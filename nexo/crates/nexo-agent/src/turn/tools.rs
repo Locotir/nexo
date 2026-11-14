@@ -38,9 +38,9 @@ pub(super) async fn run_tools(
     calls: Vec<(String, String, Value)>,
     cancel: &CancellationToken,
 ) -> (Vec<Part>, bool) {
-    let (tools, cwd, gate, session_id) = {
+    let (tools, cwd, gate, session_id, jobs) = {
         let st = state.lock().await;
-        (st.tools.clone(), st.cwd.clone(), st.gate.clone(), st.session.id().to_string())
+        (st.tools.clone(), st.cwd.clone(), st.gate.clone(), st.session.id().to_string(), st.jobs.clone())
     };
     // PreToolUse hooks first: one may block a call, decide its permission or replace its input
     let mut calls = calls;
@@ -63,7 +63,7 @@ pub(super) async fn run_tools(
                 id: id.clone(),
                 name: name.clone(),
                 args: args.clone(),
-                summary: summary_of(&tools, name, args),
+                summary: live_summary_of(&tools, &jobs, name, args),
             },
         );
     }

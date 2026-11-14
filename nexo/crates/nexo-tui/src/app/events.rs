@@ -475,9 +475,15 @@ impl App {
         use crate::render::phase::{phase_of_tool, Phase};
         Some(
             match live {
+                // the model writes the goal again in its own words: the goal shown changes with it
+                Some(Block::Tool { name, .. }) if name == "goal_brief" => return Some("Restating the goal".into()),
                 Some(Block::Tool { name, .. }) => phase_of_tool(name),
                 Some(Block::Assistant { .. }) => Phase::Writing,
-                _ => Phase::Thinking,
+                // before the reply's first word: what the agent said it is doing
+                _ => match self.prep.as_deref() {
+                    Some(what) => return Some(capitalised(what)),
+                    None => Phase::Thinking,
+                },
             }
             .label()
             .into(),
@@ -791,5 +797,14 @@ impl App {
             self.looks[i].stopped = Some(now);
             self.cache[i] = None;
         }
+    }
+}
+
+/// `what` with its first letter in capitals, as the work line's verbs are.
+fn capitalised(what: &str) -> String {
+    let mut c = what.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
     }
 }

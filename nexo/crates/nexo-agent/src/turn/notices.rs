@@ -46,3 +46,14 @@ pub(super) fn mcp_result(events: &EventTx, r: Result<String, String>) {
         Err(e) => notice(events, Level::Warn, format!("mcp: {e}")),
     }
 }
+
+/// The words of the step the agent takes before a reply starts (see `AgentEvent::Preparing`).
+pub(super) const PREP_REQUEST: &str = "preparing the request";
+pub(super) const PREP_GOAL: &str = "starting the goal";
+pub(super) const PREP_GOAL_NEXT: &str = "continuing the goal";
+pub(super) const PREP_MODEL: &str = "waiting for the model";
+
+/// Tells the interface what the agent is doing before the reply starts.
+pub(super) fn preparing(events: &EventTx, what: impl Into<String>) {
+    emit(events, AgentEvent::Preparing { what: what.into() });
+}

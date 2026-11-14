@@ -13,6 +13,14 @@ pub(super) fn summary_of(tools: &ToolSet, name: &str, args: &Value) -> String {
     }
 }
 
+/// The line of a call about to run: as `summary_of`, and a call about a background job names the job.
+pub(super) fn live_summary_of(tools: &ToolSet, jobs: &nexo_core::jobs::Jobs, name: &str, args: &Value) -> String {
+    match tools.get(name) {
+        Some(t) => t.summary_live(args, jobs),
+        None => summary_of(tools, name, args),
+    }
+}
+
 /// The name a session goes by in the mailbox: its title, else the folder it works in.
 pub(super) fn mail_name(title: &str, cwd: &Path) -> String {
     let t = title.trim();
@@ -61,6 +69,9 @@ pub(super) async fn start_prompt(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> Option<JoinHandle<TurnEnd>> {
+    // taken: said at once, before the hooks and the start of the turn (they can take seconds)
+    let events = state.lock().await.events.clone();
+    preparing(&events, PREP_REQUEST);
     let o = fire(state, "user_prompt_submit", None, serde_json::json!({"prompt": text})).await;
     if let Some(why) = o.blocked {
         let st = state.lock().await;
@@ -86,6 +97,9 @@ pub(super) async fn start_turn(
 /// Starts a turn on ``text``. When the person wrote it (``person``), everything nexo adds (shared memory, hook
 /// context, ended jobs, MCP resources, the start note, the files attached) goes first and their words come last,
 /// under `PERSON_MARK`: the request is the last thing the model reads, and nothing a file says comes after it.
+///
+/// The work before the first model call (the mentions, the project's check, the message) runs in the turn's own
+/// task: the loop takes commands meanwhile, so a message sent then is queued (and said to be) and Esc stops it.
 async fn begin_turn(
     state: &Shared,
     text: String,
@@ -93,6 +107,35 @@ async fn begin_turn(
     person: bool,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
+    let events = state.lock().await.events.clone();
+    let what = if person {
+        PREP_REQUEST
+    } else if text.starts_with(nexo_core::agent::GOAL_SET_MARK) {
+        PREP_GOAL
+    } else if text.trim_start().starts_with(nexo_core::agent::GOAL_CONTINUE_MARK) {
+        PREP_GOAL_NEXT
+    } else {
+        PREP_REQUEST
+    };
+    preparing(&events, what);
+    let state = state.clone();
+    tokio::spawn(async move {
+        let from = SystemTime::now();
+        prepare_turn(&state, text, attachments, person, &cancel).await;
+        let end = run_turn(state.clone(), cancel).await;
+        orient::worked(&mut state.lock().await.worked, from, SystemTime::now());
+        end
+    })
+}
+
+/// What `begin_turn` does before the turn's rounds: the message the model reads, in the history.
+async fn prepare_turn(
+    state: &Shared,
+    text: String,
+    attachments: Vec<Attachment>,
+    person: bool,
+    cancel: &CancellationToken,
+) {
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
     let typed = text.clone();
@@ -113,7 +156,7 @@ async fn begin_turn(
     }
     let text = if person { typed.clone() } else { text };
     // the project's check runs once, before the request is built, so its result comes with it
-    let check = orient::start_check(state, &cancel).await;
+    let check = orient::start_check(state, cancel).await;
     {
         let mut st = state.lock().await;
         // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
@@ -217,13 +260,6 @@ async fn begin_turn(
             push_user(&mut st, text, None, included, &attachments, added);
         }
     }
-    let state = state.clone();
-    tokio::spawn(async move {
-        let from = SystemTime::now();
-        let end = run_turn(state.clone(), cancel).await;
-        orient::worked(&mut state.lock().await.worked, from, SystemTime::now());
-        end
-    })
 }
 
 /// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`).

@@ -29,6 +29,12 @@ pub enum AgentEvent {
         model: String,
         sections: Vec<SentSection>,
     },
+    /// What the agent does for a request before its reply starts, in plain words ("preparing the request",
+    /// "checking the project (cargo test)", "waiting for the model"): sent the moment it takes the request and
+    /// at each slow step after, so the interface never shows a silent wait. Ends with the reply's first event.
+    Preparing {
+        what: String,
+    },
     TurnStart {
         turn: u32,
     },

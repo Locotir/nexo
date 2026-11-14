@@ -353,12 +353,21 @@ pub(super) async fn start_check(state: &Shared, cancel: &CancellationToken) -> O
     let text = match guard.recorded(&check.command, print) {
         Some(t) => t,
         None => {
+            // the one step here that can take long (a test run): the person sees it
+            let events = state.lock().await.events.clone();
+            preparing(&events, check_words(&check.command));
             let t = guard.run(&check.command, &check.dir, cap, &sandbox, &cancel.child_token()).await;
             guard.remember(&check.command, print, &t);
             t
         }
     };
     Some(nexo_tools::postcheck::brief(&text, CHECK_CHARS))
+}
+
+/// The check as the work line says it: the program and its first word (`cargo test`, `npm test`).
+fn check_words(command: &str) -> String {
+    let short: Vec<&str> = command.split_whitespace().filter(|w| !w.starts_with('-')).take(2).collect();
+    format!("checking the project ({})", short.join(" "))
 }
 
 #[cfg(test)]

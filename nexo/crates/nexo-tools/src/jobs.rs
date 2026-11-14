@@ -80,6 +80,20 @@ impl Tool for Jobs {
         }
     }
 
+    fn summary_live(&self, args: &Value, jobs: &nexo_core::jobs::Jobs) -> String {
+        let id = int_arg(args, "id");
+        let what = id.and_then(|i| jobs.get(i as u32)).map(|j| one_line(&j.label, 48));
+        let (Some(id), Some(what)) = (id, what) else { return self.summary(args) };
+        match str_arg(args, "action").unwrap_or("list") {
+            "output" => match int_arg(args, "wait").filter(|w| *w > 0) {
+                Some(w) => format!("jobs: waiting for job {id} · {what} · up to {} s", w.min(MAX_WAIT_S)),
+                None => format!("jobs: output of job {id} · {what}"),
+            },
+            "kill" => format!("jobs: stopping job {id} · {what}"),
+            _ => self.summary(args),
+        }
+    }
+
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
         let action = str_arg(&args, "action").unwrap_or("list");
         let id = int_arg(&args, "id").map(|i| i as u32);
@@ -135,6 +149,35 @@ impl Tool for Jobs {
 mod tests {
     use super::*;
     use crate::bash::Bash;
+
+    #[test]
+    fn a_wait_on_a_job_names_the_job_and_says_how_long_it_may_wait() {
+        let jobs = nexo_core::jobs::Jobs::new();
+        let shell = jobs.start(JobKind::Shell, "cargo test -p nexo-bin");
+        let agent = jobs.start(JobKind::Agent, "map the session files and their readers\nsecond line");
+        let id = shell.id();
+        let line = |args: Value| Jobs.summary_live(&args, &jobs);
+        assert_eq!(
+            line(json!({"action": "output", "id": id, "wait": 60})),
+            format!("jobs: waiting for job {id} · cargo test -p nexo-bin · up to 60 s")
+        );
+        assert_eq!(
+            line(json!({"action": "output", "id": id})),
+            format!("jobs: output of job {id} · cargo test -p nexo-bin")
+        );
+        assert_eq!(
+            line(json!({"action": "kill", "id": id})),
+            format!("jobs: stopping job {id} · cargo test -p nexo-bin")
+        );
+        // a sub-agent goes by its task, on one line
+        assert_eq!(
+            line(json!({"action": "output", "id": agent.id(), "wait": 900})),
+            format!("jobs: waiting for job {} · map the session files and their readers … · up to 600 s", agent.id())
+        );
+        // a job the session does not know, or the list: the arguments alone
+        assert_eq!(line(json!({"action": "output", "id": 99, "wait": 5})), "jobs: output 99 (wait 5 s)");
+        assert_eq!(line(json!({"action": "list"})), "jobs: list");
+    }
 
     #[test]
     fn a_background_command_runs_on_and_is_read_and_killed() {

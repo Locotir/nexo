@@ -277,7 +277,13 @@ impl App {
     }
 
     /// A request the agent has not echoed after a few seconds: say so once, and what it may be waiting for.
+    /// While the agent works (it said it took a request, or holds some in its queue) the work line says what
+    /// it does: that is no silence, and the message joins when the agent gets to it.
     pub(super) fn check_unechoed(&mut self) {
+        let open = matches!(self.modal, Some(Modal::Permission(_) | Modal::Question(_)));
+        if !open && (self.busy || self.queued > 0) {
+            return;
+        }
         let now = self.now();
         let mut late = false;
         for (_, at, said) in self.unechoed.iter_mut() {
@@ -289,12 +295,10 @@ impl App {
         if !late {
             return;
         }
-        let waits = if matches!(self.modal, Some(Modal::Permission(_) | Modal::Question(_))) {
+        let waits = if open {
             "waiting for your answer in the open window"
-        } else if self.busy {
-            "a turn is still running"
         } else {
-            "the agent has not answered"
+            "the agent has not acknowledged it and is not working"
         };
         self.notice(
             Level::Warn,

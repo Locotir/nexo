@@ -294,6 +294,11 @@ pub trait Tool: Send + Sync {
     }
     /// One line that says what this call does (`read src/main.rs`, `bash: cargo test`).
     fn summary(&self, args: &Value) -> String;
+    /// The line of a call about to run, with the session's background jobs at hand: a call about a job names
+    /// what the job is (`jobs`). The arguments alone by default.
+    fn summary_live(&self, args: &Value, _jobs: &crate::jobs::Jobs) -> String {
+        self.summary(args)
+    }
     /// Never panics on bad `args`: it answers with an error output the model can read.
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput;
 }

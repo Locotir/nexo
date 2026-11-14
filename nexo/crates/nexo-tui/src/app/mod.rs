@@ -99,6 +99,8 @@ pub struct App {
     /// Questions from the model waiting behind the open modal.
     pending_questions: VecDeque<nexo_core::permission::Question>,
     pub busy: bool,
+    /// What the agent said it is doing before the reply's first word (`AgentEvent::Preparing`).
+    pub prep: Option<String>,
     pub turn_started: Option<Instant>,
     /// When the interface opened (the banner's mark lights up for a moment).
     pub opened: Instant,
@@ -366,6 +368,7 @@ impl App {
             pending_permissions: VecDeque::new(),
             pending_questions: VecDeque::new(),
             busy: false,
+            prep: None,
             turn_started: None,
             opened: Instant::now(),
             gauge_shown: 0.0,

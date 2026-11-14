@@ -182,6 +182,7 @@ mod request_prefix;
 mod resume_and_rewind;
 mod session_commands;
 mod session_models;
+mod start_feedback;
 mod sub_agents;
 mod tool_rounds;
 
@@ -263,11 +264,11 @@ impl Running {
         self.handle.commands.send(c).unwrap();
     }
 
-    /// The next event, passing over `Idle` (the tests that want it use `raw`).
+    /// The next event, passing over `Idle` and `Preparing` (the tests that want them use `raw`).
     async fn next(&mut self) -> AgentEvent {
         loop {
             match self.raw().await {
-                AgentEvent::Idle { .. } => continue,
+                AgentEvent::Idle { .. } | AgentEvent::Preparing { .. } => continue,
                 ev => return ev,
             }
         }

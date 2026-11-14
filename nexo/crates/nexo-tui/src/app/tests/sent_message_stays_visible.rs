@@ -70,7 +70,8 @@ fn an_agent_that_does_not_answer_is_said_after_three_seconds_and_the_text_is_rec
         Block::Notice { text, .. } => Some(text.clone()),
         _ => None,
     });
-    assert!(said.unwrap().contains("not taken yet"));
+    let said = said.unwrap();
+    assert!(said.contains("not taken yet") && said.contains("not acknowledged it and is not working"), "{said}");
     fx_at(&mut a, t0, 9_000);
     a.tick();
     assert_eq!(notices(&a), before + 1, "said once");
@@ -136,4 +137,81 @@ fn enter_as_the_kitty_protocol_reports_it_sends() {
     crate::event::handle(&mut a, enter(KeyEventKind::Press, KeyModifiers::NONE, none));
     crate::event::handle(&mut a, enter(KeyEventKind::Release, KeyModifiers::NONE, none));
     assert_eq!(drain(&mut rx).len(), 1);
+}
+
+fn work_line(a: &mut App) -> String {
+    screen(a, 100, 16).into_iter().find(|r| r.contains("Esc interrupt")).unwrap_or_default()
+}
+
+fn notice_count(a: &App) -> usize {
+    a.blocks.iter().filter(|b| matches!(b, Block::Notice { .. })).count()
+}
+
+#[test]
+fn a_request_the_agent_takes_shows_working_in_the_first_frame_and_no_late_warning() {
+    let t0 = Instant::now();
+    let (mut a, mut rx) = app();
+    fx_at(&mut a, t0, 0);
+    a.input.set_text("sigue con la mision");
+    a.submit();
+    drain(&mut rx);
+    // the agent takes it at once; its turn starts seconds later (a goal's check, hooks)
+    a.handle_agent(AgentEvent::Preparing { what: "preparing the request".into() });
+    assert!(work_line(&mut a).contains("Preparing the request…"), "{:?}", screen(&mut a, 100, 16));
+    a.handle_agent(AgentEvent::Preparing { what: "checking the project (cargo test)".into() });
+    assert!(work_line(&mut a).contains("Checking the project (cargo test)…"));
+    let before = notice_count(&a);
+    fx_at(&mut a, t0, 9_000);
+    a.tick();
+    assert_eq!(notice_count(&a), before, "the agent is working: no \"not taken yet\"");
+    // a message sent now waits in the agent's queue, said so in a flash, not as a dim line that may be lost
+    a.input.set_text("one more thing");
+    a.submit();
+    assert_eq!((pending(&a), a.queued), (1, 1));
+    a.handle_agent(AgentEvent::Queued { pending: 1 });
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("sigue con la mision") });
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    assert_eq!(a.queued, 1, "the turn that starts is the taken request, not the queued one");
+    a.handle_agent(AgentEvent::AssistantStart);
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    assert!(work_line(&mut a).contains("Waiting for the model…"));
+    a.handle_agent(AgentEvent::TextDelta { text: "on it".into() });
+    assert!(work_line(&mut a).contains("Writing…"));
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+    assert!(a.prep.is_none() && !a.busy);
+}
+
+#[test]
+fn a_request_a_hook_stops_before_its_turn_leaves_nothing_working() {
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::Preparing { what: "preparing the request".into() });
+    assert!(a.busy);
+    a.handle_agent(AgentEvent::Idle { running_jobs: 0 });
+    assert!(!a.busy && a.prep.is_none());
+}
+
+#[test]
+fn goal_brief_shows_as_restating_the_goal_and_its_result_is_the_goal_shown() {
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::Goal {
+        text: Some("tests green pls".into()),
+        round: 0,
+        max: 5,
+        state: Default::default(),
+    });
+    a.handle_agent(AgentEvent::Preparing { what: "starting the goal".into() });
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "g1".into(),
+        name: "goal_brief".into(),
+        args: serde_json::json!({"want": "every test passes"}),
+        summary: "goal_brief: restating the goal · every test passes".into(),
+    });
+    a.handle_agent(AgentEvent::ToolStart { id: "g1".into() });
+    assert_eq!(a.activity().as_deref(), Some("Restating the goal"));
+    assert!(work_line(&mut a).contains("Restating the goal…"));
+    let want = "Want: every test passes\nWhy: release\nHow: fix code\nDone when: 0 failed";
+    a.handle_agent(AgentEvent::Goal { text: Some(want.into()), round: 0, max: 5, state: Default::default() });
+    a.handle_agent(AgentEvent::ToolDone { id: "g1".into(), output: ToolOutput::ok("ok"), elapsed_ms: 3 });
+    assert_eq!(a.goal.as_ref().map(|g| g.text.as_str()), Some(want));
 }

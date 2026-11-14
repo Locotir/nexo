@@ -112,6 +112,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             return TurnEnd::Interrupted;
         }
         emit(&events, AgentEvent::AssistantStart);
+        // the request is out: until its first word the wait is the model's
+        preparing(&events, PREP_MODEL);
         {
             let mut st = state.lock().await;
             if !st.mail_turn.is_empty() {

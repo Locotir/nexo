@@ -56,7 +56,7 @@ impl Tool for GoalBrief {
 
     fn summary(&self, args: &Value) -> String {
         let want = args.get("want").and_then(Value::as_str).unwrap_or("?");
-        format!("goal: {}", want.chars().take(60).collect::<String>())
+        format!("goal_brief: restating the goal · {}", want.chars().take(60).collect::<String>())
     }
 
     async fn run(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {

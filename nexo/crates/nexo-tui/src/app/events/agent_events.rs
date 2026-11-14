@@ -38,22 +38,38 @@ impl App {
             AgentEvent::Sent { model, sections } => {
                 self.modal = Some(Modal::Sent(Box::new(crate::sent_view::SentView::new(model, sections))));
             }
+            AgentEvent::Preparing { what } => {
+                // the agent took the request: the work line runs from now, not from its first model call
+                if !self.busy {
+                    self.busy = true;
+                    self.turn_started = Some(self.now());
+                    self.streamed_chars = 0;
+                }
+                self.prep = Some(what);
+            }
             AgentEvent::TurnStart { .. } => {
+                // announced by `Preparing`: the clock already runs, and the agent's own `Queued` counts hold
+                let announced = self.busy && self.prep.is_some();
                 self.todo_done_live = false;
                 self.suggestion = None;
                 self.busy = true;
-                self.turn_started = Some(self.now());
+                if !announced || self.turn_started.is_none() {
+                    self.turn_started = Some(self.now());
+                }
                 self.streamed_chars = 0;
                 self.turn_tally = Default::default();
                 self.turn_usage = Usage::default();
                 self.turn_cost_start = self.cost;
-                self.queued = self.queued.saturating_sub(1);
-                self.trim_queue();
+                if !announced {
+                    self.queued = self.queued.saturating_sub(1);
+                    self.trim_queue();
+                }
             }
             // a reply that starts while one is still open: the open one was dropped and the request sent again
             // (a stream cut inside its reasoning), so what it streamed is closed and not joined to the new one
             AgentEvent::AssistantStart => self.close_streaming(),
             AgentEvent::TextDelta { text } => {
+                self.prep = None;
                 self.streamed_chars += text.len();
                 if self.fx_on() {
                     let now = self.now();
@@ -73,6 +89,7 @@ impl App {
                 }
             }
             AgentEvent::ReasoningDelta { text } => {
+                self.prep = None;
                 self.streamed_chars += text.len();
                 match self.blocks.last_mut() {
                     Some(Block::Reasoning { text: t, streaming: true, .. }) => {
@@ -92,6 +109,7 @@ impl App {
                 }
             }
             AgentEvent::ToolCall { id, name, args, summary } => {
+                self.prep = None;
                 self.close_streaming();
                 // a replayed call already has its card from the message: give it the tool's summary
                 if let Some(i) = self.tool_index(&id) {
@@ -465,6 +483,7 @@ impl App {
                 self.todo_done_live = false;
                 self.close_streaming();
                 self.busy = false;
+                self.prep = None;
                 if matches!(reason, TurnEnd::Done) {
                     self.turn_glow();
                 }
@@ -533,7 +552,10 @@ impl App {
                     self.dirty = true;
                 }
             }
-            AgentEvent::HistoryCleared => self.clear_transcript(),
+            AgentEvent::HistoryCleared => {
+                self.prep = None;
+                self.clear_transcript()
+            }
             AgentEvent::SessionChanged { session_id, title } => {
                 self.flash(&format!("session: {}", if title.is_empty() { session_id.clone() } else { title.clone() }));
                 self.session_id = Some(session_id);
@@ -634,7 +656,12 @@ impl App {
                     v.set_tails(tails);
                 }
             }
-            AgentEvent::Idle { .. } => {}
+            // a request taken and then stopped before its turn (a hook refused it): nothing works any more
+            AgentEvent::Idle { .. } => {
+                if self.prep.take().is_some() {
+                    self.busy = false;
+                }
+            }
             AgentEvent::MailSent { id, to_name, to, summary, .. } => {
                 let peer = if to_name.is_empty() { to } else { to_name };
                 self.push(Block::Mail { id, outgoing: true, peer, text: summary, stage: nexo_core::mail::Stage::Sent });

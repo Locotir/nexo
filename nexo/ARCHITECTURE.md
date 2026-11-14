@@ -123,6 +123,14 @@ results; loop. `Interrupt` cancels the stream and the running tools; the
 partial assistant message is kept and the turn ends `Interrupted`. A
 `Submit` while a turn runs is queued and starts when the turn ends; the
 queue's length is reported as `Queued { pending }` whenever it changes. A
+request is acknowledged the moment it is taken with `Preparing { what }`
+(plain words: `preparing the request`, `starting the goal`, `checking the
+project (cargo test)`, then `waiting for the model` once the request is out);
+the work before the first model call (mentions, the project's check, the
+message) runs in the turn's task, so the loop keeps taking commands (a message
+sent meanwhile is queued, Esc stops it). The TUI's work line shows the latest
+`Preparing` until the reply's first event, and a `goal_brief` call as
+`Restating the goal`. A
 `ContextLength` error compacts once and retries. Usage is accumulated per
 turn and session and priced with the provider's pricing (`cost_usd`, 0 when
 unknown); attempts the client threw away and retried are spent too
