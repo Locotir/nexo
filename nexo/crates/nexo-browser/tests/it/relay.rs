@@ -5,7 +5,7 @@
 //!
 //! Skipped when no Chrome, Chromium or Edge is installed.
 
-mod support;
+use crate::support;
 
 use chromiumoxide::browser::{Browser as Chrome, BrowserConfig};
 use futures::StreamExt;

@@ -6,14 +6,14 @@
 //!
 //! ```text
 //! cargo build -p nexo-cli                      # or -p nexo-browser-host: the program Chrome starts as the host
-//! cargo test -p nexo-browser --test real_extension -- --ignored --nocapture
+//! cargo test -p nexo-browser --test it real_extension -- --ignored --nocapture
 //! ```
 //!
 //! `NEXO_HOST_BIN` names the host program (default: `nexo` or `nexo-browser-host` in the target folder). Chrome
 //! must be a build that still allows `--enable-unsafe-extension-debugging` with `Extensions.loadUnpacked` (Chrome for
 //! Testing, Chromium, or branded Chrome from version 137 with that flag).
 
-mod support;
+use crate::support;
 
 use nexo_browser::{browsers, RelayBrowser};
 use nexo_relay::{endpoint, Dirs};

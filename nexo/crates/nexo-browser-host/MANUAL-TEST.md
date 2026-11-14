@@ -2,7 +2,7 @@
 
 The automated tests never touch a real person's browser. They use a scripted extension end
 (`nexo-browser/tests/relay.rs`, `broadcast.rs`) and, on request, the real extension in a headless Chrome the test starts
-itself with a throwaway profile (`nexo-browser/tests/real_extension.rs`, `#[ignore]`). This page is the short check a
+itself with a throwaway profile (`nexo-browser/tests/it/real_extension.rs`, `#[ignore]`). This page is the short check a
 person makes once with the Chrome they actually use.
 
 ## One time
@@ -45,7 +45,7 @@ person makes once with the Chrome they actually use.
 
 ```text
 cargo build -p nexo-cli
-cargo test -p nexo-browser --test real_extension -- --ignored --nocapture
+cargo test -p nexo-browser --test it real_extension -- --ignored --nocapture
 ```
 
 `NEXO_HOST_BIN` names the host program (default: `nexo` or `nexo-browser-host` beside the test binary). It needs a
