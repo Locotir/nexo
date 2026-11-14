@@ -27,16 +27,18 @@ const MODERN_MAX_TOKENS: u32 = 64_000;
 /// The largest reply of a Claude 5.5 model.
 pub const MODERN_MAX_OUTPUT: u32 = 128_000;
 
-/// The family (`sonnet`, `opus`, `haiku`) and version of a name like `claude-sonnet-5-5`, also as a
+/// The family (`sonnet`, `opus`, `haiku`, `fable`, `mythos`) and version of a name like `claude-sonnet-5-5`, also as a
 /// cloud id (`anthropic.claude-sonnet-5-5-v1:0`, `claude-sonnet-5-5@20260101`).
 fn family_version(model: &str) -> Option<(&'static str, u32, u32)> {
     let m = model.to_ascii_lowercase();
     let rest = &m[m.find("claude-")? + "claude-".len()..];
-    let mut t = rest.split(['-', '.', '@', ':']);
+    let mut t = rest.split(['-', '.', '@', ':', '[', ']']);
     let fam = match t.next()? {
         "sonnet" => "sonnet",
         "opus" => "opus",
         "haiku" => "haiku",
+        "fable" => "fable",
+        "mythos" => "mythos",
         _ => return None,
     };
     let major: u32 = t.next()?.parse().ok()?;
@@ -52,6 +54,44 @@ fn family(model: &str) -> Option<&'static str> {
 /// Claude 5.5 and later: adaptive thinking, effort, no sampling parameters.
 pub fn modern(model: &str) -> bool {
     family_version(model).is_some_and(|(_, major, minor)| (major, minor) >= (5, 5))
+}
+
+/// Models that take `thinking: adaptive` plus `output_config.effort`, and answer a manual `budget_tokens` with a
+/// 400: Fable, Mythos, Opus and Sonnet from 4.6, Haiku from 5. Any other id (Haiku 4.5, Sonnet 4.5, Opus 4.5 and
+/// older, `claude-3*`, another vendor's model) still takes `budget_tokens`.
+fn adaptive_thinking(model: &str) -> bool {
+    match family_version(model) {
+        Some(("fable" | "mythos", ..)) => true,
+        Some(("opus" | "sonnet", major, minor)) => (major, minor) >= (4, 6),
+        Some(("haiku", major, _)) => major >= 5,
+        _ => false,
+    }
+}
+
+/// Models that answer a `temperature` with a 400 (or any non-default value of it): Fable, Mythos, Opus from 4.7,
+/// Sonnet and Haiku from 5. Every other id, Claude or not, still takes it.
+fn takes_temperature(model: &str) -> bool {
+    match family_version(model) {
+        Some(("fable" | "mythos", ..)) => false,
+        Some(("opus", major, minor)) => (major, minor) < (4, 7),
+        Some(("sonnet" | "haiku", major, _)) => major < 5,
+        _ => true,
+    }
+}
+
+/// The `output_config.effort` of a reasoning setting; `None` is off.
+fn effort_name(r: ReasoningConfig) -> Option<&'static str> {
+    match r {
+        ReasoningConfig::Off => None,
+        ReasoningConfig::Effort(Effort::Minimal | Effort::Low) => Some("low"),
+        ReasoningConfig::Effort(Effort::Medium) => Some("medium"),
+        ReasoningConfig::Effort(Effort::High) => Some("high"),
+        ReasoningConfig::Budget(b) => Some(match b {
+            0..=2048 => "low",
+            2049..=12_000 => "medium",
+            _ => "high",
+        }),
+    }
 }
 
 /// Reasoning off is a request for less thinking: before 5.5 it is no thinking, and on 5.5 Sonnet has a lowest
@@ -146,7 +186,7 @@ impl Anthropic {
         if modern(&req.model) {
             Self::modern_fields(cfg, req, &mut body);
         } else {
-            if let Some(t) = req.temperature {
+            if let Some(t) = req.temperature.filter(|_| takes_temperature(&req.model)) {
                 body["temperature"] = temp(t);
             }
             if !req.stop.is_empty() {
@@ -165,7 +205,13 @@ impl Anthropic {
             // wants the thinking block of a tool round back, so when the model that made it is
             // gone, this request goes without thinking rather than invalid.
             // the budget must stay below max_tokens and at least 1024: a reply too small for that goes without
-            if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
+            if adaptive_thinking(&req.model) {
+                // no budget on these models: the depth is the effort, and no reasoning set leaves it to the model
+                if let Some(e) = req.reasoning.and_then(effort_name).filter(|_| !broken_round) {
+                    body["thinking"] = json!({"type": "adaptive"});
+                    body["output_config"] = json!({"effort": e});
+                }
+            } else if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
                 let b = b.min(req.max_tokens - 1);
                 body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
                 if body["temperature"].is_number() {
@@ -178,6 +224,9 @@ impl Anthropic {
             if modern(&req.model) && matches!(k.as_str(), "temperature" | "top_p" | "top_k") {
                 continue;
             }
+            if !takes_temperature(&req.model) && k == "temperature" {
+                continue;
+            }
             body[k] = v.clone();
         }
         body
@@ -187,18 +236,10 @@ impl Anthropic {
     /// parameters are all a 400), the depth is `output_config.effort`, and the reply gets room for the
     /// reasoning, which counts inside `max_tokens`.
     fn modern_fields(cfg: &ProviderConfig, req: &ModelRequest, body: &mut Value) {
-        let effort = match req.reasoning {
-            None => Some("medium"),
-            Some(ReasoningConfig::Off) => None,
-            Some(ReasoningConfig::Effort(Effort::Minimal | Effort::Low)) => Some("low"),
-            Some(ReasoningConfig::Effort(Effort::Medium)) => Some("medium"),
-            Some(ReasoningConfig::Effort(Effort::High)) => Some("high"),
-            Some(ReasoningConfig::Budget(b)) => Some(match b {
-                0..=2048 => "low",
-                2049..=12_000 => "medium",
-                _ => "high",
-            }),
-        };
+        // a round whose thinking block another model made keeps its settings here: the 5.5 API drops a block it
+        // cannot read by itself, and the None branch below would strip every block of the history (a history edit:
+        // the messages cache and every later block are lost)
+        let effort = req.reasoning.map_or(Some("medium"), effort_name);
         match effort {
             Some(e) => {
                 body["output_config"] = json!({"effort": e});
@@ -822,6 +863,7 @@ mod tests {
             "claude-sonnet-5",
             "claude-sonnet-5-20260101",
             "claude-opus-4-8",
+            "claude-fable-5-2",
             "claude-sonnet-4-5",
             "claude-haiku-4-5",
             "claude-3-5-sonnet-latest",
@@ -857,6 +899,120 @@ mod tests {
             }
             req.reasoning = Some(ReasoningConfig::Budget(30_000));
             assert_eq!(Anthropic::body(&cfg, &req)["output_config"]["effort"], "high");
+        }
+    }
+
+    fn adaptive_req(model: &str, reasoning: Option<ReasoningConfig>) -> ModelRequest {
+        let mut req = ModelRequest::new(model, "", vec![Message::user("hi")]);
+        req.max_tokens = 16_384;
+        req.temperature = Some(0.5);
+        req.reasoning = reasoning;
+        req
+    }
+
+    #[test]
+    fn adaptive_models_get_effort_never_a_budget_and_no_rejected_temperature() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        for model in [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-2",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "us.anthropic.claude-opus-5-5-v1:0",
+            "anthropic/claude-sonnet-5-5",
+            "claude-opus-5-5[1m]",
+        ] {
+            for (r, want) in [
+                (ReasoningConfig::Effort(Effort::Minimal), "low"),
+                (ReasoningConfig::Effort(Effort::Low), "low"),
+                (ReasoningConfig::Effort(Effort::Medium), "medium"),
+                (ReasoningConfig::Effort(Effort::High), "high"),
+                (ReasoningConfig::Budget(2048), "low"),
+                (ReasoningConfig::Budget(8192), "medium"),
+                (ReasoningConfig::Budget(20_000), "high"),
+            ] {
+                let b = Anthropic::body(&cfg, &adaptive_req(model, Some(r)));
+                assert_eq!(b["thinking"]["type"], "adaptive", "{model} {r:?}");
+                assert_eq!(b["output_config"]["effort"], want, "{model} {r:?}");
+                assert!(!b.to_string().contains("budget_tokens"), "{model}");
+                if model != "claude-opus-4-6" && model != "claude-sonnet-4-6" {
+                    assert!(b.get("temperature").is_none(), "{model} sends temperature");
+                }
+            }
+            let b = Anthropic::body(&cfg, &adaptive_req(model, None));
+            assert!(!b.to_string().contains("budget_tokens"), "{model}");
+        }
+    }
+
+    #[test]
+    fn an_adaptive_model_with_no_reasoning_set_gets_no_thinking_fields_and_a_small_cap_is_kept() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        for model in ["claude-opus-4-8", "claude-fable-5-2", "claude-sonnet-4-6"] {
+            let b = Anthropic::body(&cfg, &adaptive_req(model, None));
+            assert!(b.get("thinking").is_none() && b.get("output_config").is_none(), "{model}");
+            let mut req = adaptive_req(model, Some(ReasoningConfig::Effort(Effort::High)));
+            req.max_tokens = 1000;
+            let b = Anthropic::body(&cfg, &req);
+            assert_eq!(b["thinking"]["type"], "adaptive", "no budget math, so no max_tokens floor");
+            assert_eq!(b["max_tokens"], 1000);
+        }
+    }
+
+    #[test]
+    fn temperature_is_kept_where_it_is_taken_and_a_user_extra_cannot_bring_it_back_where_it_is_not() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        for model in
+            ["claude-sonnet-4-5", "claude-opus-4-6", "claude-sonnet-4-6", "glm-4.6", "claude-opus-4-1-20250805"]
+        {
+            let b = Anthropic::body(&cfg, &adaptive_req(model, None));
+            assert_eq!(b["temperature"], 0.5, "{model}");
+        }
+        let mut req = adaptive_req("claude-opus-4-8", None);
+        req.extra.insert("temperature".into(), json!(0.7));
+        assert!(Anthropic::body(&cfg, &req).get("temperature").is_none());
+        req.extra.insert("output_config".into(), json!({"effort": "max"}));
+        assert_eq!(Anthropic::body(&cfg, &req)["output_config"]["effort"], "max", "extra still wins");
+    }
+
+    #[test]
+    fn older_claude_models_and_other_vendors_keep_the_budget() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        for model in [
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-5",
+            "claude-opus-4-1",
+            "claude-3-5-sonnet-latest",
+            "glm-4.6",
+        ] {
+            let b = Anthropic::body(&cfg, &adaptive_req(model, Some(ReasoningConfig::Effort(Effort::Medium))));
+            assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": 8192}), "{model}");
+            assert!(b.get("output_config").is_none() && b.get("temperature").is_none(), "{model}");
+        }
+    }
+
+    #[test]
+    fn a_broken_round_sends_no_thinking_before_5_5_and_keeps_it_on_5_5() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        for model in ["claude-sonnet-5-5", "claude-opus-5-5"] {
+            let mut req = adaptive_req(model, Some(ReasoningConfig::Effort(Effort::High)));
+            req.messages = reasoning_history("another-model");
+            let b = Anthropic::body(&cfg, &req);
+            assert_eq!(b["thinking"]["type"], "adaptive", "{model}: {b}");
+            assert_eq!(b["output_config"]["effort"], "high", "{model}");
+        }
+        for model in ["claude-opus-4-8", "claude-fable-5-2"] {
+            let mut req = adaptive_req(model, Some(ReasoningConfig::Effort(Effort::High)));
+            req.messages = reasoning_history("another-model");
+            let b = Anthropic::body(&cfg, &req);
+            assert!(b.get("thinking").is_none() && b.get("output_config").is_none(), "{model}: {b}");
         }
     }
 

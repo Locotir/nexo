@@ -47,6 +47,7 @@ const PRESETS: &[Preset] = &[
                 Pricing { input: 0.10, output: 0.50, cache_read: 0.01, cache_write: 0.125 },
                 1_000_000,
             ),
+            ("claude-fable-5-2", Pricing { input: 8.0, output: 40.0, cache_read: 0.20, cache_write: 10.0 }, 1_000_000),
             ("claude-sonnet-4-5", Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 }, 200_000),
             ("claude-haiku-4-5", Pricing { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25 }, 200_000),
         ],
@@ -467,6 +468,9 @@ mod tests {
             assert_eq!(a.max_output[m], 128_000, "{m}");
         }
         assert!(!a.max_output.contains_key("claude-sonnet-4-5"), "older models keep what they had");
+        let f = a.pricing_for("claude-fable-5-2").unwrap();
+        assert_eq!((f.input, f.output, f.cache_read, f.cache_write), (8.0, 40.0, 0.20, 10.0));
+        assert_eq!(a.context_window["claude-fable-5-2"], 1_000_000);
         // 1M fresh input, 1M output, 1M read, 1M written to the cache
         let u =
             Usage { input: 1_000_000, output: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000, reasoning: 0 };
