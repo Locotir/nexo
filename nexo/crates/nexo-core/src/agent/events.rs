@@ -340,7 +340,8 @@ pub enum AgentEvent {
         summary: String,
         bytes: usize,
     },
-    /// A mail could not be sent; `reason` is written for the model to read ("rate limit, retry in 30 s").
+    /// A mail the person wrote (`/msg`) could not be sent; `reason` is written for the model to read ("rate
+    /// limit, retry in 30 s"). A model's failed send is only in its tool result.
     MailFailed {
         to: String,
         reason: String,

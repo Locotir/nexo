@@ -165,6 +165,36 @@ fn a_general_sub_agent_leaves_note_todo_and_recall_to_its_parent() {
     assert_eq!(names(&listed), vec!["note".to_string()]);
 }
 
+#[test]
+fn a_sub_agent_gets_the_session_mail_tools_only_when_its_kind_lists_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mailbox = nexo_core::mailbox::Mailbox::open(
+        &dir.path().join("mail"),
+        "aaaa1111",
+        "api",
+        "/w/api",
+        false,
+        nexo_core::mail::Inbound::Auto,
+    )
+    .unwrap();
+    let mail = nexo_tools::mail::tools(mailbox);
+    let mut tools = nexo_tools::builtin();
+    for spec in mail.specs() {
+        tools.add(mail.get(&spec.name).unwrap().clone());
+    }
+    let sub =
+        SubAgent::new(Arc::new(Mute), Target::new("p", cfg("m", &[]), "m"), &tools, Vec::new(), Default::default());
+    let names = |p: &Profile| -> Vec<String> { sub.tools_for(p).specs().iter().map(|s| s.name.clone()).collect() };
+    let general = builtin().into_iter().find(|p| p.name == "general").unwrap();
+    let g = names(&general);
+    for gone in ["send_message", "send_to_session", "list_sessions"] {
+        assert!(!g.iter().any(|n| n == gone), "{gone} in {g:?}");
+    }
+    assert!(g.iter().any(|n| n == "bash"), "{g:?}");
+    let listed = Profile { tools: Some(vec!["send_message".into(), "list_sessions".into()]), ..general };
+    assert_eq!(names(&listed), ["list_sessions", "send_message"]);
+}
+
 /// What a new session offers in an empty folder: the built-in tools and `task`, every preset provider set up.
 fn default_tools() -> ToolSet {
     tools_with(Vec::new())

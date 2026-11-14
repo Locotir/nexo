@@ -183,7 +183,28 @@ fn a_full_inbox_and_an_unknown_session_are_errors_the_model_can_read() {
         api.send("api", "hi", None, FromKind::Agent).unwrap_err(),
         "Not sent: \"api\" is this session, the message would go to itself. Live sessions: web."
     );
+    // the person's failed send (the full inbox) is shown; the model's two are only in its tool result
+    let failed: Vec<String> = api
+        .drain_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AgentEvent::MailFailed { to, .. } => Some(to),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed, ["web"]);
+    api.send("nobody", "hi", None, FromKind::Person).unwrap_err();
     assert!(api.drain_events().iter().any(|e| matches!(e, AgentEvent::MailFailed { to, .. } if to == "nobody")));
+}
+
+#[test]
+fn a_model_s_failed_send_pushes_no_event_for_the_screen() {
+    let rig = Rig::new();
+    let (api, _web) = pair(&rig);
+    let e = api.send("nobody", "hi", None, FromKind::Agent).unwrap_err();
+    assert_eq!(e, "Not sent: no live session \"nobody\". Live sessions: web.");
+    assert!(api.send("web", "", None, FromKind::Agent).is_err());
+    assert!(api.drain_events().is_empty());
 }
 
 #[test]

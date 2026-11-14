@@ -262,8 +262,13 @@ impl SubAgent {
         for spec in self.all.specs() {
             let Some(t) = self.all.get(&spec.name) else { continue };
             let listed = match &p.tools {
-                // note, todo and recall are the parent's: a kind that does not list them does not get them
-                None => !matches!(spec.name.as_str(), "note" | "todo" | "recall"),
+                // note, todo and recall are the parent's: a kind that does not list them does not get them.
+                // So are the mail tools: they are bound to the parent session's mailbox and a sub-agent has no
+                // session of its own, so what it sent would go out as the parent; its way back is its report
+                None => !matches!(
+                    spec.name.as_str(),
+                    "note" | "todo" | "recall" | "send_message" | "send_to_session" | "list_sessions"
+                ),
                 Some(l) => l.iter().any(|n| n == &spec.name),
             };
             // `diagnostics` starts language servers, which may run the project's build scripts

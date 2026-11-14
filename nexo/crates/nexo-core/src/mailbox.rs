@@ -477,10 +477,11 @@ impl Mailbox {
     }
 
     /// Writes `text` into the inbox of the session `to` names. `summary` None: the first line of the text.
-    /// The error is written for the model to read.
+    /// The error is written for the model to read. Only a failed send of the person's (`/msg`) is also an
+    /// event for the screen: a model's comes back to it as its tool result.
     pub fn send(&self, to: &str, text: &str, summary: Option<&str>, kind: FromKind) -> Result<Mail, String> {
         let r = self.send_inner(to, text, summary, kind);
-        if let Err(reason) = &r {
+        if let (Err(reason), FromKind::Person) = (&r, kind) {
             let mut s = self.lock();
             Mailbox::push_event(&mut s, AgentEvent::MailFailed { to: to.to_string(), reason: reason.clone() });
         }
