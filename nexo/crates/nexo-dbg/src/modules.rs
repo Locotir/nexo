@@ -49,6 +49,14 @@ impl Mods {
         &self.main
     }
 
+    /// A range of the program's file (`A+LEN`'s whole function or section forms of `nexo_bin::range_in`) as the
+    /// addresses it has in memory.
+    pub fn file_range(&mut self, text: &str) -> crate::Result<(u64, u64)> {
+        let (lo, hi) = nexo_bin::range_in(&self.main, text)?;
+        let bias = self.main_bias();
+        Ok((lo.wrapping_add(bias), hi.wrapping_add(bias)))
+    }
+
     /// Read the names and notes kept for the program again (after `name` or `note`). A reason when they cannot be read.
     pub fn reload_names(&mut self, dir: &Path) -> Option<String> {
         nexo_bin::attach_names(&mut self.main, dir)

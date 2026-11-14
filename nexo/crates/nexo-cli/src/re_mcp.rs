@@ -413,6 +413,7 @@ fn arg_schema(a: &Arg) -> Value {
         json!({"type": "array", "items": {"type": "string"}})
     } else if a.get_default_values().first().is_some_and(|d| d.to_str().is_some_and(|d| d.parse::<i64>().is_ok()))
         || a.get_value_parser().type_id() == std::any::TypeId::of::<usize>()
+        || a.get_value_parser().type_id() == std::any::TypeId::of::<nexo_bin::Lines>()
     {
         json!({"type": ["integer", "string"]})
     } else {
@@ -531,7 +532,7 @@ fn dbg_tools() -> Vec<Tool> {
             schema: json!({"type": "object", "properties": {
                 "command": {"type": "string"},
                 "session": {"type": "string", "description": "session id, when more than one is live"},
-                "lines": {"type": "integer", "description": "most lines in the answer"},
+                "lines": {"type": ["integer", "string"], "description": "most lines in the answer, or all"},
                 "from": {"type": "string", "description": "continue a cut answer at this address or position"},
                 "json": {"type": "boolean"}
             }, "required": ["command"]}),

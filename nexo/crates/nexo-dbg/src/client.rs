@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nexo_bin::{Output, DEFAULT_LINES, MIN_LINES};
+use nexo_bin::{Lines, Output, PageAsk, MIN_LINES};
 use serde_json::json;
 
 use crate::{Error, Kind, Reply};
@@ -12,10 +12,32 @@ use crate::{Error, Kind, Reply};
 #[derive(Debug, Clone)]
 pub struct Call {
     pub session: Option<String>,
-    pub lines: usize,
+    pub lines: Option<Lines>,
     pub from: Option<u64>,
+    pub grep: Option<String>,
     pub json: bool,
     pub words: Vec<String>,
+}
+
+impl Call {
+    /// The page this call asks for: the same `--lines N|all`, `--from`, `--grep` as `nexo bin`.
+    pub fn ask(&self) -> PageAsk {
+        PageAsk { lines: self.lines, from: self.from, grep: self.grep.clone(), json: self.json, sized: self.sized() }
+    }
+
+    /// True when the call names a range or a length (`mem A..B`, `mem A 4096`, `dis A 40`, `find .. --in RANGE`):
+    /// without `--lines` its page is all of it.
+    fn sized(&self) -> bool {
+        let w = &self.words;
+        match w.first().map(String::as_str) {
+            Some("mem" | "x" | "dis" | "disasm") => {
+                let pos: Vec<&String> = w[1..].iter().filter(|x| !x.starts_with("--")).collect();
+                pos.len() > 1 || pos.first().is_some_and(|p| nexo_bin::is_span(p))
+            }
+            Some("find") => w.iter().any(|x| x == "--in"),
+            _ => false,
+        }
+    }
 }
 
 /// Where a new session's server runs.
@@ -113,7 +135,7 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let mut it = words.iter().peekable();
     while let Some(w) = it.peek() {
         match w.as_str() {
-            "-s" | "--session" | "--lines" | "--from" => {
+            "-s" | "--session" | "--lines" | "--from" | "--grep" => {
                 it.next();
                 it.next();
             }
@@ -321,10 +343,10 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
     }
 }
 
-/// Our options out of the words (`-s ID`, `--lines N`, `--from ADDR`, `--json`); a program's own options after
+/// Our options out of the words (`-s ID`, `--lines N|all`, `--from ADDR`, `--grep RE`, `--json`); a program's own options after
 /// `run` are left alone.
 pub fn parse(words: &[String]) -> Result<Call, Error> {
-    let mut o = Call { session: None, lines: DEFAULT_LINES, from: None, json: false, words: Vec::new() };
+    let mut o = Call { session: None, lines: None, from: None, grep: None, json: false, words: Vec::new() };
     let mut it = words.iter();
     while let Some(w) = it.next() {
         let ours = o.words.first().is_none_or(|c| c != "run");
@@ -333,10 +355,12 @@ pub fn parse(words: &[String]) -> Result<Call, Error> {
                 o.session = Some(it.next().ok_or_else(|| Error::Usage("-s needs a session id".into()))?.clone())
             }
             "--lines" if ours => {
-                o.lines = it
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| Error::Usage("--lines needs a number".into()))?
+                let v = it.next().ok_or_else(|| Error::Usage("--lines needs a number or all".into()))?;
+                o.lines = Some(Lines::parse(v)?);
+            }
+            "--grep" if ours => {
+                o.grep =
+                    Some(it.next().ok_or_else(|| Error::Usage("--grep needs a regular expression".into()))?.clone())
             }
             "--from" if ours => {
                 let v = it.next().ok_or_else(|| Error::Usage("--from needs an address".into()))?;
@@ -346,6 +370,7 @@ pub fn parse(words: &[String]) -> Result<Call, Error> {
             _ => o.words.push(w.clone()),
         }
     }
+    o.ask().check()?;
     // gdb's way out: `quit` as a call of its own closes the session, as `end` does
     if matches!(o.words.as_slice(), [w] if matches!(w.as_str(), "quit" | "q" | "exit")) {
         o.words[0] = "end".to_string();
@@ -445,7 +470,8 @@ fn print(
     prefix: &str,
 ) -> String {
     out.command = format!("{prefix} -s {id} {}", words.iter().map(|x| shell_word(x)).collect::<Vec<_>>().join(" "));
-    let page = out.page_as(o.from, o.lines.max(MIN_LINES), o.json);
+    let ask = o.ask();
+    let page = ask.page(&out).unwrap_or_else(|_| out.page_as(o.from, ask.budget(), o.json));
     if o.json {
         let mut v = page.value;
         if let Some(m) = v.as_object_mut() {
@@ -469,7 +495,7 @@ fn print(
 /// answer already fills the lines the caller asked for.
 fn with_bridge(mut text: String, bridge: Option<(String, u64)>, o: &Call, prefix: &str) -> String {
     let Some((exe, addr)) = bridge else { return text };
-    if o.json || text.lines().count() >= o.lines.max(MIN_LINES) {
+    if o.json || text.lines().count() >= o.ask().budget().max(MIN_LINES) {
         return text;
     }
     let call = if prefix == "debug" { "bin" } else { "nexo bin" };
@@ -713,7 +739,7 @@ mod tests {
     fn our_options_are_taken_out_of_the_command() {
         let o = parse(&words("-s abc bt 5 --lines 20 --json")).unwrap();
         assert_eq!(o.session.as_deref(), Some("abc"));
-        assert_eq!(o.lines, 20);
+        assert_eq!(o.lines, Some(Lines::Rows(20)));
         assert!(o.json);
         assert_eq!(o.words, words("bt 5"));
     }

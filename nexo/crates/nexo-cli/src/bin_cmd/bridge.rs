@@ -72,7 +72,8 @@ pub fn runnable(path: &Path) -> bool {
 pub fn line(op: &BinOp, text: &str) -> Option<String> {
     let c = op.common();
     let file = op.file();
-    if c.json || c.lines.is_some_and(|n| text.lines().count() >= n.max(nexo_bin::MIN_LINES)) {
+    if c.json || matches!(c.lines, Some(nexo_bin::Lines::Rows(n)) if text.lines().count() >= n.max(nexo_bin::MIN_LINES))
+    {
         return None;
     }
     let target = target_of(op)?;

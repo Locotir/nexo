@@ -180,7 +180,7 @@ impl Tool for Debug {
                 "properties": {
                     "command": {"type": "string", "description": "One command, e.g. `break main`."},
                     "session": {"type": "string", "description": "Session id when several are live."},
-                    "lines": {"type": "integer", "description": "Lines per answer (default 40)."},
+                    "lines": {"type": ["integer", "string"], "description": "Lines per answer (default 120; \"all\" for every row)."},
                     "from": {"type": "string", "description": "Continue a long answer from this row address."}
                 },
                 "required": ["command"]
@@ -308,8 +308,12 @@ impl Debug {
         if let Some(s) = args.get("session").and_then(Value::as_str).filter(|s| !s.is_empty()) {
             words.splice(0..0, ["-s".to_string(), s.to_string()]);
         }
-        if let Some(n) = args.get("lines").and_then(Value::as_u64) {
-            words.splice(0..0, ["--lines".to_string(), n.to_string()]);
+        let lines = match args.get("lines") {
+            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            other => other.and_then(Value::as_u64).map(|n| n.to_string()),
+        };
+        if let Some(n) = lines {
+            words.splice(0..0, ["--lines".to_string(), n]);
         }
         if let Some(f) = args.get("from").and_then(Value::as_str).filter(|s| !s.is_empty()) {
             words.splice(0..0, ["--from".to_string(), f.to_string()]);

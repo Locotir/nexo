@@ -84,12 +84,22 @@ impl Session {
             },
             None => (r.rip, None),
         };
+        // a range is every instruction that starts in it (an instruction is at least 1 byte); a count is that many
         let n = match (a.pos.get(1), end) {
-            (Some(x), _) => parse_addr(x)?.clamp(1, 200) as usize,
-            (None, Some(hi)) => (hi - at).clamp(1, 200) as usize,
+            (Some(x), _) => parse_addr(x)?.max(1),
+            (None, Some(hi)) => (hi - at).max(1),
             (None, None) => 8,
         };
-        let bytes = self.read_vec(at, n * 15);
+        let bytes_wanted = n.saturating_mul(15).min(end.map_or(u64::MAX, |hi| hi - at + 15));
+        if bytes_wanted > memory::READ_LIMIT + 15 {
+            return usage(format!(
+                "dis reads at most {} KiB of code at a time; {n} instructions or a range of {} bytes was asked: ask in parts",
+                memory::READ_LIMIT >> 10,
+                end.map_or(n, |hi| hi - at)
+            ));
+        }
+        let n = n as usize;
+        let bytes = self.read_vec(at, bytes_wanted as usize);
         let (mut pos, mut l) = (0usize, Vec::new());
         for _ in 0..n {
             let ip = at + pos as u64;

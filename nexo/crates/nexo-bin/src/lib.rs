@@ -97,11 +97,11 @@ pub use names::{
     file_path as names_path, MAX_ENTRIES as MAX_NAMES,
 };
 pub use ops::{
-    bytes, find_bytes, find_imm, func, func_window, info, parse_pattern, strings, strings_window, typed_rows, ElemType,
-    StrSort,
+    bytes, find_bytes, find_bytes_in, find_imm, find_imm_in, func, func_window, info, parse_pattern, strings,
+    strings_window, typed_rows, ElemType, StrSort,
 };
 pub use overview::{overview, overview_window};
-pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES, RANGE_LINES};
+pub use page::{Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
 pub use patch::{patch, PatchData, PatchTarget};
 pub use place::{addr_in, any_addr_in, close_names, is_span, range_in, AddrExpr, RangeExpr, ADDR_FORMS, RANGE_FORMS};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};

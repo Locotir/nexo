@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use nexo_bin::{ElemType, Error, FnQuery, FuncSort, Image, Output, StrSort, DEFAULT_LINES, MIN_LINES, RANGE_LINES};
+use nexo_bin::{ElemType, Error, FnQuery, FuncSort, Image, Lines, Output, PageAsk, StrSort};
 
 use sigs::make_sigs;
 use wasm::wasm_in;
@@ -23,7 +23,34 @@ fn parse_addr(s: &str) -> Result<u64, String> {
     nexo_bin::parse_addr(s).map_err(|e| e.to_string())
 }
 
+fn parse_lines(s: &str) -> Result<Lines, String> {
+    Lines::parse(s).map_err(|e| e.to_string())
+}
+
 impl BinOp {
+    /// The page this call asks for, and the `--grep` the op applies itself: `funcs`, `strings` and the lists of
+    /// `diff` and `managed` match it against names or text before they count; every other answer has its rows
+    /// filtered by the page.
+    pub(crate) fn page_ask(&self) -> (PageAsk, Option<String>) {
+        let sized = match self {
+            BinOp::Fn { to, target, .. } => to.is_some() || nexo_bin::is_span(target),
+            BinOp::Xref { to, target, .. } => to.is_some() || target.as_deref().is_some_and(nexo_bin::is_span),
+            BinOp::Find { within, .. } => within.is_some(),
+            BinOp::Bytes { .. } => true,
+            _ => false,
+        };
+        let mut ask = self.common().ask(sized);
+        let own = matches!(
+            self,
+            BinOp::Funcs { .. }
+                | BinOp::Strings { .. }
+                | BinOp::Diff { target: None, .. }
+                | BinOp::Managed { target: None, .. }
+        );
+        let op_grep = if own { ask.grep.take() } else { None };
+        (ask, op_grep)
+    }
+
     fn file(&self) -> &Path {
         match self {
             BinOp::Patch { file, .. }
@@ -161,13 +188,9 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         other = Some(b);
     }
     let c = op.common();
-    let (from, mut lines) = (c.from, c.budget());
-    // a range or a length the caller gave sizes the page: all of it, up to RANGE_LINES, unless --lines says otherwise
-    let sized = matches!(op, BinOp::Fn { to: Some(_), .. } | BinOp::Bytes { .. });
-    if sized && c.lines.is_none() {
-        lines = RANGE_LINES;
-    }
-    let mut out: Output = match op {
+    let (ask, op_grep) = op.page_ask();
+    let (from, lines) = ask.window();
+    let out: Output = match op {
         BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
         BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
             let target = match (at, function) {
@@ -198,10 +221,11 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Tree { target, up, depth, ptrs, .. } => {
             nexo_bin::tree_window(&img, target, *up, *depth, *ptrs, from, lines)?
         }
-        BinOp::Fn { target, bytes, to, .. } => nexo_bin::func_view(
+        BinOp::Fn { target, bytes, to, code, .. } => nexo_bin::func_view(
             &img,
             &FnQuery {
                 to: to.as_deref(),
+                as_code: *code,
                 with_bytes: *bytes,
                 from,
                 budget: lines,
@@ -222,8 +246,8 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             },
             (None, None) => return Err(Error::Usage("give an address or a name, or --str TEXT".into())),
         },
-        BinOp::Funcs { sort, grep, min_size, .. } => {
-            nexo_bin::func_list_window(&img, FuncSort::parse(sort)?, grep.as_deref(), *min_size, from, lines)?
+        BinOp::Funcs { sort, min_size, .. } => {
+            nexo_bin::func_list_window(&img, FuncSort::parse(sort)?, op_grep.as_deref(), *min_size, from, lines)?
         }
         BinOp::Decomp { targets, addr, .. } => nexo_bin::decomp_window(&img, data_dir, targets, *addr, from, lines)?,
         BinOp::Proto { target, text, clear, .. } => {
@@ -256,8 +280,8 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             };
             nexo_bin::bytes(&img, at, n, ElemType::parse(ty)?)?
         }
-        BinOp::Strings { grep, sort, .. } => {
-            nexo_bin::strings_window(&img, grep.as_deref(), StrSort::parse(sort)?, from, lines)?
+        BinOp::Strings { sort, .. } => {
+            nexo_bin::strings_window(&img, op_grep.as_deref(), StrSort::parse(sort)?, from, lines)?
         }
         BinOp::Emu { target, args, to, regs, mems, stubs, abi, steps, secs, trace, dump, stack, show, .. } => {
             nexo_bin::emulate(
@@ -280,20 +304,16 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             )?
         }
         BinOp::Managed { .. } => unreachable!("answered by bin_managed before the image is opened"),
-        BinOp::Find { pattern, imm, .. } => match imm {
-            Some(n) => nexo_bin::find_imm(&img, nexo_bin::parse_number(n)?)?,
-            None => nexo_bin::find_bytes(&img, &pattern.join(" "))?,
+        BinOp::Find { pattern, imm, within, .. } => match imm {
+            Some(n) => nexo_bin::find_imm_in(&img, nexo_bin::parse_number(n)?, within.as_deref())?,
+            None => nexo_bin::find_bytes_in(&img, &pattern.join(" "), within.as_deref())?,
         },
-        BinOp::Diff { target, grep, all, .. } => match &other {
-            Some(b) => nexo_bin::diff_window(&img, b, target.as_deref(), grep.as_deref(), *all, from, lines)?,
+        BinOp::Diff { target, all, .. } => match &other {
+            Some(b) => nexo_bin::diff_window(&img, b, target.as_deref(), op_grep.as_deref(), *all, from, lines)?,
             None => unreachable!("the second build is opened with the first"),
         },
     };
-    // the resume command leaves out a --lines equal to the default; here no --lines means the range, so keep it
-    if sized && c.lines.is_some_and(|n| n.max(MIN_LINES) == DEFAULT_LINES) {
-        out.command.push_str(&format!(" --lines {DEFAULT_LINES}"));
-    }
-    let page = out.page_as(from, lines, c.json);
+    let page = ask.page(&out)?;
     if c.timing {
         let built = img.refs().build.as_secs_f64() * 1000.0;
         eprintln!(

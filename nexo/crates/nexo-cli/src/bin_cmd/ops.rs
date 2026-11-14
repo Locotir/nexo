@@ -123,6 +123,9 @@ pub enum BinOp {
         /// Show everything from the target up to this address (0x401b00, a name, name+0x10), across functions (padding folded).
         #[arg(long, value_name = "ADDR")]
         to: Option<String>,
+        /// With a range: decode it as code also where the file says it is data or no function is (shellcode, an unpacked stub).
+        #[arg(long)]
+        code: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -216,9 +219,6 @@ pub enum BinOp {
         /// addr, size, callers or callees.
         #[arg(long, default_value = "callers", value_parser = FuncSort::NAMES)]
         sort: String,
-        /// Keep the functions whose name matches this regular expression.
-        #[arg(long, value_name = "REGEX")]
-        grep: Option<String>,
         /// Keep the functions of at least this many bytes.
         #[arg(long, default_value_t = 0, value_name = "BYTES")]
         min_size: u64,
@@ -327,9 +327,6 @@ pub enum BinOp {
     /// List ASCII and UTF-16 strings with their addresses and references; --grep keeps the ones that match.
     Strings {
         file: PathBuf,
-        /// A regular expression.
-        #[arg(long, value_name = "REGEX")]
-        grep: Option<String>,
         /// addr (default) or refs (most referenced first).
         #[arg(long, default_value = "addr", value_parser = StrSort::NAMES)]
         sort: String,
@@ -347,9 +344,6 @@ pub enum BinOp {
         /// List every call site of a method: Owner.name (descriptor optional).
         #[arg(long, value_name = "OWNER.NAME")]
         callers: Option<String>,
-        /// A regular expression that keeps matching types, members or strings.
-        #[arg(long, value_name = "REGEX")]
-        grep: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -362,6 +356,9 @@ pub enum BinOp {
         /// A number (0x1f4 or 500) instead of bytes.
         #[arg(long, allow_hyphen_values = true, value_name = "NUMBER")]
         imm: Option<String>,
+        /// Look only in this range (A..B, A+LEN, a function or section name).
+        #[arg(long = "in", value_name = "RANGE")]
+        within: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -373,9 +370,6 @@ pub enum BinOp {
         other: PathBuf,
         /// One function (a name, an address in the old build, or b:ADDR in the new one): its instructions side by side.
         target: Option<String>,
-        /// A regular expression that keeps the functions whose name matches.
-        #[arg(long, value_name = "REGEX")]
-        grep: Option<String>,
         /// List the same functions too (with a function: every instruction, none folded).
         #[arg(long)]
         all: bool,

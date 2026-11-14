@@ -132,6 +132,22 @@ impl Session {
         Ok(Some((lo, hi)))
     }
 
+    /// A range in any form of [`nexo_bin::RangeExpr`], as memory addresses: `A..B` (each end any place
+    /// [`Session::addr_of`] takes), `A+LEN`, or a function or section of the program (all of it).
+    pub fn range_of(&mut self, text: &str) -> Result<(u64, u64)> {
+        if let Some(r) = self.span_of(text)? {
+            return Ok(r);
+        }
+        match nexo_bin::RangeExpr::parse(text)? {
+            nexo_bin::RangeExpr::Len(a, n) => {
+                let lo = self.addr_of(&a)?;
+                Ok((lo, lo.saturating_add(n)))
+            }
+            nexo_bin::RangeExpr::Whole(t) => self.mods.file_range(&t),
+            nexo_bin::RangeExpr::Between(..) => unreachable!("a span is answered by span_of"),
+        }
+    }
+
     pub fn exec(&mut self, words: &[String]) -> Result<Output> {
         let Some(cmd) = words.first() else { return usage("a command is needed: `help` lists them") };
         if self.recording.is_some() {

@@ -6,42 +6,37 @@ use nexo_bin::{Error, ManagedQuery};
 
 /// `Some(answer)` when this command is about managed bytecode, `None` for the native ops.
 pub fn try_managed(op: &BinOp) -> Option<Result<String, Error>> {
-    let (query, common, file) = match op {
-        BinOp::Managed { file, target, strings, callers, grep, common } => (
+    let (ask, op_grep) = op.page_ask();
+    let (query, file) = match op {
+        BinOp::Managed { file, target, strings, callers, .. } => (
             ManagedQuery {
                 target: target.as_deref(),
                 strings: *strings,
                 callers: callers.as_deref(),
-                grep: grep.as_deref(),
+                grep: op_grep.as_deref(),
             },
-            common,
             file,
         ),
         // `info` on a class or jar gives the map of types instead of an error
-        BinOp::Info { file, common } => {
+        BinOp::Info { file, .. } => {
             let mut head = vec![0u8; nexo_bin::MANAGED_HEAD];
             let n = std::fs::File::open(file).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).ok()?;
             if !nexo_bin::is_managed(&head[..n]) {
                 return None;
             }
-            (ManagedQuery::default(), common, file)
+            (ManagedQuery::default(), file)
         }
         _ => return None,
     };
-    Some(answer(file, &query, common.from, common.budget(), common.json))
+    Some(answer(file, &query, &ask))
 }
 
-fn answer(
-    file: &std::path::Path,
-    q: &ManagedQuery<'_>,
-    from: Option<u64>,
-    lines: usize,
-    json: bool,
-) -> Result<String, Error> {
+fn answer(file: &std::path::Path, q: &ManagedQuery<'_>, ask: &nexo_bin::PageAsk) -> Result<String, Error> {
+    let (from, lines) = ask.window();
     let data = std::fs::read(file).map_err(|e| Error::Io(format!("cannot read {}: {e}", file.display())))?;
     let out = nexo_bin::managed_window(file, &data, q, from, lines)?;
-    let page = out.page_as(from, lines, json);
-    if json {
+    let page = ask.page(&out)?;
+    if ask.json {
         serde_json::to_string_pretty(&page.value).map_err(|e| Error::Bad(e.to_string()))
     } else {
         Ok(page.text())

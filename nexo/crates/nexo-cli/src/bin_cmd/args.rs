@@ -1,7 +1,7 @@
 use clap::Args;
-use nexo_bin::{DEFAULT_LINES, MIN_LINES};
+use nexo_bin::{Lines, PageAsk};
 
-use super::{parse_addr, BinOp};
+use super::{parse_addr, parse_lines, BinOp};
 
 #[derive(Args, Debug)]
 #[command(arg_required_else_help = true, args_conflicts_with_subcommands = true)]
@@ -19,10 +19,14 @@ pub struct BinArgs {
 /// Options every op takes.
 #[derive(Args, Debug)]
 pub struct Common {
-    /// Most lines in the answer (at least 10; default 120, or the range asked for by fn --to and bytes, up to 400).
-    /// When it is cut, the last line gives the command for the next piece.
-    #[arg(long, value_name = "N")]
-    pub lines: Option<usize>,
+    /// Lines in the answer: a number (at least 10) or all. Default 120, or all of a range or length that was asked
+    /// for (A..B, fn --to, bytes). When it is cut, the last line gives the command for the next piece.
+    #[arg(long, value_name = "N|all", value_parser = parse_lines)]
+    pub lines: Option<Lines>,
+    /// Keep only the rows that match this regular expression, then page them (ops that filter by name or text
+    /// themselves, like funcs and strings, use it there). The first line says how many rows matched.
+    #[arg(long, value_name = "REGEX")]
+    pub grep: Option<String>,
     /// Start at this address (or line position); the cut line prints the value to use.
     #[arg(long, value_parser = parse_addr, value_name = "ADDR")]
     pub from: Option<u64>,
@@ -38,8 +42,8 @@ pub struct Common {
 }
 
 impl Common {
-    /// The lines of a page: `--lines`, or the default when it was not given.
-    pub fn budget(&self) -> usize {
-        self.lines.unwrap_or(DEFAULT_LINES).max(MIN_LINES)
+    /// The page this call asks for; `sized` when it named a range or a length.
+    pub fn ask(&self, sized: bool) -> PageAsk {
+        PageAsk { lines: self.lines, from: self.from, grep: self.grep.clone(), json: self.json, sized }
     }
 }

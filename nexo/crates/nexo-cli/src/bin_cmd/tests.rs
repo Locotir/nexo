@@ -314,15 +314,13 @@ fn fn_to_and_bytes_pages_cover_the_range_asked() {
     let (exe, start, hi) = exe_code();
     let s = format!("{start:#x}");
     let more = |t: &str| t.lines().any(|l| l.starts_with("... ") && l.contains(" more lines: "));
-    // bytes: a short length is its rows, a long one is not cut at the default 120, a longer one stops at RANGE_LINES
+    // bytes: a short length is its rows, a long one is not cut at the default 120, and neither is a longer one
     let t = ask(&["bytes", &exe, &s, "32"]).unwrap();
     assert_eq!(t.lines().count(), 2, "{t}");
     let t = ask(&["bytes", &exe, &s, "4096"]).unwrap();
     assert!(t.lines().count() == 256 && !more(&t), "{t}");
     let t = ask(&["bytes", &exe, &s, "16384"]).unwrap();
-    let last = t.lines().last().unwrap();
-    assert_eq!(t.lines().count(), RANGE_LINES, "{last}");
-    assert!(last.starts_with("... 625 more lines: ") && last.ends_with(&format!("--lines {RANGE_LINES}")), "{last}");
+    assert!(t.lines().count() == 1024 && !more(&t), "{} lines", t.lines().count());
     // --lines still bounds it
     assert_eq!(ask(&["bytes", &exe, &s, "4096", "--lines", "50"]).unwrap().lines().count(), 50);
     // fn --to: a range longer than 120 lines comes whole, exactly its lines (the range is grown until it is one)
@@ -333,7 +331,7 @@ fn fn_to_and_bytes_pages_cover_the_range_asked() {
             let n = whole_json(&["fn", &exe, &s, "--to", &to])["lines"].as_u64().unwrap();
             (to, n)
         })
-        .find(|(_, n)| (130..RANGE_LINES as u64 - 10).contains(n))
+        .find(|(_, n)| (130..390).contains(n))
         .expect("a range of 130 to 390 lines in the code");
     let t = ask(&["fn", &exe, &s, "--to", &to]).unwrap();
     assert!(t.lines().count() as u64 == total && !more(&t), "{total}: {t}");
@@ -507,4 +505,82 @@ fn an_unknown_name_is_answered_with_the_close_ones() {
         let e = ask(&args).unwrap_err().to_string();
         assert!(e.contains("close names: main") || e.contains("close names: helper"), "{args:?}: {e}");
     }
+}
+
+#[test]
+fn grep_and_from_page_bytes_and_fn_and_the_page_says_what_it_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixtures::elf64(false);
+    let path = file(&dir, "elf", &f);
+    // bytes: rows keyed by address; --from starts at the first row at or after it, --grep keeps the keys
+    let whole = ask(&["bytes", &path, "main", "64", "--lines", "all"]).unwrap();
+    let rows: Vec<&str> = whole.lines().collect();
+    assert_eq!(rows.len(), 4, "{whole}");
+    let key = rows[2].split_whitespace().next().unwrap();
+    let from = ask(&["bytes", &path, "main", "64", "--from", key]).unwrap();
+    assert_eq!(from.lines().collect::<Vec<_>>(), rows[2..], "{from}");
+    let g = ask(&["bytes", &path, "main", "64", "--grep", &format!("^{key}")]).unwrap();
+    assert_eq!(
+        g.lines().collect::<Vec<_>>(),
+        [format!("... --grep ^{key}: 1 of 4 rows match").as_str(), rows[2]],
+        "{g}"
+    );
+    // fn: rows keyed by instruction address; the answer says how many rows matched of how many
+    let whole = ask(&["fn", &path, "main", "--lines", "all"]).unwrap();
+    let total = whole.lines().count();
+    assert!(total > 3, "{whole}");
+    let g = ask(&["fn", &path, "main", "--grep", "ret|jmp"]).unwrap();
+    let first = g.lines().next().unwrap();
+    assert!(first.starts_with("... --grep ret|jmp: ") && first.ends_with(&format!(" of {total} rows match")), "{g}");
+    assert!(g.lines().skip(1).all(|l| l.contains("ret") || l.contains("jmp")), "{g}");
+    let at = whole.lines().nth(3).unwrap().split_whitespace().next().unwrap();
+    let from = ask(&["fn", &path, "main", "--from", at]).unwrap();
+    assert_eq!(from.lines().collect::<Vec<_>>(), whole.lines().skip(3).collect::<Vec<_>>(), "{from}");
+    // a cut page names what is left and how to go on, with the filter kept
+    let t = ask(&["fn", &path, "main", "--grep", ".", "--lines", "10"]).unwrap();
+    if total > 10 {
+        let last = t.lines().last().unwrap();
+        assert!(last.contains(" more lines: ") && last.contains("--grep"), "{t}");
+    }
+    // a bad expression and a bad --lines say what was wrong
+    assert!(ask(&["fn", &path, "main", "--grep", "("]).unwrap_err().to_string().contains("regular expression"));
+    let bad = crate::cli::Args::try_parse_from(["nexo", "bin", "fn", &path, "--lines", "lots"]);
+    assert!(bad.unwrap_err().to_string().contains("number or all"));
+}
+
+#[test]
+fn find_takes_a_range_and_fn_decodes_data_as_code_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixtures::elf64(false);
+    let path = file(&dir, "elf", &f);
+    let img = Image::open(std::path::Path::new(&path)).unwrap();
+    let (a, b) = (format!("{:#x}", f.a), format!("{:#x}", f.b));
+    let hits = |t: &str| -> Vec<String> {
+        t.lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|w| w.starts_with("0x"))
+            .map(String::from)
+            .collect()
+    };
+    // the bytes of main's first instruction are found inside main, and the same hits come from every form of
+    // the range
+    let pat = img.read_at(f.a, 2).unwrap().iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ");
+    let whole = ask(&["find", &path, &pat]).unwrap();
+    let forms = [format!("{a}..{b}"), "main..helper".to_string(), format!("main+{}", f.b - f.a), "main".to_string()];
+    let first = ask(&["find", &path, &pat, "--in", &forms[0]]).unwrap();
+    assert!(hits(&first).contains(&format!("{:#010x}", f.a)), "{first}");
+    assert!(first.contains(&format!("--in {}", forms[0])) || !first.contains("more lines"), "{first}");
+    for r in &forms[1..3] {
+        assert_eq!(hits(&ask(&["find", &path, &pat, "--in", r]).unwrap()), hits(&first), "{r}");
+    }
+    assert!(hits(&whole).len() >= hits(&first).len(), "{whole}");
+    // a range that holds no match says so; an end before the start says what was wrong
+    let e = ask(&["find", &path, &pat, "--in", "helper..main"]).unwrap_err().to_string();
+    assert!(e.contains("not after its start"), "{e}");
+    // data is refused as code, and decoded when asked
+    let refused = ask(&["fn", &path, ".data", "--to", ".data+16"]).unwrap_err().to_string();
+    assert!(!refused.is_empty());
+    let t = ask(&["fn", &path, ".data", "--to", ".data+16", "--code"]).unwrap();
+    assert!(t.lines().next().unwrap().contains("decoded as code on request"), "{t}");
+    assert!(t.lines().count() > 1, "{t}");
 }

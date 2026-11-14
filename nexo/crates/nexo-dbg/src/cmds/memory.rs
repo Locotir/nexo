@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The most memory one `mem`, `dis` or `find` call reads.
+pub(super) const READ_LIMIT: u64 = 1 << 20;
+
 impl Session {
     pub(super) fn cmd_mem(&mut self, a: &Args) -> Result<Output> {
         let (Some(at), len) = (a.pos.first(), a.pos.get(1)) else {
@@ -22,8 +25,8 @@ impl Session {
             Some(t) => ElemType::parse(t)?,
             None => ElemType::U8,
         };
-        if len > 1 << 20 {
-            return usage("mem reads at most 1 MiB at a time");
+        if len > READ_LIMIT {
+            return usage(format!("mem reads at most {} KiB at a time; {len} bytes were asked", READ_LIMIT >> 10));
         }
         let bytes = self.read_vec(addr, len as usize);
         if bytes.is_empty() {
@@ -97,7 +100,9 @@ impl Session {
 
     pub(super) fn cmd_find(&mut self, a: &Args) -> Result<Output> {
         self.need_stopped()?;
-        let Some(first) = a.pos.first() else { return usage("find <hex bytes with ?? | \"text\"> [--in <map name>]") };
+        let Some(first) = a.pos.first() else {
+            return usage("find <hex bytes with ?? | \"text\"> [--in <map name | range>]");
+        };
         let pat: Vec<Option<u8>> = if first.starts_with('"') {
             a.pos.join(" ").trim_matches('"').bytes().map(Some).collect()
         } else {
@@ -106,15 +111,24 @@ impl Session {
         if pat.is_empty() {
             return usage("an empty pattern matches everywhere");
         }
+        let maps = self.t.maps()?;
+        // `--in` names a map (part of its path) or, when none has that in its path, a range in any form
         let only = a.flag("in");
+        let (only, span) = match only {
+            Some(o) if !maps.iter().any(|m| m.path.contains(o)) => (None, Some(self.range_of(o)?)),
+            other => (other, None),
+        };
         let (mut l, mut scanned) = (Vec::new(), 0u64);
-        'maps: for m in self.t.maps()? {
+        'maps: for m in maps {
             if !m.read || only.is_some_and(|o| !m.path.contains(o)) || m.path == "[vvar]" || m.path == "[vsyscall]" {
                 continue;
             }
-            let mut pos = m.start;
-            while pos < m.end {
-                let n = ((m.end - pos) as usize).min((1 << 20) + pat.len());
+            let (mut pos, end) = match span {
+                Some((lo, hi)) => (m.start.max(lo), m.end.min(hi)),
+                None => (m.start, m.end),
+            };
+            while pos < end {
+                let n = ((end - pos) as usize).min((1 << 20) + pat.len());
                 let buf = self.read_vec(pos, n);
                 if buf.is_empty() {
                     break;

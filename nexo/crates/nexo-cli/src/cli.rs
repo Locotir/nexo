@@ -250,7 +250,7 @@ pub enum Cmd {
         what: crate::worktree::WorktreeCmd,
     },
     /// Read an ELF, PE or Mach-O file and answer in bounded pieces: info, fn, xref, calls, funcs, strings, bytes, find (the file is never run).
-    Bin(crate::bin_cmd::BinArgs),
+    Bin(Box<crate::bin_cmd::BinArgs>),
     /// Run a program under a debugger, or attach to one, and drive it one bounded call at a time: run, break, cont, step, regs, mem, bt, watch, kill (`nexo dbg help`).
     Dbg(crate::dbg_cmd::DbgArgs),
     /// Connect nexo to the Chrome you are logged in to, through an extension you accept once: writes the native-messaging manifest and opens Chrome on chrome://extensions.

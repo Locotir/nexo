@@ -651,19 +651,39 @@ fn finish_hits(
     Output { op, meta, rows, tail: 0, command: command(img, "find", &rest) }
 }
 
+/// The part of a section's bytes inside `within` (all of it without one), and the address it starts at.
+fn clipped(sec_addr: u64, data: &[u8], within: Option<(u64, u64)>) -> (u64, &[u8]) {
+    let Some((lo, hi)) = within else { return (sec_addr, data) };
+    let from = lo.saturating_sub(sec_addr).min(data.len() as u64) as usize;
+    let to = hi.saturating_sub(sec_addr).min(data.len() as u64) as usize;
+    (sec_addr + from as u64, &data[from..to.max(from)])
+}
+
+/// What `--in RANGE` adds to the command that asked.
+fn in_text(within: Option<&str>) -> String {
+    within.map_or(String::new(), |w| format!(" --in {}", shell_word(w)))
+}
+
 /// Every place the byte pattern occurs in the mapped sections.
 pub fn find_bytes(img: &Image, pattern: &str) -> Result<Output> {
+    find_bytes_in(img, pattern, None)
+}
+
+/// Like [`find_bytes`], within a range written in any form of [`crate::place::RangeExpr`]: a match lies wholly
+/// inside it.
+pub fn find_bytes_in(img: &Image, pattern: &str, within: Option<&str>) -> Result<Output> {
     let pat = parse_pattern(pattern)?;
+    let span = within.map(|w| crate::place::range_in(img, w)).transpose()?;
     let mut rows = Vec::new();
     let mut capped = false;
     'sec: for sec in img.sections.iter().filter(|s| s.alloc && s.file_size > 0) {
-        let data = img.section_bytes(sec);
+        let (base, data) = clipped(sec.addr, img.section_bytes(sec), span);
         if data.len() < pat.len() {
             continue;
         }
         for i in 0..=data.len() - pat.len() {
             if pat.iter().zip(&data[i..]).all(|(p, b)| p.is_none_or(|p| p == *b)) {
-                rows.push(hit_row(img, sec.addr + i as u64, &hex(&data[i..i + pat.len()]), "bytes"));
+                rows.push(hit_row(img, base + i as u64, &hex(&data[i..i + pat.len()]), "bytes"));
                 if rows.len() >= MAX_HITS {
                     capped = true;
                     break 'sec;
@@ -672,8 +692,12 @@ pub fn find_bytes(img: &Image, pattern: &str) -> Result<Output> {
         }
     }
     let shown: Vec<String> = pat.iter().map(|p| p.map_or("??".to_string(), |b| format!("{b:02x}"))).collect();
-    let rest = shell_word(&shown.join(" "));
-    Ok(finish_hits(img, "find", rows, rest, json!({"pattern": shown.join(" ")}), capped))
+    let rest = format!("{}{}", shell_word(&shown.join(" ")), in_text(within));
+    let mut meta = json!({"pattern": shown.join(" ")});
+    if let Some((lo, hi)) = span {
+        meta["in"] = json!([lo, hi]);
+    }
+    Ok(finish_hits(img, "find", rows, rest, meta, capped))
 }
 
 fn imm_matches(ins: &Instruction, v: i128) -> bool {
@@ -697,6 +721,12 @@ fn imm_matches(ins: &Instruction, v: i128) -> bool {
 /// operand (`[rdx+0x429a80]`, kind `disp` in JSON), and every place the data sections hold it as a
 /// 4-byte (or, for a larger number, 8-byte) little-endian value.
 pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
+    find_imm_in(img, value, None)
+}
+
+/// Like [`find_imm`], within a range written in any form of [`crate::place::RangeExpr`].
+pub fn find_imm_in(img: &Image, value: i128, within: Option<&str>) -> Result<Output> {
+    let span = within.map(|w| crate::place::range_in(img, w)).transpose()?;
     if img.arm64 {
         img.require_x86("find-imm")?;
     }
@@ -722,7 +752,7 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
         let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut full = false;
         walk_bits(img.bits, code, start, |ins, _| {
-            if full {
+            if full || span.is_some_and(|(lo, hi)| ins.ip() < lo || ins.ip() >= hi) {
                 return;
             }
             let what = if imm_matches(ins, value) {
@@ -750,7 +780,7 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
     };
     if !capped {
         'data: for sec in img.sections.iter().filter(|s| s.alloc && !s.exec && s.file_size > 0) {
-            let data = img.section_bytes(sec);
+            let (base, data) = clipped(sec.addr, img.section_bytes(sec), span);
             if data.len() < needle.len() {
                 continue;
             }
@@ -758,7 +788,7 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
                 if data[i..i + needle.len()] == needle[..] {
                     rows.push(hit_row(
                         img,
-                        sec.addr + i as u64,
+                        base + i as u64,
                         &format!("data {}  {}", if needle.len() == 4 { "u32" } else { "u64" }, hex(&needle)),
                         "data",
                     ));
@@ -770,8 +800,12 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
             }
         }
     }
-    let rest = format!("--imm {value}");
-    Ok(finish_hits(img, "find", rows, rest, json!({"imm": value.to_string()}), capped))
+    let rest = format!("--imm {value}{}", in_text(within));
+    let mut meta = json!({"imm": value.to_string()});
+    if let Some((lo, hi)) = span {
+        meta["in"] = json!([lo, hi]);
+    }
+    Ok(finish_hits(img, "find", rows, rest, meta, capped))
 }
 
 /// A demangled name without spaces, to compare signatures written in different styles.

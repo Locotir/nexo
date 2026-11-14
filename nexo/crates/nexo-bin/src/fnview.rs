@@ -33,11 +33,14 @@ pub struct FnQuery<'a> {
     pub budget: usize,
     /// The caller asks for JSON: the commands inside the answer ask for it too.
     pub json: bool,
+    /// With `to`: decode the range as code wherever the file has bytes for it, also in a data section or outside
+    /// any function (shellcode, an unpacked stub). Without this a range has to lie in functions of code sections.
+    pub as_code: bool,
 }
 
 impl<'a> FnQuery<'a> {
     pub fn new(target: &'a str) -> FnQuery<'a> {
-        FnQuery { target, to: None, with_bytes: false, from: None, budget: usize::MAX, json: false }
+        FnQuery { target, to: None, with_bytes: false, from: None, budget: usize::MAX, json: false, as_code: false }
     }
 }
 
@@ -249,13 +252,21 @@ fn range(img: &Image, q: &FnQuery, to: &str) -> Result<Output> {
     if s1 - s0 > MAX_RANGE {
         return Err(Error::Usage(format!("the range is {} bytes; ask for at most {MAX_RANGE}", s1 - s0)));
     }
+    let funcs = img.funcs();
+    let holder = funcs.partition_point(|f| f.start <= s0).checked_sub(1).filter(|&i| s0 < funcs[i].end);
+    // asked for as code, a range the functions do not cover is decoded straight from its bytes
+    if q.as_code
+        && (check_code(img, s0, "the start").is_err()
+            || check_code(img, s1 - 1, "the end").is_err()
+            || holder.is_none())
+    {
+        return raw_range(img, q, to, (s0, s1));
+    }
     check_code(img, s0, "the start")?;
     check_code(img, s1 - 1, "the end")?;
-    let funcs = img.funcs();
-    let i0 =
-        funcs.partition_point(|f| f.start <= s0).checked_sub(1).filter(|&i| s0 < funcs[i].end).ok_or_else(|| {
-            Error::Usage(format!("no function holds the start {s0:#x}; start at a function or inside one"))
-        })?;
+    let i0 = holder.ok_or_else(|| {
+        Error::Usage(format!("no function holds the start {s0:#x}; start at a function or inside one"))
+    })?;
     // pass 1: what each function adds, without building a line
     let mut parts: Vec<Part> = Vec::new();
     let mut line = 0usize;
@@ -368,4 +379,59 @@ fn range(img: &Image, q: &FnQuery, to: &str) -> Result<Output> {
     }
     let meta = json!({"start": s0, "to": s1, "functions": parts.len(), "lines": total});
     Ok(Output { op: "fn", meta, rows, tail, command: command(img, "fn", &rest) })
+}
+
+/// A range decoded as code from the bytes the file holds there, one instruction after the other from its start,
+/// with no function edges (asked for with `as_code`).
+fn raw_range(img: &Image, q: &FnQuery, to: &str, (s0, s1): (u64, u64)) -> Result<Output> {
+    let data = img.read_at(s0, (s1 - s0) as usize).ok_or_else(|| match img.section_at(s0) {
+        Some(s) => {
+            Error::Usage(format!("{s0:#x} is in {}, which has no bytes in the file (it is filled at run time)", s.name))
+        }
+        None => Error::Usage(format!("the start {s0:#x} is not inside any section")),
+    })?;
+    let mut count = 0usize;
+    walk_lines(img, data, s0, |_, _| count += 1);
+    let held = s0 + data.len() as u64;
+    let short = held < s1;
+    // line 0 is the heading, then one line per instruction, then the note that the file ends early
+    let total = 1 + count + usize::from(short);
+    let (start, end) = window(q.from, q.budget, total);
+    let mut fmt = formatter();
+    let mut rows: Vec<Row> = Vec::new();
+    let keep = |pos: usize| pos >= start && pos < end;
+    if keep(0) {
+        let sec = img.section_at(s0).map_or(String::new(), |s| format!(" in {}", s.name));
+        let kind = if img.is_exec(s0) { "" } else { ", a data section" };
+        rows.push(Row {
+            key: 0,
+            text: format!(
+                "code {s0:#x}..{s1:#x} ({} bytes, {count} instructions)  ; decoded as code on request, from the bytes{sec}{kind}",
+                s1 - s0
+            ),
+            json: None,
+        });
+    }
+    let mut pos = 1usize;
+    walk_lines(img, data, s0, |ins, raw| {
+        if keep(pos) {
+            let mut row = instr_row(img, &mut fmt, ins, raw, q.with_bytes, None, None);
+            row.key = pos as u64;
+            rows.push(row);
+        }
+        pos += 1;
+    });
+    if short && keep(pos) {
+        rows.push(Row {
+            key: pos as u64,
+            text: format!("... the file holds no more bytes after {held:#x} here ({} of {} read)", held - s0, s1 - s0),
+            json: Some(json!({"addr": held, "bytes_read": held - s0, "bytes_asked": s1 - s0})),
+        });
+    }
+    let mut rest = format!("{} --to {} --code", shell_word(q.target.trim()), shell_word(to.trim()));
+    if q.with_bytes {
+        rest.push_str(" --bytes");
+    }
+    let meta = json!({"start": s0, "to": s1, "lines": total, "as_code": true, "instructions": count});
+    Ok(Output { op: "fn", meta, rows, tail: total - end, command: command(img, "fn", &rest) })
 }
