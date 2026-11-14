@@ -23,6 +23,8 @@ mod memory;
 mod msg;
 pub mod optimum;
 mod rules;
+#[cfg(test)]
+mod rules_battery;
 mod standing;
 mod textops;
 mod tools;

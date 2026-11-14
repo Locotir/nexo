@@ -35,7 +35,11 @@ static FIRM: LazyLock<String> = LazyLock::new(|| {
         format!(r"i{A}d rather|i would rather|i want you to|from now on|make sure"),
         format!(r"not allowed|forbidden|prohibited|must(?:n{A}?t| not)?"),
         r"a partir de ahora|de ahora en adelante|prohibid[oa]s?|deber[ií]as|debes|deb[eé]is|tienes que".into(),
-        r"ten[eé]is que|quiero que|no quiero|no vuelvas|no volv[aá]is".into(),
+        r"ten[eé]is que|quiero que|no quiero|no vuelvas|no volv[aá]is|no vuelva\b|procura|desde ahora".into(),
+        r"en adelante|en lo sucesivo".into(),
+        format!(
+            r"from here on|going forward|in (?:the )?future|under no circumstances|never ever|(?:has|have) to (?:stay|remain|always|never)|i want (?:every|all|each|no|any)\b|i{A}?d like (?:you )?to"
+        ),
         r"no (?:hagas|hag[aá]is|uses|us[eé]is|utilices|ejecutes|escribas|toques|modifiques|borres|cambies|pongas|a[nñ]adas|metas|lances|corras|subas|crees|instales|inventes|expliques|repitas|mezcles)".into(),
     ]
     .join("|")
@@ -46,7 +50,7 @@ static SOFT: LazyLock<String> = LazyLock::new(|| {
     [
         r"every time|whenever|no more|instead of|prefer(?:ably)?|avoid(?:ing)?".to_string(),
         r"stop \w+ing|important(?:ly)?|importante".into(),
-        r"hay que|prefiero|ten en cuenta|tened en cuenta|ojo|en vez de|en lugar de".into(),
+        r"hay que|prefiero|ten en cuenta|tened en cuenta|ojo|en vez de|en lugar de|cada vez que".into(),
         r"cuidado con|evita\w*|deja de|dejad de".into(),
     ]
     .join("|")
@@ -63,14 +67,14 @@ static FAULT: LazyLock<Regex> = LazyLock::new(|| {
 /// kept as rules, after the one they change, so the latest word is in the block. Matched on [`fold`].
 static WITHDRAW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"\b(?:forget (?:about )?(?:the|that|my|what|this|those|these|all|it)\b|scratch that|never ?mind|disregard (?:the|that|my|what|this)|ignore (?:the|that|my|this) (?:\w+ )?(?:rule|instruction)s?|no longer (?:need|have|has|must|required|necessary|appl(?:y|ies))|(?:it'?s|it is) (?:fine|ok|okay|allowed) (?:now )?to|feel free to|olvida(?:te|d)? (?:de|lo|la|el|los|las|eso|esa|ese|aquello)\b|olvidate\b|ya no (?:hace falta|es necesario|tienes que|hay que)|no hace falta que|puedes volver a|ya se puede)",
+        r"\b(?:forget (?:about )?(?:the|that|my|what|this|those|these|all|it)\b|scratch that|never ?mind|disregard (?:the|that|my|what|this)|ignore (?:the|that|my|this) (?:\w+ )?(?:rule|instruction)s?|no longer (?:need|have|has|must|required|necessary|appl(?:y|ies))|(?:it'?s|it is) (?:fine|ok|okay|allowed) (?:now )?to|feel free to|olvida(?:te|d)? (?:de|lo|la|el|los|las|eso|esa|ese|aquello)\b|olvidate\b|ya no (?:hace falta|es necesario|tienes que|hay que|vale|aplica|cuenta)|no hace falta que|puedes volver a|ya se puede|no need to\b|changed my mind|cambio de idea|cambie de idea|cambio de opinion|cambie de opinion|ignora (?:lo que|eso|lo de|lo anterior|todo lo)|lo de antes|mejor al reves|the other way around)",
     )
     .expect("static pattern")
 });
 /// "You can now…", "you can use it again", "ya puedes…": a permission that lifts an earlier rule, unless its
 /// verb only points at something ("you can see the error in the log"). Matched on [`fold`].
 static CAN_NOW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:(?:you|we) (?:can|may|are allowed to)|(?P<ya>ya) (?:puedes|podeis|se puede)) (?P<pre>(?:now|again) )?(?P<verb>[\w']+)(?P<post>[^.!?]*\b(?:now|again|de nuevo|otra vez)\b)?")
+    Regex::new(r"\b(?P<lead>(?:now|actually),? )?(?:(?:you|we) (?:can|may|are allowed to)|(?P<ya>ya|ahora(?: si)?) (?:puedes|podeis|se puede)) (?P<pre>(?:now|again) )?(?P<verb>[\w']+)(?P<post>[^.!?]*\b(?:now|again|de nuevo|otra vez)\b)?")
         .expect("static pattern")
 });
 /// Verbs after "you can" that point at something rather than allow it ("you can see…", "ya puedes probarlo").
@@ -115,7 +119,7 @@ fn withdraws(line: &str) -> bool {
     WITHDRAW.is_match(&f)
         || CAN_NOW.captures_iter(&f).any(|c| {
             let verb = c.name("verb").map_or("", |m| m.as_str());
-            let timed = c.name("ya").is_some() || c.name("pre").is_some() || c.name("post").is_some();
+            let timed = ["ya", "lead", "pre", "post"].iter().any(|n| c.name(n).is_some());
             timed && !POINTING.contains(&verb)
         })
 }
@@ -383,6 +387,33 @@ fn last_word(before: &str) -> &str {
     before.split_whitespace().next_back().unwrap_or("")
 }
 
+/// Lines that report what happens or ask about it, though a cue stands in them: "nunca carga la página",
+/// "siempre me sale un error", "it only works when I am logged out", "what happens if I don't want…",
+/// "no entiendo por qué siempre…". A Spanish "nunca" before an indicative verb describes; before a
+/// subjunctive ("nunca hagas") it orders. Matched on [`fold`].
+static REPORT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(?:(?:nunca|siempre|jamas) (?:me )?(?:llega|sale|da|pasa|aparece|deja|carga|muestra|falla|funciona|arranca|compila|conecta|abre|cierra|termina|acaba)\b|(?:always|siempre) (?:the same|lo mismo|el mismo|la misma)\b|only (?:works|happens|shows|appears|loads)\b)|^(?:what|why|how) (?:happens|does|do|is|are|if|can|would|should)\b|^no (?:entiendo|se|me explico)\b|\bpor que\b",
+    )
+    .expect("static pattern")
+});
+/// Words that make a fault happen only "sometimes": a line with one reports, unless a clause opens with an order.
+static HEDGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:sometimes|often|randomly|a veces|a menudo)\b").expect("static pattern"));
+/// "No emojis in the output, ever": a ban closed by "ever".
+static NO_EVER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^no\b[^?]*\bever[.!]*$").expect("static pattern"));
+/// A line that says where a quoted text comes from ("README says: …", "…is what the article says").
+static SAYS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:says?|said|wrote|according|readme|article|dice|dijo|seg[uú]n)\b").expect("static pattern")
+});
+static QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""[^"]{4,}"|“[^”]{4,}”"#).expect("static pattern"));
+/// Whether ``line`` reports or asks rather than instructs (see [`REPORT`] and [`HEDGE`]).
+fn reports(line: &str) -> bool {
+    let f = fold(line);
+    REPORT.is_match(&f) || (HEDGE.is_match(&f) && !a_clause_opens_with_an_order(line))
+}
+
 /// Whether the person's ``line`` reads as a standing instruction.
 pub fn is_rule(line: &str) -> bool {
     let line = line.trim();
@@ -394,8 +425,20 @@ pub fn is_rule(line: &str) -> bool {
     if line.ends_with('?') || line.starts_with('¿') || line.ends_with(['{', '}', ';']) {
         return false;
     }
+    // a quote of someone else's text ("README says: \"you must…\"") is not the person's rule
+    if SAYS.is_match(line) && QUOTED.is_match(line) {
+        let rest = QUOTED.replace_all(line, " ");
+        return is_rule(&rest);
+    }
     // a line that changes or withdraws an earlier instruction: kept, so the latest word is in the block
     if withdraws(line) {
+        return true;
+    }
+    if reports(line) {
+        return false;
+    }
+    // "No emojis in the output, ever"
+    if NO_EVER.is_match(line) {
         return true;
     }
     // a plain task request: its "must" and "make sure" are about the task
@@ -473,7 +516,7 @@ static TAG_OPEN: LazyLock<Regex> =
 /// A line that opens as a log line: a level, a compiler message, a timestamp or a bracketed level.
 static LOG_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^(?:\[?(?:ERROR|WARN|WARNING|INFO|DEBUG|FATAL|TRACE|CRITICAL)\b|(?:error|warning)(?:\[\w+\])?:|\[(?i:error|warn|warning|info|debug|fatal|trace)\]|\[?\d{4}-\d{2}-\d{2}|\[?\d{1,2}:\d{2}:\d{2})",
+        r"^(?:\[?(?:ERROR|WARN|WARNING|INFO|DEBUG|FATAL|TRACE|CRITICAL)\b|(?:error|warning)(?:\[\w+\])?:|\[(?i:error|warn|warning|info|debug|fatal|trace)\]|\[?\d{4}-\d{2}-\d{2}|\[?\d{1,2}:\d{2}:\d{2}|thread '[^']*' panicked)",
     )
     .expect("static pattern")
 });
