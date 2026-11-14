@@ -215,7 +215,7 @@ impl Run {
                             "the sub-agent's model call failed: {}{}",
                             e.human(),
                             progress(&messages, round, rounds)
-                        ))
+                        ));
                     }
                 }
             };

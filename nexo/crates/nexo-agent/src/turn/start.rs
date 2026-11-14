@@ -502,6 +502,8 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
         .filter(|s| {
             !prompt::left_out(window, &s.name)
                 && (plan || s.name != "exit_plan")
+                && (st.tools.get("ultracode_execute").is_none()
+                    || !matches!(s.name.as_str(), "task" | "workflow" | "exit_plan"))
                 && (curator || s.name != "recall")
                 && (st.goal.is_some() || s.name != "goal_brief")
         })

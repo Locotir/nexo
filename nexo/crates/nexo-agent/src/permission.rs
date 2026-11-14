@@ -28,7 +28,7 @@ pub enum Decision {
     Ask,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
     pub mode: PermissionMode,
     pub allow: Vec<String>,

@@ -186,6 +186,7 @@ mod session_models;
 mod start_feedback;
 mod sub_agents;
 mod tool_rounds;
+mod ultracode;
 
 fn data_dir() -> PathBuf {
     static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();

@@ -704,6 +704,11 @@ impl AgentsView {
             let name = self.rows.iter().find(|r| &r.key == parent).map_or(parent.as_str(), |r| r.name.as_str());
             parts.push(format!("subagent of {name}"));
         }
+        // Keep the observed workflow visible even when a session has many children.
+        // This is a tool step, not evidence that a workflow is still running.
+        if let Some(step) = Self::workflow_step(row.last_step.as_deref()) {
+            parts.push(format!("last observed workflow: {step}"));
+        }
         if !row.subs.is_empty() {
             let running = Self::running_subs(row);
             parts.push(format!("subagents {running} active / {} total", row.subs.len()));
@@ -717,9 +722,6 @@ impl AgentsView {
                 .collect::<Vec<_>>()
                 .join(", ");
             parts.push(children);
-        }
-        if let Some(step) = Self::workflow_step(row.last_step.as_deref()) {
-            parts.push(format!("last workflow: {step}"));
         }
         parts
     }

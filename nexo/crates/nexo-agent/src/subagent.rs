@@ -105,7 +105,9 @@ impl Drop for Release {
 /// worktree had no changes and is gone.
 fn worktree_note(wt: &nexo_core::worktree::Worktree) -> String {
     match nexo_core::worktree::finish(wt) {
-        nexo_core::worktree::Finished::Removed => "\n\n[worktree] the sub-agent changed nothing; its worktree was removed".into(),
+        nexo_core::worktree::Finished::Removed => {
+            "\n\n[worktree] the sub-agent changed nothing; its worktree was removed".into()
+        }
         nexo_core::worktree::Finished::Kept(c) => format!(
             "\n\n[worktree] the sub-agent worked in its own worktree.\nbranch: {}\npath: {}\n{} commit(s), {} uncommitted path(s). Changes:\n{}\nTo take them: git merge {}  (remove: nexo worktree remove {})",
             wt.branch,
@@ -157,6 +159,7 @@ pub struct SubAgent {
     hooks: Vec<nexo_core::config::HookConfig>,
     /// Commands run in a new worktree (`[agent] worktree_setup`).
     worktree_setup: Vec<String>,
+    launch_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl SubAgent {
@@ -193,6 +196,7 @@ impl SubAgent {
             parallel: false,
             hooks: Vec::new(),
             worktree_setup: Vec::new(),
+            launch_gate: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -295,7 +299,57 @@ impl SubAgent {
     /// Starts one sub-agent as a job and a task of its own and returns at once with the way to its end. The
     /// `task` tool and the workflow runner both start theirs here, so a sub-agent has the same hooks,
     /// briefing, claims, registry entry and permission questions whoever started it.
+    pub(crate) fn exclusive_launches(&self) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        self.launch_gate.clone().try_write_owned().ok()
+    }
+
     pub(crate) async fn launch(&self, l: Launch<'_>, ctx: &ToolContext) -> Result<Started, String> {
+        let guard = self.launch_gate.clone().try_read_owned().map_err(|_| "ultracode plan in progress".to_string())?;
+        self.launch_inner(l, ctx, None, Some(guard), None).await
+    }
+
+    // Only the executor calls this while holding exclusive_launches for its entire turn.
+    pub(crate) async fn launch_approved(
+        &self,
+        guard: std::sync::Arc<tokio::sync::OwnedRwLockWriteGuard<()>>,
+        l: Launch<'_>,
+        ctx: &ToolContext,
+        permissions: &crate::ask::PlanCell,
+        approved_mode: nexo_core::PermissionMode,
+        permit: crate::turn::approval::InternalTaskPermit,
+    ) -> Result<Started, String> {
+        let args = json!({"agent": l.agent, "prompt": l.prompt, "provider": l.provider, "model": l.model, "start_clean": l.start_clean});
+        self.launch_inner(l, ctx, Some((permissions, approved_mode, permit, &args)), None, Some(guard)).await
+    }
+
+    async fn launch_inner(
+        &self,
+        l: Launch<'_>,
+        ctx: &ToolContext,
+        approved: Option<(
+            &crate::ask::PlanCell,
+            nexo_core::PermissionMode,
+            crate::turn::approval::InternalTaskPermit,
+            &Value,
+        )>,
+        active_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+        exclusive_guard: Option<std::sync::Arc<tokio::sync::OwnedRwLockWriteGuard<()>>>,
+    ) -> Result<Started, String> {
+        let snapshot_check = approved.as_ref().map(|(_, _, permit, _)| permit.snapshot_check());
+        let approved_check = approved.as_ref().map(|(p, mode, _, _)| (*p, *mode));
+        let check = || -> Result<(), String> {
+            if ctx.cancel.is_cancelled() {
+                return Err("cancelled".into());
+            }
+            if let Some((permissions, mode)) = approved_check {
+                let current = permissions.lock().unwrap_or_else(|e| e.into_inner()).mode;
+                if current.reads_only() || (mode == nexo_core::PermissionMode::Auto && current != mode) {
+                    return Err("permission mode changed".into());
+                }
+            }
+            Ok(())
+        };
+        check()?;
         let Launch {
             agent: name,
             prompt,
@@ -322,7 +376,15 @@ impl SubAgent {
         };
         let provider = match provider {
             None => None,
-            Some(p) => match self.providers.iter().find(|(n, _)| n.eq_ignore_ascii_case(p)) {
+            Some(p) => match self.providers.get_key_value(p).or_else(|| {
+                let mut matches = self.providers.iter().filter(|(n, _)| n.eq_ignore_ascii_case(p));
+                let first = matches.next();
+                if matches.next().is_some() {
+                    None
+                } else {
+                    first
+                }
+            }) {
                 Some((n, c)) => Some((n.clone(), c.clone())),
                 None => {
                     let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
@@ -344,6 +406,25 @@ impl SubAgent {
             }
             (p, _) => p,
         };
+        // Register before SubagentStart hooks, briefing, or worktree setup. If any
+        // preparation fails, dropping the handle ends the registered job.
+        let label = description.unwrap_or(prompt);
+        let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
+        // Serialize mode changes with the job registration itself. CancellationToken
+        // has no shared lock with its cancel() operation: cancellation can still race
+        // this registration; the executor must kill a newly registered job afterward.
+        let job = if let Some((_, _, permit, args)) = approved {
+            permit.register(args, ctx, label.clone()).await?
+        } else {
+            if ctx.cancel.is_cancelled() {
+                return Err("cancelled".into());
+            }
+            ctx.jobs.start(JobKind::Agent, label.clone())
+        };
+        check()?;
+        if let Some(snapshot) = &snapshot_check {
+            snapshot.check_snapshot(ctx).await?;
+        }
         let host = self.host.get().cloned();
         // SubagentStart hooks: what they print is added to the task
         let prompt_owned = {
@@ -365,6 +446,10 @@ impl SubAgent {
                 format!("{prompt}\n\n{}", o.context.join("\n\n"))
             }
         };
+        check()?;
+        if let Some(snapshot) = &snapshot_check {
+            snapshot.check_snapshot(ctx).await?;
+        }
         // what names the run in the claims is the person's or model's own words, before the hooks add to them
         let own_words = description.unwrap_or(prompt);
         let prompt = prompt_owned.as_str();
@@ -374,6 +459,10 @@ impl SubAgent {
             }
             _ => None,
         };
+        check()?;
+        if let Some(snapshot) = &snapshot_check {
+            snapshot.check_snapshot(ctx).await?;
+        }
         let mut run = Run {
             client: self.client.clone(),
             target: self.target.clone(),
@@ -400,16 +489,23 @@ impl SubAgent {
         } else {
             None
         };
+        let phase_check = match check() {
+            Ok(()) => match &snapshot_check {
+                Some(snapshot) => snapshot.check_snapshot(ctx).await,
+                None => Ok(()),
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = phase_check {
+            if let Some(wt) = isolated {
+                let _ = tokio::task::spawn_blocking(move || worktree_note(&wt)).await;
+            }
+            return Err(e);
+        }
         let mut ictx = ctx.clone();
         if let Some(wt) = &isolated {
             ictx.cwd = wt.path.clone();
         }
-        // every sub-agent is a job of its own that runs as its own task. `background: true` leaves it
-        // there at once; otherwise this call waits for it (attached), and lets go of it when the person
-        // writes or presses the key (see `Detach`)
-        let label = description.unwrap_or(prompt);
-        let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
-        let job = ctx.jobs.start(JobKind::Agent, label.clone());
         let id = job.id();
         // this run's own id: the provider's call id can come again in a later turn
         run.id = format!("{}#{id}", ctx.call_id);
@@ -444,6 +540,9 @@ impl SubAgent {
         let (tx, rx) = tokio::sync::oneshot::channel::<Ended>();
         let flag = attached.clone();
         tokio::spawn(async move {
+            // Keep the launch gate until the runner and its cleanup have finished.
+            let _active_guard = active_guard;
+            let _exclusive_guard = exclusive_guard;
             // whatever it held is free again when it ends, is stopped, or the task is dropped
             let release = release;
             let job = Arc::new(job);

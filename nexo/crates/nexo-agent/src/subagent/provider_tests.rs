@@ -184,25 +184,82 @@ fn tools_with(kinds: Vec<Profile>) -> ToolSet {
 /// Nineteen kinds of sub-agent as a person keeps them in `~/.claude/agents`: made up, each described in
 /// about 150 characters (2 756 in all).
 const OWN_KINDS: [(&str, &str); 19] = [
-    ("api-designer", "Designs REST and gRPC interfaces before any code is written. Use when a feature needs new endpoints, a versioning plan or a review of request shapes."),
-    ("bug-hunter", "Debugging specialist for crashes, stack traces and flaky tests; reproduces the failure first, then narrows it to one cause and proposes the smallest fix."),
-    ("changelog-writer", "Writes release notes from the commits since the last tag: groups them by area, drops internal noise and keeps each entry to one plain sentence."),
-    ("code-reviewer", "Use this agent after a change is written to review the diff for correctness, missed edge cases, naming and tests. It reports findings by severity."),
-    ("db-migrator", "Plans and writes database migrations (PostgreSQL, SQLite), checks they can be rolled back and flags locks that would stall a busy production table."),
-    ("dependency-auditor", "Checks the dependency tree for known vulnerabilities, abandoned packages and licence conflicts, and proposes the smallest safe set of upgrades."),
-    ("docs-writer", "Technical writer for READMEs, guides and API references. Use when behaviour changed and the documentation must follow, or a page reads unclear."),
-    ("frontend-polisher", "Refines UI code - spacing, states, keyboard access and responsive breakpoints - without changing behaviour; reports every file it touched."),
-    ("i18n-checker", "Finds hard-coded strings, missing translation keys and broken plural forms across the locale files, then lists them by screen with a suggested key."),
-    ("infra-planner", "Use proactively when a task touches deployment: reads the Terraform and CI files, explains what would change and warns about anything irreversible."),
-    ("log-analyst", "Reads large log files and traces to find when an incident started, what errors cluster around it and which service emitted the first bad line."),
-    ("perf-profiler", "Performance specialist: measures before guessing, finds the hot path with a profiler or timing probes, and reports the gain of each proposed change."),
-    ("refactor-planner", "Plans a refactor as a sequence of small safe steps, each with its own check, and names the callers that would break at every step of the way."),
-    ("release-manager", "Prepares a release: bumps versions, verifies the build on every target, checks the changelog and lists what still blocks the tag from going out."),
-    ("security-reviewer", "Reviews code for injection, broken access control, secrets in the tree and unsafe deserialisation. Read-only; reports each issue with a location."),
-    ("sql-tuner", "Explains slow queries from their plans, proposes indexes or rewrites and estimates the cost of each on write-heavy tables before recommending one."),
-    ("test-writer", "Writes focused unit and integration tests for code that has none, following the patterns of the suite in place, and runs them until they pass."),
-    ("ticket-triager", "Reads an issue report, reproduces it when it can, labels its area and severity, and writes the first reply asking only for what is truly missing."),
-    ("ux-critic", "Critiques a screen or flow as a first-time user would meet it: what is unclear, what takes too many steps and which words mislead. No code changes."),
+    (
+        "api-designer",
+        "Designs REST and gRPC interfaces before any code is written. Use when a feature needs new endpoints, a versioning plan or a review of request shapes.",
+    ),
+    (
+        "bug-hunter",
+        "Debugging specialist for crashes, stack traces and flaky tests; reproduces the failure first, then narrows it to one cause and proposes the smallest fix.",
+    ),
+    (
+        "changelog-writer",
+        "Writes release notes from the commits since the last tag: groups them by area, drops internal noise and keeps each entry to one plain sentence.",
+    ),
+    (
+        "code-reviewer",
+        "Use this agent after a change is written to review the diff for correctness, missed edge cases, naming and tests. It reports findings by severity.",
+    ),
+    (
+        "db-migrator",
+        "Plans and writes database migrations (PostgreSQL, SQLite), checks they can be rolled back and flags locks that would stall a busy production table.",
+    ),
+    (
+        "dependency-auditor",
+        "Checks the dependency tree for known vulnerabilities, abandoned packages and licence conflicts, and proposes the smallest safe set of upgrades.",
+    ),
+    (
+        "docs-writer",
+        "Technical writer for READMEs, guides and API references. Use when behaviour changed and the documentation must follow, or a page reads unclear.",
+    ),
+    (
+        "frontend-polisher",
+        "Refines UI code - spacing, states, keyboard access and responsive breakpoints - without changing behaviour; reports every file it touched.",
+    ),
+    (
+        "i18n-checker",
+        "Finds hard-coded strings, missing translation keys and broken plural forms across the locale files, then lists them by screen with a suggested key.",
+    ),
+    (
+        "infra-planner",
+        "Use proactively when a task touches deployment: reads the Terraform and CI files, explains what would change and warns about anything irreversible.",
+    ),
+    (
+        "log-analyst",
+        "Reads large log files and traces to find when an incident started, what errors cluster around it and which service emitted the first bad line.",
+    ),
+    (
+        "perf-profiler",
+        "Performance specialist: measures before guessing, finds the hot path with a profiler or timing probes, and reports the gain of each proposed change.",
+    ),
+    (
+        "refactor-planner",
+        "Plans a refactor as a sequence of small safe steps, each with its own check, and names the callers that would break at every step of the way.",
+    ),
+    (
+        "release-manager",
+        "Prepares a release: bumps versions, verifies the build on every target, checks the changelog and lists what still blocks the tag from going out.",
+    ),
+    (
+        "security-reviewer",
+        "Reviews code for injection, broken access control, secrets in the tree and unsafe deserialisation. Read-only; reports each issue with a location.",
+    ),
+    (
+        "sql-tuner",
+        "Explains slow queries from their plans, proposes indexes or rewrites and estimates the cost of each on write-heavy tables before recommending one.",
+    ),
+    (
+        "test-writer",
+        "Writes focused unit and integration tests for code that has none, following the patterns of the suite in place, and runs them until they pass.",
+    ),
+    (
+        "ticket-triager",
+        "Reads an issue report, reproduces it when it can, labels its area and severity, and writes the first reply asking only for what is truly missing.",
+    ),
+    (
+        "ux-critic",
+        "Critiques a screen or flow as a first-time user would meet it: what is unclear, what takes too many steps and which words mislead. No code changes.",
+    ),
 ];
 
 /// The kinds a session has with [`OWN_KINDS`] as files in the person's `~/.claude/agents`, read as a

@@ -48,7 +48,7 @@ use crate::session::{Session, UsageKind, UsageMeta};
 use crate::setup;
 use crate::AgentSetup;
 
-mod approval;
+pub(crate) mod approval;
 mod background;
 mod chrome;
 mod commands;
@@ -404,13 +404,39 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::Ultracode { text, attachments } => {
                         if turn.is_some() {
-                            notice(&events, Level::Warn, "ultracode: wait for the current turn to end");
+                            notice(&events, Level::Warn, "ultracode requires an idle turn");
+                        } else if let Some(sub) = flow_sub.clone() {
+                            if let Some(guard) = sub.exclusive_launches() {
+                                let guard = Arc::new(guard);
+                                {
+                                    let mut st = state.lock().await;
+                                    person_spoke(&mut st);
+                                    let tool = ultracode::ExecutePlan {
+                                        sub, guard: guard.clone(), config: st.config.clone(),
+                                        asker: (!headless).then(|| asker.clone()),
+                                        permissions: st.plan.clone(), state: Arc::downgrade(&state),
+                                        used: Default::default(),
+                                    };
+                                    st.tools.add(Arc::new(tool));
+                                }
+                                let request = format!("{text}\n\nCreate a sequential agent plan and submit it once using ultracode_execute. Do not start agents any other way. Approval is required before execution.");
+                                if let Some(handle) = start_prompt(&state, request, attachments, true, cancel.child_token()).await {
+                                    let state = state.clone();
+                                    turn = Some(tokio::spawn(async move {
+                                        let end = handle.await.unwrap_or(TurnEnd::Interrupted);
+                                        state.lock().await.tools.remove("ultracode_execute");
+                                        drop(guard);
+                                        end
+                                    }));
+                                } else {
+                                    state.lock().await.tools.remove("ultracode_execute");
+                                    drop(guard);
+                                }
+                            } else {
+                                notice(&events, Level::Warn, "ultracode cannot start while a sub-agent is active or launching");
+                            }
                         } else {
-                            let mut st = state.lock().await;
-                            st.goal_round = 0;
-                            person_spoke(&mut st);
-                            drop(st);
-                            turn = start_prompt(&state, text, attachments, true, cancel.child_token()).await;
+                            notice(&events, Level::Warn, "ultracode requires enabled sub-agents");
                         }
                     }
                     AgentCommand::Deliver { mails } => {

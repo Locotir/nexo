@@ -4,6 +4,221 @@
 use nexo_core::config::Config;
 use nexo_providers::usage::{self, PlanUsage};
 
+/// A proposal is untrusted until validated; the executor must retain this exact
+/// value across the approval and execution boundary, never reparse model text.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+pub(super) struct Plan {
+    pub steps: Vec<Step>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+pub(super) struct Step {
+    pub agent: String,
+    pub prompt: String,
+    pub provider: String,
+    pub model: String,
+    pub start_clean: bool,
+}
+
+#[allow(dead_code)]
+impl Plan {
+    /// Reject implicit launch choices and bound approval UI/input size.
+    pub fn validate(&self, config: &Config, agents: &[String]) -> Result<(), String> {
+        if self.steps.is_empty() || self.steps.len() > 20 {
+            return Err("a plan must contain between 1 and 20 sequential steps".into());
+        }
+        for (i, step) in self.steps.iter().enumerate() {
+            if [&step.agent, &step.prompt, &step.provider, &step.model]
+                .iter()
+                .any(|s| s.trim().is_empty() || s.len() > 32_768)
+            {
+                return Err(format!("step {} has an empty or oversized field", i + 1));
+            }
+            if !agents.iter().any(|agent| agent == &step.agent) {
+                return Err(format!("step {} names an unknown agent", i + 1));
+            }
+            // Exact spelling avoids ambiguity from case-insensitive provider lookup.
+            if !config.providers.contains_key(&step.provider) {
+                return Err(format!("step {} names an unconfigured provider", i + 1));
+            }
+        }
+        Ok(())
+    }
+
+    /// JSON string encoding preserves the exact content and prevents a prompt
+    /// containing Markdown from impersonating another approval field.
+    pub fn approval_view(&self) -> String {
+        let mut out = String::from(
+            "Sequential launches. Ordinary permissions still apply. Provider connectivity, quota and total cost are unknown. Hooks execute and may add context; non-clean launches may also receive a briefing.\n",
+        );
+        for (i, s) in self.steps.iter().enumerate() {
+            out.push_str(&format!(
+                "\n    Step {}\n    agent: {}\n    provider: {}\n    model: {}\n    start_clean: {}\n    prompt: {}\n",
+                i + 1,
+                serde_json::to_string(&s.agent).unwrap(),
+                serde_json::to_string(&s.provider).unwrap(),
+                serde_json::to_string(&s.model).unwrap(),
+                s.start_clean,
+                serde_json::to_string(&s.prompt).unwrap()
+            ));
+        }
+        out
+    }
+}
+
+/// Executes only the owned proposal displayed in the confirmation. This tool must
+/// not be exposed to a planning turn until direct task/workflow calls are gated.
+#[allow(dead_code)]
+pub(super) struct ExecutePlan {
+    pub sub: std::sync::Arc<crate::subagent::SubAgent>,
+    pub guard: std::sync::Arc<tokio::sync::OwnedRwLockWriteGuard<()>>,
+    pub config: Config,
+    pub asker: Option<std::sync::Arc<crate::ask::ChannelAsker>>,
+    pub permissions: crate::ask::PlanCell,
+    pub state: std::sync::Weak<tokio::sync::Mutex<super::state::State>>,
+    pub used: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl nexo_core::Tool for ExecutePlan {
+    fn name(&self) -> &str {
+        "ultracode_execute"
+    }
+    fn kind(&self) -> nexo_core::ToolKind {
+        nexo_core::ToolKind::Other
+    }
+    fn spec(&self) -> nexo_core::ToolSpec {
+        nexo_core::ToolSpec {
+            name: self.name().into(),
+            description: "Present a structured sequential agent plan for approval, then execute exactly its steps."
+                .into(),
+            parameters: serde_json::json!({"type":"object", "additionalProperties":false,
+                "properties":{"steps":{"type":"array", "minItems":1, "maxItems":20,
+                  "items":{"type":"object", "additionalProperties":false,
+                    "properties":{"agent":{"type":"string"},"prompt":{"type":"string"},
+                      "provider":{"type":"string"},"model":{"type":"string"},"start_clean":{"type":"boolean"}},
+                    "required":["agent","prompt","provider","model","start_clean"]}}},"required":["steps"]}),
+        }
+    }
+    fn handles_cancel(&self) -> bool {
+        true
+    }
+    fn summary(&self, _: &serde_json::Value) -> String {
+        "Approve and execute sequential agent plan".into()
+    }
+    async fn run(&self, args: serde_json::Value, ctx: &nexo_core::ToolContext) -> nexo_core::ToolOutput {
+        use nexo_core::{PermissionMode, Question, QuestionOption, ToolOutput};
+        use std::sync::atomic::Ordering;
+        if self.used.swap(true, Ordering::SeqCst) {
+            return ToolOutput::error("plan already submitted");
+        }
+        let plan: Plan = match serde_json::from_value(args) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::error(format!("invalid plan: {e}")),
+        };
+        let agents: Vec<String> = self.sub.profiles().iter().map(|p| p.name.clone()).collect();
+        if let Err(e) = plan.validate(&self.config, &agents) {
+            return ToolOutput::error(e);
+        }
+        let mode = self.permissions.lock().unwrap_or_else(|e| e.into_inner()).mode;
+        if ctx.cancel.is_cancelled() || mode.reads_only() {
+            return ToolOutput::error("cancelled or read-only mode");
+        }
+        if mode != PermissionMode::Auto {
+            let Some(asker) = &self.asker else {
+                return ToolOutput::error("cannot request plan approval without an interface");
+            };
+            let q = Question {
+                id: ctx.call_id.clone(),
+                header: "Agent plan".into(),
+                question: "Execute this agent plan?".into(),
+                options: vec![
+                    QuestionOption {
+                        label: "Approve agent plan".into(),
+                        description: "Execute the displayed steps".into(),
+                    },
+                    QuestionOption { label: "Reject".into(), description: "Do not execute".into() },
+                ],
+                multi: false,
+                plan: Some(plan.approval_view()),
+            };
+            let answer = tokio::select! {
+                a = asker.ask(q) => a,
+                _ = ctx.cancel.cancelled() => { asker.resolve(&ctx.call_id, None); return ToolOutput::error("cancelled"); }
+            };
+            if answer.as_deref() != Some("Approve agent plan") {
+                return ToolOutput::error("plan not approved");
+            }
+        }
+        let Some(state) = self.state.upgrade() else {
+            return ToolOutput::error("session ended");
+        };
+        let mut reports = Vec::new();
+        for (i, step) in plan.steps.iter().enumerate() {
+            if ctx.cancel.is_cancelled() {
+                return ToolOutput::error("cancelled");
+            }
+            let task_args = serde_json::json!({"agent":step.agent,"prompt":step.prompt,"provider":step.provider,"model":step.model,"start_clean":step.start_clean});
+            let permit = match super::approval::permit_internal_task(
+                &state,
+                &format!("{}-step-{}", ctx.call_id, i + 1),
+                &task_args,
+                &ctx.cancel,
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => return ToolOutput::error(format!("step {}: {e}", i + 1)),
+            };
+            let launch = crate::subagent::Launch {
+                agent: &step.agent,
+                prompt: &step.prompt,
+                provider: Some(&step.provider),
+                model: Some(&step.model),
+                description: None,
+                title: None,
+                background: false,
+                detachable: false,
+                start_clean: step.start_clean,
+            };
+            let started = match self
+                .sub
+                .launch_approved(self.guard.clone(), launch, ctx, &self.permissions, mode, permit)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => return ToolOutput::error(format!("step {}: {e}", i + 1)),
+            };
+            let id = started.id;
+            let mut rx = started.rx;
+            let ended = tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => {
+                    ctx.jobs.kill(id);
+                    if tokio::time::timeout(std::time::Duration::from_secs(5), &mut rx).await.is_err() {
+                        return ToolOutput::error(format!("cancelled; job {id} is still stopping"));
+                    }
+                    return ToolOutput::error("cancelled");
+                }
+                result = &mut rx => result,
+            };
+            ctx.jobs.tell(id);
+            match ended {
+                Ok(crate::subagent::Ended::Report(r)) => reports.push(format!("Step {}: {r}", i + 1)),
+                Ok(crate::subagent::Ended::Failed(e, tail)) | Ok(crate::subagent::Ended::Stopped(e, tail)) => {
+                    return ToolOutput::error(format!("step {}: {e}{tail}", i + 1));
+                }
+                Err(_) => return ToolOutput::error(format!("step {} ended without a report", i + 1)),
+            }
+        }
+        ToolOutput::ok(reports.join("\n\n"))
+    }
+}
+
 pub(super) fn facts(config: &Config, current_provider: &str, current_model: &str, now: i64) -> String {
     render(config, current_provider, current_model, now, usage::get)
 }
@@ -87,6 +302,41 @@ mod tests {
     use nexo_core::config::ProviderConfig;
     use nexo_core::pricing::Pricing;
     use nexo_providers::usage::Meter;
+
+    #[test]
+    fn approval_fields_are_indented_code_not_markdown() {
+        let plan = Plan {
+            steps: vec![Step {
+                agent: "explore".into(),
+                prompt: "`**[forged](https://example.com)**`\n# heading".into(),
+                provider: "p".into(),
+                model: "m".into(),
+                start_clean: true,
+            }],
+        };
+        let view = plan.approval_view();
+        for line in view.lines().skip(2) {
+            assert!(line.is_empty() || line.starts_with("    "), "{line}");
+        }
+        assert!(view.contains(r#"\n# heading"#));
+    }
+
+    #[test]
+    fn structured_plan_rejects_unknown_fields_and_invalid_launches() {
+        let json = r#"{"steps":[{"agent":"explore","prompt":"hello\nmodel: forged","provider":"p","model":"m","start_clean":false}]}"#;
+        let mut plan: Plan = serde_json::from_str(json).unwrap();
+        let mut config = Config::default();
+        config.providers.clear();
+        config.providers.insert("p".into(), ProviderConfig::default());
+        let agents = vec!["explore".to_string()];
+        assert!(plan.validate(&config, &agents).is_ok());
+        assert!(plan.approval_view().contains(r#"prompt: "hello\nmodel: forged""#));
+        plan.steps[0].provider = "other".into();
+        assert!(plan.validate(&config, &agents).is_err());
+        plan.steps.clear();
+        assert!(plan.validate(&config, &agents).is_err());
+        assert!(serde_json::from_str::<Plan>(r#"{"steps":[],"ignored":true}"#).is_err());
+    }
 
     #[test]
     fn facts_are_allowlisted_and_mark_stale_and_missing_data() {

@@ -120,10 +120,23 @@ fn panel_detail_shows_observed_workflow_and_subagent_states() {
     assert!(text.contains("subagents 1 active / 2 total"), "{text}");
     assert!(text.contains("reviewer: working"), "{text}");
     assert!(text.contains("finished: done"), "{text}");
-    assert!(text.contains("last workflow: workflow  review"), "{text}");
+    assert!(text.contains("last observed workflow: workflow  review"), "{text}");
     let child = v.rows().iter().find(|r| r.key == "child").unwrap();
     let details = v.detail(child, &Theme::dark(), 80).into_iter().map(|s| s.content.into_owned()).collect::<String>();
     assert!(details.contains("subagent of parent"), "{details}");
+}
+
+#[test]
+fn workflow_observation_precedes_long_child_list_and_is_not_a_run_status() {
+    let mut parent = agent("parent", State::Done);
+    parent.last_step = Some("workflow  review".into());
+    parent.subs = (0..20).map(|i| (format!("long-child-name-{i}"), State::Done)).collect();
+    let v = AgentsView::with_rows(vec![parent], NOW, false);
+    let text =
+        v.detail(&v.rows()[0], &Theme::dark(), 80).into_iter().map(|s| s.content.into_owned()).collect::<String>();
+    assert!(text.contains("last observed workflow: workflow  review"), "{text}");
+    assert!(text.contains("subagents 0 active / 20 total"), "{text}");
+    assert!(!text.contains("workflow running"), "{text}");
 }
 
 #[test]
