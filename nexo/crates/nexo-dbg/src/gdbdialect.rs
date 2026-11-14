@@ -117,13 +117,13 @@ fn split_assign(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// The parts of a script: cut at `;` and at line ends outside quotes (double or single, so `';'` and `'a;b'` stay
-/// whole), trimmed, without empty parts and without `#` comment lines. A quote left open keeps the rest as one part.
+/// The parts of a script: cut at `;` and at line ends outside quotes, trimmed, without empty parts and without `#`
+/// comment lines. A double quote opens a span anywhere (left open it keeps the rest as one part). A single quote
+/// opens one only at a word start (after whitespace, `=`, `(`, `,` or `[`, or at the start) and only when it closes,
+/// so `';'` and `'a;b'` stay whole while the apostrophe of `it's` or an unclosed `'` is a plain character.
 pub fn units(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
     let (mut out, mut cur) = (Vec::new(), String::new());
-    let mut q: Option<char> = None;
-    let mut esc = false;
-    let mut comment = false;
     let mut push = |cur: &mut String| {
         let t = cur.trim();
         if !t.is_empty() && !t.starts_with('#') {
@@ -131,36 +131,50 @@ pub fn units(text: &str) -> Vec<String> {
         }
         cur.clear();
     };
-    for c in text.chars() {
-        if comment {
-            // a comment line ends at its line end; its quotes mean nothing
-            if c == '\n' {
-                comment = false;
-                cur.clear();
+    // the end of a span opened at `i` with `open`, backslash escapes skipped
+    let close = |i: usize, open: char| -> Option<usize> {
+        let mut j = i + 1;
+        while j < chars.len() {
+            match chars[j] {
+                '\\' => j += 1,
+                c if c == open => return Some(j),
+                _ => {}
             }
-            continue;
+            j += 1;
         }
-        if let Some(open) = q {
-            cur.push(c);
-            if esc {
-                esc = false;
-            } else if c == '\\' {
-                esc = true;
-            } else if c == open {
-                q = None;
-            }
-            continue;
-        }
+        None
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
         match c {
             '"' | '\'' => {
-                q = Some(c);
-                cur.push(c);
+                let word_start =
+                    i == 0 || cur.is_empty() || matches!(chars[i - 1], c if c.is_whitespace() || "=(,[".contains(c));
+                let end = if c == '"' || word_start { close(i, c) } else { None };
+                match end {
+                    Some(e) => {
+                        cur.extend(&chars[i..=e]);
+                        i = e;
+                    }
+                    None if c == '"' => {
+                        cur.extend(&chars[i..]);
+                        i = chars.len();
+                    }
+                    None => cur.push(c),
+                }
             }
-            '#' if cur.trim().is_empty() => comment = true,
+            '#' if cur.trim().is_empty() => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
             ';' | '\n' => push(&mut cur),
             '\r' => {}
             _ => cur.push(c),
         }
+        i += 1;
     }
     push(&mut cur);
     out
@@ -868,8 +882,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unclosed_quote_keeps_the_rest_as_one_part() {
-        assert_eq!(units("a; find 'x; b\nc"), s(&["a", "find 'x; b\nc"]));
+    fn an_apostrophe_in_prose_and_an_unclosed_single_quote_are_plain_characters() {
+        assert_eq!(units("note 0x401000 the user's key; xref 0x401000").len(), 2);
+        assert_eq!(units("echo don't; cont"), s(&["echo don't", "cont"]));
+        assert_eq!(units("a; find 'x; b"), s(&["a", "find 'x", "b"]));
+        assert_eq!(units("print c=='x'; print c=='\\''; d"), s(&["print c=='x'", "print c=='\\''", "d"]));
+        // a double quote left open still keeps the rest as one part
         assert_eq!(units("a; say \"x; b"), s(&["a", "say \"x; b"]));
     }
 }
