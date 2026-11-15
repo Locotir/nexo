@@ -127,7 +127,8 @@ fn same(kind: &str, a: &str, b: &str) -> bool {
     plain(a) == plain(b)
 }
 
-fn one_line(s: &str, max: usize) -> String {
+/// `s` on one line (runs of whitespace become one space), at most `max` characters and an ellipsis when cut.
+pub(crate) fn one_line(s: &str, max: usize) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() <= max {
         s
@@ -413,5 +414,14 @@ mod tests {
         one(&mut r, "bash", json!({"command": "fd x"}), "sh: 1: fd: not found", true);
         one(&mut r, "bash", json!({"command": "PATH=~/bin:$PATH fd --version"}), "fd 10.2.0", false);
         assert!(!tagged(&one(&mut r, "bash", json!({"command": "fd y"}), "sh: 1: fd: not found", true)));
+    }
+
+    #[test]
+    fn one_line_joins_whitespace_and_cuts_by_characters() {
+        assert_eq!(one_line("", 5), "");
+        assert_eq!(one_line("  a \n\t b  ", 10), "a b");
+        assert_eq!(one_line("abcde", 5), "abcde");
+        assert_eq!(one_line("abcdef", 5), "abcde…");
+        assert_eq!(one_line("ñandú ñandú", 5), "ñandú…");
     }
 }

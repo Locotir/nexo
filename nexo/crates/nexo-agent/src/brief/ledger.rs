@@ -54,15 +54,6 @@ pub(super) const MARKERS: &[&str] = &[
     "solo ",
 ];
 
-pub(super) fn short(s: &str, n: usize) -> String {
-    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if s.chars().count() <= n {
-        s
-    } else {
-        format!("{}…", s.chars().take(n).collect::<String>())
-    }
-}
-
 impl Ledger {
     /// The facts of `history`, those that bear on `task` first.
     pub(super) fn of(history: &[Message], cwd: &Path, check: bool, task: &str) -> Ledger {
@@ -72,8 +63,8 @@ impl Ledger {
         let requests: Vec<&Unit> = us.iter().filter(|u| u.kind == Kind::Person).collect();
         if let Some(last) = requests.last() {
             if last.text.trim() != task.trim() {
-                let r = short(&last.text, 500);
-                if r == short(&last.text, usize::MAX) {
+                let r = one_line(&last.text, 500);
+                if r == one_line(&last.text, usize::MAX) {
                     l.request_at = Some(last.msg);
                 }
                 l.request = Some(r);
@@ -83,7 +74,7 @@ impl Ledger {
         for r in requests.iter().rev().skip(1).filter(|r| r.text.len() <= RULE_REQUEST) {
             for sentence in r.text.split(['\n', ';']).flat_map(|s| s.split(". ")) {
                 let low = sentence.to_lowercase();
-                let s = short(sentence, 200);
+                let s = one_line(sentence, 200);
                 if s.len() >= 8 && MARKERS.iter().any(|m| low.contains(m)) && !rules.iter().any(|(_, x)| *x == s) {
                     rules.push((bearing(&s, &q, &qn), s));
                 }
@@ -190,7 +181,7 @@ impl Ledger {
         for (_, u) in failing.into_iter().filter(|(b, u)| *b > 0 || Some(u.msg) == latest).take(3) {
             let code = u.text.rsplit_once("[exit code ").and_then(|(_, r)| r.split(']').next());
             let code = code.map(|c| format!("exit {c}")).unwrap_or_else(|| "failed".into());
-            let mut out = format!("- `{}` ({code})", short(u.command.as_deref().unwrap_or(""), 120));
+            let mut out = format!("- `{}` ({code})", one_line(u.command.as_deref().unwrap_or(""), 120));
             for line in error_lines(&u.text) {
                 out.push_str(&format!("\n    {line}"));
             }
@@ -213,7 +204,7 @@ impl Ledger {
                     _ => " ",
                 };
                 if !text.is_empty() {
-                    l.plan.push(format!("- [{mark}] {}", short(text, 120)));
+                    l.plan.push(format!("- [{mark}] {}", one_line(text, 120)));
                 }
             }
         }

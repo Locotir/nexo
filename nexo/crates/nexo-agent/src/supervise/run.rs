@@ -539,7 +539,7 @@ pub struct Setup {
 impl Setup {
     /// The usual places on this machine. Nothing is created; a place that does not exist is skipped.
     pub fn detect(policy: &Policy) -> Setup {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+        let home = nexo_core::paths::user_home();
         Setup {
             logs_root: home.map(|h| h.join(".claude").join("projects")),
             scan_hours: policy.scan_hours,
@@ -570,7 +570,7 @@ impl Setup {
 
 /// The wall clock in seconds.
 pub fn now_secs() -> Secs {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as Secs).unwrap_or(0)
+    nexo_core::auth::now() as Secs
 }
 
 /// Where a [`Panel`] keeps its files and listens. The default has neither: nothing is written.

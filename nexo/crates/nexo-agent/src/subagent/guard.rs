@@ -8,7 +8,7 @@ pub(super) fn outside(args: &Value, cwd: &Path) -> Option<String> {
 
 pub(super) fn outside_path(p: &str, cwd: &Path) -> Option<String> {
     // `~` is the home directory for the file tools, so it is here
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    let home = nexo_core::paths::user_home();
     let p = p.trim();
     let path = match (p, home) {
         ("~", Some(h)) => h,

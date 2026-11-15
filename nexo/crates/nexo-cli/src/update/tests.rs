@@ -274,7 +274,7 @@ async fn the_api_never_chooses_the_download_host_or_path() {
 
 #[tokio::test]
 async fn a_used_up_hourly_limit_is_named_with_the_minutes_left() {
-    let reset = now_secs() + 590;
+    let reset = nexo_core::auth::now() + 590;
     let m = Mock::start(|_| vec![("/api/releases/latest".to_string(), rate_limited(reset))]).await;
     let (c, p) = (client(5).unwrap(), probe(5).unwrap());
     let e = latest_release(&c, &p, &m.sources(), &[SUMS]).await.err().unwrap();

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use nexo_core::{Config, ProviderConfig};
 use serde::{Deserialize, Serialize};
@@ -51,10 +51,6 @@ fn save(file: &Path, store: &Store) {
     if std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, file)).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-}
-
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// The model ids the vendor listed last time for `provider` at `base_url`, from `file`.
@@ -122,10 +118,9 @@ where
             if !p.ready(name) {
                 continue;
             }
-            let fresh = store
-                .providers
-                .get(name)
-                .is_some_and(|s| s.base_url == p.base_url && now().saturating_sub(s.at) < TTL.as_secs());
+            let fresh = store.providers.get(name).is_some_and(|s| {
+                s.base_url == p.base_url && nexo_core::auth::now().saturating_sub(s.at) < TTL.as_secs()
+            });
             let key = format!("{file:?}|{name}");
             let recent = tried.iter().any(|(k, t)| *k == key && t.elapsed() < RETRY);
             if fresh || recent {
@@ -151,7 +146,7 @@ where
     let before = store.clone();
     for (name, base_url, models) in answers {
         let Some(models) = models.filter(|m| !m.is_empty()) else { continue };
-        store.providers.insert(name, Stored { at: now(), base_url, models });
+        store.providers.insert(name, Stored { at: nexo_core::auth::now(), base_url, models });
     }
     let changed = store != before;
     if changed {

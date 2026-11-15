@@ -32,8 +32,8 @@ const BOOK_URL: &str = "https://www.gutenberg.org/cache/epub/2000/pg2000.txt";
 const BOOK_SHA256: &str = "8a3738c61aa507f2319fad526a886c2de74c17c7ba1d64726c53d3591fa62321";
 
 fn cache_file() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join("build-cache/bench-data/pg2000.txt"))
+    let home = nexo_core::paths::user_home()?;
+    Some(home.join("build-cache/bench-data/pg2000.txt"))
 }
 
 fn cached_ok(p: &Path) -> bool {

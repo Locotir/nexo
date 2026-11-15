@@ -41,6 +41,7 @@ mod tests;
 mod units;
 mod words;
 
+use crate::repeat::one_line;
 use annotate::*;
 use ledger::*;
 pub use lexical::lexical;
@@ -213,7 +214,7 @@ pub fn recall(
     for m in history.iter().filter(|m| m.role == Role::Assistant) {
         for l in m.text().lines().map(str::trim) {
             if NOTE_HEADS.iter().any(|h| l.starts_with(h)) {
-                let l = short(l, 240);
+                let l = one_line(l, 240);
                 notes.retain(|n| *n != l);
                 notes.push(l);
             }
@@ -232,8 +233,12 @@ pub fn recall(
     // a note already listed is not repeated in the excerpts
     let mut spans = lexical(focus, history, left);
     for s in &mut spans {
-        s.text =
-            s.text.lines().filter(|l| !notes.iter().any(|n| n == &short(l.trim(), 240))).collect::<Vec<_>>().join("\n");
+        s.text = s
+            .text
+            .lines()
+            .filter(|l| !notes.iter().any(|n| n == &one_line(l.trim(), 240)))
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     spans.retain(|s| !s.text.trim().is_empty());
     if spans.is_empty() && facts == 0 && notes.is_empty() {
@@ -245,7 +250,7 @@ pub fn recall(
          It was true then; files may have changed since.\n",
         quote(from),
         quote(title),
-        short(&quote(focus), 200)
+        one_line(&quote(focus), 200)
     );
     if !note_text.is_empty() {
         out.push_str("Notes its agent wrote:\n");

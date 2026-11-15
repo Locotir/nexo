@@ -33,10 +33,9 @@ pub fn path() -> Result<PathBuf, Error> {
     if let Some(p) = std::env::var_os("NEXO_SHARED_MEMORY") {
         return Ok(PathBuf::from(p));
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
+    let home = nexo_core::paths::user_home()
         .ok_or_else(|| Error::new(ErrorKind::Other, "no home directory for the shared memory"))?;
-    Ok(PathBuf::from(home).join(".nexo").join("shared-memory.md"))
+    Ok(home.join(".nexo").join("shared-memory.md"))
 }
 
 /// The lines newer than `since` (0 reads them all), oldest first, up to [`READ_CAP`].

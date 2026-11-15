@@ -10,6 +10,11 @@ pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".nexo")
 }
 
+/// The person's own home folder as the environment gives it: `HOME`, or `USERPROFILE` where there is none (Windows).
+pub fn user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+}
+
 /// Settings: `config.toml`, `prompt.md`, `commands/`, `agents/` (`~/.nexo`).
 pub fn config_dir() -> PathBuf {
     env_dir("NEXO_CONFIG_DIR").unwrap_or_else(home_dir)

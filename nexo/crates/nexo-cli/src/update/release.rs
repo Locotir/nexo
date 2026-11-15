@@ -61,10 +61,6 @@ pub(super) fn limit_text(status: u16, remaining: Option<&str>, reset: Option<&st
     Some(format!("GitHub's hourly limit for this network is used up; {when}"))
 }
 
-pub(super) fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
 /// The latest release from the API (the second try): why not when it cannot be had.
 pub(super) async fn api_release(client: &reqwest::Client, src: &Sources) -> Result<Release, String> {
     let r = client
@@ -75,7 +71,8 @@ pub(super) async fn api_release(client: &reqwest::Client, src: &Sources) -> Resu
         .map_err(|_| NO_RELEASE.to_string())?;
     if !r.status().is_success() {
         let h = |k: &str| r.headers().get(k).and_then(|v| v.to_str().ok());
-        let why = limit_text(r.status().as_u16(), h("x-ratelimit-remaining"), h("x-ratelimit-reset"), now_secs());
+        let why =
+            limit_text(r.status().as_u16(), h("x-ratelimit-remaining"), h("x-ratelimit-reset"), nexo_core::auth::now());
         return Err(why.unwrap_or_else(|| NO_RELEASE.to_string()));
     }
     let rel =

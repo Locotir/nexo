@@ -66,5 +66,5 @@ pub(super) fn error_lines(text: &str) -> Vec<String> {
     let hits: Vec<&str> =
         lines.iter().copied().filter(|l| keys.iter().any(|k| l.to_lowercase().contains(k))).take(6).collect();
     let pick = if hits.is_empty() { lines[lines.len().saturating_sub(6)..].to_vec() } else { hits };
-    pick.into_iter().map(|l| short(l, 200)).collect()
+    pick.into_iter().map(|l| one_line(l, 200)).collect()
 }
