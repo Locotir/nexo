@@ -43,23 +43,23 @@ impl Tool for Grep {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "grep".into(),
-            description: "Search file contents with a regular expression (Rust regex syntax) under a \
+            description: "Search file contents with a regex (Rust syntax) under a \
                           directory or in one file; gitignored and binary files are skipped. Returns \
-                          `path:line: text` per match (with `context` lines around each when asked), or \
-                          only the matching files with `files_only`. At most `max_results` matches \
-                          (default 200) and `max_per_file` per file (default 20); what was left is counted."
+                          `path:line: text` per match (`context` lines around it), or \
+                          only the matching files with `files_only`. At most `max_results` (200) matches, \
+                          `max_per_file` (20) per file."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string"},
                     "path": {"type": "string", "description": "Default: the working directory."},
-                    "glob": {"type": "string", "description": "Only files whose name matches, e.g. `*.rs`; with a `/` or `**` the path under `path` is matched, e.g. `src/**/*.ts`."},
+                    "glob": {"type": "string", "description": "Only files whose name matches, e.g. `*.rs`; with a `/` or `**` the path under `path` is matched."},
                     "case_insensitive": {"type": "boolean"},
                     "context": {"type": "integer", "minimum": 0},
                     "files_only": {"type": "boolean"},
                     "max_results": {"type": "integer", "minimum": 1},
-                    "max_per_file": {"type": "integer", "minimum": 1},
+                    "max_per_file": {"type": "integer"},
                     "multiline": {"type": "boolean", "description": "Match across lines (`\\n` in the pattern, `.` also matches a newline)."}
                 },
                 "required": ["pattern"]
