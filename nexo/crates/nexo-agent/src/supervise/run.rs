@@ -68,6 +68,40 @@ pub struct AgentRow {
     pub held: u16,
     /// Seconds until the provider is tried again.
     pub retry_secs: Option<u32>,
+    /// How full its context window is, in percent, when the session says.
+    pub ctx_pct: Option<u8>,
+    /// The goal it works toward (`/goal`), when one runs.
+    pub goal: Option<String>,
+    /// The team lane this session is, with its clock and spend; none for a session that is not a lane.
+    pub lane: Option<LaneInfo>,
+}
+
+/// What the panel shows of a team lane (`team.toml` and its state under `<data_dir>/team/`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LaneInfo {
+    pub name: String,
+    /// The word `nexo team status` prints: `running`, `idle`, `paused`, `held`, `stopped` or `failed`.
+    pub state: String,
+    /// Whether the lane's runner process is alive (its command line checked, never matched by pattern).
+    pub runner: bool,
+    /// When the next round is due.
+    pub next_round: Option<Secs>,
+    /// The lane's clock in seconds; none: it runs its routine once at start, then only answers mail.
+    pub every_secs: Option<u64>,
+    /// The last round: when it ended, its result (`ok`, `failed`, `denied`, `capped`) and what it spent.
+    pub last_round: Option<(Secs, String, f64)>,
+    pub rounds: u64,
+    /// Failed rounds in a row; three stop the runner.
+    pub failures: u32,
+    /// Dollars spent today and the day's limit, when one is set.
+    pub spend_today: f64,
+    pub cap_day: Option<f64>,
+    /// Why it failed, or the last failed round's error.
+    pub why: Option<String>,
+    /// The lane's folder, model and permission mode as `team.toml` sets them.
+    pub dir: String,
+    pub model: Option<String>,
+    pub mode: Option<String>,
 }
 
 /// One mail between two sessions, one row per mail id.
@@ -318,6 +352,9 @@ impl Supervisor {
                     unread: t.inbox.iter().filter(|m| !m.1).count() as u16,
                     held: t.inbox.iter().filter(|m| m.1).count() as u16,
                     retry_secs: t.retry_until.map(|u| (u - now).max(0) as u32).filter(|s| *s > 0),
+                    ctx_pct: None,
+                    goal: None,
+                    lane: None,
                 }
             })
             .collect();

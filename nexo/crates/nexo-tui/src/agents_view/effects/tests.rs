@@ -76,6 +76,9 @@ fn agent(key: &str, state: State) -> AgentRow {
         unread: 0,
         held: 0,
         retry_secs: None,
+        ctx_pct: None,
+        goal: None,
+        lane: None,
     }
 }
 

@@ -28,7 +28,7 @@ use nexo_core::mail::Stage;
 
 pub use classify::{classify, ends_in_question, loop_signal, LoopWhy};
 pub use policy::{Loaded, Policy, Verdict};
-pub use run::{AgentRow, MailRow, Options, Panel, Setup, Supervisor};
+pub use run::{AgentRow, LaneInfo, MailRow, Options, Panel, Setup, Supervisor};
 pub use source::{Source, SourceKind};
 pub use source_nexo::{NexoSource, Nudge};
 

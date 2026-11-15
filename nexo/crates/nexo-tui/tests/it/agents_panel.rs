@@ -81,6 +81,9 @@ fn row(key: &str, name: &str, source: SourceKind, state: State, idle: Option<u64
         unread: 0,
         held: 0,
         retry_secs: None,
+        ctx_pct: None,
+        goal: None,
+        lane: None,
     }
 }
 

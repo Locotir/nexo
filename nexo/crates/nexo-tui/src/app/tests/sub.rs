@@ -680,6 +680,9 @@ fn panel_row(key: &str, source: nexo_agent::supervise::SourceKind) -> nexo_agent
         unread: 0,
         held: 0,
         retry_secs: None,
+        ctx_pct: None,
+        goal: None,
+        lane: None,
     }
 }
 

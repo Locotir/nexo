@@ -36,6 +36,9 @@ fn claude_row(cwd: &str) -> AgentRow {
         unread: 0,
         held: 0,
         retry_secs: None,
+        ctx_pct: None,
+        goal: None,
+        lane: None,
     }
 }
 
