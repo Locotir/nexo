@@ -226,6 +226,7 @@ mod session_lists_changes_and_selection;
 mod setup_save_and_scroll_news;
 mod starfield;
 mod steps_banner_gauge_and_pricing;
+mod stream_speed;
 mod sub;
 mod suggestions_links_and_errors;
 mod tool_group_cards;

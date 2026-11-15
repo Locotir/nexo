@@ -177,8 +177,14 @@ pub fn render_as(md: &str, width: usize, theme: &Theme, interpreted: bool) -> Ve
     render_as_meta(md, width, theme, interpreted).0
 }
 
-/// [`render_as`] and the boxes and wrapped rows of its lines.
+/// [`render_as`] and the boxes and wrapped rows of its lines. A reply that keeps growing is not parsed again
+/// from its first byte: see [`stream`].
 pub fn render_as_meta(md: &str, width: usize, theme: &Theme, interpreted: bool) -> (Vec<Line<'static>>, Meta) {
+    stream::render(md, width, theme, interpreted, stream::MIN_LEN)
+}
+
+/// The whole of `md`, from its first byte.
+fn render_whole(md: &str, width: usize, theme: &Theme, interpreted: bool) -> (Vec<Line<'static>>, Meta) {
     // escapes cleaned before parsing: the parser splits "\x1b[31m" at the bracket, and a span
     // cleaned on its own would leave "[31m" behind
     let raw_md = md;
@@ -248,7 +254,11 @@ fn list_sizes(md: &str, opts: Options) -> std::collections::VecDeque<usize> {
 mod code_block;
 mod events;
 mod inline;
+mod stream;
 mod table;
+
+#[cfg(test)]
+pub(crate) mod stream_tests;
 
 pub use inline::*;
 
