@@ -339,3 +339,24 @@ fn told_finds_either_line_and_the_old_one_in_a_kept_history_and_nothing_else() {
     assert!(!told(&[Message::user(HEAD), without, quoted]));
     assert!(!told(&[]));
 }
+
+#[test]
+fn the_line_follows_the_results_text_joined_by_newlines_and_a_told_session_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let hit = format!("objdump -d '{}'", slashed(this_binary()));
+    let calls = vec![call("a", &hit)];
+    let two = Part::ToolResult {
+        call_id: "a".into(),
+        name: Some("bash".into()),
+        content: vec![Part::text("one"), Part::text("two")],
+        is_error: false,
+    };
+    let mut told = false;
+    let out = round(&mut told, &calls, vec![two.clone()], dir.path(), TOOL);
+    let Part::ToolResult { content, .. } = &out[0] else { panic!("not a result") };
+    assert_eq!(content.len(), 1);
+    assert!(content[0].as_text().unwrap().starts_with("one\ntwo\n\n[nexo: the bin tool"), "{:?}", content[0].as_text());
+    assert!(told);
+    let mut spent = true;
+    assert_eq!(round(&mut spent, &calls, vec![two.clone()], dir.path(), TOOL), vec![two]);
+}

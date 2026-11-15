@@ -298,3 +298,51 @@ fn a_refused_command_spends_nothing_and_a_failed_one_does() {
     round(&mut now, &calls, failed, d.path());
     assert!(now.gdb);
 }
+
+#[test]
+fn background_and_detached_calls_and_other_tools_get_no_line_and_spend_nothing() {
+    let d = dir_with_prog();
+    let calls = vec![
+        ("a".to_string(), "bash".to_string(), json!({"command": "gdb -batch ./paint", "background": true})),
+        ("b".to_string(), "bash".to_string(), json!({"command": "gdb -batch ./paint", "detach": true})),
+        ("c".to_string(), "read".to_string(), json!({"command": "gdb -batch ./paint"})),
+    ];
+    let res = vec![
+        Part::tool_result("a", "started", false),
+        Part::tool_result("b", "started", false),
+        Part::tool_result("c", "x", false),
+    ];
+    let mut now = Told::default();
+    let out = round(&mut now, &calls, res, d.path());
+    assert_eq!(now, Told::default());
+    let said: Vec<String> = out
+        .iter()
+        .map(|p| match p {
+            Part::ToolResult { content, .. } => content.iter().filter_map(Part::as_text).collect(),
+            _ => String::new(),
+        })
+        .collect();
+    assert_eq!(said, ["started", "started", "x"]);
+}
+
+#[test]
+fn the_line_follows_the_results_text_joined_by_newlines_and_a_full_set_changes_nothing() {
+    let d = dir_with_prog();
+    let calls = vec![("a".to_string(), "bash".to_string(), json!({"command": "gdb -batch ./paint"}))];
+    let two = Part::ToolResult {
+        call_id: "a".into(),
+        name: Some("bash".into()),
+        content: vec![Part::text("one"), Part::text("two")],
+        is_error: false,
+    };
+    let mut now = Told::default();
+    let out = round(&mut now, &calls, vec![two.clone()], d.path());
+    let Part::ToolResult { content, .. } = &out[0] else { panic!("not a result") };
+    assert_eq!(content.len(), 1);
+    assert!(content[0].as_text().unwrap().starts_with("one\ntwo\n\n[nexo: "), "{:?}", content[0].as_text());
+    assert!(now.gdb);
+    let mut all = Told { gdb: true, trace: true, fault: true };
+    let same = round(&mut all, &calls, vec![two.clone()], d.path());
+    assert_eq!(same, vec![two]);
+    assert_eq!(told(&[]), Told::default());
+}
