@@ -649,14 +649,8 @@ pub(super) async fn prepare(
     }
     // what rides on this request only is worked out first, so the view's budget leaves room for it
     let hidden = (!st.hidden.is_empty()).then(|| crate::supervise::watch::hidden_block(&st.hidden));
-    let goal_facts = st
-        .goal
-        .as_ref()
-        .filter(|_| st.goal_state.is_active())
-        .and(st.goal_idle.facts())
-        // an active goal's work that brings nothing new: the plain facts of it (see `GoalIdle::facts`), in
-        // place of a generic note
-        .map(|f| format!("[goal work: {f}]"));
+    // an active goal: the counts of its run and, once its work brings nothing new, the facts of that (see `goal_note`)
+    let goal_facts = goal_note(st);
     let view = view_now(st, request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>())).await;
     let (_, cfg, model) = st.target.get();
     let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);

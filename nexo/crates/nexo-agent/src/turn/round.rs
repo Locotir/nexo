@@ -649,6 +649,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             let mut guard = state.lock().await;
             let st = &mut *guard;
             if st.goal.is_some() && st.goal_state.is_active() {
+                let kind = |n: &str, a: &Value| st.tools.get(n).map(|t| t.call_kind(a));
+                st.goal_counts.round(&kept, &ok, kind);
                 let mut idle = std::mem::take(&mut st.goal_idle);
                 let was = goal_calls(st, &mut idle, &kept, &ok, &last_results);
                 let step = goal_watch(&mut idle, &was);

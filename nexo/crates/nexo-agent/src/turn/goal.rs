@@ -111,6 +111,7 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     };
     st.goal_cost0 = st.cost;
     st.goal_idle = GoalIdle::default();
+    st.goal_counts = GoalCounts::new(st.cost);
     if let Err(e) = st.session.record_goal(text.as_deref()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -174,6 +175,129 @@ pub(super) fn count_step(st: &mut State) {
     }
 }
 
+/// What a goal's work did since the goal was set or resumed, counted from the calls that ran: the facts the model
+/// reads back on each request (see [`goal_note`]), so a long run is not blind to its own shape. Files are told by
+/// the path the call was given.
+#[derive(Debug, Clone)]
+pub(super) struct GoalCounts {
+    started: std::time::Instant,
+    /// The session's cost when the count began.
+    cost0: f64,
+    calls: u32,
+    read: HashSet<String>,
+    /// The files read since a call last changed a file.
+    read_since_edit: HashSet<String>,
+    edited: HashSet<String>,
+    commands: u32,
+    commands_failed: u32,
+}
+
+impl GoalCounts {
+    pub(super) fn new(cost: f64) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            cost0: cost,
+            calls: 0,
+            read: HashSet::new(),
+            read_since_edit: HashSet::new(),
+            edited: HashSet::new(),
+            commands: 0,
+            commands_failed: 0,
+        }
+    }
+
+    /// Counts the calls of one tool round: `ok` tells, call by call, whether each succeeded; `kind` gives the kind of
+    /// a call by its name and arguments (None: unknown tool).
+    pub(super) fn round(
+        &mut self,
+        calls: &[(String, String, Value)],
+        ok: &[bool],
+        kind: impl Fn(&str, &Value) -> Option<ToolKind>,
+    ) {
+        for (i, (_, name, args)) in calls.iter().enumerate() {
+            let done = ok.get(i).copied().unwrap_or(false);
+            self.calls += 1;
+            if name == "bash" {
+                self.commands += 1;
+                self.commands_failed += u32::from(!done);
+            }
+            if !done {
+                continue;
+            }
+            match kind(name, args) {
+                Some(ToolKind::Write) => {
+                    let paths = written_paths(args);
+                    if !paths.is_empty() {
+                        self.read_since_edit.clear();
+                    }
+                    self.edited.extend(paths);
+                }
+                Some(ToolKind::Read) if name == "read" => {
+                    if let Some(p) = args.get("path").and_then(Value::as_str) {
+                        self.read.insert(p.to_string());
+                        self.read_since_edit.insert(p.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The counts as one line of facts, `Goal so far: 23 min, round 3, 187 tool calls; read 96 files (41 since the
+    /// last edit), edited 3; ran 12 commands, 2 failed; $1.84.`: the spend only where the session priced it. None
+    /// before the first call, when there is nothing to count.
+    pub(super) fn line(&self, round: u32, cost: f64) -> Option<String> {
+        if self.calls == 0 {
+            return None;
+        }
+        let many = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+        let mut read = format!("read {}", many(self.read.len(), "file"));
+        if !self.edited.is_empty() {
+            read.push_str(&format!(" ({} since the last edit)", self.read_since_edit.len()));
+        }
+        let mut s = format!(
+            "Goal so far: {} min, round {}, {}; {read}, edited {}; ran {}, {} failed",
+            self.started.elapsed().as_secs() / 60,
+            round + 1,
+            many(self.calls as usize, "tool call"),
+            self.edited.len(),
+            many(self.commands as usize, "command"),
+            self.commands_failed,
+        );
+        let spent = cost - self.cost0;
+        if spent >= 0.005 {
+            s.push_str(&format!("; ${spent:.2}"));
+        }
+        s.push('.');
+        Some(s)
+    }
+}
+
+/// The files a write call names: its `path`, or the `path` of each entry of `files`.
+fn written_paths(args: &Value) -> Vec<String> {
+    let one = args.get("path").and_then(Value::as_str).map(str::to_string);
+    let many = args
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.get("path").and_then(Value::as_str).map(str::to_string));
+    one.into_iter().chain(many).collect()
+}
+
+/// What rides on each request of an active goal, never in the saved conversation: the counts of its run so far
+/// (see [`GoalCounts::line`]) and, once its work brings nothing new, the facts of that (see [`GoalIdle::facts`]).
+pub(super) fn goal_note(st: &State) -> Option<String> {
+    if st.goal.is_none() || !st.goal_state.is_active() {
+        return None;
+    }
+    let counts = st.goal_counts.line(st.goal_round, st.cost);
+    // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
+    let idle = st.goal_idle.facts().map(|f| format!("[goal work: {f}]"));
+    let lines: Vec<String> = counts.into_iter().chain(idle).collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 /// Tells the interface the goal, its round and its state.
 pub(super) fn emit_goal(st: &State) {
     // the log goes first: the interface has it when the goal it belongs to arrives
@@ -197,6 +321,7 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
     // a goal that runs again (resumed, or with the person's answer) starts with all its reading tools
     if to.is_active() {
         st.goal_idle = GoalIdle::default();
+        st.goal_counts = GoalCounts::new(st.cost);
     }
     // every pause is remembered with its time and reason (Esc, a guard, a limit, an error), for the goal panel
     if let GoalState::Paused(why) = &to {
@@ -469,6 +594,7 @@ pub(super) async fn resume_goal(state: &Shared, running: bool) -> bool {
 #[cfg(test)]
 mod goal_tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_file_that_cannot_be_read_is_not_recorded_as_missing() {
@@ -583,6 +709,30 @@ mod goal_tests {
             (None, Some("Want: green\nWhy: x\nHow: y\nDone when: z"))
         );
         assert_eq!(restated.started_ms, 0, "when it was set is not known");
+    }
+
+    #[test]
+    fn the_counts_line_names_the_spend_only_when_it_shows_in_cents() {
+        let call = |name: &str, args: Value| (format!("{name}-id"), name.to_string(), args);
+        let kind = |n: &str, _: &Value| match n {
+            "read" => Some(ToolKind::Read),
+            "edit" => Some(ToolKind::Write),
+            _ => Some(ToolKind::Exec),
+        };
+        let mut c = GoalCounts::new(1.0);
+        assert_eq!(c.line(0, 1.0), None, "nothing is counted before the first call");
+        let calls = [
+            call("read", json!({"path": "a.rs"})),
+            call("edit", json!({"files": [{"path": "a.rs"}, {"path": "b.rs"}]})),
+            call("read", json!({"path": "c.rs"})),
+            call("bash", json!({"command": "make"})),
+        ];
+        c.round(&calls, &[true, true, true, false], kind);
+        assert_eq!(
+            c.line(2, 1.004).as_deref(),
+            Some("Goal so far: 0 min, round 3, 4 tool calls; read 2 files (1 since the last edit), edited 2; ran 1 command, 1 failed.")
+        );
+        assert!(c.line(2, 2.84).unwrap().ends_with("1 failed; $1.84."));
     }
 }
 

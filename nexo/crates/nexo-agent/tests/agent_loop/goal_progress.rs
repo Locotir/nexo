@@ -151,3 +151,111 @@ async fn a_read_heavy_question_without_a_goal_is_not_stopped() {
     assert!(reqs.iter().all(|q| offers(q, "read")));
     r.stop().await;
 }
+
+/// What the model reads of the last message of request `k`: the continuation mark or the tool results, and the
+/// facts that ride on that request only.
+fn tail_of(client: &Scripted, k: usize) -> String {
+    text_of_parts(&client.requests()[k].messages.last().unwrap().content)
+}
+
+fn files_in(dir: &std::path::Path, names: &[&str]) {
+    for n in names {
+        std::fs::write(dir.join(n), "fn f() {}\n").unwrap();
+    }
+}
+
+/// A goal run states its own counts on each request: calls, distinct files read, files edited, the reads since the
+/// last edit (back to zero at an edit) and the commands with the failures; the line comes with the continuation of
+/// the second round, as the person's own request and the saved conversation never carry it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_run_shows_the_model_its_own_counts() {
+    let dir = test_tmpdir().unwrap();
+    files_in(dir.path(), &["a.rs", "b.rs", "c.rs", "d.rs"]);
+    let client = Scripted::new(vec![
+        Reply::Events(call("r1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(call("r2", "read", json!({"path": "b.rs"}))),
+        Reply::Events(call("r3", "read", json!({"path": "a.rs"}))),
+        Reply::Events(call("w1", "write", json!({"path": "out.rs", "content": "fn out() {}\n"}))),
+        Reply::Events(call("r4", "read", json!({"path": "c.rs"}))),
+        Reply::Events(call("b1", "bash", json!({"command": "exit 3"}))),
+        Reply::Events(text("checked it, going on")),
+        Reply::Events(call("r5", "read", json!({"path": "d.rs"}))),
+        Reply::Events(text("all done\nGOAL DONE")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("find the leak".into()) });
+    let first = r.turn().await;
+    assert_eq!(end_of(&first), TurnEnd::Done);
+    let second = r.turn().await;
+    assert_eq!(end_of(&second), TurnEnd::Done);
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert_eq!(client.requests().len(), 9);
+    // nothing to count before the first call
+    assert!(!tail_of(&client, 0).contains("Goal so far"), "{}", tail_of(&client, 0));
+    // an edit sends the reads since the last one back to zero
+    assert!(
+        tail_of(&client, 3)
+            .contains("Goal so far: 0 min, round 1, 3 tool calls; read 2 files, edited 0; ran 0 commands, 0 failed."),
+        "{}",
+        tail_of(&client, 3)
+    );
+    assert!(
+        tail_of(&client, 4).contains(
+            "Goal so far: 0 min, round 1, 4 tool calls; read 2 files (0 since the last edit), edited 1; ran 0 commands, 0 failed."
+        ),
+        "{}",
+        tail_of(&client, 4)
+    );
+    assert!(tail_of(&client, 5).contains("read 3 files (1 since the last edit), edited 1; ran 0 commands"));
+    // the second round: the continuation, then the line with the failed command counted
+    let line = "Goal so far: 0 min, round 2, 6 tool calls; read 3 files (1 since the last edit), edited 1; ran 1 command, 1 failed.";
+    assert!(tail_of(&client, 7).starts_with("[goal: continue]"), "{}", tail_of(&client, 7));
+    assert!(tail_of(&client, 7).contains(line), "{}", tail_of(&client, 7));
+    assert!(tail_of(&client, 8).contains("round 2, 7 tool calls; read 4 files (2 since the last edit)"));
+    // it rides on the request only: the saved conversation holds the continuation mark alone
+    let saved: Vec<String> = second
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::History { message, .. } if message.role == nexo_core::message::Role::User => {
+                Some(message.text())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(saved.first().map(String::as_str), Some("[goal: continue]"));
+    assert!(saved.iter().all(|t| !t.contains("Goal so far")), "{saved:?}");
+    r.stop().await;
+}
+
+/// A goal resumed after a stop counts again from its own start: what it read before the stop is not in the line.
+#[tokio::test]
+async fn a_resumed_goal_starts_its_counts_over() {
+    let dir = test_tmpdir().unwrap();
+    files_in(dir.path(), &["a.rs", "b.rs"]);
+    let client = Scripted::new(vec![
+        Reply::Events(call("r1", "read", json!({"path": "a.rs"}))),
+        Reply::Hang(vec![StreamEvent::TextDelta("half".into())]),
+        Reply::Events(call("r2", "read", json!({"path": "b.rs"}))),
+        Reply::Events(text("all set\nGOAL DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("find the leak".into()) });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Interrupt);
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
+    // the request that hung had the first read counted
+    assert!(tail_of(&client, 1).contains("round 1, 1 tool call; read 1 file, edited 0"), "{}", tail_of(&client, 1));
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
+    r.send(AgentCommand::ResumeGoal);
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+    let after = tail_of(&client, 3);
+    assert!(
+        after.contains("Goal so far: 0 min, round 1, 1 tool call; read 1 file, edited 0; ran 0 commands, 0 failed."),
+        "{after}"
+    );
+    r.stop().await;
+}
