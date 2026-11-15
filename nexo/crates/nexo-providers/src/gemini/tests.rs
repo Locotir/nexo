@@ -1,0 +1,174 @@
+use super::*;
+use crate::parse::Feed;
+use nexo_core::ToolSpec;
+use nexo_core::{ErrorKind, FinishReason, ImageSource, Message, Part, Role, StreamEvent, Usage};
+
+#[test]
+fn body_uses_contents_and_names_function_responses() {
+    let mut req = ModelRequest::new(
+        "gemini-2.5-pro",
+        "sys",
+        vec![
+            Message::user("hi"),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    Part::Reasoning { text: "t".into(), signature: Some("TS".into()), encrypted: None, model: None },
+                    Part::tool_call("call_1", "read", json!({"path": "a"})),
+                ],
+            ),
+            Message::tool_results(vec![Part::tool_result("call_1", "contents", false)]),
+        ],
+    );
+    req.tools = vec![ToolSpec {
+        name: "read".into(),
+        description: "d".into(),
+        parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}, "additionalProperties": false}),
+    }];
+    let b = Gemini::body(&ProviderConfig::new(ID, "https://generativelanguage.googleapis.com", None), &req);
+    assert_eq!(b["systemInstruction"]["parts"][0]["text"], "sys");
+    assert_eq!(b["contents"][0], json!({"role": "user", "parts": [{"text": "hi"}]}));
+    assert_eq!(b["contents"][1]["role"], "model");
+    assert_eq!(b["contents"][1]["parts"][0]["functionCall"]["name"], "read");
+    assert_eq!(b["contents"][1]["parts"][0]["thoughtSignature"], "TS");
+    assert_eq!(
+        b["contents"][2]["parts"][0]["functionResponse"],
+        json!({"name": "read", "response": {"result": "contents"}})
+    );
+    assert!(b["tools"][0]["functionDeclarations"][0]["parameters"].get("additionalProperties").is_none());
+    assert_eq!(b["generationConfig"]["maxOutputTokens"], 8192);
+    assert_eq!(
+        Gemini::url(&ProviderConfig::new(ID, "https://generativelanguage.googleapis.com", None), "gemini-2.5-pro"),
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+    );
+}
+
+#[test]
+fn parses_thoughts_text_whole_calls_and_usage() {
+    let data = [
+        r#"{"candidates":[{"content":{"parts":[{"text":"plan","thought":true}],"role":"model"}}],"responseId":"r1","modelVersion":"gemini-2.5-pro"}"#,
+        r#"{"candidates":[{"content":{"parts":[{"text":"Hello "}],"role":"model"}}]}"#,
+        r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}},"thoughtSignature":"TS"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":10,"cachedContentTokenCount":40,"thoughtsTokenCount":6}}"#,
+    ];
+    let mut p = GeminiParser::default();
+    let evs: Vec<StreamEvent> = data.iter().flat_map(|d| p.feed(d)).collect();
+    assert_eq!(evs[0], StreamEvent::Start { response_id: Some("r1".into()), model: Some("gemini-2.5-pro".into()) });
+    assert_eq!(evs[1], StreamEvent::ReasoningDelta("plan".into()));
+    assert_eq!(evs[2], StreamEvent::TextDelta("Hello ".into()));
+    assert_eq!(evs[3], StreamEvent::ReasoningMeta { signature: Some("TS".into()), encrypted: None });
+    let id = match &evs[4] {
+        StreamEvent::ToolCallStart { id, name } if name == "read" => id.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(id.starts_with("call_"));
+    assert_eq!(evs[5], StreamEvent::ToolCallEnd { id: id.clone(), name: "read".into(), args: json!({"path": "a"}) });
+    assert_eq!(
+        evs[6],
+        StreamEvent::Usage(Usage { input: 60, output: 16, cache_read: 40, cache_write: 0, reasoning: 6 })
+    );
+    assert_eq!(evs[7], StreamEvent::Finish(FinishReason::ToolUse));
+    // a second response never reuses an id
+    let mut p2 = GeminiParser::default();
+    let evs2: Vec<StreamEvent> = data.iter().flat_map(|d| p2.feed(d)).collect();
+    assert!(matches!(&evs2[4], StreamEvent::ToolCallStart { id: id2, .. } if id2 != &id));
+}
+
+#[test]
+fn errors_in_the_stream_are_classified_and_a_cut_prompt_is_not_a_reply() {
+    let mut p = GeminiParser::default();
+    let evs = p.feed(r#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#);
+    assert!(matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::RateLimit && e.is_retryable()));
+    let mut p = GeminiParser::default();
+    p.feed(r#"{"candidates":[{"content":{"parts":[],"role":"model"}}]}"#);
+    assert!(matches!(&p.finish()[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network));
+}
+
+#[test]
+fn a_malformed_call_or_an_empty_finish_is_a_retryable_error() {
+    for r in ["MALFORMED_FUNCTION_CALL", "OTHER"] {
+        let mut p = GeminiParser::default();
+        let mut evs = p.feed(&format!(r#"{{"candidates":[{{"finishReason":"{r}"}}]}}"#));
+        evs.extend(p.finish());
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::Finish(_))), "{evs:?}");
+        assert!(evs.iter().any(|e| matches!(e, StreamEvent::Error(e) if e.is_retryable() && e.message.contains(r))));
+    }
+    let mut p = GeminiParser::default();
+    let evs = p.feed(r#"{"candidates":[{"finishReason":"SAFETY"}]}"#);
+    assert!(evs.contains(&StreamEvent::Finish(FinishReason::ContentFilter)), "a block stays a block");
+}
+
+#[test]
+fn clean_schema_keeps_properties_named_like_keywords() {
+    let s = json!({"type": "object", "additionalProperties": false,
+        "properties": {"default": {"type": "string", "default": "x"}, "const": {"type": "integer"}},
+        "required": ["default"]});
+    let c = clean_schema(&s);
+    assert_eq!(c["properties"]["default"], json!({"type": "string"}));
+    assert_eq!(c["properties"]["const"], json!({"type": "integer"}));
+    assert!(c.get("additionalProperties").is_none());
+}
+
+#[test]
+fn usage_after_the_finish_reason_is_still_reported_once() {
+    let late = [
+        r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"},"finishReason":"STOP"}]}"#,
+        r#"{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}"#,
+    ];
+    let mut p = GeminiParser::default();
+    let mut evs: Vec<StreamEvent> = late.iter().flat_map(|d| p.feed(d)).collect();
+    evs.extend(p.finish());
+    let usages: Vec<_> = evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).collect();
+    assert_eq!(usages, vec![&StreamEvent::Usage(Usage { input: 10, output: 2, ..Default::default() })]);
+    // usage sent with the finish is not sent again when a later chunk repeats it
+    let mut p = GeminiParser::default();
+    let mut evs = p.feed(r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}"#);
+    evs.extend(p.feed(late[1]));
+    evs.extend(p.finish());
+    assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).count(), 1);
+}
+
+#[test]
+fn thought_signature_of_another_model_is_not_sent_back() {
+    let history = |made_by: &str| {
+        vec![
+            Message::user("hi"),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    Part::Reasoning {
+                        text: "t".into(),
+                        signature: Some("TS".into()),
+                        encrypted: None,
+                        model: Some(made_by.into()),
+                    },
+                    Part::tool_call("call_1", "read", json!({})),
+                ],
+            ),
+        ]
+    };
+    let cfg = ProviderConfig::new(ID, "https://generativelanguage.googleapis.com", None);
+    let same = Gemini::body(&cfg, &ModelRequest::new("gem-a", "", history("gem-a")));
+    assert_eq!(same["contents"][1]["parts"][0]["thoughtSignature"], "TS");
+    let other = Gemini::body(&cfg, &ModelRequest::new("gem-b", "", history("gem-a")));
+    assert!(!other.to_string().contains("thoughtSignature"));
+    assert_eq!(other["contents"][1]["parts"][0]["functionCall"]["name"], "read");
+}
+
+#[test]
+fn a_picture_in_a_tool_result_rides_as_inline_data_after_the_response() {
+    let msgs = vec![
+        Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({"path": "n.png"}))]),
+        Message::tool_results(vec![Part::ToolResult {
+            call_id: "c1".into(),
+            name: Some("read".into()),
+            content: vec![
+                Part::text("n.png: PNG image"),
+                Part::Image { source: ImageSource::Base64 { media_type: "image/png".into(), data: "AAAA".into() } },
+            ],
+            is_error: false,
+        }]),
+    ];
+    let c = contents(&msgs, "gemini-x");
+    assert_eq!(c[1]["parts"][0]["functionResponse"]["response"]["result"], "n.png: PNG image");
+    assert_eq!(c[1]["parts"][1], json!({"inlineData": {"mimeType": "image/png", "data": "AAAA"}}));
+}
