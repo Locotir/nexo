@@ -264,3 +264,74 @@ fn start_detaches_one_runner_that_outlives_a_hangup_and_stop_ends_it() {
     wait_for(60, "the runner's end", || state(dir, "D")["state"] == "stopped");
     assert!(std::fs::read_to_string(dir.join("data/team/D.log")).unwrap().contains("echo: Go."));
 }
+
+/// With no `team.toml`, `status` and `start` say how to make a lane, with an example, and never point at a doc
+/// an installed copy does not have; `status` still ends well.
+#[test]
+fn without_lanes_status_and_start_say_how_to_add_one() {
+    let d = tempfile::tempdir().unwrap();
+    for (args, code) in [(["team", "status"], 0), (["team", "start"], 1)] {
+        let out = nexo(d.path()).args(args).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(code), "{args:?}: {said}");
+        assert!(said.starts_with("No lanes yet. Create one with: nexo team add\n"), "{said}");
+        assert!(said.contains("[[lane]]") && said.contains("routine = "), "{said}");
+        assert!(!said.contains("TEAM.md") && !String::from_utf8_lossy(&out.stderr).contains("TEAM.md"), "{said}");
+        assert!(!said.contains("does not exist"), "{said}");
+    }
+    assert!(!d.path().join("team.toml").exists(), "asking does not create the file");
+}
+
+/// `add` with flags makes the file, appends a second lane under what is already there, comments included, and
+/// the lanes read back as `status` lists them; a lane that does not check out leaves the file as it was.
+#[test]
+fn add_with_flags_creates_team_toml_then_appends_and_keeps_the_comments() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path();
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let add = |args: &[&str]| nexo(dir).args(["team", "add"]).args(args).stdin(Stdio::null()).output().unwrap();
+    let work_s = work.to_string_lossy().to_string();
+
+    let out = add(&["DOCS", "--dir", &work_s, "--routine", "Tidy the docs.", "--every", "1h"]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{said} {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(said.trim(), "added DOCS; start it with: nexo team start DOCS");
+    let file = std::fs::read_to_string(dir.join("team.toml")).unwrap();
+    assert!(
+        file.contains("name = \"DOCS\"") && file.contains("every = \"1h\"") && file.contains("mode = \"accept-edits\""),
+        "{file}"
+    );
+
+    // the person's own comment goes in; the next lane is added under it
+    let mine = format!("# my lanes\n{file}");
+    std::fs::write(dir.join("team.toml"), &mine).unwrap();
+    let out = add(&[
+        "API",
+        "--dir",
+        &work_s,
+        "--routine",
+        "Watch the build.",
+        "--mode",
+        "plan",
+        "--max-spend-day",
+        "2",
+        "--model",
+        "mock/mock",
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let after = std::fs::read_to_string(dir.join("team.toml")).unwrap();
+    assert!(after.starts_with(&mine), "what was there stays as it was:\n{after}");
+    assert!(after.contains("name = \"API\"") && after.contains("max_spend_day = 2.0"), "{after}");
+    let status = nexo(dir).args(["team", "status"]).output().unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(text.lines().any(|l| l.starts_with("DOCS")) && text.lines().any(|l| l.starts_with("API")), "{text}");
+
+    // a taken name, a clock that is not one and a missing routine write nothing
+    for bad in [vec!["docs", "--routine", "x"], vec!["NEW", "--routine", "x", "--every", "soon"], vec!["NEW"]] {
+        let out = add(&bad);
+        assert_eq!(out.status.code(), Some(2), "{bad:?}");
+        assert!(!out.stderr.is_empty());
+    }
+    assert_eq!(std::fs::read_to_string(dir.join("team.toml")).unwrap(), after);
+}

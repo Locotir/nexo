@@ -1,4 +1,4 @@
-//! `/team`: the table read from a state folder, the line that says where `team.toml` goes, and what the keys
+//! `/team`: the table read from a state folder, the line that says how to make a lane, and what the keys
 //! write: the pause file, the stop file, a started runner. Everything is in temporary folders; the person's own
 //! `~/.nexo` is never read. The folders come from the environment, so one test at a time holds it.
 
@@ -107,19 +107,74 @@ fn the_window_shows_each_lane_with_its_state_last_round_and_spend_today() {
 }
 
 #[test]
-fn without_a_team_file_the_window_says_where_to_create_it_in_one_line() {
+fn without_a_team_file_the_window_says_in_one_line_how_to_create_a_lane() {
     let lab = Lab::new(None);
     let mut v = TeamView::new(Instant::now());
     settle(&mut v);
-    let t = text(&v);
-    assert_eq!(t.lines().count(), 1, "{t}");
-    assert!(t.contains("no lanes: create") && t.contains("team.toml") && t.contains("docs/TEAM.md"), "{t}");
-    assert!(t.contains(&*nexo_core::paths::shown(&lab.dir.path().join("team.toml"))), "{t}");
+    assert_eq!(text(&v), "no lanes yet: press n to create one");
     // a lane key does nothing without lanes, and the window closes
     assert!(matches!(press(&mut v, 's'), ModalOut::Nothing));
     assert!(matches!(press(&mut v, 'o'), ModalOut::Nothing));
     assert!(matches!(v.key(KeyEvent::from(KeyCode::Esc), Instant::now()), ModalOut::Close));
     assert!(!lab.team("paused").exists());
+    assert!(!lab.dir.path().join("team.toml").exists());
+}
+
+#[test]
+fn n_asks_the_six_questions_one_at_a_time_and_writes_the_lane_to_team_toml() {
+    let lab = Lab::new(None);
+    let mut v = TeamView::new(Instant::now());
+    settle(&mut v);
+    press(&mut v, 'n');
+    assert!(v.title().contains("new lane") && text(&v).contains("question 1 of 6"), "{}", text(&v));
+    let type_in = |v: &mut TeamView, s: &str| {
+        for c in s.chars() {
+            press(v, c);
+        }
+        v.key(KeyEvent::from(KeyCode::Enter), Instant::now());
+    };
+    // a name with a space is refused and asked again, the reason on the last row
+    type_in(&mut v, "my lane");
+    assert!(text(&v).contains("question 1 of 6") && text(&v).contains("letters, digits"), "{}", text(&v));
+    for _ in 0..7 {
+        v.key(KeyEvent::from(KeyCode::Backspace), Instant::now());
+    }
+    type_in(&mut v, "DOCS");
+    assert!(text(&v).contains("Folder: ") && text(&v).contains("(default)"), "{}", text(&v));
+    type_in(&mut v, "/tmp");
+    type_in(&mut v, "Tidy the docs.");
+    type_in(&mut v, "1h");
+    type_in(&mut v, "");
+    assert!(text(&v).contains("Permission mode"), "{}", text(&v));
+    assert!(!lab.dir.path().join("team.toml").exists(), "nothing is written before the last answer");
+    type_in(&mut v, "");
+    assert_eq!(v.said(), Some("added DOCS: press s to start it"));
+    let file = std::fs::read_to_string(lab.dir.path().join("team.toml")).unwrap();
+    assert!(
+        file.contains("name = \"DOCS\"")
+            && file.contains("dir = \"/tmp\"")
+            && file.contains("every = \"1h\"")
+            && file.contains("mode = \"accept-edits\""),
+        "{file}"
+    );
+    until(&mut v, "the new lane", |v| v.rows().len() == 1);
+    assert_eq!(v.rows()[0].name, "DOCS");
+    assert!(v.title() == " team ", "the form is closed");
+}
+
+#[test]
+fn esc_in_the_questions_gives_them_up_without_writing_anything() {
+    let lab = Lab::new(None);
+    let mut v = TeamView::new(Instant::now());
+    settle(&mut v);
+    press(&mut v, 'n');
+    press(&mut v, 'D');
+    assert!(
+        matches!(v.key(KeyEvent::from(KeyCode::Esc), Instant::now()), ModalOut::Nothing),
+        "Esc ends the questions, not the window"
+    );
+    assert_eq!(text(&v), "no lanes yet: press n to create one");
+    assert!(!lab.dir.path().join("team.toml").exists());
 }
 
 #[test]

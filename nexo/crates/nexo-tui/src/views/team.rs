@@ -7,8 +7,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nexo_core::agent::AgentCommand;
+use nexo_core::config::Lane;
+use nexo_core::team::add::{self, FIELDS};
 use nexo_core::team::state::{self, LaneState};
 use nexo_core::team::{self, spawn, Cells, Started, Stopped};
 use ratatui::style::Modifier;
@@ -26,6 +28,8 @@ const WAITING: Duration = Duration::from_millis(300);
 const OPEN_WAIT: Duration = Duration::from_secs(60);
 /// A read that has not answered in this long is forgotten.
 const READ_GIVE_UP: Duration = Duration::from_secs(10);
+/// The one line the window shows when there are no lanes.
+const NO_LANES: &str = "no lanes yet: press n to create one";
 
 /// What one read of the disk found.
 #[derive(Debug, Clone, Default)]
@@ -39,17 +43,12 @@ pub struct Snapshot {
 /// Reads `team.toml` and every lane's state.
 pub fn read() -> Snapshot {
     let paused = state::paused();
-    let file = nexo_core::config::team_file();
-    if !file.exists() {
-        let note = format!("no lanes: create {} (an example is in docs/TEAM.md)", nexo_core::paths::shown(&file));
-        return Snapshot { note: Some(note), rows: Vec::new(), paused };
-    }
     match team::read_lanes() {
         Err(e) => Snapshot { note: Some(e), rows: Vec::new(), paused },
         Ok(read) => {
             let now = nexo_core::mailbox::now_ms();
             let rows = team::table(&read.team, now, &nexo_agent::budget::today(), nexo_agent::budget::local_offset());
-            let note = rows.is_empty().then(|| format!("no lanes in {}", nexo_core::paths::shown(&file)));
+            let note = rows.is_empty().then(|| NO_LANES.to_string());
             Snapshot { note, rows, paused }
         }
     }
@@ -77,6 +76,17 @@ pub struct TeamView {
     said: Option<String>,
     /// Starts a lane's runner: the detached `nexo team run <name>`; a test puts a stand-in here.
     starter: Starter,
+    /// The questions of a new lane, while they are being answered.
+    form: Option<Form>,
+}
+
+/// A new lane being asked about, one question at a time (the ones `nexo team add` asks).
+#[derive(Debug, Clone)]
+struct Form {
+    lane: Lane,
+    at: usize,
+    typed: String,
+    problem: Option<String>,
 }
 
 /// Starts the runner of a lane and gives its pid.
@@ -94,6 +104,7 @@ impl TeamView {
             wait: None,
             said: None,
             starter: spawn::runner,
+            form: None,
         }
     }
 
@@ -186,6 +197,10 @@ impl TeamView {
     }
 
     pub fn key(&mut self, key: KeyEvent, now: Instant) -> ModalOut {
+        if self.form.is_some() {
+            self.form_key(key);
+            return ModalOut::Nothing;
+        }
         let last = self.rows().len().saturating_sub(1);
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
@@ -197,6 +212,9 @@ impl TeamView {
                 self.said = None;
                 self.stale = true;
             }
+            KeyCode::Char('n') => {
+                self.form = Some(Form { lane: Lane::default(), at: 0, typed: String::new(), problem: None })
+            }
             KeyCode::Char('p') => self.pause(),
             KeyCode::Char('s') => self.start(),
             KeyCode::Char('x') => self.stop(),
@@ -204,6 +222,62 @@ impl TeamView {
             _ => {}
         }
         ModalOut::Nothing
+    }
+
+    /// A key while a new lane is being asked about: typing, Enter for the answer, Esc to give up.
+    fn form_key(&mut self, key: KeyEvent) {
+        let Some(form) = self.form.as_mut() else { return };
+        match key.code {
+            KeyCode::Esc => self.form = None,
+            KeyCode::Backspace => {
+                form.typed.pop();
+                form.problem = None;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                form.typed.push(c);
+                form.problem = None;
+            }
+            KeyCode::Enter => self.answer(),
+            _ => {}
+        }
+    }
+
+    /// Takes the typed answer to the question in view: next question, or the lane written to `team.toml`.
+    fn answer(&mut self) {
+        let Some(form) = self.form.as_mut() else { return };
+        let field = FIELDS[form.at];
+        let existing = match team::read_lanes() {
+            Ok(f) => f.team,
+            Err(e) => {
+                form.problem = Some(e);
+                return;
+            }
+        };
+        let mut lane = form.lane.clone();
+        add::set(&mut lane, field, &form.typed);
+        if let Some(p) = add::problem(&existing, &lane, field) {
+            form.problem = Some(p);
+            return;
+        }
+        form.lane = lane;
+        form.typed.clear();
+        form.at += 1;
+        if form.at < FIELDS.len() {
+            return;
+        }
+        let lane = form.lane.clone();
+        match add::add(&lane) {
+            Ok(()) => {
+                self.said = Some(format!("added {}: press s to start it", lane.name));
+                self.form = None;
+                self.selected = self.rows().len();
+                self.stale = true;
+            }
+            Err(e) => {
+                form.at = 0;
+                form.problem = Some(e);
+            }
+        }
     }
 
     fn pause(&mut self) {
@@ -285,6 +359,9 @@ impl TeamView {
     }
 
     pub fn title(&self) -> String {
+        if self.form.is_some() {
+            return " team · new lane ".into();
+        }
         match (&self.snap, self.paused()) {
             (Some(_), true) => " team · paused ".into(),
             _ => " team ".into(),
@@ -293,10 +370,27 @@ impl TeamView {
 
     /// The keys, in the row pinned under the body; the longest set that fits `w`.
     pub fn keys(&self, w: usize, theme: &Theme) -> Line<'static> {
+        if self.form.is_some() {
+            let key = |k: &str, what: &str| {
+                [Span::styled(k.to_string(), theme.style(theme.accent)), Span::styled(format!(" {what}"), theme.dim())]
+            };
+            let mut spans = key("Enter", "next").to_vec();
+            spans.push(Span::styled(" · ", theme.dim2()));
+            spans.extend(key("Esc", "cancel"));
+            return Line::from(spans);
+        }
         let pause = if self.paused() { "resume" } else { "pause" };
-        let long: Vec<(&str, &str)> =
-            vec![("o", "open"), ("s", "start"), ("x", "stop"), ("p", pause), ("r", "reload"), ("Esc", "close")];
-        let short: Vec<(&str, &str)> = vec![("o", ""), ("s", ""), ("x", ""), ("p", ""), ("r", ""), ("Esc", "")];
+        let long: Vec<(&str, &str)> = vec![
+            ("o", "open"),
+            ("s", "start"),
+            ("x", "stop"),
+            ("n", "new"),
+            ("p", pause),
+            ("r", "reload"),
+            ("Esc", "close"),
+        ];
+        let short: Vec<(&str, &str)> =
+            vec![("o", ""), ("s", ""), ("x", ""), ("n", ""), ("p", ""), ("r", ""), ("Esc", "")];
         for set in [long, short] {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (k, what) in set {
@@ -317,6 +411,9 @@ impl TeamView {
 
     /// The body at `w` columns: the lanes, or the one line that says why there are none; then what the last key did.
     pub fn lines(&self, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+        if let Some(form) = &self.form {
+            return form_lines(form, w, theme);
+        }
         let Some(snap) = &self.snap else {
             return vec![Line::from(Span::styled("reading…", theme.dim()))];
         };
@@ -332,6 +429,33 @@ impl TeamView {
         }
         lines
     }
+}
+
+/// The question in view: which of the six, what is typed (or the default it stands for), what goes with it, and
+/// why the last answer was not taken. Always five rows, so the window keeps its size.
+fn form_lines(form: &Form, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let field = FIELDS[form.at];
+    let shown = if form.typed.is_empty() {
+        match field.default() {
+            Some(d) => Span::styled(format!("{d} (default)"), theme.dim()),
+            None => Span::raw(""),
+        }
+    } else {
+        Span::raw(form.typed.clone())
+    };
+    let ask = Line::from(vec![
+        Span::styled(format!("{}: ", field.label()), theme.style(theme.accent)),
+        shown,
+        Span::raw("▏"),
+    ]);
+    let problem = form.problem.as_deref().map(|p| truncate(p, w)).unwrap_or_default();
+    vec![
+        Line::from(Span::styled(format!("new lane · question {} of {}", form.at + 1, FIELDS.len()), theme.dim())),
+        Line::default(),
+        ask,
+        Line::from(Span::styled(truncate(field.hint(), w), theme.dim())),
+        Line::from(Span::styled(problem, theme.style(theme.error))),
+    ]
 }
 
 fn dimmed(theme: &Theme) -> impl Fn(Line<'static>) -> Line<'static> + '_ {
@@ -385,7 +509,7 @@ impl TeamView {
 
     /// What makes this dialog the same dialog from frame to frame: the shape of what it shows.
     pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
-        std::hash::Hash::hash(&(14u8, self.snap.is_some(), self.rows().len()), h)
+        std::hash::Hash::hash(&(14u8, self.snap.is_some(), self.rows().len(), self.form.is_some()), h)
     }
 }
 
@@ -465,10 +589,10 @@ mod tests {
         let text = |l: Line<'static>| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
         let mut v = view(vec![lane("A", false, None)], t0);
         let long = text(v.keys(80, &theme));
-        assert_eq!(long, "o open · s start · x stop · p pause · r reload · Esc close");
+        assert_eq!(long, "o open · s start · x stop · n new · p pause · r reload · Esc close");
         v.snap.as_mut().unwrap().paused = true;
         assert!(text(v.keys(80, &theme)).contains("p resume"));
-        assert_eq!(text(v.keys(24, &theme)), "o · s · x · p · r · Esc");
+        assert_eq!(text(v.keys(27, &theme)), "o · s · x · n · p · r · Esc");
         assert_eq!(text(v.keys(10, &theme)), "Esc close");
     }
 }

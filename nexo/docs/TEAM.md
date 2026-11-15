@@ -4,6 +4,19 @@ A lane is a named session that runs on its own in the background: its own folder
 and a routine it runs on a clock. Between rounds it answers mail from your other sessions, and it keeps one
 session for good, so every round sees what the previous ones did.
 
+## Making a lane
+
+`nexo team add` asks one question at a time (name, folder, what the lane should do, how often, model,
+permission mode), each with its default, and writes `team.toml` for you, keeping whatever is already in it.
+For scripts, give the answers as flags:
+
+```
+nexo team add DOCS --dir ~/work/app --routine "Check the open issues." --every 1h [--model P/M] [--mode plan] [--max-spend-day 2]
+```
+
+It ends with `added NAME; start it with: nexo team start NAME`. In the interface, `/team` then `n` asks the same
+questions in the window.
+
 ## `team.toml`
 
 Lanes live in `team.toml`, next to `config.toml`:
@@ -27,12 +40,20 @@ A key nexo does not read is reported, with the key it most looks like.
 
 | Command | What it does |
 | --- | --- |
+| `nexo team add [NAME]` | adds a lane to `team.toml` (creating it); questions on a terminal, `--dir --every --routine --model --mode --max-spend-day` otherwise |
 | `nexo team status` | one line per lane: running a round, idle until HH:MM, paused, held, stopped or failed (and why); the last round's result and age; spend today; its session |
 | `nexo team start [NAME...]` | starts the lanes (all of them by default) in the background; held lanes and lanes already running are left alone |
 | `nexo team stop [NAME...] [--now]` | the runner ends after the round in flight; `--now` ends it at once |
 | `nexo team pause` / `resume` | no lane starts a round while paused; mail waits too |
 | `nexo team hold NAME` / `unhold NAME` | `start` skips a held lane |
 | `nexo team open NAME` | stops the lane at its next idle point and opens its session in the interface; `nexo team start NAME` puts it back |
+
+## `/team`
+
+`/team` shows the same table as `nexo team status` in a window: Up and Down pick a lane, then `o` stops its runner at the
+next idle point and switches this session to the lane's (as `/resume` does, waiting up to 60 s without freezing the
+interface), `s` starts it, `x` stops it, `n` adds a lane, `p` pauses or resumes all lanes, `r` reads again, Esc closes. It
+starts the same detached `nexo team run NAME` and ends only a recorded process whose command line matches.
 
 ## How a lane runs
 

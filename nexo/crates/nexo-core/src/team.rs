@@ -2,6 +2,7 @@
 //! ([`state`]), starting its runner detached ([`spawn`]), the table that says how each lane stands, and the
 //! few actions (start, stop, a marker file) that both interfaces do the same way.
 
+pub mod add;
 pub mod spawn;
 pub mod state;
 
@@ -10,14 +11,12 @@ use std::path::{Path, PathBuf};
 use crate::config::{team_file, Lane, TeamConfig};
 use state::LaneState;
 
-/// The lanes of `team.toml`; a file that does not parse is an error. The keys nexo does not read are in `unread`.
+/// The lanes of `team.toml` (none when there is no file); a file that does not parse is an error. The keys nexo does not read are in `unread`.
 pub fn read_lanes() -> Result<crate::config::TeamFile, String> {
     let f = team_file();
     let text = match std::fs::read_to_string(&f) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("no lanes: {} does not exist (see docs/TEAM.md)", f.display()))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(crate::config::TeamFile::default()),
         Err(e) => return Err(format!("cannot read {}: {e}", f.display())),
     };
     TeamConfig::parse(&text).map_err(|e| format!("{}: {e}", f.display()))
@@ -53,7 +52,8 @@ pub fn age(ms: i64) -> String {
 }
 
 /// What a lane is doing, as `status` says it.
-pub fn state_word(name: &str, st: &LaneState, alive: bool, offset: Option<time::UtcOffset>) -> String {
+/// `clocked`: the lane has an `every`, so "mail only" is never its word.
+pub fn state_word(name: &str, st: &LaneState, alive: bool, clocked: bool, offset: Option<time::UtcOffset>) -> String {
     if !alive {
         return match (st.state.as_str(), &st.why) {
             ("failed", Some(why)) => format!("failed: {why}"),
@@ -65,8 +65,11 @@ pub fn state_word(name: &str, st: &LaneState, alive: bool, offset: Option<time::
     match st.state.as_str() {
         "running" => "running a round".into(),
         _ if state::paused() => "paused".into(),
+        // `start` has recorded the process but the runner has not written its own state yet
+        _ if st.started.is_none() => "starting".into(),
         _ => match st.next_round {
             Some(at) => format!("idle until {}", clock(at, offset)),
+            None if clocked => "idle".into(),
             None => "idle (mail only)".into(),
         },
     }
@@ -87,7 +90,15 @@ pub struct Cells {
 }
 
 /// The cells of lane `name` from its state, `now` (ms) and `today` (as the spend file keys it).
-pub fn cells(name: &str, st: &LaneState, alive: bool, now: i64, today: &str, offset: Option<time::UtcOffset>) -> Cells {
+pub fn cells(
+    name: &str,
+    st: &LaneState,
+    alive: bool,
+    clocked: bool,
+    now: i64,
+    today: &str,
+    offset: Option<time::UtcOffset>,
+) -> Cells {
     let last = match &st.last_round {
         Some(r) => format!("last {} {} ago", r.result, age(now - r.at)),
         None => "no round yet".into(),
@@ -95,7 +106,7 @@ pub fn cells(name: &str, st: &LaneState, alive: bool, now: i64, today: &str, off
     Cells {
         name: name.to_string(),
         alive,
-        state: state_word(name, st, alive, offset),
+        state: state_word(name, st, alive, clocked, offset),
         last,
         spend: st.spent_on(today),
         session: st.session_id.clone(),
@@ -108,7 +119,7 @@ pub fn table(team: &TeamConfig, now: i64, today: &str, offset: Option<time::UtcO
         .iter()
         .map(|l| {
             let st = LaneState::load(&l.name);
-            cells(&l.name, &st, st.live_pid(&l.name).is_some(), now, today, offset)
+            cells(&l.name, &st, st.live_pid(&l.name).is_some(), l.every.is_some(), now, today, offset)
         })
         .collect()
 }
@@ -210,7 +221,7 @@ mod tests {
     #[test]
     fn the_status_line_says_what_the_lane_does_and_spent() {
         let line = |name: &str, st: &LaneState, alive, now, today: &str| {
-            status_line(&cells(name, st, alive, now, today, None))
+            status_line(&cells(name, st, alive, false, now, today, None))
         };
         let mut st = LaneState { session_id: Some("s-1".into()), ..Default::default() };
         st.spend("2026-11-15", 0.13);
@@ -221,6 +232,7 @@ mod tests {
         assert!(l.contains("last ok 3m ago") && l.contains("$0.13 today") && l.ends_with("s-1"), "{l}");
         st.state = "idle".into();
         st.next_round = None;
+        st.started = Some(1_000);
         assert!(line("W", &st, true, 0, "x").contains("idle (mail only)"));
         st.state = "failed".into();
         st.why = Some("bad key".into());
@@ -228,6 +240,28 @@ mod tests {
         assert!(l.contains("failed: bad key") && l.contains("$0.00 today"), "{l}");
         st.state = "stopped".into();
         assert!(line("W", &st, false, 0, "x").contains("stopped"));
+    }
+
+    #[test]
+    fn a_lane_just_started_is_starting_and_mail_only_is_only_for_a_lane_without_a_clock() {
+        // the marker files are looked for in a data folder of this test's own, never the person's
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_DATA_DIR", dir.path());
+        let word = |st: &LaneState, clocked| state_word("T", st, true, clocked, None);
+        // what `start` leaves before the runner writes anything: a pid, "idle", no start time, no round planned
+        let mut st = LaneState { pid: Some(1), state: "idle".into(), ..Default::default() };
+        assert_eq!(word(&st, true), "starting");
+        assert_eq!(word(&st, false), "starting");
+        // the runner is up: with a clock the next round is planned, and a lane between plans is idle, not mail only
+        st.started = Some(1_000);
+        st.next_round = Some(3_600_000);
+        assert!(word(&st, true).starts_with("idle until "), "{}", word(&st, true));
+        st.next_round = None;
+        assert_eq!(word(&st, true), "idle");
+        assert_eq!(word(&st, false), "idle (mail only)");
+        std::env::remove_var("NEXO_DATA_DIR");
     }
 
     #[test]

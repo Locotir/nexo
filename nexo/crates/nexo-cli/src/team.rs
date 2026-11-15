@@ -5,6 +5,7 @@
 
 mod runner;
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::time::Duration;
 
 use clap::Subcommand;
@@ -14,6 +15,29 @@ use nexo_core::team::{self, spawn, Started, Stopped};
 
 #[derive(Subcommand, Debug)]
 pub enum TeamCmd {
+    /// Add a lane to team.toml (creating it): asks one question at a time on a terminal, or takes flags.
+    Add {
+        /// The lane's name (letters, digits, `-`, `_`).
+        name: Option<String>,
+        /// The folder it works in (default: this folder).
+        #[arg(long)]
+        dir: Option<String>,
+        /// A round every 30s, 15m, 2h; none: mail only.
+        #[arg(long)]
+        every: Option<String>,
+        /// What the lane does each round.
+        #[arg(long)]
+        routine: Option<String>,
+        /// provider/model; none: your default.
+        #[arg(long)]
+        model: Option<String>,
+        /// ask, accept-edits, plan, yolo or read-only (default: accept-edits).
+        #[arg(long)]
+        mode: Option<String>,
+        /// Dollars the lane may spend a day.
+        #[arg(long)]
+        max_spend_day: Option<f64>,
+    },
     /// One line per lane: its state, last round, spend today and session.
     Status,
     /// Start every lane (or the ones named) that is not held, paused or running, in the background.
@@ -57,6 +81,10 @@ fn chosen<'a>(team: &'a TeamConfig, names: &[String]) -> Result<Vec<&'a Lane>, S
 }
 
 pub async fn run(cmd: &TeamCmd) -> i32 {
+    if let TeamCmd::Add { name, dir, every, routine, model, mode, max_spend_day } = cmd {
+        let given = Given { name, dir, every, routine, model, mode, max_spend_day: *max_spend_day };
+        return add_lane(given, std::io::stdin().is_terminal());
+    }
     let team = match lanes() {
         Ok(t) => t,
         Err(e) => {
@@ -65,7 +93,9 @@ pub async fn run(cmd: &TeamCmd) -> i32 {
         }
     };
     match cmd {
+        TeamCmd::Add { .. } => unreachable!("handled before the lanes are read"),
         TeamCmd::Status => status(&team),
+        TeamCmd::Start { names } if team.lane.is_empty() => no_lanes_yet(1),
         TeamCmd::Start { names } => with_lanes(&team, names, start),
         TeamCmd::Stop { names, now } => with_lanes(&team, names, |l| stop(l, *now)),
         TeamCmd::Pause => {
@@ -163,7 +193,7 @@ fn status(team: &TeamConfig) -> i32 {
     let now = nexo_core::mailbox::now_ms();
     let today = nexo_agent::budget::today();
     if team.lane.is_empty() {
-        println!("no lanes in {}", nexo_core::config::team_file().display());
+        return no_lanes_yet(0);
     }
     for c in team::table(team, now, &today, nexo_agent::budget::local_offset()) {
         println!("{}", team::status_line(&c));
@@ -214,4 +244,159 @@ async fn open(lane: &Lane) -> i32 {
     }
     println!("nexo team start {name} to put it back in the background");
     0
+}
+
+/// What a person with no lanes is told, and how the command ends (`code`).
+fn no_lanes_yet(code: i32) -> i32 {
+    println!("{}", team::add::no_lanes_help(&nexo_core::config::team_file()));
+    code
+}
+
+/// What `nexo team add` was given on the command line.
+struct Given<'a> {
+    name: &'a Option<String>,
+    dir: &'a Option<String>,
+    every: &'a Option<String>,
+    routine: &'a Option<String>,
+    model: &'a Option<String>,
+    mode: &'a Option<String>,
+    max_spend_day: Option<f64>,
+}
+
+/// `nexo team add`: the lane from the flags, and from questions for whatever the flags left out when `tty`.
+fn add_lane(given: Given, tty: bool) -> i32 {
+    let mut lane = Lane { max_spend_day: given.max_spend_day, ..Lane::default() };
+    let flags = [
+        (team::add::Field::Name, given.name),
+        (team::add::Field::Dir, given.dir),
+        (team::add::Field::Routine, given.routine),
+        (team::add::Field::Every, given.every),
+        (team::add::Field::Model, given.model),
+        (team::add::Field::Mode, given.mode),
+    ];
+    let existing = match team::read_lanes() {
+        Ok(f) => f.team,
+        Err(e) => {
+            eprintln!("nexo team: {e}");
+            return 2;
+        }
+    };
+    let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
+    match fill(&mut lane, &flags, &existing, tty, &mut stdin.lock(), &mut stdout.lock()) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("nexo team: {e}");
+            return 2;
+        }
+    }
+    if let Err(e) = team::add::add(&lane) {
+        eprintln!("nexo team: {e}");
+        return 2;
+    }
+    if !team::lane_dir(&lane).is_dir() {
+        eprintln!("nexo team: note: {} does not exist yet", team::lane_dir(&lane).display());
+    }
+    println!("added {}; start it with: nexo team start {}", lane.name, lane.name);
+    0
+}
+
+/// Fills `lane` from the flags, and on a terminal asks the rest one question at a time (an empty answer takes
+/// the default; one that is refused is asked again). Off a terminal the flags must be enough.
+fn fill(
+    lane: &mut Lane,
+    flags: &[(team::add::Field, &Option<String>)],
+    existing: &TeamConfig,
+    tty: bool,
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+) -> Result<(), String> {
+    for (field, flag) in flags {
+        let field = *field;
+        if let Some(a) = flag {
+            team::add::set(lane, field, a);
+            if let Some(p) = team::add::problem(existing, lane, field) {
+                return Err(format!("{}: {p}", field.label()));
+            }
+            continue;
+        }
+        if !tty {
+            // nobody to ask: an answer with a default or none needed is left to it, a required one is missing
+            if field.required() {
+                return Err(format!(
+                    "{:?} is needed: give it on the command line (the name as an argument, the routine as --routine) or run this in a terminal",
+                    field.label()
+                ));
+            }
+            team::add::set(lane, field, "");
+            continue;
+        }
+        loop {
+            let default = field.default().map(|d| format!(" [{d}]")).unwrap_or_default();
+            let _ = write!(out, "{} ({}){default}: ", field.label(), field.hint());
+            let _ = out.flush();
+            let mut line = String::new();
+            if input.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                return Err("no answer: input ended before the lane was complete; nothing was written".into());
+            }
+            let mut tried = lane.clone();
+            team::add::set(&mut tried, field, &line);
+            match team::add::problem(existing, &tried, field) {
+                None => {
+                    *lane = tried;
+                    break;
+                }
+                Some(p) => {
+                    let _ = writeln!(out, "  {p}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use team::add::Field;
+
+    fn none() -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn the_questions_come_one_at_a_time_each_with_its_default_and_a_refused_answer_is_asked_again() {
+        let mut lane = Lane::default();
+        let flags = [
+            (Field::Name, &none()),
+            (Field::Dir, &none()),
+            (Field::Routine, &none()),
+            (Field::Every, &none()),
+            (Field::Model, &none()),
+            (Field::Mode, &none()),
+        ];
+        // a name with a space is refused, "soon" is no clock, an empty folder, model and mode take their defaults
+        let mut input: &[u8] = b"my lane\nDOCS\n\nTidy the docs.\nsoon\n15m\n\n\n";
+        let mut out = Vec::new();
+        fill(&mut lane, &flags, &TeamConfig::default(), true, &mut input, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert_eq!(said.matches("Name (").count(), 2, "{said}");
+        assert!(said.contains("letters, digits"), "{said}");
+        assert!(said.contains("Folder (the folder it works in) ["), "the default is shown: {said}");
+        assert_eq!(said.matches("How often (").count(), 2, "{said}");
+        assert_eq!(
+            (lane.name.as_str(), lane.routine.as_deref(), lane.every.as_deref()),
+            ("DOCS", Some("Tidy the docs."), Some("15m"))
+        );
+        assert_eq!((lane.model.as_deref(), lane.mode.as_deref()), (None, Some("accept-edits")));
+        assert_eq!(lane.dir, std::env::current_dir().unwrap().display().to_string());
+    }
+
+    #[test]
+    fn off_a_terminal_the_flags_must_name_the_lane_and_its_routine() {
+        let mut lane = Lane::default();
+        let (n, r) = (Some("A".to_string()), none());
+        let flags = [(Field::Name, &n), (Field::Dir, &none()), (Field::Routine, &r)];
+        let e = fill(&mut lane, &flags, &TeamConfig::default(), false, &mut &b""[..], &mut Vec::new()).unwrap_err();
+        assert!(e.contains("What should the lane do\" is needed"), "{e}");
+    }
 }
