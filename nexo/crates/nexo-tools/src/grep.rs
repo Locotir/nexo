@@ -18,6 +18,9 @@ pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const TIME_CAP: Duration = Duration::from_secs(20);
 
 pub const DEFAULT_MAX_RESULTS: u64 = 200;
+/// One file shows at most this many matches by default: in recorded sessions 6 % of the files with hits
+/// held more than 20, and one such file could fill the whole answer while the others got nothing.
+pub const DEFAULT_MAX_PER_FILE: u64 = 20;
 const LINE_CHARS: usize = 300;
 /// A multi-line match shows at most this many of its lines.
 const MAX_SPAN_LINES: usize = 10;
@@ -37,7 +40,7 @@ impl Tool for Grep {
                           directory or in one file; gitignored and binary files are skipped. Returns \
                           `path:line: text` per match (with `context` lines around each when asked), or \
                           only the matching files with `files_only`. At most `max_results` matches \
-                          (default 200)."
+                          (default 200) and `max_per_file` per file (default 20); what was left is counted."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -49,6 +52,7 @@ impl Tool for Grep {
                     "context": {"type": "integer", "minimum": 0},
                     "files_only": {"type": "boolean"},
                     "max_results": {"type": "integer", "minimum": 1},
+                    "max_per_file": {"type": "integer", "minimum": 1},
                     "multiline": {"type": "boolean", "description": "Match across lines (`\\n` in the pattern, `.` also matches a newline)."}
                 },
                 "required": ["pattern"]
@@ -64,6 +68,7 @@ impl Tool for Grep {
                 ("context", "Lines around a match"),
                 ("files_only", "List files only"),
                 ("max_results", "Default 200"),
+                ("max_per_file", "Default 20"),
                 ("multiline", "Match across lines"),
             ],
         })
@@ -125,6 +130,7 @@ impl Tool for Grep {
         let context = int_arg(&args, "context").unwrap_or(0) as usize;
         let files_only = bool_arg(&args, "files_only");
         let max = int_arg(&args, "max_results").unwrap_or(DEFAULT_MAX_RESULTS).max(1) as usize;
+        let max_per_file = int_arg(&args, "max_per_file").unwrap_or(DEFAULT_MAX_PER_FILE).max(1) as usize;
         let cwd = ctx.cwd.clone();
         let root2 = root.clone();
         let joined = tokio::task::spawn_blocking(move || {
@@ -165,6 +171,10 @@ impl Tool for Grep {
             };
             let mut items: Vec<String> = Vec::new();
             let mut total = 0usize;
+            // matches shown, and the ones not shown (over `max_results` or `max_per_file`) with their files
+            let mut shown_total = 0usize;
+            let mut left = 0usize;
+            let mut left_files = 0usize;
             let mut hit_files = 0usize;
             let mut too_big = 0usize;
             let mut unreadable = 0usize;
@@ -195,6 +205,8 @@ impl Tool for Grep {
                 let lines: Vec<&str> = text.lines().collect();
                 let shown = display_path(&cwd, &f);
                 let mut file_hit = false;
+                let mut file_shown = 0usize;
+                let mut file_left = 0usize;
                 // the first and last line (0-based) of each match
                 let mut spans: Vec<(usize, usize)> = Vec::new();
                 if multiline {
@@ -227,9 +239,13 @@ impl Tool for Grep {
                         }
                         continue;
                     }
-                    if total > max {
+                    if shown_total >= max || file_shown >= max_per_file {
+                        left += 1;
+                        file_left += 1;
                         continue;
                     }
+                    shown_total += 1;
+                    file_shown += 1;
                     if context > 0 {
                         for (j, l) in lines.iter().enumerate().take(a).skip(a.saturating_sub(context)) {
                             items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
@@ -249,11 +265,18 @@ impl Tool for Grep {
                         items.push("--".into());
                     }
                 }
+                if file_left > 0 {
+                    left_files += 1;
+                    // a file past `max_results` shows nothing, so there is nothing to put the note under
+                    if file_shown > 0 {
+                        items.push(format!("… {file_left} more in this file"));
+                    }
+                }
             }
-            (items, total, cut, kept_out, hit_files, too_big, unreadable)
+            (items, total, left, left_files, cut, kept_out, hit_files, too_big, unreadable)
         })
         .await;
-        let Ok((items, total, cut, kept_out, hit_files, too_big, unreadable)) = joined else {
+        let Ok((items, total, left, left_files, cut, kept_out, hit_files, too_big, unreadable)) = joined else {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
         let mut content = if total == 0 {
@@ -262,12 +285,13 @@ impl Tool for Grep {
                 s.push_str(". Patterns are matched line by line; set `multiline: true` to match across lines.");
             }
             s
-        } else if !files_only && total > max {
+        } else if !files_only && left > 0 {
             format!(
-                "{}\n… {} more {} ({total} in all); narrow the pattern or the path",
+                "{}\n… {} more {} in {} ({total} in all); narrow the pattern or the path",
                 items.join("\n"),
-                total - max,
-                if total - max == 1 { "match" } else { "matches" }
+                left,
+                if left == 1 { "match" } else { "matches" },
+                nexo_core::count(left_files, "file")
             )
         } else if files_only {
             let mut s = format!(
@@ -352,7 +376,7 @@ mod tests {
         let out = Grep.run(json!({"pattern": "fn", "files_only": true, "case_insensitive": true}), &c).await;
         assert_eq!(out.content, "2 matches in 1 file\nsrc/a.rs");
         let out = Grep.run(json!({"pattern": "fn", "max_results": 1}), &c).await;
-        assert!(out.content.contains("1 more match ("), "{}", out.content);
+        assert!(out.content.contains("1 more match in 1 file (2 in all)"), "{}", out.content);
         let out = Grep.run(json!({"pattern": "beta", "path": "src/a.rs"}), &c).await;
         assert_eq!(out.content, "src/a.rs:3: fn beta() {}");
         assert!(Grep.run(json!({"pattern": "("}), &c).await.is_error);
@@ -408,5 +432,80 @@ mod tests {
         }
         let out = Grep.run(json!({"pattern": "hit", "files_only": true, "max_results": 2}), &c).await;
         assert_eq!(out.content, "5 matches in 5 files\nf0.txt\nf1.txt\n… 3 more files", "{}", out.content);
+    }
+
+    /// Three files with 30, 25 and 2 matching lines (`hit 0` ...), so one file can crowd out the others.
+    fn crowded() -> (tempfile::TempDir, ToolContext) {
+        let d = tempfile::tempdir().unwrap();
+        for (name, n) in [("a.txt", 30), ("b.txt", 25), ("c.txt", 2)] {
+            let body: String = (0..n).map(|i| format!("hit {i}\n")).collect();
+            std::fs::write(d.path().join(name), body).unwrap();
+        }
+        let c = ToolContext::new(d.path().to_path_buf());
+        (d, c)
+    }
+
+    #[tokio::test]
+    async fn one_file_shows_at_most_twenty_matches_and_says_how_many_it_left() {
+        let (_d, c) = crowded();
+        let out = Grep.run(json!({"pattern": "hit"}), &c).await;
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.iter().filter(|l| l.starts_with("a.txt:")).count(), 20, "{}", out.content);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("b.txt:")).count(), 20, "{}", out.content);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("c.txt:")).count(), 2, "{}", out.content);
+        let a_note = lines.iter().position(|l| *l == "… 10 more in this file").unwrap();
+        assert_eq!(lines[a_note - 1], "a.txt:20: hit 19", "the note sits under its own file");
+        let b_note = lines.iter().position(|l| *l == "… 5 more in this file").unwrap();
+        assert_eq!(lines[b_note - 1], "b.txt:20: hit 19");
+        assert_eq!(
+            *lines.last().unwrap(),
+            "… 15 more matches in 2 files (57 in all); narrow the pattern or the path",
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn max_per_file_raises_or_lowers_the_cap_per_file() {
+        let (_d, c) = crowded();
+        let out = Grep.run(json!({"pattern": "hit", "max_per_file": 30}), &c).await;
+        assert_eq!(out.content.lines().filter(|l| l.starts_with("a.txt:")).count(), 30, "{}", out.content);
+        assert!(!out.content.contains("more"), "{}", out.content);
+        let out = Grep.run(json!({"pattern": "hit", "max_per_file": 100}), &c).await;
+        assert!(!out.content.contains("more"), "nothing is left when the cap is above every file: {}", out.content);
+        assert_eq!(out.content.lines().count(), 57);
+        let out = Grep.run(json!({"pattern": "hit", "max_per_file": 1}), &c).await;
+        assert_eq!(
+            out.content,
+            "a.txt:1: hit 0\n… 29 more in this file\nb.txt:1: hit 0\n… 24 more in this file\nc.txt:1: hit 0\n… 1 more in this file\n… 54 more matches in 3 files (57 in all); narrow the pattern or the path"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_results_counts_the_files_it_left_without_a_note_under_a_file_it_did_not_show() {
+        let (_d, c) = crowded();
+        let out = Grep.run(json!({"pattern": "hit", "max_results": 22}), &c).await;
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.iter().filter(|l| l.starts_with("a.txt:")).count(), 20, "{}", out.content);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("b.txt:")).count(), 2, "{}", out.content);
+        assert!(!lines.iter().any(|l| l.starts_with("c.txt:")), "{}", out.content);
+        assert_eq!(
+            *lines.last().unwrap(),
+            "… 35 more matches in 3 files (57 in all); narrow the pattern or the path",
+            "{}",
+            out.content
+        );
+        assert!(
+            lines.contains(&"… 10 more in this file") && lines.contains(&"… 23 more in this file"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn files_only_ignores_the_per_file_cap() {
+        let (_d, c) = crowded();
+        let out = Grep.run(json!({"pattern": "hit", "files_only": true, "max_per_file": 1}), &c).await;
+        assert_eq!(out.content, "57 matches in 3 files\na.txt\nb.txt\nc.txt");
     }
 }
