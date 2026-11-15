@@ -284,6 +284,30 @@ impl SentView {
     }
 }
 
+impl SentView {
+    /// What the dialog draws for this view: title, body lines and the rows pinned under it.
+    pub(crate) fn modal_body(
+        &mut self,
+        inner_w: usize,
+        theme: &Theme,
+    ) -> (String, Vec<Line<'static>>, Vec<Line<'static>>) {
+        let lines = self.layout(inner_w, theme);
+        let pinned = self.pinned(inner_w, theme);
+        (self.title(), lines, pinned)
+    }
+
+    /// The scroll offset of the dialog's body of `body_len` lines shown in `body_h` rows.
+    pub(crate) fn modal_scroll(&mut self, body_h: usize, body_len: usize) -> usize {
+        self.scroll = self.scroll.min(body_len.saturating_sub(body_h));
+        self.scroll
+    }
+
+    /// What makes this dialog the same dialog from frame to frame.
+    pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
+        std::hash::Hash::hash(&12u8, h)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

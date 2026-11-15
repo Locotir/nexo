@@ -251,6 +251,34 @@ pub fn span(ms: i64) -> String {
     }
 }
 
+impl GoalView {
+    /// What the dialog draws for this view: title, body lines, the rows pinned under it and which
+    /// of them is the Resume button.
+    pub(crate) fn modal_body(
+        &self,
+        inner_w: usize,
+        theme: &Theme,
+        gfx: &crate::fx_goal::GoalFx,
+        now: std::time::Instant,
+    ) -> (String, Vec<Line<'static>>, Vec<Line<'static>>, Option<usize>) {
+        let (rows, button) = self.pinned(inner_w, theme);
+        let pinned = rows;
+        let goal_button = button;
+        (self.title(), self.lines_fx(inner_w, theme, nexo_core::mailbox::now_ms(), gfx, now), pinned, goal_button)
+    }
+
+    /// The scroll offset of the dialog's body of `body_len` lines shown in `body_h` rows.
+    pub(crate) fn modal_scroll(&mut self, body_h: usize, body_len: usize) -> usize {
+        self.scroll = self.scroll.min(body_len.saturating_sub(body_h));
+        self.scroll
+    }
+
+    /// What makes this dialog the same dialog from frame to frame.
+    pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
+        std::hash::Hash::hash(&(11u8, self.size_key()), h)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -208,3 +208,33 @@ fn detail(s: &McpServerInfo) -> String {
         }
     }
 }
+
+impl McpView {
+    /// What the dialog draws for this view: title, body lines, the rows pinned under it, the line
+    /// each server starts at and the one to keep in sight.
+    pub(crate) fn modal_body(
+        &self,
+        inner_w: usize,
+        theme: &Theme,
+    ) -> (String, Vec<Line<'static>>, Vec<Line<'static>>, Vec<usize>, usize) {
+        let (lines, starts, at) = self.lines(inner_w, theme);
+        let job_rows = starts;
+        let job_at = at;
+        let pinned = vec![Line::default(), self.keys(inner_w, theme)];
+        (self.title(), lines, pinned, job_rows, job_at)
+    }
+
+    /// The scroll offset of the dialog's body of `body_len` lines shown in `body_h` rows.
+    pub(crate) fn modal_scroll(&mut self, job_at: usize, body_h: usize, body_len: usize) -> usize {
+        // the selected server and its two lines stay in view
+        let end = job_at + 2;
+        self.scroll = end.saturating_sub(body_h);
+        self.scroll = self.scroll.min(body_len.saturating_sub(body_h));
+        self.scroll
+    }
+
+    /// What makes this dialog the same dialog from frame to frame.
+    pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
+        std::hash::Hash::hash(&(9u8, self.len()), h)
+    }
+}

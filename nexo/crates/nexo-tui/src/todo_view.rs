@@ -374,6 +374,56 @@ impl TodoView {
     }
 }
 
+impl TodoView {
+    /// What the dialog draws for this view: title, body lines, the rows pinned under it, where
+    /// each task starts and how long it is, the selected one, and the finished ones' header.
+    /// `animations` and `tick` are the app's switch and spinner frame.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn modal_body(
+        &mut self,
+        inner_w: usize,
+        theme: &Theme,
+        animations: bool,
+        tick: usize,
+        now: Instant,
+    ) -> (String, Vec<Line<'static>>, Vec<Line<'static>>, (usize, usize), Vec<(usize, usize)>, Option<usize>) {
+        let spinner = animations.then_some(tick);
+        let pulse = if spinner.is_some() { ((tick as f32 * 0.21).sin() + 1.0) / 2.0 } else { 0.0 };
+        let b = self.body(inner_w, theme, spinner, pulse, now);
+        let pinned = vec![Line::default(), self.keys(inner_w, theme)];
+        let todo_sel = b.starts.get(self.selected).copied().unwrap_or((0, 1));
+        let todo_rows = b.starts;
+        let todo_head = b.done_head;
+        (self.title(), b.lines, pinned, todo_sel, todo_rows, todo_head)
+    }
+
+    /// The scroll offset of the dialog's body of `body_len` lines shown in `body_h` rows;
+    /// `todo_sel` and `todo_rows` come from [`Self::modal_body`].
+    pub(crate) fn modal_scroll(
+        &mut self,
+        todo_sel: (usize, usize),
+        todo_rows: &[(usize, usize)],
+        body_h: usize,
+        body_len: usize,
+    ) -> usize {
+        // the selected task stays in view, headers above it too when there is room
+        let (at, len) = todo_sel;
+        let end = at + len;
+        let top = match self.selected.checked_sub(1).and_then(|p| todo_rows.get(p)) {
+            Some(&(s, l)) => s + l,
+            None => 0,
+        };
+        self.scroll = end.saturating_sub(body_h).min(top.min(at));
+        self.scroll = self.scroll.min(body_len.saturating_sub(body_h));
+        self.scroll
+    }
+
+    /// What makes this dialog the same dialog from frame to frame.
+    pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
+        std::hash::Hash::hash(&(8u8, self.size_key(), self.natural_width()), h)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

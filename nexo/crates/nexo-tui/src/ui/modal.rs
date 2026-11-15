@@ -141,43 +141,41 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Modal::Help { .. } => (" help ".to_string(), Modal::help_lines(&theme, inner_w), None),
         Modal::Jobs(v) => {
-            let (lines, starts, at) = v.lines(inner_w, &theme);
-            job_rows = starts;
-            job_at = at;
-            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
-            (v.title(), lines, None)
+            let title;
+            let lines;
+            (title, lines, pinned, job_rows, job_at) = v.modal_body(inner_w, &theme);
+            (title, lines, None)
         }
         Modal::Mcp(v) => {
-            let (lines, starts, at) = v.lines(inner_w, &theme);
-            job_rows = starts;
-            job_at = at;
-            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
-            (v.title(), lines, None)
+            let title;
+            let lines;
+            (title, lines, pinned, job_rows, job_at) = v.modal_body(inner_w, &theme);
+            (title, lines, None)
         }
         Modal::Chrome(v) => {
-            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
-            (v.title(), v.lines(inner_w, &theme), None)
+            let (title, lines, rows) = v.modal_body(inner_w, &theme);
+            pinned = rows;
+            (title, lines, None)
         }
         Modal::Todo(v) => {
-            let spinner = app.opts.animations.then_some(app.spinner);
-            let pulse = if spinner.is_some() { ((app.spinner as f32 * 0.21).sin() + 1.0) / 2.0 } else { 0.0 };
-            let b = v.body(inner_w, &theme, spinner, pulse, now);
-            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
-            todo_sel = b.starts.get(v.selected).copied().unwrap_or((0, 1));
-            todo_rows = b.starts;
-            todo_head = b.done_head;
-            (v.title(), b.lines, None)
+            let (title, lines, rows, sel, starts, head) =
+                v.modal_body(inner_w, &theme, app.opts.animations, app.spinner, now);
+            pinned = rows;
+            todo_sel = sel;
+            todo_rows = starts;
+            todo_head = head;
+            (title, lines, None)
         }
         Modal::Goal(v) => {
-            let (rows, button) = v.pinned(inner_w, &theme);
+            let (title, lines, rows, button) = v.modal_body(inner_w, &theme, &gfx, now);
             pinned = rows;
             goal_button = button;
-            (v.title(), v.lines_fx(inner_w, &theme, nexo_core::mailbox::now_ms(), &gfx, now), None)
+            (title, lines, None)
         }
         Modal::Sent(v) => {
-            let lines = v.layout(inner_w, &theme);
-            pinned = v.pinned(inner_w, &theme);
-            (v.title(), lines, None)
+            let (title, lines, rows) = v.modal_body(inner_w, &theme);
+            pinned = rows;
+            (title, lines, None)
         }
         Modal::Trust(t) => {
             let (lines, rows) = trust_rows(t, inner_w, &theme);
@@ -236,46 +234,12 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             *scroll = (*scroll).min(body.len().saturating_sub(body_h));
             *scroll
         }
-        Modal::Jobs(v) => {
-            if !v.detail {
-                // the selected job and its lines stay in view
-                let end = job_at + 1 + 2;
-                v.scroll = end.saturating_sub(body_h);
-            }
-            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
-            v.scroll
-        }
-        Modal::Mcp(v) => {
-            // the selected server and its two lines stay in view
-            let end = job_at + 2;
-            v.scroll = end.saturating_sub(body_h);
-            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
-            v.scroll
-        }
-        Modal::Chrome(v) => {
-            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
-            v.scroll
-        }
-        Modal::Todo(v) => {
-            // the selected task stays in view, headers above it too when there is room
-            let (at, len) = todo_sel;
-            let end = at + len;
-            let top = match v.selected.checked_sub(1).and_then(|p| todo_rows.get(p)) {
-                Some(&(s, l)) => s + l,
-                None => 0,
-            };
-            v.scroll = end.saturating_sub(body_h).min(top.min(at));
-            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
-            v.scroll
-        }
-        Modal::Goal(v) => {
-            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
-            v.scroll
-        }
-        Modal::Sent(v) => {
-            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
-            v.scroll
-        }
+        Modal::Jobs(v) => v.modal_scroll(job_at, body_h, body.len()),
+        Modal::Mcp(v) => v.modal_scroll(job_at, body_h, body.len()),
+        Modal::Chrome(v) => v.modal_scroll(body_h, body.len()),
+        Modal::Todo(v) => v.modal_scroll(todo_sel, &todo_rows, body_h, body.len()),
+        Modal::Goal(v) => v.modal_scroll(body_h, body.len()),
+        Modal::Sent(v) => v.modal_scroll(body_h, body.len()),
         Modal::Trust(_) => 0,
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {

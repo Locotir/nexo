@@ -79,13 +79,13 @@ pub fn modal_key(m: &Modal) -> u64 {
         Modal::Setup(s) => (4u8, format!("{:?}", s.step)).hash(&mut h),
         Modal::Info(_) => 5u8.hash(&mut h),
         Modal::Agents(v) => (6u8, v.size_key()).hash(&mut h),
-        Modal::Jobs(_) => 7u8.hash(&mut h),
-        Modal::Todo(v) => (8u8, v.size_key(), v.natural_width()).hash(&mut h),
-        Modal::Mcp(v) => (9u8, v.len()).hash(&mut h),
-        Modal::Goal(v) => (11u8, v.size_key()).hash(&mut h),
-        Modal::Sent(_) => 12u8.hash(&mut h),
+        Modal::Jobs(v) => v.size_hash(&mut h),
+        Modal::Todo(v) => v.size_hash(&mut h),
+        Modal::Mcp(v) => v.size_hash(&mut h),
+        Modal::Goal(v) => v.size_hash(&mut h),
+        Modal::Sent(v) => v.size_hash(&mut h),
         Modal::Trust(_) => 10u8.hash(&mut h),
-        Modal::Chrome(v) => (13u8, v.size_key()).hash(&mut h),
+        Modal::Chrome(v) => v.size_hash(&mut h),
     }
     h.finish()
 }
