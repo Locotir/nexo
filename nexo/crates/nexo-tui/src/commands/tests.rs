@@ -195,7 +195,7 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         assert!(lookup(old).is_some(), "/{old} no longer resolves");
         assert!(COMMANDS.iter().all(|s| s.name != old), "/{old} is a menu command");
     }
-    assert_eq!(COMMANDS.len(), 49, "the menu has grown or shrunk: update this on purpose");
+    assert_eq!(COMMANDS.len(), 50, "the menu has grown or shrunk: update this on purpose");
     for old in ["provider", "keys", "config", "yolo"] {
         assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
     }
@@ -233,6 +233,14 @@ fn chrome_opens_the_browser_window_and_is_listed() {
     assert_eq!(parse("/chrome"), Some(Command::Chrome));
     assert_eq!(parse("/browser"), Some(Command::Chrome));
     let s = lookup("chrome").expect("a listed command");
+    assert!(!s.description.is_empty(), "the menu and /help show its line");
+}
+
+#[test]
+fn team_opens_the_lanes_window_and_is_listed() {
+    assert_eq!(parse("/team"), Some(Command::Team));
+    assert_eq!(parse("/lanes"), Some(Command::Team));
+    let s = lookup("team").expect("a listed command");
     assert!(!s.description.is_empty(), "the menu and /help show its line");
 }
 
@@ -278,7 +286,7 @@ session/fork session/rewind session/undo session/rename session/msg session/expo
 model/logout model/fast model/pricing model/prompt model/memory model/budget \
 context and tools/context context and tools/sent context and tools/cost context and tools/tools context and tools/hooks \
 context and tools/mcp context and tools/chrome context and tools/skills context and tools/plugins context and tools/jobs \
-context and tools/panel context and tools/todo context and tools/diff context and tools/shared-memory context and tools/init \
+context and tools/panel context and tools/team context and tools/todo context and tools/diff context and tools/shared-memory context and tools/init \
 context and tools/review context and tools/commit context and tools/pr context and tools/status \
 settings/settings settings/sandbox settings/add-dir settings/theme \
 nexo/doctor nexo/copy nexo/quit";

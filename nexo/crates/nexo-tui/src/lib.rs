@@ -86,6 +86,7 @@ pub use views::goal as goal_view;
 pub use views::jobs as jobs_view;
 pub use views::mcp as mcp_view;
 pub use views::sent as sent_view;
+pub use views::team as team_view;
 pub use views::todo as todo_view;
 
 /// What the binary knows when it starts the interface.

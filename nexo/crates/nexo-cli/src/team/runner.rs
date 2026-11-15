@@ -13,8 +13,8 @@ use nexo_core::config::Lane;
 use nexo_core::mailbox::{now_ms, Mailbox};
 use nexo_core::permission::PermissionMode;
 
-use nexo_core::team::state::{self, LaneState, Round};
 use crate::setup;
+use nexo_core::team::state::{self, LaneState, Round};
 
 /// Failed rounds in a row that end the runner.
 const FAILURES_MAX: u32 = 3;

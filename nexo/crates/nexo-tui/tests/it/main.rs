@@ -42,6 +42,7 @@ mod status_label;
 mod statusline;
 mod stream_effects;
 mod suggestion_view;
+mod team_panel;
 mod timestamps;
 mod todo_chip;
 mod todo_panel;

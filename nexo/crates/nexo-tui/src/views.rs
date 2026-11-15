@@ -5,4 +5,5 @@ pub mod goal;
 pub mod jobs;
 pub mod mcp;
 pub mod sent;
+pub mod team;
 pub mod todo;

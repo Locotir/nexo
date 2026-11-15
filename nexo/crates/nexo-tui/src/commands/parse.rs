@@ -30,6 +30,8 @@ pub enum Command {
     Mcp,
     /// `/chrome`: the window that connects the person's own browser.
     Chrome,
+    /// `/team`: the lanes of `team.toml` in a window.
+    Team,
     /// `/skills`: the Agent Skills found, with their source.
     Skills,
     /// `/plugins`: the installed plugins and what each adds.
@@ -199,6 +201,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "hooks" => Command::Hooks,
         "mcp" => Command::Mcp,
         "chrome" => Command::Chrome,
+        "team" => Command::Team,
         "skills" => Command::Skills,
         "plugins" => Command::Plugins,
         "budget" => Command::Budget(arg),

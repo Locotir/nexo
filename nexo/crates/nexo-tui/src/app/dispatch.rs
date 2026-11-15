@@ -195,6 +195,7 @@ impl App {
             Command::Hooks => self.send(AgentCommand::ShowHooks),
             Command::Mcp => self.open_mcp(),
             Command::Chrome => self.open_chrome(),
+            Command::Team => self.open_team(),
             Command::Skills => self.show_skills(),
             Command::Plugins => {
                 let text = nexo_core::plugins::describe(&nexo_core::paths::config_dir(), &Default::default());

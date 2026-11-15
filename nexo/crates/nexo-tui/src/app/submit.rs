@@ -420,6 +420,25 @@ impl App {
         }
     }
 
+    /// `/team`: the lanes of `team.toml` (the window reads the disk on a thread of its own).
+    pub fn open_team(&mut self) {
+        self.modal = Some(Modal::Team(Box::new(crate::team_view::TeamView::new(std::time::Instant::now()))));
+    }
+
+    /// While `/team` is open: keeps its table fresh, and when a lane asked to stop with `o` has stopped, switches
+    /// this session to the lane's own, as `/resume` does.
+    pub(super) fn poll_team(&mut self) {
+        let id = match &mut self.modal {
+            Some(Modal::Team(v)) => v.poll(std::time::Instant::now()),
+            _ => None,
+        };
+        if let Some(id) = id {
+            self.modal = None;
+            self.flash(&format!("resuming {id}…"));
+            self.send(AgentCommand::Resume { id });
+        }
+    }
+
     /// The servers changed: the prompts become the commands `/mcp__server__prompt` (the old ones go).
     pub(super) fn set_mcp(&mut self, servers: Vec<nexo_core::agent::McpServerInfo>) {
         self.custom_commands.retain(|c| c.origin != "mcp");
