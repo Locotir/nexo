@@ -70,8 +70,9 @@ impl Palette {
     /// `view`, with the section titles left out when `titles` is false and the list does not fit.
     pub fn view_titled(&mut self, max: usize, titles: bool) -> View {
         let max = max.max(1);
-        let mut lines: Vec<(bool, usize)> = Vec::new(); // (is a title, ranked index)
         // short of rows, a title would push a command off the list: the list goes flat unless it all fits
+        // (is a title, ranked index)
+        let mut lines: Vec<(bool, usize)> = Vec::new();
         let n_titles = (0..self.ranked.len()).filter(|&k| self.groups.get(k).is_some_and(Option::is_some)).count();
         let flat = !titles && self.ranked.len() + n_titles > max;
         for k in 0..self.ranked.len() {

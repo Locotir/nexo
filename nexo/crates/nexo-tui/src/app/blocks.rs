@@ -169,7 +169,8 @@ impl App {
             let busy = self.blocks[i].is_live()
                 || self.looks.get(i).is_some_and(|l| {
                     l.born.is_some_and(|t| now.saturating_duration_since(t).as_millis() <= FADE_MS as u128 + 100)
-                        || l.opened.is_some_and(|(t, _)| now.saturating_duration_since(t).as_millis() <= OPEN_MS as u128 + 100)
+                        || l.opened
+                            .is_some_and(|(t, _)| now.saturating_duration_since(t).as_millis() <= OPEN_MS as u128 + 100)
                 });
             if (end < lo || start > hi) && !busy {
                 *lines = None;
