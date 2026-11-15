@@ -46,11 +46,7 @@ fn launch(exe: &Path, name: &str, now: bool) -> std::io::Result<u32> {
         std::fs::write(state::now_file(name), b"")?;
     }
     let mut c = Command::new(exe);
-    c.args(["team", "run", name])
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err)
-        .current_dir(state::dir());
+    c.args(["team", "run", name]).stdin(Stdio::null()).stdout(out).stderr(err).current_dir(state::dir());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
