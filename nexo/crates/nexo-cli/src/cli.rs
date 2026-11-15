@@ -768,12 +768,8 @@ async fn interactive(
         },
     );
     let models = setup::model_choices(&config);
-    // A session nothing was said in has nothing to resume.
-    let sessions = nexo_agent::session::list()
-        .into_iter()
-        .filter(|m| m.messages > 0 && !m.headless)
-        .map(|m| (m.id, m.title))
-        .collect();
+    // The session files are read while the agent is set up, not before it.
+    let listing = tokio::task::spawn_blocking(nexo_agent::session::list);
     // sessions write to each other through the mailbox; it takes its session when the agent has one
     let mailbox = config.mail.enabled.then(|| {
         nexo_core::mailbox::Mailbox::unbound(
@@ -784,6 +780,14 @@ async fn interactive(
         )
     });
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume.clone(), None, mailbox.clone()).await?;
+    // A session nothing was said in has nothing to resume.
+    let sessions = listing
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.messages > 0 && !m.headless)
+        .map(|m| (m.id, m.title))
+        .collect();
     let opts = nexo_tui::TuiOptions {
         cwd: cwd.clone(),
         // nothing chosen: the interface names none and opens on the locked home

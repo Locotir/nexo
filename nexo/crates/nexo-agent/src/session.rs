@@ -371,22 +371,41 @@ fn same_form(p: &Path) -> PathBuf {
     c
 }
 
+/// What the list shows of one file: the head for the id and folder, the last title, and the messages since
+/// the last reset. A line is told by how it starts (the writer puts `type` first), so a message is counted
+/// and a tool output, which can be megabytes, is read past without parsing either; only the short title and
+/// reset lines, and any line that does not start like the writer's, are parsed.
 fn read_meta(path: &Path) -> Option<SessionMeta> {
+    const MESSAGE: &[u8] = br#"{"type":"message""#;
+    const SHORT: [&[u8]; 2] = [br#"{"type":"title""#, br#"{"type":"reset""#];
+    const OTHER: &[u8] = br#"{"type":""#;
     let f = File::open(path).ok()?;
-    let mut r = BufReader::new(f);
+    let mut r = BufReader::with_capacity(256 * 1024, f);
     let mut first = String::new();
     r.read_line(&mut first).ok()?;
     let Line::Meta(mut m) = serde_json::from_str(&first).ok()? else { return None };
     let mut n = 0;
     let mut title = None;
+    let mut buf = Vec::new();
     // each line on its own, as `open_path` reads them: a UTF-8 sequence cut by a crash spoils one line
-    for l in r.split(b'\n').map_while(Result::ok) {
-        let l = String::from_utf8_lossy(&l);
-        match serde_json::from_str::<Line>(&l) {
-            Ok(Line::Message { .. }) => n += 1,
-            Ok(Line::Reset) => n = 0,
-            Ok(Line::Title { title: t }) => title = Some(t),
-            _ => {}
+    loop {
+        buf.clear();
+        if !matches!(r.read_until(b'\n', &mut buf), Ok(len) if len > 0) {
+            break;
+        }
+        let line = buf.trim_ascii();
+        if line.starts_with(MESSAGE) {
+            // a line cut by a crash lacks its end: it is not a message, as when every line was parsed
+            if line.ends_with(b"}}") {
+                n += 1;
+            }
+        } else if SHORT.iter().any(|p| line.starts_with(p)) || !line.starts_with(OTHER) {
+            match serde_json::from_str::<Line>(&String::from_utf8_lossy(line)) {
+                Ok(Line::Message { .. }) => n += 1,
+                Ok(Line::Reset) => n = 0,
+                Ok(Line::Title { title: t }) => title = Some(t),
+                _ => {}
+            }
         }
     }
     m.messages = n;

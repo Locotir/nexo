@@ -1032,3 +1032,110 @@ fn resuming_a_damaged_file_loads_every_good_line_and_counts_the_skipped_ones() {
     let clean = Session::open_path(&busy_session(tempfile::tempdir().unwrap().path())).unwrap();
     assert_eq!(clean.skipped_lines(), 0);
 }
+
+/// The listing as it was written first: every line of the file parsed, to compare the cheap one with.
+fn read_meta_parsing_every_line(path: &Path) -> Option<SessionMeta> {
+    let f = File::open(path).ok()?;
+    let mut r = BufReader::new(f);
+    let mut first = String::new();
+    r.read_line(&mut first).ok()?;
+    let Line::Meta(mut m) = serde_json::from_str(&first).ok()? else { return None };
+    let mut n = 0;
+    let mut title = None;
+    for l in r.split(b'\n').map_while(Result::ok) {
+        let l = String::from_utf8_lossy(&l);
+        match serde_json::from_str::<Line>(&l) {
+            Ok(Line::Message { .. }) => n += 1,
+            Ok(Line::Reset) => n = 0,
+            Ok(Line::Title { title: t }) => title = Some(t),
+            _ => {}
+        }
+    }
+    m.messages = n;
+    if let Some(t) = title {
+        m.title = t;
+    }
+    if let Ok(md) = std::fs::metadata(path) {
+        if let Ok(t) = md.modified() {
+            let t: time::OffsetDateTime = t.into();
+            m.updated = t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
+        }
+    }
+    Some(m)
+}
+
+/// A session file of `outputs` tool outputs of `big` bytes each, written the way a session writes it.
+fn write_big_session(dir: &Path, outputs: usize, big: usize) -> PathBuf {
+    let mut s = Session::create_in(dir, Path::new("/p"), "mock", "m1").unwrap();
+    for i in 0..outputs {
+        s.append(&Message::user(format!("question {i}"))).unwrap();
+        let id = format!("c{i}");
+        s.append(&Message::new(Role::Assistant, vec![Part::tool_call(&id, "read", serde_json::json!({"path": "a"}))]))
+            .unwrap();
+        s.record_output(&id, &ToolOutput::ok("x".repeat(big))).unwrap();
+        s.record_usage(Usage { input: 5, output: 2, ..Default::default() }, 0.001).unwrap();
+    }
+    s.path().to_path_buf()
+}
+
+#[test]
+fn the_list_reads_what_parsing_every_line_gave_on_files_with_huge_outputs_and_damage() {
+    let d = tempfile::tempdir().unwrap();
+    let plain = write_big_session(d.path(), 3, 200_000);
+    // a reset, a later title, a cut line, a blank line, a line with another key order, a CRLF line and a stray line
+    let reset = write_big_session(d.path(), 2, 50_000);
+    let mut f = OpenOptions::new().append(true).open(&reset).unwrap();
+    write!(f, "{{\"type\":\"reset\"}}\n{{\"type\":\"title\",\"title\":\"later title\"}}\n\n").unwrap();
+    f.write_all(b"not json at all\n").unwrap();
+    f.write_all(b"{\"index\":9,\"type\":\"message\",\"ts\":\"\",\"message\":{\"role\":\"user\",\"content\":[]}}\r\n")
+        .unwrap();
+    f.write_all(b"{\"type\":\"tool_output\",\"call_id\":\"x\",\"output\":{\"content\":\"cut\n").unwrap();
+    f.write_all(b"{\"type\":\"message\",\"index\":1,\"ts\":\"x\",\"mess").unwrap();
+    drop(f);
+    // a UTF-8 sequence cut in the middle of a message line, with a message after it
+    let cut = write_big_session(d.path(), 1, 10);
+    let mut f = OpenOptions::new().append(true).open(&cut).unwrap();
+    f.write_all(
+        b"{\"type\":\"message\",\"index\":5,\"ts\":\"\",\"message\":{\"role\":\"user\",\"content\":\"\xe2\x82\n",
+    )
+    .unwrap();
+    drop(f);
+    // an empty file, a file that is not a session, and one that is only its head
+    std::fs::write(d.path().join("empty.jsonl"), b"").unwrap();
+    std::fs::write(d.path().join("other.jsonl"), b"{\"type\":\"title\",\"title\":\"x\"}\n").unwrap();
+    let head = write_big_session(d.path(), 0, 0);
+    let mut seen = 0;
+    for p in [&plain, &reset, &cut, &head, &d.path().join("empty.jsonl"), &d.path().join("other.jsonl")] {
+        assert_eq!(read_meta(p), read_meta_parsing_every_line(p), "{}", p.display());
+        seen += 1;
+    }
+    assert_eq!(seen, 6);
+    assert_eq!(read_meta(&plain).unwrap().messages, 6);
+    assert_eq!(read_meta(&reset).unwrap().title, "later title");
+    assert!(read_meta(&d.path().join("empty.jsonl")).is_none());
+}
+
+/// `NEXO_BENCH_DIR=<empty scratch folder> cargo test -p nexo-agent --release listing_bench -- --ignored --nocapture`
+#[test]
+#[ignore = "builds ~300 MB of files; a measurement, not a check"]
+fn listing_bench() {
+    let dir = PathBuf::from(std::env::var("NEXO_BENCH_DIR").expect("NEXO_BENCH_DIR names an empty scratch folder"));
+    std::fs::create_dir_all(&dir).unwrap();
+    if std::fs::read_dir(&dir).unwrap().next().is_none() {
+        // 300 sessions of about 1 MB: 8 tool outputs of 120 KB each
+        for _ in 0..300 {
+            write_big_session(&dir, 8, 120_000);
+        }
+    }
+    let t = std::time::Instant::now();
+    let old: Vec<SessionMeta> =
+        std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| read_meta_parsing_every_line(&e.path())).collect();
+    let old_ms = t.elapsed().as_millis();
+    let t = std::time::Instant::now();
+    let new = list_in(&dir);
+    let new_ms = t.elapsed().as_millis();
+    let bytes: u64 =
+        std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
+    println!("{} sessions, {} MB: every line parsed {old_ms} ms, by prefix {new_ms} ms", new.len(), bytes / 1_000_000);
+    assert_eq!(old.len(), new.len());
+}
