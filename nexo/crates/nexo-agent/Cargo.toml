@@ -23,7 +23,6 @@ base64 = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 globset = { workspace = true }
