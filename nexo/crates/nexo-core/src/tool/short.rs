@@ -1,11 +1,11 @@
 //! The text of MCP tools in a small window. A server's schemas are the person's choice and as long as its
 //! author wrote them, so past a share of the window the tools beyond it are offered by name and one line, and
 //! the model is told which (see [`McpShortened::note`]). A shortened tool still runs: the server checks its
-//! arguments, and an error carries the whole schema (see [`Tool::offered_short`]).
+//! arguments, and the caller that offered it short adds the whole schema to an error (see [`with_schema`]).
 
 use std::sync::Arc;
 
-use super::{Tool, ToolSet};
+use super::{Tool, ToolOutput, ToolSet};
 use crate::provider::ToolSpec;
 
 /// The tokens the MCP tools may take together in a request of a small window (32k and under), as offered
@@ -13,6 +13,26 @@ use crate::provider::ToolSpec;
 /// asks 2 000 for the reply, so 4 088 are left for the conversation (measured), and this share leaves it 3 088
 /// of them, three quarters of what it had. A larger window keeps more room than that with the same share.
 pub const MCP_SMALL_TOKENS: u64 = 1_000;
+
+/// The tokens the MCP tools may take together in a request of a small window of `window` tokens: an eighth of it,
+/// [`MCP_SMALL_TOKENS`] at 8k, or that when the window is not known.
+pub fn mcp_share(window: Option<u64>) -> u64 {
+    window.map_or(MCP_SMALL_TOKENS, |w| w / 8)
+}
+
+/// `out` of a call to `tool`, for a caller that offered the tools in `short` by name and one line: when the call
+/// failed and `tool` was one of them, the tool's whole input schema follows, to retry with. The schema goes by
+/// what this caller offered, since one MCP server serves agents on different windows at once.
+pub fn with_schema(tool: &dyn Tool, short: &[String], mut out: ToolOutput) -> ToolOutput {
+    if out.is_error && tool.server().is_some() && short.iter().any(|n| n == tool.name()) {
+        out.content = format!(
+            "{}\nThe tool was offered by name only; its whole input schema: {}",
+            out.content,
+            tool.spec().parameters
+        );
+    }
+    out
+}
 
 /// The characters of the one line a shortened tool keeps, from the longest to none: the longest line that lets
 /// the shortened tools fit the share is used.
@@ -48,6 +68,11 @@ pub struct McpShortened {
 }
 
 impl McpShortened {
+    /// The tools offered by name and one line, of every server.
+    pub fn names(&self) -> Vec<String> {
+        self.servers.iter().flat_map(|(_, t)| t.iter().cloned()).collect()
+    }
+
     /// The fact the model gets about it, for a model with context window `window`.
     pub fn note(&self, window: Option<u64>) -> String {
         let cut: usize = self.servers.iter().map(|(_, t)| t.len()).sum();
@@ -82,20 +107,20 @@ impl ToolSet {
     pub fn specs_with(&self, compact: bool, mcp_tokens: Option<u64>) -> Vec<ToolSpec> {
         let mut specs = self.specs_base(compact);
         let Some(budget) = mcp_tokens else { return specs };
-        let Some(plan) = self.mcp_plan(&specs, budget) else {
-            self.told_short(&specs, &[]);
-            return specs;
-        };
+        let Some(plan) = self.mcp_plan(&specs, budget) else { return specs };
         let short: Vec<String> = plan.tools[plan.whole..].iter().map(|(_, s)| s.name.clone()).collect();
         for s in specs.iter_mut().filter(|s| short.contains(&s.name)) {
             *s = short_spec(s, plan.line);
         }
-        self.told_short(&specs, &short);
         specs
     }
 
     /// What [`ToolSet::specs_with`] shortens under `budget` tokens, when it does.
     pub fn mcp_shortened(&self, compact: bool, budget: u64) -> Option<McpShortened> {
+        // most sessions have no MCP tools: nothing to build the specs for
+        if !self.entries().any(|t| t.server().is_some()) {
+            return None;
+        }
         let specs = self.specs_base(compact);
         let plan = self.mcp_plan(&specs, budget)?;
         let mut servers: Vec<(String, Vec<String>)> = vec![];
@@ -131,15 +156,6 @@ impl ToolSet {
 
     fn entries(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
         self.tools.values()
-    }
-
-    /// Tells each MCP tool whether it was just offered shortened.
-    fn told_short(&self, specs: &[ToolSpec], short: &[String]) {
-        for (t, s) in self.entries().zip(specs) {
-            if t.server().is_some() {
-                t.offered_short(short.contains(&s.name));
-            }
-        }
     }
 
     /// The MCP tools among `specs` (in the order of the set) and how many may stay whole, or `None` when all of

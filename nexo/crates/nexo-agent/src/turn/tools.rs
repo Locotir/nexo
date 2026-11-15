@@ -578,6 +578,12 @@ pub(super) async fn run_call(
             };
             drop(ctx);
             let _ = forwarder.await;
+            // a failed call to an MCP tool this agent was offered by name only carries its whole schema
+            let out = if out.is_error && tool.server().is_some() {
+                nexo_core::tool::with_schema(tool.as_ref(), &state.lock().await.mcp_short, out)
+            } else {
+                out
+            };
             if name == "bash" {
                 // a sandboxed command changed a path that runs outside the sandbox later: the person is told too
                 if let Some(note) = nexo_tools::guarded::note_in(&out.content) {

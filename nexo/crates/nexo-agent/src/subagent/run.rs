@@ -207,12 +207,16 @@ impl Run {
         };
         // the tool text of a small window, and without the tools it leaves out, as the main agent is offered them
         let window = limits.context_window.map(u64::from);
+        let compact = crate::prompt::is_compact(window);
+        let share = compact.then(|| nexo_core::tool::mcp_share(window));
         let mut specs: Vec<_> = self
             .tools
-            .specs_for(crate::prompt::is_compact(window))
+            .specs_with(compact, share)
             .into_iter()
             .filter(|s| !crate::prompt::left_out(window, &s.name))
             .collect();
+        // the MCP tools it has by name and one line: a failed call to one answers with its whole schema
+        let short = share.and_then(|b| self.tools.mcp_shortened(true, b)).map_or_else(Vec::new, |s| s.names());
         // a policy that leaves messages out offers `recall`, answered from this run's own messages
         if policy.recall() && !specs.iter().any(|s| s.name == "recall") {
             // in the text of a small window when the window is small, as the main agent has it; whole otherwise
@@ -387,6 +391,10 @@ impl Run {
                     crate::recall::answer(&messages, &a)
                 } else {
                     self.call(&id, &name, &a, ctx, say).await
+                };
+                let out = match self.tools.get(&name) {
+                    Some(t) if out.is_error => nexo_core::tool::with_schema(t.as_ref(), &short, out),
+                    _ => out,
                 };
                 if let Some(s) = &self.sub {
                     s.item(SubItem::Result {

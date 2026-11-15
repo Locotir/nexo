@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -250,13 +250,8 @@ impl McpClient {
                     let tail = format!("_{n}");
                     full_name = format!("{}{tail}", &full_name[..full_name.len().min(MAX_NAME - tail.len())]);
                 }
-                Arc::new(McpTool {
-                    server: self.name.clone(),
-                    full_name,
-                    def: d,
-                    inner: self.inner.clone(),
-                    short: AtomicBool::new(false),
-                }) as Arc<dyn Tool>
+                Arc::new(McpTool { server: self.name.clone(), full_name, def: d, inner: self.inner.clone() })
+                    as Arc<dyn Tool>
             })
             .collect()
     }
@@ -589,18 +584,6 @@ pub struct McpTool {
     full_name: String,
     def: ToolDef,
     inner: Arc<Inner>,
-    /// The model was last offered this tool by name and one line (a small window); see [`Tool::offered_short`].
-    short: AtomicBool,
-}
-
-impl McpTool {
-    /// `text` of a failed call; for a tool the model only has by name, the whole input schema follows, to retry with.
-    fn failed(&self, text: String) -> String {
-        if !self.short.load(Ordering::Relaxed) {
-            return text;
-        }
-        format!("{text}\nThe tool was offered by name only; its whole input schema: {}", self.def.input_schema)
-    }
 }
 
 #[async_trait]
@@ -611,10 +594,6 @@ impl Tool for McpTool {
 
     fn server(&self) -> Option<&str> {
         Some(&self.server)
-    }
-
-    fn offered_short(&self, short: bool) {
-        self.short.store(short, Ordering::Relaxed);
     }
 
     fn spec(&self) -> ToolSpec {
@@ -657,7 +636,7 @@ impl Tool for McpTool {
                 self.def.name,
                 CALL_TIMEOUT.as_secs()
             )),
-            Ok(Err(e)) => ToolOutput::error(self.failed(format!("mcp {}:{}: {e}", self.server, self.def.name))),
+            Ok(Err(e)) => ToolOutput::error(format!("mcp {}:{}: {e}", self.server, self.def.name)),
             Ok(Ok(result)) => {
                 let is_error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
                 let mut text = String::new();
@@ -685,7 +664,6 @@ impl Tool for McpTool {
                 // a server may send megabytes; the model gets the head and the tail
                 let text = crate::util::cap_text(text.trim_end(), MAX_RESULT_CHARS);
                 let text = if text.is_empty() { "(no content)".to_string() } else { text };
-                let text = if is_error { self.failed(text) } else { text };
                 ToolOutput { content: text, is_error, display: nexo_core::ToolDisplay::Plain, images: Vec::new() }
             }
         }

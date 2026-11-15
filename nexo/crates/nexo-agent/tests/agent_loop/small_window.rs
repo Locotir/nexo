@@ -224,10 +224,10 @@ const BIG_SERVER: &str = r#"while IFS= read -r l; do
 done
 "#;
 
-/// What the 30-tool server's session sends on a window of `w` tokens: the first request, and what its two calls
-/// to the last tool (right arguments, then wrong ones) answered.
+/// A session under `cfg` with the 30-tool server, its model answering `replies`: the requests (and where each went)
+/// and what the turn said.
 #[cfg(unix)]
-async fn big_mcp_session(w: u32) -> (ModelRequest, Vec<String>) {
+async fn with_big_server(cfg: Config, replies: Vec<Reply>) -> (Vec<ModelRequest>, Vec<String>, Vec<AgentEvent>) {
     let d = test_tmpdir().unwrap();
     let tool = |i: usize| {
         json!({
@@ -253,19 +253,19 @@ async fn big_mcp_session(w: u32) -> (ModelRequest, Vec<String>) {
         },
     );
     let hub = nexo_tools::mcp_hub::McpHub::start_in_background(&servers, &d.path().join("auth.json"), None);
+    // the server is up before the session starts, so the sub-agents it starts have its tools too
+    hub.ready().await;
+    let mut tools = nexo_tools::builtin();
+    hub.sync_tools(&mut tools, &mut 0);
     data_dir();
     let (handle, ends) = channels();
-    let client = Scripted::new(vec![
-        Reply::Events(call("c1", "mcp__big__tool_29", json!({"q": "x"}))),
-        Reply::Events(call("c2", "mcp__big__tool_29", json!({"fail": true}))),
-        Reply::Events(text("done")),
-    ]);
+    let client = Scripted::new(replies);
     let setup = AgentSetup {
-        config: cfg_window(w),
+        config: cfg,
         cwd: d.path().to_path_buf(),
         provider: "mock".into(),
         model: "m1".into(),
-        tools: nexo_tools::builtin(),
+        tools,
         client: client.clone(),
         resume: None,
         gate: None,
@@ -280,18 +280,33 @@ async fn big_mcp_session(w: u32) -> (ModelRequest, Vec<String>) {
     let evs = r.turn().await;
     r.stop().await;
     hub.close().await;
-    let outputs = ["c1", "c2"]
-        .iter()
-        .map(|c| {
-            evs.iter()
-                .find_map(|e| match e {
-                    AgentEvent::ToolDone { id, output, .. } if id == c => Some(output.content.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default()
+    let bases = client.bases.lock().unwrap().clone();
+    (client.requests(), bases, evs)
+}
+
+/// What the main agent was told a call `id` of its own answered.
+#[cfg(unix)]
+fn done_output(evs: &[AgentEvent], id: &str) -> String {
+    evs.iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id: i, output, .. } if i == id => Some(output.content.clone()),
+            _ => None,
         })
-        .collect();
-    (client.requests()[0].clone(), outputs)
+        .unwrap_or_default()
+}
+
+/// What the 30-tool server's session sends on a window of `w` tokens: the first request, what its two calls to
+/// the last tool (right arguments, then wrong ones) answered, and what the turn said.
+#[cfg(unix)]
+async fn big_mcp_session(w: u32) -> (ModelRequest, Vec<String>, Vec<AgentEvent>) {
+    let replies = vec![
+        Reply::Events(call("c1", "mcp__big__tool_29", json!({"q": "x"}))),
+        Reply::Events(call("c2", "mcp__big__tool_29", json!({"fail": true}))),
+        Reply::Events(text("done")),
+    ];
+    let (reqs, _, evs) = with_big_server(cfg_window(w), replies).await;
+    let outputs = ["c1", "c2"].iter().map(|c| done_output(&evs, c)).collect();
+    (reqs[0].clone(), outputs, evs)
 }
 
 /// The tokens the MCP tools of `r` take, as nexo counts them (four characters a token).
@@ -308,7 +323,7 @@ fn mcp_tokens(r: &ModelRequest) -> u64 {
 #[tokio::test]
 async fn thirty_mcp_tools_on_an_8k_window_stay_in_their_share_are_named_and_still_run() {
     let _g = config_lock().lock().await;
-    let (req, outputs) = big_mcp_session(8_000).await;
+    let (req, outputs, _) = big_mcp_session(8_000).await;
     let tokens = mcp_tokens(&req);
     eprintln!("30 MCP tools at 8k: {tokens} tokens");
     assert_eq!(
@@ -333,7 +348,7 @@ async fn thirty_mcp_tools_on_an_8k_window_stay_in_their_share_are_named_and_stil
 #[tokio::test]
 async fn thirty_mcp_tools_on_a_large_window_are_offered_whole_as_before() {
     let _g = config_lock().lock().await;
-    let (req, outputs) = big_mcp_session(200_000).await;
+    let (req, outputs, _) = big_mcp_session(200_000).await;
     let mcp: Vec<_> = req.tools.iter().filter(|t| t.name.starts_with("mcp__big__")).collect();
     assert_eq!(mcp.len(), 30);
     eprintln!("30 MCP tools at 200k: {} tokens", mcp_tokens(&req));
@@ -505,4 +520,79 @@ async fn a_plain_session_at_8k_with_room_for_a_short_reply_only_goes_from_the_cu
         assert_eq!(serde_json::to_string(&a.messages).unwrap(), serde_json::to_string(&b.messages).unwrap());
         assert_eq!(a.max_tokens, b.max_tokens);
     }
+}
+
+/// The person notices of `evs` that say which MCP tools went out by name.
+#[cfg(unix)]
+fn mcp_notices(evs: &[AgentEvent]) -> Vec<String> {
+    notices(evs).into_iter().filter(|n| n.starts_with("MCP tools: ")).collect()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn thirty_mcp_tools_on_a_16k_window_take_an_eighth_of_it_and_the_person_is_told_once() {
+    let _g = config_lock().lock().await;
+    let (req, outputs, evs) = big_mcp_session(16_000).await;
+    let tokens = mcp_tokens(&req);
+    eprintln!("30 MCP tools at 16k: {tokens} tokens");
+    // the share is the window's eighth, 2 000 tokens, so more of them go whole than at 8k
+    assert!(tokens <= 2_000 && tokens > nexo_core::tool::MCP_SMALL_TOKENS, "the MCP tools take {tokens} tokens");
+    let note = req.system.lines().find(|l| l.starts_with("MCP tools: ")).expect("no note in the system text");
+    assert!(note.contains("for a 16000-token window") && note.contains("share of 2000"), "{note}");
+    // the person reads the same numbers once, though the turn sent three requests
+    let told = mcp_notices(&evs);
+    assert_eq!(told.len(), 1, "{:?}", notices(&evs));
+    assert!(told[0].starts_with(note), "{}", told[0]);
+    assert!(outputs[1].contains("\"required\":[\"q\"]"), "{}", outputs[1]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_person_is_not_told_of_mcp_tools_on_a_large_window() {
+    let _g = config_lock().lock().await;
+    let (_, _, evs) = big_mcp_session(200_000).await;
+    assert!(mcp_notices(&evs).is_empty(), "{:?}", notices(&evs));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_main_agent_at_200k_and_its_sub_agent_at_8k_on_one_mcp_server_each_get_the_schema_by_what_they_were_offered()
+{
+    let _g = config_lock().lock().await;
+    let mut cfg = cfg_window(200_000);
+    let mut small = ProviderConfig::new("mock", "http://small", None);
+    small.models = vec!["s1".into()];
+    small.context_window.insert("s1".into(), 8_000);
+    cfg.providers.insert("small".into(), small);
+    let replies = vec![
+        Reply::Events(call(
+            "t1",
+            "task",
+            json!({"prompt": "look", "provider": "small", "model": "s1", "description": "look", "agent": "general"}),
+        )),
+        Reply::Events(call("s1", "mcp__big__tool_29", json!({"fail": true}))),
+        Reply::Events(text("found it")),
+        // the main agent calls the same tool wrongly after its sub-agent was offered it short
+        Reply::Events(call("c2", "mcp__big__tool_29", json!({"fail": true}))),
+        Reply::Events(text("done")),
+    ];
+    let (reqs, bases, evs) = with_big_server(cfg, replies).await;
+    let sub: Vec<_> = bases.iter().zip(&reqs).filter(|(b, _)| *b == "http://small").map(|(_, r)| r).collect();
+    assert_eq!(sub.len(), 2, "{bases:?}");
+    let offered = sub[0]
+        .tools
+        .iter()
+        .find(|t| t.name == "mcp__big__tool_29")
+        .unwrap_or_else(|| panic!("{:?}", sub[0].tools.iter().map(|t| &t.name).collect::<Vec<_>>()));
+    assert_eq!(offered.parameters, json!({"type": "object"}), "the sub-agent at 8k has it by name");
+    // the sub-agent's failed call brings the whole schema back to it
+    let answer = serde_json::to_string(sub[1].messages.last().unwrap()).unwrap();
+    assert!(answer.contains("bad arguments") && answer.contains("whole input schema"), "{answer}");
+    // the main agent was offered the tool whole and its failed call says only what failed
+    let main = reqs.last().unwrap();
+    let whole = main.tools.iter().find(|t| t.name == "mcp__big__tool_29").unwrap();
+    assert!(whole.parameters["properties"]["q"].is_object());
+    let c2 = done_output(&evs, "c2");
+    assert!(c2.contains("bad arguments") && !c2.contains("whole input schema"), "{c2}");
+    assert!(mcp_notices(&evs).is_empty(), "the main agent's own tools were not shortened: {:?}", notices(&evs));
 }

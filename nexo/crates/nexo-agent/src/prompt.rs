@@ -188,7 +188,7 @@ fn compact_guidance(tools: &ToolSet, window: Option<u64>) -> String {
     }
     let mut out = if lines.is_empty() { String::new() } else { format!("\n\nTools:\n{}", lines.join("\n")) };
     // the MCP tools that did not fit their share of the window go out by name and one line: the model is told which
-    if let Some(s) = tools.mcp_shortened(true, nexo_core::tool::MCP_SMALL_TOKENS) {
+    if let Some(s) = tools.mcp_shortened(true, nexo_core::tool::mcp_share(window)) {
         out.push_str("\n\n");
         out.push_str(&s.note(window));
     }

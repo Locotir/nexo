@@ -615,7 +615,9 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     // curator, so that a comparison measures the view alone)
     let curator = st.policy.recall();
     let window = window_of(&st.limits);
-    let specs = st.tools.specs_for(prompt::is_compact(window));
+    // in a small window the MCP tools are held to their share of this model's window
+    let compact = prompt::is_compact(window);
+    let specs = st.tools.specs_with(compact, compact.then(|| nexo_core::tool::mcp_share(window)));
     specs
         .into_iter()
         .filter(|s| {
@@ -628,6 +630,25 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
         .collect()
 }
 
+/// Notes which MCP tools this request offers by name and one line ([`offered`] in a small window), and tells the
+/// person what was shortened, with its numbers, once for as long as that stays the same.
+fn mcp_offered_short(st: &mut State) {
+    let window = window_of(&st.limits);
+    let short = if prompt::is_compact(window) {
+        st.tools.mcp_shortened(true, nexo_core::tool::mcp_share(window))
+    } else {
+        None
+    };
+    st.mcp_short = short.as_ref().map_or_else(Vec::new, |s| s.names());
+    if let Some(s) = short {
+        let note = s.note(window);
+        if note != st.mcp_told {
+            notice(&st.events, Level::Info, note.clone());
+            st.mcp_told = note;
+        }
+    }
+}
+
 /// The request for the next model call, through the context policy.
 pub(super) async fn prepare(
     state: &Shared,
@@ -637,6 +658,7 @@ pub(super) async fn prepare(
     let mut guard = state.lock().await;
     let st = &mut *guard;
     let specs = offered(st);
+    mcp_offered_short(st);
     if let Some(at) = st.policy.compact_at() {
         let at = compact_threshold(at, st.limits.context_window, reply_tokens(st));
         if request_tokens(st, &specs) > at {

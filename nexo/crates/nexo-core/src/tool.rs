@@ -16,7 +16,7 @@ use crate::provider::ToolSpec;
 
 pub mod catalog;
 mod short;
-pub use short::{McpShortened, MCP_SMALL_TOKENS};
+pub use short::{mcp_share, with_schema, McpShortened, MCP_SMALL_TOKENS};
 
 /// What a tool does to the world; the permission policy decides by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -296,9 +296,6 @@ pub trait Tool: Send + Sync {
     fn server(&self) -> Option<&str> {
         None
     }
-    /// Told, each time the tools are offered, whether this one went out by name and one line only (see
-    /// [`MCP_SMALL_TOKENS`]): a call that fails then carries the whole schema.
-    fn offered_short(&self, _short: bool) {}
     fn kind(&self) -> ToolKind;
     /// The kind of this call, where `args` change it (a sub-agent that may write is a write);
     /// it decides which calls of one round may run at the same time.

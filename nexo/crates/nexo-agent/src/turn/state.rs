@@ -132,6 +132,10 @@ pub(super) struct State {
     /// How many of `hidden` the interface was told of (they ride on the request, which `/sent` shows).
     pub(super) hidden_told: usize,
     pub(super) noticed: HashSet<String>,
+    /// The MCP tools the last request offered by name and one line (a failed call to one answers with its whole
+    /// schema), and what the person was last told of it.
+    pub(super) mcp_short: Vec<String>,
+    pub(super) mcp_told: String,
     /// A check-in was made for this request of the person (at most one; the person speaking opens it again).
     pub(super) checked_in: bool,
     /// How many times `agent.max_tokens` a reply may take in this request: doubled (up to 4) when a reply

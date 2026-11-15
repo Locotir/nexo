@@ -358,6 +358,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         hidden: Vec::new(),
         hidden_told: 0,
         noticed: HashSet::new(),
+        mcp_short: Vec::new(),
+        mcp_told: String::new(),
         checked_in: false,
         reply_boost: 1,
         audit,
