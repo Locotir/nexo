@@ -478,7 +478,9 @@ impl Run {
             why: Why::denied("rule"),
             denied: true,
         };
-        if self.profile.read_only {
+        // with an agent above it, the main agent's rules decide where it reads, as for the main agent
+        // (keys and credentials asked for); alone, nothing outside the project
+        if self.profile.read_only && self.host.is_none() {
             if let Some(p) = outside(args, &ctx.cwd) {
                 return refused(ToolOutput::error(format!("`{p}` is outside the project")));
             }

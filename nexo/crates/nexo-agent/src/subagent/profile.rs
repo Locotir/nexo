@@ -109,7 +109,7 @@ pub struct Profile {
     pub description: String,
     /// The tools it may use; `None` is every tool but `task`.
     pub tools: Option<Vec<String>>,
-    /// Only reading and searching, inside the project, with nothing to ask.
+    /// Only reading and searching; run alone (no main agent), only inside the project.
     pub read_only: bool,
     /// Another model of the same provider.
     pub model: Option<String>,

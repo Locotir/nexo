@@ -10,16 +10,12 @@ async fn a_task_runs_a_read_only_sub_agent_whose_report_is_the_result() {
             "task",
             json!({"description": "find the parser", "prompt": "where is parsing done?"}),
         )),
-        // the sub-agent reads one file, tries to leave the project and to write, then reports
+        // the sub-agent reads one file, reads the notes beside the project, tries to write, then reports
         Reply::Events(vec![
             StreamEvent::ToolCallStart { id: "s1".into(), name: "read".into() },
             StreamEvent::ToolCallEnd { id: "s1".into(), name: "read".into(), args: json!({"path": "src/parse.rs"}) },
             StreamEvent::ToolCallStart { id: "s2".into(), name: "read".into() },
-            StreamEvent::ToolCallEnd {
-                id: "s2".into(),
-                name: "read".into(),
-                args: json!({"path": "../../etc/passwd"}),
-            },
+            StreamEvent::ToolCallEnd { id: "s2".into(), name: "read".into(), args: json!({"path": "../notes.md"}) },
             StreamEvent::ToolCallStart { id: "s3".into(), name: "write".into() },
             StreamEvent::ToolCallEnd { id: "s3".into(), name: "write".into(), args: json!({"path": "x"}) },
             StreamEvent::Finish(FinishReason::ToolUse),
@@ -56,7 +52,7 @@ async fn a_task_runs_a_read_only_sub_agent_whose_report_is_the_result() {
             _ => None,
         })
         .collect();
-    assert!(said[1].contains("outside the project") && said[2].contains("only read"), "{said:?}");
+    assert!(said[1] == "read:../notes.md" && said[2].contains("only read"), "{said:?}");
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolProgress { line, .. } if line.contains("read"))));
     r.stop().await;
 }

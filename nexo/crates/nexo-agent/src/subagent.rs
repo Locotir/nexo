@@ -4,7 +4,7 @@
 //! one message.
 //!
 //! Kinds of sub-agent:
-//! - `explore` (the default): reads and searches inside the project, changes nothing;
+//! - `explore` (the default): reads and searches where the main agent may, changes nothing;
 //! - `general`: every tool but `task`, each call asked for like the main agent's;
 //! - custom ones from `.nexo/agents/*.md` (the project) and `~/.nexo/agents/*.md`
 //!   (the person), a front matter with `name`, `description`, `tools`, `model` and
