@@ -11,8 +11,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use nexo_core::auth::{self, Credential};
 use nexo_core::config::McpServerConfig;
-use nexo_providers::codex::pkce;
-use nexo_providers::login::form;
+use nexo_http::form;
+use nexo_http::pkce::pkce;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -200,7 +200,7 @@ pub async fn login(
 ) -> anyhow::Result<String> {
     let server = expand_env(cfg.url.as_deref().unwrap_or("")).map_err(|e| anyhow!("url: {e}"))?;
     let server_url = url::Url::parse(&server).context("bad url")?;
-    let client = nexo_providers::build_client(|| {
+    let client = nexo_http::build_client(|| {
         Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(30))
     })
     .map_err(|e| anyhow!(e))?;

@@ -93,7 +93,7 @@ pub(super) fn builder(cfg: &WebConfig) -> reqwest::ClientBuilder {
 }
 
 pub(super) fn client(cfg: &WebConfig, redirects: usize) -> Result<reqwest::Client, String> {
-    nexo_providers::build_client(|| {
+    nexo_http::build_client(|| {
         builder(cfg).redirect(reqwest::redirect::Policy::custom(move |att| {
             if att.previous().len() > redirects {
                 att.error("too many redirects")

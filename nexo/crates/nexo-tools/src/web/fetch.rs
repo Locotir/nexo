@@ -10,7 +10,7 @@ impl WebFetch {
     pub fn new(cfg: &WebConfig) -> WebFetch {
         // redirects are followed by hand, each one checked (`hop`)
         WebFetch {
-            http: nexo_providers::build_client(|| {
+            http: nexo_http::build_client(|| {
                 builder(cfg).redirect(reqwest::redirect::Policy::none()).dns_resolver(Arc::new(PublicResolver))
             }),
         }

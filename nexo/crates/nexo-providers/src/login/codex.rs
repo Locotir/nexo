@@ -5,7 +5,7 @@ use nexo_core::auth::Credential;
 use nexo_core::ProviderError;
 use serde_json::{json, Value};
 
-use super::form::form;
+use super::form;
 use super::oauth::{fail, poll, post, said, secs, text, tokens, Body, Poll};
 use super::{DeviceCode, Endpoints, CODEX_CLIENT};
 

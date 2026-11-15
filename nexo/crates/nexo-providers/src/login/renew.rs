@@ -4,7 +4,7 @@ use nexo_core::auth;
 use nexo_core::auth::Credential;
 use nexo_core::{ProviderConfig, ProviderError};
 
-use super::form::form;
+use super::form;
 use super::oauth::{fail, post, said, tokens, Body};
 use super::xai::XAI_CLIENT;
 use super::{Endpoints, CODEX_CLIENT};

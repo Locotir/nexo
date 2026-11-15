@@ -177,7 +177,7 @@ impl HttpLink {
             let v = expand_env(v).map_err(|e| format!("mcp server `{name}`: header {k}: {e}"))?;
             headers.push((k.clone(), v));
         }
-        let client = nexo_providers::build_client(|| {
+        let client = nexo_http::build_client(|| {
             Client::builder()
                 .connect_timeout(Duration::from_secs(15))
                 .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))

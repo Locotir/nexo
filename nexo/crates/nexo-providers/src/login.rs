@@ -15,7 +15,6 @@
 mod choices;
 mod codex;
 mod copilot;
-mod form;
 mod oauth;
 mod renew;
 mod xai;
@@ -25,7 +24,7 @@ mod tests;
 
 pub use choices::{choices, choices_in, open_url, Choice};
 pub use codex::account_id;
-pub use form::form;
+pub use nexo_http::form;
 pub(crate) use oauth::{fail, post, text, tokens, Body};
 pub(crate) use renew::refresh_plain;
 pub use renew::{apply, prepare, prepare_in, refresh, refresh_at};

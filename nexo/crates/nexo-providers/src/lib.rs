@@ -27,9 +27,9 @@ pub mod presets;
 pub mod probe;
 pub mod sse;
 pub mod testing;
-pub mod tls;
+pub use nexo_http::tls;
 pub mod usage;
 
 pub use client::{registry, Client, Registry};
+pub use nexo_http::build_client;
 pub use presets::presets;
-pub use tls::build_client;

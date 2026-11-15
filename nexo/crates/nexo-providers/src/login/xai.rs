@@ -3,7 +3,7 @@ use std::time::Duration;
 use nexo_core::auth::Credential;
 use nexo_core::ProviderError;
 
-use super::form::form;
+use super::form;
 use super::oauth::{fail, oauth_poll_error, poll, post, said, secs, text, tokens, Body, Poll, DEVICE_GRANT};
 use super::{DeviceCode, Endpoints};
 

@@ -1,0 +1,16 @@
+[package]
+name = "nexo-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: the small HTTP helpers shared by providers and tools (TLS client builder, PKCE, form encoding)"
+
+[dependencies]
+reqwest = { workspace = true }
+webpki-root-certs = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }

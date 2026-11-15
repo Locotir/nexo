@@ -22,11 +22,12 @@ use base64::Engine;
 use nexo_core::auth::{self, Credential};
 use nexo_core::ProviderError;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::login::{fail, form, post, text, tokens, Body, DeviceCode, Endpoints, CODEX_CLIENT};
+
+pub use nexo_http::pkce::{challenge_of, pkce, Pkce};
 
 /// The ports the login client accepts a redirect on, in the order tried.
 pub const CALLBACK_PORTS: [u16; 2] = [1455, 1457];
@@ -35,26 +36,6 @@ const SCOPE: &str = "openid profile email offline_access";
 const WAIT: Duration = Duration::from_secs(10 * 60);
 /// How long one connection to the callback may take to send its request.
 const REQUEST: Duration = Duration::from_secs(5);
-
-// ---- PKCE ----
-
-/// A code verifier and the challenge sent in its place.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Pkce {
-    pub verifier: String,
-    pub challenge: String,
-}
-
-/// `BASE64URL(SHA256(verifier))`, no padding (RFC 7636, S256).
-pub fn challenge_of(verifier: &str) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
-}
-
-/// A fresh verifier: 64 characters from 256 random bits, within the 43..128 the RFC allows.
-pub fn pkce() -> Pkce {
-    let verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-    Pkce { challenge: challenge_of(&verifier), verifier }
-}
 
 fn state() -> String {
     uuid::Uuid::new_v4().simple().to_string()

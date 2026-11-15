@@ -1945,6 +1945,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexo-http"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "reqwest",
+ "sha2",
+ "tracing",
+ "uuid",
+ "webpki-root-certs",
+]
+
+[[package]]
 name = "nexo-providers"
 version = "0.1.0"
 dependencies = [
@@ -1955,10 +1967,10 @@ dependencies = [
  "futures",
  "httpmock",
  "nexo-core",
+ "nexo-http",
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "time",
  "tokio",
@@ -1966,7 +1978,6 @@ dependencies = [
  "toml",
  "tracing",
  "uuid",
- "webpki-root-certs",
 ]
 
 [[package]]
@@ -2002,7 +2013,7 @@ dependencies = [
  "nexo-browser",
  "nexo-core",
  "nexo-dbg",
- "nexo-providers",
+ "nexo-http",
  "nexo-relay",
  "proc-macro2",
  "regex",
