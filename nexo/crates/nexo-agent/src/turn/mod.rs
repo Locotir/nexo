@@ -233,6 +233,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             permission_mode: perm.mode,
         },
     );
+    // Consumers need the model limits before other startup events, so they can describe the
+    // actual tool set in their initial output even when a session title or notice follows.
+    emit(&events, limits.event(&provider, &model));
     emit(
         &events,
         AgentEvent::SessionChanged { session_id: session.id().to_string(), title: session.meta().title.clone() },
@@ -253,7 +256,6 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     if replay {
         replay_history(&events, &session, &tools);
     }
-    emit(&events, limits.event(&provider, &model));
     if let Some(c) = config.providers.get(&provider) {
         emit(
             &events,
