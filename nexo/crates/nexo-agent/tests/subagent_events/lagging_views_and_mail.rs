@@ -140,8 +140,10 @@ async fn a_rewind_announces_the_live_runs_again() {
     let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
     let id = held_sub_agent(&mut r, &client).await;
     r.send(AgentCommand::Rewind { index: 0 });
-    let evs = r.until(|e| matches!(e, AgentEvent::SubState { info } if info.id == id)).await;
-    assert!(evs.iter().any(|e| matches!(e, AgentEvent::HistoryCleared)), "the state comes after the clear: {evs:?}");
+    // a state the run sent before the rewind may still be on its way: read up to the clear first
+    r.until(|e| matches!(e, AgentEvent::HistoryCleared)).await;
+    // then the live run is announced again (a wait that never ends here fails on the event timeout)
+    r.until(|e| matches!(e, AgentEvent::SubState { info } if info.id == id)).await;
     release(d.path(), "go");
     r.stop().await;
 }
