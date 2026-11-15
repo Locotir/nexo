@@ -129,6 +129,9 @@ impl Runner {
     }
 
     fn on_event(&mut self, ev: &AgentEvent) {
+        if let Some(m) = &self.mail {
+            m.observe(ev);
+        }
         match ev {
             // a turn nobody here started (queued mail): it is followed like a mail's turn, so no round starts over it
             AgentEvent::TurnStart { .. } if self.turn.is_none() => {
@@ -338,6 +341,9 @@ pub async fn run(lane: &Lane, now: bool) -> i32 {
         due: Some(Instant::now() + wait),
         paused: false,
     };
+    if let Some(m) = &r.mail {
+        m.set_lane(&name);
+    }
     // the session's name is the lane's, which is how the other sessions and /panel know it
     let _ = handle.commands.send(AgentCommand::Rename { title: name.clone() });
     // what the session has spent before: what it adds from now on is the lane's

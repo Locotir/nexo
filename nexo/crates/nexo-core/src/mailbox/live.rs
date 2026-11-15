@@ -1,6 +1,7 @@
 //! The live sessions as their heartbeats tell them, for `nexo sessions live` and dashboards. Only metadata
 //! leaves a session this way: who it is, whether a turn runs, and the jobs running. Never a message.
 
+use super::facts::LiveFacts;
 use super::peers::{clean, read_live};
 use super::*;
 use crate::jobs::{JobInfo, JobKind};
@@ -32,6 +33,8 @@ pub struct LiveSession {
     /// Whether a turn is running; none when the heartbeat does not say (an older nexo wrote it).
     pub busy: Option<bool>,
     pub jobs: Vec<LiveJob>,
+    /// Model, mode, step, turn start, cost, context use, goal and lane, as far as the session said them.
+    pub facts: LiveFacts,
 }
 
 /// The sessions whose heartbeat under `root` is fresh at `now` (ms) and whose process exists, by name and id.
@@ -51,6 +54,7 @@ pub fn live_sessions(root: &Path, now: i64) -> Vec<LiveSession> {
                 beat_ms: f.beat,
                 busy: f.busy,
                 jobs: f.jobs,
+                facts: f.facts,
             });
         }
     }

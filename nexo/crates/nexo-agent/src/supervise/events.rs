@@ -126,6 +126,7 @@ pub fn derive(kind: &ObsKind, at: Secs) -> Option<Ev> {
     let ev = |k: EvKind| Some(Ev::new(at, k));
     match kind {
         ObsKind::UserInput => ev(EvKind::TurnStart),
+        ObsKind::TurnBegin => ev(EvKind::TurnStart),
         ObsKind::ToolPending { name } if name == "AskUserQuestion" => None,
         ObsKind::ToolPending { name } => ev(kind_of_tool(name)),
         ObsKind::TurnEnd { .. } => ev(EvKind::TurnEnd),

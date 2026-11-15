@@ -32,6 +32,8 @@ struct Inner {
     text: String,
     cost: f64,
     model: Option<String>,
+    /// The model's context window in tokens, for the share of it the next call fills.
+    window: Option<u64>,
     /// Sub-agents still running, by key.
     running: Vec<String>,
     /// What the supervisor wants delivered to this session, oldest first.
@@ -315,6 +317,17 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
         }
         AgentEvent::MailStage { id, stage } => {
             out.push(mk(ObsKind::MsgStage { mail: id.clone(), stage: *stage }));
+        }
+        AgentEvent::ModelLimits { context_window, .. } => g.window = context_window.map(u64::from),
+        AgentEvent::Context { view_tokens, .. } => {
+            if let Some(w) = g.window.filter(|w| *w > 0) {
+                let pct = (view_tokens.saturating_mul(100) / w).min(100) as u8;
+                out.push(mk(ObsKind::Ctx { pct }));
+            }
+        }
+        AgentEvent::Goal { text, .. } => {
+            let text = text.as_deref().map(|t| one_line(t, 80)).filter(|t| !t.is_empty());
+            out.push(mk(ObsKind::Goal { text }));
         }
         AgentEvent::Compacted { .. } => out.push(mk(ObsKind::Ev(Ev::new(now, EvKind::Compact)))),
         AgentEvent::Retrying { wait_secs, rate_limit, .. } => {

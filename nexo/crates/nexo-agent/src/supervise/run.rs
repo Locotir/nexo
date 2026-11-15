@@ -14,6 +14,7 @@ use super::policy::Policy;
 use super::source::{Source, SourceKind};
 use super::source_jsonl::JsonlSource;
 use super::source_list::ListSource;
+use super::source_live::LiveSource;
 use super::source_nexo::{NexoSource, LOCAL_KEY};
 use super::{classify, ends_in_question, input_hash, AgentTrack, ObsKind, Secs, State};
 use nexo_core::mail::Stage;
@@ -225,6 +226,11 @@ impl Supervisor {
                 if matches!(o.kind, ObsKind::MsgOut { .. } | ObsKind::MsgIn { .. } | ObsKind::MsgStage { .. }) {
                     // a mail between sessions is a row of the feed; it gives a card to no one
                     changed |= fold_mail(&mut self.mails, &o);
+                    // the mail ledgers name a session by its id, the heartbeats key it `nexo:<id>`
+                    let alias = format!("nexo:{}", o.agent_key);
+                    if !self.entries.contains_key(&o.agent_key) && self.entries.contains_key(&alias) {
+                        o.agent_key = alias;
+                    }
                     if !self.entries.contains_key(&o.agent_key) {
                         continue;
                     }
@@ -352,9 +358,9 @@ impl Supervisor {
                     unread: t.inbox.iter().filter(|m| !m.1).count() as u16,
                     held: t.inbox.iter().filter(|m| m.1).count() as u16,
                     retry_secs: t.retry_until.map(|u| (u - now).max(0) as u32).filter(|s| *s > 0),
-                    ctx_pct: None,
-                    goal: None,
-                    lane: None,
+                    ctx_pct: t.ctx_pct,
+                    goal: t.goal.clone(),
+                    lane: t.lane.clone(),
                 }
             })
             .collect();
@@ -401,6 +407,7 @@ type Print = (
     Option<(u32, u32, Secs)>,
     Option<Secs>,
     Option<(Secs, u32)>,
+    (Option<u8>, Option<String>, Option<LaneInfo>),
 );
 
 fn fingerprint(t: &AgentTrack) -> Print {
@@ -414,6 +421,7 @@ fn fingerprint(t: &AgentTrack) -> Print {
         t.tests,
         t.retry_until,
         t.tokens.back().copied(),
+        (t.ctx_pct, t.goal.clone(), t.lane.clone()),
     )
 }
 
@@ -600,6 +608,16 @@ impl Setup {
         }
         if let Some((prog, args)) = &self.list_cmd {
             s.add(Box::new(ListSource::new(prog.clone(), args.clone(), self.list_every)));
+        }
+        // the other nexo sessions and the team lanes: from their heartbeats and state files under the person's own
+        // folders, so only the setup that lists the other tool's sessions too (`detect`, this machine's) reads them; a
+        // test setup with fake places never touches the real ones.
+        if self.list_cmd.is_some() {
+            let root = nexo_core::mailbox::mail_root();
+            if root.is_dir() {
+                s.add(Box::new(LiveSource::new(root)));
+            }
+            s.add(Box::new(super::source_team::TeamSource::new()));
         }
         s
     }

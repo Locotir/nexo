@@ -38,11 +38,13 @@ pub const CHAIN_MAX: usize = 4;
 pub const CHAIN_MS: i64 = 10 * 60_000;
 const EVENTS_MAX: usize = 256;
 
+mod facts;
 mod fsx;
 mod ledger;
 mod live;
 mod peers;
 
+pub use facts::LiveFacts;
 use fsx::{age_ms, make_dir, pid_alive, text_hash, write_atomic};
 pub use fsx::{mail_root, now_ms};
 pub use ledger::{read_ledgers, read_receipts, session_ids, SentRec};
@@ -66,6 +68,9 @@ struct SessionFile {
     /// The jobs running now, for `nexo sessions live`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     jobs: Vec<LiveJob>,
+    /// What the host said of the session beyond who it is (model, step, cost, goal, lane).
+    #[serde(flatten)]
+    facts: LiveFacts,
 }
 
 #[derive(Default)]
@@ -86,6 +91,7 @@ struct State {
     last_purge: i64,
     idle: bool,
     jobs: Vec<LiveJob>,
+    live: facts::Folded,
     /// File names already read from the inbox.
     seen: HashSet<String>,
     ready: VecDeque<(Mail, PathBuf)>,
@@ -277,10 +283,10 @@ impl Mailbox {
     }
 
     fn write_session(&self, now: i64) {
-        let (id, name, bypass, busy, jobs) = {
+        let (id, name, bypass, busy, jobs, facts) = {
             let mut s = self.lock();
             s.last_beat = now;
-            (s.id.clone(), s.name.clone(), s.bypass, !s.idle, s.jobs.clone())
+            (s.id.clone(), s.name.clone(), s.bypass, !s.idle, s.jobs.clone(), s.live.facts.clone())
         };
         if id.is_empty() {
             return;
@@ -296,6 +302,7 @@ impl Mailbox {
             bypass,
             busy: Some(busy),
             jobs,
+            facts,
         };
         if let Ok(b) = serde_json::to_vec(&f) {
             let _ = write_atomic(&self.dir().join("session.json"), &b);

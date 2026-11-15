@@ -17,8 +17,10 @@ pub mod socket;
 pub mod source;
 pub mod source_jsonl;
 pub mod source_list;
+pub mod source_live;
 pub mod source_mail;
 pub mod source_nexo;
+pub mod source_team;
 pub mod watch;
 
 use std::collections::VecDeque;
@@ -87,6 +89,8 @@ pub enum ObsKind {
     Activity,
     /// The person wrote in the session: new work begins, and they are present.
     UserInput,
+    /// A turn began that the person did not start (a lane's round, a mail): new work, nobody wrote.
+    TurnBegin,
     ToolPending {
         name: String,
     },
@@ -131,6 +135,16 @@ pub enum ObsKind {
         cwd: Option<String>,
         permission_mode: Option<String>,
     },
+    /// How full the context window is, in percent; not a sign of life.
+    Ctx {
+        pct: u8,
+    },
+    /// The goal the session works toward (none: cleared); not a sign of life.
+    Goal {
+        text: Option<String>,
+    },
+    /// The team lane this session is, with its clock and spend; not a sign of life.
+    Lane(Box<LaneInfo>),
     /// An event the older kinds cannot say (test results, commits, compactions, retries, the todo list).
     Ev(Ev),
     /// The session wrote to another one.
@@ -164,6 +178,9 @@ impl ObsKind {
                 | ObsKind::Reported(_)
                 | ObsKind::Dead
                 | ObsKind::Spend { .. }
+                | ObsKind::Ctx { .. }
+                | ObsKind::Goal { .. }
+                | ObsKind::Lane(_)
                 | ObsKind::MsgStage { .. }
         )
     }
@@ -206,6 +223,12 @@ pub struct AgentTrack {
     pub last_step: Option<String>,
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
+    /// How full its context window is, in percent.
+    pub ctx_pct: Option<u8>,
+    /// The goal it works toward.
+    pub goal: Option<String>,
+    /// The team lane it is.
+    pub lane: Option<LaneInfo>,
     pub done: bool,
     pub dead: bool,
     /// The latest events, newest last.
@@ -250,6 +273,7 @@ impl AgentTrack {
         }
         match &o.kind {
             ObsKind::Activity => {}
+            ObsKind::TurnBegin => self.begin_work(),
             ObsKind::UserInput => {
                 self.begin_work();
                 self.last_user = Some(at);
@@ -303,6 +327,9 @@ impl AgentTrack {
                     self.model = model.clone();
                 }
             }
+            ObsKind::Ctx { pct } => self.ctx_pct = Some(*pct),
+            ObsKind::Goal { text } => self.goal = text.clone(),
+            ObsKind::Lane(l) => self.lane = Some((**l).clone()),
             ObsKind::Meta { name, cwd, permission_mode } => {
                 if name.is_some() {
                     self.name = name.clone();

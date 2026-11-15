@@ -23,6 +23,10 @@ impl App {
             self.clear_progress_flash();
         }
         self.nexo_src.observe(&ev, nexo_agent::supervise::run::now_secs());
+        // the heartbeat tells the other sessions the step, model, cost and goal (metadata only)
+        if let Some(m) = crate::mailbox() {
+            m.observe(&ev);
+        }
         match ev {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
                 self.on_ready(session_id, provider, model, cwd, permission_mode)

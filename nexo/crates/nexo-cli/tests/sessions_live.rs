@@ -85,16 +85,23 @@ fn live_sessions_show_their_state_model_and_jobs_and_stale_ones_do_not_show() {
         keys,
         [
             "beat_age_ms",
+            "cost_usd",
+            "ctx_pct",
             "cwd",
+            "goal",
             "id",
             "jobs",
+            "lane",
             "last_beat_ms",
+            "mode",
             "model",
             "pid",
             "provider",
             "started_ms",
             "state",
-            "title"
+            "step",
+            "title",
+            "turn_ms"
         ]
     );
 
