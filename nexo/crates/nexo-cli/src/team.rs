@@ -41,7 +41,13 @@ pub enum TeamCmd {
     /// One line per lane: its state, last round, spend today and session.
     Status,
     /// Start every lane (or the ones named) that is not held, paused or running, in the background.
-    Start { names: Vec<String> },
+    Start {
+        names: Vec<String>,
+        /// Run a round right away, as a lane never run before does; otherwise a lane whose last round is
+        /// less than `every` ago waits for the rest of it.
+        #[arg(long)]
+        now: bool,
+    },
     /// Ask lanes to end after the round in flight (`--now`: at once).
     Stop {
         names: Vec<String>,
@@ -60,7 +66,11 @@ pub enum TeamCmd {
     Open { name: String },
     #[command(hide = true)]
     /// The runner of one lane (what `start` launches).
-    Run { name: String },
+    Run {
+        name: String,
+        #[arg(long)]
+        now: bool,
+    },
 }
 
 /// The lanes of `team.toml`; keys nexo does not read are warned about.
@@ -95,8 +105,8 @@ pub async fn run(cmd: &TeamCmd) -> i32 {
     match cmd {
         TeamCmd::Add { .. } => unreachable!("handled before the lanes are read"),
         TeamCmd::Status => status(&team),
-        TeamCmd::Start { names } if team.lane.is_empty() => no_lanes_yet(1),
-        TeamCmd::Start { names } => with_lanes(&team, names, start),
+        TeamCmd::Start { .. } if team.lane.is_empty() => no_lanes_yet(1),
+        TeamCmd::Start { names, now } => with_lanes(&team, names, |l| start(l, *now)),
         TeamCmd::Stop { names, now } => with_lanes(&team, names, |l| stop(l, *now)),
         TeamCmd::Pause => {
             marker(&state::paused_file(), true, "paused: no lane starts a round until `nexo team resume`")
@@ -114,8 +124,8 @@ pub async fn run(cmd: &TeamCmd) -> i32 {
             Some(l) => open(l).await,
             None => no_lane(name),
         },
-        TeamCmd::Run { name } => match team.get(name) {
-            Some(l) => runner::run(l).await,
+        TeamCmd::Run { name, now } => match team.get(name) {
+            Some(l) => runner::run(l, *now).await,
             None => no_lane(name),
         },
     }
@@ -150,9 +160,10 @@ fn marker(path: &std::path::Path, on: bool, said: &str) -> i32 {
     }
 }
 
-fn start(lane: &Lane) -> i32 {
+fn start(lane: &Lane, now: bool) -> i32 {
     let name = &lane.name;
-    match team::start(name, spawn::runner) {
+    let launch = if now { spawn::runner_now } else { spawn::runner };
+    match team::start(name, launch) {
         Ok(Started::Held) => println!("held: {name}"),
         Ok(Started::Paused) => println!("paused: {name} (`nexo team resume` first)"),
         Ok(Started::AlreadyRunning) => println!("already running: {name}"),

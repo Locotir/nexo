@@ -58,6 +58,14 @@ fn stamp() -> String {
     super::clock(now_ms())
 }
 
+/// How long the first round waits: none when asked for at once (`now`), when the lane has no clock, or when it has
+/// never had a round; otherwise what is left of `every` since the last round (`last_at`, in ms).
+fn first_wait(last_at: Option<i64>, every: Option<Duration>, now_ms: i64, now: bool) -> Duration {
+    let (Some(last), Some(every), false) = (last_at, every, now) else { return Duration::ZERO };
+    let next = last.saturating_add(every.as_millis() as i64);
+    Duration::from_millis((next - now_ms).max(0) as u64)
+}
+
 /// A round (or a mail's turn) in flight.
 #[derive(Default)]
 struct Turn {
@@ -250,7 +258,7 @@ impl Runner {
 
 /// Runs lane `lane` until its stop file, its third failed round in a row or the agent's end. The exit code: 0
 /// stopped, 1 failed.
-pub async fn run(lane: &Lane) -> i32 {
+pub async fn run(lane: &Lane, now: bool) -> i32 {
     let name = lane.name.clone();
     let me = std::process::id();
     let mut st = LaneState::load(&name);
@@ -306,6 +314,16 @@ pub async fn run(lane: &Lane) -> i32 {
         };
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
 
+    // a restart does not run a round the lane has no need of: the clock goes on from the last one
+    let wait = first_wait(st.last_round.as_ref().map(|r| r.at), every, now_ms(), now);
+    if let (Some(last), false) = (st.last_round.as_ref(), wait.is_zero()) {
+        println!(
+            "[{}] next round at {} (last one {} min ago)",
+            stamp(),
+            super::clock(now_ms() + wait.as_millis() as i64),
+            (now_ms() - last.at).max(0) / 60_000
+        );
+    }
     let mut r = Runner {
         name: name.clone(),
         lane: lane.clone(),
@@ -315,7 +333,7 @@ pub async fn run(lane: &Lane) -> i32 {
         mail,
         cost_seen: None,
         turn: None,
-        due: Some(Instant::now()),
+        due: Some(Instant::now() + wait),
         paused: false,
     };
     // the session's name is the lane's, which is how the other sessions and /panel know it
@@ -433,6 +451,19 @@ mod tests {
         assert_eq!(t(Some(TurnEnd::MaxTurns), false, None, false).result(), "failed");
         assert_eq!(t(Some(TurnEnd::Error), false, Some("spend limit reached"), true).result(), "capped");
         assert_eq!(t(None, false, Some("a hook stopped it"), false).result(), "failed");
+    }
+
+    #[test]
+    fn a_restarted_lane_waits_for_what_is_left_of_its_clock_unless_it_is_asked_to_run_now() {
+        let hour = Some(Duration::from_secs(3600));
+        let last = Some(1_000_000);
+        let at = |after_ms: i64, every, now| first_wait(last, every, 1_000_000 + after_ms, now);
+        assert_eq!(at(10_000, hour, false), Duration::from_millis(3_590_000), "10 s into the hour");
+        assert_eq!(at(10_000, hour, true), Duration::ZERO, "--now");
+        assert_eq!(at(3_600_000, hour, false), Duration::ZERO, "the hour is over");
+        assert_eq!(at(9_000_000, hour, false), Duration::ZERO, "long over");
+        assert_eq!(first_wait(None, hour, 5, false), Duration::ZERO, "no round yet");
+        assert_eq!(at(10_000, None, false), Duration::ZERO, "no clock: the once-at-start round");
     }
 
     #[test]

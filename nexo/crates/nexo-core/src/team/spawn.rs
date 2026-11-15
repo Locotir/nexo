@@ -24,17 +24,31 @@ pub fn runner(name: &str) -> std::io::Result<u32> {
     runner_of(&std::env::current_exe()?, name)
 }
 
+/// Like [`runner`], and the runner starts its first round at once, whatever the last one was (`team start --now`).
+pub fn runner_now(name: &str) -> std::io::Result<u32> {
+    launch(&std::env::current_exe()?, name, true)
+}
+
 /// Starts `<exe> team run <name>` detached; its pid. The program is a parameter so a test can start a stand-in.
+pub fn runner_of(exe: &Path, name: &str) -> std::io::Result<u32> {
+    launch(exe, name, false)
+}
+
 // the runner is meant to outlive this command, so it is never waited on
 #[allow(clippy::zombie_processes)]
-pub fn runner_of(exe: &Path, name: &str) -> std::io::Result<u32> {
+fn launch(exe: &Path, name: &str, now: bool) -> std::io::Result<u32> {
     std::fs::create_dir_all(state::dir())?;
     let log = state::log_file(name);
     rotate(&log, LOG_MAX);
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
     let err = out.try_clone()?;
     let mut c = Command::new(exe);
-    c.args(["team", "run", name]).stdin(Stdio::null()).stdout(out).stderr(err).current_dir(state::dir());
+    c.args(["team", "run", name])
+        .args(now.then_some("--now"))
+        .stdin(Stdio::null())
+        .stdout(out)
+        .stderr(err)
+        .current_dir(state::dir());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

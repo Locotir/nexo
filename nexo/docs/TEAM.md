@@ -42,7 +42,7 @@ A key nexo does not read is reported, with the key it most looks like.
 | --- | --- |
 | `nexo team add [NAME]` | adds a lane to `team.toml` (creating it); questions on a terminal, `--dir --every --routine --model --mode --max-spend-day` otherwise |
 | `nexo team status` | one line per lane: running a round, idle until HH:MM, paused, held, stopped or failed (and why); the last round's result and age; spend today; its session |
-| `nexo team start [NAME...]` | starts the lanes (all of them by default) in the background; held lanes and lanes already running are left alone |
+| `nexo team start [NAME...]` | starts the lanes (all of them by default) in the background; held lanes and lanes already running are left alone; a lane whose last round is less than `every` ago waits for the rest of it, and `--now` runs a round right away |
 | `nexo team stop [NAME...] [--now]` | the runner ends after the round in flight; `--now` ends it at once |
 | `nexo team pause` / `resume` | no lane starts a round while paused; mail waits too |
 | `nexo team hold NAME` / `unhold NAME` | `start` skips a held lane |

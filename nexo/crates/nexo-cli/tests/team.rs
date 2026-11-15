@@ -335,3 +335,56 @@ fn add_with_flags_creates_team_toml_then_appends_and_keeps_the_comments() {
     }
     assert_eq!(std::fs::read_to_string(dir.join("team.toml")).unwrap(), after);
 }
+
+/// A restart does not run a round the clock has not asked for: a lane whose last round was 10 s ago with
+/// `every = "1h"` waits (and says when), and `--now` runs one at once.
+#[test]
+fn a_restarted_lane_waits_for_its_clock_and_runs_a_round_at_once_only_when_asked() {
+    let (d, _) = setup(
+        "[[lane]]\nname = \"LATE\"\ndir = \"{work}\"\nevery = \"1h\"\nroutine = \"Go.\"\n\
+         [[lane]]\nname = \"NOW\"\ndir = \"{work}\"\nevery = \"1h\"\nroutine = \"Go.\"\n",
+        None,
+    );
+    let dir = d.path();
+    let last = nexo_clock_ms() - 10_000;
+    for name in ["LATE", "NOW"] {
+        std::fs::create_dir_all(dir.join("data/team")).unwrap();
+        let st = format!("{{\"state\":\"stopped\",\"last_round\":{{\"at\":{last},\"result\":\"ok\",\"spend\":0.0}}}}");
+        std::fs::write(dir.join("data/team").join(format!("{name}.json")), st).unwrap();
+    }
+    let late = runner(dir, "LATE");
+    wait_for(60, "the runner to be up", || {
+        let st = state(dir, "LATE");
+        st["started"].is_number() && st["next_round"].is_number()
+    });
+    let st = state(dir, "LATE");
+    let due = st["next_round"].as_i64().unwrap();
+    assert!((due - (last + 3_600_000)).abs() < 5_000, "the round is due an hour after the last one: {st}");
+    std::thread::sleep(Duration::from_millis(1500));
+    let st = state(dir, "LATE");
+    assert_eq!(st["last_round"]["at"].as_i64(), Some(last), "no round ran: {st}");
+    assert_eq!(st["rounds"].as_u64().unwrap_or(0), 0, "{st}");
+    assert!(
+        output(dir, "LATE").contains("min ago)") && output(dir, "LATE").contains("next round at "),
+        "{}",
+        output(dir, "LATE")
+    );
+    drop(late);
+
+    let out = std::fs::File::create(dir.join("NOW.out")).unwrap();
+    let _now = Held(
+        nexo(dir)
+            .args(["team", "run", "NOW", "--now"])
+            .stdin(Stdio::null())
+            .stdout(out.try_clone().unwrap())
+            .stderr(out)
+            .spawn()
+            .unwrap(),
+    );
+    wait_for(60, "the round that was asked for", || state(dir, "NOW")["rounds"].as_u64() >= Some(1));
+    assert!(output(dir, "NOW").contains("echo: Go."), "{}", output(dir, "NOW"));
+}
+
+fn nexo_clock_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
