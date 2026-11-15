@@ -172,7 +172,14 @@ impl JobsView {
         let list: &[(&str, &str)] = &[("↑↓", "move"), ("Enter", "open"), ("x", "stop"), ("Esc", "close")];
         let detail: &[(&str, &str)] = &[("↑↓", "scroll"), ("x", "stop"), ("Esc", "back")];
         let short: &[(&str, &str)] = &[("Enter", ""), ("x", ""), ("Esc", "")];
-        let first = if self.detail { detail } else { list };
+        // with nothing listed only the key that works is offered
+        let first = if self.detail {
+            detail
+        } else if self.is_empty() {
+            &[("Esc", "close")]
+        } else {
+            list
+        };
         for set in [first, short] {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (k, what) in set {
@@ -198,6 +205,7 @@ impl JobsView {
             let empty = vec![
                 Line::from(Span::styled("⚙", theme.dim2())).centered(),
                 Line::from(Span::styled("No background jobs", theme.dim())).centered(),
+                Line::from(Span::styled("Ask the agent to run a command in the background.", theme.dim2())).centered(),
             ];
             return (empty, Vec::new(), 0);
         }
@@ -320,6 +328,6 @@ impl JobsView {
 
     /// What makes this dialog the same dialog from frame to frame.
     pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
-        std::hash::Hash::hash(&7u8, h)
+        std::hash::Hash::hash(&(7u8, self.is_empty()), h)
     }
 }

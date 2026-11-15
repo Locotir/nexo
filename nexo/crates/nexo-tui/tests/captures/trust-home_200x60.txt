@@ -20,18 +20,18 @@
 
 
 
-                                                    ╭ trust this folder ───────────────────────────────────────────────────────────────────────────╮
-                                                    │ Do you trust the files in this folder?                                                       │
-                                                    │                                                                                              │
-                                                    │ /home/ana                                                                                    │
-                                                    │                                                                                              │
-                                                    │ Project hooks and MCP servers will run.                                                      │
-                                                    │ This is your home folder: trusting it trusts every folder below it that is not a project of  │
-                                                    │ its own.                                                                                     │
-                                                    │                                                                                              │
-                                                    │ ❯ Yes, trust this folder                                                                   y │
-                                                    │   No, don't trust                                                                          n │
-                                                    ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+                                             ╭ trust this folder ─────────────────────────────────────────────────────────────────────────────────────────╮
+                                             │ Do you trust the files in this folder?                                                                     │
+                                             │                                                                                                            │
+                                             │ /home/ana                                                                                                  │
+                                             │                                                                                                            │
+                                             │ Project hooks and MCP servers will run.                                                                    │
+                                             │ This is your home folder: trusting it trusts every folder below it that is not a project of its own.       │
+                                             │                                                                                                            │
+                                             │ ❯ Yes, trust this folder                                                                                 y │
+                                             │   No, don't trust                                                                                        n │
+                                             ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 

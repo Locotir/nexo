@@ -100,16 +100,16 @@ fn the_ghost_waits_for_a_typed_single_line_draft() {
 #[test]
 fn the_help_scrolls_by_page_and_says_so() {
     let mut a = app();
-    a.modal = Some(Modal::Help { scroll: 0 });
+    a.modal = Some(Modal::Help { scroll: 0, query: String::new() });
     let first = draw(&mut a, 80, 24);
     assert!(first.contains("PgUp/PgDn"), "{first}");
     key(&mut a, KeyCode::PageDown, KeyModifiers::NONE);
-    assert!(matches!(a.modal, Some(Modal::Help { scroll }) if scroll > 0));
+    assert!(matches!(a.modal, Some(Modal::Help { scroll, .. }) if scroll > 0));
     assert_ne!(draw(&mut a, 80, 24), first);
     key(&mut a, KeyCode::Home, KeyModifiers::NONE);
-    assert!(matches!(a.modal, Some(Modal::Help { scroll: 0 })));
+    assert!(matches!(a.modal, Some(Modal::Help { scroll: 0, .. })));
     key(&mut a, KeyCode::End, KeyModifiers::NONE);
-    assert!(matches!(a.modal, Some(Modal::Help { scroll }) if scroll > 0));
+    assert!(matches!(a.modal, Some(Modal::Help { scroll, .. }) if scroll > 0));
 }
 
 #[test]
@@ -157,4 +157,63 @@ fn a_multi_line_paste_into_a_picker_filter_keeps_the_words_apart() {
     nexo_tui::event::handle(&mut a, crossterm::event::Event::Paste("message 0\nmessage 1".into()));
     let s = draw(&mut a, 100, 30);
     assert!(s.contains("message 0 message 1"), "{s}");
+}
+
+#[test]
+fn typing_in_the_help_narrows_it_and_the_first_esc_takes_the_text_back() {
+    let mut a = app();
+    a.modal = Some(Modal::Help { scroll: 0, query: String::new() });
+    for c in "rewind".chars() {
+        key(&mut a, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let s = draw(&mut a, 80, 24);
+    assert!(s.contains("filter rewind"), "{s}");
+    assert!(s.contains("Esc Esc") && !s.contains("Ctrl+C"), "{s}");
+    key(&mut a, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(matches!(&a.modal, Some(Modal::Help { query, .. }) if query.is_empty()));
+    key(&mut a, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(a.modal.is_none());
+    a.modal = Some(Modal::Help { scroll: 0, query: "zzzqq".into() });
+    assert!(draw(&mut a, 80, 24).contains("nothing matches"));
+}
+
+#[test]
+fn the_help_keeps_its_bottom_border_at_80_by_24() {
+    let mut a = app();
+    a.modal = Some(Modal::Help { scroll: 0, query: String::new() });
+    let s = draw(&mut a, 80, 24);
+    assert!(s.contains("╰"), "{s}");
+}
+
+#[test]
+fn a_window_over_the_transcript_dims_what_is_behind_it() {
+    use ratatui::style::Modifier;
+    let mut a = app();
+    run(&mut a, "!echo behind-the-window");
+    a.modal = Some(Modal::Help { scroll: 0, query: String::new() });
+    let mut t = Terminal::new(TestBackend::new(170, 48)).unwrap();
+    draw_frame(&mut t, &mut a).unwrap();
+    let buf = t.backend().buffer().clone();
+    let dimmed = |x: u16, y: u16| buf[(x, y)].modifier.contains(Modifier::DIM);
+    assert!(dimmed(2, 10) && dimmed(168, 10), "the cells beside the window are dimmed");
+}
+
+#[test]
+fn an_empty_jobs_window_is_narrow_and_offers_only_the_key_that_works() {
+    let mut a = app();
+    a.modal = Some(Modal::Jobs(Box::new(nexo_tui::views::jobs::JobsView::new(Vec::new()))));
+    let s = draw(&mut a, 170, 48);
+    assert!(s.contains("No background jobs") && s.contains("Esc close"), "{s}");
+    assert!(!s.contains("x stop") && !s.contains("Enter open"), "{s}");
+    let row: Vec<char> = s.lines().find(|l| l.contains('╭')).unwrap().chars().collect();
+    let (from, to) = (row.iter().position(|c| *c == '╭').unwrap(), row.iter().rposition(|c| *c == '╮').unwrap());
+    assert!(to - from < 60, "a window with one line says it in a small box: {}", to - from);
+}
+
+#[test]
+fn settings_alone_opens_a_window_of_switches() {
+    let mut a = app();
+    run(&mut a, "/settings");
+    let s = draw(&mut a, 100, 30);
+    assert!(s.contains("Settings") && s.contains("timestamps") && s.contains("vim"), "{s}");
 }

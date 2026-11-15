@@ -38,7 +38,7 @@ fn req() -> PermissionRequest {
 #[test]
 fn help_files_and_todos_in_the_dialog_show_no_marks() {
     let th = Theme::dark();
-    let help = Modal::help_lines(&th, 80).iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
+    let help = Modal::help_lines(&th, 80, "").iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
     assert!(!help.contains('`'), "{help}");
     let mut r = req();
     r.detail = ToolDisplay::File { path: "notes.md".into(), text: "# Title\nsome **bold**".into(), start_line: 1 };
@@ -95,9 +95,9 @@ fn a_long_command_is_shown_whole_in_the_permission_dialog() {
 
 #[test]
 fn a_dragged_scrollbar_sets_the_body_or_moves_a_lists_selection() {
-    let mut m = Modal::Help { scroll: 0 };
+    let mut m = Modal::Help { scroll: 0, query: String::new() };
     m.set_scroll(7, 10, 0);
-    assert!(matches!(m, Modal::Help { scroll: 7 }));
+    assert!(matches!(m, Modal::Help { scroll: 7, .. }));
     let items: Vec<PickItem> =
         (0..40).map(|i| PickItem { label: format!("item {i}"), value: i.to_string(), hint: String::new() }).collect();
     let mut m = Modal::Picker(Picker::new(PickKind::Model, "Model", items, None));

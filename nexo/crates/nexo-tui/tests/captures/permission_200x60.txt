@@ -21,16 +21,16 @@
    ✓ read tests/a.rs · 2 lines  12ms ▸
    ✓ edit src/lib.rs · +1 −1  3ms
    │ @@ -1,1 +1,1 @@
-   │ 1 - let x = 1;                                 ╭ permission · bash ───────────────────────────────────────────────────────────────────────────╮
-   └ 1 + let x = 2;                                 │ bash  cargo test                                                                             │
-                                                    │                                                                                              │
- ◈ model deepseek/deepseek-chat · 9.0k context · no │ $ cargo test                                                                                 │
-                                                    │                                                                                              │
- ◇ compacted 2 messages                             │ Allow always with a rule:                                                                    │
-                                                    │   1  bash(cargo *)                                                                           │
-      0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.00 │                                                                                              │
-                                                    │ [y] allow   [a] always   [n] deny                                                            │
-                                                    ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+   │ 1 - let x = 1;                          ╭ permission · bash ─────────────────────────────────────────────────────────────────────────────────────────╮
+   └ 1 + let x = 2;                          │ bash  cargo test                                                                                           │
+                                             │                                                                                                            │
+ ◈ model deepseek/deepseek-chat · 9.0k conte │ $ cargo test                                                                                               │
+                                             │                                                                                                            │
+ ◇ compacted 2 messages                      │ Allow always with a rule:                                                                                  │
+                                             │   1  bash(cargo *)                                                                                         │
+      0ms   1 step   ↑ 6.2k  ↓  340  hit 81% │                                                                                                            │
+                                             │ [y] allow   [a] always   [n] deny                                                                          │
+                                             ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 

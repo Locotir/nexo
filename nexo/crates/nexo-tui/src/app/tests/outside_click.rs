@@ -42,7 +42,7 @@ fn a_click_outside_every_window_closes_it_and_a_decision_dialog_stays() {
         ("resume", picker(PickKind::Session), true),
         ("mode", picker(PickKind::PermissionMode), true),
         ("theme", picker(PickKind::Theme), true),
-        ("help", Modal::Help { scroll: 0 }, true),
+        ("help", Modal::Help { scroll: 0, query: String::new() }, true),
         ("usage", Modal::Info(Box::new(crate::overlay::Info::new(1))), true),
         ("jobs", Modal::Jobs(Box::new(crate::jobs_view::JobsView::new(vec![]))), true),
         ("mcp", Modal::Mcp(Box::new(crate::mcp_view::McpView::new(vec![]))), true),

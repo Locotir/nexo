@@ -26,6 +26,8 @@ pub enum PickKind {
     /// A session whose memory joins this one.
     Memory,
     Trash,
+    /// `/settings`: the switches, one per row.
+    Settings,
     Theme,
     PermissionMode,
     Rewind,
@@ -319,6 +321,8 @@ pub enum Modal {
     Picker(Picker),
     Help {
         scroll: usize,
+        /// What was typed to narrow the list (empty: everything).
+        query: String,
     },
     /// `/model`: the guided setup.
     Setup(Box<Setup>),
@@ -663,14 +667,32 @@ impl Modal {
                 }
                 _ => ModalOut::Nothing,
             },
-            Modal::Help { scroll } => match key.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => ModalOut::Close,
-                KeyCode::Up | KeyCode::Char('k') => {
+            Modal::Help { scroll, query } => match key.code {
+                // the first Esc takes back what was typed, the next one closes
+                KeyCode::Esc if !query.is_empty() => {
+                    query.clear();
+                    *scroll = 0;
+                    ModalOut::Nothing
+                }
+                KeyCode::Esc | KeyCode::Enter => ModalOut::Close,
+                KeyCode::Char('?') if query.is_empty() => ModalOut::Close,
+                KeyCode::Up => {
                     *scroll = scroll.saturating_sub(1);
                     ModalOut::Nothing
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Down => {
                     *scroll += 1;
+                    ModalOut::Nothing
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    *scroll = 0;
+                    ModalOut::Nothing
+                }
+                // anything typed narrows the list: keys and commands whose name or text hold it
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    query.push(c);
+                    *scroll = 0;
                     ModalOut::Nothing
                 }
                 KeyCode::PageUp => {
@@ -789,7 +811,7 @@ impl Modal {
         match self {
             Modal::Permission(p) => p.scroll = (p.scroll as i32 + delta).max(0) as usize,
             Modal::Question(a) => a.scroll = (a.scroll as i32 + delta).max(0) as usize,
-            Modal::Help { scroll } => *scroll = (*scroll as i32 + delta).max(0) as usize,
+            Modal::Help { scroll, .. } => *scroll = (*scroll as i32 + delta).max(0) as usize,
             Modal::Picker(p) => {
                 if !p.ranked.is_empty() {
                     p.selected = ((p.selected as i32 + delta).rem_euclid(p.ranked.len() as i32)) as usize;
@@ -827,7 +849,7 @@ impl Modal {
         match self {
             Modal::Permission(p) => p.scroll = off,
             Modal::Question(a) => a.scroll = off,
-            Modal::Help { scroll } => *scroll = off,
+            Modal::Help { scroll, .. } => *scroll = off,
             Modal::Info(i) => i.scroll = off,
             Modal::Agents(a) => a.scroll = off,
             Modal::Jobs(j) => j.scroll = off,

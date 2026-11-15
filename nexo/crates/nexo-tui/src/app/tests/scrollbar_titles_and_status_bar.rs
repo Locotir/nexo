@@ -527,3 +527,15 @@ fn session_title_persists_in_the_rendered_subscription_bar() {
     assert_ne!(alpha, beta);
     assert!(alpha.contains("gpt-"), "model should remain visible: {alpha}");
 }
+
+#[test]
+fn memory_on_a_missing_file_says_the_editor_opens_a_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    let (mut a, _rx) = app();
+    a.cwd = dir.path().to_path_buf();
+    a.run_command(Command::Memory { user: false });
+    assert!(a.edit_request.is_some());
+    let said = a.blocks.iter().any(|b| format!("{b:?}").contains("yet: the editor opens a new one"));
+    assert!(said, "a notice comes before the editor");
+}

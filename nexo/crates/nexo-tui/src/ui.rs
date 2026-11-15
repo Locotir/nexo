@@ -236,6 +236,15 @@ fn draw_all(f: &mut Frame, app: &mut App) {
             let rows = card_end.saturating_sub(app.view_top()).min(usize::from(area_for.height)) as u16;
             clear_bg(f, Rect { height: rows, ..area_for }, &app.theme);
         }
+        // the windows sit on a dimmed backdrop; a permission and a theme preview keep the text in full sight
+        let keep_lit = match &app.modal {
+            Some(Modal::Permission(_) | Modal::Question(_)) => true,
+            Some(Modal::Picker(p)) => p.kind == PickKind::Theme,
+            _ => false,
+        };
+        if !keep_lit {
+            dim_backdrop(f.buffer_mut(), area_for);
+        }
         draw_modal(f, app, area_for);
         if matches!(app.modal, Some(Modal::Permission(_))) {
             draw_hints(f, app, hints);
@@ -267,6 +276,16 @@ pub fn scrub(buf: &mut ratatui::buffer::Buffer) {
 fn clear_bg(f: &mut Frame, r: Rect, theme: &Theme) {
     f.render_widget(Clear, r);
     f.render_widget(Box_::default().style(theme.base()), r);
+}
+
+/// Dims everything in `r` so a window drawn over it stands out and the text around it recedes.
+fn dim_backdrop(buf: &mut ratatui::buffer::Buffer, r: Rect) {
+    let r = r.intersection(buf.area);
+    for y in r.top()..r.bottom() {
+        for x in r.left()..r.right() {
+            buf[(x, y)].modifier.insert(Modifier::DIM);
+        }
+    }
 }
 
 /// One cell of clear ground on each side of a dialog, so the transcript's markers do not peek out beside it.

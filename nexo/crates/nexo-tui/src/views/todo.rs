@@ -230,7 +230,10 @@ impl TodoView {
     pub fn keys(&self, w: usize, theme: &Theme) -> Line<'static> {
         let full: &[(&str, &str)] = &[("↑↓", "move"), ("Enter", "copy"), ("Space", "fold done"), ("Esc", "close")];
         let short: &[(&str, &str)] = &[("↑↓", ""), ("Enter", "copy"), ("Space", "done"), ("Esc", "")];
-        for set in [full, short] {
+        let only_close: &[(&str, &str)] = &[("Esc", "close")];
+        // with no task the only key that works is the one that closes
+        let sets: &[&[(&str, &str)]] = if self.items.is_empty() { &[only_close] } else { &[full, short] };
+        for set in sets.iter().copied() {
             let mut spans = Vec::new();
             for (k, what) in set {
                 if !spans.is_empty() {

@@ -113,7 +113,7 @@ fn no_dialog_runs_over_the_draft_line_at_any_size() {
                         .collect();
                     Modal::Picker(Picker::new(PickKind::Model, "Model", items, Some("3")))
                 }
-                "help" => Modal::Help { scroll: 0 },
+                "help" => Modal::Help { scroll: 0, query: String::new() },
                 _ => Modal::Question(Box::new(Ask::new(Question {
                     id: "q".into(),
                     header: "Approach".into(),

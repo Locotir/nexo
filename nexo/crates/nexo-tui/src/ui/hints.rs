@@ -185,7 +185,7 @@ pub(super) fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
             Some(Modal::Trust(_)) => " ↑↓ choose · Enter pick · y yes · n or Esc no".to_string(),
             Some(Modal::Picker(_)) => " type to filter · ↑↓ choose · Enter pick · Esc close".to_string(),
             Some(Modal::Setup(s)) => s.hints().to_string(),
-            Some(Modal::Help { .. }) => " ↑↓ PgUp/PgDn Home/End scroll · Esc close".to_string(),
+            Some(Modal::Help { .. }) => " type to filter · ↑↓ PgUp/PgDn scroll · Esc close".to_string(),
             _ => " Esc close".to_string(),
         }
     } else if let Some(p) = &app.palette {

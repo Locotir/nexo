@@ -196,7 +196,7 @@ fn a_question_keeps_its_size_through_every_option_and_the_typed_answer() {
 fn the_help_keeps_its_size_while_it_scrolls() {
     for (w, h) in SIZES {
         let mut a = app();
-        a.modal = Some(Modal::Help { scroll: 0 });
+        a.modal = Some(Modal::Help { scroll: 0, query: String::new() });
         stays("help", w, h, a, &downs(10));
     }
 }

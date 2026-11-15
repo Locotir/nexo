@@ -242,3 +242,18 @@ fn a_message_that_waited_behind_other_lines_gets_one_added_line() {
     a.handle_agent(AgentEvent::Added { index: 0, parts: vec![AddedPart::new(StartNote, "project", note)] });
     assert_eq!(added_lines(&a), 1, "one line for one message");
 }
+
+#[test]
+fn a_long_wait_on_a_local_server_says_it_may_be_loading_the_model() {
+    let (mut a, _rx) = app();
+    a.provider = "ollama".into();
+    let t0 = Instant::now();
+    fx_at(&mut a, t0, 0);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    assert_eq!(a.activity().as_deref(), Some("Waiting for the model"));
+    fx_at(&mut a, t0, 16_000);
+    assert!(a.activity().unwrap().contains("local server may be loading"), "{:?}", a.activity());
+    a.provider = "mock".into();
+    assert_eq!(a.activity().as_deref(), Some("Waiting for the model"), "a hosted provider is not loading anything");
+}

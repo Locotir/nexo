@@ -122,7 +122,7 @@ fn parses_names_aliases_and_arguments() {
     assert_eq!(parse("/?"), Some(Command::Help));
     assert_eq!(parse("/nope"), Some(Command::Unknown("nope".into())));
     assert_eq!(parse("/login"), Some(Command::Login));
-    assert_eq!(parse("/settings"), Some(Command::Status));
+    assert_eq!(parse("/settings"), Some(Command::Settings));
     assert_eq!(parse("/doctor"), Some(Command::Doctor));
     assert_eq!(parse("/models"), Some(Command::Model(None)));
     assert_eq!(parse("hello"), None);
@@ -144,7 +144,7 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         ("/mouse", Command::Mouse),
         ("/timestamps", Command::Timestamps),
         ("/vim", Command::Vim),
-        ("/settings", Command::Status),
+        ("/settings", Command::Settings),
         ("/settings mouse", Command::Mouse),
         ("/context live", Command::ContextLive),
         ("/context-live", Command::ContextLive),

@@ -33,19 +33,15 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width < 12 || area.height < 5 {
         return draw_too_narrow(f, &theme, area, area.width < 12);
     }
-    let cap = match modal {
-        Modal::Todo(_) => 76,
-        Modal::Sent(_) => 120,
-        _ => 96,
-    };
-    // the to-do and goal windows give a long line its room on a wide terminal, up to two thirds of it
+    // one width rule for every window: as wide as its content wants, between a floor and a share of the screen
+    // the to-do and goal windows ask for room for their longest line
     let asked = match &*modal {
         Modal::Todo(v) => v.natural_width(),
         Modal::Goal(v) => v.natural_width(),
         _ => 0,
-    };
-    let cap = cap.max(asked.min(usize::from(area.width) * 2 / 3) as u16);
-    let w = (area.width.saturating_sub(4)).min(cap);
+    }
+    .min(usize::from(u16::MAX)) as u16;
+    let w = crate::dialog_size::max_width(area.width, asked);
     let max_h = area.height.saturating_sub(2);
     // laid out for the width it has now, so nothing is cut while it pops open
     let inner_w = pop_rect(Rect::new(0, 0, w, 3), pop).width.saturating_sub(4) as usize;
@@ -143,7 +139,15 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             };
             (title, lines, None)
         }
-        Modal::Help { .. } => (" help ".to_string(), Modal::help_lines(&theme, inner_w), None),
+        Modal::Help { query, .. } => {
+            // the filter sits pinned at the bottom, where the typing is
+            pinned = vec![Line::from(vec![
+                Span::styled("filter ", theme.dim()),
+                Span::styled(query.clone(), theme.style(theme.accent)),
+                Span::styled("▏", theme.dim()),
+            ])];
+            (" help ".to_string(), Modal::help_lines(&theme, inner_w, query), None)
+        }
         Modal::Jobs(v) => {
             let title;
             let lines;
@@ -215,8 +219,13 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         _ => 0,
     };
     let want_h = ((body.len() + open_extra) as u16 + pinned_h + 2 + button_h).min(max_h).max(5);
+    // forms (a permission, the setup steps, lists with a typed filter) keep the full width; windows fit their content
+    let want_w = match modal {
+        Modal::Permission(_) | Modal::Setup(_) | Modal::Picker(_) | Modal::Trust(_) => w,
+        _ => crate::dialog_size::fit_width(area.width, asked, body.iter().chain(pinned.iter())),
+    };
     let room = Rect::new(0, 0, area.width, max_h.max(5));
-    let (w, h) = app.dialog_size.modal.keep(key, f.area(), room, || (w, want_h));
+    let (w, h) = app.dialog_size.modal.keep(key, f.area(), room, || (want_w, want_h));
     let h = h.max(5).min(area.height);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
@@ -239,7 +248,7 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             p.scroll = p.scroll.min(body.len().saturating_sub(body_h));
             p.scroll
         }
-        Modal::Help { scroll } => {
+        Modal::Help { scroll, .. } => {
             *scroll = (*scroll).min(body.len().saturating_sub(body_h));
             *scroll
         }

@@ -115,15 +115,23 @@ impl Modal {
 
     /// The help at `w` columns: keys and commands in two columns, the descriptions wrapped
     /// under their own column (a long command takes a line of its own).
-    pub fn help_lines(theme: &Theme, w: usize) -> Vec<Line<'static>> {
+    pub fn help_lines(theme: &Theme, w: usize, query: &str) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
+        let q = query.trim().to_lowercase();
+        let hit = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
         let mut lines = Vec::new();
-        for (i, (group, keys)) in HELP.iter().enumerate() {
-            if i > 0 {
+        for (group, keys) in HELP.iter() {
+            // a group's own name keeps all of it
+            let all = hit(group);
+            let keys: Vec<&(&str, &str)> = keys.iter().filter(|(k, d)| all || hit(k) || hit(d)).collect();
+            if keys.is_empty() {
+                continue;
+            }
+            if !lines.is_empty() {
                 lines.push(Line::default());
             }
             lines.push(Line::from(Span::styled(group.to_string(), bold)));
-            for (k, d) in keys.iter() {
+            for (k, d) in keys {
                 lines.extend(two_columns(
                     Span::styled(k.to_string(), theme.style(theme.accent)),
                     d,
@@ -134,9 +142,17 @@ impl Modal {
                 ));
             }
         }
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled("Commands", bold)));
-        for s in crate::commands::COMMANDS {
+        let mut commands = crate::commands::COMMANDS
+            .iter()
+            .filter(|s| hit(s.name) || hit(s.description) || s.aliases.iter().any(|a| hit(a)))
+            .peekable();
+        if commands.peek().is_some() {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(Span::styled("Commands", bold)));
+        }
+        for s in commands {
             let left = if s.hint.is_empty() { format!("/{}", s.name) } else { format!("/{} {}", s.name, s.hint) };
             let also = if s.aliases.is_empty() {
                 Vec::new()
@@ -152,6 +168,9 @@ impl Modal {
                 w,
                 theme,
             ));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(format!("nothing matches \"{}\"", query.trim()), theme.dim())));
         }
         lines
     }

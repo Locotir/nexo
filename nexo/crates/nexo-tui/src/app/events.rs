@@ -467,6 +467,17 @@ impl App {
         self.blocks.iter().rev().take_while(|b| !matches!(b, Block::User { .. })).any(|b| b.is_live())
     }
 
+    /// The turn has waited 15 s or more on a provider that runs on this machine.
+    fn long_local_wait(&self) -> bool {
+        let waited = self.turn_started.is_some_and(|t| self.now().saturating_duration_since(t).as_secs() >= 15);
+        waited
+            && self.opts.providers.iter().any(|(name, c)| {
+                let url = c.base_url.to_ascii_lowercase();
+                let host = url.split("://").last().unwrap_or("");
+                *name == self.provider && ["localhost", "127.", "[::1]", "0.0.0.0"].iter().any(|h| host.starts_with(h))
+            })
+    }
+
     /// What the agent is doing now, as the activity line words it.
     pub fn activity(&self) -> Option<String> {
         if !self.busy {
@@ -485,6 +496,10 @@ impl App {
                 Some(Block::Assistant { .. }) => Phase::Writing,
                 // before the reply's first word: what the agent said it is doing
                 _ => match self.prep.as_deref() {
+                    // a cold local server loads the model before it answers: say so once the wait is long
+                    Some(what) if what == "waiting for the model" && self.long_local_wait() => {
+                        return Some("Waiting for the model: the local server may be loading it".into())
+                    }
                     Some(what) => return Some(capitalised(what)),
                     None => Phase::Thinking,
                 },

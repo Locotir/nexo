@@ -24,6 +24,8 @@ pub enum Command {
     /// `/pr [base]`
     Pr(Option<String>),
     Status,
+    /// `/settings` alone: the window of switches.
+    Settings,
     Tools,
     Hooks,
     /// `/mcp`: the window with the MCP servers.
@@ -279,7 +281,7 @@ pub fn parse(line: &str) -> Option<Command> {
             Some(a) => Command::BadArgument("context".into(), a.to_string()),
         },
         "settings" => match arg.as_deref().map(|a| a.split_whitespace().collect::<Vec<_>>()).as_deref() {
-            None => Command::Status,
+            None => Command::Settings,
             // `/settings mouse off` reads as `/settings mouse`: the key is the switch
             Some(["mouse", ..]) => Command::Mouse,
             Some(["timestamps", ..]) => Command::Timestamps,

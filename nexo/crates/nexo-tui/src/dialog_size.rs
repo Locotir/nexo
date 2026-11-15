@@ -59,6 +59,54 @@ impl Slot {
     }
 }
 
+/// The narrowest a window is drawn, so a nearly empty one still looks like a window.
+pub const MIN_WINDOW_W: u16 = 44;
+
+/// The widest a window may be on a terminal `screen_w` columns wide: the screen less two columns of
+/// margin on each side, never more than `asked` (110 unless the window has a long line to show: the
+/// to-do and goal windows ask for up to two thirds of a wide screen).
+pub fn max_width(screen_w: u16, asked: u16) -> u16 {
+    let room = screen_w.saturating_sub(4);
+    let widest = 110.max(asked.min(screen_w / 3 * 2));
+    room.min(widest)
+}
+
+/// The width a window with these lines is drawn at: what the longest line needs plus the frame
+/// and a column of air on each side, between [`MIN_WINDOW_W`] and [`max_width`]. This is the one
+/// size rule of every window.
+pub fn fit_width<'a>(
+    screen_w: u16,
+    asked: u16,
+    lines: impl Iterator<Item = &'a ratatui::text::Line<'a>>,
+) -> u16 {
+    let max = max_width(screen_w, asked);
+    let longest = lines.map(content_width).max().unwrap_or(0) as u16;
+    let want = longest.saturating_add(4).clamp(MIN_WINDOW_W.min(max), max);
+    // text that wrapped at the widest layout stops a few columns short of it: that is a full window
+    if want + 4 >= max {
+        max
+    } else {
+        want
+    }
+}
+
+/// A line's width without trailing blanks, except where the blanks carry a background (a selected row).
+fn content_width(l: &ratatui::text::Line<'_>) -> usize {
+    let total: usize = l.spans.iter().map(|s| crate::render::wrap::width(&s.content)).sum();
+    let mut trim = 0;
+    for s in l.spans.iter().rev() {
+        if s.style.bg.is_some() {
+            break;
+        }
+        let t = s.content.trim_end();
+        trim += crate::render::wrap::width(&s.content) - crate::render::wrap::width(t);
+        if !t.is_empty() {
+            break;
+        }
+    }
+    total - trim
+}
+
 /// The remembered sizes of the palette and of the dialog on top.
 #[derive(Debug, Clone, Default)]
 pub struct DialogSize {
@@ -104,6 +152,20 @@ mod tests {
         assert_eq!(s.keep(2, screen, screen, || (80, 20)), (80, 20), "replaced");
         let small = Rect::new(0, 0, 60, 30);
         assert_eq!(s.keep(2, small, small, || (60, 12)), (60, 12), "resized");
+    }
+
+    #[test]
+    fn a_window_is_as_wide_as_its_content_between_a_floor_and_a_share_of_the_screen() {
+        use ratatui::text::Line;
+        let short = [Line::from("No jobs"), Line::from("Esc close      ")];
+        assert_eq!(fit_width(170, 0, short.iter()), MIN_WINDOW_W);
+        let long = [Line::from("x".repeat(200))];
+        assert_eq!(fit_width(170, 0, long.iter()), 110);
+        assert_eq!(fit_width(80, 0, long.iter()), 76);
+        assert_eq!(fit_width(240, 150, long.iter()), 150, "a long line asks for more on a wide screen");
+        let mid = [Line::from("y".repeat(60))];
+        assert_eq!(fit_width(170, 0, mid.iter()), 64);
+        assert_eq!(max_width(30, 0), 26);
     }
 
     #[test]

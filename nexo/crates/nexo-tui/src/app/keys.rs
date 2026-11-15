@@ -102,6 +102,11 @@ impl App {
         if let Some(d) = path.parent() {
             let _ = std::fs::create_dir_all(d);
         }
+        // a file that is not there yet opens as an empty one: say so before the editor takes the screen
+        if !path.exists() {
+            let shown = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            self.notice(Level::Info, format!("no {shown} yet: the editor opens a new one, saving it creates the file"));
+        }
         self.edit_request = Some(path);
     }
 
@@ -408,6 +413,16 @@ impl App {
                         self.set_theme(&value, true);
                     }
                     PickKind::Shared => {}
+                    PickKind::Settings => {
+                        let cmd = match value.as_str() {
+                            "mouse" => Command::Mouse,
+                            "timestamps" => Command::Timestamps,
+                            "vim" => Command::Vim,
+                            "theme" => Command::Theme(None),
+                            _ => Command::Permissions(None),
+                        };
+                        self.run_command(cmd);
+                    }
                     PickKind::Queue => {
                         if let Ok(i) = value.parse::<usize>() {
                             self.unqueue(i);

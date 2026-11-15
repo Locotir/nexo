@@ -101,7 +101,10 @@ impl McpView {
         ];
         let mid: &[(&str, &str)] = &[("Space", "on/off"), ("p", "save"), ("l", "login"), ("r", "retry"), ("Esc", "")];
         let short: &[(&str, &str)] = &[("Space", ""), ("p", ""), ("l", ""), ("r", ""), ("Esc", "")];
-        for set in [long, mid, short] {
+        let only_close: &[(&str, &str)] = &[("Esc", "close")];
+        // with no server the only key that works is the one that closes
+        let sets: &[&[(&str, &str)]] = if self.is_empty() { &[only_close] } else { &[long, mid, short] };
+        for set in sets.iter().copied() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (k, what) in set {
                 if !spans.is_empty() {

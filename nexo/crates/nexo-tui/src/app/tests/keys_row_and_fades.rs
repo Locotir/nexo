@@ -169,7 +169,7 @@ fn a_dialogs_scrollbar_drags_its_text() {
     pointer(&mut a, K::Down(MouseButton::Left), bar.x, bar.y + bar.len - 1);
     pointer(&mut a, K::Drag(MouseButton::Left), bar.x, bar.y + bar.len - 1);
     pointer(&mut a, K::Up(MouseButton::Left), bar.x, bar.y + bar.len - 1);
-    assert!(matches!(a.modal, Some(Modal::Help { scroll }) if scroll == bar.max_offset()), "{:?}", a.modal.is_some());
+    assert!(matches!(a.modal, Some(Modal::Help { scroll, .. }) if scroll == bar.max_offset()), "{:?}", a.modal.is_some());
     frame(&mut a, 70, 16);
     assert!(a.modal_bar.unwrap().offset > 0);
     a.modal = None;
