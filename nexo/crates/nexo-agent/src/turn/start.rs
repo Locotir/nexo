@@ -655,7 +655,7 @@ pub(super) async fn prepare(
     let (_, cfg, model) = st.target.get();
     let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
-    if let Some(block) = hidden {
+    if let Some(block) = &hidden {
         // the person may read what rides on this request only, apart from what they typed
         if st.hidden.len() != st.hidden_told {
             st.hidden_told = st.hidden.len();
@@ -663,10 +663,12 @@ pub(super) async fn prepare(
             part.request_only = true;
             emit(&st.events, AgentEvent::Added { index: st.turn_start, parts: vec![part] });
         }
-        attach_hidden(&mut req.messages, block);
     }
-    if let Some(f) = goal_facts {
-        attach_hidden(&mut req.messages, f);
+    // the notes of this request only go as one text part: a provider puts its cache breakpoint before one trailing
+    // text part, so with two the breakpoint would land on a note the next request does not carry
+    let notes: Vec<String> = hidden.into_iter().chain(goal_facts).collect();
+    if !notes.is_empty() {
+        attach_hidden(&mut req.messages, notes.join("\n\n"));
     }
     req.tools = specs;
     req.no_tool_call = no_tool_call;

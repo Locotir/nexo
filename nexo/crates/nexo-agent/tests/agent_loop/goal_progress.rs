@@ -259,3 +259,44 @@ async fn a_resumed_goal_starts_its_counts_over() {
     );
     r.stop().await;
 }
+
+/// A supervisor note and the counts of a goal ride on the same request: they go as one trailing text part, so a
+/// provider's cache breakpoint before it lands where the next request, without them, still finds its prefix.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_supervisor_note_and_the_goal_counts_ride_as_one_text_part() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "exit 127"}))),
+        Reply::Events(call("b2", "bash", json!({"command": "exit 127"}))),
+        Reply::Events(text("giving up\nGOAL DONE")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 0;
+    let mut r = start_with(client.clone(), cfg, None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("read the file".into()) });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    let last = client.requests()[2].messages.last().unwrap().clone();
+    let texts: Vec<&str> = last
+        .content
+        .iter()
+        .filter_map(|p| if let Part::Text { text, .. } = p { Some(text.as_str()) } else { None })
+        .collect();
+    let tail = texts.last().copied().unwrap_or("");
+    assert!(tail.contains("was run again") && tail.contains("Goal so far"), "{texts:?}");
+    assert!(tail.find("was run again") < tail.find("Goal so far"), "the supervisor note comes first: {tail}");
+    assert!(
+        texts[..texts.len() - 1].iter().all(|t| !t.contains("Goal so far") && !t.contains("was run again")),
+        "{texts:?}"
+    );
+    // the person is still told of the supervisor note
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::Added { parts, .. } if parts.iter().any(|p| p.kind == AddedKind::Supervisor))
+    ));
+    r.stop().await;
+}
