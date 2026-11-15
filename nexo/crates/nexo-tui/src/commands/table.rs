@@ -73,7 +73,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("commit", "context and tools", 40, &[], "[hint]", "commit the staged changes with a message"),
     spec("pr", "context and tools", 41, &["pull-request"], "[base]", "push the branch and open a pull request"),
     spec("status", "context and tools", 42, &["info"], "", "version, model, key, endpoint, session"),
-    spec("settings", "settings", 43, &[], "[mouse|timestamps|vim]", "a window of switches: mouse, times, vim keys"),
+    spec("settings", "settings", 43, &[], "[mouse|timestamps|vim]", "a window: mouse, times, vim keys"),
     spec("doctor", "nexo", 47, &[], "", "check the setup: files, provider, key"),
     spec("tools", "context and tools", 26, &[], "", "the tools the model has, by kind"),
     spec("hooks", "context and tools", 27, &[], "", "the hooks loaded, and where from"),

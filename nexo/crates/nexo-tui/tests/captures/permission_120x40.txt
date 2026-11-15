@@ -11,16 +11,16 @@
    ▸ thinking · 1 line · 0ms
 
  ◆ I will read the test first.
-            ╭ permission · bash ───────────────────────────────────────────────────────────────────────────╮
-   • the in │ bash  cargo test                                                                             │
-   • the ou │                                                                                              │
-            │ $ cargo test                                                                                 │
-   rust ─── │                                                                                              │ ─────────
-   ▎ fn mai │ Allow always with a rule:                                                                    │
-            │   1  bash(cargo *)                                                                           │
-   ✓ read t │                                                                                              │
-   ✓ edit s │ [y] allow   [a] always   [n] deny                                                            │
-   │ @@ -1, ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+     ╭ permission · bash ─────────────────────────────────────────────────────────────────────────────────────────╮
+   • │ bash  cargo test                                                                                           │
+   • │                                                                                                            │
+     │ $ cargo test                                                                                               │
+   r │                                                                                                            │ ──
+   ▎ │ Allow always with a rule:                                                                                  │
+     │   1  bash(cargo *)                                                                                         │
+   ✓ │                                                                                                            │
+   ✓ │ [y] allow   [a] always   [n] deny                                                                          │
+   │ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
    │ 1 - let x = 1;
    └ 1 + let x = 2;
 
