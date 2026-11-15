@@ -300,7 +300,26 @@ impl App {
             let n = self.shown(i, width);
             off += n + self.gap_after(i, n);
         }
-        self.total_lines = off;
+        // following a reply as it streams, the end of the text only moves up: what a live block gives back
+        // (a wrapped line that got shorter, thinking that closed to its head) stays as blank space until
+        // the reply grows into it, so the lines above never slide down under the reader's eyes. The space is
+        // kept only while the start of the turn is where it was: a fold above it is the person's own
+        // doing and takes effect at once.
+        let live = self.blocks.iter().any(|b| b.is_live());
+        // the turn starts at the last message of the person: calls and thinking come and go after it
+        let turn = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).unwrap_or(0);
+        let held = (self.follow && self.busy)
+            .then_some(self.held)
+            .flatten()
+            .filter(|h| h.width == width && self.offsets.get(h.anchor).is_some_and(|o| *o == h.anchor_off));
+        let pin = (live || held.is_some()).then_some(turn);
+        self.total_lines = off.max(held.map_or(0, |h| h.total));
+        self.held = (self.follow && self.busy).then_some(()).and(pin).map(|anchor| HeldEnd {
+            width,
+            total: self.total_lines,
+            anchor,
+            anchor_off: self.offsets[anchor],
+        });
         if let Some((bi, j)) = anchor.filter(|(bi, _)| *bi < self.offsets.len()) {
             let end = self.offsets.get(bi + 1).copied().unwrap_or(self.total_lines);
             let top = self.offsets[bi];

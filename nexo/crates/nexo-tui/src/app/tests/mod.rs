@@ -218,6 +218,7 @@ mod effort_fx;
 mod goal_window_and_additions;
 mod goals_todo_strip_and_flashes;
 mod keys_row_and_fades;
+mod live_block_height;
 mod outside_click;
 mod pastes_questions_and_plans;
 mod scrollbar_titles_and_status_bar;

@@ -63,6 +63,16 @@ pub const GUESS_WINDOW: u64 = 128_000;
 /// A block's render: the width, the line count (kept), and the lines (dropped when far from the view).
 type Rendered = (usize, usize, Option<Vec<Line<'static>>>, crate::regions::Meta);
 
+/// The end of the transcript as the last layout held it while a reply streamed (see `App::held`): the width,
+/// the height, and the live block whose start must not have moved.
+#[derive(Clone, Copy)]
+pub(super) struct HeldEnd {
+    pub width: usize,
+    pub total: usize,
+    pub anchor: usize,
+    pub anchor_off: usize,
+}
+
 pub struct App {
     pub opts: TuiOptions,
     pub theme: Theme,
@@ -190,6 +200,10 @@ pub struct App {
     pub keymap: crate::keymap::Keymap,
     files: Option<Vec<String>>,
     pub last_width: usize,
+    /// The height the transcript had at the last layout while a reply streamed in follow mode, and how many
+    /// blocks made it: what is live may shrink (a wrapped line, a closed thinking card), but the text above it
+    /// must not move down, so the space it gave up stays as blank lines until new text takes it.
+    pub(super) held: Option<HeldEnd>,
     /// Inline mode: the blocks before this index are already in the terminal's scrollback and take no room here.
     pub inline_flushed: usize,
     /// Picker rows of the last draw, for clicks: (rect, index in the ranked list).
@@ -438,6 +452,7 @@ impl App {
             keymap: crate::keymap::Keymap::from_config(&opts.keys).0,
             files: None,
             last_width: 80,
+            held: None,
             inline_flushed: 0,
             picker_rows: Vec::new(),
             palette_rows: Vec::new(),

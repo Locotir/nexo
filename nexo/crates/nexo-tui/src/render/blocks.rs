@@ -368,9 +368,18 @@ impl Block {
                 };
                 let mut lines = vec![Line::from(Span::styled(head_text, head_style))];
                 if !*folded || *streaming {
-                    let body = if *streaming && *folded { tail(text, 3) } else { text.clone() };
+                    // folded and streaming, the card shows the last rows of the text, not of its source lines: a
+                    // source line wraps into any number of rows, so counting lines made the card change height
+                    // with every delta. Far more lines than rows are rendered so the window never starts mid-block.
+                    let live = *streaming && *folded;
+                    let body = if live { tail(text, LIVE_THINK_ROWS * 8) } else { text.clone() };
                     let guide = [Span::styled(GUIDE, theme.dim2())];
-                    let (b, mut m) = markdown::md_lines_meta(&body, w, theme, style, true, &guide);
+                    let (mut b, mut m) = markdown::md_lines_meta(&body, w, theme, style, true, &guide);
+                    if live && b.len() > LIVE_THINK_ROWS {
+                        b.drain(..b.len() - LIVE_THINK_ROWS);
+                        // the rows moved up: what the wrap noted about the old ones no longer fits
+                        m = Meta::default();
+                    }
                     if !b.is_empty() {
                         m.shift(1);
                         m.regions.push(Region::new(Kind::Think, 1, b.len(), 2));

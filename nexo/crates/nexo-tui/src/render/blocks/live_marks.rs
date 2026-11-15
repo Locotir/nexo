@@ -27,6 +27,9 @@ pub(super) fn shimmer(word: &str, frame: usize, theme: &Theme) -> Vec<Span<'stat
         .collect()
 }
 
+/// Rows of live thinking a folded card shows while it streams.
+pub(super) const LIVE_THINK_ROWS: usize = 3;
+
 pub(super) fn tail(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(n);
