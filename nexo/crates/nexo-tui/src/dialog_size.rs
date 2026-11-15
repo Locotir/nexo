@@ -74,11 +74,7 @@ pub fn max_width(screen_w: u16, asked: u16) -> u16 {
 /// The width a window with these lines is drawn at: what the longest line needs plus the frame
 /// and a column of air on each side, between [`MIN_WINDOW_W`] and [`max_width`]. This is the one
 /// size rule of every window.
-pub fn fit_width<'a>(
-    screen_w: u16,
-    asked: u16,
-    lines: impl Iterator<Item = &'a ratatui::text::Line<'a>>,
-) -> u16 {
+pub fn fit_width<'a>(screen_w: u16, asked: u16, lines: impl Iterator<Item = &'a ratatui::text::Line<'a>>) -> u16 {
     let max = max_width(screen_w, asked);
     let longest = lines.map(content_width).max().unwrap_or(0) as u16;
     let want = longest.saturating_add(4).clamp(MIN_WINDOW_W.min(max), max);

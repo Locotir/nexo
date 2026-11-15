@@ -38,7 +38,8 @@ fn req() -> PermissionRequest {
 #[test]
 fn help_files_and_todos_in_the_dialog_show_no_marks() {
     let th = Theme::dark();
-    let help = Modal::help_lines(&th, 80, "").iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
+    let help =
+        Modal::help_lines(&th, 80, "").iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
     assert!(!help.contains('`'), "{help}");
     let mut r = req();
     r.detail = ToolDisplay::File { path: "notes.md".into(), text: "# Title\nsome **bold**".into(), start_line: 1 };

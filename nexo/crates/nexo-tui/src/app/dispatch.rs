@@ -105,7 +105,8 @@ impl App {
                     row("theme", self.theme.name.to_string()),
                     row("permissions", self.permission_mode.as_str().to_string()),
                 ];
-                self.modal = Some(Modal::Picker(Picker::new(PickKind::Settings, "Settings · Enter switches", items, None)));
+                self.modal =
+                    Some(Modal::Picker(Picker::new(PickKind::Settings, "Settings · Enter switches", items, None)));
             }
             Command::Mouse => self.toggle_mouse(),
             Command::Timestamps => {

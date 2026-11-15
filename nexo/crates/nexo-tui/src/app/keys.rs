@@ -104,7 +104,8 @@ impl App {
         }
         // a file that is not there yet opens as an empty one: say so before the editor takes the screen
         if !path.exists() {
-            let shown = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let shown =
+                path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
             self.notice(Level::Info, format!("no {shown} yet: the editor opens a new one, saving it creates the file"));
         }
         self.edit_request = Some(path);
