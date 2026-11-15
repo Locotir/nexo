@@ -233,9 +233,6 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             permission_mode: perm.mode,
         },
     );
-    // Consumers need the model limits before other startup events, so they can describe the
-    // actual tool set in their initial output even when a session title or notice follows.
-    emit(&events, limits.event(&provider, &model));
     emit(
         &events,
         AgentEvent::SessionChanged { session_id: session.id().to_string(), title: session.meta().title.clone() },
@@ -275,6 +272,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         emit(&events, AgentEvent::GoalLog(resumed_log(goal.as_deref())));
         emit(&events, AgentEvent::Goal { text: goal.clone(), round: 0, max: goal_rounds(), state: goal_state.clone() });
     }
+    // Marks the end of startup, including replay, for consumers such as ACP.
+    emit(&events, limits.event(&provider, &model));
     let (usage, cost) = (session.usage(), session.cost());
     let max_cost = config.agent.max_cost;
     let jobs = Jobs::new();

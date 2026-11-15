@@ -286,6 +286,8 @@ struct Run {
     /// A turn of this run has started. A resumed session replays its recorded calls before that, for the
     /// interface: they are history, not work this run did, so they are not reported as new calls.
     live: bool,
+    /// Events held until the startup model limits let stream JSON announce the correct tools.
+    startup: Vec<AgentEvent>,
 }
 
 /// The line the legacy JSON output prints for an event. The events about a sub-agent run's own conversation
@@ -338,11 +340,32 @@ impl Run {
             quiet_text: false,
             reach,
             live: false,
+            startup: Vec::new(),
         }
     }
 
     /// Handles one agent event; true when the request is over.
     fn on_event(&mut self, ev: &AgentEvent) -> bool {
+        if self.init.is_some() {
+            match ev {
+                AgentEvent::ModelLimits { context_window, .. } => {
+                    self.send_init(context_window.map(u64::from));
+                    for event in std::mem::take(&mut self.startup) {
+                        self.on_event(&event);
+                    }
+                }
+                AgentEvent::Idle { .. } | AgentEvent::Shutdown => {
+                    self.send_init(None);
+                    for event in std::mem::take(&mut self.startup) {
+                        self.on_event(&event);
+                    }
+                }
+                _ => {
+                    self.startup.push(ev.clone());
+                    return false;
+                }
+            }
+        }
         if self.fmt == Fmt::Legacy {
             if let Some(s) = legacy_line(ev) {
                 let mut out = std::io::stdout().lock();
@@ -350,9 +373,6 @@ impl Run {
             }
         }
         let stream = self.fmt == Fmt::StreamJson;
-        if !matches!(ev, AgentEvent::Ready { .. } | AgentEvent::ModelLimits { .. }) {
-            self.send_init(None);
-        }
         match ev {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
                 self.t.session_id = session_id.clone();
