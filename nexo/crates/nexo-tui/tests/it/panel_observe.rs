@@ -103,6 +103,13 @@ fn press(a: &mut App, code: KeyCode) -> ModalOut {
     view(a).key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+// Exercise the panel's observation page directly. The app normally routes this
+// output to a local/remote sub view when the selected session supports it.
+fn observe(a: &mut App) {
+    let ModalOut::ObserveAgent { key, .. } = press(a, KeyCode::Enter) else { panic!("expected observation request") };
+    view(a).observe_selected(&key);
+}
+
 #[test]
 fn enter_observes_the_selected_session_and_escape_returns() {
     use nexo_agent::supervise::{Ev, EvDetail, EvKind};
@@ -111,7 +118,7 @@ fn enter_observes_the_selected_session_and_escape_returns() {
     row.ribbon = vec![Ev::with(NOW, EvKind::Read, EvDetail::Text("src/main.rs".into()))];
     let mut a = scene(vec![row, job("beta", SourceKind::External)]);
     capture(&mut a, 100, 25);
-    assert_eq!(press(&mut a, KeyCode::Enter), ModalOut::Nothing);
+    observe(&mut a);
     let shown = capture(&mut a, 100, 25).join("\n");
     assert!(
         shown.contains("observation") && shown.contains("reading code") && shown.contains("src/main.rs"),
@@ -160,7 +167,7 @@ fn observation_message_stays_with_its_target_when_selection_changes() {
     a.modal = Some(Modal::Agents(Box::new(v)));
     let shown = capture(&mut a, 140, 30).join("\n");
     assert!(shown.contains("Enter observe"), "{shown}");
-    press(&mut a, KeyCode::Enter);
+    observe(&mut a);
     press(&mut a, KeyCode::Char('n'));
     let shown = capture(&mut a, 140, 30).join("\n");
     assert!(shown.contains("message › ▏"), "new message must be empty: {shown}");
@@ -190,7 +197,7 @@ fn observation_message_stays_with_its_target_when_selection_changes() {
 fn observation_does_not_message_a_replacement_selection() {
     let mut a = scene(vec![job("alpha", SourceKind::Nexo), job("beta", SourceKind::Nexo)]);
     capture(&mut a, 120, 30);
-    press(&mut a, KeyCode::Enter);
+    observe(&mut a);
     view(&mut a).set_rows(vec![job("beta", SourceKind::Nexo)]);
     press(&mut a, KeyCode::Char('n'));
     let shown = capture(&mut a, 120, 30).join("\n");
@@ -223,7 +230,7 @@ fn persisted_session_reaches_observation() {
     v.set_rows(vec![job(&id, SourceKind::Nexo)]);
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
-    press(&mut a, KeyCode::Enter);
+    observe(&mut a);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         view(&mut a).refresh();
@@ -263,7 +270,7 @@ fn end_follows_new_observation_rows_until_manual_scroll() {
         row
     };
     let mut a = scene(vec![make_row(8)]);
-    press(&mut a, KeyCode::Enter);
+    observe(&mut a);
     press(&mut a, KeyCode::End);
     let first = capture(&mut a, 100, 12).join("\n");
     assert!(first.contains("event-marker-7"), "{first}");

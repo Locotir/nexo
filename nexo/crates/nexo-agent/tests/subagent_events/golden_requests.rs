@@ -72,6 +72,7 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
         [
             "state Attached",
             "item task",
+            "state Attached", // The resolved provider/model is published to live readers.
             "delta let me ",
             "delta look",
             "item text",
@@ -82,6 +83,8 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
             "state Ok"
         ]
     );
+    let SubChange::State(resolved) = &evs[2] else { panic!("missing resolved target") };
+    assert!(resolved.provider.is_some() && resolved.model.is_some());
     assert_eq!(items_of(&evs, "t1#1"), want_items);
     assert_eq!(subs.transcript("t1#1").unwrap().items, want_items);
     assert_eq!(subs.transcript("t1#1").unwrap().dropped, 0);

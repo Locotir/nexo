@@ -41,6 +41,10 @@ fn a_running_supervisor_answers_through_the_program() {
     let setup = Setup { logs_root: None, scan_hours: 12, list_cmd: None, list_every: 10, poll_every_ms: 100 };
     let opts = Options { socket: Some(sock.clone()), dir: Some(d.path().join("st")), must_listen: true };
     let panel = Panel::start_with(&setup, Policy::default(), NexoSource::default(), &opts).unwrap();
+    assert!(panel.nudge("sess-a", "Check the build output first.").is_err());
+    // A hook identifies the external session before messages can be queued for it.
+    let (out, code, _) = run_hook("notify", &sock, r#"{"session_id":"sess-a","notification_type":"idle_prompt"}"#);
+    assert_eq!((out.as_str(), code), ("{}", 0));
     panel.nudge("sess-a", "Check the build output first.").unwrap();
     let (out, code, _) = run_hook("stop", &sock, r#"{"session_id":"sess-a","stop_hook_active":false}"#);
     assert_eq!(code, 0);

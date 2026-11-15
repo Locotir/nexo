@@ -13,7 +13,7 @@
 │  ✓ done       ▢ docs                          ◉⇡■   2h  Bash  gh release cr… │
 │                                                                              │
 │ selected  subagents 1 active / 2 total · explore: working, n1.2: done · /ho… │
-│ ←↑↓→ move · Enter observe · s source · +/- zoom · Esc close                  │
+│ ←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 
