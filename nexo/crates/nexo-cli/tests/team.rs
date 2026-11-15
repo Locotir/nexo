@@ -265,6 +265,41 @@ fn start_detaches_one_runner_that_outlives_a_hangup_and_stop_ends_it() {
     assert!(std::fs::read_to_string(dir.join("data/team/D.log")).unwrap().contains("echo: Go."));
 }
 
+/// `start --now` runs the first round at once and leaves a runner the other commands still know: a second `start`
+/// finds it running, `status` does not call it stopped, and `stop` reaches it.
+#[cfg(unix)]
+#[test]
+fn start_now_runs_a_round_at_once_and_the_runner_stays_known() {
+    let (d, _) = setup("[[lane]]\nname = \"N\"\ndir = \"{work}\"\nevery = \"1h\"\nroutine = \"Go.\"\n", None);
+    let dir = d.path();
+    struct StopOnDrop(PathBuf);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, b"");
+        }
+    }
+    let _stop = StopOnDrop(dir.join("data/team/N.stop"));
+    std::fs::create_dir_all(dir.join("data/team")).unwrap();
+    let last = nexo_clock_ms() - 10_000;
+    let st = format!("{{\"state\":\"stopped\",\"last_round\":{{\"at\":{last},\"result\":\"ok\",\"spend\":0.0}}}}");
+    std::fs::write(dir.join("data/team/N.json"), st).unwrap();
+
+    let out = nexo(dir).args(["team", "start", "--now", "N"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("started: N"), "{out:?}");
+    wait_for(60, "the round asked for", || state(dir, "N")["rounds"].as_u64() >= Some(1));
+    assert!(!dir.join("data/team/N.now").exists(), "the runner took the request away");
+
+    let again = nexo(dir).args(["team", "start", "N"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&again.stdout).contains("already running: N"), "{again:?}");
+    let status = nexo(dir).args(["team", "status"]).output().unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(!text.contains("stopped") && text.contains("idle until"), "{text}");
+
+    let stop = nexo(dir).args(["team", "stop", "N"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&stop.stdout).contains("stopping: N"), "{stop:?}");
+    wait_for(60, "the runner's end", || state(dir, "N")["state"] == "stopped");
+}
+
 /// With no `team.toml`, `status` and `start` say how to make a lane, with an example, and never point at a doc
 /// an installed copy does not have; `status` still ends well.
 #[test]

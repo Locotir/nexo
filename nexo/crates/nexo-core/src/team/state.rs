@@ -60,6 +60,12 @@ pub fn stop_file(name: &str) -> PathBuf {
     dir().join(format!("{name}.stop"))
 }
 
+/// Left by `team start --now` for the runner it starts, which takes it away and runs its first round at once. A
+/// file and not an argument, so the runner's command line stays `nexo team run <name>`, the one `is_runner` knows.
+pub fn now_file(name: &str) -> PathBuf {
+    dir().join(format!("{name}.now"))
+}
+
 pub fn hold_file(name: &str) -> PathBuf {
     dir().join("hold").join(name)
 }

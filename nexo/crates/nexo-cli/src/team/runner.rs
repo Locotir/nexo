@@ -266,6 +266,8 @@ pub async fn run(lane: &Lane, now: bool) -> i32 {
         println!("already running: {name} (process {p})");
         return 0;
     }
+    // `team start --now` asks through a file, so this runner's command line is the plain one
+    let now = now || std::fs::remove_file(state::now_file(&name)).is_ok();
     let fail = |mut st: LaneState, why: String| {
         eprintln!("[{}] {name}: {why}", stamp());
         st.state = "failed".into();

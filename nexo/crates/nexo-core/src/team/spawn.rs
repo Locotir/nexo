@@ -42,9 +42,11 @@ fn launch(exe: &Path, name: &str, now: bool) -> std::io::Result<u32> {
     rotate(&log, LOG_MAX);
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
     let err = out.try_clone()?;
+    if now {
+        std::fs::write(state::now_file(name), b"")?;
+    }
     let mut c = Command::new(exe);
     c.args(["team", "run", name])
-        .args(now.then_some("--now"))
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err)
@@ -71,7 +73,11 @@ fn launch(exe: &Path, name: &str, now: bool) -> std::io::Result<u32> {
         c.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
     // the child is never waited on: it runs on after this command ends, and the system reaps it
-    let child = c.spawn()?;
+    let child = c.spawn().inspect_err(|_| {
+        if now {
+            let _ = std::fs::remove_file(state::now_file(name));
+        }
+    })?;
     Ok(child.id())
 }
 
