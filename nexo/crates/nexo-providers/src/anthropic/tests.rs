@@ -497,3 +497,73 @@ fn usage_counts_cache_writes_and_reads_and_prices_them() {
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 2000.0 * 2.50) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
 }
+
+#[test]
+fn pin_a_tool_call_split_over_chunks_ends_with_the_joined_arguments() {
+    let mut p = MessagesParser::default();
+    let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+    evs.extend(p.feed(
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"th\":\"a\"}"}}"#,
+    ));
+    evs.extend(p.feed(r#"{"type":"content_block_stop","index":0}"#));
+    assert_eq!(
+        &evs[1..],
+        &[
+            StreamEvent::ToolCallStart { id: "tu_1".into(), name: "read".into() },
+            StreamEvent::ToolCallDelta { id: "tu_1".into(), partial_json: "{\"pa".into() },
+            StreamEvent::ToolCallDelta { id: "tu_1".into(), partial_json: "th\":\"a\"}".into() },
+            StreamEvent::ToolCallEnd { id: "tu_1".into(), name: "read".into(), args: json!({"path": "a"}) },
+        ]
+    );
+}
+
+#[test]
+fn pin_a_call_without_arguments_or_id_ends_with_empty_object_args() {
+    let mut p = MessagesParser::default();
+    let mut evs = p.feed(r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"ls"}}"#);
+    evs.extend(p.feed(r#"{"type":"content_block_stop","index":0}"#));
+    assert_eq!(
+        evs,
+        vec![
+            StreamEvent::ToolCallStart { id: "".into(), name: "ls".into() },
+            StreamEvent::ToolCallEnd { id: "".into(), name: "ls".into(), args: json!({}) },
+        ]
+    );
+}
+
+#[test]
+fn pin_a_transport_failure_drops_open_calls_and_reports_the_cut_once() {
+    let mut p = MessagesParser::default();
+    let _: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+    let evs = p.fail("reset".into());
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert!(
+        matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network && e.message == "stream cut: reset")
+    );
+    assert!(p.fail("again".into()).is_empty(), "once");
+    assert!(p.finish().is_empty(), "the open call was dropped, nothing more at the end");
+}
+
+#[test]
+fn pin_a_transport_failure_after_the_finish_says_nothing() {
+    let mut p = MessagesParser::default();
+    p.feed(r#"{"type":"message_start","message":{"id":"m"}}"#);
+    p.feed(r#"{"type":"message_stop"}"#);
+    assert!(p.fail("late".into()).is_empty());
+}
+
+#[test]
+fn pin_an_error_body_is_shown_as_type_and_message() {
+    let mut p = MessagesParser::default();
+    let evs = p.feed(r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#);
+    assert!(
+        matches!(&evs[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::RateLimit && e.message == "rate_limit_error: slow down"),
+        "{evs:?}"
+    );
+    let mut p = MessagesParser::default();
+    let evs = p.feed(r#"{"error":{"type":"overloaded_error","message":"busy"}}"#);
+    assert!(
+        matches!(&evs[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::Overloaded && e.message == "overloaded_error: busy"),
+        "{evs:?}"
+    );
+}

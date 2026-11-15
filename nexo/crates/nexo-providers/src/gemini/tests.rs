@@ -172,3 +172,51 @@ fn a_picture_in_a_tool_result_rides_as_inline_data_after_the_response() {
     assert_eq!(c[1]["parts"][0]["functionResponse"]["response"]["result"], "n.png: PNG image");
     assert_eq!(c[1]["parts"][1], json!({"inlineData": {"mimeType": "image/png", "data": "AAAA"}}));
 }
+
+#[test]
+fn pin_a_function_call_is_started_and_ended_in_one_chunk_and_empty_args_are_an_object() {
+    let mut p = GeminiParser::default();
+    let evs =
+        p.feed(r#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"g1","name":"ls","args":null}}]}}]}"#);
+    assert_eq!(
+        &evs[1..],
+        &[
+            StreamEvent::ToolCallStart { id: "g1".into(), name: "ls".into() },
+            StreamEvent::ToolCallEnd { id: "g1".into(), name: "ls".into(), args: json!({}) },
+        ]
+    );
+    let mut p = GeminiParser::default();
+    let evs =
+        p.feed(r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}}}]}}]}"#);
+    assert!(matches!(&evs[1], StreamEvent::ToolCallStart { id, .. } if id.starts_with("call_")), "{evs:?}");
+    assert!(
+        matches!(&evs[2], StreamEvent::ToolCallEnd { id, args, .. } if id.starts_with("call_") && args["path"] == "a"),
+        "{evs:?}"
+    );
+}
+
+#[test]
+fn pin_a_transport_failure_reports_the_cut_once_and_a_late_one_says_nothing() {
+    let mut p = GeminiParser::default();
+    p.feed(r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}"#);
+    let evs = p.fail("reset".into());
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert!(
+        matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network && e.message == "stream cut: reset")
+    );
+    assert!(p.fail("again".into()).is_empty(), "once");
+    assert!(p.finish().is_empty());
+    let mut p = GeminiParser::default();
+    p.feed(r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}"#);
+    assert!(p.fail("late".into()).is_empty());
+}
+
+#[test]
+fn pin_an_error_body_uses_its_message_and_status() {
+    let mut p = GeminiParser::default();
+    let evs = p.feed(r#"{"error":{"code":503,"message":"busy","status":"UNAVAILABLE"}}"#);
+    assert!(
+        matches!(&evs[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::Overloaded && e.message == "busy"),
+        "{evs:?}"
+    );
+}

@@ -243,3 +243,67 @@ fn a_picture_in_a_tool_result_follows_the_tool_message_as_an_image_url() {
         json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]})
     );
 }
+
+#[test]
+fn pin_a_tool_call_split_over_chunks_ends_with_the_joined_arguments() {
+    let mut p = ChatParser::default();
+    let mut evs = p.feed(CALL_OPEN);
+    evs.extend(p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a\"}"}}]}}]}"#));
+    evs.extend(p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#));
+    assert_eq!(
+        &evs[1..],
+        &[
+            StreamEvent::ToolCallStart { id: "c1".into(), name: "read".into() },
+            StreamEvent::ToolCallDelta { id: "c1".into(), partial_json: "{\"pa".into() },
+            StreamEvent::ToolCallDelta { id: "c1".into(), partial_json: "th\":\"a\"}".into() },
+            StreamEvent::ToolCallEnd { id: "c1".into(), name: "read".into(), args: json!({"path": "a"}) },
+            StreamEvent::Finish(FinishReason::ToolUse),
+        ]
+    );
+}
+
+#[test]
+fn pin_a_call_without_arguments_ends_with_empty_object_args_and_a_missing_id_is_made_up() {
+    let mut p = ChatParser::default();
+    let mut evs =
+        p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"ls"}}]}}]}"#);
+    evs.extend(p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#));
+    assert!(
+        matches!(&evs[1], StreamEvent::ToolCallStart { id, name } if id.starts_with("call_") && name == "ls"),
+        "{evs:?}"
+    );
+    assert!(
+        matches!(&evs[2], StreamEvent::ToolCallEnd { id, args, .. } if id.starts_with("call_") && *args == json!({})),
+        "{evs:?}"
+    );
+}
+
+#[test]
+fn pin_a_transport_failure_drops_open_calls_and_reports_the_cut_once() {
+    let mut p = ChatParser::default();
+    p.feed(CALL_OPEN);
+    let evs = p.fail("reset".into());
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert!(
+        matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network && e.message == "stream cut: reset")
+    );
+    assert!(p.fail("again".into()).is_empty(), "once");
+    assert!(p.finish().is_empty(), "the open call was dropped, nothing more at the end");
+}
+
+#[test]
+fn pin_a_transport_failure_after_the_finish_says_nothing() {
+    let mut p = ChatParser::default();
+    p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#);
+    assert!(p.fail("late".into()).is_empty());
+}
+
+#[test]
+fn pin_an_error_body_is_shown_as_type_and_message() {
+    let mut p = ChatParser::default();
+    let evs = p.feed(r#"{"error":{"message":"slow down","type":"rate_limit_error"}}"#);
+    assert!(
+        matches!(&evs[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::RateLimit && e.message == "rate_limit_error: slow down"),
+        "{evs:?}"
+    );
+}
