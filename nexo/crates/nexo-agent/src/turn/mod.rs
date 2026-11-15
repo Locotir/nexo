@@ -294,7 +294,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         history: crate::history::History::new(history),
         policy,
         last_view: (0, 0),
-        last_sent: Vec::new(),
+        last_sent: crate::history::Sent::default(),
         last_request: None,
         mended: HashSet::new(),
         perm,

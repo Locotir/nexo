@@ -14,7 +14,7 @@ pub(super) struct State {
     /// The tokens of the history and of the last view sent, for /status.
     pub(super) last_view: (u64, u64),
     /// The messages of the last request, to tell which part of the next one repeats it (the cache).
-    pub(super) last_sent: Vec<Message>,
+    pub(super) last_sent: crate::history::Sent,
     /// The last request the conversation sent, which a prompt suggestion repeats (the provider's cache) with one message more.
     pub(super) last_request: Option<ModelRequest>,
     /// The mends of a broken history already said (each is said once).

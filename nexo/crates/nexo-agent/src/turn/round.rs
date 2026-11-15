@@ -516,7 +516,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             // the curator's view leaves outputs out: what it did not send is not something the model has seen
             let mut shown = {
                 let st = state.lock().await;
-                (st.policy.recall() && !st.last_sent.is_empty()).then(|| known_lines(&st.last_sent))
+                (st.policy.recall() && !st.last_sent.is_empty()).then(|| known_lines(st.last_sent.messages()))
             };
             fresh_count_in(&mut known, shown.as_mut(), &results, false)
         } else {

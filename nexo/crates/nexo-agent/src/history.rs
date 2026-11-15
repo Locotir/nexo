@@ -26,6 +26,35 @@ fn sizes(m: &Message) -> (u64, u64, u64) {
     (size_of(m), message_tokens(m), reasoning_tokens(m))
 }
 
+/// The messages of the last request, to tell how much of the next one repeats it (the provider's cache).
+#[derive(Default)]
+pub struct Sent {
+    messages: Vec<Message>,
+}
+
+impl Sent {
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Takes `view` as the request just made. Returns how many of its first messages equal those of the
+    /// request before; only the messages after that part are copied.
+    pub fn follow(&mut self, view: &[Message]) -> usize {
+        let same = self.messages.iter().zip(view).take_while(|(a, b)| a == b).count();
+        self.messages.truncate(same);
+        self.messages.extend_from_slice(&view[same..]);
+        same
+    }
+}
+
 #[derive(Default)]
 pub struct History {
     messages: Vec<Message>,

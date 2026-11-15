@@ -804,9 +804,8 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
         Some(map) => map,
         None => (crate::context_map::map(&st.history, &view.messages), Vec::new()),
     };
-    let same = st.last_sent.iter().zip(&view.messages).take_while(|(a, b)| a == b).count();
+    let same = st.last_sent.follow(&view.messages);
     let calls = crate::context_map::calls(&st.history, &cells, &view.messages, same);
-    st.last_sent = view.messages.clone();
     let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
     emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
     if let Some(m) = &view.memory {
