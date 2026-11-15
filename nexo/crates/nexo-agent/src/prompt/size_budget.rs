@@ -144,7 +144,7 @@ fn a_small_window_gets_the_compact_text_within_its_caps() {
         assert!(json.len() <= 6_000, "{w}: the compact tool JSON takes {} characters", json.len());
     }
     assert!(BUILT_IN_COMPACT.len() <= 2_400, "{}", BUILT_IN_COMPACT.len());
-    assert!(compact_guidance(&tools).lines().filter(|l| l.starts_with("- ")).count() <= 2);
+    assert!(compact_guidance(&tools, None).lines().filter(|l| l.starts_with("- ")).count() <= 2);
 }
 
 #[test]

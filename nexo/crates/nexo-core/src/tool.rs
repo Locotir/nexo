@@ -15,6 +15,8 @@ use crate::message::ImageSource;
 use crate::provider::ToolSpec;
 
 pub mod catalog;
+mod short;
+pub use short::{McpShortened, MCP_SMALL_TOKENS};
 
 /// What a tool does to the world; the permission policy decides by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -290,6 +292,13 @@ pub trait Tool: Send + Sync {
     /// A last cut of the compact spec (a parameter the tool takes but a short text leaves out, to be learnt from
     /// its own help when needed). The full spec is untouched.
     fn trim_compact(&self, _spec: &mut ToolSpec) {}
+    /// The MCP server this tool belongs to, when it is a server's tool.
+    fn server(&self) -> Option<&str> {
+        None
+    }
+    /// Told, each time the tools are offered, whether this one went out by name and one line only (see
+    /// [`MCP_SMALL_TOKENS`]): a call that fails then carries the whole schema.
+    fn offered_short(&self, _short: bool) {}
     fn kind(&self) -> ToolKind;
     /// The kind of this call, where `args` change it (a sub-agent that may write is a write);
     /// it decides which calls of one round may run at the same time.
@@ -355,18 +364,10 @@ impl ToolSet {
 
     /// The specs as a model is offered them: the [`Compact`] text of every tool that has one when `compact`
     /// (a small window), else only of the tools seldom called ([`Tool::rare`]).
+    ///
+    /// In a small window the MCP tools are held to [`MCP_SMALL_TOKENS`] (see [`ToolSet::specs_with`]).
     pub fn specs_for(&self, compact: bool) -> Vec<ToolSpec> {
-        self.tools
-            .values()
-            .map(|t| match t.compact() {
-                Some(c) if compact || t.rare() => {
-                    let mut spec = c.apply(t.spec());
-                    t.trim_compact(&mut spec);
-                    spec
-                }
-                _ => t.spec(),
-            })
-            .collect()
+        self.specs_with(compact, compact.then_some(MCP_SMALL_TOKENS))
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {

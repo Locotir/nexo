@@ -170,14 +170,14 @@ pub fn tool_definitions_for(specs: &[nexo_core::provider::ToolSpec], window: Opt
 /// The guidance for the tools present, as the model with context window `window` gets it.
 fn guidance_for(tools: &ToolSet, window: Option<u64>) -> String {
     if is_compact(window) {
-        compact_guidance(tools)
+        compact_guidance(tools, window)
     } else {
         tool_guidance(tools)
     }
 }
 
 /// Two short lines at most, for the tools present.
-fn compact_guidance(tools: &ToolSet) -> String {
+fn compact_guidance(tools: &ToolSet, window: Option<u64>) -> String {
     let has = |n: &str| tools.get(n).is_some();
     let mut lines = Vec::new();
     if has("ls") || has("bash") {
@@ -186,10 +186,13 @@ fn compact_guidance(tools: &ToolSet) -> String {
     if has("bash") {
         lines.push("- Slow jobs: `background: true`.");
     }
-    if lines.is_empty() {
-        return String::new();
+    let mut out = if lines.is_empty() { String::new() } else { format!("\n\nTools:\n{}", lines.join("\n")) };
+    // the MCP tools that did not fit their share of the window go out by name and one line: the model is told which
+    if let Some(s) = tools.mcp_shortened(true, nexo_core::tool::MCP_SMALL_TOKENS) {
+        out.push_str("\n\n");
+        out.push_str(&s.note(window));
     }
-    format!("\n\nTools:\n{}", lines.join("\n"))
+    out
 }
 
 /// The guidance for the tools present, by name.

@@ -176,6 +176,7 @@ fn tools_chars(r: &ModelRequest) -> usize {
 async fn a_sub_agent_on_an_8k_window_gets_the_compact_tool_text_the_main_agent_gets_there() {
     let _g = config_lock().lock().await;
     let (req, _, _) = sub_agent_on_a_small_model(8_000, None).await;
+    eprintln!("sub-agent tools at 8k: {} tokens", tools_chars(&req) / 4);
     // the budget the main agent's compact tool text is held to at 8k (`prompt::size_budget`)
     assert!(tools_chars(&req) <= 6_000, "the sub-agent's tools take {} characters", tools_chars(&req));
     let names: Vec<_> = req.tools.iter().map(|t| t.name.as_str()).collect();
@@ -207,4 +208,137 @@ async fn a_sub_agent_on_a_large_window_gets_the_full_tool_text_as_before() {
             assert_eq!(&f, t, "{} is not the full text", t.name);
         }
     }
+}
+
+/// A server with 30 tools, each with a long text and three parameters. A call answers `ran`; one whose arguments
+/// carry `fail` is an error the tool reports.
+#[cfg(unix)]
+const BIG_SERVER: &str = r#"while IFS= read -r l; do
+  id=$(printf '%s' "$l" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$l" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"big"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":' "$id"; cat "$TOOLS"; printf '}\n' ;;
+    *'"method":"tools/call"'*'fail'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"bad arguments"}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ran"}]}}\n' "$id" ;;
+  esac
+done
+"#;
+
+/// What the 30-tool server's session sends on a window of `w` tokens: the first request, and what its two calls
+/// to the last tool (right arguments, then wrong ones) answered.
+#[cfg(unix)]
+async fn big_mcp_session(w: u32) -> (ModelRequest, Vec<String>) {
+    let d = test_tmpdir().unwrap();
+    let tool = |i: usize| {
+        json!({
+            "name": format!("tool_{i:02}"),
+            "description": format!("Tool number {i} of the big server. It looks things up in the records the server keeps, by name, by date or by owner, and returns the matching rows with their fields in full."),
+            "inputSchema": {"type": "object", "required": ["q"], "properties": {
+                "q": {"type": "string", "description": "What to look for: a name, a date range or an owner, as the records keep it."},
+                "limit": {"type": "integer", "description": "The most rows to return, 1 to 500."},
+                "fail": {"type": "boolean", "description": "Make the call fail."}
+            }}
+        })
+    };
+    let list = json!({"tools": (0..30).map(tool).collect::<Vec<_>>()});
+    std::fs::write(d.path().join("tools.json"), list.to_string()).unwrap();
+    let mut servers = std::collections::BTreeMap::new();
+    servers.insert(
+        "big".to_string(),
+        nexo_core::config::McpServerConfig {
+            command: "sh".into(),
+            args: vec!["-c".into(), BIG_SERVER.into()],
+            env: [("TOOLS".to_string(), d.path().join("tools.json").display().to_string())].into(),
+            ..Default::default()
+        },
+    );
+    let hub = nexo_tools::mcp_hub::McpHub::start_in_background(&servers, &d.path().join("auth.json"), None);
+    data_dir();
+    let (handle, ends) = channels();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "mcp__big__tool_29", json!({"q": "x"}))),
+        Reply::Events(call("c2", "mcp__big__tool_29", json!({"fail": true}))),
+        Reply::Events(text("done")),
+    ]);
+    let setup = AgentSetup {
+        config: cfg_window(w),
+        cwd: d.path().to_path_buf(),
+        provider: "mock".into(),
+        model: "m1".into(),
+        tools: nexo_tools::builtin(),
+        client: client.clone(),
+        resume: None,
+        gate: None,
+        mail: None,
+        mcp: Some(hub.clone()),
+        model_pinned: false,
+    };
+    let task = tokio::spawn(nexo_agent::run(ends, setup));
+    let mut r = Running { handle, task };
+    assert!(matches!(r.next().await, AgentEvent::Ready { .. }));
+    r.send(AgentCommand::Submit { text: "look up the records".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    r.stop().await;
+    hub.close().await;
+    let outputs = ["c1", "c2"]
+        .iter()
+        .map(|c| {
+            evs.iter()
+                .find_map(|e| match e {
+                    AgentEvent::ToolDone { id, output, .. } if id == c => Some(output.content.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    (client.requests()[0].clone(), outputs)
+}
+
+/// The tokens the MCP tools of `r` take, as nexo counts them (four characters a token).
+#[cfg(unix)]
+fn mcp_tokens(r: &ModelRequest) -> u64 {
+    r.tools
+        .iter()
+        .filter(|t| t.name.starts_with("mcp__"))
+        .map(|t| serde_json::to_string(t).unwrap().chars().count() as u64 / 4)
+        .sum()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn thirty_mcp_tools_on_an_8k_window_stay_in_their_share_are_named_and_still_run() {
+    let _g = config_lock().lock().await;
+    let (req, outputs) = big_mcp_session(8_000).await;
+    let tokens = mcp_tokens(&req);
+    eprintln!("30 MCP tools at 8k: {tokens} tokens");
+    assert_eq!(
+        req.tools.iter().filter(|t| t.name.starts_with("mcp__big__")).count(),
+        30,
+        "every tool is still offered"
+    );
+    assert!(tokens <= nexo_core::tool::MCP_SMALL_TOKENS, "the MCP tools take {tokens} tokens");
+    // the fact the model gets: the server, the tools, and the numbers
+    let short: Vec<&str> =
+        req.tools.iter().filter(|t| t.parameters == json!({"type": "object"})).map(|t| t.name.as_str()).collect();
+    assert!(short.len() > 20, "{short:?}");
+    let note = req.system.lines().find(|l| l.starts_with("MCP tools: ")).expect("no notice in the system text");
+    assert!(note.contains(&format!("{} of 30", short.len())) && note.contains("share of 1000"), "{note}");
+    assert!(req.system.contains(&format!("- big: {}", short[0])), "{}", req.system);
+    // a shortened tool runs; wrong arguments bring its whole schema back
+    assert_eq!(outputs[0], "ran");
+    assert!(outputs[1].contains("bad arguments") && outputs[1].contains("\"required\":[\"q\"]"), "{}", outputs[1]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn thirty_mcp_tools_on_a_large_window_are_offered_whole_as_before() {
+    let _g = config_lock().lock().await;
+    let (req, outputs) = big_mcp_session(200_000).await;
+    let mcp: Vec<_> = req.tools.iter().filter(|t| t.name.starts_with("mcp__big__")).collect();
+    assert_eq!(mcp.len(), 30);
+    eprintln!("30 MCP tools at 200k: {} tokens", mcp_tokens(&req));
+    assert!(mcp.iter().all(|t| t.description.len() > 100 && t.parameters["properties"]["q"].is_object()));
+    assert!(!req.system.contains("MCP tools:"));
+    assert_eq!(outputs[0], "ran");
+    assert!(!outputs[1].contains("whole input schema"), "{}", outputs[1]);
 }
