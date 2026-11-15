@@ -31,7 +31,7 @@ async fn a_second_sub_agent_writes_the_path_after_the_holder_ended_normally() {
     until_tool(&client, 1).await;
     release(d.path(), "go");
     let evs = r.turn().await;
-    assert_eq!(done_of(&evs, "t2").as_deref(), Some("second done"));
+    assert_eq!(done_of(&evs, "t2").as_deref(), Some("second done\n\n[tool log] 1 tool call:\n- wrote a.txt"));
     assert_eq!(result_for(&requests_of(&client, "second writer"), "s2").as_deref(), Some("wrote a.txt"));
     r.stop().await;
 }
@@ -70,7 +70,7 @@ async fn killing_the_holder_frees_its_file_for_the_main_agent_and_for_a_new_sub_
     release(d.path(), "g3");
     let evs = r.turn().await;
     assert!(done_of(&evs, "m1").unwrap().contains("wrote a.txt"), "{:?}", done_of(&evs, "m1"));
-    assert_eq!(done_of(&evs, "t2").as_deref(), Some("new done"));
+    assert_eq!(done_of(&evs, "t2").as_deref(), Some("new done\n\n[tool log] 1 tool call:\n- wrote a.txt"));
     assert_eq!(result_for(&requests_of(&client, "new writer"), "s2").as_deref(), Some("wrote a.txt"));
     r.stop().await;
 }
@@ -108,7 +108,7 @@ async fn clear_frees_the_file_of_a_background_writer_too() {
     release(d.path(), "g3");
     let evs = r.turn().await;
     assert!(done_of(&evs, "m1").unwrap().contains("wrote a.txt"), "{:?}", done_of(&evs, "m1"));
-    assert_eq!(done_of(&evs, "t2").as_deref(), Some("new done"));
+    assert_eq!(done_of(&evs, "t2").as_deref(), Some("new done\n\n[tool log] 1 tool call:\n- wrote a.txt"));
     r.stop().await;
 }
 
@@ -153,7 +153,10 @@ async fn an_edit_of_several_files_claims_each_and_a_refused_call_gives_back_what
     until_tool(&client, 1).await;
     release(d.path(), "g2");
     let evs = r.until(is_done("t2")).await;
-    assert_eq!(done_of(&evs, "t2").as_deref(), Some("gave up"));
+    assert_eq!(
+        done_of(&evs, "t2").as_deref(),
+        Some("gave up\n\n[tool log] 1 tool call:\n- refused b.txt: held by hold files")
+    );
     let refusal = result_for(&requests_of(&client, "take b"), "s2").unwrap();
     assert!(
         refusal.contains("`b.txt` is being changed by another sub-agent running at the same time (hold files)"),
@@ -161,7 +164,7 @@ async fn an_edit_of_several_files_claims_each_and_a_refused_call_gives_back_what
     );
     release(d.path(), "g3");
     let evs = r.turn().await;
-    assert_eq!(done_of(&evs, "t3").as_deref(), Some("c done"));
+    assert_eq!(done_of(&evs, "t3").as_deref(), Some("c done\n\n[tool log] 1 tool call:\n- wrote c.txt"));
     assert_eq!(result_for(&requests_of(&client, "take c"), "s3").as_deref(), Some("wrote c.txt"));
     release(d.path(), "go");
     r.stop().await;

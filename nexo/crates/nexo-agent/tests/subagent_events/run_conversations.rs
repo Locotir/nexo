@@ -99,7 +99,7 @@ async fn nobody_listening_changes_nothing_for_the_sub_agent_or_the_registry() {
     // a view that looked and went away
     drop(subs.changes());
     let out = agent.run(task("explore", "go"), &ctx).await;
-    assert_eq!(out.content, "fine");
+    assert_eq!(out.content, "fine\n\n[tool log] 1 tool call");
     assert_eq!(subs.list()[0].state, SubState::Ok);
     assert_eq!(subs.transcript("t1#1").unwrap().items.len(), 5);
 }

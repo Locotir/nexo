@@ -192,7 +192,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "reader report"
+                "text": "reader report\n\n[tool log] 1 tool call"
               }
             ]
           }
@@ -378,7 +378,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "reader report"
+                "text": "reader report\n\n[tool log] 1 tool call"
               }
             ]
           }
@@ -595,7 +595,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "reader report"
+                "text": "reader report\n\n[tool log] 1 tool call"
               }
             ]
           }
@@ -646,7 +646,7 @@
         "content": [
           {
             "type": "text",
-            "text": "[background jobs ended]\n- job 2 sub-agent \"slow look\" done (reported) after <T> ms, 3 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).\n\n[project at the start of this request]\nProject (changed since you last saw it):\n- go"
+            "text": "[background jobs ended]\n- job 2 sub-agent \"slow look\" done (reported) after <T> ms, 5 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).\n\n[project at the start of this request]\nProject (changed since you last saw it):\n- go"
           }
         ]
       }

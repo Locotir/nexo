@@ -32,7 +32,9 @@ async fn a_task_runs_a_read_only_sub_agent_whose_report_is_the_result() {
         AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.clone()),
         _ => None,
     });
-    assert_eq!(done.map(|o| o.content).as_deref(), Some("parsing is in src/parse.rs:12"));
+    let said = done.map(|o| o.content).unwrap();
+    // the report, then what its tool log shows: three calls, no file written, none run
+    assert_eq!(said, "parsing is in src/parse.rs:12\n\n[tool log] 3 tool calls");
     let reqs = client.requests();
     // the sub-agent's own call has only the read-only tools and its own system prompt
     assert!(reqs[1].system.starts_with("You are a sub-agent"));
@@ -121,7 +123,7 @@ async fn a_general_sub_agent_asks_for_its_writes_and_its_spending_is_counted() {
     r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
     let evs = r.turn().await;
     assert!(evs.iter().any(
-        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "t1" && output.content == "wrote x.txt")
+        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "t1" && output.content.starts_with("wrote x.txt\n\n[tool log] 1 tool call:\n- wrote x.txt"))
     ));
     assert!(evs
         .iter()
@@ -165,7 +167,10 @@ async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
         _ => None,
     });
     let done = done.unwrap();
-    assert!(!done.is_error && done.content == "x is kept in a.rs:3; b.rs not checked", "{done:?}");
+    assert!(
+        !done.is_error && done.content.starts_with("x is kept in a.rs:3; b.rs not checked\n\n[tool log] 16 tool calls"),
+        "{done:?}"
+    );
     let reqs = client.requests();
     assert!(reqs[1].system.contains("You have 16 rounds"), "it knows its budget");
     let told = reqs[17]
@@ -361,8 +366,8 @@ async fn sub_agents_that_can_write_run_one_after_the_other() {
             _ => None,
         })
     };
-    assert_eq!(report("t1").as_deref(), Some("first report"));
-    assert_eq!(report("t2").as_deref(), Some("second report"));
+    assert!(report("t1").unwrap().starts_with("first report"));
+    assert!(report("t2").unwrap().starts_with("second report"));
     let reqs = client.requests();
     // the second sub-agent's first request comes after the first one's two
     assert_eq!(reqs[3].messages.len(), 1, "{:?}", reqs[3].messages);
@@ -509,13 +514,25 @@ async fn a_file_one_sub_agent_is_changing_is_closed_to_another_at_the_same_time(
     let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "two changes".into(), attachments: vec![] });
-    r.turn().await;
+    let evs = r.turn().await;
     let mut got = sub_results(&client);
     got.sort();
     assert_eq!(got.len(), 2, "{got:?}");
     assert!(got[0].contains("is being changed by another sub-agent running at the same time"), "{got:?}");
     assert!(got[0].contains("first change") || got[0].contains("second change"), "{got:?}");
     assert_eq!(got[1], "written");
+    // the main model is told which write was held back, and by whom, by the harness and not by the sub-agent
+    let reports: Vec<String> = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" || id == "t2" => Some(output.content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    let held =
+        reports.iter().find(|r| r.contains("- refused ./sub/../x.txt: held by ")).expect("a refusal in a report");
+    assert!(held.contains("first change") || held.contains("second change"), "{held}");
     r.stop().await;
 }
 
@@ -547,7 +564,7 @@ async fn a_sub_agent_round_cut_by_the_server_is_asked_again_and_its_work_kept() 
     r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert!(evs.iter().any(
-        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "t1" && output.content == "wrote x.txt")
+        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "t1" && output.content.starts_with("wrote x.txt\n\n[tool log] 1 tool call:\n- wrote x.txt"))
     ));
     let reqs = client.requests();
     assert_eq!(reqs.len(), 5);
@@ -578,7 +595,10 @@ async fn a_sub_agent_that_fails_for_good_hands_back_what_it_did() {
             _ => None,
         })
         .unwrap();
-    assert!(out.contains("in round 2/") && out.contains("- write x.txt") && out.contains("go on from there"), "{out}");
+    assert!(
+        out.contains("in round 2/") && out.contains("- wrote x.txt\n") && out.contains("go on from there"),
+        "{out}"
+    );
     assert_eq!(client.requests().len(), 4, "not asked again: the error is not one a retry mends");
     r.stop().await;
 }
@@ -607,5 +627,70 @@ async fn a_sub_agent_reply_cut_at_the_output_limit_is_a_failure_not_a_report() {
         })
         .unwrap();
     assert!(done.is_error && done.content.contains("cut off"), "{done:?}");
+    r.stop().await;
+}
+
+/// A tool that answers with the text of its `out` argument, as the real edit and bash tools word theirs.
+struct Says {
+    name: &'static str,
+    kind: ToolKind,
+}
+
+#[async_trait]
+impl Tool for Says {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: self.name.into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        self.kind
+    }
+    fn summary(&self, _args: &Value) -> String {
+        self.name.into()
+    }
+    async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+        ToolOutput::ok(args.get("out").and_then(Value::as_str).unwrap_or("").to_string())
+    }
+}
+
+#[tokio::test]
+async fn a_sub_agents_report_ends_with_the_files_it_wrote_and_the_commands_it_ran_from_its_own_tool_log() {
+    let d = test_tmpdir().unwrap();
+    let edit = |id: &str, path: &str, added: u32, removed: u32| {
+        let out = format!("edited {path}: +{added} \u{2212}{removed} lines, verified\n");
+        call(id, "edit", json!({"path": path, "out": out}))
+    };
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "fix the parser"}))),
+        Reply::Events(edit("s1", "src/a.rs", 3, 1)),
+        Reply::Events(edit("s2", "src/b.rs", 2, 0)),
+        Reply::Events(call("s3", "bash", json!({"command": "cargo test -p parser", "out": "ok"}))),
+        Reply::Events(call("s4", "bash", json!({"command": "cargo clippy", "out": "warn\n\n[exit code 1]"}))),
+        Reply::Events(text("all tests pass")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.extend(["edit".into(), "bash".into()]);
+    let set = tools()
+        .with(Arc::new(Says { name: "edit", kind: ToolKind::Write }))
+        .with(Arc::new(Says { name: "bash", kind: ToolKind::Exec }));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let report = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        report,
+        "all tests pass\n\n[tool log] 4 tool calls:\n- wrote src/a.rs: +3 -1\n- wrote src/b.rs: +2 -0\n\
+         - ran `cargo test -p parser`: exit 0\n- ran `cargo clippy`: exit 1"
+    );
     r.stop().await;
 }

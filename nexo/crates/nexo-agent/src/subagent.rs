@@ -44,6 +44,9 @@ use crate::client::{ModelClient, Target};
 #[cfg(test)]
 mod context_tests;
 mod guard;
+mod ledger;
+#[cfg(test)]
+mod ledger_tests;
 mod profile;
 mod provider;
 #[cfg(test)]

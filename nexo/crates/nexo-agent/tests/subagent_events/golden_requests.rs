@@ -45,7 +45,7 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
     let subs = ctx.jobs.subs();
     let mut rx = subs.changes();
     let out = agent.run(task("explore", "look around"), &ctx).await;
-    assert_eq!(out.content, "the report");
+    assert_eq!(out.content, "the report\n\n[tool log] 1 tool call");
     let evs = drain(&mut rx);
     let want_items = vec![
         SubItem::Task { text: "look around".into() },

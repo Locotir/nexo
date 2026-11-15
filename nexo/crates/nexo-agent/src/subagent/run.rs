@@ -32,44 +32,27 @@ pub(super) fn stopped(messages: &[Message]) -> String {
     format!("stopped{}", progress(messages, usize::MAX, 0))
 }
 
-/// What a sub-agent that ends without a report had done: its calls (their effects stay on disk) and
-/// its last words, so whoever started it goes on from there instead of doing it all again. Empty when
-/// it had done nothing.
+/// What a sub-agent that ends without a report had done: what its tool log shows of its calls (their effects
+/// stay on disk) and its last words, so whoever started it goes on from there instead of doing it all again.
+/// Empty when it had done nothing.
 pub(super) fn progress(messages: &[Message], round: usize, rounds: usize) -> String {
-    let mut did: Vec<String> = Vec::new();
-    let mut said = String::new();
-    for m in messages.iter().filter(|m| m.role == Role::Assistant) {
-        for p in &m.content {
-            match p {
-                Part::ToolCall { name, args, .. } => {
-                    let what = ["path", "command", "pattern", "url"]
-                        .iter()
-                        .find_map(|k| args.get(*k).and_then(Value::as_str))
-                        .map(|w| w.lines().next().unwrap_or("").chars().take(120).collect::<String>())
-                        .unwrap_or_default();
-                    did.push(if what.is_empty() { name.clone() } else { format!("{name} {what}") });
-                }
-                Part::Text { .. } => said = m.text(),
-                _ => {}
-            }
-        }
-    }
-    if did.is_empty() {
+    let fx = ledger::Effects::of(messages);
+    let said = messages
+        .iter()
+        .rfind(|m| m.role == Role::Assistant && m.content.iter().any(|p| matches!(p, Part::Text { .. })))
+        .map(Message::text)
+        .unwrap_or_default();
+    if fx.calls == 0 {
         return String::new();
     }
     let at = if round == usize::MAX { String::new() } else { format!(" in round {}/{rounds}", round + 1) };
     let mut out = format!(
         "{at}. Before that it made {} calls; what they changed stays as they left it, so go on from there rather \
          than start over:\n",
-        did.len()
+        fx.calls
     );
-    const SHOWN: usize = 40;
-    let skip = did.len().saturating_sub(SHOWN);
-    if skip > 0 {
-        out.push_str(&format!("- ({skip} earlier calls)\n"));
-    }
-    for d in &did[skip..] {
-        out.push_str(&format!("- {d}\n"));
+    for l in fx.lines() {
+        out.push_str(&format!("- {l}\n"));
     }
     let said = said.trim();
     if !said.is_empty() {
@@ -315,10 +298,12 @@ impl Run {
                             progress(&messages, usize::MAX, 0)
                         )
                     } else {
-                        "the sub-agent answered nothing".into()
+                        format!("the sub-agent answered nothing{}", progress(&messages, usize::MAX, 0))
                     })
                 } else {
-                    Ok(brief::compact_report(report, brief.map(|b| b.text.as_str()), brief::REPORT_TOKENS))
+                    let said = brief::compact_report(report, brief.map(|b| b.text.as_str()), brief::REPORT_TOKENS);
+                    let did = ledger::Effects::of(&messages).block();
+                    Ok(if did.is_empty() { said } else { format!("{said}\n\n{did}") })
                 };
             }
             let mut asked = vec![];
@@ -492,10 +477,7 @@ impl Run {
             let keys: Vec<PathBuf> = paths.iter().map(|p| plain_path(p, &ctx.cwd)).collect();
             if let Err((i, label)) = self.claims.hold_all(&keys, &self.id, &self.label) {
                 let p = &paths[i];
-                return refused(ToolOutput::error(format!(
-                    "`{p}` is being changed by another sub-agent running at the same time ({label}); \
-                     leave it to that one and say so in your report"
-                )));
+                return refused(ToolOutput::error(ledger::claim_refusal(p, &label)));
             }
         }
         // the main agent's rules hold for every sub-agent: its deny rules, and its asks (keys, writes)

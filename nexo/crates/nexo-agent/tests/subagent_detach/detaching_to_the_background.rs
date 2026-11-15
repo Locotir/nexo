@@ -26,7 +26,7 @@ async fn a_quiet_person_gets_the_report_as_the_tool_output_and_no_ended_note() {
     // the old code made the output `{note}{report}{tail}`: no note unless background was asked, no tail
     // unless the sub-agent was isolated. A quiet person gets the report and nothing else.
     assert_eq!(done_of(&evs, "t1").as_deref(), Some("reader report"));
-    assert_eq!(done_of(&evs, "t2").as_deref(), Some("writer report"));
+    assert_eq!(done_of(&evs, "t2").as_deref(), Some("writer report\n\n[tool log] 1 tool call:\n- wrote a.txt"));
     // the third request: the history holds both outputs, as it did, and nothing about ended jobs
     let reqs = client.main_requests();
     assert_eq!(reqs.len(), 3);
@@ -36,7 +36,8 @@ async fn a_quiet_person_gets_the_report_as_the_tool_output_and_no_ended_note() {
          Assistant call t1 task {\"agent\":\"explore\",\"prompt\":\"look\"}\n\
          User result t1 error=false: reader report\n\
          Assistant call t2 task {\"agent\":\"general\",\"prompt\":\"change a.txt\"}\n\
-         User result t2 error=false: writer report"
+         User result t2 error=false: writer report\n\n\
+         [tool log] 1 tool call:\n- wrote a.txt"
     );
     // and the writer's own tool ran as it always did
     assert_eq!(result_for(&requests_of(&client, "change a.txt"), "s1").as_deref(), Some("wrote a.txt"));
@@ -236,7 +237,7 @@ async fn with_detach_on_message_off_the_message_waits_for_the_round() {
     assert!(r.quiet(300, |e| matches!(e, AgentEvent::ToolDone { .. })).await, "the call is still waiting");
     release(d.path(), "go");
     let evs = r.until(|e| matches!(e, AgentEvent::TurnEnd { .. })).await;
-    assert_eq!(done_of(&evs, "t1").as_deref(), Some("the report"));
+    assert_eq!(done_of(&evs, "t1").as_deref(), Some("the report\n\n[tool log] 1 tool call"));
     r.stop().await;
 }
 
@@ -260,7 +261,11 @@ async fn a_key_with_nothing_attached_leaves_no_signal_for_a_sub_agent_that_start
     until_tool(&client, 1).await;
     release(d.path(), "go");
     let evs = r.turn().await;
-    assert_eq!(done_of(&evs, "t1").as_deref(), Some("report"), "it stayed attached: the key had nothing to act on");
+    assert_eq!(
+        done_of(&evs, "t1").as_deref(),
+        Some("report\n\n[tool log] 1 tool call"),
+        "it stayed attached: the key had nothing to act on"
+    );
     r.stop().await;
 }
 
