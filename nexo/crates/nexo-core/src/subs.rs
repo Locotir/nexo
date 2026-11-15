@@ -32,6 +32,8 @@ const INBOX_MAX: usize = 32;
 const TITLE_CHARS: usize = 80;
 /// Events the channel holds for a slow receiver.
 const CHANGES: usize = 4096;
+/// Maximum bytes retained for each tool argument or output payload.
+pub const KEEP_TOOL_BYTES: usize = 16 * 1024;
 
 /// One thing in a sub-agent's conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,10 +43,10 @@ pub enum SubItem {
     Task { text: String },
     /// A reply it wrote, whole.
     Text { text: String },
-    /// A tool call, with the one-line summary the main transcript shows for that tool.
-    Call { id: String, name: String, summary: String },
-    /// How a call ended: not its output.
-    Result { id: String, ok: bool, bytes: usize },
+    /// Tool arguments are JSON text; oversized values are explicitly truncated.
+    Call { id: String, name: String, summary: String, args: String },
+    /// Text output only (images are not retained). `bytes` is the original size.
+    Result { id: String, ok: bool, bytes: usize, output: String },
     /// A message a person sent it.
     Person { text: String },
     /// A message the agent that started it sent it (`send_message` to its job).
@@ -57,8 +59,8 @@ impl SubItem {
             SubItem::Task { text } | SubItem::Text { text } | SubItem::Person { text } | SubItem::Parent { text } => {
                 text.len()
             }
-            SubItem::Call { id, name, summary } => id.len() + name.len() + summary.len(),
-            SubItem::Result { id, .. } => id.len(),
+            SubItem::Call { id, name, summary, args } => id.len() + name.len() + summary.len() + args.len(),
+            SubItem::Result { id, output, .. } => id.len() + output.len(),
         }
     }
 
@@ -69,8 +71,15 @@ impl SubItem {
             SubItem::Text { text } => SubItem::Text { text: cut(&text, KEEP_BYTES) },
             SubItem::Person { text } => SubItem::Person { text: cut(&text, KEEP_BYTES) },
             SubItem::Parent { text } => SubItem::Parent { text: cut(&text, KEEP_BYTES) },
-            SubItem::Call { id, name, summary } => SubItem::Call { id, name, summary: cut(&summary, KEEP_BYTES / 4) },
-            r @ SubItem::Result { .. } => r,
+            SubItem::Call { id, name, summary, args } => SubItem::Call {
+                id: cut(&id, 1024),
+                name: cut(&name, 1024),
+                summary: cut(&summary, KEEP_TOOL_BYTES),
+                args: cut(&args, KEEP_TOOL_BYTES),
+            },
+            SubItem::Result { id, ok, bytes, output } => {
+                SubItem::Result { id: cut(&id, 1024), ok, bytes, output: cut(&output, KEEP_TOOL_BYTES) }
+            }
         }
     }
 }
@@ -114,6 +123,11 @@ impl SubState {
 pub struct SubInfo {
     pub id: String,
     pub profile: String,
+    /// Effective target, absent until resolved by the runner.
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     /// The first line of the task.
     pub title: String,
     pub state: SubState,
@@ -132,6 +146,9 @@ pub struct SubInfo {
 pub struct SubTranscript {
     pub items: Vec<SubItem>,
     pub dropped: usize,
+    /// Bounded text of the current model attempt, if any.
+    #[serde(default)]
+    pub partial: String,
 }
 
 /// A change of the registry, in the order it was made.
@@ -144,12 +161,14 @@ pub enum SubChange {
     /// Part of a reply being written (the whole reply follows as a `Text` item).
     Delta { id: String, text: String },
     /// A message to a run could not be delivered.
-    NotDelivered { id: String, why: String },
+    NotDelivered { id: String, why: String, text: String },
     /// A workflow run began, or something in it changed.
     Flow(FlowInfo),
 }
 
 struct Data {
+    provider: Option<String>,
+    model: Option<String>,
     state: SubState,
     ended_ms: Option<u64>,
     tokens_in: u64,
@@ -158,6 +177,8 @@ struct Data {
     items: VecDeque<SubItem>,
     bytes: usize,
     dropped: usize,
+    partial: String,
+    partial_cut: bool,
     /// `Person` and `Parent` items, oldest first.
     inbox: VecDeque<SubItem>,
 }
@@ -175,6 +196,8 @@ impl Entry {
         SubInfo {
             id: self.id.clone(),
             profile: self.profile.clone(),
+            provider: d.provider.clone(),
+            model: d.model.clone(),
             title: self.title.clone(),
             state: d.state,
             started_ms: self.started_ms,
@@ -259,6 +282,8 @@ impl Subs {
             title,
             started_ms: now_ms(),
             data: Mutex::new(Data {
+                provider: None,
+                model: None,
                 state: if background { SubState::Background } else { SubState::Attached },
                 ended_ms: None,
                 tokens_in: 0,
@@ -267,6 +292,8 @@ impl Subs {
                 items: VecDeque::new(),
                 bytes: 0,
                 dropped: 0,
+                partial: String::new(),
+                partial_cut: false,
                 inbox: VecDeque::new(),
             }),
         });
@@ -294,7 +321,7 @@ impl Subs {
     pub fn transcript(&self, id: &str) -> Option<SubTranscript> {
         let e = self.entry(id)?;
         let d = e.data.lock().unwrap();
-        Some(SubTranscript { items: d.items.iter().cloned().collect(), dropped: d.dropped })
+        Some(SubTranscript { items: d.items.iter().cloned().collect(), dropped: d.dropped, partial: d.partial.clone() })
     }
 
     /// A person's message for run `id`: it joins that run's conversation between its rounds. When it
@@ -331,7 +358,11 @@ impl Subs {
             None => Ok(()),
             Some(why) => {
                 if !parent {
-                    let _ = self.0.changes.send(SubChange::NotDelivered { id: id.to_string(), why: why.clone() });
+                    let _ = self.0.changes.send(SubChange::NotDelivered {
+                        id: id.to_string(),
+                        why: why.clone(),
+                        text: text.to_string(),
+                    });
                 }
                 Err(why)
             }
@@ -436,10 +467,25 @@ impl SubRun {
         &self.entry.id
     }
 
+    /// Record the target actually selected by the runner and notify late and live readers.
+    pub fn target(&self, provider: &str, model: &str) {
+        let mut d = self.entry.data.lock().unwrap();
+        if !d.state.running() {
+            return;
+        }
+        d.provider = Some(cut(provider, 1024));
+        d.model = Some(cut(model, 1024));
+        self.send(SubChange::State(self.entry.info(&d)));
+    }
+
     /// Adds an item (its text bounded) and tells the watchers.
     pub fn item(&self, item: SubItem) {
         let item = item.bounded();
         let mut d = self.entry.data.lock().unwrap();
+        if matches!(item, SubItem::Text { .. }) {
+            d.partial.clear();
+            d.partial_cut = false;
+        }
         d.bytes += item.size();
         d.items.push_back(item.clone());
         while (d.items.len() > KEEP_ITEMS || d.bytes > KEEP_BYTES) && d.items.len() > 1 {
@@ -453,8 +499,23 @@ impl SubRun {
 
     /// Part of the reply being written.
     pub fn delta(&self, text: &str) {
-        let _d = self.entry.data.lock().unwrap();
+        let mut d = self.entry.data.lock().unwrap();
+        if !d.partial_cut {
+            let combined = format!("{}{}", d.partial, text);
+            d.partial_cut = combined.len() > KEEP_BYTES;
+            d.partial = cut(&combined, KEEP_BYTES);
+        }
         self.send(SubChange::Delta { id: self.entry.id.clone(), text: text.to_string() });
+    }
+
+    /// Discard an unsuccessful attempt before another is started.
+    pub fn reset_partial(&self) {
+        let mut d = self.entry.data.lock().unwrap();
+        if !d.partial.is_empty() {
+            d.partial.clear();
+            d.partial_cut = false;
+            self.send(SubChange::Delta { id: self.entry.id.clone(), text: String::new() });
+        }
     }
 
     /// What one model call spent.
@@ -491,9 +552,9 @@ impl SubRun {
         let mut unread = 0;
         for m in d.inbox.drain(..) {
             match m {
-                SubItem::Person { .. } => {
+                SubItem::Person { text } => {
                     let why = "that sub-agent ended before it read the message".to_string();
-                    self.send(SubChange::NotDelivered { id: e.id.clone(), why });
+                    self.send(SubChange::NotDelivered { id: e.id.clone(), why, text });
                 }
                 SubItem::Parent { .. } => unread += 1,
                 _ => {}
@@ -517,6 +578,25 @@ impl Drop for SubRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_is_unknown_until_resolved_and_reaches_live_and_late_readers() {
+        let subs = Subs::default();
+        let mut rx = subs.changes();
+        let run = subs.begin("call#1", "explore", "task", false);
+        assert_eq!(subs.list()[0].provider, None);
+        run.target("xai", "grok-test");
+        let info = &subs.list()[0];
+        assert_eq!((info.provider.as_deref(), info.model.as_deref()), (Some("xai"), Some("grok-test")));
+        assert!(kinds(&mut rx)
+            .iter()
+            .any(|e| matches!(e, SubChange::State(i) if i.model.as_deref() == Some("grok-test"))));
+        let mut old = serde_json::to_value(info).unwrap();
+        old.as_object_mut().unwrap().remove("provider");
+        old.as_object_mut().unwrap().remove("model");
+        let old: SubInfo = serde_json::from_value(old).unwrap();
+        assert!(old.provider.is_none() && old.model.is_none());
+    }
 
     fn kinds(rx: &mut broadcast::Receiver<SubChange>) -> Vec<SubChange> {
         let mut out = Vec::new();
@@ -569,6 +649,57 @@ mod tests {
         let Some(SubItem::Text { text }) = t.items.last() else { panic!("no text item") };
         assert!(text.len() <= KEEP_BYTES, "{}", text.len());
         assert!(text.ends_with("bytes cut]") && text.starts_with('é'));
+    }
+
+    #[test]
+    fn tool_payloads_are_bounded_and_live_matches_snapshot() {
+        let subs = Subs::new();
+        let mut rx = subs.changes();
+        let run = subs.begin("a", "explore", "task", true);
+        run.item(SubItem::Call {
+            id: "x".into(),
+            name: "read".into(),
+            summary: "s".into(),
+            args: "é".repeat(KEEP_TOOL_BYTES),
+        });
+        run.item(SubItem::Result {
+            id: "x".into(),
+            ok: true,
+            bytes: KEEP_TOOL_BYTES * 2,
+            output: "é".repeat(KEEP_TOOL_BYTES),
+        });
+        let t = subs.transcript("a").unwrap();
+        let evs: Vec<_> = kinds(&mut rx)
+            .into_iter()
+            .filter_map(|c| match c {
+                SubChange::Item { item, .. } => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(t.items, evs);
+        assert!(
+            matches!(&t.items[1], SubItem::Call { args, .. } if args.len() <= KEEP_TOOL_BYTES && args.ends_with("bytes cut]"))
+        );
+        assert!(
+            matches!(&t.items[2], SubItem::Result { output, bytes, .. } if output.len() <= KEEP_TOOL_BYTES && output.ends_with("bytes cut]") && *bytes == KEEP_TOOL_BYTES * 2)
+        );
+        assert!(t.items.iter().map(SubItem::size).sum::<usize>() <= KEEP_BYTES);
+    }
+
+    #[test]
+    fn partial_is_snapshotted_bounded_and_reset_between_attempts() {
+        let subs = Subs::new();
+        let run = subs.begin("a", "general", "task", true);
+        run.delta("first ");
+        run.delta("attempt");
+        assert_eq!(subs.transcript("a").unwrap().partial, "first attempt");
+        run.reset_partial();
+        assert!(subs.transcript("a").unwrap().partial.is_empty());
+        run.delta(&"é".repeat(KEEP_BYTES));
+        let partial = subs.transcript("a").unwrap().partial;
+        assert!(partial.len() <= KEEP_BYTES && partial.ends_with("bytes cut]"));
+        run.item(SubItem::Text { text: "finished".into() });
+        assert!(subs.transcript("a").unwrap().partial.is_empty());
     }
 
     #[test]
@@ -666,7 +797,9 @@ mod tests {
         a.end(SubState::Failed);
         assert!(!a.has_mail());
         let evs = kinds(&mut rx);
-        assert!(evs.iter().any(|c| matches!(c, SubChange::NotDelivered { id, .. } if id == "a")));
+        assert!(evs
+            .iter()
+            .any(|c| matches!(c, SubChange::NotDelivered { id, text, .. } if id == "a" && text == "too late")));
     }
 
     #[test]

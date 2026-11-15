@@ -70,6 +70,17 @@ pub(super) async fn start_prompt(
     ultracode: bool,
     cancel: CancellationToken,
 ) -> Option<JoinHandle<TurnEnd>> {
+    start_prompt_item(state, text, attachments, ultracode, cancel, None).await
+}
+
+pub(super) async fn start_prompt_item(
+    state: &Shared,
+    text: String,
+    attachments: Vec<Attachment>,
+    ultracode: bool,
+    cancel: CancellationToken,
+    item: Option<InboxItem>,
+) -> Option<JoinHandle<TurnEnd>> {
     // taken: said at once, before the hooks and the start of the turn (they can take seconds)
     let events = state.lock().await.events.clone();
     preparing(&events, PREP_REQUEST);
@@ -81,7 +92,7 @@ pub(super) async fn start_prompt(
         return None;
     }
     state.lock().await.hook_context.extend(o.context);
-    Some(begin_turn(state, text, attachments, true, ultracode, cancel).await)
+    Some(begin_turn(state, text, attachments, true, ultracode, cancel, item).await)
 }
 
 /// Starts a turn on a message that is not the person's own words (mail, the goal loop, a job note, the
@@ -92,7 +103,7 @@ pub(super) async fn start_turn(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
-    begin_turn(state, text, attachments, false, false, cancel).await
+    begin_turn(state, text, attachments, false, false, cancel, None).await
 }
 
 /// Starts a turn on ``text``. When the person wrote it (``person``), everything nexo adds (shared memory, hook
@@ -108,6 +119,7 @@ async fn begin_turn(
     person: bool,
     ultracode: bool,
     cancel: CancellationToken,
+    item: Option<InboxItem>,
 ) -> JoinHandle<TurnEnd> {
     let events = state.lock().await.events.clone();
     let what = if person {
@@ -123,7 +135,9 @@ async fn begin_turn(
     let state = state.clone();
     tokio::spawn(async move {
         let from = SystemTime::now();
-        prepare_turn(&state, text, attachments, person, ultracode, &cancel).await;
+        if !prepare_turn(&state, text, attachments, person, ultracode, &cancel, item).await {
+            return TurnEnd::Interrupted;
+        }
         let end = run_turn(state.clone(), cancel).await;
         orient::worked(&mut state.lock().await.worked, from, SystemTime::now());
         end
@@ -138,7 +152,8 @@ async fn prepare_turn(
     person: bool,
     ultracode: bool,
     cancel: &CancellationToken,
-) {
+    mut item: Option<InboxItem>,
+) -> bool {
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
     let typed = text.clone();
@@ -162,6 +177,20 @@ async fn prepare_turn(
     let check = orient::start_check(state, cancel).await;
     {
         let mut st = state.lock().await;
+        if let Some(item) = &item {
+            if cancel.is_cancelled() {
+                if let Some((_, reply)) = &item.directed {
+                    reply.resolve(nexo_core::agent::DirectedResult::Rejected("turn cancelled"));
+                }
+                return false;
+            }
+            if let Some((target, reply)) = &item.directed {
+                if !st.target_matches(target) {
+                    reply.resolve(nexo_core::agent::DirectedResult::Rejected("observation changed"));
+                    return false;
+                }
+            }
+        }
         if ultracode {
             let (provider, _, model) = st.target.get();
             let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
@@ -263,11 +292,35 @@ async fn prepare_turn(
             }
         };
         if person {
-            push_user(&mut st, first.join("\n\n"), Some(text), included, &attachments, added);
+            if !push_user_checked(
+                &mut st,
+                first.join("\n\n"),
+                Some(text),
+                included,
+                &attachments,
+                added,
+                item.as_ref().map(|i| (i, cancel)),
+            ) {
+                return false;
+            }
         } else {
-            push_user(&mut st, text, None, included, &attachments, added);
+            if !push_user_checked(
+                &mut st,
+                text,
+                None,
+                included,
+                &attachments,
+                added,
+                item.as_ref().map(|i| (i, cancel)),
+            ) {
+                return false;
+            }
+        }
+        if let Some((_, reply)) = item.as_mut().and_then(|i| i.directed.take()) {
+            reply.resolve(nexo_core::agent::DirectedResult::Accepted);
         }
     }
+    true
 }
 
 /// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`).
@@ -298,8 +351,22 @@ pub(super) fn push_user(
     typed: Option<String>,
     included: Vec<orient::Included>,
     attachments: &[Attachment],
-    mut added: Vec<AddedPart>,
+    added: Vec<AddedPart>,
 ) {
+    push_user_checked(st, text, typed, included, attachments, added, None);
+}
+
+// The cancellation check immediately before history insertion is the linearization point:
+// cancellation observed there rejects the directed item; later cancellation cannot undo acceptance.
+fn push_user_checked(
+    st: &mut State,
+    text: String,
+    typed: Option<String>,
+    included: Vec<orient::Included>,
+    attachments: &[Attachment],
+    mut added: Vec<AddedPart>,
+    guard: Option<(&InboxItem, &CancellationToken)>,
+) -> bool {
     let mut text = text;
     let mut own = Vec::new();
     for f in included {
@@ -317,9 +384,6 @@ pub(super) fn push_user(
         Some(words) => format!("{}\n\n{}\n{words}", text.trim_matches('\n'), nexo_core::agent::PERSON_MARK),
         None => text,
     };
-    for (path, bytes, header) in whole {
-        st.reads.attached(path, &bytes, header);
-    }
     let m = if images.is_empty() {
         Message::user(text)
     } else {
@@ -327,7 +391,13 @@ pub(super) fn push_user(
         parts.extend(images);
         Message::new(Role::User, parts)
     };
+    if !may_incorporate(guard) {
+        return false;
+    }
     st.history.push(m.clone());
+    for (path, bytes, header) in whole {
+        st.reads.attached(path, &bytes, header);
+    }
     let _ = st.session.append(&m);
     saving(st);
     let index = st.history.len() - 1;
@@ -335,6 +405,19 @@ pub(super) fn push_user(
     if !added.is_empty() {
         emit(&st.events, AgentEvent::Added { index, parts: added });
     }
+    true
+}
+
+fn may_incorporate(guard: Option<(&InboxItem, &CancellationToken)>) -> bool {
+    if let Some((item, cancel)) = guard {
+        if cancel.is_cancelled() {
+            if let Some((_, reply)) = &item.directed {
+                reply.resolve(nexo_core::agent::DirectedResult::Rejected("turn cancelled"));
+            }
+            return false;
+        }
+    }
+    true
 }
 
 /// Bills the usage of an attempt the turn goes on from without keeping its reply.
@@ -346,7 +429,7 @@ pub(super) async fn bill_attempt(state: &Shared, events: &EventTx, model: &str, 
 
 /// Messages the person sent while the turn ran join it now, right after the tool
 /// results, so the next model call already sees them. Tells whether a message of the person joined.
-pub(super) async fn take_inbox(state: &Shared) -> bool {
+pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bool {
     let mut st = state.lock().await;
     // jobs that ended while the tools ran: the model hears of them now
     st.detach.clear();
@@ -358,7 +441,11 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     if st.inbox.is_empty() {
         return false;
     }
-    while let Some((text, attachments)) = st.inbox.pop_front() {
+    let mut consumed = false;
+    let mut deferred = Vec::new();
+    while let Some(mut item) = st.pop_inbox() {
+        let text = std::mem::take(&mut item.text);
+        let attachments = std::mem::take(&mut item.attachments);
         // the files the message names come as in a first request: under nexo's own header, counted by a note
         let (named, known) = named_files(&st, &text, &attachments);
         let included = orient::include(&named, &st.cwd);
@@ -368,12 +455,28 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
         if !note.is_empty() {
             added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));
         }
-        push_user(&mut st, note, Some(text), included, &attachments, added);
+        if !push_user_checked(&mut st, note, Some(text.clone()), included, &attachments, added, Some((&item, cancel))) {
+            if item.directed.is_none() {
+                item.text = text;
+                item.attachments = attachments;
+                deferred.push(item);
+            }
+            continue;
+        }
+        consumed = true;
+        if let Some((_, reply)) = item.directed.take() {
+            reply.resolve(nexo_core::agent::DirectedResult::Accepted);
+        }
     }
-    person_spoke(&mut st);
+    for item in deferred.into_iter().rev() {
+        st.inbox.push_front(item);
+    }
+    if consumed {
+        person_spoke(&mut st);
+    }
     // the message shows in the transcript where it joined: nothing else to say
-    emit(&st.events, AgentEvent::Queued { pending: 0 });
-    true
+    emit(&st.events, AgentEvent::Queued { pending: st.inbox.len() });
+    consumed
 }
 
 /// The media type of an image file nexo attaches as an image, by its extension.
@@ -789,6 +892,25 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachme
 #[cfg(test)]
 mod request_only_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_directed_item_is_explicitly_rejected_at_incorporation() {
+        use nexo_core::agent::{DirectedReply, DirectedResult, ObservationTarget};
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let item = InboxItem {
+            text: "queued".into(),
+            attachments: Vec::new(),
+            directed: Some((
+                ObservationTarget { instance_id: "instance".into(), session_id: "session".into(), generation: 0 },
+                DirectedReply::new(tx),
+            )),
+        };
+        let cancel = CancellationToken::new();
+        assert!(may_incorporate(Some((&item, &cancel))));
+        cancel.cancel();
+        assert!(!may_incorporate(Some((&item, &cancel))));
+        assert_eq!(rx.await.unwrap(), DirectedResult::Rejected("turn cancelled"));
+    }
 
     #[test]
     fn what_rides_on_the_request_only_is_counted_with_the_estimator_of_the_budget() {

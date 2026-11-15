@@ -61,6 +61,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
+    st.invalidate_directed();
     st.epoch += 1;
     flow::release_slot(st);
     st.turn_start = 0;
@@ -264,6 +265,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
+    st.invalidate_directed();
     st.epoch += 1;
     st.turn_start = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
@@ -391,6 +393,7 @@ pub(super) async fn clear(state: &Shared) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
+    st.invalidate_directed();
     st.epoch += 1;
     flow::release_slot(&st);
     st.reads.clear();

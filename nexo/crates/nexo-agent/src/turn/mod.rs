@@ -90,6 +90,24 @@ use self::settings::*;
 use self::start::*;
 use self::tools::*;
 
+// Join consecutive ordinary requests, but never merge across a directed receipt.
+fn take_queued(st: &mut State) -> (Option<InboxItem>, usize) {
+    let Some(mut item) = st.pop_inbox() else { return (None, 0) };
+    if item.directed.is_some() {
+        return (Some(item), 1);
+    }
+    let mut parts = VecDeque::new();
+    parts.push_back((std::mem::take(&mut item.text), std::mem::take(&mut item.attachments)));
+    let mut joined = 1;
+    while st.inbox.front().is_some_and(|next| next.directed.is_none()) {
+        let mut next = st.inbox.pop_front().expect("front exists");
+        parts.push_back((std::mem::take(&mut next.text), std::mem::take(&mut next.attachments)));
+        joined += 1;
+    }
+    (item.text, item.attachments) = queue::take_all(&mut parts).expect("one item exists");
+    (Some(item), joined)
+}
+
 /// Lines a `read` without `limit` returns (as the read tool does).
 const READ_LIMIT: u64 = 2000;
 /// Bytes of a file attached with `@` that are sent whole.
@@ -396,7 +414,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         let mut st = state.lock().await;
                         st.goal_round = 0;
                         if turn.is_some() {
-                            st.inbox.push_back((text, attachments));
+                            st.inbox.push_back(InboxItem { text, attachments, directed: None });
                             emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                             // the person is heard now: sub-agents the round waits for go to the background
                             if st.config.agent.detach_on_message {
@@ -406,13 +424,29 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             person_spoke(&mut st);
                             // requests kept after an Esc were written before this one: they go with it, first
                             let kept = st.inbox.len();
-                            st.inbox.push_back((text, attachments));
-                            let (text, attachments) = queue::take_all(&mut st.inbox).unwrap_or_default();
+                            st.inbox.push_back(InboxItem { text, attachments, directed: None });
+                            let (next, _) = take_queued(&mut st);
                             if kept > 0 {
-                                emit(&events, AgentEvent::Queued { pending: 0 });
+                                emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                             }
                             drop(st);
-                            turn = start_prompt(&state, text, attachments, false, cancel.child_token()).await;
+                            if let Some(mut item) = next {
+                                let text = std::mem::take(&mut item.text);
+                                let attachments = std::mem::take(&mut item.attachments);
+                                turn = start_prompt_item(&state, text, attachments, false, cancel.child_token(), Some(item)).await;
+                            }
+                        }
+                    }
+                    AgentCommand::SubmitDirected { target, text, reply } => {
+                        let mut st = state.lock().await;
+                        if !st.target_matches(&target) {
+                            reply.resolve(nexo_core::agent::DirectedResult::Rejected("observation changed"));
+                        } else if turn.is_none() {
+                            reply.resolve(nexo_core::agent::DirectedResult::Rejected("no active turn"));
+                        } else {
+                            st.inbox.push_back(InboxItem { text, attachments: Vec::new(), directed: Some((target, reply)) });
+                            emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
+                            if st.config.agent.detach_on_message { detach.fire(nexo_core::jobs::DetachWhy::Message); }
                         }
                     }
                     AgentCommand::Ultracode { text, attachments } => {
@@ -488,10 +522,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::Unqueue { index, text } => {
                         let mut st = state.lock().await;
-                        let at = if st.inbox.get(index).is_some_and(|(t, _)| *t == text) {
+                        let at = if st.inbox.get(index).is_some_and(|item| item.directed.is_none() && item.text == text) {
                             Some(index)
                         } else {
-                            st.inbox.iter().position(|(t, _)| *t == text)
+                            st.inbox.iter().position(|item| item.directed.is_none() && item.text == text)
                         };
                         if let Some(i) = at {
                             st.inbox.remove(i);
@@ -776,7 +810,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                                 let mut st = state.lock().await;
                                 st.goal_round = 0;
                                 if turn.is_some() {
-                                    st.inbox.push_back((text, Vec::new()));
+                                    st.inbox.push_back(InboxItem { text, attachments: Vec::new(), directed: None });
                                     emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                                 } else {
                                     person_spoke(&mut st);
@@ -907,9 +941,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     AgentCommand::SubSubmit { id, text } => {
                         let _ = jobs.subs().submit(&id, &text);
                     }
-                    AgentCommand::SubTranscript { id } => {
+                    AgentCommand::SubTranscript { id, request } => {
                         let transcript = jobs.subs().transcript(&id);
-                        emit(&events, AgentEvent::SubTranscript { id, transcript });
+                        emit(&events, AgentEvent::SubTranscript { id, request, transcript });
                     }
                     AgentCommand::FlowStart { name, args } => flow::start(&state, flow_sub.clone(), name, args).await,
                     AgentCommand::FlowStopStep { run, step } => {
@@ -1002,9 +1036,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     let mut st = state.lock().await;
                     // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
                     let waits = reason == TurnEnd::Interrupted && !run_queue;
-                    let joined = st.inbox.len();
-                    // all of it, as one request: two queued lines are not two turns
-                    let next = if waits { None } else { queue::take_all(&mut st.inbox) };
+                    let (next, joined) = if waits { (None, 0) } else { take_queued(&mut st) };
                     if waits && !st.inbox.is_empty() {
                         notice(&events, Level::Info, format!("{} queued request(s) kept; they join your next message", st.inbox.len()));
                     }
@@ -1014,10 +1046,12 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     (next, joined)
                 };
-                if let Some((text, attachments)) = next {
+                if let Some(mut item) = next {
+                    let text = std::mem::take(&mut item.text);
+                    let attachments = std::mem::take(&mut item.attachments);
                     let what = if joined > 1 { format!("running the {joined} queued requests as one") } else { "running the queued request".into() };
                     notice(&events, Level::Info, what);
-                    turn = start_prompt(&state, text, attachments, false, cancel.child_token()).await;
+                    turn = start_prompt_item(&state, text, attachments, false, cancel.child_token(), Some(item)).await;
                 } else if !state.lock().await.mail_wait.is_empty() {
                     let mails = std::mem::take(&mut state.lock().await.mail_wait);
                     turn = Some(deliver_mails(&state, mails, cancel.child_token()).await);

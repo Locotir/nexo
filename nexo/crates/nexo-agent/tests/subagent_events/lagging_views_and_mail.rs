@@ -99,12 +99,12 @@ async fn a_view_can_ask_for_the_conversation_of_a_run() {
     );
     let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
     let id = held_sub_agent(&mut r, &client).await;
-    r.send(AgentCommand::SubTranscript { id: id.clone() });
-    r.send(AgentCommand::SubTranscript { id: "nobody#9".into() });
+    r.send(AgentCommand::SubTranscript { id: id.clone(), request: 1 });
+    r.send(AgentCommand::SubTranscript { id: "nobody#9".into(), request: 2 });
     let evs = r.until_all(&[&|e| matches!(e, AgentEvent::SubTranscript { id, .. } if id == "nobody#9")]).await;
     let answers: Vec<&AgentEvent> = evs.iter().filter(|e| matches!(e, AgentEvent::SubTranscript { .. })).collect();
     assert_eq!(answers.len(), 2, "one answer for each question: {answers:?}");
-    let AgentEvent::SubTranscript { id: got, transcript: Some(t) } = answers[0] else { panic!("{answers:?}") };
+    let AgentEvent::SubTranscript { id: got, transcript: Some(t), .. } = answers[0] else { panic!("{answers:?}") };
     assert_eq!(got, &id);
     assert_eq!(t.dropped, 0);
     assert!(matches!(&t.items[0], SubItem::Task { text } if text == "slow look"), "{:?}", t.items);

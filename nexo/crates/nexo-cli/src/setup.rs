@@ -193,8 +193,8 @@ pub fn prompt_tools(cfg: &Config, cwd: &Path) -> ToolSet {
         .with_parallel(cfg.agent.parallel_tasks);
         tools.add(Arc::new(sub));
     }
-    let (events, _unused) = tokio::sync::mpsc::unbounded_channel();
-    tools.add(Arc::new(nexo_agent::ask::AskUser::new(nexo_agent::ask::ChannelAsker::new(events))));
+    let (_unused, ends) = nexo_core::agent::channels();
+    tools.add(Arc::new(nexo_agent::ask::AskUser::new(nexo_agent::ask::ChannelAsker::new(ends.events))));
     tools
 }
 

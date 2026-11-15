@@ -666,7 +666,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 return TurnEnd::MaxTurns;
             }
         }
-        if take_inbox(&state).await {
+        if take_inbox(&state, &cancel).await {
             // the person spoke: the new message is answered with tools on, and the guards start over
             answer = Answer::No;
             seen.clear();

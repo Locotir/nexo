@@ -1,5 +1,39 @@
 use super::*;
 
+/// Identity of the observation that a directed request is allowed to enter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationTarget {
+    pub instance_id: String,
+    pub session_id: String,
+    pub generation: u64,
+}
+
+/// Accepted means incorporated in the in-memory history, not persisted or answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectedResult {
+    Accepted,
+    Rejected(&'static str),
+}
+
+/// Cloneable command envelope with exactly one reply; never serialized.
+#[derive(Debug, Clone)]
+pub struct DirectedReply(std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<DirectedResult>>>>);
+impl DirectedReply {
+    pub fn new(tx: tokio::sync::oneshot::Sender<DirectedResult>) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(Some(tx))))
+    }
+    pub fn resolve(&self, result: DirectedResult) {
+        if let Some(tx) = self.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = tx.send(result);
+        }
+    }
+}
+impl PartialEq for DirectedReply {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// What the interface asks the agent to do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -9,6 +43,13 @@ pub enum AgentCommand {
         text: String,
         #[serde(default)]
         attachments: Vec<Attachment>,
+    },
+    /// In-process only; the reply resolves on consumption or rejection, not on enqueue.
+    #[serde(skip)]
+    SubmitDirected {
+        target: ObservationTarget,
+        text: String,
+        reply: DirectedReply,
     },
     /// Start an ultracode planning request; rejected while another turn is running.
     Ultracode {
@@ -30,6 +71,7 @@ pub enum AgentCommand {
     /// when the run is unknown or was forgotten).
     SubTranscript {
         id: String,
+        request: u64,
     },
     /// Run the saved workflow `name` with `args` as its `{{args}}` (`/workflow <name> [args]`). It asks the same
     /// question the `workflow` tool asks, about the same pinned file, and runs in the background: the main agent

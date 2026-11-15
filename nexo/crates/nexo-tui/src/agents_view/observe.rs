@@ -3,6 +3,15 @@ use super::*;
 use nexo_agent::supervise::EvDetail;
 
 impl AgentsView {
+    /// Fall back to the existing bounded observation for sessions outside this process.
+    pub fn observe_selected(&mut self, key: &str) {
+        let Some(row) = self.selected_row().filter(|r| r.key == key) else { return };
+        self.start_history(&row);
+        self.observing = Some(row.key);
+        self.observe_scroll = 0;
+        self.observe_max = 0;
+    }
+
     pub(super) fn start_history(&mut self, row: &AgentRow) {
         self.history_rx = None;
         self.history = None;
@@ -71,6 +80,9 @@ impl AgentsView {
         let mut lines = Vec::new();
         if let Some(row) = row {
             lines.push(format!("{} · {} · {}", row.name, row.program, chip(row.state).1));
+            if let Some(model) = &row.model {
+                lines.push(format!("Model: {model}"));
+            }
             lines.push(format!("Last step: {}", row.last_step.as_deref().unwrap_or("unavailable")));
             if let Some(result) = row.last_conclusion {
                 lines.push(format!("Last result: {result}"));

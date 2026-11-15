@@ -41,7 +41,7 @@ fn a_running_supervisor_answers_through_the_program() {
     let setup = Setup { logs_root: None, scan_hours: 12, list_cmd: None, list_every: 10, poll_every_ms: 100 };
     let opts = Options { socket: Some(sock.clone()), dir: Some(d.path().join("st")), must_listen: true };
     let panel = Panel::start_with(&setup, Policy::default(), NexoSource::default(), &opts).unwrap();
-    panel.nudge("sess-a", "Check the build output first.");
+    panel.nudge("sess-a", "Check the build output first.").unwrap();
     let (out, code, _) = run_hook("stop", &sock, r#"{"session_id":"sess-a","stop_hook_active":false}"#);
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();

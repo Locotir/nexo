@@ -86,7 +86,7 @@ impl Supervisor {
 
     /// A live session of this program that the supervisor may speak to directly: not a sub-agent.
     fn nexo_target(&self, key: &str) -> bool {
-        self.nexo.is_some() && !key.rsplit_once('.').is_some_and(|(p, _)| self.entries.contains_key(p))
+        self.nexo.as_ref().is_some_and(|n| n.owns(key))
     }
 
     /// Cases where a session of this program is better left to its person: a question dialog is open, or the
@@ -102,7 +102,9 @@ impl Supervisor {
     fn nudge_nexo(&mut self, key: &str, text: &str, rule: &str, now: Secs) -> bool {
         let Some(n) = self.nexo.clone() else { return false };
         let before = self.entries.get(key).and_then(|e| e.track.last_activity);
-        n.send_nudge(key, text, false);
+        if n.send_nudge(key, text, false).is_err() {
+            return false;
+        }
         self.ledgers.entry(key.to_string()).or_default().note_delivery(before, now);
         self.record(now, key, "internal", "nudge", rule, text, true);
         self.say(key, format!("nudged: {rule}"), now);
@@ -239,10 +241,10 @@ impl Supervisor {
     pub fn handle(&mut self, req: Request, now: Secs) -> Reply {
         match req {
             Request::Ping => Reply::ok(json!("pong")),
-            Request::Nudge { key, text } => {
-                self.queue_manual(&key, &text, now);
-                Reply::ok(Value::Null)
-            }
+            Request::Nudge { key, text } => match self.queue_manual(&key, &text, now) {
+                Ok(()) => Reply::ok(Value::Null),
+                Err(e) => Reply { ok: false, out: json!(e) },
+            },
             Request::Pause { key, on } => {
                 self.set_pause(key.as_deref().filter(|k| !k.is_empty()), on, now);
                 Reply::ok(Value::Null)
@@ -252,26 +254,36 @@ impl Supervisor {
     }
 
     /// The person's own nudge: it goes out at the session's next stop, whatever the rate limits say.
-    pub fn queue_manual(&mut self, key: &str, text: &str, now: Secs) {
+    pub fn queue_manual(&mut self, key: &str, text: &str, now: Secs) -> Result<(), String> {
         let text: String = text.chars().take(MAX_NUDGE).collect();
         if text.trim().is_empty() {
-            return;
+            return Err("empty message".into());
         }
         if self.nexo_target(key) && self.entries.get(key).is_some_and(|e| e.source == SourceKind::Nexo) {
             // the live session takes it at once, as a message
             if let Some(n) = self.nexo.clone() {
-                n.send_nudge(key, &text, true);
+                n.send_nudge(key, &text, true)?;
                 self.record(now, key, "panel", "nudge", "manual", &text, true);
-                self.say(key, "your message was sent".into(), now);
+                self.say(key, "your message was queued for this session".into(), now);
                 self.version += 1;
-                return;
+                return Ok(());
             }
+        }
+        if !self.entries.contains_key(key) {
+            return Err("destination is unknown to this supervisor".into());
+        }
+        if self.entries.get(key).is_some_and(|e| e.source == SourceKind::Nexo) {
+            return Err("destination is not this live session".into());
+        }
+        if self.ledgers.get(key).is_some_and(|l| l.queued.is_some()) {
+            return Err("a nudge is already queued for this session".into());
         }
         self.ledgers.entry(key.to_string()).or_default().queued =
             Some(Queued { text: text.clone(), rule: "manual".into(), manual: true, at: now });
         self.record(now, key, "panel", "queue_nudge", "manual", &text, true);
         self.say(key, "your nudge is queued".into(), now);
         self.version += 1;
+        Ok(())
     }
 
     pub fn set_pause(&mut self, key: Option<&str>, on: bool, now: Secs) {

@@ -206,10 +206,13 @@ async fn main() -> anyhow::Result<()> {
                         problem: None,
                     });
                 }
-                Some(AgentCommand::SubTranscript { id }) => {
-                    let transcript =
-                        sub.as_ref().map(|s| nexo_core::subs::SubTranscript { items: s.clone(), dropped: 0 });
-                    let _ = events.send(AgentEvent::SubTranscript { id, transcript });
+                Some(AgentCommand::SubTranscript { id, request }) => {
+                    let transcript = sub.as_ref().map(|s| nexo_core::subs::SubTranscript {
+                        items: s.clone(),
+                        dropped: 0,
+                        partial: String::new(),
+                    });
+                    let _ = events.send(AgentEvent::SubTranscript { id, request, transcript });
                 }
                 Some(AgentCommand::SubSubmit { id, text }) => {
                     let Some(items) = sub.as_mut() else { continue };
@@ -454,7 +457,7 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
 }
 
 /// The scripted run: its state, the job that carries it, and what it has done so far.
-fn demo_sub(events: &tokio::sync::mpsc::UnboundedSender<AgentEvent>) -> Vec<nexo_core::subs::SubItem> {
+fn demo_sub(events: &nexo_core::agent::EventTx) -> Vec<nexo_core::subs::SubItem> {
     use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
     use nexo_core::subs::{SubInfo, SubItem, SubState};
     let id = "demo_call#1".to_string();
@@ -462,6 +465,8 @@ fn demo_sub(events: &tokio::sync::mpsc::UnboundedSender<AgentEvent>) -> Vec<nexo
         info: SubInfo {
             id: id.clone(),
             profile: "explore".into(),
+            provider: None,
+            model: None,
             title: "survey how weights are parsed".into(),
             state: SubState::Background,
             started_ms: 1,
@@ -483,8 +488,13 @@ fn demo_sub(events: &tokio::sync::mpsc::UnboundedSender<AgentEvent>) -> Vec<nexo
     });
     let items = vec![
         SubItem::Task { text: "survey how weights are parsed".into() },
-        SubItem::Call { id: "t1".into(), name: "grep".into(), summary: "parse_weight in src/".into() },
-        SubItem::Result { id: "t1".into(), ok: true, bytes: 412 },
+        SubItem::Call {
+            id: "t1".into(),
+            name: "grep".into(),
+            summary: "parse_weight in src/".into(),
+            args: "{}".into(),
+        },
+        SubItem::Result { id: "t1".into(), ok: true, bytes: 412, output: "demo output".into() },
         SubItem::Text { text: "`parse_weight` lives in `src/units.rs` and is called from two places.".into() },
     ];
     for item in &items {

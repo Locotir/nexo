@@ -15,7 +15,7 @@
 │  ✓ done       ▢ release                             2h  Bash  gh release cr… │
 │                                                                              │
 │ selected  /home/dev/project · default · this-session                         │
-│ ←↑↓→ move · Enter observe · s source · +/- zoom · Esc close                  │
+│ ←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 ─ ask ──────────────────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ mod history;
 pub mod hooks;
 pub mod limits;
 mod missing;
+pub mod observe_remote;
 pub mod permission;
 pub mod prompt;
 pub mod providers;

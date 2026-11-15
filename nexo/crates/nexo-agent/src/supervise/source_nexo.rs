@@ -91,20 +91,29 @@ impl NexoSource {
         }
     }
 
-    /// The supervisor asks for a message to this session (the host delivers it).
-    pub fn send_nudge(&self, key: &str, text: &str, manual: bool) {
-        if let Ok(mut g) = self.inner.lock() {
-            if g.outbox.len() >= OUTBOX_MAX {
-                g.outbox.pop_front();
-            }
-            g.outbox.push_back(Nudge { key: key.to_string(), text: text.to_string(), manual });
-        }
+    /// True only for the current host session, not an observed or stale session.
+    pub fn owns(&self, key: &str) -> bool {
+        self.inner.lock().map(|g| g.key() == key).unwrap_or(false)
     }
 
-    /// What the supervisor wants said to this session; the host delivers each.
+    /// Queue for this host only; never evict an earlier message silently.
+    pub fn send_nudge(&self, key: &str, text: &str, manual: bool) -> Result<(), String> {
+        let mut g = self.inner.lock().map_err(|_| "session message queue unavailable".to_string())?;
+        if g.key() != key {
+            return Err("destination is not this live session".into());
+        }
+        if g.outbox.len() >= OUTBOX_MAX {
+            return Err("session message queue is full".into());
+        }
+        g.outbox.push_back(Nudge { key: key.to_string(), text: text.to_string(), manual });
+        Ok(())
+    }
+
+    /// Drop messages addressed to a previous session after a session switch.
     pub fn take_nudges(&self) -> Vec<Nudge> {
         let Ok(mut g) = self.inner.lock() else { return Vec::new() };
-        g.outbox.drain(..).collect()
+        let key = g.key();
+        g.outbox.drain(..).filter(|n| n.key == key).collect()
     }
 
     /// Whether a nudge waits for delivery.
@@ -233,6 +242,21 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             }
             out.push(mk(ObsKind::TurnEnd { last_text_tail: t }));
         }
+        AgentEvent::SubState { info } => {
+            // Run IDs end in the job number used by panel rows. Do not guess a target
+            // from the parent session or a profile when the runner has not resolved it.
+            if let (Some(job), Some(provider), Some(model)) = (
+                info.id.rsplit_once('#').and_then(|(_, n)| n.parse::<u32>().ok()),
+                info.provider.as_ref(),
+                info.model.as_ref(),
+            ) {
+                out.push(Observation {
+                    agent_key: format!("{}.{}", g.key(), job),
+                    at: now,
+                    kind: ObsKind::Spend { usd: info.cost_usd, model: Some(format!("{provider}/{model}")) },
+                });
+            }
+        }
         AgentEvent::Jobs { jobs } => {
             let parent = g.key();
             for j in jobs.iter().filter(|j| j.kind == JobKind::Agent) {
@@ -327,9 +351,9 @@ mod nudge_tests {
     fn a_nudge_is_taken_once_and_a_resume_turn_is_not_the_persons() {
         let s = NexoSource::new();
         assert!(!s.has_nudges());
-        s.send_nudge("s1", "go on", false);
+        s.send_nudge(LOCAL_KEY, "go on", false).unwrap();
         assert!(s.has_nudges());
-        assert_eq!(s.take_nudges(), vec![Nudge { key: "s1".into(), text: "go on".into(), manual: false }]);
+        assert_eq!(s.take_nudges(), vec![Nudge { key: LOCAL_KEY.into(), text: "go on".into(), manual: false }]);
         assert!(s.take_nudges().is_empty());
         let mut me = s.clone();
         let resume = nexo_core::message::Message::user(nexo_core::agent::SUPERVISOR_RESUME_MARK);
@@ -339,6 +363,23 @@ mod nudge_tests {
         assert!(obs.iter().all(|o| o.kind != ObsKind::UserInput), "{obs:?}");
         s.observe(&AgentEvent::TurnStart { turn: 2 }, 20);
         assert!(me.poll(21).iter().any(|o| o.kind == ObsKind::UserInput), "the person's turn counts again");
+    }
+
+    #[test]
+    fn queue_is_bound_to_session_and_never_evicts() {
+        let s = NexoSource::new();
+        assert!(s.send_nudge("other", "wrong", true).is_err());
+        for _ in 0..OUTBOX_MAX {
+            s.send_nudge(LOCAL_KEY, "keep", true).unwrap();
+        }
+        assert!(s.send_nudge(LOCAL_KEY, "overflow", true).is_err());
+        assert_eq!(s.take_nudges().len(), OUTBOX_MAX);
+        s.send_nudge(LOCAL_KEY, "stale", true).unwrap();
+        s.observe(&AgentEvent::SessionChanged { session_id: "new".into(), title: String::new() }, 1);
+        assert!(s.take_nudges().is_empty());
+        assert!(s.send_nudge(LOCAL_KEY, "wrong", true).is_err());
+        s.send_nudge("new", "right", true).unwrap();
+        assert_eq!(s.take_nudges()[0].text, "right");
     }
 
     #[test]

@@ -163,6 +163,9 @@ impl Run {
         };
         // the window and prices of the model it runs on: its view is kept under the one and priced at the other
         let name = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
+        if let Some(sub) = &self.sub {
+            sub.target(name, &model);
+        }
         let limits = crate::limits::resolve(name, &cfg, &model, None);
         let pricing = if other { limits.pricing } else { None };
         let prices = limits.pricing.or_else(|| cfg.pricing_for(&model));
@@ -265,6 +268,11 @@ impl Run {
                     policy.usage(usage.cache_read, usage.total_input());
                     tok_ratio = crate::turn::learn_ratio(tok_ratio, sent_tokens, usage.total_input());
                 }
+                if got.is_err() {
+                    if let Some(s) = &self.sub {
+                        s.reset_partial();
+                    }
+                }
                 match got {
                     Ok(reply) => break reply,
                     Err(Failure::Stopped) => return Err(stopped(&messages)),
@@ -322,7 +330,7 @@ impl Run {
                 asked.push(Part::tool_call(&id, &name, a.clone()));
                 if let Some(s) = &self.sub {
                     let summary = self.tools.get(&name).map_or_else(|| name.clone(), |t| t.summary(&a));
-                    s.item(SubItem::Call { id: id.clone(), name: name.clone(), summary });
+                    s.item(SubItem::Call { id: id.clone(), name: name.clone(), summary, args: a.to_string() });
                 }
                 let out = if name == "recall" {
                     crate::recall::answer(&messages, &a)
@@ -330,7 +338,12 @@ impl Run {
                     self.call(&id, &name, &a, ctx, say).await
                 };
                 if let Some(s) = &self.sub {
-                    s.item(SubItem::Result { id: id.clone(), ok: !out.is_error, bytes: out.content.len() });
+                    s.item(SubItem::Result {
+                        id: id.clone(),
+                        ok: !out.is_error,
+                        bytes: out.content.len(),
+                        output: out.content.clone(),
+                    });
                 }
                 results.push(Part::ToolResult {
                     call_id: id,

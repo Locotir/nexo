@@ -763,13 +763,30 @@ impl Panel {
     }
 
     /// Queue the person's nudge for the session's next stop.
-    pub fn nudge(&self, key: &str, text: &str) {
-        if let Ok(mut g) = self.core.sup.lock() {
-            g.queue_manual(key, text, now_secs());
+    pub fn nudge(&self, key: &str, text: &str) -> Result<(), String> {
+        let owns = self
+            .core
+            .sup
+            .lock()
+            .map_err(|_| "supervisor unavailable".to_string())?
+            .nexo
+            .as_ref()
+            .is_some_and(|n| n.owns(key));
+        if owns || self.remote.is_none() {
+            return self.core.sup.lock().map_err(|_| "supervisor unavailable".to_string())?.queue_manual(
+                key,
+                text,
+                now_secs(),
+            );
         }
-        if let Some(p) = &self.remote {
-            let req = super::socket::Request::Nudge { key: key.into(), text: text.into() };
-            let _ = super::socket::ask(p, &req, super::socket::HOOK_TIMEOUT);
+        let p = self.remote.as_ref().unwrap();
+        let req = super::socket::Request::Nudge { key: key.into(), text: text.into() };
+        let reply = super::socket::ask(p, &req, super::socket::HOOK_TIMEOUT)
+            .ok_or_else(|| "supervisor did not answer; delivery is unknown".to_string())?;
+        if reply.ok {
+            Ok(())
+        } else {
+            Err(reply.out.as_str().unwrap_or("supervisor rejected message").to_string())
         }
     }
 

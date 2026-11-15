@@ -246,10 +246,13 @@ pub enum AgentEvent {
     SubNotDelivered {
         id: String,
         why: String,
+        /// The undelivered message, for recovery.
+        text: String,
     },
     /// The answer to `SubTranscript`: what the registry keeps of the run, or nothing if it has no such run.
     SubTranscript {
         id: String,
+        request: u64,
         transcript: Option<crate::subs::SubTranscript>,
     },
     /// The end of the output of each background job, answering `JobTails`.
@@ -413,7 +416,7 @@ impl From<crate::subs::SubChange> for AgentEvent {
             SubChange::State(info) => AgentEvent::SubState { info },
             SubChange::Item { id, item } => AgentEvent::Sub { id, item },
             SubChange::Delta { id, text } => AgentEvent::SubDelta { id, text },
-            SubChange::NotDelivered { id, why } => AgentEvent::SubNotDelivered { id, why },
+            SubChange::NotDelivered { id, why, text } => AgentEvent::SubNotDelivered { id, why, text },
             SubChange::Flow(info) => AgentEvent::FlowRun { info },
         }
     }

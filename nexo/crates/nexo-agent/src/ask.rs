@@ -340,7 +340,7 @@ the files each one touches, how the result will be checked. Do not start the wor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
+    use nexo_core::agent::channels;
 
     fn ctx(id: &str) -> ToolContext {
         let mut c = ToolContext::new(std::env::temp_dir());
@@ -370,7 +370,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_answer_comes_back_and_the_question_is_closed() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (handle, ends) = channels();
+        let tx = ends.events;
+        let mut rx = handle.events;
         let asker = ChannelAsker::new(tx);
         let tool = AskUser::new(asker.clone());
         let a = asker.clone();
@@ -390,7 +392,9 @@ mod tests {
 
     #[tokio::test]
     async fn yolo_presents_a_nonempty_plan_without_question_and_returns_to_auto() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (handle, ends) = channels();
+        let tx = ends.events;
+        let mut rx = handle.events;
         let cell: PlanCell = Arc::default();
         {
             let mut state = cell.lock().unwrap();
@@ -408,7 +412,9 @@ mod tests {
 
     #[tokio::test]
     async fn exit_plan_switches_mode_or_brings_back_the_feedback() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (handle, ends) = channels();
+        let tx = ends.events;
+        let mut rx = handle.events;
         let asker = ChannelAsker::new(tx);
         let cell: PlanCell = Arc::default();
         let tool = ExitPlan::new(Some(asker.clone()), cell.clone());

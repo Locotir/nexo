@@ -469,3 +469,72 @@ async fn a_clear_during_a_turn_leaves_the_agent_idle() {
     assert!(!sent.contains("background jobs ended"), "{sent}");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn directed_receipt_follows_history_incorporation() {
+    use nexo_core::agent::{DirectedReply, DirectedResult, ObservationTarget};
+    let d = test_tmpdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Hang(vec![StreamEvent::TextDelta("one".into())]), Reply::Events(text("done"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    let snap = r.handle.observation.snapshot();
+    let target = ObservationTarget {
+        instance_id: snap.instance_id,
+        session_id: snap.session_id.unwrap(),
+        generation: snap.generation,
+    };
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    r.send(AgentCommand::SubmitDirected { target, text: "directed".into(), reply: DirectedReply::new(tx) });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    assert!(rx.try_recv().is_err());
+    r.send(AgentCommand::InterruptRun);
+    r.turn().await;
+    let events = r.turn().await;
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::History { message, .. } if message.text().contains("directed"))));
+    assert_eq!(rx.await.unwrap(), DirectedResult::Accepted);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn unqueue_does_not_remove_a_directed_message_with_matching_text() {
+    use nexo_core::agent::{DirectedReply, DirectedResult, ObservationTarget};
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let d = test_tmpdir().unwrap();
+        let client = Scripted::new(vec![Reply::Hang(vec![StreamEvent::TextDelta("one".into())])]);
+        let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });
+        r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+        let snap = r.handle.observation.snapshot();
+        let target = ObservationTarget {
+            instance_id: snap.instance_id,
+            session_id: snap.session_id.unwrap(),
+            generation: snap.generation,
+        };
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        r.send(AgentCommand::SubmitDirected { target, text: "same".into(), reply: DirectedReply::new(tx) });
+        r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+        r.send(AgentCommand::Submit { text: "same".into(), attachments: vec![] });
+        r.until(|e| matches!(e, AgentEvent::Queued { pending: 2 })).await;
+        // Even with an index and text matching the directed item, remove only the local one.
+        r.send(AgentCommand::Unqueue { index: 0, text: "same".into() });
+        r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        // An additional unqueue cannot remove the remaining directed item either.
+        r.send(AgentCommand::Unqueue { index: 0, text: "same".into() });
+        r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        // Clearing the session really invalidates it, and must resolve rather than accept it.
+        r.send(AgentCommand::Clear);
+        assert_eq!(rx.await.unwrap(), DirectedResult::Rejected("removed before consumption"));
+        r.until(|e| matches!(e, AgentEvent::SessionChanged { .. })).await;
+        r.stop().await;
+    })
+    .await
+    .expect("directed queue test timed out");
+}

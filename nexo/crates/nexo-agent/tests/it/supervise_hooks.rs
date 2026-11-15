@@ -154,7 +154,7 @@ fn the_persons_nudge_and_pause_go_through_the_stop_hook() {
     });
     let p = json!({"session_id": "sess-1", "stop_hook_active": false});
     r.panel.pause(Some("sess-1"), true);
-    r.panel.nudge("sess-1", "Look at the failing test first.");
+    r.panel.nudge("sess-1", "Look at the failing test first.").unwrap();
     assert_eq!(hook(&r, HookKind::Stop, p.clone()), json!({}), "paused: nothing goes out");
     assert!(r.panel.rows(nexo_agent::supervise::run::now_secs()).iter().any(|w| w.key == "sess-1" && w.paused));
     r.panel.pause(Some("sess-1"), false);
@@ -163,7 +163,7 @@ fn the_persons_nudge_and_pause_go_through_the_stop_hook() {
     assert_eq!(hook(&r, HookKind::Stop, p.clone()), json!({}), "delivered once");
     r.panel.pause(None, true);
     assert!(r.panel.paused_all());
-    r.panel.nudge("sess-1", "again");
+    r.panel.nudge("sess-1", "again").unwrap();
     assert_eq!(hook(&r, HookKind::Stop, p), json!({}));
 }
 
@@ -177,7 +177,11 @@ fn a_second_panel_forwards_to_the_running_supervisor() {
     // the daemon refuses to start twice
     let strict = Options { must_listen: true, ..opts };
     assert!(Panel::start_with(&setup, Policy::default(), NexoSource::default(), &strict).is_err());
-    other.nudge("sess-1", "From the other window.");
+    wait_for("session known", || {
+        r.panel.rows(nexo_agent::supervise::run::now_secs()).iter().any(|w| w.key == "sess-1")
+    });
+    assert!(other.nudge("unknown-session", "must not be delivered").is_err());
+    other.nudge("sess-1", "From the other window.").unwrap();
     let out = hook(&r, HookKind::Stop, json!({"session_id": "sess-1"}));
     assert_eq!(out["reason"], "From the other window.");
 }

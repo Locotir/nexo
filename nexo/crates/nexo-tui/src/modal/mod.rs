@@ -363,6 +363,11 @@ pub enum ModalOut {
     Copy(String),
     /// Open the conversation of the sub-agent run with this id; the modal closes.
     OpenSub(String),
+    /// Observe a panel row; only the app can resolve it to a local run.
+    ObserveAgent {
+        key: String,
+        nexo: bool,
+    },
     /// The answer to the trust question; the modal closes.
     Trust(bool),
 }

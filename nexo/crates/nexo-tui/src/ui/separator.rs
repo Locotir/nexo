@@ -119,7 +119,15 @@ fn rule_colour(theme: &Theme, mode: PermissionMode) -> ratatui::style::Color {
 /// when the run is over.
 fn sub_rule(app: &App, w: usize) -> Line<'static> {
     let theme = &app.theme;
-    let (title, ended) = app.sub_label().unwrap_or_default();
+    let (mut title, ended) = app.sub_label().unwrap_or_default();
+    if let Some(info) =
+        app.sub_view.as_ref().and_then(|v| app.sub_runs.iter().find(|r| r.info.id == v.id)).map(|r| &r.info)
+    {
+        if let (Some(provider), Some(model)) = (&info.provider, &info.model) {
+            // Put the target first so it remains visible with long task titles.
+            title = format!("{} · {title}", crate::render::wrap::one_line(&format!("{provider}/{model}")));
+        }
+    }
     let (head, tail) = ("sub · ", if ended { " · ended" } else { "" });
     // the rule keeps a dash and a space on each side
     let room = w.saturating_sub(4);

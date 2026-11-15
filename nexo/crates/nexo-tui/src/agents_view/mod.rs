@@ -5,8 +5,10 @@
 mod draw;
 mod effects;
 mod keys;
+mod map;
 mod observe;
 mod pulse;
+mod tree;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -82,6 +84,14 @@ pub enum Zoom {
     Blocks,
     List,
     Cards,
+}
+
+/// Presentation, independent of card zoom. Map falls back to tree in narrow windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum View {
+    Cards,
+    Tree,
+    Map,
 }
 
 /// Which sessions the view lists: `s` cycles it.
@@ -311,6 +321,8 @@ pub struct AgentsView {
     /// Ids of the mails whose letter was already sent; none until the first look (old mail does not fly).
     mails_seen: Option<std::collections::HashSet<String>>,
     pub zoom: Zoom,
+    view: View,
+    collapsed: std::collections::HashSet<String>,
     /// The ASCII forms of the glyphs the panel draws itself.
     ascii: bool,
     /// What the effects remember between two draws.
@@ -381,6 +393,8 @@ impl AgentsView {
             mails_seen: None,
             pulse_at: None,
             zoom: Zoom::Cards,
+            view: View::Cards,
+            collapsed: Default::default(),
             ascii: crate::ascii::wanted(),
             live: effects::Fleet::default(),
             drawn: Layout::List,
@@ -423,7 +437,16 @@ impl AgentsView {
     fn shown(&self) -> Vec<AgentRow> {
         let mut v: Vec<AgentRow> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().map(tidy).collect();
         v.sort_by_key(|r| (r.source, r.program.to_lowercase()));
+        if self.view != View::Cards {
+            v = tree::visible(tree::ordered(v), &self.collapsed);
+        }
         v
+    }
+
+    fn tree_rows(&self) -> Vec<AgentRow> {
+        let mut rows: Vec<_> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().map(tidy).collect();
+        rows.sort_by_key(|r| (r.source, r.program.to_lowercase()));
+        tree::ordered(rows)
     }
 
     fn selected_row(&self) -> Option<AgentRow> {
@@ -696,6 +719,8 @@ impl AgentsView {
         let spare = u16::from(area.height >= SPARE_FROM);
         let want = if self.policy_page || self.observing.is_some() {
             area.height
+        } else if self.view != View::Cards {
+            (shown.len() as u16).saturating_add(CHROME + spare + pulse)
         } else if self.rows.is_empty() && self.filter == Filter::All {
             EMPTY_STATE.len() as u16 + CHROME + spare + pulse
         } else {
@@ -708,6 +733,7 @@ impl AgentsView {
             use std::hash::{Hash, Hasher};
             let mut k = std::collections::hash_map::DefaultHasher::new();
             self.size_key().hash(&mut k);
+            self.view.hash(&mut k);
             k.finish()
         };
         let (w, h) = self.size.keep(key, f.area(), area, || (w, h));
@@ -722,6 +748,10 @@ impl AgentsView {
                     " panel · policy "
                 } else if self.observing.is_some() {
                     " panel · observation "
+                } else if self.view == View::Map && inner_w >= map::MAP_MIN_W {
+                    " panel · map "
+                } else if self.view != View::Cards {
+                    " panel · tree "
                 } else {
                     " panel "
                 },
@@ -782,7 +812,11 @@ impl AgentsView {
                     }
                 }
             };
-            self.draw_bands(f, body, layout, card_h, &shown, &groups, theme, now, fx);
+            match self.view {
+                View::Map if body.width >= map::MAP_MIN_W => self.draw_map(f, body, &shown, theme),
+                View::Tree | View::Map => self.draw_tree(f, body, &shown, theme),
+                View::Cards => self.draw_bands(f, body, layout, card_h, &shown, &groups, theme, now, fx),
+            }
             let lane = Rect { y: rule_y, height: 1, ..pad };
             if !slim {
                 self.draw_flights(f, lane, body, &shown, theme, now);
@@ -822,16 +856,18 @@ impl AgentsView {
             let room = (foot.width as usize).saturating_sub(width(more));
             let hints: &[&str] = if self.panel.is_some() {
                 &[
-                    "←↑↓→ move · s source · Enter observe · n message · o policy · p/P pause · +/- zoom · Esc close",
+                    "←↑↓→ move · v view · s source · Enter observe · n message · o policy · p/P pause · +/- zoom · Esc close",
                     "←↑↓→ move · s source · n message · o policy · p pause · +/- zoom · Esc close",
                     "s source · n message · p pause · Esc close",
+                    "v view · s source · Esc close",
                     "s source · Esc close",
                     "Esc close",
                 ]
             } else {
                 &[
-                    "←↑↓→ move · Enter observe · s source · +/- zoom · Esc close",
+                    "←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close",
                     "←↑↓→ move · s source · +/- zoom · Esc close",
+                    "v view · s source · Esc close",
                     "s source · Esc close",
                     "Esc close",
                 ]

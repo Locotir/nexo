@@ -10,6 +10,8 @@ fn info(id: &str, title: &str, state: SubState) -> SubInfo {
     SubInfo {
         id: id.into(),
         profile: "explore".into(),
+        provider: None,
+        model: None,
         title: title.into(),
         state,
         started_ms: 1,
@@ -37,7 +39,12 @@ fn reply(text: &str) -> SubItem {
 }
 
 fn answer(a: &mut App, id: &str, items: Vec<SubItem>, dropped: usize) {
-    a.handle_agent(AgentEvent::SubTranscript { id: id.into(), transcript: Some(SubTranscript { items, dropped }) });
+    let request = a.sub_view.as_ref().and_then(|v| v.asking).unwrap_or(0);
+    a.handle_agent(AgentEvent::SubTranscript {
+        id: id.into(),
+        request,
+        transcript: Some(SubTranscript { items, dropped, partial: String::new() }),
+    });
 }
 
 /// An app with one running sub-agent run (job 3) and one shell job (job 4), the draft empty.
@@ -57,9 +64,16 @@ fn opened(items: Vec<SubItem>) -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
     }
     a.open_sub(RUN);
     let asked = drain(&mut rx);
-    assert!(matches!(asked.as_slice(), [AgentCommand::SubTranscript { id }] if id == RUN), "{asked:?}");
+    assert!(matches!(asked.as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN), "{asked:?}");
     answer(&mut a, RUN, items, 0);
     (a, rx)
+}
+
+fn flush_refresh(a: &mut App) {
+    if let Some(v) = a.sub_view.as_mut() {
+        v.last_ask = None;
+    }
+    a.sub_tick();
 }
 
 fn texts(a: &App, wanted: &str) -> usize {
@@ -101,15 +115,15 @@ fn enter_on_a_sub_agent_row_opens_its_conversation_and_on_a_shell_job_opens_the_
     assert!(a.modal.is_none(), "the window closes");
     assert!(a.in_sub());
     let sent = drain(&mut rx);
-    assert!(matches!(sent.as_slice(), [AgentCommand::SubTranscript { id }] if id == RUN), "{sent:?}");
+    assert!(matches!(sent.as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN), "{sent:?}");
 }
 
 #[test]
 fn the_view_draws_the_run_with_the_blocks_of_the_main_chat() {
     let (mut a, _rx) = opened(vec![
         SubItem::Task { text: "look at the parser".into() },
-        SubItem::Call { id: "t1".into(), name: "read".into(), summary: "src/parser.rs".into() },
-        SubItem::Result { id: "t1".into(), ok: true, bytes: 120 },
+        SubItem::Call { id: "t1".into(), name: "read".into(), summary: "src/parser.rs".into(), args: "{}".into() },
+        SubItem::Result { id: "t1".into(), ok: true, bytes: 120, output: "parser output".into() },
         person("and the lexer?"),
         reply("The lexer is small."),
     ]);
@@ -137,13 +151,50 @@ fn the_view_draws_the_run_with_the_blocks_of_the_main_chat() {
 
 #[test]
 fn a_streamed_reply_and_then_the_whole_text_show_once() {
-    let (mut a, _rx) = opened(vec![SubItem::Task { text: "go".into() }]);
+    let (mut a, mut rx) = opened(vec![SubItem::Task { text: "go".into() }]);
     a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "Hello ".into() });
     a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "there".into() });
+    flush_refresh(&mut a);
+    assert!(matches!(drain(&mut rx).as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN));
+    a.handle_agent(AgentEvent::SubTranscript {
+        id: RUN.into(),
+        request: a.sub_view.as_ref().and_then(|v| v.asking).unwrap_or(0),
+        transcript: Some(SubTranscript {
+            items: vec![SubItem::Task { text: "go".into() }],
+            dropped: 0,
+            partial: "Hello there".into(),
+        }),
+    });
     assert!(on_screen(&frame(&mut a, 100, 30), "Hello there"));
     item(&mut a, RUN, reply("Hello there"));
     assert_eq!(texts(&a, "Hello there"), 1);
     assert!(a.blocks.iter().all(|b| !matches!(b, Block::Assistant { streaming: true, .. })));
+}
+
+#[test]
+fn concurrent_deltas_coalesce_and_refresh_after_an_older_snapshot() {
+    let (mut a, mut rx) = opened(vec![]);
+    for _ in 0..100 {
+        a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "x".into() });
+    }
+    flush_refresh(&mut a);
+    assert!(matches!(drain(&mut rx).as_slice(), [AgentCommand::SubTranscript { .. }]));
+    a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "later".into() });
+    a.handle_agent(AgentEvent::SubTranscript {
+        id: RUN.into(),
+        request: a.sub_view.as_ref().and_then(|v| v.asking).unwrap_or(0),
+        transcript: Some(SubTranscript { items: vec![], dropped: 0, partial: "old".into() }),
+    });
+    flush_refresh(&mut a);
+    assert!(matches!(drain(&mut rx).as_slice(), [AgentCommand::SubTranscript { .. }]));
+    a.handle_agent(AgentEvent::SubTranscript {
+        id: RUN.into(),
+        request: a.sub_view.as_ref().and_then(|v| v.asking).unwrap_or(0),
+        transcript: Some(SubTranscript { items: vec![], dropped: 0, partial: "new".into() }),
+    });
+    assert_eq!(texts(&a, "new"), 1);
+    assert_eq!(texts(&a, "old"), 0);
+    assert!(drain(&mut rx).is_empty());
 }
 
 #[test]
@@ -161,6 +212,8 @@ fn enter_sends_to_that_run_only_and_a_slash_text_sends_nothing() {
     item(&mut a, RUN, person("check the tests too"));
     assert_eq!(texts(&a, "check the tests too"), 1);
 
+    flush_refresh(&mut a);
+    assert!(matches!(drain(&mut rx).as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN));
     a.input.set_text("/jobs");
     a.submit();
     assert!(drain(&mut rx).is_empty(), "no command runs from here");
@@ -284,11 +337,13 @@ fn a_lag_notice_asks_for_the_conversation_again() {
     let (mut a, mut rx) = opened(vec![reply("a")]);
     // the agent sends the state of every run again after a lag: same state as the app knows
     a.handle_agent(AgentEvent::SubState { info: info(RUN, "survey the parser", SubState::Background) });
+    flush_refresh(&mut a);
     let sent = drain(&mut rx);
-    assert!(matches!(sent.as_slice(), [AgentCommand::SubTranscript { id }] if id == RUN), "{sent:?}");
+    assert!(matches!(sent.as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN), "{sent:?}");
     answer(&mut a, RUN, vec![reply("a"), reply("b")], 0);
     // from here every change is read again instead of counted
     item(&mut a, RUN, reply("c"));
+    flush_refresh(&mut a);
     let sent = drain(&mut rx);
     assert!(matches!(sent.as_slice(), [AgentCommand::SubTranscript { .. }]), "{sent:?}");
     answer(&mut a, RUN, vec![reply("a"), reply("b"), reply("c")], 0);
@@ -304,9 +359,13 @@ fn not_delivered_is_one_line_and_an_ended_run_says_so() {
     assert!(on_screen(&rows, "ended · Esc back"));
     a.input.set_text("hello?");
     a.submit();
-    a.handle_agent(AgentEvent::SubNotDelivered { id: RUN.into(), why: "the sub-agent has ended".into() });
+    a.handle_agent(AgentEvent::SubNotDelivered {
+        id: RUN.into(),
+        why: "the sub-agent has ended".into(),
+        text: "hello?".into(),
+    });
     let toasts: Vec<_> = a.toasts.iter().map(|t| t.text.clone()).collect();
-    assert_eq!(toasts, vec!["not delivered: the sub-agent has ended".to_string()]);
+    assert_eq!(toasts, vec!["not delivered: the sub-agent has ended · restored in editor".to_string()]);
 }
 
 #[test]
@@ -388,6 +447,7 @@ fn the_jobs_chip_opens_the_one_run_and_the_list_when_there_are_several() {
     assert_eq!(a.sub_chip_target().as_deref(), Some(RUN));
     a.open_hint(HintHit::Jobs);
     assert!(a.in_sub());
+    flush_refresh(&mut a);
     assert!(matches!(drain(&mut rx).as_slice(), [AgentCommand::SubTranscript { .. }]));
     a.close_sub();
     a.handle_agent(AgentEvent::Jobs { jobs: vec![job(3, JobKind::Agent), job(4, JobKind::Shell)] });
@@ -433,6 +493,8 @@ fn the_view_hands_nothing_to_the_inline_scrollback_and_the_main_flush_count_is_k
 fn a_rebuilt_answer_starts_with_nothing_flushed() {
     let (mut a, _rx) = opened(vec![reply("one")]);
     a.inline_flushed = 2;
+    a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "x".into() });
+    flush_refresh(&mut a);
     answer(&mut a, RUN, vec![reply("one"), reply("two")], 0);
     assert_eq!(a.inline_flushed, 0);
 }
@@ -478,7 +540,7 @@ fn after_a_rewind_the_run_announced_again_still_opens_from_jobs() {
     a.open_jobs();
     press(&mut a, KeyCode::Enter);
     assert!(a.in_sub());
-    assert!(drain(&mut rx).iter().any(|c| matches!(c, AgentCommand::SubTranscript { id } if id == RUN)));
+    assert!(drain(&mut rx).iter().any(|c| matches!(c, AgentCommand::SubTranscript { id, .. } if id == RUN)));
 }
 
 fn pending_text(a: &mut App, w: u16) -> Vec<String> {
@@ -508,8 +570,8 @@ fn a_not_delivered_notice_lowers_the_count_and_two_sends_count_two() {
     assert!(on_screen(&pending_text(&mut a, 100), "2 sent · arrive at its next step"));
     item(&mut a, RUN, person("one"));
     assert!(on_screen(&pending_text(&mut a, 100), "sent · arrives at its next step"));
-    a.handle_agent(AgentEvent::SubNotDelivered { id: RUN.into(), why: "it ended".into() });
-    assert!(on_screen(&pending_text(&mut a, 100), "message this sub-agent · Esc back"));
+    a.handle_agent(AgentEvent::SubNotDelivered { id: RUN.into(), why: "it ended".into(), text: "two".into() });
+    assert_eq!(a.input.full_text(), "two");
 }
 
 #[test]
@@ -589,4 +651,301 @@ fn right_and_l_on_a_run_row_open_the_jobs_detail_and_a_click_opens_the_conversat
     let Some(Modal::Jobs(v)) = &mut a.modal else { panic!("the jobs window") };
     let out = v.click_row(1);
     assert!(matches!(out, ModalOut::OpenSub(ref id) if id == RUN), "a click on the run row opens it");
+}
+
+fn panel_row(key: &str, source: nexo_agent::supervise::SourceKind) -> nexo_agent::supervise::AgentRow {
+    use nexo_agent::supervise::{AgentRow, State};
+    AgentRow {
+        key: key.into(),
+        name: "same title".into(),
+        source,
+        program: "nexo".into(),
+        state: State::Working,
+        since: 0,
+        last_step: None,
+        last_conclusion: None,
+        idle_secs: None,
+        cost_usd: None,
+        model: None,
+        cwd: None,
+        permission_mode: None,
+        parent: None,
+        last_action: None,
+        paused: false,
+        ribbon: vec![],
+        spark: vec![],
+        todo: None,
+        tests: None,
+        subs: vec![],
+        unread: 0,
+        held: 0,
+        retry_secs: None,
+    }
+}
+
+#[test]
+fn panel_enter_opens_local_run_and_returns_to_same_panel() {
+    use nexo_agent::supervise::SourceKind;
+    let (mut a, mut rx) = with_run();
+    a.session_id = Some("session".into());
+    a.input.set_text("main draft");
+    let mut panel = crate::agents_view::AgentsView::with_rows(vec![panel_row("session.3", SourceKind::Nexo)], 0, true);
+    panel.zoom = crate::agents_view::Zoom::List;
+    a.modal = Some(Modal::Agents(Box::new(panel)));
+    drain(&mut rx);
+    press(&mut a, KeyCode::Enter);
+    assert!(a.in_sub() && a.modal.is_none());
+    flush_refresh(&mut a);
+    assert!(matches!(drain(&mut rx).as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN));
+    item(&mut a, RUN, reply("live"));
+    answer(&mut a, RUN, vec![reply("live")], 0);
+    item(&mut a, RUN, reply("next"));
+    assert_eq!(texts(&a, "next"), 1);
+    flush_refresh(&mut a);
+    let snapshots = drain(&mut rx);
+    assert!(matches!(snapshots.as_slice(), [AgentCommand::SubTranscript { id, .. }] if id == RUN), "{snapshots:?}");
+    a.input.set_text("intervene");
+    a.submit();
+    assert!(
+        matches!(drain(&mut rx).as_slice(), [AgentCommand::SubSubmit { id, text }] if id == RUN && text == "intervene")
+    );
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.in_sub());
+    assert_eq!(a.input.text(), "main draft");
+    assert!(matches!(&a.modal, Some(Modal::Agents(v)) if v.zoom == crate::agents_view::Zoom::List && v.selected == 0));
+}
+
+#[test]
+fn panel_does_not_confuse_foreign_or_ambiguous_jobs_with_local_runs() {
+    use nexo_agent::supervise::SourceKind;
+    for (key, source, duplicate) in [
+        ("other.3", SourceKind::Nexo, false),
+        ("session.3", SourceKind::External, false),
+        ("session.3", SourceKind::Nexo, true),
+    ] {
+        let (mut a, mut rx) = with_run();
+        a.session_id = Some("session".into());
+        if duplicate {
+            a.handle_agent(AgentEvent::SubState { info: info("other#3", "same title", SubState::Background) });
+        }
+        a.modal = Some(Modal::Agents(Box::new(crate::agents_view::AgentsView::with_rows(
+            vec![panel_row(key, source)],
+            0,
+            true,
+        ))));
+        drain(&mut rx);
+        press(&mut a, KeyCode::Enter);
+        assert!(!a.in_sub(), "{key:?} {source:?}");
+        assert!(drain(&mut rx).is_empty());
+    }
+}
+
+#[test]
+fn tool_payloads_in_snapshot_and_live_are_shown_safely() {
+    let (mut a, _rx) = opened(vec![SubItem::Call {
+        id: "safe".into(),
+        name: "read".into(),
+        summary: "file".into(),
+        args: "{\"path\":\"hello\\u001bworld\"}".into(),
+    }]);
+    a.handle_sub(AgentEvent::Sub {
+        id: RUN.into(),
+        item: SubItem::Result { id: "safe".into(), ok: true, bytes: 9, output: "out\u{1b}put".into() },
+    });
+    let tool = a
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Tool { args, output, .. } => Some((args, output)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(tool.0["path"], "helloworld");
+    assert_eq!(tool.1.as_ref().unwrap().content, "output");
+}
+
+#[test]
+fn rejected_messages_preserve_existing_draft_and_each_other() {
+    let (mut a, _) = opened(vec![reply("x")]);
+    a.input.set_text("draft");
+    for text in ["first", "second"] {
+        a.handle_agent(AgentEvent::SubNotDelivered { id: RUN.into(), why: "full".into(), text: text.into() });
+    }
+    assert_eq!(a.input.full_text(), "draft\n\nfirst\n\nsecond");
+}
+
+#[test]
+fn stale_reply_after_reopen_cannot_replace_current_snapshot() {
+    let (mut a, mut rx) = with_run();
+    a.open_sub(RUN);
+    let old = a.sub_view.as_ref().unwrap().asking.unwrap();
+    a.close_sub();
+    a.open_sub(RUN);
+    let new = a.sub_view.as_ref().unwrap().asking.unwrap();
+    assert_ne!(old, new);
+    drain(&mut rx);
+    a.handle_agent(AgentEvent::SubTranscript {
+        id: RUN.into(),
+        request: old,
+        transcript: Some(SubTranscript { items: vec![reply("obsolete")], dropped: 0, partial: String::new() }),
+    });
+    assert_eq!(texts(&a, "obsolete"), 0);
+    assert_eq!(a.sub_view.as_ref().unwrap().asking, Some(new));
+    answer(&mut a, RUN, vec![reply("current")], 0);
+    assert_eq!(texts(&a, "current"), 1);
+}
+
+#[test]
+fn refresh_keeps_search_and_selection_on_unchanged_prefix() {
+    let (mut a, mut rx) = opened(vec![reply("find me")]);
+    frame(&mut a, 100, 30);
+    a.open_search();
+    a.search.as_mut().unwrap().query = "find".into();
+    a.rematch();
+    a.selected = Some(0);
+    a.selection = Some(crate::select::Selection::new(crate::select::Pos { line: 0, col: 0 }));
+    a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "x".into() });
+    flush_refresh(&mut a);
+    drain(&mut rx);
+    answer(&mut a, RUN, vec![reply("find me"), reply("new")], 0);
+    assert_eq!(a.search.as_ref().unwrap().query, "find");
+    assert!(!a.search.as_ref().unwrap().matches.is_empty());
+    assert_eq!(a.selected, Some(0));
+    assert!(a.selection.is_some());
+}
+
+#[test]
+fn fast_responses_do_not_trigger_a_snapshot_per_delta() {
+    let (mut a, mut rx) = opened(vec![]);
+    for _ in 0..100 {
+        a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "x".into() });
+        a.sub_tick();
+    }
+    assert!(drain(&mut rx).is_empty(), "refresh is rate limited after the opening answer");
+    flush_refresh(&mut a);
+    let sent = drain(&mut rx);
+    assert_eq!(sent.len(), 1);
+    answer(&mut a, RUN, vec![], 0);
+    for _ in 0..100 {
+        a.handle_agent(AgentEvent::SubDelta { id: RUN.into(), text: "x".into() });
+        a.sub_tick();
+    }
+    assert!(drain(&mut rx).is_empty());
+    flush_refresh(&mut a);
+    assert_eq!(drain(&mut rx).len(), 1);
+}
+
+#[test]
+fn remote_snapshots_refresh_isolate_local_events_and_restore_panel() {
+    use super::super::sub::RemoteUpdate;
+    use nexo_agent::supervise::SourceKind;
+    use nexo_core::agent::channels;
+    let (mut a, mut commands) = with_run();
+    a.input.set_text("main draft");
+    let panel =
+        Box::new(crate::agents_view::AgentsView::with_rows(vec![panel_row("remote", SourceKind::Nexo)], 0, true));
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    a.open_remote_receiver(RUN, rx); // deliberately collide with a local run identity
+    a.sub_view.as_mut().unwrap().panel = Some(panel);
+    let (observer, ends) = channels();
+    ends.events.send(AgentEvent::SessionChanged { session_id: RUN.into(), title: String::new() }).unwrap();
+    ends.events.send(AgentEvent::TextDelta { text: "first".into() }).unwrap();
+    let first = observer.observation.snapshot();
+    tx.send(Ok(RemoteUpdate::Initial(first.clone()))).unwrap();
+    a.sub_tick();
+    assert_eq!(texts(&a, "first"), 1);
+    item(&mut a, RUN, reply("local event"));
+    assert_eq!(texts(&a, "local event"), 0);
+    assert!(drain(&mut commands).is_empty());
+    ends.events.send(AgentEvent::TextDelta { text: " second".into() }).unwrap();
+    let second = observer.observation.snapshot_since(&first).unwrap();
+    tx.send(Ok(RemoteUpdate::Delta(second.clone()))).unwrap();
+    a.sub_tick();
+    assert_eq!(texts(&a, "first second"), 1);
+    tx.send(Err("offline".into())).unwrap();
+    a.sub_tick();
+    assert!(format!("{:?}", a.blocks).contains("offline"));
+    let empty = observer.observation.snapshot_since(&second).unwrap();
+    tx.send(Ok(RemoteUpdate::Delta(empty))).unwrap();
+    a.sub_tick();
+    assert!(!format!("{:?}", a.blocks).contains("offline"));
+    assert!(drain(&mut commands).is_empty());
+    a.input.clear();
+    a.esc_sub();
+    assert_eq!(a.input.full_text(), "main draft");
+    assert!(matches!(a.modal, Some(Modal::Agents(_))));
+}
+
+#[test]
+fn remote_delivery_receipts_guard_uncertainty_and_preserve_edits() {
+    use super::super::sub::{RemoteDelivery, RemoteReceipt};
+    let (mut a, _) = with_run();
+    let (_snap_tx, snap_rx) = std::sync::mpsc::sync_channel(1);
+    a.open_remote_receiver("session", snap_rx);
+    for receipt in [RemoteReceipt::Rejected("stale".into()), RemoteReceipt::BeforeSend("offline".into())] {
+        a.input.clear();
+        a.input.set_text("independent edit");
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        a.sub_view.as_mut().unwrap().remote.as_mut().unwrap().delivery =
+            RemoteDelivery::Sending { text: "message".into(), request_id: "request".into(), rx };
+        tx.send(receipt).unwrap();
+        a.sub_tick();
+        assert_eq!(a.input.full_text(), "independent edit\n\nmessage");
+    }
+    a.input.clear();
+    a.input.set_text("independent edit");
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    a.sub_view.as_mut().unwrap().remote.as_mut().unwrap().delivery =
+        RemoteDelivery::Sending { text: "message".into(), request_id: "request".into(), rx };
+    tx.send(RemoteReceipt::Unknown).unwrap();
+    a.sub_tick();
+    a.esc_sub();
+    assert_eq!(a.input.full_text(), "independent edit");
+    a.submit_sub();
+    assert!(matches!(a.sub_view.as_ref().unwrap().remote.as_ref().unwrap().delivery, RemoteDelivery::Unknown { .. }));
+    a.esc_sub();
+    assert!(!a.in_sub());
+    assert!(a.input.history().iter().any(|s| s == "message"));
+    assert!(a.input.history().iter().any(|s| s == "independent edit"));
+}
+
+#[test]
+fn remote_identity_change_stays_invalid_after_disconnect() {
+    use super::super::sub::RemoteUpdate;
+    let (mut a, _) = with_run();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    a.open_remote_receiver("session", rx);
+    let (observer, ends) = nexo_core::agent::channels();
+    ends.events.send(AgentEvent::SessionChanged { session_id: "session".into(), title: String::new() }).unwrap();
+    let original = observer.observation.snapshot();
+    tx.send(Ok(RemoteUpdate::Initial(original.clone()))).unwrap();
+    a.sub_tick();
+    tx.send(Err("offline".into())).unwrap();
+    a.sub_tick();
+    let mut changed = original.clone();
+    changed.generation += 1;
+    tx.send(Ok(RemoteUpdate::Resync(changed))).unwrap();
+    a.sub_tick();
+    assert!(format!("{:?}", a.blocks).contains("identity changed"));
+    tx.send(Ok(RemoteUpdate::Resync(original))).unwrap();
+    a.sub_tick();
+    a.input.set_text("draft");
+    a.submit_sub();
+    assert_eq!(a.input.full_text(), "draft");
+}
+
+#[test]
+fn remote_pending_close_retries_after_receipt() {
+    use super::super::sub::{RemoteDelivery, RemoteReceipt};
+    let (mut a, _) = with_run();
+    let (_tx, rx) = std::sync::mpsc::sync_channel(1);
+    a.open_remote_receiver("session", rx);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    a.sub_view.as_mut().unwrap().remote.as_mut().unwrap().delivery =
+        RemoteDelivery::Sending { text: "message".into(), request_id: "request".into(), rx };
+    a.handle_agent(AgentEvent::HistoryCleared);
+    assert!(a.in_sub());
+    tx.send(RemoteReceipt::Accepted).unwrap();
+    a.sub_tick();
+    assert!(!a.in_sub());
 }

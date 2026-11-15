@@ -851,6 +851,8 @@ mod tests {
         let info = SubInfo {
             id: "a#1".into(),
             profile: "explore".into(),
+            provider: None,
+            model: None,
             title: "t".into(),
             state: SubState::Ok,
             started_ms: 0,
@@ -863,8 +865,8 @@ mod tests {
             AgentEvent::Sub { id: "a#1".into(), item: SubItem::Text { text: "x".into() } },
             AgentEvent::SubDelta { id: "a#1".into(), text: "x".into() },
             AgentEvent::SubState { info },
-            AgentEvent::SubNotDelivered { id: "a#1".into(), why: "w".into() },
-            AgentEvent::SubTranscript { id: "a#1".into(), transcript: None },
+            AgentEvent::SubNotDelivered { id: "a#1".into(), why: "w".into(), text: "message".into() },
+            AgentEvent::SubTranscript { id: "a#1".into(), request: 0, transcript: None },
             AgentEvent::FlowRun {
                 info: nexo_core::subs::FlowInfo {
                     id: "wf#1".into(),

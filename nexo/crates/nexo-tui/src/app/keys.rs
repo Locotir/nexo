@@ -273,6 +273,49 @@ impl App {
     pub fn modal_out(&mut self, out: ModalOut) {
         match out {
             ModalOut::Nothing => self.sync_theme_preview(),
+            ModalOut::ObserveAgent { key, nexo } => {
+                // Supervisor keys for local jobs are <current session>.<job number>.
+                // Resolve only a unique known run; names and foreign sessions are not identities.
+                let id = self.session_id.as_deref().filter(|_| nexo).and_then(|session| {
+                    let job = key.strip_prefix(session)?.strip_prefix('.')?.parse::<u32>().ok()?;
+                    if key != format!("{session}.{job}") {
+                        return None;
+                    }
+                    let mut runs = self.sub_runs.iter().filter(|r| super::sub::job_of_run(&r.info.id) == Some(job));
+                    let run = runs.next()?.info.id.clone();
+                    runs.next().is_none().then_some(run)
+                });
+                if let Some(id) = id {
+                    let panel = match self.modal.take() {
+                        Some(Modal::Agents(v)) => v,
+                        other => {
+                            self.modal = other;
+                            return;
+                        }
+                    };
+                    self.open_sub(&id);
+                    if let Some(view) = self.sub_view.as_mut() {
+                        view.panel = Some(panel);
+                    } else {
+                        self.modal = Some(Modal::Agents(panel));
+                    }
+                    self.next_permission();
+                } else if nexo && self.session_id.as_deref() != Some(&key) && !key.contains('.') {
+                    #[cfg(unix)]
+                    if let Some(Modal::Agents(panel)) = self.modal.take() {
+                        self.open_remote(&key);
+                        if let Some(view) = self.sub_view.as_mut() {
+                            view.panel = Some(panel);
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    if let Some(Modal::Agents(view)) = &mut self.modal {
+                        view.observe_selected(&key);
+                    }
+                } else if let Some(Modal::Agents(view)) = &mut self.modal {
+                    view.observe_selected(&key);
+                }
+            }
             ModalOut::OpenSub(id) => {
                 self.modal = None;
                 self.open_sub(&id);

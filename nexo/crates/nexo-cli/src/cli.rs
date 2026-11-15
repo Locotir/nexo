@@ -737,6 +737,36 @@ async fn interactive(
     first: Option<String>,
 ) -> anyhow::Result<i32> {
     let (handle, ends) = channels();
+    #[cfg(unix)]
+    let observation_events = ends.events.clone();
+    #[cfg(unix)]
+    let _observation_host = nexo_agent::observe_remote::serve_with_errors(
+        nexo_agent::observe_remote::default_root(),
+        handle.observation.clone(),
+        move |text| {
+            let _ = observation_events.send(nexo_core::agent::AgentEvent::Notice {
+                level: nexo_core::agent::Level::Warn,
+                text,
+                problem: None,
+            });
+        },
+    );
+    #[cfg(unix)]
+    let _intervention_host = nexo_agent::observe_remote::serve_interventions_with_errors(
+        nexo_agent::observe_remote::default_root(),
+        handle.observation.clone(),
+        handle.commands.clone(),
+        {
+            let events = ends.events.clone();
+            move |text| {
+                let _ = events.send(nexo_core::agent::AgentEvent::Notice {
+                    level: nexo_core::agent::Level::Warn,
+                    text,
+                    problem: None,
+                });
+            }
+        },
+    );
     let models = setup::model_choices(&config);
     // A session nothing was said in has nothing to resume.
     let sessions = nexo_agent::session::list()

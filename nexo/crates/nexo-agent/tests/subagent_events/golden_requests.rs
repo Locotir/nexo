@@ -50,8 +50,8 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
     let want_items = vec![
         SubItem::Task { text: "look around".into() },
         SubItem::Text { text: "let me look".into() },
-        SubItem::Call { id: "s1".into(), name: "read".into(), summary: "read".into() },
-        SubItem::Result { id: "s1".into(), ok: true, bytes: "contents".len() },
+        SubItem::Call { id: "s1".into(), name: "read".into(), summary: "read".into(), args: "{}".into() },
+        SubItem::Result { id: "s1".into(), ok: true, bytes: "contents".len(), output: "contents".into() },
         SubItem::Text { text: "the report".into() },
     ];
     // the events, in the order they were made: the state, the items, a delta for each piece of text

@@ -61,7 +61,7 @@ pub(super) struct State {
     /// Why the last request ended at a checkpoint cap or for lack of progress, for a goal's pause.
     pub(super) ck_stop: Option<String>,
     /// Messages sent while a turn runs: they join it before its next model call.
-    pub(super) inbox: VecDeque<(String, Vec<Attachment>)>,
+    pub(super) inbox: VecDeque<InboxItem>,
     /// What other sessions know, waiting to go with the next request: `(id, title, block)`.
     pub(super) shared: Vec<(String, String, String)>,
     /// Files the model has seen, so an unchanged one is not sent again.
@@ -139,4 +139,42 @@ pub(super) type Shared = Arc<Mutex<State>>;
 /// Which of the tools the hints name this session offers.
 pub(super) fn offer_of(st: &State) -> crate::hint_cmd::Offer {
     crate::hint_cmd::Offer { bin: st.tools.get("bin").is_some(), debug: st.tools.get("debug").is_some() }
+}
+
+/// A directed item keeps its identity and receipt until it is consumed or removed.
+pub(super) struct InboxItem {
+    pub text: String,
+    pub attachments: Vec<Attachment>,
+    pub directed: Option<(nexo_core::agent::ObservationTarget, nexo_core::agent::DirectedReply)>,
+}
+impl Drop for InboxItem {
+    fn drop(&mut self) {
+        if let Some((_, reply)) = &self.directed {
+            reply.resolve(nexo_core::agent::DirectedResult::Rejected("removed before consumption"));
+        }
+    }
+}
+impl State {
+    pub(super) fn target_matches(&self, target: &nexo_core::agent::ObservationTarget) -> bool {
+        let snapshot = self.events.observation().snapshot();
+        snapshot.instance_id == target.instance_id
+            && snapshot.session_id.as_deref() == Some(&target.session_id)
+            && self.session.id() == target.session_id
+            && snapshot.generation == target.generation
+    }
+    pub(super) fn pop_inbox(&mut self) -> Option<InboxItem> {
+        while let Some(item) = self.inbox.pop_front() {
+            if let Some((target, reply)) = &item.directed {
+                if !self.target_matches(target) {
+                    reply.resolve(nexo_core::agent::DirectedResult::Rejected("observation changed"));
+                    continue;
+                }
+            }
+            return Some(item);
+        }
+        None
+    }
+    pub(super) fn invalidate_directed(&mut self) {
+        self.inbox.retain(|item| item.directed.is_none());
+    }
 }

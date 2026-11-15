@@ -300,7 +300,8 @@ fn n_writes_a_nudge_p_pauses_and_enter_opens_the_details() {
     key(v, KeyCode::Char('P'));
     assert!(!panel.paused_all());
     // Enter opens the details instead of closing; Esc closes them first, then the window
-    key(v, KeyCode::Enter);
+    let out = v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    a.modal_out(out);
     assert!(text(&mut a).contains("observation"));
     let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
     assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Nothing);
@@ -807,7 +808,8 @@ fn the_footer_offers_back_from_observation() {
     a.modal = Some(Modal::Agents(Box::new(v)));
     assert!(capture(&mut a, 140, 30).join("\n").contains("Enter observe"));
     let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let out = v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    a.modal_out(out);
     let text = capture(&mut a, 140, 30).join("\n");
     assert!(text.contains("Esc back") && text.contains("observation"), "{text}");
 }

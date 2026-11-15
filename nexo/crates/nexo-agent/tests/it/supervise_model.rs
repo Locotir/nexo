@@ -172,7 +172,7 @@ fn a_message_typed_in_the_panel_stays_the_persons_own() {
     let mut s = Setup::none().supervisor(Policy::parse("interval_secs = 0").unwrap(), src.clone());
     nexo_session(&src, "All done.", 1000);
     s.tick(1010);
-    s.queue_manual("s1", "please also run the linter", 1020);
+    s.queue_manual("s1", "please also run the linter", 1020).unwrap();
     let sent = src.take_nudges();
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].manual);

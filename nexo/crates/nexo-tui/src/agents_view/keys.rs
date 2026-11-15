@@ -25,13 +25,26 @@ impl AgentsView {
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
             KeyCode::Enter => {
                 if let Some(row) = self.selected_row() {
-                    self.start_history(&row);
-                    self.observing = Some(row.key);
-                    self.observe_scroll = 0;
-                    self.observe_max = 0;
+                    return ModalOut::ObserveAgent { key: row.key, nexo: row.source == SourceKind::Nexo };
                 }
             }
             KeyCode::Char('s') => self.cycle_filter(),
+            KeyCode::Char('v') => {
+                let keep = self.selected_key();
+                self.view = match self.view {
+                    View::Cards => View::Tree,
+                    View::Tree => View::Map,
+                    View::Map => View::Cards,
+                };
+                // Do not hide a selection made in cards behind a previously folded branch.
+                if keep.as_ref().is_some_and(|k| !self.shown().iter().any(|r| &r.key == k)) {
+                    self.collapsed.clear();
+                }
+                self.retarget(keep);
+                self.scroll = 0;
+                self.grid.clear();
+                self.want_col = None;
+            }
             KeyCode::Char('o') if self.panel.is_some() => {
                 self.policy_page = true;
                 self.policy_scroll = 0;
@@ -51,6 +64,8 @@ impl AgentsView {
             KeyCode::Char('n') => self.start_nudge(),
             KeyCode::Char('p') => self.toggle_pause(false),
             KeyCode::Char('P') => self.toggle_pause(true),
+            KeyCode::Left | KeyCode::Char('h') if self.view != View::Cards => self.fold_branch(false),
+            KeyCode::Right | KeyCode::Char('l') if self.view != View::Cards => self.fold_branch(true),
             KeyCode::Left | KeyCode::Char('h') => self.step(-1, false),
             KeyCode::Right | KeyCode::Char('l') => self.step(1, false),
             KeyCode::Tab => self.step(1, true),
@@ -64,6 +79,22 @@ impl AgentsView {
             _ => {}
         }
         ModalOut::Nothing
+    }
+
+    fn fold_branch(&mut self, expand: bool) {
+        let Some(row) = self.selected_row() else { return };
+        let rows = self.tree_rows();
+        let (parents, _) = tree::relations(&rows);
+        let Some(i) = rows.iter().position(|r| r.key == row.key) else { return };
+        if parents.contains(&Some(i)) {
+            if expand {
+                self.collapsed.remove(&row.key);
+            } else {
+                self.collapsed.insert(row.key.clone());
+            }
+            self.retarget(Some(row.key));
+            self.grid.clear();
+        }
     }
 
     /// `s`: all, then nexo only, then external only, kept for the rest of the session.
@@ -265,13 +296,16 @@ impl AgentsView {
                     return ModalOut::Nothing;
                 }
                 if let Some(panel) = self.panel.clone() {
-                    panel.nudge(&row.key, &text);
-                    self.fly_key = Some(row.key.clone());
-                    self.note = Some(if row.source == SourceKind::Nexo {
-                        format!("message sent to {}", row.name)
-                    } else {
-                        format!("nudge queued for {}; it goes out when the session stops", row.name)
-                    });
+                    match panel.nudge(&row.key, &text) {
+                        Ok(()) => {
+                            self.fly_key = Some(row.key.clone());
+                            self.note = Some(format!("message queued for {}; awaiting delivery", row.name));
+                        }
+                        Err(e) => {
+                            self.drafts.insert(row.key.clone(), text);
+                            self.note = Some(format!("message not confirmed: {e}; draft kept"));
+                        }
+                    }
                 } else {
                     self.drafts.insert(row.key, text);
                     self.note =

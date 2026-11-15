@@ -384,6 +384,8 @@ mod tests {
         let run = |profile: &str, state, cost_usd, ended_ms| SubInfo {
             id: "id".into(),
             profile: profile.into(),
+            provider: None,
+            model: None,
             title: "task".into(),
             state,
             started_ms: 1,

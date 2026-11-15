@@ -126,6 +126,7 @@ fn panel_detail_shows_observed_workflow_and_subagent_states() {
     let mut child = agent("child", State::Working);
     child.name = "reviewer".into();
     child.parent = Some("parent".into());
+    child.model = Some("xai/grok-test".into());
     let mut v = AgentsView::with_rows(vec![parent, child], NOW, false);
     let b = paint(&mut v, 150, 30, Instant::now(), false);
     let text = (0..b.area.height).map(|y| row_text(&b, y, 0, b.area.width)).collect::<Vec<_>>().join("\n");
@@ -136,6 +137,7 @@ fn panel_detail_shows_observed_workflow_and_subagent_states() {
     let child = v.rows().iter().find(|r| r.key == "child").unwrap();
     let details = v.detail(child, &Theme::dark(), 80).into_iter().map(|s| s.content.into_owned()).collect::<String>();
     assert!(details.contains("subagent of parent"), "{details}");
+    assert!(details.contains("xai/grok-test"), "{details}");
 }
 
 #[test]
@@ -392,4 +394,110 @@ fn effects_on_two_hundred_cards_stay_cheap() {
     let per = start.elapsed() / frames as u32;
     // measured in a debug build on a shared machine: a generous bound that still catches a quadratic loop
     assert!(per < Duration::from_millis(250), "{per:?} a frame with 200 cards in motion");
+}
+
+#[test]
+fn tree_uses_real_parents_and_keeps_selection_through_toggle_and_refresh() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let root = agent("root", State::Working);
+    let mut child = agent("child", State::Working);
+    child.parent = Some("root".into());
+    let mut orphan = agent("orphan", State::Done);
+    orphan.parent = Some("missing".into());
+    let mut v = AgentsView::with_rows(vec![child.clone(), orphan.clone(), root.clone()], NOW, true);
+    v.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(v.selected_key().as_deref(), Some("child"));
+    let shown = v.shown();
+    assert!(shown.iter().position(|r| r.key == "root") < shown.iter().position(|r| r.key == "child"));
+    let mut t = Terminal::new(TestBackend::new(35, 12)).unwrap();
+    let theme = Theme::nexo();
+    t.draw(|f| v.draw(f, f.area(), &theme, Instant::now(), false)).unwrap();
+    assert_eq!(v.grid.len(), 3);
+    v.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(v.selected_key().as_deref(), Some("root"));
+    v.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(v.selected_key().as_deref(), Some("child"));
+    v.set_rows(vec![root, child, orphan]);
+    assert_eq!(v.selected_key().as_deref(), Some("child"));
+    v.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(v.selected_key().as_deref(), Some("child"));
+}
+
+#[test]
+fn tree_keeps_cycles_without_looping_or_dropping_rows() {
+    let mut a = agent("a", State::Working);
+    let mut b = agent("b", State::Working);
+    a.parent = Some("b".into());
+    b.parent = Some("a".into());
+    let rows = super::super::tree::ordered(vec![a, b]);
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn tree_connectors_anomalies_and_folding() {
+    use super::super::tree::{self, Issue};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let root = agent("root", State::Working);
+    let mut a = agent("a", State::Working);
+    a.parent = Some("root".into());
+    let mut grand = agent("grand", State::Done);
+    grand.parent = Some("a".into());
+    let mut b = agent("b", State::Working);
+    b.parent = Some("root".into());
+    let mut orphan = agent("orphan", State::Done);
+    orphan.parent = Some("missing".into());
+    let mut cycle = agent("cycle", State::Done);
+    cycle.parent = Some("cycle".into());
+    let rows = tree::ordered(vec![root, a, grand, b, orphan, cycle]);
+    assert_eq!(&tree::prefixes(&rows, false)[..4], &["", "├ ", "│ └ ", "└ "]);
+    let (_, issues) = tree::relations(&rows);
+    assert_eq!(issues[4], Issue::Orphan);
+    assert_eq!(issues[5], Issue::Cycle);
+    let mut v = AgentsView::with_rows(rows, NOW, true);
+    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    v.key(key(KeyCode::Char('v')));
+    assert_eq!(v.selected_key().as_deref(), Some("root"));
+    v.key(key(KeyCode::Left));
+    assert_eq!(v.shown().len(), 3);
+    assert_eq!(v.selected_key().as_deref(), Some("root"));
+    v.key(key(KeyCode::Char('v')));
+    assert_eq!(v.shown().len(), 3);
+    v.key(key(KeyCode::Right));
+    assert_eq!(v.shown().len(), 6);
+}
+
+#[test]
+fn map_cycles_views_preserves_selection_and_falls_back_when_narrow() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let root = agent("root", State::Working);
+    let mut child = agent("child", State::Done);
+    child.parent = Some("root".into());
+    let mut orphan = agent("orphan", State::Working);
+    orphan.parent = Some("missing".into());
+    let mut v = AgentsView::with_rows(vec![child, root, orphan], NOW, true);
+    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    v.key(key(KeyCode::Char('v')));
+    v.key(key(KeyCode::Char('v')));
+    assert_eq!(v.selected_key().as_deref(), Some("child"));
+    let theme = Theme::nexo();
+    let mut wide = Terminal::new(TestBackend::new(100, 15)).unwrap();
+    wide.draw(|f| v.draw(f, f.area(), &theme, Instant::now(), false)).unwrap();
+    let buf = wide.backend().buffer();
+    let text = (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    assert!(text.iter().any(|l| l.contains("[root #") && l.contains("child") && l.contains("──▶")), "{text:?}");
+    assert!(!text.iter().any(|l| l.contains("orphan") && l.contains("──▶")), "{text:?}");
+    v.key(key(KeyCode::Up));
+    assert_eq!(v.selected_key().as_deref(), Some("root"));
+    let mut narrow = Terminal::new(TestBackend::new(40, 15)).unwrap();
+    narrow.draw(|f| v.draw(f, f.area(), &theme, Instant::now(), false)).unwrap();
+    let buf = narrow.backend().buffer();
+    let text = (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    assert!(text.iter().any(|l| l.contains("panel · tree")), "{text:?}");
+    assert!(!text.iter().any(|l| l.contains("──▶")), "{text:?}");
+    v.key(key(KeyCode::Char('v')));
+    assert_eq!(v.selected_key().as_deref(), Some("root"));
 }

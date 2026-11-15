@@ -259,6 +259,7 @@ impl App {
     }
 
     pub fn tick_frame(&mut self, beat: bool) {
+        self.sub_tick();
         self.words.pump(crate::complete::PUMP);
         if beat {
             self.spinner = self.spinner.wrapping_add(1);

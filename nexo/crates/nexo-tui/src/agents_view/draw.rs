@@ -734,6 +734,11 @@ impl AgentsView {
     pub(super) fn detail(&self, row: &AgentRow, theme: &Theme, w: usize) -> Vec<Span<'static>> {
         // Coordination goes first so it remains visible when paths or session keys are long.
         let mut parts = self.coordination(row);
+        if row.parent.is_some() {
+            if let Some(model) = &row.model {
+                parts.insert(0, model.clone());
+            }
+        }
         if row.paused {
             parts.insert(0, "supervisor paused".into());
         }
@@ -744,8 +749,10 @@ impl AgentsView {
         if let Some(m) = &row.permission_mode {
             parts.push(m.clone());
         }
-        if let Some(m) = &row.model {
-            parts.push(m.clone());
+        if row.parent.is_none() {
+            if let Some(m) = &row.model {
+                parts.push(m.clone());
+            }
         }
         if self.open {
             parts.push(row.key.clone());

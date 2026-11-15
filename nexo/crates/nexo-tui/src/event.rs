@@ -337,7 +337,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
         Edit::Submit => app.submit(),
         Edit::Changed => app.refresh_palette(),
         // a recalled history entry: the palette stays shut so the next Up keeps browsing
-        Edit::Recalled => app.suggestion = None,
+        Edit::Recalled => {}
         Edit::Ignored => {}
     }
 }

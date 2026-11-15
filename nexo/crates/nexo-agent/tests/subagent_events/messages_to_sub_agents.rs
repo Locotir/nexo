@@ -132,13 +132,13 @@ async fn a_message_to_an_ended_or_unknown_sub_agent_says_it_was_not_delivered_an
     r.send(AgentCommand::SubSubmit { id: id.clone(), text: "are you there".into() });
     let evs = r.until(|e| matches!(e, AgentEvent::SubNotDelivered { .. })).await;
     assert!(
-        matches!(evs.last(), Some(AgentEvent::SubNotDelivered { id: i, why }) if *i == id && why.contains("ended")),
+        matches!(evs.last(), Some(AgentEvent::SubNotDelivered { id: i, why, text }) if *i == id && why.contains("ended") && text == "are you there"),
         "{evs:?}"
     );
     r.send(AgentCommand::SubSubmit { id: "nobody#9".into(), text: "hello".into() });
     let evs = r.until(|e| matches!(e, AgentEvent::SubNotDelivered { .. })).await;
     assert!(
-        matches!(evs.last(), Some(AgentEvent::SubNotDelivered { id, why }) if id == "nobody#9" && why.contains("no sub-agent"))
+        matches!(evs.last(), Some(AgentEvent::SubNotDelivered { id, why, text }) if id == "nobody#9" && why.contains("no sub-agent") && text == "hello")
     );
     // nothing woke anything: no new request, no new turn
     assert!(r.quiet(300, |e| matches!(e, AgentEvent::TurnStart { .. } | AgentEvent::Sub { .. })).await);
@@ -170,7 +170,7 @@ async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_i
     let id = held_sub_agent(&mut r, &client).await;
     r.send(AgentCommand::SubSubmit { id: id.clone(), text: "SECRET-NUDGE-42".into() });
     r.sync().await;
-    r.send(AgentCommand::SubTranscript { id: id.clone() });
+    r.send(AgentCommand::SubTranscript { id: id.clone(), request: 1 });
     r.until(|e| matches!(e, AgentEvent::SubTranscript { transcript: Some(_), .. })).await;
     release(d.path(), "go");
     let evs = r.turn().await;
