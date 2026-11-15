@@ -9,7 +9,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentEvent;
 use crate::mail::*;
-use crate::paths;
 use crate::redact::redact;
 
 /// The session file is rewritten this often (ms), and a session counts as live below `LIVE_MS` since the last beat.
@@ -40,15 +38,15 @@ pub const CHAIN_MAX: usize = 4;
 pub const CHAIN_MS: i64 = 10 * 60_000;
 const EVENTS_MAX: usize = 256;
 
-/// Milliseconds since the Unix epoch.
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
-}
+mod fsx;
+mod ledger;
+mod peers;
 
-/// Where the mailboxes live: `<data_dir>/mail`.
-pub fn mail_root() -> PathBuf {
-    paths::data_dir().join("mail")
-}
+use fsx::{age_ms, make_dir, pid_alive, text_hash, write_atomic};
+pub use fsx::{mail_root, now_ms};
+pub use ledger::{read_ledgers, read_receipts, session_ids, SentRec};
+use peers::clean_name;
+pub use peers::describe;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SessionFile {
@@ -60,81 +58,6 @@ struct SessionFile {
     started: i64,
     beat: i64,
     bypass: bool,
-}
-
-/// One line of `sent.jsonl`: what a session wrote to another (the text is not kept, only its summary).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SentRec {
-    pub id: String,
-    pub from: String,
-    #[serde(default)]
-    pub from_name: String,
-    pub to: String,
-    #[serde(default)]
-    pub to_name: String,
-    pub summary: String,
-    pub bytes: usize,
-    pub at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply_to: Option<String>,
-}
-
-fn pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        if pid == 0 {
-            return false;
-        }
-        // SAFETY: signal 0 only checks that the process exists.
-        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(not(unix))]
-    {
-        pid != 0
-    }
-}
-
-fn make_dir(p: &Path) -> std::io::Result<()> {
-    let mut b = fs::DirBuilder::new();
-    b.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        b.mode(0o700);
-    }
-    b.create(p)
-}
-
-/// Writes `bytes` to `path` whole: a temporary file in the same folder, then a rename.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = dir.join(format!(".tmp-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
-    let mut o = fs::OpenOptions::new();
-    o.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
-    let r = o.open(&tmp).and_then(|mut f| f.write_all(bytes)).and_then(|_| fs::rename(&tmp, path));
-    if r.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    r
-}
-
-fn age_ms(p: &Path, now: i64) -> i64 {
-    let m = fs::metadata(p).and_then(|m| m.modified()).ok();
-    let t = m.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64);
-    t.map_or(0, |t| now - t)
-}
-
-fn text_hash(s: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
 }
 
 #[derive(Default)]
@@ -369,101 +292,6 @@ impl Mailbox {
         let _ = fs::remove_file(self.dir().join("session.json"));
     }
 
-    /// The live sessions: this one (marked `me`), the others that beat in the last 20 s and whose process
-    /// exists, then the external ones the host knows.
-    pub fn peers(&self) -> Vec<PeerInfo> {
-        let now = self.now();
-        let me = self.me();
-        let mut out = if me.id.is_empty() { Vec::new() } else { vec![me] };
-        let mut rest = Vec::new();
-        if let Ok(rd) = fs::read_dir(&self.root) {
-            for e in rd.flatten() {
-                let sid = e.file_name().to_string_lossy().to_string();
-                if sid == self.id() {
-                    continue;
-                }
-                let Ok(text) = fs::read_to_string(e.path().join("session.json")) else { continue };
-                let Ok(f) = serde_json::from_str::<SessionFile>(&text) else { continue };
-                if f.id != sid || f.v != MAIL_VERSION || now - f.beat >= LIVE_MS || !pid_alive(f.pid) {
-                    continue;
-                }
-                rest.push(PeerInfo {
-                    id: f.id,
-                    name: f.name,
-                    cwd: f.cwd,
-                    pid: f.pid,
-                    external: false,
-                    bypass: f.bypass,
-                    sendable: true,
-                    me: false,
-                });
-            }
-        }
-        rest.sort_by(|a, b| (a.name.as_str(), a.id.as_str()).cmp(&(b.name.as_str(), b.id.as_str())));
-        out.extend(rest);
-        let ext = self.externals.lock().ok().and_then(|g| g.clone());
-        if let Some(f) = ext {
-            for mut p in f() {
-                p.external = true;
-                p.sendable = false;
-                p.me = false;
-                out.push(p);
-            }
-        }
-        out
-    }
-
-    /// The session `to` names: an exact id, an id prefix (four characters or more), a unique name, or
-    /// `name [ref]`. An error says what to do instead.
-    pub fn resolve(&self, to: &str) -> Result<PeerInfo, String> {
-        let to = to.trim();
-        let peers: Vec<PeerInfo> = self.peers().into_iter().filter(|p| !p.external).collect();
-        let (name_part, ref_part) = match to.rfind('[') {
-            Some(i) if to.ends_with(']') => (to[..i].trim(), Some(to[i + 1..to.len() - 1].trim())),
-            _ => (to, None),
-        };
-        let pick = |c: Vec<&PeerInfo>| -> Result<PeerInfo, String> {
-            match c.len() {
-                1 => {
-                    if c[0].me {
-                        Err(format!(
-                            "Not sent: \"{to}\" is this session, the message would go to itself. {}",
-                            reachable(&peers)
-                        ))
-                    } else {
-                        Ok(c[0].clone())
-                    }
-                }
-                0 => Err(format!("Not sent: no live session \"{to}\". {}", reachable(&peers))),
-                _ => {
-                    let list: Vec<String> = c.iter().map(|p| describe(p)).collect();
-                    Err(format!(
-                        "Not sent: \"{to}\" fits several sessions: {}; name one as `name [ref]`",
-                        list.join(", ")
-                    ))
-                }
-            }
-        };
-        if let Some(p) = peers.iter().find(|p| p.id == to) {
-            return pick(vec![p]);
-        }
-        if let Some(r) = ref_part {
-            let c: Vec<&PeerInfo> = peers
-                .iter()
-                .filter(|p| p.name.eq_ignore_ascii_case(name_part) && r.len() >= 2 && p.id.starts_with(r))
-                .collect();
-            return pick(c);
-        }
-        if to.len() >= 4 {
-            let c: Vec<&PeerInfo> = peers.iter().filter(|p| p.id.starts_with(to)).collect();
-            if !c.is_empty() {
-                return pick(c);
-            }
-        }
-        let c: Vec<&PeerInfo> = peers.iter().filter(|p| p.name.eq_ignore_ascii_case(to)).collect();
-        pick(c)
-    }
-
     fn push_event(s: &mut State, ev: AgentEvent) {
         if s.events.len() >= EVENTS_MAX {
             s.events.remove(0);
@@ -628,21 +456,6 @@ impl Mailbox {
             },
         );
         Ok(mail)
-    }
-
-    fn append_ledger(&self, rec: &SentRec) {
-        let Ok(mut line) = serde_json::to_string(rec) else { return };
-        line.push('\n');
-        let mut o = fs::OpenOptions::new();
-        o.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.mode(0o600);
-        }
-        if let Ok(mut f) = o.open(self.dir().join("sent.jsonl")) {
-            let _ = f.write_all(line.as_bytes());
-        }
     }
 
     /// Tells the sender's side how far a mail got: an empty file `receipts/<mail id>.<stage>` in the sender's folder.
@@ -914,15 +727,6 @@ impl Mailbox {
     }
 }
 
-/// Longest name a session goes by.
-const NAME_MAX: usize = 48;
-
-/// A session name that is safe to list and to put in a delivery: no secrets, no control characters, clipped.
-fn clean_name(name: &str) -> String {
-    let s: String = redact(name).chars().filter(|c| !c.is_control()).take(NAME_MAX).collect();
-    s.trim().to_string()
-}
-
 /// An accepted mail leaves the inbox for `done/` when it is handed over. False when the file was already gone:
 /// someone else (a second process on the same session) took it, and handing it over again would repeat it.
 fn claim(dir: &Path, path: &Path) -> bool {
@@ -931,88 +735,6 @@ fn claim(dir: &Path, path: &Path) -> bool {
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
         Ok(()) => true,
     }
-}
-
-/// `name [3fa9c1] cwd`: a session as an ambiguity lists it.
-pub fn describe(p: &PeerInfo) -> String {
-    let short: String = p.id.chars().take(6).collect();
-    format!("{} [{short}] {}", p.name, p.cwd)
-}
-
-/// The other live sessions a message can reach, as a short line for an error to end with.
-fn reachable(peers: &[PeerInfo]) -> String {
-    let others: Vec<&PeerInfo> = peers.iter().filter(|p| !p.me).collect();
-    if others.is_empty() {
-        return "No other session is live.".into();
-    }
-    let names: Vec<String> = others
-        .iter()
-        .take(8)
-        .map(|p| {
-            if others.iter().filter(|q| q.name.eq_ignore_ascii_case(&p.name)).count() > 1 {
-                format!("{} [{}]", p.name, p.id.chars().take(6).collect::<String>())
-            } else {
-                p.name.clone()
-            }
-        })
-        .collect();
-    let more = if others.len() > 8 { format!(" and {} more", others.len() - 8) } else { String::new() };
-    format!("Live sessions: {}{more}.", names.join(", "))
-}
-
-/// The ledgers: every `sent.jsonl` under `root` read from `offsets` on (bytes, per session id), with the new offsets.
-pub fn read_ledgers(root: &Path, offsets: &mut HashMap<String, u64>) -> Vec<SentRec> {
-    let mut out = Vec::new();
-    let Ok(rd) = fs::read_dir(root) else { return out };
-    for e in rd.flatten() {
-        let sid = e.file_name().to_string_lossy().to_string();
-        let Ok(data) = fs::read(e.path().join("sent.jsonl")) else { continue };
-        let off = offsets.entry(sid).or_insert(0);
-        if (*off as usize) > data.len() {
-            *off = 0;
-        }
-        let tail = &data[*off as usize..];
-        // only whole lines
-        let end = tail.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-        for line in tail[..end].split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-            if let Ok(r) = serde_json::from_slice::<SentRec>(line) {
-                out.push(r);
-            }
-        }
-        *off += end as u64;
-    }
-    out.sort_by_key(|r| r.at);
-    out
-}
-
-/// The receipts that wait in session `sid`'s folder: `(mail id, stage)`, the furthest stage of each.
-pub fn read_receipts(root: &Path, sid: &str) -> Vec<(String, Stage)> {
-    let mut best: HashMap<String, Stage> = HashMap::new();
-    if let Ok(rd) = fs::read_dir(root.join(sid).join("receipts")) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().to_string();
-            let Some((id, st)) = n.rsplit_once('.') else { continue };
-            let Some(stage) = Stage::parse(st) else { continue };
-            let slot = best.entry(id.to_string()).or_insert(stage);
-            if stage.rank() > slot.rank() {
-                *slot = stage;
-            }
-        }
-    }
-    let mut v: Vec<(String, Stage)> = best.into_iter().collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
-    v
-}
-
-/// The ids of the session folders under `root`.
-pub fn session_ids(root: &Path) -> Vec<String> {
-    let mut v: Vec<String> = fs::read_dir(root)
-        .map(|rd| {
-            rd.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().to_string()).collect()
-        })
-        .unwrap_or_default();
-    v.sort();
-    v
 }
 
 #[cfg(test)]
