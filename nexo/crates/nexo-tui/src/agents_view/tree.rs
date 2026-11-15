@@ -282,23 +282,59 @@ impl AgentsView {
     /// The tree line a letter for `key` lands on: its row, else the nearest ancestor drawn (a folded parent),
     /// else the header of its folded group. A row that needs the person counts in its own group, as the totals do.
     pub(super) fn landing(&self, key: &str) -> Option<usize> {
+        self.landings().find(key)
+    }
+
+    /// The lookup behind `landing`, built once: a frame with many letters in flight asks for dozens of keys, and
+    /// building the tree lines for each one cost about ten times the rest of the frame.
+    pub(super) fn landings(&self) -> Landings {
         let items = self.items();
         let rows = ordered(self.listed());
         let (parents, _) = relations(&rows);
-        let mut i = rows.iter().position(|r| r.key == key)?;
-        loop {
-            let k = &rows[i].key;
-            let drawn =
-                items.iter().position(|it| it.group() != &Group::Needs && it.row().is_some_and(|r| &r.key == k));
-            if drawn.is_some() {
-                return drawn;
+        let mut drawn: HashMap<String, usize> = HashMap::new();
+        let mut heads: Vec<(Group, usize)> = Vec::new();
+        for (n, it) in items.iter().enumerate() {
+            match it {
+                Item::Row { group, row, .. } if *group != Group::Needs => {
+                    drawn.entry(row.key.clone()).or_insert(n);
+                }
+                Item::Head { group, .. } => heads.push((group.clone(), n)),
+                _ => {}
             }
-            match parents[i] {
+        }
+        let mut at: HashMap<String, usize> = HashMap::new();
+        for (i, r) in rows.iter().enumerate() {
+            at.entry(r.key.clone()).or_insert(i);
+        }
+        let groups = rows.iter().map(|r| Group::of(Kind::of(r), r)).collect();
+        let keys = rows.into_iter().map(|r| r.key).collect();
+        Landings { drawn, heads, at, parents, keys, groups }
+    }
+}
+
+/// Where each key's letter lands, see `AgentsView::landing`.
+pub(super) struct Landings {
+    drawn: HashMap<String, usize>,
+    heads: Vec<(Group, usize)>,
+    at: HashMap<String, usize>,
+    parents: Vec<Option<usize>>,
+    keys: Vec<String>,
+    /// The group of each ordered row, as `Group::of` says of the row itself.
+    groups: Vec<Group>,
+}
+
+impl Landings {
+    pub(super) fn find(&self, key: &str) -> Option<usize> {
+        let mut i = *self.at.get(key)?;
+        loop {
+            if let Some(n) = self.drawn.get(&self.keys[i]) {
+                return Some(*n);
+            }
+            match self.parents[i] {
                 Some(p) => i = p,
                 None => break,
             }
         }
-        let group = Group::of(Kind::of(&rows[i]), &rows[i]);
-        items.iter().position(|it| matches!(it, Item::Head { group: g, .. } if *g == group))
+        self.heads.iter().find(|(g, _)| *g == self.groups[i]).map(|(_, n)| *n)
     }
 }

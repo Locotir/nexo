@@ -169,11 +169,13 @@ fn stress_cited_events_are_the_planted_cut_dependencies() {
     let r = run(&s.requests, spec, Prices::LEGACY, 0.0, 0).unwrap();
     // the replay runs on this thread: its CPU time is the curator's cost, and other work on a busy
     // machine does not count; without a CPU clock, wall time
-    let secs = match (c0, thread_cpu_secs()) {
-        (Some(a), Some(b)) => b - a,
-        _ => t0.elapsed().as_secs_f64(),
+    let (secs, bound) = match (c0, thread_cpu_secs()) {
+        (Some(a), Some(b)) => (b - a, 60.0),
+        // Windows has no /proc clock: the wall time of a debug build on a shared runner was 62.9 s on 2026-11-15
+        // where the same code uses 21 s of CPU on Linux (the bound before it was 60 s), so the fallback allows 4x
+        _ => (t0.elapsed().as_secs_f64(), 240.0),
     };
-    assert!(secs < 60.0, "{secs} s");
+    assert!(secs < bound, "{secs} s, bound {bound} s");
     // which planted chunks the curator cut, from the views themselves
     let mut cur = nexo_curator::Curator::new(spec).unwrap();
     cur.window(0);

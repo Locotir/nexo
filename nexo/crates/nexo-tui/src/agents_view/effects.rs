@@ -620,8 +620,9 @@ impl AgentsView {
     /// the tree's edge for a moment. A row folded away sends and receives on the line that holds it (its parent
     /// or its group's header). A mail that fails turns back half way.
     pub(super) fn draw_flights(&self, f: &mut Frame, rule: Rect, body: Rect, theme: &Theme, now: Instant) {
+        let land = self.landings();
         let rect_of = |key: &str| {
-            let i = self.landing(key)?;
+            let i = land.find(key)?;
             self.lines.iter().find(|(c, _)| *c == i).map(|(_, r)| (i, *r))
         };
         let a = self.ascii;
@@ -631,7 +632,7 @@ impl AgentsView {
                 continue;
             }
             let ms = ms_since(Some(l.born), now).saturating_sub(l.delay_ms);
-            let Some(ti) = self.landing(&l.to) else { continue };
+            let Some(ti) = land.find(&l.to) else { continue };
             let from = l.from.as_deref().and_then(rect_of);
             let Some((_, to_r)) = rect_of(&l.to) else {
                 if ms < px::EDGE_MS && !self.lines.is_empty() && body.width >= 4 && body.height > 0 {
