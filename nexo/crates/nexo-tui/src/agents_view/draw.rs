@@ -85,8 +85,7 @@ pub(super) fn fit_step(step: &str, room: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents_view::layout::{balanced, split_evenly};
-    use crate::agents_view::{chip, chip_color, AgentsView, Layout, CARD_MAX_W, GAP};
+    use crate::agents_view::{chip, chip_color, AgentsView};
 
     fn lum(c: Color) -> f64 {
         let Color::Rgb(r, g, b) = c else { return 0.0 };
@@ -209,22 +208,5 @@ mod tests {
         // CJK path: never wider than the room
         let cut = fit_step("Read  /项目/源代码/解析器/语法分析.rs", 20);
         assert!(width(&cut) <= 20, "{cut}");
-    }
-
-    #[test]
-    fn rows_balance_and_cards_split_a_strip_to_the_cell() {
-        assert_eq!(balanced(4, 3), 2);
-        assert_eq!(balanced(5, 3), 3);
-        assert_eq!(balanced(7, 4), 4);
-        assert_eq!(balanced(5, 4), 3);
-        assert_eq!(balanced(1, 4), 1);
-        assert_eq!(balanced(0, 4), 1);
-        assert_eq!(split_evenly(113, 3), vec![38, 38, 37]);
-        let l = Layout::Cards { cols: 3, card_w: 37 };
-        for n in 1..=4 {
-            let w = AgentsView::row_widths(l, 116, 37, n);
-            let gaps = GAP * (n as u16 - 1);
-            assert_eq!(w.iter().sum::<u16>() + gaps, 116.min(n as u16 * CARD_MAX_W + gaps), "{n}: {w:?}");
-        }
     }
 }

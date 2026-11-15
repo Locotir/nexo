@@ -223,7 +223,6 @@ fn draw_all(f: &mut Frame, app: &mut App) {
                     | Modal::Jobs(_)
                     | Modal::Mcp(_)
                     | Modal::Chrome(_)
-                    | Modal::Team(_)
                     | Modal::Goal(_)
                     | Modal::Sent(_)
                     | Modal::Trust(_)

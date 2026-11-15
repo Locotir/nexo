@@ -1,23 +1,23 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ●─╮ ╭─●   nexo 0.1.0                                                     │
-│   ╰●╯     deepseek/deepseek-chat · ask                                   │
-╭ panel ──────────────────────────────────────────────────────────────────[✗]──╮
-│ no sessions                                       all · watching · read-only │
-│ ──────────────────────────────────────────────────────────────────────────── │
-│  Live board of your agent sessions.                                          │
-│  They appear here on their own:                                              │
-│  ▣ this session, after your message                                          │
-│  ▢ other agents whose logs nexo reads                                        │
-│                                                                              │
-│  One card each: its state, last step                                         │
-│  and how long it has been quiet.                                             │
+╭ panel ────────────────────────────────────────────────────────── 13:46 ─[✗]──╮
+│ ● 0 working  ○ 0 idle  ! 0 needs you   ▕▁▁▁▁▁▁▁▁▏ 0/min            read-only │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Nothing running besides this session yet.                                    │
+│ Rows appear here on their own:                                               │
+│ this session after your message, its sub-agents,                             │
+│ nexo team lanes, other nexo sessions,                                        │
+│ and other agents whose logs nexo reads.                                      │
 │                                                                              │
 │                                                                              │
-│ ←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ / filter · f show · F source · Esc close                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
-
-
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
  Esc close                                                 20261102-100000-ef56

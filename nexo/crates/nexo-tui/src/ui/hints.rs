@@ -39,6 +39,18 @@ pub(super) fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
             vec![Span::styled(format!(" ⚙ {running} {word}"), base.fg(theme.accent).add_modifier(lit(HintHit::Jobs)))],
         ));
     }
+    // everything this session can see running besides itself: lanes, its sub-agents, other sessions
+    if let Some(fleet) = app.fleet {
+        let colour = if fleet.need > 0 { theme.warn2 } else { theme.accent };
+        out.push((
+            3,
+            Some(HintHit::Fleet),
+            vec![Span::styled(
+                format!(" {}", fleet.text(false)),
+                base.fg(colour).add_modifier(lit(HintHit::Fleet)),
+            )],
+        ));
+    }
     if !app.shared.is_empty() {
         let tok: usize = app.shared.iter().map(|s| s.2).sum();
         out.push((

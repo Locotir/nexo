@@ -1,23 +1,23 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ·                                                                        │
-│    ·                                                                     │
-╭ panel ──────────────────────────────────────────────────────────────────[✗]──╮
-│ ◈ 1 permission  ↻ 1 looping  ● 2 working  ✓ 1 done             ! 1 ◉ 2 · all │
-│ ──────────────────────────────────────────────────────────────────────────── │
-│ ▣ nexo · 2 ───────────────────────────────────────────────────────────────── │
-│ ▌● working    ▣ project                 ⠁ ✎❯✘✎✔◉▤✎   2s  Edit  src/parser.rs │
-│  ● working    └ ▣ explore                     ◦◎◎   1s  Grep  fn classify    │
-│ ▢ othertool · 3 ──────────────────────────────────────────────────────────── │
-│  ◈ permission ▢ api-migration                 ✎❯⚿   1m  Bash  cargo publish… │
-│  ↻ looping    ▢ scheduler                    ❯❯✗↻  30s  Bash  git pull       │
-│  ✓ done       ▢ docs                          ◉⇡■   2h  Bash  gh release cr… │
+╭ panel ────────────────────────────────────────────────────────── 13:46 ─[✗]──╮
+│ ● 2 working  ○ 0 idle  ! 2 needs you   $1.67 today                 read-only │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ! NEEDS YOU  2                                                               │
+│ ◈ api-migration  Bash  cargo publish --dry-run                     1m  $1.25 │
+│ ↻ scheduler      Bash  git pull                                           1m │
+│ ▾ THIS SESSION                                                               │
+│ ● project        Edit  src/parser.rs                               1m  $0.42 │
+│ ╰ ● explore      Grep  fn classify                                  1m  ▁▅█▆ │
+│ ▸ OTHERTOOL · 3                                                              │
 │                                                                              │
-│ selected  subagents 1 active / 2 total · explore: working, n1.2: done · /ho… │
-│ ←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ⏎ details · n message · / filter · f show · F source · Esc close             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
-
-
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
  Esc close                                                 20261102-100000-ef56

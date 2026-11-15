@@ -271,6 +271,7 @@ impl App {
         self.poll_mailbox();
         self.poll_chrome();
         self.poll_team();
+        self.poll_fleet();
         self.poll_diffview();
         self.poll_insights();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {
@@ -390,6 +391,19 @@ impl App {
         if let Some(Modal::Goal(v)) = &mut self.modal {
             if v.tick() {
                 self.dirty = true;
+            }
+        }
+        // the panel knows which of its jobs are sub-agents it can write to, and reads the output of the one it shows
+        if let Some(Modal::Agents(v)) = &mut self.modal {
+            let runs = self
+                .sub_runs
+                .iter()
+                .filter(|r| r.info.state.running())
+                .filter_map(|r| Some((crate::app::sub::job_of_run(&r.info.id)?, r.info.id.clone())))
+                .collect();
+            v.set_runs(runs);
+            if v.wants_tails(at) {
+                self.commands.send(AgentCommand::JobTails).ok();
             }
         }
         // the jobs window asks for fresh output now and then

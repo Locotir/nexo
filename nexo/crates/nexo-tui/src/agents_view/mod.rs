@@ -1,30 +1,28 @@
-//! `/panel`: one card per agent session (this one, sub-agents, and other tools' sessions read from their
-//! logs), each with its name, source, a coloured state chip, the last step, how long it has been quiet and
-//! the supervisor's last action. It supervises and messages: a message flies to its card as a letter.
+//! `/panel`: mission control for everything nexo runs. A tree on the left groups the rows (who needs the
+//! person, this session and its sub-agents, the `nexo team` lanes, the other live nexo sessions, then the
+//! sessions of other programs), one line each; the pane on the right tells the selected row in full. The keys
+//! depend on the kind of row selected, and the footer lists only those. It supervises, messages, starts and
+//! stops lanes; a message flies to its row as a letter.
 
-mod bands;
-mod card;
 mod chips;
-mod compact;
 mod detail;
 mod draw;
 mod effects;
 mod keys;
-mod layout;
-mod map;
+mod lanes;
 mod observe;
+mod pane;
 mod pulse;
+mod row;
 mod tree;
 mod view;
 mod window;
 
 use self::chips::{age, attention, chip, chip_color};
-pub use self::layout::{blocks_layout, cards_layout, Layout};
-use self::layout::{Band, Group};
-use self::view::View;
-pub use self::view::{Filter, Zoom};
+pub use self::lanes::Starter;
+pub use self::view::{needs_you, FleetCount, Filter, Group, Kind, Show};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,57 +33,53 @@ use nexo_agent::supervise::{AgentRow, Panel, Secs, SourceKind, State};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block as Box_, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::anim::{ease_out, progress};
 use crate::modal::{contains, ModalOut};
-use crate::motion::{fade, within, Glide};
+use crate::motion::{fade, within};
 use crate::render::wrap::{truncate, width};
 use crate::theme::Theme;
 
-const CARD_MIN_W: u16 = 34;
-const CARD_MAX_W: u16 = 60;
-const CARD_H: u16 = 5;
-/// With this much room the cards take a sixth row for the last events.
-const RIBBON_FROM: u16 = 20;
-/// With this much room the fleet pulse gets a line of its own under the header.
-const PULSE_FROM: u16 = 22;
-const GAP: u16 = 2;
-const MAX_COLS: u16 = 4;
-/// The width under which the cards give way to one line per session.
-const LIST_BELOW: u16 = 44;
+/// From this width the pane sits beside the tree; under it the tree takes the width and Enter opens the pane.
+pub const WIDE_FROM: u16 = 110;
 /// One breath of an attention chip.
 const BREATH_MS: u128 = 1600;
-/// A card fades (and rises one row) in this long when it first shows; the first cards of a new view start
-/// one after the other, `STAGGER_MS` apart, up to `STAGGER_MAX`.
+/// A new row slides in from the right in this long; the first rows of a new view start one after the other,
+/// `STAGGER_MS` apart, up to `STAGGER_MAX`.
 const ENTER_MS: u64 = 280;
-const STAGGER_MS: u64 = 45;
-const STAGGER_MAX: u64 = 270;
-/// A chip changing state cross-fades from the old colour to the new one in this long.
+const STAGGER_MS: u64 = 25;
+const STAGGER_MAX: u64 = 200;
+/// A glyph changing state cross-fades from the old colour to the new one in this long.
 const CHIP_MS: u64 = 400;
-/// A far-zoom block: wide, tall, and the most of them that a row can hold.
-const BLOCK_W: u16 = 16;
-const BLOCK_H: u16 = 3;
-const MAX_BLOCK_COLS: u16 = 12;
-/// A letter takes this long from the header to the card it is for; the card then pulses.
+/// A letter takes this long from the footer to the row it is for; the row then pulses.
 const FLIGHT_MS: u64 = 1000;
 /// Cells of streak behind the letter.
 const TRAIL: u16 = 4;
-/// Rows the window spends besides the sessions: borders, header and rule, detail, footer.
-const CHROME: u16 = 2 + 2 + 1 + 1;
-/// From this window height a blank row sets the sessions apart from their details.
-const SPARE_FROM: u16 = 16;
+/// A row that starts needing the person pulses this long, and the NEEDS YOU header blinks once.
+const NEED_MS: u64 = 900;
+/// A lane's round that ended pops its ✓ or ✗ this long.
+const POP_MS: u64 = 700;
+/// Two clicks on one row within this long are one double click (Enter).
+const DOUBLE_MS: u128 = 400;
 
-/// What a card spells out with no session to show: what `/panel` is and how sessions get here.
-const EMPTY_STATE: [&str; 7] = [
-    "Live board of your agent sessions.",
-    "They appear here on their own:",
-    "▣ this session, after your message",
-    "▢ other agents whose logs nexo reads",
-    "",
-    "One card each: its state, last step",
-    "and how long it has been quiet.",
+/// What the tree says with no row to show: what `/panel` is and how rows get here.
+const EMPTY_STATE: [&str; 5] = [
+    "Nothing running besides this session yet.",
+    "Rows appear here on their own:",
+    "this session after your message, its sub-agents,",
+    "nexo team lanes, other nexo sessions,",
+    "and other agents whose logs nexo reads.",
+];
+
+/// What the pane says with nothing selected: the groups the tree will hold, in their order.
+const LEGEND: [(&str, &str); 5] = [
+    ("NEEDS YOU", "permission waits, errors, failed lanes, held mail"),
+    ("THIS SESSION", "this session, its sub-agents and its jobs"),
+    ("LANES", "nexo team lanes: s start, x stop, p pause all"),
+    ("NEXO SESSIONS", "nexo running in other terminals"),
+    ("other programs", "one group per program, folded to its count"),
 ];
 
 /// A row whose text is safe to lay out: another program's names, paths and steps may hold line breaks, escape
@@ -99,6 +93,7 @@ fn tidy(mut r: AgentRow) -> AgentRow {
     r.cwd.iter_mut().for_each(one);
     r.model.iter_mut().for_each(one);
     r.permission_mode.iter_mut().for_each(one);
+    r.goal.iter_mut().for_each(one);
     r.last_action.iter_mut().for_each(|(what, _)| one(what));
     r
 }
@@ -113,7 +108,7 @@ fn bucket(secs: u64) -> u64 {
     }
 }
 
-/// The motion of one session: when its card first showed, and its last change of state.
+/// The motion of one row: when it first showed, and its last change of state.
 #[derive(Debug, Clone)]
 struct RowFx {
     born: Instant,
@@ -121,6 +116,14 @@ struct RowFx {
     state: State,
     prev: State,
     changed: Option<Instant>,
+    /// It started needing the person at this moment (it pulses).
+    needs: Option<Instant>,
+    /// Its lane's round ended at this moment, well or not (the glyph pops).
+    round: Option<(Instant, bool)>,
+    /// It needed the person at the last look.
+    needing: bool,
+    /// When its lane's last round ended, at the last look.
+    last_round: Option<Secs>,
 }
 
 /// A message for a session of another program, asked about before it is typed in.
@@ -134,6 +137,7 @@ struct Typing {
 
 #[derive(Debug, Clone)]
 pub struct AgentsView {
+    /// The selected line of the tree (a group's header or a row).
     pub selected: usize,
     panel: Option<Arc<Panel>>,
     seen: u64,
@@ -143,38 +147,48 @@ pub struct AgentsView {
     pub window: Rect,
     pub close: Rect,
     pub hover: bool,
-    /// Where each card (or line) was drawn last, for the pointer.
+    /// Where each row was drawn last, as an index into the rows in tree order (the letters fly to it).
     cards: Vec<(usize, Rect)>,
-    cols: usize,
-    /// The first grid row in sight.
+    /// Where each tree line was drawn last, as an index into the tree (the pointer).
+    lines: Vec<(usize, Rect)>,
+    /// Where the tree and the pane were drawn last (the wheel scrolls the one under the pointer).
+    tree_area: Rect,
+    pane_area: Rect,
+    /// The first tree line in sight.
     pub scroll: usize,
-    glide: Glide,
-    /// When the view was first drawn (the phase of the breathing chips).
+    /// How far the pane's events are scrolled.
+    pane_scroll: usize,
+    pane_max: usize,
+    /// When the view was first drawn (the phase of the breathing glyphs).
     opened: Option<Instant>,
     fx: HashMap<String, RowFx>,
-    /// The card that pulses when a letter lands, and from when.
+    /// The NEEDS YOU header blinks once from this moment.
+    need_blink: Option<Instant>,
+    /// The row that pulses when a letter lands, and from when.
     pulse_at: Option<(String, Instant)>,
     /// A message is on its way to this session: the letter starts at the next draw.
     fly_key: Option<String>,
-    /// The letter in flight: whose card it is going to, and when it left.
+    /// The letter in flight: whose row it is going to, and when it left.
     flight: Option<(String, Instant)>,
     /// Ids of the mails whose letter was already sent; none until the first look (old mail does not fly).
-    mails_seen: Option<std::collections::HashSet<String>>,
-    pub zoom: Zoom,
-    view: View,
-    collapsed: std::collections::HashSet<String>,
+    mails_seen: Option<HashSet<String>>,
+    /// Parent rows folded away.
+    collapsed: HashSet<String>,
+    /// Groups whose fold differs from their first one.
+    flipped: HashSet<String>,
     /// The ASCII forms of the glyphs the panel draws itself.
     ascii: bool,
     /// What the effects remember between two draws.
     live: effects::Fleet,
-    /// The layout of the last draw (where a letter flies).
-    drawn: Layout,
-    /// Which sessions are listed.
+    /// Which sessions are listed by source (`F`).
     pub filter: Filter,
-    /// Where the filter is kept for the rest of the session.
+    /// Which rows are listed by what they do (`f`).
+    pub show: Show,
+    /// The text filter (`/`), and whether it is being typed.
+    find: Option<String>,
+    finding: bool,
+    /// Where the source filter is kept for the rest of the session.
     memory: Option<Arc<AtomicU8>>,
-    /// The rows of cards (or lines) of the last draw, as indices into the shown sessions, for the arrows.
-    grid: Vec<Vec<usize>>,
     /// No motion (`[ui] animations = false`, or a mono theme).
     still: bool,
     /// The nudge being written for the selected session.
@@ -187,15 +201,17 @@ pub struct AgentsView {
     reach: nexo_core::reach::Reach,
     /// A message waiting for the person's yes before it is typed into another program.
     confirm: Option<Typing>,
-    /// The column the arrows hold while the selection goes up and down over rows of different lengths.
-    want_col: Option<usize>,
+    /// A job of this session waiting for the person's yes before it is stopped.
+    kill_ask: Option<u32>,
     /// The view keeps the selection in sight; the wheel lets go of it until the selection moves again.
     follow: bool,
     /// One line of news from the last action.
     note: Option<String>,
-    /// The selected session's details are open.
+    /// Narrow window: the pane is open at full width.
     open: bool,
-    /// The policy page is showing instead of the sessions.
+    /// The keys act on the pane (Enter or Tab moved them there): the arrows scroll its events.
+    focus: bool,
+    /// The policy page is showing instead of the tree.
     policy_page: bool,
     policy_scroll: usize,
     /// Stable key of the session being observed, independent of fleet reordering.
@@ -204,8 +220,30 @@ pub struct AgentsView {
     observe_max: usize,
     history_rx: Option<HistoryReceiver>,
     history: Option<Result<nexo_agent::session::HistorySnapshot, String>>,
-    /// The size the window took when it opened.
-    size: crate::dialog_size::Slot,
+    /// The runs of this session's sub-agents by job id (a message to a running one goes to its run).
+    runs: Vec<(u32, String)>,
+    /// The end of the output of this session's jobs, by job id, as `/jobs` reads it.
+    tails: HashMap<u32, String>,
+    /// The last time the tails were asked for.
+    tails_asked: Option<Instant>,
+    /// Starts a lane's runner: the detached `nexo team run <name>`; a test puts a stand-in here.
+    starter: Starter,
+    starter_now: Starter,
+    /// The questions of a new lane, while they are being answered.
+    form: Option<lanes::Form>,
+    /// A lane asked to stop so that this session takes its place.
+    wait: Option<lanes::Wait>,
+    /// The session of a lane that stopped for this one: the app resumes it.
+    resume: Option<String>,
+    /// The last click on a tree line: which, and when (two make a double click).
+    last_click: Option<(usize, Instant)>,
+    /// The pointer was last over the pane (the wheel scrolls it).
+    over_pane: bool,
+    /// The LANES group shows even with no lane yet (the panel was opened with `/team`).
+    lanes_first: bool,
+    /// Every lane is paused (`nexo team pause`). Read by `refresh` from the team folder, never while drawing, so a
+    /// view built from rows alone (tests) never touches the person's files.
+    lanes_paused: bool,
 }
 
 type HistoryReceiver =
@@ -223,34 +261,39 @@ impl AgentsView {
             close: Rect::default(),
             hover: false,
             cards: Vec::new(),
-            cols: 1,
+            lines: Vec::new(),
+            tree_area: Rect::default(),
+            pane_area: Rect::default(),
             scroll: 0,
-            glide: Glide::default(),
+            pane_scroll: 0,
+            pane_max: 0,
             opened: None,
             fx: HashMap::new(),
+            need_blink: None,
             fly_key: None,
             flight: None,
             mails_seen: None,
             pulse_at: None,
-            zoom: Zoom::Cards,
-            view: View::Cards,
             collapsed: Default::default(),
+            flipped: Default::default(),
             ascii: crate::ascii::wanted(),
             live: effects::Fleet::default(),
-            drawn: Layout::List,
             filter: Filter::All,
+            show: Show::All,
+            find: None,
+            finding: false,
             memory: None,
-            grid: Vec::new(),
             still,
             edit: None,
             edit_for: None,
             reach: nexo_core::reach::Reach::default(),
             confirm: None,
+            kill_ask: None,
             drafts: HashMap::new(),
-            want_col: None,
             follow: true,
             note: None,
             open: false,
+            focus: false,
             policy_page: false,
             policy_scroll: 0,
             observing: None,
@@ -258,7 +301,18 @@ impl AgentsView {
             observe_max: 0,
             history_rx: None,
             history: None,
-            size: Default::default(),
+            runs: Vec::new(),
+            tails: HashMap::new(),
+            tails_asked: None,
+            starter: nexo_core::team::spawn::runner,
+            starter_now: nexo_core::team::spawn::runner_now,
+            form: None,
+            wait: None,
+            resume: None,
+            last_click: None,
+            over_pane: false,
+            lanes_first: false,
+            lanes_paused: false,
         };
         v.refresh();
         v
@@ -272,45 +326,40 @@ impl AgentsView {
         self
     }
 
-    /// The sessions the filter keeps, grouped by program: nexo first, then each other program by name. The
-    /// order is the one they are drawn in, so an index into it is what the selection holds.
-    fn shown(&self) -> Vec<AgentRow> {
-        let mut v: Vec<AgentRow> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().map(tidy).collect();
-        v.sort_by_key(|r| (r.source, r.program.to_lowercase()));
-        if self.view != View::Cards {
-            v = tree::visible(tree::ordered(v), &self.collapsed);
-        }
-        v
+    /// Opens on the lanes (`/team`): the LANES group shows even when empty, and the cursor starts on it.
+    pub fn on_lanes(mut self) -> AgentsView {
+        self.lanes_first = true;
+        self.select_lanes();
+        self
     }
 
-    fn tree_rows(&self) -> Vec<AgentRow> {
-        let mut rows: Vec<_> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().map(tidy).collect();
-        rows.sort_by_key(|r| (r.source, r.program.to_lowercase()));
-        tree::ordered(rows)
+    /// The cursor on the LANES header.
+    pub fn select_lanes(&mut self) {
+        self.lanes_first = true;
+        if let Some(i) = self.items().iter().position(|it| matches!(it, tree::Item::Head { group: Group::Lanes, .. })) {
+            self.selected = i;
+            self.follow = true;
+        }
+    }
+
+    /// The rows in tree order, each once (a row that needs the person is counted in its own group): what the
+    /// totals count and the letters fly to.
+    fn shown(&self) -> Vec<AgentRow> {
+        let items = self.items();
+        items.iter().filter(|it| it.group() != &Group::Needs).filter_map(|it| it.row().cloned()).collect()
+    }
+
+    fn selected_item(&self) -> Option<tree::Item> {
+        self.items().into_iter().nth(self.selected)
     }
 
     fn selected_row(&self) -> Option<AgentRow> {
-        self.shown().into_iter().nth(self.selected)
+        self.selected_item().and_then(|it| it.row().cloned())
     }
 
-    /// The groups of the shown sessions. A program with no sessions that the filter allows still gets its
-    /// header, with a line that says there is nothing.
-    fn groups(&self, shown: &[AgentRow]) -> Vec<Group> {
-        let mut out: Vec<Group> = Vec::new();
-        for (i, r) in shown.iter().enumerate() {
-            let label = if r.source == SourceKind::Nexo { "nexo".to_string() } else { r.program.clone() };
-            match out.last_mut() {
-                Some(g) if g.label == label && g.source == r.source => g.idx.push(i),
-                _ => out.push(Group { label, source: r.source, idx: vec![i] }),
-            }
-        }
-        if self.filter != Filter::External && !out.iter().any(|g| g.source == SourceKind::Nexo) {
-            out.insert(0, Group { label: "nexo".into(), source: SourceKind::Nexo, idx: Vec::new() });
-        }
-        if self.filter != Filter::Nexo && !out.iter().any(|g| g.source == SourceKind::External) {
-            out.push(Group { label: "external".into(), source: SourceKind::External, idx: Vec::new() });
-        }
-        out
+    /// The kind of the selected row; None on a group's header.
+    pub fn selected_kind(&self) -> Option<Kind> {
+        self.selected_item().and_then(|it| it.kind())
     }
 
     /// A view of fixed rows, no panel behind it (tests).
@@ -318,6 +367,7 @@ impl AgentsView {
         let mut v = AgentsView::new(None, still);
         v.rows = rows;
         v.clock = clock;
+        v.retarget(None);
         v
     }
 
@@ -328,43 +378,104 @@ impl AgentsView {
 
     /// Replaces the rows as a poll would (tests drive the motion with it).
     pub fn set_rows(&mut self, rows: Vec<AgentRow>) {
-        let keep = self.selected_row().map(|r| r.key);
+        let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
         self.rows = rows;
         self.retarget(keep);
     }
 
-    /// After the sessions changed: the selection goes with its session (not its index) when that is still
-    /// shown, else it stays near where it was.
-    fn retarget(&mut self, keep: Option<String>) {
-        let shown = self.shown();
-        self.selected = match keep.and_then(|k| shown.iter().position(|r| r.key == k)) {
-            Some(i) => i,
-            None => self.selected.min(shown.len().saturating_sub(1)),
-        };
+    /// The clock rows are told against (tests).
+    pub fn set_clock(&mut self, clock: Secs) {
+        self.clock = clock;
+    }
+
+    /// The runs of this session's sub-agents, by job id: `n` on a running one sends to its run.
+    pub fn set_runs(&mut self, runs: Vec<(u32, String)>) {
+        self.runs = runs;
+    }
+
+    /// The end of the output of this session's jobs (the answer to `JobTails`).
+    pub fn set_tails(&mut self, tails: Vec<nexo_core::jobs::JobTail>) {
+        self.tails = tails.into_iter().map(|t| (t.id, t.text)).collect();
+    }
+
+    /// Whether the pane wants the tails of this session's jobs now: a job of this session is selected and the
+    /// last ask is a second old. It notes the ask.
+    pub fn wants_tails(&mut self, now: Instant) -> bool {
+        if self.selected_kind() != Some(Kind::Sub) || self.local_job().is_none() {
+            return false;
+        }
+        if self.tails_asked.is_some_and(|t| now.duration_since(t).as_millis() < 1000) {
+            return false;
+        }
+        self.tails_asked = Some(now);
+        true
+    }
+
+    /// The job id of the selected sub-agent of this session (`<session>.<job id>`).
+    fn local_job(&self) -> Option<u32> {
+        let row = self.selected_row()?;
+        if Kind::of(&row) != Kind::Sub {
+            return None;
+        }
+        row.key.rsplit_once('.')?.1.parse().ok()
+    }
+
+    /// After the rows changed: the selection goes with its line (not its index) when that is still shown, then
+    /// with its row in another group, else it stays near where it was.
+    fn retarget(&mut self, keep: Option<(String, Option<String>)>) {
+        let items = self.items();
+        // with nothing selected yet the cursor starts on the first row, not on a header: the pane then shows
+        // someone at once and the row keys act without a first Down
+        if keep.is_none() {
+            self.selected = items.iter().position(|it| it.row().is_some()).unwrap_or(0);
+            return;
+        }
+        let found = keep.and_then(|(id, key)| {
+            items.iter().position(|it| it.id() == id).or_else(|| {
+                let key = key?;
+                items.iter().position(|it| it.row().is_some_and(|r| r.key == key))
+            })
+        });
+        self.selected = found.unwrap_or_else(|| self.selected.min(items.len().saturating_sub(1)));
     }
 
     pub fn rows(&self) -> &[AgentRow] {
         &self.rows
     }
 
-    /// The key of the selected session.
+    /// The key of the selected row.
     pub fn selected_key(&self) -> Option<String> {
         self.selected_row().map(|r| r.key)
     }
 
-    /// Where each session was drawn last (the pointer hits).
+    /// Where each row was drawn last (the pointer hits), as an index into the rows in tree order.
     pub fn card_rects(&self) -> Vec<(usize, Rect)> {
         self.cards.clone()
     }
 
-    /// The selected session's details are open.
+    /// Where each tree line was drawn last, as an index into the tree.
+    pub fn line_rects(&self) -> Vec<(usize, Rect)> {
+        self.lines.clone()
+    }
+
+    /// The pane shows at full width (a narrow window after Enter).
     pub fn details_open(&self) -> bool {
         self.open
+    }
+
+    /// The keys act on the pane.
+    pub fn pane_focused(&self) -> bool {
+        self.focus
     }
 
     /// How far the policy page is scrolled.
     pub fn policy_scroll(&self) -> usize {
         self.policy_scroll
+    }
+
+    /// What the last action said.
+    pub fn said(&self) -> Option<&str> {
+        self.note.as_deref()
     }
 
     /// Draws the glyphs the panel makes itself in their ASCII forms (or not).
@@ -375,7 +486,8 @@ impl AgentsView {
     /// Takes the panel's newest rows. True when something the view shows changed (the caller repaints).
     pub fn refresh(&mut self) -> bool {
         let history_changed = self.poll_history();
-        let Some(panel) = &self.panel else { return history_changed };
+        let waited = self.poll_wait(Instant::now());
+        let Some(panel) = &self.panel else { return history_changed || waited };
         let now = now_secs();
         let v = panel.version();
         let mut rows = panel.rows(now);
@@ -383,18 +495,20 @@ impl AgentsView {
             r.idle_secs = r.idle_secs.map(bucket);
         }
         let clock = if rows.iter().any(|r| r.idle_secs.is_some_and(|s| s < 120)) { now } else { now / 60 * 60 };
-        let changed = rows != self.rows || clock != self.clock;
+        let lanes_paused = rows.iter().any(|r| r.lane.is_some()) && nexo_core::team::state::paused();
+        let changed = rows != self.rows || clock != self.clock || lanes_paused != self.lanes_paused;
+        self.lanes_paused = lanes_paused;
         let feed = panel.mail_feed(now - 3600);
         self.ingest_mail(feed, &rows, now);
         self.seen = v;
-        let keep = self.selected_row().map(|r| r.key);
+        let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
         self.rows = rows;
         self.clock = clock;
         self.retarget(keep);
-        changed || history_changed
+        changed || history_changed || waited
     }
 
-    /// 0..1: how far a session's card has entered (1 with no motion).
+    /// 0..1: how far a row has slid in (1 with no motion).
     fn entered(&self, key: &str, now: Instant) -> f32 {
         match self.fx.get(key) {
             Some(x) => {
@@ -409,8 +523,8 @@ impl AgentsView {
         }
     }
 
-    /// The state to draw for a session and the colour of its chip: while the state is changing, the old
-    /// one's word fades into the new one's.
+    /// The state to draw for a session and the colour of its glyph: while the state is changing, the old
+    /// one's colour fades into the new one's.
     fn chip_at(&self, row: &AgentRow, theme: &Theme, now: Instant) -> (State, ratatui::style::Color) {
         let new = chip_color(theme, row.state);
         match self.fx.get(&row.key) {
@@ -423,27 +537,8 @@ impl AgentsView {
         }
     }
 
-    /// Dims everything drawn in `r` towards the window ground by `1 - t` (a card coming in).
-    fn veil(f: &mut Frame, r: Rect, theme: &Theme, t: f32) {
-        if t >= 1.0 || theme.mono {
-            return;
-        }
-        let bg = theme.modal_bg;
-        let buf = f.buffer_mut();
-        for y in r.y..r.y + r.height {
-            for x in r.x..r.x + r.width {
-                let Some(c) = buf.cell_mut((x, y)) else { continue };
-                let fg = if c.fg == ratatui::style::Color::Reset { theme.fg } else { c.fg };
-                c.set_fg(fade(theme, bg, fg, t));
-                if c.bg != ratatui::style::Color::Reset {
-                    c.set_bg(fade(theme, bg, c.bg, t));
-                }
-            }
-        }
-    }
-
-    /// What keeps the window the same window: the zoom, the filter, the page and whether any session has arrived yet (the first poll can land after the first draw), not the cursor.
+    /// What keeps the window the same window: the filters, the page, and whether any row has arrived yet.
     pub fn size_key(&self) -> (u8, u8, bool, bool) {
-        (self.zoom as u8, self.filter as u8, self.policy_page || self.observing.is_some(), self.rows.is_empty())
+        (self.show as u8, self.filter as u8, self.policy_page || self.observing.is_some(), self.rows.is_empty())
     }
 }

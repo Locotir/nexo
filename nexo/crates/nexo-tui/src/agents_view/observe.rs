@@ -5,7 +5,10 @@ use nexo_agent::supervise::EvDetail;
 impl AgentsView {
     /// Fall back to the existing bounded observation for sessions outside this process.
     pub fn observe_selected(&mut self, key: &str) {
-        let Some(row) = self.selected_row().filter(|r| r.key == key) else { return };
+        // the app gets another nexo session's id without the `nexo:` of its row key
+        let Some(row) = self.selected_row().filter(|r| r.key == key || r.key.strip_prefix("nexo:") == Some(key)) else {
+            return;
+        };
         self.start_history(&row);
         self.observing = Some(row.key);
         self.observe_scroll = 0;
@@ -18,7 +21,7 @@ impl AgentsView {
         if self.panel.is_none() || row.source != SourceKind::Nexo {
             return;
         }
-        let id = row.key.clone();
+        let id = row.key.strip_prefix("nexo:").unwrap_or(&row.key).to_string();
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             self.history = Some(Err("No persisted session history for this agent (it may be a sub-agent).".into()));
             return;

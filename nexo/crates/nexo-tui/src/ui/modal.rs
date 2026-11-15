@@ -165,11 +165,6 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             pinned = rows;
             (title, lines, None)
         }
-        Modal::Team(v) => {
-            let (title, lines, rows) = v.modal_body(inner_w, &theme);
-            pinned = rows;
-            (title, lines, None)
-        }
         Modal::Todo(v) => {
             let (title, lines, rows, sel, starts, head) =
                 v.modal_body(inner_w, &theme, app.opts.animations, app.spinner, now);
@@ -255,7 +250,6 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         Modal::Jobs(v) => v.modal_scroll(job_at, body_h, body.len()),
         Modal::Mcp(v) => v.modal_scroll(job_at, body_h, body.len()),
         Modal::Chrome(v) => v.modal_scroll(body_h, body.len()),
-        Modal::Team(v) => v.modal_scroll(body_h, body.len()),
         Modal::Todo(v) => v.modal_scroll(todo_sel, &todo_rows, body_h, body.len()),
         Modal::Goal(v) => v.modal_scroll(body_h, body.len()),
         Modal::Sent(v) => v.modal_scroll(body_h, body.len()),
@@ -302,7 +296,6 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         | Modal::Todo(_)
         | Modal::Mcp(_)
         | Modal::Chrome(_)
-        | Modal::Team(_)
         | Modal::Goal(_)
         | Modal::Sent(_)
         | Modal::Trust(_) => Some(0),

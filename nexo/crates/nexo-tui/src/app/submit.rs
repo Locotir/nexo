@@ -420,16 +420,37 @@ impl App {
         }
     }
 
-    /// `/team`: the lanes of `team.toml` (the window reads the disk on a thread of its own).
-    pub fn open_team(&mut self) {
-        self.modal = Some(Modal::Team(Box::new(crate::team_view::TeamView::new(std::time::Instant::now()))));
+    /// Counts the fleet chip once a second: the panel's rows once its poller runs, and before that this session's
+    /// running sub-agents.
+    pub(super) fn poll_fleet(&mut self) {
+        let now = std::time::Instant::now();
+        if self.fleet_at.is_some_and(|t| now.duration_since(t).as_millis() < 1000) {
+            return;
+        }
+        self.fleet_at = Some(now);
+        let rows = self.panel.as_ref().map(|p| p.rows(nexo_agent::supervise::run::now_secs())).unwrap_or_default();
+        let mut count = crate::agents_view::FleetCount::of(&rows);
+        count.subs = count.subs.max(self.sub_runs.iter().filter(|r| r.info.state.running()).count());
+        let chip = (!count.is_empty()).then_some(count);
+        if chip != self.fleet {
+            self.fleet = chip;
+            self.dirty = true;
+        }
     }
 
-    /// While `/team` is open: keeps its table fresh, and when a lane asked to stop with `o` has stopped, switches
-    /// this session to the lane's own, as `/resume` does.
+    /// `/team`: the panel with the cursor on its lanes, where their actions live.
+    pub fn open_team(&mut self) {
+        self.run_command(Command::Panel);
+        if let Some(Modal::Agents(v)) = &mut self.modal {
+            v.select_lanes();
+        }
+    }
+
+    /// While the panel is open: when a lane asked to stop with `o` has stopped, switches this session to the
+    /// lane's own, as `/resume` does.
     pub(super) fn poll_team(&mut self) {
         let id = match &mut self.modal {
-            Some(Modal::Team(v)) => v.poll(std::time::Instant::now()),
+            Some(Modal::Agents(v)) => v.take_resume(),
             _ => None,
         };
         if let Some(id) = id {
@@ -552,6 +573,7 @@ impl App {
             HintHit::Mem => self.open_shared(),
             HintHit::Queued => self.open_queue(),
             HintHit::Session => self.run_command(Command::Sessions),
+            HintHit::Fleet => self.run_command(Command::Panel),
         }
     }
 

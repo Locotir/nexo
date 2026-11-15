@@ -102,6 +102,8 @@ pub enum HintHit {
     Queued,
     /// The session id or title: `/resume`.
     Session,
+    /// `◉ 2 lanes · 3 subs`: `/panel`.
+    Fleet,
 }
 
 /// What the pointer is over.

@@ -1,10 +1,10 @@
-╭ panel ──────────────────────────[✗]──╮
-│ ◈1 ↻1 ●2 ✓1            ! 1 ◉ 2 · all │
-│ ──────────────────────────────────── │
-│ ▣ nexo · 2 ───────────────────────── │
-│ ▌● working    ▣ project            ⠁ │
-│ subagents 1 active / 2 total · expl… │
-│ s source · Esc close  ↓ 4 more       │
+╭ panel ────────────────── 13:46 ─[✗]──╮
+│ ! NEEDS YOU  2                       │
+│ ◈ api-migration  Bash  c…  1m  $1.25 │
+│ ↻ scheduler      Bash  git pull   1m │
+│ ▾ THIS SESSION                       │
+├──────────────────────────────────────┤
+│ ⏎ details · Esc close       ↓ 3 more │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

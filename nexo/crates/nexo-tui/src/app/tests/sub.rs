@@ -692,8 +692,7 @@ fn panel_enter_opens_local_run_and_returns_to_same_panel() {
     let (mut a, mut rx) = with_run();
     a.session_id = Some("session".into());
     a.input.set_text("main draft");
-    let mut panel = crate::agents_view::AgentsView::with_rows(vec![panel_row("session.3", SourceKind::Nexo)], 0, true);
-    panel.zoom = crate::agents_view::Zoom::List;
+    let panel = crate::agents_view::AgentsView::with_rows(vec![panel_row("session.3", SourceKind::Nexo)], 0, true);
     a.modal = Some(Modal::Agents(Box::new(panel)));
     drain(&mut rx);
     press(&mut a, KeyCode::Enter);
@@ -715,7 +714,7 @@ fn panel_enter_opens_local_run_and_returns_to_same_panel() {
     press(&mut a, KeyCode::Esc);
     assert!(!a.in_sub());
     assert_eq!(a.input.text(), "main draft");
-    assert!(matches!(&a.modal, Some(Modal::Agents(v)) if v.zoom == crate::agents_view::Zoom::List && v.selected == 0));
+    assert!(matches!(&a.modal, Some(Modal::Agents(v)) if v.selected_key().as_deref() == Some("session.3")));
 }
 
 #[test]

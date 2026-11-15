@@ -1,11 +1,29 @@
-//! The window of `/panel`: its frame, header and footer around the body.
+//! The window of `/panel`: the whole area above the input line. A header with the fleet's figures, then the
+//! tree of rows on the left and the pane on the right (from `WIDE_FROM` columns; under it the tree alone, and
+//! Enter opens the pane at full width), then a footer with the keys of the selected row.
 
+use ratatui::widgets::{Block as Box_, BorderType, Borders, Clear};
+
+use super::row::clock_of;
+use super::tree::Item;
 use super::*;
 
+/// The tree's share of a wide window, and its bounds in columns.
+const TREE_SHARE: f32 = 0.44;
+const TREE_MIN: u16 = 44;
+const TREE_MAX: u16 = 76;
+/// How far a new row starts to the right of its place before it slides in.
+const SLIDE_CELLS: f32 = 8.0;
+
 impl AgentsView {
-    // ---------------------------------------------------------------- drawing
+    /// Whether the last draw had the room for the pane beside the tree.
+    pub(super) fn wide(&self) -> bool {
+        // before the first draw the view has no width yet: it acts as the wide one, so Enter acts at once
+        self.window.width == 0 || self.window.width >= WIDE_FROM
+    }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, theme: &Theme, now: Instant, fx: bool) {
+        let fx = fx && !self.still;
         if area.width < 30 || area.height < 6 {
             let msg = if area.width < 30 { "make the window wider" } else { "make the window taller" };
             let msg = truncate(msg, area.width as usize);
@@ -14,76 +32,28 @@ impl AgentsView {
                 Line::from(Span::styled(msg, theme.style(theme.warn))).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
             self.cards.clear();
+            self.lines.clear();
+            // no window is drawn: what the last one left (its rects) must not take clicks or carry motion
+            self.window = Rect::default();
+            self.close = Rect::default();
+            self.tree_area = Rect::default();
+            self.pane_area = Rect::default();
             return;
         }
-        let widest = if self.zoom == Zoom::Blocks {
-            MAX_BLOCK_COLS * BLOCK_W + (MAX_BLOCK_COLS - 1) * GAP
-        } else {
-            MAX_COLS * CARD_MAX_W + (MAX_COLS - 1) * GAP
-        };
-        let inner_w = area.width.min(widest + 4).saturating_sub(4);
-        let zoom = self.zoom;
-        let shown = self.shown();
-        let groups = self.groups(&shown);
-        // the cards take a sixth row for the last events, and the fleet a line of figures under the header,
-        // when the terminal has the room for every session that way; else the cards keep five rows
-        let pulse_ok =
-            !self.policy_page && self.observing.is_none() && !self.rows.is_empty() && area.height >= PULSE_FROM;
-        let layout_with = |h: u16, card_h: u16, pulse: u16| match zoom {
-            Zoom::Blocks => blocks_layout(inner_w),
-            Zoom::List => Layout::List,
-            Zoom::Cards => {
-                Self::fit_cards(&groups, cards_layout(inner_w, h), h.saturating_sub(CHROME + 1 + pulse), card_h)
-            }
-        };
-        let (card_h, pulse) = [(CARD_H + 1, 1), (CARD_H, 1), (CARD_H, 0)]
-            .into_iter()
-            .filter(|(ch, pl)| (*ch == CARD_H || area.height >= RIBBON_FROM) && (*pl == 0 || pulse_ok))
-            .find(|&(ch, pl)| zoom != Zoom::Cards || matches!(layout_with(area.height, ch, pl), Layout::Cards { .. }))
-            .unwrap_or((CARD_H, u16::from(pulse_ok)));
-        let layout_for = |h: u16| layout_with(h, card_h, pulse);
-        // a blank row between the sessions and their details, when the window is tall enough to spare it
-        let spare = u16::from(area.height >= SPARE_FROM);
-        let want = if self.policy_page || self.observing.is_some() {
-            area.height
-        } else if self.view != View::Cards {
-            (shown.len() as u16).saturating_add(CHROME + spare + pulse)
-        } else if self.rows.is_empty() && self.filter == Filter::All {
-            EMPTY_STATE.len() as u16 + CHROME + spare + pulse
-        } else {
-            Self::content_h(&groups, layout_for(area.height), card_h) + CHROME + spare + pulse
-        };
-        let h = want.clamp(8.min(area.height), area.height);
-        let w = inner_w + 4;
-        // the size it took when it opened: sessions coming and going never resize it
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut k = std::collections::hash_map::DefaultHasher::new();
-            self.size_key().hash(&mut k);
-            self.view.hash(&mut k);
-            k.finish()
-        };
-        let (w, h) = self.size.keep(key, f.area(), area, || (w, h));
-        let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+        let r = area;
         f.render_widget(Clear, r);
+        let title = if self.policy_page {
+            " panel · policy "
+        } else if self.observing.is_some() {
+            " panel · observation "
+        } else {
+            " panel "
+        };
         let block = Box_::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(theme.style(theme.border))
-            .title(Span::styled(
-                if self.policy_page {
-                    " panel · policy "
-                } else if self.observing.is_some() {
-                    " panel · observation "
-                } else if self.view == View::Map && inner_w >= map::MAP_MIN_W {
-                    " panel · map "
-                } else if self.view != View::Cards {
-                    " panel · tree "
-                } else {
-                    " panel "
-                },
-                theme.bold(theme.accent),
-            ))
+            .title(Span::styled(title, theme.bold(theme.accent)))
             .style(Style::default().bg(theme.modal_bg));
         let inner = block.inner(r);
         f.render_widget(block, r);
@@ -91,73 +61,278 @@ impl AgentsView {
         self.close = Rect::new(r.x + r.width.saturating_sub(6), r.y, 3, 1);
         let close_style =
             if self.hover { theme.bold(theme.error).add_modifier(Modifier::REVERSED) } else { theme.dim() };
-        f.render_widget(Paragraph::new(Span::styled("[✗]", close_style)), self.close);
-
-        let pad = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
-        // the pulse row only where the window kept room for it
-        let pulse = pulse.min(u16::from(r.height >= CHROME + 5));
-        let rule_y = pad.y + 1 + pulse;
-        // header: how many sessions are in which state, and what this view is
-        f.render_widget(
-            Paragraph::new(Line::from(self.header(theme, pad.width as usize, pulse == 0))),
-            Rect { height: 1, ..pad },
-        );
-        if pulse > 0 {
-            let line = self.pulse_line(theme, pad.width as usize, now, fx);
-            f.render_widget(Paragraph::new(Line::from(line)), Rect { y: pad.y + 1, height: 1, ..pad });
-        }
-        // four rows or fewer: the rule gives way so one session line shows
-        let slim = pad.height < 5 + pulse;
-        if !slim {
+        f.render_widget(Paragraph::new(Span::styled(if self.ascii { "[x]" } else { "[✗]" }, close_style)), self.close);
+        // the clock the rows are told against, on the top border
+        let clock = format!(" {} ", clock_of(self.clock));
+        let cw = width(&clock) as u16;
+        if r.width > cw + 24 {
             f.render_widget(
-                Paragraph::new(Span::styled("─".repeat(pad.width as usize), theme.dim2())),
-                Rect { y: rule_y, height: 1, ..pad },
+                Paragraph::new(Span::styled(clock, theme.dim())),
+                Rect::new(self.close.x.saturating_sub(cw + 1), r.y, cw, 1),
             );
         }
-        let foot = Rect::new(pad.x, pad.y + pad.height.saturating_sub(1), pad.width, 1);
-        let detail = Rect::new(pad.x, foot.y.saturating_sub(1), pad.width, 1);
-        let body_top = pad.y + if slim { 1 } else { 2 } + pulse;
-        let spare = u16::from(r.height >= SPARE_FROM);
-        let body = Rect::new(pad.x, body_top, pad.width, detail.y.saturating_sub(body_top + spare));
-        self.cards.clear();
-        if self.policy_page {
-            self.draw_policy(f, body, theme);
-        } else if self.observing.is_some() {
-            self.draw_observation(f, body, theme);
-        } else {
-            self.glide.note(Some(self.selected), now, fx);
-            self.note(now, fx);
-            let (layout, card_h) = match self.zoom {
-                Zoom::Blocks if body.height >= BLOCK_H => (blocks_layout(body.width), card_h),
-                Zoom::Blocks | Zoom::List => (Layout::List, card_h),
-                Zoom::Cards => {
-                    // a window that kept an older size may have lost the room for the sixth row
-                    let at = |ch: u16| Self::fit_cards(&groups, cards_layout(body.width, body.height), body.height, ch);
-                    match at(card_h) {
-                        Layout::List if card_h > CARD_H => (at(CARD_H), CARD_H),
-                        other => (other, card_h),
-                    }
-                }
-            };
-            match self.view {
-                View::Map if body.width >= map::MAP_MIN_W => self.draw_map(f, body, &shown, theme),
-                View::Tree | View::Map => self.draw_tree(f, body, &shown, theme),
-                View::Cards => self.draw_bands(f, body, layout, card_h, &shown, &groups, theme, now, fx),
-            }
-            let lane = Rect { y: rule_y, height: 1, ..pad };
-            if !slim {
-                self.draw_flights(f, lane, body, &shown, theme, now);
-                self.draw_letter(f, lane, body, &shown, theme, now);
-            }
-            if let Some(row) = shown.get(self.selected) {
-                f.render_widget(Paragraph::new(Line::from(self.detail(row, theme, detail.width as usize))), detail);
+
+        let pad = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
+        let wide = r.width >= WIDE_FROM;
+        let page = self.policy_page || self.observing.is_some();
+        // the split between the tree and the pane: where the divider runs
+        let split = (wide && !page).then(|| {
+            let tw = ((inner.width as f32 * TREE_SHARE) as u16).clamp(TREE_MIN, TREE_MAX);
+            inner.x + tw.min(inner.width.saturating_sub(20))
+        });
+        // a short window (a split pane) gives the header line and its rule to the rows: who is there matters more
+        // than the fleet's figures
+        let short = inner.height < 7;
+        let top_rule = inner.y + 1;
+        let foot_rule = inner.y + inner.height.saturating_sub(2);
+        let foot = Rect::new(pad.x, inner.y + inner.height.saturating_sub(1), pad.width, 1);
+        let body_y = if short { inner.y } else { top_rule + 1 };
+        let body_h = foot_rule.saturating_sub(body_y);
+        if !short {
+            self.rule(f, r, top_rule, split, '┬', theme);
+        } else if let Some(sx) = split {
+            f.render_widget(Paragraph::new(Span::styled("┬", theme.style(theme.border))), Rect::new(sx, r.y, 1, 1));
+        }
+        self.rule(f, r, foot_rule, split, '┴', theme);
+        if let Some(sx) = split {
+            let st = if self.focus { theme.style(theme.accent) } else { theme.style(theme.border) };
+            for y in body_y..foot_rule {
+                f.render_widget(Paragraph::new(Span::styled("│", st)), Rect::new(sx, y, 1, 1));
             }
         }
-        let more = self.more_marks();
-        let more = more.as_str();
-        let line = if self.policy_page {
-            Line::from(Span::styled(truncate("↑↓ scroll · o/Esc back", foot.width as usize), theme.dim2()))
-        } else if let Some(t) = &self.edit {
+        // the header: the fleet's figures, then the filters and what the supervisor does
+        self.note(now, fx);
+        let right = self.header_right(pad.width as usize);
+        let rw = width(&right);
+        let mut head = self.pulse_line(theme, (pad.width as usize).saturating_sub(rw + 2), now, fx);
+        let used: usize = head.iter().map(|s| width(&s.content)).sum();
+        if rw > 0 {
+            head.push(Span::raw(" ".repeat((pad.width as usize).saturating_sub(used + rw))));
+            head.push(Span::styled(right, theme.dim2()));
+        }
+        if !short {
+            f.render_widget(Paragraph::new(Line::from(head)), Rect { height: 1, ..pad });
+        }
+
+        self.cards.clear();
+        self.lines.clear();
+        if self.policy_page {
+            self.draw_policy(f, Rect::new(pad.x, body_y, pad.width, body_h), theme);
+        } else if self.observing.is_some() {
+            self.draw_observation(f, Rect::new(pad.x, body_y, pad.width, body_h), theme);
+        } else {
+            let (tree, pane) = match split {
+                Some(sx) => (
+                    Rect::new(pad.x, body_y, sx.saturating_sub(pad.x + 1), body_h),
+                    Some(Rect::new(sx + 2, body_y, (pad.x + pad.width).saturating_sub(sx + 2), body_h)),
+                ),
+                None if self.open || self.form.is_some() => {
+                    (Rect::default(), Some(Rect::new(pad.x, body_y, pad.width, body_h)))
+                }
+                None => (Rect::new(pad.x, body_y, pad.width, body_h), None),
+            };
+            self.tree_area = tree;
+            self.pane_area = pane.unwrap_or_default();
+            if tree.width > 0 {
+                self.draw_tree(f, tree, theme, now, fx);
+                let rule = Rect::new(pad.x, foot_rule, pad.width, 1);
+                if fx {
+                    self.draw_flights(f, rule, tree, theme, now);
+                    self.draw_letter(f, rule, tree, theme, now);
+                }
+            }
+            if let Some(p) = pane {
+                self.draw_pane(f, p, theme, now, fx);
+            }
+        }
+        let line = self.footer(theme, foot.width as usize);
+        f.render_widget(Paragraph::new(line), foot);
+    }
+
+    /// A rule across the window at `y` that joins its borders, with `join` where the divider meets it.
+    fn rule(&self, f: &mut Frame, r: Rect, y: u16, split: Option<u16>, join: char, theme: &Theme) {
+        let w = r.width as usize;
+        let mut s: Vec<char> = std::iter::once('├').chain(std::iter::repeat_n('─', w.saturating_sub(2))).collect();
+        s.push('┤');
+        if let Some(sx) = split {
+            if let Some(c) = s.get_mut((sx - r.x) as usize) {
+                *c = join;
+            }
+        }
+        let text: String = s.into_iter().collect();
+        f.render_widget(Paragraph::new(Span::styled(text, theme.style(theme.border))), Rect::new(r.x, y, r.width, 1));
+    }
+
+    /// The tree: one line per group header and row, the selection kept in sight; each row's motion on top.
+    fn draw_tree(&mut self, f: &mut Frame, tree: Rect, theme: &Theme, now: Instant, fx: bool) {
+        let items = self.items();
+        if items.is_empty() {
+            // rows hidden by the filters are not "nothing running": say which keys bring them back
+            let filtered = ["no row matches the filters:", "/ edits the text, f and F cycle back to all"];
+            let say: &[&str] = if self.rows.is_empty() { &EMPTY_STATE } else { &filtered };
+            let lines: Vec<Line> =
+                say.iter().map(|s| Line::from(Span::styled(truncate(s, tree.width as usize), theme.dim()))).collect();
+            f.render_widget(Paragraph::new(Text::from(lines)), tree);
+            return;
+        }
+        let h = tree.height as usize;
+        if self.follow {
+            if self.selected < self.scroll {
+                self.scroll = self.selected;
+            } else if self.selected >= self.scroll + h {
+                self.scroll = self.selected + 1 - h;
+            }
+        }
+        self.scroll = self.scroll.min(items.len().saturating_sub(h));
+        let name_w = Self::name_col(&items);
+        let shown = self.shown();
+        let w = tree.width as usize;
+        for (k, item) in items.iter().enumerate().skip(self.scroll).take(h) {
+            let y = tree.y + (k - self.scroll) as u16;
+            let at = Rect::new(tree.x, y, tree.width, 1);
+            self.lines.push((k, at));
+            let line = self.tree_line(item, name_w, w, theme, now, fx, k == self.selected);
+            let Item::Row { row, group, prefix, .. } = item else {
+                f.render_widget(Paragraph::new(line), at);
+                continue;
+            };
+            // a new row slides in from the right
+            let off = if fx { ((1.0 - self.entered(&row.key, now)) * SLIDE_CELLS).round() as u16 } else { 0 };
+            let off = off.min(tree.width.saturating_sub(1));
+            f.render_widget(Paragraph::new(line), Rect { x: at.x + off, width: at.width - off, ..at });
+            let lead = if prefix.is_empty() { 0 } else { width(prefix) as u16 + 1 };
+            let glyph = (at.x + off + lead, y);
+            if *group != Group::Needs {
+                if let Some(i) = shown.iter().position(|r| r.key == row.key) {
+                    self.cards.push((i, Rect::new(glyph.0, y, (at.x + at.width).saturating_sub(glyph.0), 1)));
+                }
+            }
+            if !fx {
+                continue;
+            }
+            if let Some((c, s)) = self.row_tint(&row.key, theme, now) {
+                let buf = f.buffer_mut();
+                for x in at.x..at.x + at.width {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        let base = if cell.bg == ratatui::style::Color::Reset { theme.modal_bg } else { cell.bg };
+                        cell.set_bg(fade(theme, base, c, 0.45 * s));
+                    }
+                }
+            }
+            self.draw_row_fx(f, glyph, at.x + at.width, tree, &row.key, theme, now);
+        }
+    }
+
+    /// What the right side of the header says: the filters in force and what the supervisor does, as much as
+    /// fits in a third of the line.
+    fn header_right(&self, w: usize) -> String {
+        let mut which: Vec<String> = Vec::new();
+        if self.filter != Filter::All {
+            which.push(self.filter.label().to_string());
+        }
+        if self.show != Show::All {
+            which.push(self.show.label().to_string());
+        }
+        if let Some(t) = self.find.as_deref().filter(|t| !t.is_empty()) {
+            which.push(format!("“{t}”"));
+        }
+        let hidden = self.rows.len().saturating_sub(self.listed().len());
+        if hidden > 0 && !which.is_empty() {
+            which.push(format!("+{hidden} hidden"));
+        }
+        let paused_all = self.panel.as_ref().is_some_and(|p| p.paused_all());
+        let sup = match (&self.panel, paused_all) {
+            (None, _) => "read-only",
+            (Some(_), true) => "supervisor paused",
+            (Some(_), false) => "supervising",
+        };
+        let room = w / 3;
+        let full = which.iter().map(String::as_str).chain([sup]).collect::<Vec<_>>().join(" · ");
+        if width(&full) <= room {
+            return full;
+        }
+        let which = which.join(" · ");
+        if !which.is_empty() && width(&which) <= room {
+            return which;
+        }
+        if width(sup) <= room {
+            return sup.to_string();
+        }
+        String::new()
+    }
+
+    /// The keys that act on the selected line, most used first. None act on two things on one row.
+    pub fn footer_keys(&self) -> Vec<&'static str> {
+        let sup = self.panel.is_some();
+        let mut k: Vec<&'static str> = Vec::new();
+        let item = self.selected_item();
+        if let Some(Item::Head { group, .. }) = &item {
+            if *group == Group::Lanes {
+                k.extend(["a add lane", "p pause lanes"]);
+            }
+            k.push("←→ fold");
+        }
+        if let Some(Item::Row { kind, row, kids, .. }) = &item {
+            let kind = *kind;
+            if !self.wide() && !self.open {
+                k.push("⏎ details");
+            }
+            match kind {
+                Kind::Lane => {
+                    k.extend(["s start", "S round now", "x stop", "o open here", "H hold", "p pause lanes"]);
+                    if row.key.starts_with("nexo:") {
+                        k.push("n message");
+                    }
+                    k.push("a add lane");
+                }
+                Kind::This => {
+                    k.push("n message");
+                    k.push("⏎ observe");
+                }
+                Kind::Sub => {
+                    if self.local_job().is_some_and(|j| self.runs.iter().any(|(id, _)| *id == j)) {
+                        k.push("n message");
+                    }
+                    if self.local_job().is_some() && row.state != State::Done {
+                        k.push("k stop");
+                    }
+                    k.push("⏎ output");
+                }
+                Kind::Job => {
+                    k.push("⏎ output");
+                }
+                Kind::Peer | Kind::Other => {
+                    k.extend(["n message", "⏎ observe"]);
+                }
+            }
+            // under 110 columns Enter first opens the pane; what Enter does on the row is listed once it is open
+            if !self.wide() && !self.open {
+                k.retain(|s| !s.starts_with('⏎') || *s == "⏎ details");
+            }
+            if *kids > 0 {
+                k.push("←→ fold");
+            }
+            if sup && !matches!(kind, Kind::Sub | Kind::Job) && !(kind == Kind::Lane && row.key.starts_with("lane:")) {
+                k.extend(["z pause watch", "Z pause all"]);
+            }
+        }
+        if self.wide() || self.open {
+            k.push("Tab pane");
+        }
+        k.extend(["/ filter", "f show", "F source"]);
+        if sup {
+            k.push("P policy");
+        }
+        k
+    }
+
+    /// The footer: the message being written, a question, the last action's news, or the keys of the selection.
+    fn footer(&self, theme: &Theme, w: usize) -> Line<'static> {
+        if let Some(id) = self.kill_ask {
+            let ask = format!("stop job {id}? y stops it · any other key keeps it");
+            return Line::from(Span::styled(truncate(&ask, w), theme.bold(theme.warn2)));
+        }
+        if let Some(t) = &self.edit {
             // the end of the text is what is being typed: it is the part kept when the line is long
             let gone = self.edit_for.as_ref().is_some_and(|(k, _)| !self.rows.iter().any(|r| &r.key == k));
             let tails: [&str; 3] = if gone {
@@ -165,144 +340,71 @@ impl AgentsView {
             } else {
                 ["  Enter send · Esc cancel", "  Enter · Esc", ""]
             };
-            let w = foot.width as usize;
             // the longest tail that still leaves 12 columns for the message
             let tail = tails.into_iter().find(|s| w >= width(s) + 12).unwrap_or("");
             let shown =
                 tail_of(&format!("message › {t}▏"), w.saturating_sub(width(tail)), "message › ".chars().count());
-            Line::from(vec![
+            return Line::from(vec![
                 Span::styled(shown, theme.style(theme.accent)),
                 Span::styled(tail, if gone { theme.style(theme.warn) } else { theme.dim2() }),
-            ])
-        } else if let Some(n) = &self.note {
-            Line::from(Span::styled(truncate(n, foot.width as usize), theme.style(theme.accent2)))
-        } else if self.observing.is_some() {
-            Line::from(Span::styled(truncate("↑↓ scroll · n message · Esc back", foot.width as usize), theme.dim2()))
-        } else {
-            // "more below" is the part that must survive a narrow window
-            let room = (foot.width as usize).saturating_sub(width(more));
-            let hints: &[&str] = if self.panel.is_some() {
-                &[
-                    "←↑↓→ move · v view · s source · Enter observe · n message · o policy · p/P pause · +/- zoom · Esc close",
-                    "←↑↓→ move · s source · n message · o policy · p pause · +/- zoom · Esc close",
-                    "s source · n message · p pause · Esc close",
-                    "v view · s source · Esc close",
-                    "s source · Esc close",
-                    "Esc close",
-                ]
-            } else {
-                &[
-                    "←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close",
-                    "←↑↓→ move · s source · +/- zoom · Esc close",
-                    "v view · s source · Esc close",
-                    "s source · Esc close",
-                    "Esc close",
-                ]
-            };
-            let hint = hints.iter().find(|h| width(h) <= room).copied().unwrap_or("Esc close");
-            Line::from(vec![
-                Span::styled(truncate(hint, room), theme.dim2()),
-                Span::styled(more, theme.style(theme.accent2)),
-            ])
-        };
-        f.render_widget(Paragraph::new(line), foot);
+            ]);
+        }
+        if self.finding {
+            let t = self.find.clone().unwrap_or_default();
+            let tail = "  Enter keep · Esc clear";
+            let shown = tail_of(&format!("filter › {t}▏"), w.saturating_sub(width(tail)), "filter › ".chars().count());
+            return Line::from(vec![
+                Span::styled(shown, theme.style(theme.accent)),
+                Span::styled(tail, theme.dim2()),
+            ]);
+        }
+        if self.form.is_some() {
+            return Line::from(Span::styled(truncate("Enter answer · Esc give up", w), theme.dim2()));
+        }
+        if let Some(n) = &self.note {
+            return Line::from(Span::styled(truncate(n, w), theme.style(theme.accent2)));
+        }
+        if self.policy_page {
+            return Line::from(Span::styled(truncate("↑↓ scroll · P/Esc back", w), theme.dim2()));
+        }
+        if self.observing.is_some() {
+            return Line::from(Span::styled(truncate("↑↓ scroll · n message · Esc back", w), theme.dim2()));
+        }
+        // the marks of lines out of sight are what must survive a narrow window, then "Esc close"
+        let more = self.more_marks();
+        let close = if self.open || self.focus { "Esc back" } else { "Esc close" };
+        let room = w.saturating_sub(width(&more) + width(close) + 3);
+        let mut keys = self.footer_keys();
+        while !keys.is_empty() && width(&keys.join(" · ")) > room {
+            keys.pop();
+        }
+        let mut text = keys.join(" · ");
+        if !text.is_empty() {
+            text.push_str(" · ");
+        }
+        text.push_str(close);
+        let mut spans = vec![Span::styled(text, theme.dim2())];
+        if !more.is_empty() {
+            let used: usize = spans.iter().map(|s| width(&s.content)).sum();
+            spans.push(Span::raw(" ".repeat(w.saturating_sub(used + width(&more)))));
+            spans.push(Span::styled(more, theme.style(theme.accent2)));
+        }
+        Line::from(spans)
     }
 
-    /// `↑ 2 ↓ 3` when sessions sit out of sight above and below, so a scrolled list never looks complete.
+    /// `↑ 2 ↓ 3` when tree lines sit out of sight above and below, so a scrolled tree never looks complete.
     fn more_marks(&self) -> String {
-        let total = self.shown().len();
-        let Some((first, last)) = self
-            .cards
-            .iter()
-            .map(|(i, _)| *i)
-            .fold(None, |m: Option<(usize, usize)>, i| Some(m.map_or((i, i), |(a, b)| (a.min(i), b.max(i)))))
-        else {
+        let total = self.items().len();
+        let Some((first, last)) = self.lines.first().zip(self.lines.last()).map(|(a, b)| (a.0, b.0)) else {
             return String::new();
         };
         let below = total.saturating_sub(last + 1);
         match (first, below) {
             (0, 0) => String::new(),
-            (0, n) => format!("  ↓ {n} more"),
-            (n, 0) => format!("  ↑ {n} above"),
-            (a, b) => format!("  ↑ {a} ↓ {b}"),
+            (0, n) => format!("↓ {n} more"),
+            (n, 0) => format!("↑ {n} above"),
+            (a, b) => format!("↑ {a} ↓ {b}"),
         }
-    }
-
-    fn header(&self, theme: &Theme, w: usize, fold: bool) -> Vec<Span<'static>> {
-        let order = [
-            State::WaitingPermission,
-            State::WaitingAnswer,
-            State::Stalled,
-            State::Looping,
-            State::Working,
-            State::Idle { min: 0 },
-            State::Done,
-        ];
-        let shown = self.shown();
-        let counts: Vec<(State, usize)> = order
-            .into_iter()
-            .map(|s| {
-                (s, shown.iter().filter(|r| std::mem::discriminant(&r.state) == std::mem::discriminant(&s)).count())
-            })
-            .filter(|(_, n)| *n > 0)
-            .collect();
-        // the words when they fit, else the glyph and the number alone: a count is never left out
-        let build = |full: bool| -> (Vec<Span<'static>>, usize) {
-            let mut out: Vec<Span<'static>> = Vec::new();
-            let mut used = 0;
-            for (s, n) in &counts {
-                let (g, label) = chip(*s);
-                let text = if full { format!("{g} {n} {label}") } else { format!("{g}{n}") };
-                if used > 0 {
-                    out.push(Span::raw(if full { "  " } else { " " }));
-                    used += if full { 2 } else { 1 };
-                }
-                used += width(&text);
-                out.push(Span::styled(text, theme.style(chip_color(theme, *s))));
-            }
-            if out.is_empty() {
-                out.push(Span::styled("no sessions", theme.dim()));
-                used = 11;
-            }
-            (out, used)
-        };
-        let (mut left, mut used) = build(true);
-        if used > w {
-            (left, used) = build(false);
-        }
-        let paused_all = self.panel.as_ref().is_some_and(|p| p.paused_all());
-        let rights: [&str; 2] = match (&self.panel, paused_all) {
-            (None, _) => ["watching · read-only", "read-only"],
-            (Some(_), true) => ["supervisor paused", "paused"],
-            (Some(_), false) => ["supervising · rules", "supervising"],
-        };
-        // which sessions this is, ahead of what the supervisor does; "+N" counts those the filter hides
-        let hidden = self.rows.len() - shown.len();
-        let which =
-            if hidden > 0 { format!("{} +{hidden}", self.filter.label()) } else { self.filter.label().to_string() };
-        // with no pulse row of its own, the fleet's figures ride at the front of the right side
-        let fold = if fold { self.pulse_fold(&shown) } else { None };
-        let mut candidates: Vec<String> = Vec::new();
-        if let Some(p) = &fold {
-            candidates.push(format!("{p} · {which} · {}", rights[0]));
-            candidates.push(format!("{p} · {which} · {}", rights[1]));
-            candidates.push(format!("{p} · {which}"));
-        }
-        candidates.extend([
-            format!("{which} · {}", rights[0]),
-            format!("{which} · {}", rights[1]),
-            which.clone(),
-            which.split(' ').next().unwrap_or("").to_string(),
-        ]);
-        for right in &candidates {
-            let rw = width(right);
-            if used + rw + 2 <= w {
-                left.push(Span::raw(" ".repeat(w - used - rw)));
-                left.push(Span::styled(right.clone(), theme.dim2()));
-                break;
-            }
-        }
-        left
     }
 }
 

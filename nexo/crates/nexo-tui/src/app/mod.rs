@@ -137,6 +137,10 @@ pub struct App {
     pub panel: Option<std::sync::Arc<nexo_agent::supervise::Panel>>,
     /// Which sessions `/panel` lists (all, nexo only, external only); kept while this session runs.
     pub panel_filter: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// The status bar's fleet chip (lanes on, sub-agents, other sessions, rows that need the person), when any.
+    pub fleet: Option<crate::agents_view::FleetCount>,
+    /// When the fleet chip was last counted.
+    pub fleet_at: Option<std::time::Instant>,
     pub spinner: usize,
     /// A conversation was loaded and the curator has not yet said what it keeps: the footer shows a spinner.
     pub context_wait: bool,
@@ -391,6 +395,8 @@ impl App {
             nexo_src: nexo_agent::supervise::NexoSource::default(),
             panel: None,
             panel_filter: Default::default(),
+            fleet: None,
+            fleet_at: None,
             spinner: 0,
             context_wait: false,
             session_usage: Usage::default(),

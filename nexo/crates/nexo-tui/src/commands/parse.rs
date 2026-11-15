@@ -32,7 +32,7 @@ pub enum Command {
     Mcp,
     /// `/chrome`: the window that connects the person's own browser.
     Chrome,
-    /// `/team`: the lanes of `team.toml` in a window.
+    /// `/team`: the panel with the cursor on the lanes of `team.toml`.
     Team,
     /// `/skills`: the Agent Skills found, with their source.
     Skills,

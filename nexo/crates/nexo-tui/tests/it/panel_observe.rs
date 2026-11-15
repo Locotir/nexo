@@ -107,9 +107,14 @@ fn press(a: &mut App, code: KeyCode) -> ModalOut {
 }
 
 // Exercise the panel's observation page directly. The app normally routes this
-// output to a local/remote sub view when the selected session supports it.
+// output to a local/remote sub view when the selected session supports it. Under 110 columns the first Enter
+// opens the pane at full width and the second one observes.
 fn observe(a: &mut App) {
-    let ModalOut::ObserveAgent { key, .. } = press(a, KeyCode::Enter) else { panic!("expected observation request") };
+    let mut out = press(a, KeyCode::Enter);
+    if out == ModalOut::Nothing && view(a).details_open() {
+        out = press(a, KeyCode::Enter);
+    }
+    let ModalOut::ObserveAgent { key, .. } = out else { panic!("expected observation request") };
     view(a).observe_selected(&key);
 }
 
@@ -130,6 +135,8 @@ fn enter_observes_the_selected_session_and_escape_returns() {
     view(&mut a).set_rows(vec![job("beta", SourceKind::External)]);
     let shown = capture(&mut a, 100, 25).join("\n");
     assert!(shown.contains("Session no longer available"), "{shown}");
+    // Esc leaves the observation, then the pane (the window is narrow), then the panel
+    assert_eq!(press(&mut a, KeyCode::Esc), ModalOut::Nothing);
     assert_eq!(press(&mut a, KeyCode::Esc), ModalOut::Nothing);
     assert_eq!(press(&mut a, KeyCode::Esc), ModalOut::Close);
 }
@@ -164,12 +171,16 @@ fn observation_message_stays_with_its_target_when_selection_changes() {
         v.refresh();
     }
     assert_eq!(v.rows().len(), 2);
+    // another program's group starts folded to its count: unfold it and go down to its first session
+    for code in [KeyCode::Right, KeyCode::Down] {
+        v.key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
     let target = v.selected_key().unwrap();
     let other = v.rows().iter().find(|r| r.key != target).unwrap().key.clone();
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
     let shown = capture(&mut a, 140, 30).join("\n");
-    assert!(shown.contains("Enter observe"), "{shown}");
+    assert!(shown.contains("⏎ observe"), "{shown}");
     observe(&mut a);
     press(&mut a, KeyCode::Char('n'));
     let shown = capture(&mut a, 140, 30).join("\n");
@@ -273,6 +284,9 @@ fn end_follows_new_observation_rows_until_manual_scroll() {
         row
     };
     let mut a = scene(vec![make_row(8)]);
+    // another program's group starts folded to its count: unfold it and go down to its session
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Down);
     observe(&mut a);
     press(&mut a, KeyCode::End);
     let first = capture(&mut a, 100, 12).join("\n");

@@ -201,8 +201,17 @@ fn a_letter_shows_mid_flight_never_over_text_and_is_gone_with_the_motion_off() {
 fn the_view_asks_for_frames_only_while_the_letter_flies() {
     let t0 = Instant::now();
     let mut a = app(true);
-    let calm: Vec<AgentRow> =
-        fleet().into_iter().filter(|r| !matches!(r.state, State::WaitingPermission | State::Stalled)).collect();
+    // a working row breathes and one waiting for the person pulses: a calm fleet has neither
+    let calm: Vec<AgentRow> = fleet()
+        .into_iter()
+        .filter(|r| !matches!(r.state, State::WaitingPermission | State::Stalled | State::Looping))
+        .map(|mut r| {
+            if r.state == State::Working {
+                r.state = State::Idle { min: 1 };
+            }
+            r
+        })
+        .collect();
     a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(calm, NOW, false))));
     for at in [0, 3000] {
         a.fx.clock = Some(t0 + Duration::from_millis(at));
@@ -239,12 +248,17 @@ fn the_footer_lists_the_keys_and_still_fits_at_80_columns() {
         poll_every_ms: 100,
     };
     let panel = std::sync::Arc::new(Panel::start(&setup, Policy::default(), NexoSource::default()));
+    let mut v = AgentsView::new(Some(panel), true);
+    v.set_rows(fleet());
     let mut a = app(false);
-    a.modal = Some(Modal::Agents(Box::new(AgentsView::new(Some(panel), true))));
+    a.modal = Some(Modal::Agents(Box::new(v)));
+    // the cursor starts on the one waiting for the person, another program's session: under 110 columns
+    // Enter opens its details first, and the keys that act on it come before the ones for the whole panel
     let shot = capture(&mut a, 80, 24).join("\n");
-    for key in ["n message", "o policy", "p pause", "+/- zoom", "Esc"] {
+    for key in ["⏎ details", "n message", "z pause watch", "Esc"] {
         assert!(shot.contains(key), "{key} is missing\n{shot}");
     }
+    assert!(!shot.contains("s start"), "a lane key on a session\n{shot}");
 }
 
 #[test]

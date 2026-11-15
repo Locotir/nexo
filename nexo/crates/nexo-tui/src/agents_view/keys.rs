@@ -1,6 +1,29 @@
-//! Keys, clicks and the wheel in the panel.
+//! Keys, clicks and the wheel in the panel. The keys depend on the kind of the selected row, and no key means
+//! two things on one row: lanes start, stop, hold and pause; sub-agents take a message or stop; sessions take
+//! mail and are observed. The arrows move in the tree, or scroll the pane when the keys are there.
 
+use nexo_core::agent::AgentCommand;
+
+use super::tree::Item;
 use super::*;
+
+/// Where a message typed in the panel goes when the supervisor does not carry it.
+pub(super) enum Route {
+    /// The run of a sub-agent of this session.
+    Run(String),
+    /// Another nexo session, by its id, through the mailbox.
+    Mail(String),
+}
+
+impl Route {
+    pub(super) fn command(self, text: String) -> AgentCommand {
+        let text = text.trim().to_string();
+        match self {
+            Route::Run(id) => AgentCommand::SubSubmit { id, text },
+            Route::Mail(to) => AgentCommand::SendMail { to, text },
+        }
+    }
+}
 
 impl AgentsView {
     pub fn key(&mut self, key: KeyEvent) -> ModalOut {
@@ -8,8 +31,24 @@ impl AgentsView {
             self.answer_typing(t, matches!(key.code, KeyCode::Enter | KeyCode::Char('y')));
             return ModalOut::Nothing;
         }
+        if let Some(id) = self.kill_ask.take() {
+            if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                self.note = Some(format!("stopping job {id}"));
+                return ModalOut::Send(AgentCommand::KillJob { id: Some(id) });
+            }
+            self.note = Some(format!("job {id} keeps running"));
+            return ModalOut::Nothing;
+        }
         if self.edit.is_some() {
             return self.edit_key(key);
+        }
+        if self.form.is_some() {
+            self.form_key(key);
+            return ModalOut::Nothing;
+        }
+        if self.finding {
+            self.find_key(key);
+            return ModalOut::Nothing;
         }
         self.note = None;
         self.follow = true;
@@ -19,144 +58,209 @@ impl AgentsView {
         if self.observing.is_some() {
             return self.observe_key(key);
         }
-        let n = self.shown().len();
+        let kind = self.selected_kind();
+        let lane = kind == Some(Kind::Lane);
+        let on_lanes = lane || matches!(self.selected_item(), Some(Item::Head { group: Group::Lanes, .. }));
+        let n = self.items().len();
         match key.code {
-            KeyCode::Esc if self.open => self.open = false,
+            KeyCode::Esc if self.focus || self.open => {
+                self.focus = false;
+                self.open = false;
+            }
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
-            KeyCode::Enter => {
-                if let Some(row) = self.selected_row() {
-                    return ModalOut::ObserveAgent { key: row.key, nexo: row.source == SourceKind::Nexo };
+            KeyCode::Enter => return self.enter(),
+            KeyCode::Tab => {
+                if self.wide() || self.open {
+                    self.focus = !self.focus;
+                } else if self.selected_row().is_some() {
+                    self.open = true;
+                    self.focus = true;
                 }
             }
-            KeyCode::Char('s') => self.cycle_filter(),
-            KeyCode::Char('v') => {
-                let keep = self.selected_key();
-                self.view = match self.view {
-                    View::Cards => View::Tree,
-                    View::Tree => View::Map,
-                    View::Map => View::Cards,
-                };
-                // Do not hide a selection made in cards behind a previously folded branch.
-                if keep.as_ref().is_some_and(|k| !self.shown().iter().any(|r| &r.key == k)) {
-                    self.collapsed.clear();
-                }
-                self.retarget(keep);
-                self.scroll = 0;
-                self.grid.clear();
-                self.want_col = None;
+            KeyCode::BackTab => self.focus = false,
+            KeyCode::Up if self.focus => self.pane_scroll = self.pane_scroll.saturating_sub(1),
+            KeyCode::Down if self.focus => self.pane_scroll = (self.pane_scroll + 1).min(self.pane_max),
+            KeyCode::PageUp if self.focus => self.pane_scroll = self.pane_scroll.saturating_sub(self.pane_page()),
+            KeyCode::PageDown if self.focus => self.pane_scroll = (self.pane_scroll + self.pane_page()).min(self.pane_max),
+            KeyCode::Up => self.move_to(self.selected as i64 - 1),
+            KeyCode::Down => self.move_to(self.selected as i64 + 1),
+            KeyCode::PageUp => self.move_to(self.selected as i64 - self.tree_area.height.max(1) as i64),
+            KeyCode::PageDown => self.move_to(self.selected as i64 + self.tree_area.height.max(1) as i64),
+            KeyCode::Home => self.move_to(0),
+            KeyCode::End => self.move_to(n as i64 - 1),
+            KeyCode::Left => self.fold(Some(true)),
+            KeyCode::Right => self.fold(Some(false)),
+            KeyCode::Char(' ') => self.fold(None),
+            KeyCode::Char('/') => {
+                self.finding = true;
+                self.find.get_or_insert_with(String::new);
             }
-            KeyCode::Char('o') if self.panel.is_some() => {
+            KeyCode::Char('f') => self.cycle_show(),
+            KeyCode::Char('F') => self.cycle_filter(),
+            KeyCode::Char('P') if self.panel.is_some() => {
                 self.policy_page = true;
                 self.policy_scroll = 0;
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.zoom = match self.zoom {
-                    Zoom::Blocks => Zoom::List,
-                    _ => Zoom::Cards,
-                }
-            }
-            KeyCode::Char('-') | KeyCode::Char('_') => {
-                self.zoom = match self.zoom {
-                    Zoom::Cards => Zoom::List,
-                    _ => Zoom::Blocks,
-                }
-            }
+            KeyCode::Char('z') if !matches!(kind, Some(Kind::Sub | Kind::Job)) => self.toggle_pause(false),
+            KeyCode::Char('Z') => self.toggle_pause(true),
+            KeyCode::Char('s') if lane => self.lane_start(false),
+            KeyCode::Char('S') if lane => self.lane_start(true),
+            KeyCode::Char('x') if lane => self.lane_stop(),
+            KeyCode::Char('o') if lane => return self.lane_open(Instant::now()),
+            KeyCode::Char('H') if lane => self.lane_hold(),
+            KeyCode::Char('p') if on_lanes => self.lanes_pause(),
+            KeyCode::Char('a') if on_lanes => self.lane_add(),
             KeyCode::Char('n') => self.start_nudge(),
-            KeyCode::Char('p') => self.toggle_pause(false),
-            KeyCode::Char('P') => self.toggle_pause(true),
-            KeyCode::Left | KeyCode::Char('h') if self.view != View::Cards => self.fold_branch(false),
-            KeyCode::Right | KeyCode::Char('l') if self.view != View::Cards => self.fold_branch(true),
-            KeyCode::Left | KeyCode::Char('h') => self.step(-1, false),
-            KeyCode::Right | KeyCode::Char('l') => self.step(1, false),
-            KeyCode::Tab => self.step(1, true),
-            KeyCode::BackTab => self.step(-1, true),
-            KeyCode::Up | KeyCode::Char('k') => self.step_rows(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.step_rows(1),
-            KeyCode::Home | KeyCode::Char('g') => self.jump(0),
-            KeyCode::End | KeyCode::Char('G') => self.jump(n.saturating_sub(1)),
-            KeyCode::PageUp => self.step_rows(-(self.page_rows() as i32)),
-            KeyCode::PageDown => self.step_rows(self.page_rows() as i32),
+            KeyCode::Char('k') if kind == Some(Kind::Sub) => match self.local_job() {
+                Some(id) if self.selected_row().is_some_and(|r| r.state != State::Done) => self.kill_ask = Some(id),
+                Some(id) => self.note = Some(format!("job {id} has ended")),
+                None => self.note = Some("not a job of this session".into()),
+            },
             _ => {}
         }
         ModalOut::Nothing
     }
 
-    fn fold_branch(&mut self, expand: bool) {
-        let Some(row) = self.selected_row() else { return };
-        let rows = self.tree_rows();
-        let (parents, _) = tree::relations(&rows);
-        let Some(i) = rows.iter().position(|r| r.key == row.key) else { return };
-        if parents.contains(&Some(i)) {
-            if expand {
-                self.collapsed.remove(&row.key);
-            } else {
-                self.collapsed.insert(row.key.clone());
+    /// Lines a page of the pane moves by.
+    fn pane_page(&self) -> usize {
+        (self.pane_area.height as usize).saturating_sub(1).max(1)
+    }
+
+    /// The cursor to tree line `to` (clamped). A new selection shows its pane from the top.
+    pub(super) fn move_to(&mut self, to: i64) {
+        let n = self.items().len() as i64;
+        if n == 0 {
+            return;
+        }
+        let to = to.clamp(0, n - 1) as usize;
+        if to != self.selected {
+            self.selected = to;
+            self.pane_scroll = 0;
+            self.tails_asked = None;
+        }
+        self.follow = true;
+    }
+
+    /// Enter: a group's header folds or unfolds; in a narrow window the pane opens first; a lane moves the keys
+    /// to its pane; a session is observed, a sub-agent's or a job's output opens.
+    pub(super) fn enter(&mut self) -> ModalOut {
+        match self.selected_item() {
+            None => ModalOut::Nothing,
+            Some(Item::Head { .. }) => {
+                self.fold(None);
+                ModalOut::Nothing
             }
-            self.retarget(Some(row.key));
-            self.grid.clear();
+            Some(Item::Row { row, kind, .. }) => {
+                if !self.wide() && !self.open {
+                    self.open = true;
+                    self.pane_scroll = 0;
+                    return ModalOut::Nothing;
+                }
+                if kind == Kind::Lane {
+                    self.focus = true;
+                    return ModalOut::Nothing;
+                }
+                let key = row.key.strip_prefix("nexo:").unwrap_or(&row.key).to_string();
+                ModalOut::ObserveAgent { key, nexo: row.source == SourceKind::Nexo }
+            }
         }
     }
 
-    /// `s`: all, then nexo only, then external only, kept for the rest of the session.
+    /// ← folds (`Some(true)`), → unfolds (`Some(false)`), Space flips (`None`) the selected group or parent row.
+    /// ← on a row with nothing to fold goes up to its group's header.
+    pub(super) fn fold(&mut self, want: Option<bool>) {
+        let Some(item) = self.selected_item() else { return };
+        let keep = Some((item.id(), item.row().map(|r| r.key.clone())));
+        match &item {
+            Item::Head { group, folded, .. } => {
+                if want.is_none_or(|w| w != *folded) {
+                    let id = group.id();
+                    if !self.flipped.remove(&id) {
+                        self.flipped.insert(id);
+                    }
+                }
+            }
+            Item::Row { row, kids, folded, .. } if *kids > 0 && want.is_none_or(|w| w != *folded) => {
+                if *folded {
+                    self.collapsed.remove(&row.key);
+                } else {
+                    self.collapsed.insert(row.key.clone());
+                }
+            }
+            Item::Row { group, .. } if want == Some(true) => {
+                let id = format!("h:{}", group.id());
+                if let Some(i) = self.items().iter().position(|it| it.id() == id) {
+                    self.move_to(i as i64);
+                }
+                return;
+            }
+            Item::Row { .. } => return,
+        }
+        self.retarget(keep);
+    }
+
+    /// `f`: everything, then what works, then what needs the person.
+    pub(super) fn cycle_show(&mut self) {
+        let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
+        self.show = self.show.next();
+        self.retarget(keep);
+        self.note = Some(format!("showing {}", self.show.label()));
+    }
+
+    /// `F`: all, then nexo only, then external only, kept for the rest of the session.
     pub(super) fn cycle_filter(&mut self) {
-        let keep = self.selected_row().map(|r| r.key);
+        let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
         self.filter = self.filter.next();
         if let Some(m) = &self.memory {
             m.store(self.filter.to_u8(), Ordering::Relaxed);
         }
-        // the same session stays selected when the new filter still lists it, else the first
-        self.selected = 0;
-        self.want_col = None;
-        let still = keep.filter(|k| self.shown().iter().any(|r| &r.key == k));
-        self.retarget(still);
+        self.retarget(keep);
         self.scroll = 0;
-        self.open = false;
         self.note = Some(format!("showing {}", self.filter.label()));
     }
 
-    /// One card back or on in reading order; `wrap` (Tab) goes round at the ends, the arrows stop there.
-    pub(super) fn step(&mut self, delta: i32, wrap: bool) {
-        let n = self.shown().len() as i32;
-        if n == 0 {
-            return;
+    /// Where a message for `row` goes without the supervisor: a running sub-agent of this session into its run,
+    /// another nexo session (or a lane's) as mail. None for every other row.
+    pub(super) fn mail_route(&self, row: &AgentRow) -> Option<Route> {
+        match Kind::of(row) {
+            Kind::Sub => {
+                let job: u32 = row.key.rsplit_once('.')?.1.parse().ok()?;
+                let run = self.runs.iter().find(|(id, _)| *id == job)?.1.clone();
+                Some(Route::Run(run))
+            }
+            Kind::Peer | Kind::Lane => Some(Route::Mail(row.key.strip_prefix("nexo:")?.to_string())),
+            _ => None,
         }
-        let to = self.selected as i32 + delta;
-        self.selected = if wrap { to.rem_euclid(n) } else { to.clamp(0, n - 1) } as usize;
-        self.want_col = None;
     }
 
-    /// To the card at `i` (Home, End).
-    pub(super) fn jump(&mut self, i: usize) {
-        self.selected = i;
-        self.want_col = None;
-    }
-
-    /// How many rows of cards (or lines) the last draw showed: what a page moves by.
-    pub(super) fn page_rows(&self) -> usize {
-        let mut ys: Vec<u16> = self.cards.iter().map(|(_, r)| r.y).collect();
-        ys.sort_unstable();
-        ys.dedup();
-        ys.len().max(1)
-    }
-
-    /// Moves the selection `delta` rows of cards (or lines) up or down, keeping its column even across a
-    /// shorter row.
-    pub(super) fn step_rows(&mut self, delta: i32) {
-        let at = self
-            .grid
-            .iter()
-            .enumerate()
-            .find_map(|(r, row)| row.iter().position(|i| *i == self.selected).map(|c| (r, c)));
-        let Some((r, c)) = at else { return };
-        let c = *self.want_col.get_or_insert(c);
-        let to = (r as i32 + delta).clamp(0, self.grid.len() as i32 - 1) as usize;
-        let row = &self.grid[to];
-        self.selected = row[c.min(row.len() - 1)];
+    /// A key while the text filter is typed: it narrows the tree as it goes; Enter keeps it, Esc clears it.
+    fn find_key(&mut self, key: KeyEvent) {
+        let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
+        let text = self.find.get_or_insert_with(String::new);
+        match key.code {
+            KeyCode::Esc => {
+                self.find = None;
+                self.finding = false;
+            }
+            KeyCode::Enter => {
+                self.finding = false;
+                if text.is_empty() {
+                    self.find = None;
+                }
+            }
+            KeyCode::Backspace => {
+                text.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
+            _ => {}
+        }
+        self.retarget(keep);
     }
 
     pub(super) fn policy_key(&mut self, key: KeyEvent) -> ModalOut {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => self.policy_page = false,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('P') => self.policy_page = false,
             KeyCode::Up | KeyCode::Char('k') => self.policy_scroll = self.policy_scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.policy_scroll = self.policy_scroll.saturating_add(1),
             KeyCode::PageUp => self.policy_scroll = self.policy_scroll.saturating_sub(10),
@@ -242,13 +346,30 @@ impl AgentsView {
                 self.note = Some("no session selected".into())
             };
         };
-        if row.parent.is_some() {
-            self.note = Some("a sub-agent takes no message; write to its session".into());
-            return;
-        }
-        // a session of another program that can be typed into needs no supervisor
-        if self.panel.is_none() && self.typing_address(&row).is_none() {
-            return self.needs_supervisor();
+        match Kind::of(&row) {
+            // a running sub-agent of this session takes a message into its run
+            Kind::Sub => {
+                if self.mail_route(&row).is_none() {
+                    self.note = Some("only a running sub-agent takes a message; k stops a job".into());
+                    return;
+                }
+            }
+            Kind::Job => {
+                self.note = Some("a job of another session takes no message; write to its session".into());
+                return;
+            }
+            // other nexo sessions and lanes get mail through the mailbox, no supervisor needed
+            Kind::Peer | Kind::Lane if self.mail_route(&row).is_none() => {
+                self.note = Some(format!("{} has no session yet: s starts it", row.name));
+                return;
+            }
+            Kind::Peer | Kind::Lane => {}
+            // a session of another program that can be typed into needs no supervisor
+            Kind::This | Kind::Other => {
+                if self.panel.is_none() && self.typing_address(&row).is_none() {
+                    return self.needs_supervisor();
+                }
+            }
         }
         let text = self.drafts.remove(&row.key).unwrap_or_default();
         self.edit_for = Some((row.key.clone(), row.name.clone()));
@@ -288,6 +409,12 @@ impl AgentsView {
                 if text.trim().is_empty() {
                     self.refresh();
                     return ModalOut::Nothing;
+                }
+                // a sub-agent of this session gets it in its run, another nexo session as mail
+                if let Some(cmd) = self.mail_route(&row).map(|r| r.command(text.clone())) {
+                    self.fly_key = Some(row.key.clone());
+                    self.note = Some(format!("message sent to {}", row.name));
+                    return ModalOut::Send(cmd);
                 }
                 // another program gets it as typed input, and only after a yes
                 if let Some(address) = self.typing_address(&row) {
@@ -339,6 +466,7 @@ impl AgentsView {
         }
     }
 
+    /// `z` pauses or resumes the supervisor's watch on the selected row, `Z` on every row.
     pub(super) fn toggle_pause(&mut self, all: bool) {
         let Some(panel) = self.panel.clone() else { return self.needs_supervisor() };
         if all {
@@ -356,37 +484,52 @@ impl AgentsView {
         self.refresh();
     }
 
-    /// A click on the close box closes. A click outside closes too, except while a message is being written
-    /// (it would be lost). A click on a card selects it; a second click on the selected card opens its details.
+    /// A click on the close box closes. A click outside closes too, except while something is being typed
+    /// (it would be lost). A click on a tree line selects it, a second one soon after is Enter; a click in the
+    /// pane moves the keys there.
     pub fn click(&mut self, x: u16, y: u16) -> ModalOut {
+        self.click_at(x, y, Instant::now())
+    }
+
+    pub(super) fn click_at(&mut self, x: u16, y: u16, now: Instant) -> ModalOut {
         if contains(self.close, x, y) {
             return ModalOut::Close;
         }
+        let typing = self.edit.is_some() || self.confirm.is_some() || self.form.is_some() || self.finding;
         if !contains(self.window, x, y) {
-            return if self.edit.is_some() || self.confirm.is_some() { ModalOut::Nothing } else { ModalOut::Close };
+            return if typing { ModalOut::Nothing } else { ModalOut::Close };
         }
-        if self.edit.is_some() || self.confirm.is_some() || self.policy_page {
+        if typing || self.policy_page || self.observing.is_some() {
             return ModalOut::Nothing;
         }
-        if let Some(i) = self.cards.iter().find(|(_, r)| contains(*r, x, y)).map(|(i, _)| *i) {
-            if self.selected == i {
-                self.open = !self.open;
-            } else {
-                self.selected = i;
-            }
-            self.want_col = None;
-            self.follow = true;
+        if contains(self.pane_area, x, y) {
+            self.focus = true;
+            return ModalOut::Nothing;
         }
+        let Some(i) = self.lines.iter().find(|(_, r)| contains(*r, x, y)).map(|(i, _)| *i) else {
+            return ModalOut::Nothing;
+        };
+        self.focus = false;
+        let double = self.last_click.is_some_and(|(j, t)| j == i && now.duration_since(t).as_millis() < DOUBLE_MS);
+        self.move_to(i as i64);
+        if double {
+            self.last_click = None;
+            return self.enter();
+        }
+        self.last_click = Some((i, now));
         ModalOut::Nothing
     }
 
+    /// The pointer moved: the close box lights under it, and the wheel follows it into the pane or the tree.
+    /// True when the view must repaint.
     pub fn on_hover(&mut self, x: u16, y: u16) -> bool {
+        self.over_pane = contains(self.pane_area, x, y);
         let on = contains(self.close, x, y);
         std::mem::replace(&mut self.hover, on) != on
     }
 
-    /// The wheel: the policy page by lines, the sessions by a strip of cards (or lines), the selection staying
-    /// where it is until it moves again.
+    /// The wheel: the policy page and an observation by lines, the pane under the pointer by lines, else the
+    /// tree, which lets go of the selection until it moves again.
     pub fn scroll_by(&mut self, delta: i32) {
         if self.policy_page {
             self.policy_scroll = (self.policy_scroll as i32 + delta).max(0) as usize;
@@ -398,8 +541,11 @@ impl AgentsView {
             }
             return;
         }
-        let step = if matches!(self.drawn, Layout::List) { delta } else { delta.signum() };
-        self.scroll = (self.scroll as i32 + step).max(0) as usize;
+        if self.over_pane || (self.open && !self.wide()) {
+            self.pane_scroll = self.pane_scroll.saturating_add_signed(delta as isize).min(self.pane_max);
+            return;
+        }
+        self.scroll = (self.scroll as i32 + delta).max(0) as usize;
         self.follow = false;
     }
 }

@@ -85,6 +85,9 @@ fn writing() -> (tempfile::TempDir, Arc<Panel>, App) {
     assert_eq!(v.rows().len(), 1);
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
+    // another program's group starts folded to its count: unfold it and go down to its one session
+    press(&mut a, KeyCode::Right, KeyModifiers::NONE);
+    press(&mut a, KeyCode::Down, KeyModifiers::NONE);
     press(&mut a, KeyCode::Char('n'), KeyModifiers::NONE);
     (d, panel, a)
 }
@@ -149,7 +152,7 @@ fn a_paste_lands_in_the_field_on_one_line_and_is_dropped_elsewhere() {
 #[test]
 fn n_and_p_with_no_session_in_the_list_say_so() {
     let panel = Arc::new(Panel::start(&Setup::none(), Policy::default(), NexoSource::default()));
-    for keys in ['n', 'p'] {
+    for keys in ['n', 'z'] {
         let v = AgentsView::new(Some(panel.clone()), true);
         assert!(v.rows().is_empty());
         let mut a = app();

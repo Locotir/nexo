@@ -1,12 +1,15 @@
-//! `/panel` drawn at sizes from a split pane to a huge window: captures kept in `tests/captures/`
-//! (`NEXO_UPDATE_GOLDEN=1 cargo test` accepts a deliberate change), and the things that must hold at every size.
+//! `/panel` inside the app, drawn at sizes from a split pane to a huge window: captures kept in `tests/captures/`
+//! (`NEXO_UPDATE_GOLDEN=1 cargo test` accepts a deliberate change), the command, the supervisor's keys, and the
+//! things that must hold at every size. The mission control itself (rows of every kind, keys per kind, the narrow
+//! mode, rest) is tested in `panel.rs`.
 
 use std::path::PathBuf;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nexo_agent::supervise::{AgentRow, SourceKind, State};
-use nexo_tui::agents_view::{cards_layout, AgentsView, Layout};
+use nexo_tui::agents_view::AgentsView;
 use nexo_tui::commands::{lookup, parse, Command, COMMANDS};
-use nexo_tui::modal::Modal;
+use nexo_tui::modal::{Modal, ModalOut};
 use nexo_tui::ui::rows_of;
 use nexo_tui::{draw_frame, App, TuiOptions};
 use ratatui::backend::TestBackend;
@@ -147,6 +150,76 @@ fn file_of(scene: &str, w: u16, h: u16) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/captures").join(format!("{scene}_{w}x{h}.txt"))
 }
 
+fn key(a: &mut App, c: KeyCode) -> ModalOut {
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!("the panel is open") };
+    v.key(KeyEvent::new(c, KeyModifiers::NONE))
+}
+
+fn press(a: &mut App, keys: &str) {
+    for c in keys.chars() {
+        key(a, KeyCode::Char(c));
+    }
+}
+
+fn view(a: &mut App) -> &mut AgentsView {
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!("the panel is open") };
+    v
+}
+
+/// Every line of the window, from its top border to its bottom one.
+fn window_lines(a: &mut App, w: u16, h: u16) -> Vec<String> {
+    let out = capture(a, w, h);
+    let from = out.iter().position(|l| l.starts_with("╭ panel")).expect("the window");
+    let to = out.iter().skip(from).position(|l| l.starts_with('╰')).expect("its foot") + from;
+    out[from..=to].to_vec()
+}
+
+fn window(a: &mut App) -> String {
+    window_lines(a, 120, 40).join("\n")
+}
+
+/// A live panel reading one session of another program from a temporary log folder.
+fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>) {
+    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+    let dir = tempfile::tempdir().unwrap();
+    let logs = dir.path().join("logs").join("proj");
+    std::fs::create_dir_all(&logs).unwrap();
+    let rec = r#"{"type":"assistant","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#;
+    std::fs::write(logs.join("sess-1.jsonl"), format!("{rec}\n")).unwrap();
+    let setup = Setup {
+        logs_root: Some(dir.path().join("logs")),
+        scan_hours: 12,
+        list_cmd: None,
+        list_every: 10,
+        poll_every_ms: 100,
+    };
+    let p = Panel::start(&setup, Policy::default(), NexoSource::default());
+    (dir, std::sync::Arc::new(p))
+}
+
+/// The live panel's view once its poller has seen the log; generous, a loaded machine's poller can be slow.
+fn live_view() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>, AgentsView) {
+    let (d, panel) = live_panel();
+    let t = std::time::Instant::now();
+    let mut v = AgentsView::new(Some(panel.clone()), true);
+    while v.rows().is_empty() && t.elapsed().as_secs() < 60 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        v.refresh();
+    }
+    assert_eq!(v.rows().len(), 1);
+    // the row is another program's, whose group starts folded: unfold it and put the cursor on the row
+    v.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    v.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(v.selected_key().is_some());
+    (d, panel, v)
+}
+
+fn peers(n: usize) -> Vec<AgentRow> {
+    (0..n)
+        .map(|i| row(&format!("nexo:k{i}"), &format!("job{i:02}"), SourceKind::Nexo, State::Working, Some(i as u64), None))
+        .collect()
+}
+
 #[test]
 fn the_panel_matches_its_captures_from_40x12_to_400x120() {
     let update = std::env::var("NEXO_UPDATE_GOLDEN").is_ok();
@@ -171,61 +244,20 @@ fn the_panel_matches_its_captures_from_40x12_to_400x120() {
 }
 
 #[test]
-fn at_every_size_the_window_is_whole_and_says_what_each_state_is_in_words() {
+fn at_every_size_the_window_is_whole_and_keeps_its_title_and_its_way_out() {
     for (w, h) in SIZES {
         let out = capture(&mut scene(rows()), w, h);
         assert_eq!(out.len(), h as usize);
-        let all = out.join("\n");
-        if w >= 80 {
-            assert!(all.contains("panel"), "{w}x{h}: no title\n{all}");
-            assert!(all.contains("only"), "{w}x{h}: no read-only note\n{all}");
-            for word in ["working", "permission"] {
-                assert!(all.contains(word), "{w}x{h}: no {word}\n{all}");
-            }
-        }
-        // no row is wider than the screen
         assert!(out.iter().all(|r| r.chars().count() <= w as usize), "{w}x{h}");
+        let all = out.join("\n");
+        assert!(all.contains("panel"), "{w}x{h}: no title\n{all}");
         if h >= 12 && w >= 40 {
             assert!(all.contains("Esc"), "{w}x{h}: no footer\n{all}");
         }
-    }
-}
-
-#[test]
-fn cards_flow_into_more_columns_as_the_window_widens() {
-    assert_eq!(cards_layout(30, 20), Layout::List);
-    assert_eq!(cards_layout(80, 3), Layout::List);
-    let cols = |w| match cards_layout(w, 30) {
-        Layout::Cards { cols, .. } => cols,
-        Layout::List => 0,
-        Layout::Blocks { .. } => unreachable!(),
-    };
-    assert_eq!((cols(44), cols(80), cols(120), cols(200), cols(400)), (1, 2, 3, 4, 4));
-    for w in 44..400u16 {
-        if let Layout::Cards { cols, card_w } = cards_layout(w, 30) {
-            assert!((34..=60).contains(&card_w) && card_w * cols + 2 * (cols - 1) <= w, "{w}");
+        if w >= 80 {
+            assert!(all.contains("read-only"), "{w}x{h}: the header says there is no supervisor\n{all}");
         }
     }
-}
-
-#[test]
-fn keys_move_the_selection_and_escape_closes() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut a = scene(rows());
-    capture(&mut a, 120, 40);
-    let press = |a: &mut App, c: KeyCode| {
-        if let Some(Modal::Agents(v)) = &mut a.modal {
-            let _ = v.key(KeyEvent::new(c, KeyModifiers::NONE));
-        }
-    };
-    press(&mut a, KeyCode::Right);
-    press(&mut a, KeyCode::Down);
-    let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-    assert_eq!(v.selected, 3, "one right, then down to the second row of the external group (three columns)");
-    press(&mut a, KeyCode::End);
-    press(&mut a, KeyCode::Right);
-    let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-    assert_eq!(v.selected, v.rows().len() - 1);
 }
 
 #[test]
@@ -239,247 +271,72 @@ fn panel_is_a_command_and_agents_answers_without_being_listed() {
 }
 
 #[test]
-fn the_command_opens_the_panel_and_a_session_event_shows_in_it() {
+fn the_command_opens_the_panel_and_team_opens_it_on_its_lanes() {
+    // a supervisor of temporary logs: the command would otherwise start one that reads the real ones
+    let (_d, panel) = live_panel();
     let mut a = app();
+    a.panel = Some(panel.clone());
     a.input.set_text("/panel");
     a.run_command(parse("/panel").unwrap());
     assert!(matches!(a.modal, Some(Modal::Agents(_))));
-}
-
-fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>) {
-    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
-    let dir = tempfile::tempdir().unwrap();
-    let logs = dir.path().join("logs").join("proj");
-    std::fs::create_dir_all(&logs).unwrap();
-    let rec = r#"{"type":"assistant","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#;
-    std::fs::write(logs.join("sess-1.jsonl"), format!("{rec}\n")).unwrap();
-    let setup = Setup {
-        logs_root: Some(dir.path().join("logs")),
-        scan_hours: 12,
-        list_cmd: None,
-        list_every: 10,
-        poll_every_ms: 100,
-    };
-    let p = Panel::start(&setup, Policy::default(), NexoSource::default());
-    (dir, std::sync::Arc::new(p))
+    let mut a = app();
+    a.panel = Some(panel);
+    a.run_command(parse("/team").unwrap());
+    assert!(matches!(a.modal, Some(Modal::Agents(_))), "/team is the panel now");
+    let text = window(&mut a);
+    assert!(text.contains("LANES"), "the lanes group is there even with no lane yet\n{text}");
 }
 
 #[test]
-fn n_writes_a_nudge_p_pauses_and_enter_opens_the_details() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (_d, panel) = live_panel();
-    let t = std::time::Instant::now();
-    let mut v = AgentsView::new(Some(panel.clone()), true);
-    // generous: on a loaded machine the panel's poller thread can be slow to see the file
-    while v.rows().is_empty() && t.elapsed().as_secs() < 60 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        v.refresh();
-    }
-    assert_eq!(v.rows().len(), 1);
-    let key = |v: &mut AgentsView, c: KeyCode| {
-        v.key(KeyEvent::new(c, KeyModifiers::NONE));
-    };
+fn n_writes_a_nudge_z_pauses_and_enter_observes_until_esc() {
+    let (_d, panel, v) = live_view();
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
     let text = |a: &mut App| capture(a, 120, 30).join("\n");
     assert!(text(&mut a).contains("n message"), "the keys are listed");
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    key(v, KeyCode::Char('n'));
-    for c in " now".chars() {
-        key(v, KeyCode::Char(c));
-    }
+    press(&mut a, "n now");
     assert!(text(&mut a).contains("message ›"), "the field shows");
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    key(v, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
     let row = panel.rows(nexo_agent::supervise::run::now_secs()).remove(0);
     assert_eq!(row.last_action.as_ref().map(|a| a.0.as_str()), Some("your nudge is queued"));
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    key(v, KeyCode::Char('p'));
+    press(&mut a, "z");
     assert!(panel.rows(nexo_agent::supervise::run::now_secs())[0].paused);
-    assert!(text(&mut a).contains("paused"), "{}", text(&mut a));
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    key(v, KeyCode::Char('P'));
+    assert!(text(&mut a).contains("supervision paused"), "{}", text(&mut a));
+    press(&mut a, "Z");
     assert!(panel.paused_all());
-    key(v, KeyCode::Char('P'));
+    press(&mut a, "Z");
     assert!(!panel.paused_all());
-    // Enter opens the details instead of closing; Esc closes them first, then the window
-    let out = v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Enter observes instead of closing; Esc leaves the observation first, then the window
+    let out = key(&mut a, KeyCode::Enter);
     a.modal_out(out);
     assert!(text(&mut a).contains("observation"));
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Nothing);
-    assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Close);
+    assert_eq!(key(&mut a, KeyCode::Esc), ModalOut::Nothing);
+    assert_eq!(key(&mut a, KeyCode::Esc), ModalOut::Close);
 }
 
 #[test]
-fn a_nudge_on_a_view_without_a_panel_or_on_this_session_does_nothing() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut v = AgentsView::with_rows(rows(), NOW, true);
-    v.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    v.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-    assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Close);
+fn a_nudge_or_pause_on_a_view_without_a_supervisor_says_why_nothing_happened() {
+    for keys in ["n", "z", "Z"] {
+        let mut a = scene(rows());
+        press(&mut a, keys);
+        let text = window(&mut a);
+        assert!(text.contains("need the supervisor"), "{keys}: silent\n{text}");
+        assert_eq!(key(&mut a, KeyCode::Esc), ModalOut::Close, "{keys}: nothing is left open");
+    }
 }
 
 #[test]
-fn o_shows_the_policy_page_with_the_model_line_and_goes_back() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+fn capital_p_shows_the_policy_page_with_the_model_line_and_goes_back() {
     let (_d, panel) = live_panel();
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(AgentsView::new(Some(panel), true))));
-    let text = |a: &mut App| capture(a, 120, 30).join("\n");
-    assert!(text(&mut a).contains("o policy"), "the key is listed");
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    v.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
-    let shown = text(&mut a);
+    assert!(capture(&mut a, 160, 30).join("\n").contains("P policy"), "the key is listed");
+    press(&mut a, "P");
+    let shown = capture(&mut a, 120, 30).join("\n");
     assert!(shown.contains("panel · policy"), "{shown}");
     assert!(shown.contains("model: none"), "{shown}");
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!text(&mut a).contains("panel · policy"));
-}
-
-/// The window itself: from its title row down (the conversation behind it moves on its own).
-fn panel_part(s: &str) -> String {
-    let from = s.find("╭ panel").unwrap_or(0);
-    s[from..].lines().take_while(|l| !l.starts_with("─ ask")).collect::<Vec<_>>().join("\n")
-}
-
-fn zoomed(rows: Vec<AgentRow>, keys: &str) -> App {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut a = scene(rows);
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    for c in keys.chars() {
-        v.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-    }
-    a
-}
-
-#[test]
-fn the_zoomed_views_match_their_captures_at_every_size() {
-    let update = std::env::var("NEXO_UPDATE_GOLDEN").is_ok();
-    let mut wrong = Vec::new();
-    for (name, keys) in [("panel-lines", "-"), ("panel-blocks", "--")] {
-        for (w, h) in SIZES {
-            let text = capture(&mut zoomed(rows(), keys), w, h).join("\n") + "\n";
-            let path = file_of(name, w, h);
-            if update {
-                std::fs::write(&path, &text).unwrap();
-                continue;
-            }
-            match std::fs::read_to_string(&path) {
-                Ok(kept) if kept == text => {}
-                Ok(_) => wrong.push(format!("{name} {w}x{h}: differs from {}", path.display())),
-                Err(_) => wrong.push(format!("{name} {w}x{h}: no capture")),
-            }
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-}
-
-#[test]
-fn plus_and_minus_move_between_cards_lines_and_blocks() {
-    let mut a = zoomed(rows(), "");
-    let cards = capture(&mut a, 120, 40).join("\n");
-    assert!(cards.contains("▸ Edit"), "cards show the last step with a marker");
-    let mut a = zoomed(rows(), "-");
-    let lines = capture(&mut a, 120, 40).join("\n");
-    assert!(!panel_part(&lines).contains("╭───"), "lines have no card borders\n{lines}");
-    let mut a = zoomed(rows(), "--");
-    let blocks = capture(&mut a, 120, 40).join("\n");
-    assert!(blocks.contains('▌') && blocks.contains("api-migration"), "{blocks}");
-    let mut a = zoomed(rows(), "---+");
-    assert_eq!(capture(&mut a, 120, 40).join("\n"), lines, "+ goes back in one step; - stops at blocks");
-    let mut a = zoomed(rows(), "--++");
-    assert_eq!(capture(&mut a, 120, 40).join("\n"), cards);
-}
-
-mod motion {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    fn live_app() -> (App, Instant) {
-        let mut a = app();
-        a.opts.animations = true;
-        let t0 = Instant::now();
-        a.fx.clock = Some(t0);
-        (a, t0)
-    }
-
-    fn at(a: &mut App, t0: Instant, ms: u64) -> String {
-        a.fx.clock = Some(t0 + Duration::from_millis(ms));
-        capture(a, 120, 40).join("\n")
-    }
-
-    fn open(a: &mut App, rows: Vec<AgentRow>) {
-        a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows, NOW, false))));
-    }
-
-    #[test]
-    fn cards_come_in_one_after_the_other_and_settle_to_the_still_picture() {
-        let (mut a, t0) = live_app();
-        open(&mut a, rows());
-        let first = at(&mut a, t0, 0);
-        assert!(first.contains("project"), "the first card is already there\n{first}");
-        assert!(!first.contains("nightly-fixer"), "a later card has not started\n{first}");
-        let mid = at(&mut a, t0, 200);
-        assert!(mid.contains("api-migration") || mid.contains("explore"), "{mid}");
-        let end = at(&mut a, t0, 2000);
-        assert!(end.contains("nightly-fixer") && end.contains("release"), "{end}");
-        let mut still = scene(rows());
-        assert_eq!(
-            panel_part(&capture(&mut still, 120, 40).join("\n")),
-            panel_part(&end),
-            "after the entry it is the still picture"
-        );
-    }
-
-    #[test]
-    fn a_chip_changing_state_keeps_the_old_word_then_takes_the_new_one() {
-        let (mut a, t0) = live_app();
-        let mut r = rows();
-        open(&mut a, r.clone());
-        at(&mut a, t0, 0);
-        at(&mut a, t0, 2000);
-        r[0].state = State::Done;
-        let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-        v.set_rows(r);
-        let early = at(&mut a, t0, 2050);
-        let late = at(&mut a, t0, 2600);
-        let line = |s: &str| s.lines().find(|l| l.contains("▣ project")).unwrap_or_default().to_string();
-        assert!(line(&early).contains("working"), "{}", line(&early));
-        assert!(line(&late).contains("done"), "{}", line(&late));
-    }
-
-    #[test]
-    fn at_rest_nothing_asks_for_a_repaint_and_with_the_animations_off_nothing_moves() {
-        let (mut a, t0) = live_app();
-        let calm: Vec<AgentRow> = rows()
-            .into_iter()
-            .filter(|r| !matches!(r.state, State::WaitingPermission | State::WaitingAnswer | State::Stalled))
-            .collect();
-        open(&mut a, calm);
-        at(&mut a, t0, 0);
-        let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-        assert!(v.animating(t0), "cards are entering");
-        at(&mut a, t0, 3000);
-        let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-        assert!(!v.animating(t0 + Duration::from_millis(3000)), "settled: zero frames per second");
-        let still = AgentsView::with_rows(rows(), NOW, true);
-        assert!(!still.animating(t0));
-    }
-
-    #[test]
-    fn the_selection_glides_and_a_nudge_pulses_the_card() {
-        let (mut a, t0) = live_app();
-        open(&mut a, rows());
-        at(&mut a, t0, 0);
-        at(&mut a, t0, 2000);
-        let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-        v.selected = 2;
-        at(&mut a, t0, 2010);
-        let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-        assert!(v.animating(t0 + Duration::from_millis(2050)), "gliding");
-    }
+    key(&mut a, KeyCode::Esc);
+    assert!(!capture(&mut a, 120, 30).join("\n").contains("panel · policy"));
 }
 
 #[test]
@@ -491,10 +348,10 @@ fn a_moving_frame_at_400x120_stays_cheap() {
     let many: Vec<AgentRow> = (0..40)
         .map(|i| {
             row(
-                &format!("k{i}"),
+                &format!("nexo:k{i}"),
                 &format!("s{i}"),
-                SourceKind::External,
-                State::WaitingAnswer,
+                SourceKind::Nexo,
+                State::WaitingPermission,
                 Some(i),
                 Some("Bash  ls"),
             )
@@ -516,141 +373,58 @@ fn a_moving_frame_at_400x120_stays_cheap() {
     assert!(per < Duration::from_millis(100), "{per:?} per frame is too slow for 30 fps");
 }
 
-fn press(a: &mut App, keys: &str) {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    for c in keys.chars() {
-        v.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-    }
-}
-
-fn window(a: &mut App) -> String {
-    panel_part(&capture(a, 120, 40).join("\n"))
-}
-
 #[test]
-fn sessions_sit_under_a_header_per_program_nexo_first_and_every_card_has_its_tag() {
-    let mut a = scene(rows());
-    let text = window(&mut a);
+fn programs_come_after_this_session_folded_to_their_count_and_a_waiting_row_still_shows() {
+    let text = window(&mut scene(rows()));
     let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("no {needle:?}\n{text}"));
-    assert!(at("▣ nexo · 2") < at("▢ agentx · 4") && at("▢ agentx · 4") < at("▢ othertool · 2"), "{text}");
-    for tag in ["[nexo]", "[agentx]", "[othertool]"] {
-        assert!(text.contains(tag), "no {tag} tag\n{text}");
-    }
-    assert_eq!(text.matches("[nexo]").count(), 2, "one tag per nexo card\n{text}");
-    assert_eq!(text.matches("[agentx]").count(), 4, "{text}");
-    assert!(text.contains("all"), "the header says which sessions these are\n{text}");
-    assert!(text.contains("s source"), "the key is listed\n{text}");
+    assert!(at("THIS SESSION") < at("AGENTX · 4") && at("AGENTX · 4") < at("OTHERTOOL · 2"), "{text}");
+    assert!(!text.contains("refactor"), "a folded program shows no rows\n{text}");
+    assert!(at("NEEDS YOU") < at("api-migration"), "the session waiting on a permission is under NEEDS YOU\n{text}");
 }
 
 #[test]
-fn s_cycles_all_nexo_only_external_only_and_the_choice_outlives_the_window() {
+fn capital_f_cycles_all_nexo_only_external_only_and_the_choice_outlives_the_window() {
     let mut a = scene(rows());
-    press(&mut a, "s");
+    press(&mut a, "F");
     let nexo = window(&mut a);
-    assert!(nexo.contains("▣ nexo · 2") && !nexo.contains("agentx") && !nexo.contains("othertool"), "{nexo}");
-    assert!(nexo.contains("nexo only +6"), "the header counts what is hidden\n{nexo}");
-    press(&mut a, "s");
+    assert!(nexo.contains("project") && !nexo.contains("AGENTX") && !nexo.contains("OTHERTOOL"), "{nexo}");
+    assert!(nexo.contains("nexo only"), "the header says what is shown\n{nexo}");
+    press(&mut a, "F");
     let ext = window(&mut a);
-    assert!(!ext.contains("▣ nexo") && ext.contains("▢ agentx · 4") && ext.contains("▢ othertool · 2"), "{ext}");
-    assert!(ext.contains("external only +2"), "{ext}");
-    press(&mut a, "s");
+    assert!(!ext.contains("THIS SESSION") && ext.contains("AGENTX · 4"), "{ext}");
+    press(&mut a, "F");
     let all = window(&mut a);
-    assert!(all.contains("▣ nexo · 2") && all.contains("▢ othertool · 2"), "back to everything\n{all}");
+    assert!(all.contains("THIS SESSION") && all.contains("OTHERTOOL · 2"), "back to everything\n{all}");
 
     // a window opened later in the same session starts where the last one stopped
     let mut b = app();
     let mem = b.panel_filter.clone();
     b.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows(), NOW, true).remembering(mem.clone()))));
-    press(&mut b, "ss");
-    let Some(Modal::Agents(v)) = &b.modal else { panic!() };
-    assert_eq!(v.filter, nexo_tui::agents_view::Filter::External);
+    press(&mut b, "FF");
+    assert_eq!(view(&mut b).filter, nexo_tui::agents_view::Filter::External);
     b.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows(), NOW, true).remembering(mem))));
-    let Some(Modal::Agents(v)) = &b.modal else { panic!() };
-    assert_eq!(v.filter, nexo_tui::agents_view::Filter::External, "remembered");
+    assert_eq!(view(&mut b).filter, nexo_tui::agents_view::Filter::External, "remembered");
 }
 
 #[test]
-fn a_group_with_nothing_in_it_says_so() {
-    let only_nexo: Vec<AgentRow> = rows().into_iter().filter(|r| r.source == SourceKind::Nexo).collect();
-    let text = window(&mut scene(only_nexo.clone()));
-    assert!(text.contains("▢ external") && text.contains("no sessions from other programs"), "{text}");
-    let mut a = scene(only_nexo);
-    press(&mut a, "ss");
-    let text = window(&mut a);
-    assert!(text.contains("no sessions from other programs found") && !text.contains("▣ nexo"), "{text}");
-
-    let only_ext: Vec<AgentRow> = rows().into_iter().filter(|r| r.source == SourceKind::External).collect();
-    let text = window(&mut scene(only_ext));
-    assert!(text.contains("▣ nexo") && text.contains("no nexo sessions yet"), "{text}");
-
-    let mut none = scene(vec![]);
-    press(&mut none, "s");
-    let text = window(&mut none);
-    assert!(text.contains("no nexo sessions yet") && !text.contains("no sessions from other programs"), "{text}");
-    press(&mut none, "s");
-    let text = window(&mut none);
-    assert!(text.contains("no sessions from other programs found"), "{text}");
-}
-
-#[test]
-fn the_arrows_walk_the_groups_in_the_order_they_are_drawn() {
-    use crossterm::event::KeyCode;
-    let mut a = scene(rows());
-    capture(&mut a, 120, 40);
-    let sel = |a: &App| match &a.modal {
-        Some(Modal::Agents(v)) => v.selected,
-        _ => panic!(),
-    };
-    let key = |a: &mut App, c: KeyCode| {
-        if let Some(Modal::Agents(v)) = &mut a.modal {
-            v.key(crossterm::event::KeyEvent::new(c, crossterm::event::KeyModifiers::NONE));
-        }
-    };
-    key(&mut a, KeyCode::Down);
-    assert_eq!(sel(&a), 2, "down from the nexo row to the first card of the next group");
-    key(&mut a, KeyCode::Down);
-    assert_eq!(sel(&a), 4, "then to the group's second row");
-    key(&mut a, KeyCode::Down);
-    assert_eq!(sel(&a), 6);
-    key(&mut a, KeyCode::Up);
-    key(&mut a, KeyCode::Up);
-    key(&mut a, KeyCode::Up);
-    assert_eq!(sel(&a), 0);
-}
-
-#[test]
-fn a_long_list_scrolls_with_its_headers_and_keeps_the_selection_in_sight() {
-    let many: Vec<AgentRow> = (0..14)
-        .map(|i| row(&format!("k{i}"), &format!("job{i:02}"), SourceKind::External, State::Working, Some(i), None))
-        .collect();
-    let mut a = scene(many);
-    capture(&mut a, 80, 24);
-    for _ in 0..7 {
-        press(&mut a, "j");
+fn a_long_list_scrolls_keeps_the_selection_in_sight_and_says_how_many_lines_are_out_of_it() {
+    let mut a = scene(peers(30));
+    let first = window_lines(&mut a, 80, 24).join("\n");
+    assert!(first.contains(" more") && !first.contains("above"), "{first}");
+    for _ in 0..40 {
+        key(&mut a, KeyCode::Down);
     }
-    let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-    let want = format!("job{:02}", v.selected);
-    let text = capture(&mut a, 80, 24).join("\n");
-    assert!(text.contains(&want), "the selected session is drawn\n{text}");
-}
-
-#[test]
-fn a_message_or_pause_key_with_no_supervisor_says_why_nothing_happened() {
-    for keys in ["n", "p", "P"] {
-        let mut a = scene(rows());
-        press(&mut a, keys);
-        let text = window(&mut a);
-        assert!(text.contains("need the supervisor"), "{keys}: silent\n{text}");
+    let last = window_lines(&mut a, 80, 24).join("\n");
+    let at = view(&mut a).selected_key();
+    let want = view(&mut a).rows().iter().find(|r| Some(&r.key) == at.as_ref()).map(|r| r.name.clone());
+    assert!(last.contains(want.as_deref().unwrap()), "the selected session is drawn\n{last}");
+    assert!(last.contains("above") && !last.contains(" more"), "{last}");
+    // far enough up that the tree scrolls back: lines are then out of sight on both sides
+    for _ in 0..20 {
+        key(&mut a, KeyCode::Up);
     }
-}
-
-/// Every line of the window, from its top border to its bottom one.
-fn window_lines(a: &mut App, w: u16, h: u16) -> Vec<String> {
-    let out = capture(a, w, h);
-    let from = out.iter().position(|l| l.starts_with("╭ panel")).expect("the window");
-    let to = out.iter().skip(from).position(|l| l.starts_with('╰')).expect("its foot") + from;
-    out[from..=to].to_vec()
+    let middle = window_lines(&mut a, 80, 24).join("\n");
+    assert!(middle.contains("↑ ") && middle.contains(" ↓ "), "{middle}");
 }
 
 #[test]
@@ -663,155 +437,53 @@ fn names_paths_and_steps_in_any_script_are_cut_with_an_ellipsis_and_never_break_
     odd[3].program = "a-tool-with-a-program-name-far-too-long-for-a-tag".into();
     odd[3].last_action = Some(("marked\npermission\x1b]0;title\x07".into(), NOW - 5));
     for (w, h) in [(60, 24), (80, 24), (120, 40), (200, 60)] {
-        for keys in ["", "-", "--"] {
-            let mut a = zoomed(odd.clone(), keys);
-            let lines = window_lines(&mut a, w, h);
-            let top = lines[0].chars().count();
-            for l in &lines {
-                assert_eq!(
-                    l.chars().count(),
-                    top,
-                    "{w}x{h} '{keys}': a row is not as wide as the frame\n{}",
-                    lines.join("\n")
-                );
-                assert!(!l.contains('\x1b') && !l.contains('\t'), "{w}x{h}: raw control text\n{l}");
-            }
-            let all = lines.join("\n");
-            if keys.is_empty() && w >= 80 {
-                assert!(all.contains('…'), "{w}x{h}: a long name is cut with an ellipsis\n{all}");
-            }
+        let lines = window_lines(&mut scene(odd.clone()), w, h);
+        let top = lines[0].chars().count();
+        for l in &lines {
+            assert_eq!(l.chars().count(), top, "{w}x{h}: a row is not as wide as the frame\n{}", lines.join("\n"));
+            assert!(!l.contains('\x1b') && !l.contains('\t'), "{w}x{h}: raw control text\n{l}");
         }
+        let all = lines.join("\n");
+        assert!(all.contains('…'), "{w}x{h}: a long name is cut with an ellipsis\n{all}");
     }
 }
 
 #[test]
-fn the_state_chip_survives_a_long_name_and_stays_whole_at_the_card_s_right_edge() {
-    let mut long = rows();
-    for r in &mut long {
-        r.name = format!("{}-with-a-name-that-never-ends", r.name);
-    }
-    let all = window_lines(&mut scene(long), 120, 40).join("\n");
-    for chip in ["● working", "◈ permission", "↻ looping", "◐ stalled", "✓ done"] {
-        assert!(all.contains(&format!("{chip} │")), "chip {chip:?} lost or pushed off\n{all}");
-    }
-}
-
-#[test]
-fn cards_stretch_over_the_whole_row_and_a_group_never_ends_on_an_orphan() {
-    for (w, h) in [(120, 40), (200, 60)] {
-        let lines = window_lines(&mut scene(rows()), w, h);
-        let tops: Vec<&String> = lines.iter().filter(|l| l.contains("╭─")).collect();
-        assert!(tops.len() >= 3, "{w}x{h}: card strips\n{}", lines.join("\n"));
-        for t in &tops {
-            // the last card ends one blank column short of the frame, as the header rule does
-            if w == 200 && t.matches("╭─").count() < 4 {
-                continue;
-            }
-            assert!(t.ends_with("╮ │"), "{w}x{h}: a strip ends ragged\n{t}\n{}", lines.join("\n"));
-        }
-        // 4 cards on 3 columns: two and two, not three and one
-        if w == 120 {
-            let counts: Vec<usize> = tops.iter().map(|t| t.matches("╭─").count()).collect();
-            assert_eq!(counts, [2, 2, 2, 2], "{}", lines.join("\n"));
-        }
-    }
-}
-
-#[test]
-fn quiet_time_is_one_short_unit_and_lines_keep_it_in_one_right_aligned_column() {
-    let all = window_lines(&mut scene(rows()), 120, 40).join("\n");
-    for t in ["quiet 2s", "quiet 1m", "quiet 6m", "quiet 40m", "quiet 2h"] {
-        assert!(all.contains(t), "no {t:?}\n{all}");
-    }
-    assert!(!all.contains("m 0") && !all.contains("h 0"), "two-unit times are gone\n{all}");
-    // with the supervisor's action on the line the time stays and the cost is what gives way
-    assert!(all.contains("quiet 1m") || !all.contains("$1.25"), "the cost left before the time did\n{all}");
-    let list = window_lines(&mut zoomed(rows(), "-"), 100, 30);
-    // in the lines every time ends on the same column
-    let ends: std::collections::HashSet<usize> = [" 2s  ", " 1m  ", "40m  ", " 2h  ", " 6m  "]
-        .iter()
-        .map(|t| {
-            let l = list.iter().find(|l| l.contains(t)).unwrap_or_else(|| panic!("no {t:?}\n{}", list.join("\n")));
-            l[..l.find(t).unwrap()].chars().count()
-        })
-        .collect();
-    assert_eq!(ends.len(), 1, "{}", list.join("\n"));
-}
-
-#[test]
-fn a_session_less_panel_says_what_it_is_for_and_how_sessions_appear() {
+fn a_session_less_panel_says_what_it_is_for_and_how_rows_appear() {
     for (w, h) in [(60, 24), (120, 40)] {
         let text = window_lines(&mut scene(vec![]), w, h).join("\n");
-        for needle in ["board of your agent sessions", "appear here on their own", "this session", "other agents"] {
+        for needle in ["Nothing running besides this session", "appear here on their own", "nexo team lanes"] {
             assert!(text.contains(needle), "{w}x{h}: no {needle:?}\n{text}");
         }
     }
-    // a filter that hides everything keeps the per-program lines instead
-    let mut a = scene(vec![]);
-    press(&mut a, "s");
-    let text = window(&mut a);
-    assert!(text.contains("no nexo sessions yet") && !text.contains("board of your"), "{text}");
     // the smallest window still tells what it is
     let tiny = window_lines(&mut scene(vec![]), 40, 12).join("\n");
-    assert!(tiny.contains("board of your") && tiny.contains("appear here"), "{tiny}");
+    assert!(tiny.contains("Nothing running"), "{tiny}");
 }
 
 #[test]
-fn a_scrolled_list_says_how_many_sessions_sit_above_and_below() {
-    let many: Vec<AgentRow> = (0..30)
-        .map(|i| row(&format!("k{i}"), &format!("job{i:02}"), SourceKind::External, State::Working, Some(i), None))
-        .collect();
-    let mut a = scene(many);
-    let first = window_lines(&mut a, 80, 24).join("\n");
-    assert!(first.contains(" more") && !first.contains("above"), "{first}");
-    for _ in 0..40 {
-        press(&mut a, "j");
-    }
-    let last = window_lines(&mut a, 80, 24).join("\n");
-    assert!(last.contains("above") && !last.contains(" more"), "{last}");
-    for _ in 0..12 {
-        press(&mut a, "k");
-    }
-    let middle = window_lines(&mut a, 80, 24).join("\n");
-    assert!(middle.contains("↑ ") && middle.contains(" ↓ "), "{middle}");
-}
-
-#[test]
-fn the_window_is_measured_again_when_sessions_arrive_after_it_opened() {
+fn rows_that_arrive_after_the_window_opened_are_drawn() {
     let mut a = scene(vec![]);
-    let before = window_lines(&mut a, 120, 40).len();
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    v.set_rows(rows());
-    let after = window_lines(&mut a, 120, 40);
-    assert!(after.len() > before, "{before} lines before, {} after", after.len());
-    assert!(after.iter().any(|l| l.contains("api-migration")), "{}", after.join("\n"));
+    assert!(!window(&mut a).contains("api-migration"));
+    view(&mut a).set_rows(rows());
+    let after = window(&mut a);
+    assert!(after.contains("api-migration"), "{after}");
 }
 
 #[test]
-fn a_tiny_terminal_keeps_a_session_line_and_drops_the_group_header() {
+fn a_tiny_terminal_keeps_a_session_line() {
     let mut a = scene(rows());
-    let lines = window_lines(&mut a, 36, 9);
-    let text = lines.join("\n");
-    // the detail line also names the project, so a session line is a second one
-    assert!(lines.iter().filter(|l| l.contains("project")).count() >= 2, "{text}");
+    let text = window_lines(&mut a, 36, 9).join("\n");
+    assert!(text.contains("project") || text.contains("api-migr"), "{text}");
 }
 
 #[test]
-fn the_footer_offers_back_from_observation() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (_d, panel) = live_panel();
-    let t = std::time::Instant::now();
-    let mut v = AgentsView::new(Some(panel), true);
-    // generous: on a loaded machine the panel's poller thread can be slow to see the file
-    while v.rows().is_empty() && t.elapsed().as_secs() < 60 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        v.refresh();
-    }
+fn the_footer_offers_observe_then_back_from_the_observation() {
+    let (_d, _panel, v) = live_view();
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
-    assert!(capture(&mut a, 140, 30).join("\n").contains("Enter observe"));
-    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
-    let out = v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(capture(&mut a, 140, 30).join("\n").contains("⏎ observe"));
+    let out = key(&mut a, KeyCode::Enter);
     a.modal_out(out);
     let text = capture(&mut a, 140, 30).join("\n");
     assert!(text.contains("Esc back") && text.contains("observation"), "{text}");
@@ -819,10 +491,10 @@ fn the_footer_offers_back_from_observation() {
 
 #[test]
 fn the_footer_of_a_wide_window_ends_on_esc_close_not_a_bare_esc() {
-    let (_d, panel) = live_panel();
+    let (_d, _panel, v) = live_view();
     let mut a = app();
-    a.modal = Some(Modal::Agents(Box::new(AgentsView::new(Some(panel), true))));
-    let text = capture(&mut a, 140, 30);
-    let foot = text.iter().find(|l| l.contains("p/P pause")).expect("the full key list shows at 140 columns");
-    assert!(foot.contains("+/- zoom · Esc close"), "{foot}");
+    a.modal = Some(Modal::Agents(Box::new(v)));
+    let text = capture(&mut a, 200, 30);
+    let foot = text.iter().find(|l| l.contains("z pause watch")).expect("the full key list shows at 200 columns");
+    assert!(foot.contains("P policy · Esc close"), "{foot}");
 }

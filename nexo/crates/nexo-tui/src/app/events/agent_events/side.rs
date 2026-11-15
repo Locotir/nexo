@@ -111,8 +111,13 @@ impl App {
     }
 
     pub(super) fn on_job_tails(&mut self, tails: Vec<nexo_core::jobs::JobTail>) {
-        if let Some(Modal::Jobs(v)) = &mut self.modal {
-            v.set_tails(tails);
+        match &mut self.modal {
+            Some(Modal::Jobs(v)) => v.set_tails(tails),
+            Some(Modal::Agents(v)) => {
+                v.set_tails(tails);
+                self.dirty = true;
+            }
+            _ => {}
         }
     }
 }

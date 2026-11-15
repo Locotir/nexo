@@ -1,23 +1,23 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-╭ panel ──────────────────────────────────────────────────────────────────[✗]──╮
-│ ◈ 1 permission  ◐ 1 stalled  ↻ 1 looping  ● 2 working  ○ 2 idle  ✓ 1 done    │
-│ ──────────────────────────────────────────────────────────────────────────── │
-│ ▣ nexo · 4 ───────────────────────────────────────────────────────────────── │
-│ ▌● working    ▣ project                             2s  Edit  src/parser.rs  │
-│  ● working    └ ▣ explore                           1s  Grep  fn classify    │
-│  ○ idle       └ ▣ tests                             3m  Bash  cargo test -p… │
-│┃ ○ idle       ▣ scribe                             17m                       │
-│┃▢ agentx · 2 ─────────────────────────────────────────────────────────────── │
-│┃ ◈ permission ▢ api-migration                       1m  Bash  cargo publish… │
-│┃ ↻ looping    ▢ scheduler                          30s  Bash  git pull       │
-│✉▢ othertool · 2 ──────────────────────────────────────────────────────────── │
-│  ✓ done       ▢ docs                                2h  Bash  gh release cr… │
-│  ◐ stalled    ▢ nightly-fixer                      40m  Read  tests/long_ru… │
-│                                                                              │
-│ selected  /home/dev/project · default · n1                                   │
-│ ←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close         │
+╭ panel ────────────────────────────────────────────────────────── 13:46 ─[✗]──╮
+│ ● 2 working  ○ 2 idle  ! 3 needs you   $1.25 today                 read-only │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ! NEEDS YOU  3                                                               │
+│ ◈ api-migration  Bash  cargo publish --dry-run                     1m  $1.25 │
+│ ↻ scheduler      Bash  git pull                                           1m │
+│ ◐ nightly-fixer  Read  tests/long_running.rs                              1m │
+│ ▾ THIS SESSION                                                               │
+│ ● project        Edit  src/parser.rs                                      1m │
+│ ├ ● explore      Grep  fn classify                                        1m │
+│ ╰ ○ tests        Bash  cargo test -p parser                               1m │
+│ ○ scribe                                                                  1m │
+│ ▸ AGENTX · 2                                                                 │
+│✉▸ OTHERTOOL · 2                                                              │
+│┃                                                                             │
+│┃                                                                             │
+│┃                                                                             │
+├━─────────────────────────────────────────────────────────────────────────────┤
+│ ⏎ details · n message · / filter · f show · F source · Esc close             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
  Esc close                                                 20261102-100000-ef56

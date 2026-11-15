@@ -1,10 +1,10 @@
-╭ panel ──────────────────────────[✗]──╮
-│ no sessions          all · read-only │
-│ ──────────────────────────────────── │
-│  Live board of your agent sessions.  │
-│  They appear here on their own:      │
-│                                      │
-│ v view · s source · Esc close        │
+╭ panel ────────────────── 13:46 ─[✗]──╮
+│ Nothing running besides this sessio… │
+│ Rows appear here on their own:       │
+│ this session after your message, it… │
+│ nexo team lanes, other nexo session… │
+├──────────────────────────────────────┤
+│ / filter · f show · Esc close        │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

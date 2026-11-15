@@ -65,6 +65,10 @@ fn a_message_for_another_program_is_asked_about_then_typed_into_its_inbox() {
         tmux_name: Some(format!("nexo-panel-none-{}", std::process::id())),
     });
 
+    // another program's group starts folded to its count: unfold it and go down to its row
+    press(&mut v, KeyCode::Right);
+    press(&mut v, KeyCode::Down);
+    assert_eq!(v.selected_key().as_deref(), Some(v.rows()[0].key.as_str()));
     // no supervisor behind the panel: the message is still written, and asked about before it goes
     press(&mut v, KeyCode::Char('n'));
     write(&mut v, "run the tests");

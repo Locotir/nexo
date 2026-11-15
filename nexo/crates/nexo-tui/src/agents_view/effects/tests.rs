@@ -110,65 +110,57 @@ fn row_text(b: &Buffer, y: u16, x0: u16, x1: u16) -> String {
     (x0..x1).map(|x| b[(x, y)].symbol().to_string()).collect()
 }
 
+fn screen(b: &Buffer) -> String {
+    (0..b.area.height).map(|y| row_text(b, y, 0, b.area.width)).collect::<Vec<_>>().join("\n")
+}
+
+fn pane_text(v: &AgentsView, key: &str, w: usize) -> String {
+    let row = v.rows().iter().find(|r| r.key == key).unwrap().clone();
+    let kind = crate::agents_view::Kind::of(&row);
+    v.pane_lines(&row, kind, w, &Theme::dark(), Instant::now(), false)
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
-fn card_prioritizes_last_result_and_keeps_state_visible() {
+fn the_pane_puts_the_last_result_under_the_state_of_a_finished_session() {
     let mut row = agent("builder", State::Done);
     row.last_conclusion = Some("tests passed".into());
     let mut v = AgentsView::with_rows(vec![row], NOW, false);
-    let b = paint(&mut v, 100, 30, Instant::now(), false);
-    let text = (0..b.area.height).map(|y| row_text(&b, y, 0, b.area.width)).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("last result: tests passed"), "{text}");
+    let b = paint(&mut v, 150, 30, Instant::now(), false);
+    let text = screen(&b);
+    assert!(text.contains("last") && text.contains("tests passed"), "{text}");
     assert!(text.contains("done"), "{text}");
 }
 
 #[test]
-fn panel_detail_shows_observed_workflow_and_subagent_states() {
+fn a_sub_agent_sits_under_its_session_and_its_pane_names_its_model() {
     let mut parent = agent("parent", State::Working);
     parent.last_step = Some("workflow  review".into());
-    parent.subs = vec![("child".into(), State::Working), ("finished".into(), State::Done)];
-    let mut child = agent("child", State::Working);
+    let mut child = agent("parent.3", State::Working);
     child.name = "reviewer".into();
     child.parent = Some("parent".into());
     child.model = Some("xai/grok-test".into());
     let mut v = AgentsView::with_rows(vec![parent, child], NOW, false);
     let b = paint(&mut v, 150, 30, Instant::now(), false);
-    let text = (0..b.area.height).map(|y| row_text(&b, y, 0, b.area.width)).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("subagents 1 active / 2 total"), "{text}");
-    assert!(text.contains("reviewer: working"), "{text}");
-    assert!(text.contains("finished: done"), "{text}");
-    assert!(text.contains("last observed workflow: workflow  review"), "{text}");
-    let child = v.rows().iter().find(|r| r.key == "child").unwrap();
-    let details = v.detail(child, &Theme::dark(), 80).into_iter().map(|s| s.content.into_owned()).collect::<String>();
-    assert!(details.contains("subagent of parent"), "{details}");
-    assert!(details.contains("xai/grok-test"), "{details}");
+    let text = screen(&b);
+    let at = |s: &str| text.lines().position(|l| l.contains(s));
+    assert!(at("parent") < at("reviewer"), "{text}");
+    assert!(text.lines().any(|l| l.contains("reviewer") && (l.contains('╰') || l.contains('├'))), "{text}");
+    let pane = pane_text(&v, "parent.3", 80);
+    assert!(pane.contains("sub-agent") && pane.contains("grok-test"), "{pane}");
 }
 
 #[test]
-fn workflow_observation_precedes_long_child_list_and_is_not_a_run_status() {
-    let mut parent = agent("parent", State::Done);
-    parent.last_step = Some("workflow  review".into());
-    parent.subs = (0..20).map(|i| (format!("long-child-name-{i}"), State::Done)).collect();
-    let v = AgentsView::with_rows(vec![parent], NOW, false);
-    let text =
-        v.detail(&v.rows()[0], &Theme::dark(), 80).into_iter().map(|s| s.content.into_owned()).collect::<String>();
-    assert!(text.contains("last observed workflow: workflow  review"), "{text}");
-    assert!(text.contains("subagents 0 active / 20 total"), "{text}");
-    assert!(!text.contains("workflow running"), "{text}");
-}
-
-#[test]
-fn selected_detail_is_labelled_when_wide_and_pause_is_clear_when_narrow() {
+fn a_paused_watch_is_said_in_the_pane_at_every_width() {
     let mut row = agent("builder", State::Working);
     row.paused = true;
-    row.parent = Some("coordinator".into());
     let v = AgentsView::with_rows(vec![row], NOW, false);
-    let theme = Theme::dark();
     for w in [26, 50, 80] {
-        let spans = v.detail(&v.rows()[0], &theme, w);
-        let text = spans.iter().map(|s| s.content.as_ref()).collect::<String>();
-        assert!(text.contains("supervisor paused"), "{w}: {text}");
-        assert_eq!(text.starts_with("selected  "), w >= 80, "{w}: {text}");
-        assert!(crate::render::wrap::width(&text) <= w, "{w}: {text}");
+        let text = pane_text(&v, "builder", w);
+        assert!(text.contains("supervision paused"), "{w}: {text}");
     }
 }
 
@@ -248,47 +240,6 @@ fn nothing_lands_on_the_right_half_of_a_wide_glyph_and_the_left_half_takes_both(
         assert_eq!(f.buffer_mut()[(3, 0)].symbol(), " ", "the right half of the glyph it replaced is cleared");
     })
     .unwrap();
-}
-
-#[test]
-fn the_count_of_a_letter_stays_inside_the_body() {
-    let mut v = AgentsView::with_rows(vec![agent("a", State::Done), agent("b", State::Done)], NOW, false);
-    let t0 = Instant::now();
-    v.drawn = Layout::Cards { cols: 1, card_w: 20 };
-    // the receiver's card ends two columns before the body does
-    let body = Rect::new(0, 2, 10, 6);
-    v.cards = vec![(0, Rect::new(0, 2, 4, 3)), (1, Rect::new(5, 4, 5, 4))];
-    v.live.letters.push(Letter { from: None, to: "b".into(), born: t0, delay_ms: 0, count: 5, bounce: false });
-    let rule = Rect::new(0, 1, 10, 1);
-    let shown = v.rows().to_vec();
-    let theme = Theme::by_name("dark").unwrap();
-    let mut t = Terminal::new(TestBackend::new(30, 10)).unwrap();
-    // landed: the head sits on the receiver's card
-    let now = at(t0, px::LIFT_MS + px::FLY_MS + 10);
-    t.draw(|f| v.draw_flights(f, rule, body, &shown, &theme, now)).unwrap();
-    let b = t.backend().buffer();
-    for y in 0..10 {
-        for x in 10..30 {
-            assert_eq!(b[(x, y)].symbol(), " ", "a cell outside the body was written at {x},{y}");
-        }
-    }
-}
-
-#[test]
-fn a_fail_mark_and_a_commit_mark_never_leave_their_card() {
-    // a card two columns wide inside: the ribbon column is the card's own border
-    let mut v = AgentsView::with_rows(vec![agent("a", State::Working)], NOW, false);
-    let t0 = Instant::now();
-    v.live.bursts.push(Burst { key: "a".into(), kind: EvKind::GitCommit, born: t0 });
-    let theme = Theme::by_name("dark").unwrap();
-    let row = v.rows()[0].clone();
-    let card = Rect::new(2, 2, 6, 5);
-    let marks = vec![(30usize, EvKind::GitCommit, NOW)];
-    let mut t = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    t.draw(|f| v.draw_ribbon_fx(f, card, 3, 4, &marks, &row, &theme, t0)).unwrap();
-    let b = t.backend().buffer();
-    let touched = (0..10).flat_map(|y| (0..40).map(move |x| (x, y))).any(|(x, y)| b[(x, y)].symbol() != " ");
-    assert!(!touched, "a mark far past the card's edge was drawn");
 }
 
 #[test]
@@ -400,34 +351,32 @@ fn effects_on_two_hundred_cards_stay_cheap() {
 }
 
 #[test]
-fn tree_uses_real_parents_and_keeps_selection_through_toggle_and_refresh() {
+fn the_tree_uses_real_parents_and_keeps_the_selection_through_a_fold_and_a_refresh() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
     let root = agent("root", State::Working);
-    let mut child = agent("child", State::Working);
+    let mut child = agent("root.1", State::Working);
     child.parent = Some("root".into());
-    let mut orphan = agent("orphan", State::Done);
-    orphan.parent = Some("missing".into());
-    let mut v = AgentsView::with_rows(vec![child.clone(), orphan.clone(), root.clone()], NOW, true);
-    v.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
-    assert_eq!(v.selected_key().as_deref(), Some("child"));
+    let mut v = AgentsView::with_rows(vec![child.clone(), root.clone()], NOW, true);
     let shown = v.shown();
-    assert!(shown.iter().position(|r| r.key == "root") < shown.iter().position(|r| r.key == "child"));
-    let mut t = Terminal::new(TestBackend::new(35, 12)).unwrap();
-    let theme = Theme::nexo();
-    t.draw(|f| v.draw(f, f.area(), &theme, Instant::now(), false)).unwrap();
-    assert_eq!(v.grid.len(), 3);
-    v.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(shown.iter().position(|r| r.key == "root") < shown.iter().position(|r| r.key == "root.1"));
+    while v.selected_key().as_deref() != Some("root.1") {
+        v.key(key(KeyCode::Down));
+    }
+    v.key(key(KeyCode::Up));
     assert_eq!(v.selected_key().as_deref(), Some("root"));
-    v.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(v.selected_key().as_deref(), Some("child"));
-    v.set_rows(vec![root, child, orphan]);
-    assert_eq!(v.selected_key().as_deref(), Some("child"));
-    v.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
-    assert_eq!(v.selected_key().as_deref(), Some("child"));
+    v.key(key(KeyCode::Left));
+    assert!(!v.shown().iter().any(|r| r.key == "root.1"), "← folds the parent");
+    assert_eq!(v.selected_key().as_deref(), Some("root"));
+    v.key(key(KeyCode::Right));
+    assert!(v.shown().iter().any(|r| r.key == "root.1"), "→ unfolds it");
+    v.key(key(KeyCode::Down));
+    v.set_rows(vec![root, child]);
+    assert_eq!(v.selected_key().as_deref(), Some("root.1"), "the selection stays on its row after a poll");
 }
 
 #[test]
-fn tree_keeps_cycles_without_looping_or_dropping_rows() {
+fn the_tree_keeps_cycles_without_looping_or_dropping_rows() {
     let mut a = agent("a", State::Working);
     let mut b = agent("b", State::Working);
     a.parent = Some("b".into());
@@ -437,9 +386,8 @@ fn tree_keeps_cycles_without_looping_or_dropping_rows() {
 }
 
 #[test]
-fn tree_connectors_anomalies_and_folding() {
+fn the_tree_draws_connectors_and_marks_orphans_and_cycles() {
     use super::super::tree::{self, Issue};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let root = agent("root", State::Working);
     let mut a = agent("a", State::Working);
     a.parent = Some("root".into());
@@ -452,55 +400,10 @@ fn tree_connectors_anomalies_and_folding() {
     let mut cycle = agent("cycle", State::Done);
     cycle.parent = Some("cycle".into());
     let rows = tree::ordered(vec![root, a, grand, b, orphan, cycle]);
-    assert_eq!(&tree::prefixes(&rows, false)[..4], &["", "├ ", "│ └ ", "└ "]);
+    let p = tree::prefixes(&rows, false);
+    assert_eq!(p[0], "");
+    assert!(p[1].starts_with('├') && p[3].starts_with('╰') || p[3].starts_with('└'), "{p:?}");
     let (_, issues) = tree::relations(&rows);
     assert_eq!(issues[4], Issue::Orphan);
     assert_eq!(issues[5], Issue::Cycle);
-    let mut v = AgentsView::with_rows(rows, NOW, true);
-    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
-    v.key(key(KeyCode::Char('v')));
-    assert_eq!(v.selected_key().as_deref(), Some("root"));
-    v.key(key(KeyCode::Left));
-    assert_eq!(v.shown().len(), 3);
-    assert_eq!(v.selected_key().as_deref(), Some("root"));
-    v.key(key(KeyCode::Char('v')));
-    assert_eq!(v.shown().len(), 3);
-    v.key(key(KeyCode::Right));
-    assert_eq!(v.shown().len(), 6);
-}
-
-#[test]
-fn map_cycles_views_preserves_selection_and_falls_back_when_narrow() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let root = agent("root", State::Working);
-    let mut child = agent("child", State::Done);
-    child.parent = Some("root".into());
-    let mut orphan = agent("orphan", State::Working);
-    orphan.parent = Some("missing".into());
-    let mut v = AgentsView::with_rows(vec![child, root, orphan], NOW, true);
-    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
-    v.key(key(KeyCode::Char('v')));
-    v.key(key(KeyCode::Char('v')));
-    assert_eq!(v.selected_key().as_deref(), Some("child"));
-    let theme = Theme::nexo();
-    let mut wide = Terminal::new(TestBackend::new(100, 15)).unwrap();
-    wide.draw(|f| v.draw(f, f.area(), &theme, Instant::now(), false)).unwrap();
-    let buf = wide.backend().buffer();
-    let text = (0..buf.area.height)
-        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
-        .collect::<Vec<_>>();
-    assert!(text.iter().any(|l| l.contains("[root #") && l.contains("child") && l.contains("──▶")), "{text:?}");
-    assert!(!text.iter().any(|l| l.contains("orphan") && l.contains("──▶")), "{text:?}");
-    v.key(key(KeyCode::Up));
-    assert_eq!(v.selected_key().as_deref(), Some("root"));
-    let mut narrow = Terminal::new(TestBackend::new(40, 15)).unwrap();
-    narrow.draw(|f| v.draw(f, f.area(), &theme, Instant::now(), false)).unwrap();
-    let buf = narrow.backend().buffer();
-    let text = (0..buf.area.height)
-        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
-        .collect::<Vec<_>>();
-    assert!(text.iter().any(|l| l.contains("panel · tree")), "{text:?}");
-    assert!(!text.iter().any(|l| l.contains("──▶")), "{text:?}");
-    v.key(key(KeyCode::Char('v')));
-    assert_eq!(v.selected_key().as_deref(), Some("root"));
 }

@@ -1,39 +1,39 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ●─╮ ╭─●   nexo 0.1.0                                                     │
-│   ╰●╯     deepseek/deepseek-chat · ask                                   │
-│ ●─╯ ╰─●   /tmp/project                                                   │
-│                                                                          │
-│ /model sets up a model · /resume picks a session · ? help                │
-╰──────────────────────────────────────────────────────────────────────────╯
-
-
-
-
-╭ panel ──────────────────────────────────────────────────────────────────────────────────────────────────────────[✗]──╮
-│ no sessions                                                                               all · watching · read-only │
-│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│  Live board of your agent sessions.                                                                                  │
-│  They appear here on their own:                                                                                      │
-│  ▣ this session, after your message                                                                                  │
-│  ▢ other agents whose logs nexo reads                                                                                │
-│                                                                                                                      │
-│  One card each: its state, last step                                                                                 │
-│  and how long it has been quiet.                                                                                     │
-│                                                                                                                      │
-│                                                                                                                      │
-│ ←↑↓→ move · v view · Enter observe · s source · +/- zoom · Esc close                                                 │
+╭ panel ────────────────────────────────────────────────────────────────────────────────────────────────── 13:46 ─[✗]──╮
+│ ● 0 working  ○ 0 idle  ! 0 needs you   ▕▁▁▁▁▁▁▁▁▏ 0/min                                                    read-only │
+├───────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────┤
+│ Nothing running besides this session yet.         │ NEEDS YOU     a wait for permission, an error, a failed lane,    │
+│ Rows appear here on their own:                    │ held mail                                                        │
+│ this session after your message, its sub-agents,  │ THIS SESSION  this session, its sub-agents and its jobs          │
+│ nexo team lanes, other nexo sessions,             │ LANES         nexo team lanes: s starts, x stops, p pauses them  │
+│ and other agents whose logs nexo reads.           │ all                                                              │
+│                                                   │ NEXO SESSIONS nexo running in other terminals                    │
+│                                                   │ other programsone group each, folded to a count                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
+├───────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────┤
+│ Tab pane · / filter · f show · F source · Esc close                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-
-
-
-
-
-
-
-
-
-
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ›   ask anything
  Esc close                                                                                         20261102-100000-ef56

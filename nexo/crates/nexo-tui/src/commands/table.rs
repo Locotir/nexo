@@ -87,7 +87,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("rename", "session", 12, &["title", "name"], "<name>", "give this session a name"),
     spec("msg", "session", 13, &["mail", "tell"], "<session> <text>", "write to another running session"),
     spec("diff", "context and tools", 36, &[], "", "browse staged, unstaged and new files"),
-    spec("panel", "context and tools", 33, &[], "", "live agent sessions: events, todo, mail"),
+    spec("panel", "context and tools", 33, &[], "", "sub-agents, team lanes and sessions: watch and act"),
     spec("cost", "context and tools", 25, &["usage"], "", "window: tokens, cost, calls"),
     spec("sent", "context and tools", 24, &["request"], "", "window: the last request as sent"),
     spec("context", "context and tools", 23, &["ctx"], "[live]", "window: what the next call sends"),
@@ -103,7 +103,7 @@ pub const COMMANDS: &[Spec] = &[
         "coordination notes shared with agents",
     ),
     spec("todo", "context and tools", 35, &["tasks"], "", "the todo list, every item with its state"),
-    spec("team", "context and tools", 34, &["lanes"], "", "the lanes of team.toml: how each stands"),
+    spec("team", "context and tools", 34, &["lanes"], "", "the panel on its team lanes"),
     spec("queue", "session", 16, &["queued"], "", "requests waiting for the turn to end"),
 ];
 

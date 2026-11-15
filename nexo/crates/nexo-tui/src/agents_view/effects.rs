@@ -1,7 +1,8 @@
-//! What moves in `/panel` besides the chips: letters between cards, satellites for sub-agents, the burst of a
-//! passing test run, the squash of a compaction, the flash of an error. An effect is born at the first draw that
-//! sees its cause and is a pure function of the time since; at rest (no motion, a mono theme, nothing live)
-//! nothing asks for a frame and nothing changes between two draws.
+//! What moves in `/panel` besides the glyphs: a letter that flies from the footer to its row, the burst of a
+//! passing test run, the squash of a compaction, the flash of an error, the pulse of a row that starts needing
+//! the person, a lane's round popping its ✓ or ✗, and spend and cost rolling to their new values. An effect is
+//! born at the first draw that sees its cause and is a pure function of the time since; at rest (no motion, a
+//! mono theme, nothing live) nothing asks for a frame and nothing changes between two draws.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -14,30 +15,19 @@ use ratatui::text::Span;
 use ratatui::Frame;
 
 use super::pulse::PulseFx;
-use super::{attention, AgentsView, Layout, CHIP_MS, ENTER_MS, FLIGHT_MS, TRAIL};
-use crate::anim::{ease_out, progress, PULSE_MS};
+use super::{attention, needs_you, AgentsView, CHIP_MS, ENTER_MS, FLIGHT_MS, NEED_MS, POP_MS, TRAIL};
+use crate::anim::{progress, PULSE_MS};
 use crate::motion::{ease_in_out, fade, route, within, Counter};
 use crate::panel_fx as px;
 use crate::render::wrap::width;
 use crate::theme::Theme;
 
-/// A one-shot effect on a session's card, born when its event was first seen.
+/// A one-shot effect on a session's row, born when its event was first seen.
 #[derive(Debug, Clone)]
 pub(super) struct Burst {
     pub key: String,
     pub kind: EvKind,
     pub born: Instant,
-}
-
-/// The motion of one sub-agent's satellite.
-#[derive(Debug, Clone)]
-pub(super) struct SubFx {
-    pub born: Instant,
-    /// It appeared while the view was open: its dot flies from the chip to its slot.
-    pub spawn: bool,
-    pub state: State,
-    pub changed: Option<Instant>,
-    pub failed: bool,
 }
 
 /// A mail as last seen, and when it reached that stage.
@@ -74,13 +64,15 @@ pub(super) struct Fleet {
     pub primed: bool,
     pub last_ev: HashMap<String, Option<(Secs, EvKind, u32)>>,
     pub bursts: Vec<Burst>,
-    pub subs: HashMap<String, SubFx>,
     pub mails: HashMap<String, MailInfo>,
     pub wishes: Vec<Wish>,
     pub letters: Vec<Letter>,
     pub todo: HashMap<String, Counter>,
     pub todo_shown: HashMap<String, f64>,
     pub todo_moving: bool,
+    /// Spend and cost as they roll to new values, by row key.
+    pub money: HashMap<String, Counter>,
+    pub money_shown: HashMap<String, f64>,
     pub pulse: PulseFx,
     /// The last draw had the motion off (animations disabled, or a mono theme): nothing asks for a frame.
     pub off: bool,
@@ -92,24 +84,17 @@ impl Fleet {
         self.primed = false;
         self.last_ev.clear();
         self.bursts.clear();
-        self.subs.clear();
         self.wishes.clear();
         self.letters.clear();
         self.todo.clear();
         self.todo_shown.clear();
         self.todo_moving = false;
+        self.money.clear();
+        self.money_shown.clear();
         self.pulse = PulseFx::default();
     }
 }
 
-impl SubFx {
-    fn animating(&self, now: Instant) -> bool {
-        (self.spawn && within(Some(self.born), now, px::SAT_SPAWN_MS))
-            || self.changed.is_some_and(|t| {
-                within(Some(t), now, if self.failed { px::SAT_FAIL_MS } else { px::SAT_DONE_MS + px::SAT_FADE_MS })
-            })
-    }
-}
 
 fn is_bad(s: Stage) -> bool {
     matches!(s, Stage::Refused | Stage::Expired | Stage::Failed)
@@ -178,11 +163,6 @@ impl AgentsView {
             && row.ribbon.last().is_some_and(|e| px::live_frame(e.kind, 0, false).is_some() && self.clock - e.at <= 120)
     }
 
-    /// Milliseconds the live slot has been spinning, for a session whose slot spins.
-    pub(super) fn live_phase(&self, row: &AgentRow, now: Instant, fx: bool) -> px::LivePhase {
-        (fx && self.busy(row)).then(|| ms_since(self.opened, now))
-    }
-
     /// Milliseconds since the view first drew (the phase of everything that breathes).
     pub(super) fn since_open(&self, now: Instant) -> u64 {
         ms_since(self.opened, now)
@@ -193,37 +173,41 @@ impl AgentsView {
         row.subs.iter().filter(|(_, s)| *s != State::Done).count()
     }
 
-    /// Whether something moves on its own (a breathing chip, an entering card, a chip changing colour, the
-    /// selection gliding, a pulse, a letter, a satellite, a burst, a live slot): the loop keeps drawing. At rest
-    /// it is false, so nothing repaints.
+    /// Whether something moves on its own (a breathing glyph, a row sliding in, a glyph changing colour, a
+    /// pulse, a letter, a burst, a pop, a figure rolling): the loop keeps drawing. At rest it is false, so
+    /// nothing repaints.
     pub fn animating(&self, now: Instant) -> bool {
         // a static page (the policy) and a draw with the motion off move nothing, whatever the sessions do
         if self.still || self.live.off || self.policy_page {
             return false;
         }
         let l = &self.live;
-        self.rows
-            .iter()
-            .any(|r| attention(r.state) || self.busy(r) || r.retry_secs.is_some() || Self::running_subs(r) > 0)
-            || self.glide.moving(now)
-            || self
-                .fx
-                .values()
-                .any(|x| within(Some(x.born), now, x.delay_ms + ENTER_MS) || within(x.changed, now, CHIP_MS))
+        self.rows.iter().any(|r| {
+            attention(r.state)
+                || r.state == State::Working
+                || r.retry_secs.is_some()
+                || Self::running_subs(r) > 0
+                || r.lane.as_ref().is_some_and(|l| l.state == "running")
+        }) || self.fx.values().any(|x| {
+            within(Some(x.born), now, x.delay_ms + ENTER_MS)
+                || within(x.changed, now, CHIP_MS)
+                || within(x.needs, now, NEED_MS)
+                || x.round.is_some_and(|(t, _)| within(Some(t), now, POP_MS))
+        }) || within(self.need_blink, now, NEED_MS)
             || self.fly_key.is_some()
             || self.flight.as_ref().is_some_and(|(_, t)| within(Some(*t), now, FLIGHT_MS))
             || self.pulse_at.as_ref().is_some_and(|(_, t)| now < *t || within(Some(*t), now, PULSE_MS))
             || !l.wishes.is_empty()
             || l.letters.iter().any(|x| within(Some(x.born), now, x.delay_ms + px::LETTER_MS.max(px::EDGE_MS)))
             || l.bursts.iter().any(|b| burst_ms(b.kind).is_some_and(|ms| within(Some(b.born), now, ms)))
-            || l.subs.values().any(|s| s.animating(now))
             || l.todo_moving
             || l.pulse.animating(now)
     }
 
-    /// Learns what changed since the last draw: new sessions (their card enters), new states (the chip
-    /// cross-fades), a nudge just sent (its card pulses), new events and mails (their effects start). Without
-    /// motion nothing is kept.
+    /// Learns what changed since the last draw: new rows (they slide in), new states (the glyph cross-fades),
+    /// a row that starts needing the person (it pulses, NEEDS YOU blinks), a lane's round that ended (it pops),
+    /// a nudge just sent (its row pulses), new events and mails (their effects start). Without motion nothing
+    /// is kept.
     pub(super) fn note(&mut self, now: Instant, fx: bool) {
         if self.opened.is_none() {
             self.opened = Some(now);
@@ -234,12 +218,17 @@ impl AgentsView {
             self.fly_key = None;
             self.flight = None;
             self.pulse_at = None;
+            self.need_blink = None;
             self.live.calm();
             return;
         }
         let first = self.fx.is_empty();
+        let primed = self.live.primed;
+        let mut blink = false;
         self.fx.retain(|k, _| self.rows.iter().any(|r| &r.key == k));
         for (i, r) in self.rows.iter().enumerate() {
+            let needing = needs_you(r);
+            let round = r.lane.as_ref().and_then(|l| l.last_round.as_ref()).map(|(at, word, _)| (*at, word == "ok"));
             match self.fx.get_mut(&r.key) {
                 Some(x) => {
                     if super::chip(x.state).1 != super::chip(r.state).1 {
@@ -247,25 +236,51 @@ impl AgentsView {
                         x.changed = Some(now);
                     }
                     x.state = r.state;
+                    if needing && !x.needing {
+                        x.needs = Some(now);
+                        blink = true;
+                    }
+                    x.needing = needing;
+                    if let Some((at, ok)) = round {
+                        if x.last_round != Some(at) {
+                            x.round = Some((now, ok));
+                        }
+                    }
+                    x.last_round = round.map(|(at, _)| at);
                 }
                 None => {
                     let delay_ms = if first { (i as u64 * super::STAGGER_MS).min(super::STAGGER_MAX) } else { 0 };
+                    let fresh_need = primed && needing;
+                    blink |= fresh_need;
                     self.fx.insert(
                         r.key.clone(),
-                        super::RowFx { born: now, delay_ms, state: r.state, prev: r.state, changed: None },
+                        super::RowFx {
+                            born: now,
+                            delay_ms,
+                            state: r.state,
+                            prev: r.state,
+                            changed: None,
+                            needs: fresh_need.then_some(now),
+                            round: None,
+                            needing,
+                            last_round: round.map(|(at, _)| at),
+                        },
                     );
                 }
             }
         }
+        if blink {
+            self.need_blink = Some(now);
+        }
         if let Some(k) = self.fly_key.take() {
-            // the card pulses when the letter lands
+            // the row pulses when the letter lands
             self.pulse_at = Some((k.clone(), now + std::time::Duration::from_millis(FLIGHT_MS)));
             self.flight = Some((k, now));
         }
         self.live_note(now);
     }
 
-    /// New events, satellites, letters, the todo bars and the pulse row, as of this draw.
+    /// New events, letters, the rolling figures and the pulse row, as of this draw.
     fn live_note(&mut self, now: Instant) {
         let primed = self.live.primed;
         let clock = self.clock;
@@ -284,33 +299,6 @@ impl AgentsView {
                 }
             }
         }
-        // satellites
-        let mut alive: Vec<String> = Vec::new();
-        for r in &self.rows {
-            for (sk, st) in &r.subs {
-                let id = format!("{}/{}", r.key, sk);
-                let failed = match self.rows.iter().find(|x| &x.key == sk) {
-                    Some(s) => s.state == State::Looping || s.ribbon.last().is_some_and(|e| e.kind == EvKind::Error),
-                    None => *st == State::Looping,
-                };
-                match self.live.subs.get_mut(&id) {
-                    Some(s) => {
-                        if std::mem::discriminant(&s.state) != std::mem::discriminant(st) {
-                            s.changed = Some(now);
-                            s.state = *st;
-                        }
-                        s.failed = failed;
-                    }
-                    None => {
-                        self.live
-                            .subs
-                            .insert(id.clone(), SubFx { born: now, spawn: primed, state: *st, changed: None, failed });
-                    }
-                }
-                alive.push(id);
-            }
-        }
-        self.live.subs.retain(|id, _| alive.contains(id));
         // letters that were wished for since the last draw leave now, three at a time
         let wishes = std::mem::take(&mut self.live.wishes);
         for (i, w) in wishes.into_iter().take(px::MAX_LETTERS).enumerate() {
@@ -324,9 +312,10 @@ impl AgentsView {
                 bounce: w.bounce,
             });
         }
-        // todo bars roll to their fill
+        // todo bars, spend and cost roll to their new values
         let mut moving = false;
         let mut have: Vec<String> = Vec::new();
+        let mut paid: Vec<String> = Vec::new();
         for r in &self.rows {
             if let Some((d, t)) = r.todo.filter(|(_, t)| *t > 0) {
                 let c = self.live.todo.entry(r.key.clone()).or_default();
@@ -335,12 +324,31 @@ impl AgentsView {
                 moving |= mv;
                 have.push(r.key.clone());
             }
+            let money = r.lane.as_ref().map(|l| l.spend_today).or(r.cost_usd);
+            if let Some(m) = money {
+                let c = self.live.money.entry(r.key.clone()).or_default();
+                let (v, mv) = c.sample(m, now, primed);
+                self.live.money_shown.insert(r.key.clone(), v);
+                moving |= mv;
+                paid.push(r.key.clone());
+            }
         }
         self.live.todo.retain(|k, _| have.contains(k));
         self.live.todo_shown.retain(|k, _| have.contains(k));
+        self.live.money.retain(|k, _| paid.contains(k));
+        self.live.money_shown.retain(|k, _| paid.contains(k));
         self.live.todo_moving = moving;
         self.pulse_note(now);
         self.live.primed = true;
+    }
+
+    /// A row's spend or cost as shown now: rolling towards `target`, or `target` with the motion off.
+    pub(super) fn rolled(&self, key: &str, target: f64, fx: bool) -> f64 {
+        if fx {
+            self.live.money_shown.get(key).copied().unwrap_or(target)
+        } else {
+            target
+        }
     }
 
     // ---------------------------------------------------------------- mail
@@ -413,17 +421,13 @@ impl AgentsView {
         self.fly_key = Some(key.to_string());
     }
 
-    /// Milliseconds since a letter for this session landed on its card, while the landing lasts.
+    /// Milliseconds since a letter for this session landed on its row, while the landing lasts.
     pub(super) fn landing_ms(&self, key: &str, now: Instant) -> Option<u64> {
-        let flight = match self.drawn {
-            Layout::Cards { .. } => px::LIFT_MS + px::FLY_MS,
-            _ => px::HOP_MS,
-        };
         self.live
             .letters
             .iter()
             .filter(|l| l.to == key && !l.bounce && now >= l.born + std::time::Duration::from_millis(l.delay_ms))
-            .filter_map(|l| (ms_since(Some(l.born), now).saturating_sub(l.delay_ms)).checked_sub(flight))
+            .filter_map(|l| (ms_since(Some(l.born), now).saturating_sub(l.delay_ms)).checked_sub(px::HOP_MS))
             .find(|ms| *ms <= px::LAND_MS)
     }
 
@@ -492,9 +496,9 @@ impl AgentsView {
         Some(Span::styled(format!("{mail} {peer} {mark} {}s", age), theme.style(color)))
     }
 
-    // ---------------------------------------------------------------- card effects
+    // ---------------------------------------------------------------- row effects
 
-    /// How squashed the card of `key` is (a compaction just happened).
+    /// How squashed the row of `key` is (a compaction just happened).
     pub(super) fn squash_of(&self, key: &str, now: Instant) -> f32 {
         self.live
             .bursts
@@ -504,161 +508,97 @@ impl AgentsView {
             .fold(0.0, f32::max)
     }
 
-    /// The card border with the effects on it: the lock's breath, an error's flash, a commit, a letter lifting
-    /// off or landing.
-    pub(super) fn border_fx(&self, row: &AgentRow, border: Color, theme: &Theme, now: Instant, fx: bool) -> Color {
-        if !fx {
-            return border;
-        }
-        let mut c = border;
-        if row.state == State::WaitingPermission {
-            let breath = px::breath(ms_since(self.opened, now), px::LOCK_BREATH_MS);
-            c = fade(theme, c, theme.warn2, 0.7 * breath);
-        }
-        for b in self.live.bursts.iter().filter(|b| b.key == row.key) {
+    /// The wash a row's line takes now and how strong (0..1): an error's flash, a commit, a passing or failing
+    /// run, a letter lifting off or landing, the pulse of a row that starts needing the person, a lane's round
+    /// popping. The strongest wins; none at rest.
+    pub(super) fn row_tint(&self, key: &str, theme: &Theme, now: Instant) -> Option<(Color, f32)> {
+        let mut best: Option<(Color, f32)> = None;
+        let mut take = |c: Color, s: f32| {
+            if s > 0.0 && best.is_none_or(|(_, b)| s > b) {
+                best = Some((c, s));
+            }
+        };
+        for b in self.live.bursts.iter().filter(|b| b.key == key) {
             let ms = ms_since(Some(b.born), now);
             match b.kind {
-                EvKind::Error => c = fade(theme, c, theme.error, px::hump_ms(ms, px::ERROR_MS)),
-                EvKind::GitCommit => c = fade(theme, c, theme.accent, px::hump_ms(ms, px::COMMIT_MS)),
+                EvKind::Error => take(theme.error, px::hump_ms(ms, px::ERROR_MS)),
+                EvKind::TestsFail => take(theme.error, 0.7 * px::hump_ms(ms, px::SHAKE_MS)),
+                EvKind::TestsPass => take(theme.success, 0.6 * px::hump_ms(ms, px::BURST_MS)),
+                EvKind::GitCommit => take(theme.accent, 0.6 * px::hump_ms(ms, px::COMMIT_MS)),
                 _ => {}
             }
         }
-        if let Some(ms) = self.landing_ms(&row.key, now) {
-            c = fade(theme, c, theme.accent2, px::hump_ms(ms, px::LAND_MS));
+        if let Some(ms) = self.landing_ms(key, now) {
+            take(theme.accent2, 0.7 * px::hump_ms(ms, px::LAND_MS));
         }
-        if let Some(ms) = self.lifting_ms(&row.key, now) {
-            c = fade(theme, c, theme.accent2, px::hump_ms(ms, px::LIFT_MS));
+        if let Some(ms) = self.lifting_ms(key, now) {
+            take(theme.accent2, 0.6 * px::hump_ms(ms, px::LIFT_MS));
         }
-        c
+        if let Some((k, t)) = &self.pulse_at {
+            if k == key && now >= *t {
+                take(theme.accent2, 0.7 * px::hump_ms(ms_since(Some(*t), now), PULSE_MS as u64));
+            }
+        }
+        if let Some(x) = self.fx.get(key) {
+            if let Some(t) = x.needs {
+                take(theme.warn2, 0.8 * px::hump_ms(ms_since(Some(t), now), NEED_MS));
+            }
+            if let Some((t, ok)) = x.round {
+                take(if ok { theme.success } else { theme.error }, 0.6 * px::hump_ms(ms_since(Some(t), now), POP_MS));
+            }
+        }
+        best
     }
 
-    /// The glow a block or a line takes while a letter lands on it.
-    pub(super) fn land_glow(&self, key: &str, now: Instant) -> f32 {
-        self.landing_ms(key, now).map_or(0.0, |ms| 0.6 * px::hump_ms(ms, 300))
-    }
-
-    /// The satellites of a card, drawn on its bottom border from the right corner: one dot per running
-    /// sub-agent (`✓` for a moment when it is done, `✗` for five seconds when it failed), `+N` past four.
-    pub(super) fn draw_sats(&self, f: &mut Frame, r: Rect, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) {
+    /// The effects drawn over a row's line after its text: the particles of a passing run around the glyph
+    /// (on blank cells of the tree only), the shake of a failing one, the squash of a compaction. `at` is the
+    /// glyph's cell and `end` the line's last column; `tree` bounds the particles.
+    pub(super) fn draw_row_fx(&self, f: &mut Frame, at: (u16, u16), end: u16, tree: Rect, key: &str, theme: &Theme, now: Instant) {
         let a = self.ascii;
-        let y = r.y + r.height.saturating_sub(1);
-        let dot = if a { "o" } else { "●" };
-        let mut slot: u16 = 0;
-        let mut extra = 0usize;
-        for (sk, st) in &row.subs {
-            let s = self.live.subs.get(&format!("{}/{}", row.key, sk));
-            let (sym, color, bold): (&str, Color, bool) = if *st != State::Done {
-                let breath = if fx { px::breath(ms_since(self.opened, now), px::SAT_BREATH_MS) } else { 0.0 };
-                (dot, fade(theme, theme.success, theme.dim2, breath), false)
-            } else {
-                match s.and_then(|s| s.changed.map(|t| (t, s.failed))) {
-                    Some((t, true)) if fx && within(Some(t), now, px::SAT_FAIL_MS) => {
-                        (if a { "x" } else { "✗" }, theme.error, true)
-                    }
-                    Some((t, false)) if fx && within(Some(t), now, px::SAT_DONE_MS + px::SAT_FADE_MS) => {
-                        let ms = ms_since(Some(t), now);
-                        let gone = ms.saturating_sub(px::SAT_DONE_MS) as f32 / px::SAT_FADE_MS as f32;
-                        (if a { "+" } else { "✓" }, fade(theme, theme.success, theme.border, gone), false)
-                    }
-                    _ => continue,
-                }
-            };
-            if slot >= 4 {
-                extra += 1;
-                continue;
-            }
-            let x = px::satellite_x(r, slot);
-            slot += 1;
-            if x <= r.x + 1 {
-                break;
-            }
-            // a new sub-agent's dot flies from the chip to its slot
-            let at = match s {
-                Some(s) if fx && s.spawn && within(Some(s.born), now, px::SAT_SPAWN_MS) => {
-                    let t = ease_out(progress(Some(s.born), now, px::SAT_SPAWN_MS));
-                    let (cx, cy) = (r.x + r.width.saturating_sub(4), r.y + 1);
-                    let lerp = |p: u16, q: u16| (p as f64 + (q as f64 - p as f64) * t).round() as u16;
-                    (lerp(cx, x), lerp(cy, y))
-                }
-                _ => (x, y),
-            };
-            put(f, at, sym, color, bold);
-        }
-        if extra > 0 {
-            let x = px::satellite_x(r, 4);
-            if x > r.x + 2 {
-                let text = format!("+{extra}");
-                for (k, ch) in text.chars().enumerate() {
-                    put(f, (x + k as u16, y), &ch.to_string(), theme.success, false);
-                }
-            }
-        }
-    }
-
-    /// The effects that sit on the ribbon line of a card: the burst of a passing run, the shake of a failing
-    /// one, a commit's three frames, a push's arrow. `x0` is the ribbon's first column, `y` its row.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn draw_ribbon_fx(
-        &self,
-        f: &mut Frame,
-        card: Rect,
-        x0: u16,
-        y: u16,
-        marks: &[(usize, EvKind, Secs)],
-        row: &AgentRow,
-        theme: &Theme,
-        now: Instant,
-    ) {
-        let a = self.ascii;
-        let inside = |x: i32, yy: i32| {
-            x > card.x as i32
-                && x < (card.x + card.width) as i32 - 1
-                && yy > card.y as i32
-                && yy < (card.y + card.height) as i32 - 1
+        let inside = |x: i32, y: i32| {
+            x >= tree.x as i32 && x < (tree.x + tree.width) as i32 && y >= tree.y as i32 && y < (tree.y + tree.height) as i32
         };
-        for b in self.live.bursts.iter().filter(|b| b.key == row.key) {
+        for b in self.live.bursts.iter().filter(|b| b.key == key) {
             let ms = ms_since(Some(b.born), now);
-            let Some((col, _, _)) = marks.iter().rev().find(|m| m.1 == b.kind) else { continue };
-            let (cx, cy) = (x0 as i32 + *col as i32, y as i32);
+            let (cx, cy) = (at.0 as i32, at.1 as i32);
             match b.kind {
                 EvKind::TestsPass => {
-                    let fadeout = fade(theme, theme.success, theme.dim2, ms as f32 / px::BURST_MS as f32);
+                    let c = fade(theme, theme.success, theme.dim2, ms as f32 / px::BURST_MS as f32);
                     for (dx, dy) in px::particles(ms) {
-                        let (x, yy) = (cx + dx, cy + dy);
-                        if !inside(x, yy) {
+                        let (x, y) = (cx + dx, cy + dy);
+                        if !inside(x, y) {
                             continue;
                         }
-                        let blank = f.buffer_mut().cell((x as u16, yy as u16)).is_some_and(|c| c.symbol() == " ");
-                        if blank {
-                            put(f, (x as u16, yy as u16), if a { "." } else { "∙" }, fadeout, false);
+                        if f.buffer_mut().cell((x as u16, y as u16)).is_some_and(|c| c.symbol() == " ") {
+                            put(f, (x as u16, y as u16), if a { "." } else { "∙" }, c, false);
                         }
                     }
                 }
                 EvKind::TestsFail => {
                     let dx = px::shake(ms);
-                    if dx != 0 && inside(cx, cy) && inside(cx + dx, cy) {
-                        put(f, (cx as u16, cy as u16), " ", theme.error, false);
-                        put(f, ((cx + dx) as u16, cy as u16), px::glyph(EvKind::TestsFail, a), theme.error, true);
-                    }
-                }
-                EvKind::GitCommit if ms < px::COMMIT_FRAME_MS * 3 && inside(cx, cy) => {
-                    put(f, (cx as u16, cy as u16), px::commit_frame(ms, a), theme.accent, false);
-                }
-                EvKind::GitPush if ms < px::PUSH_MS => {
-                    // the arrow comes up from the border and settles in its cell
-                    let p = px::push_p(ms);
-                    let (x, yy) = if p < 0.34 {
-                        (cx + 1, cy + 1)
-                    } else if p < 0.67 {
-                        (cx + 1, cy)
-                    } else {
-                        (cx, cy)
-                    };
-                    if inside(cx, cy) && inside(x, cy) && yy < (card.y + card.height) as i32 {
-                        put(f, (x as u16, yy as u16), px::glyph(EvKind::GitPush, a), theme.accent, false);
+                    if dx != 0 && inside(cx + dx, cy) {
+                        let sym = f.buffer_mut().cell((at.0, at.1)).map(|c| c.symbol().to_string());
+                        if let Some(sym) = sym {
+                            put(f, at, " ", theme.error, false);
+                            put(f, ((cx + dx) as u16, at.1), &sym, theme.error, true);
+                        }
                     }
                 }
                 _ => {}
+            }
+        }
+        // a compaction presses the row: its glyph flattens and its text sinks towards the dim colour
+        let sq = self.squash_of(key, now);
+        if sq > 0.0 {
+            put(f, at, if a { "=" } else { "▬" }, theme.accent2, true);
+            let buf = f.buffer_mut();
+            for x in at.0 + 1..end {
+                if let Some(c) = buf.cell_mut((x, at.1)) {
+                    let fg = c.fg;
+                    if fg != Color::Reset {
+                        c.set_fg(fade(theme, fg, theme.dim2, sq));
+                    }
+                }
             }
         }
     }
@@ -676,35 +616,27 @@ impl AgentsView {
         }
     }
 
-    /// The letters of mail between cards, over the body. A card out of sight is flown towards: a `▲✉` or
-    /// `▼✉` stays at the body's edge for a moment.
-    pub(super) fn draw_flights(
-        &self,
-        f: &mut Frame,
-        rule: Rect,
-        body: Rect,
-        shown: &[AgentRow],
-        theme: &Theme,
-        now: Instant,
-    ) {
+    /// The letters of mail between rows: each hops in the padding column left of the tree, from the sender's
+    /// row (or the footer rule) to the receiver's. A row out of sight is flown towards: a `▲✉` or `▼✉` stays at
+    /// the tree's edge for a moment. A row folded away sends and receives on the line that holds it (its parent
+    /// or its group's header). A mail that fails turns back half way.
+    pub(super) fn draw_flights(&self, f: &mut Frame, rule: Rect, body: Rect, theme: &Theme, now: Instant) {
         let rect_of = |key: &str| {
-            let i = shown.iter().position(|r| r.key == key)?;
-            self.cards.iter().find(|(c, _)| *c == i).map(|(_, r)| (i, *r))
+            let i = self.landing(key)?;
+            self.lines.iter().find(|(c, _)| *c == i).map(|(_, r)| (i, *r))
         };
-        let ground = theme.modal_bg;
+        let a = self.ascii;
+        let glyph = self.letter_glyph();
         for l in &self.live.letters {
             if now < l.born + std::time::Duration::from_millis(l.delay_ms) {
                 continue;
             }
             let ms = ms_since(Some(l.born), now).saturating_sub(l.delay_ms);
-            let a = self.ascii;
-            let glyph = self.letter_glyph();
-            let Some(ti) = shown.iter().position(|r| r.key == l.to) else { continue };
+            let Some(ti) = self.landing(&l.to) else { continue };
             let from = l.from.as_deref().and_then(rect_of);
             let Some((_, to_r)) = rect_of(&l.to) else {
-                // out of sight: above or below the cards that are drawn
-                if ms < px::EDGE_MS && !self.cards.is_empty() && body.width >= 4 && body.height > 0 {
-                    let above = self.cards.iter().all(|(c, _)| *c > ti);
+                if ms < px::EDGE_MS && !self.lines.is_empty() && body.width >= 4 && body.height > 0 {
+                    let above = self.lines.iter().all(|(c, _)| *c > ti);
                     let y = if above { body.y } else { body.y + body.height.saturating_sub(1) };
                     let x = body.x + body.width.saturating_sub(3);
                     let arrow = match (above, a) {
@@ -718,113 +650,54 @@ impl AgentsView {
                 }
                 continue;
             };
-            let lines = matches!(self.drawn, Layout::List);
-            let blocks = matches!(self.drawn, Layout::Blocks { .. });
-            if lines || blocks {
-                if ms >= px::HOP_MS {
-                    continue;
-                }
-                let t = ease_in_out(ms as f64 / px::HOP_MS as f64) as f32;
-                let t = if l.bounce { px::bounce_p(ms * px::BOUNCE_MS / px::HOP_MS) * 2.0 } else { t };
-                let head = if lines {
-                    let x = body.x.saturating_sub(1);
-                    let y0 = from.map_or(rule.y, |(_, r)| r.y);
-                    let y = (y0 as f32 + (to_r.y as f32 - y0 as f32) * t).round() as u16;
-                    (x, y)
-                } else {
-                    let centre = |r: Rect| (r.x + r.width / 2, r.y + r.height / 2);
-                    let c0 = from.map_or((body.x, body.y), |(_, r)| centre(r));
-                    px::hop(c0, centre(to_r), t, 5)
-                };
-                put(f, head, glyph, theme.accent2, true);
+            if ms >= px::HOP_MS {
                 continue;
             }
-            // cards: a curve from the top border of the sender to the top border of the receiver
-            let to = (to_r.x + 3, to_r.y);
-            let start = match from {
-                Some((_, r)) => (r.x + r.width.saturating_sub(4), r.y),
-                None => (rule.x, rule.y),
+            let t = ease_in_out(ms as f64 / px::HOP_MS as f64) as f32;
+            let t = if l.bounce { px::bounce_p(ms * px::BOUNCE_MS / px::HOP_MS) * 2.0 } else { t };
+            let x = body.x.saturating_sub(1);
+            let y0 = from.map_or(rule.y, |(_, r)| r.y);
+            let y = (y0 as f32 + (to_r.y as f32 - y0 as f32) * t.min(1.0)).round() as u16;
+            let (g, c) = if l.bounce && ms * 2 >= px::HOP_MS {
+                (px::glyph(EvKind::Error, a), theme.error)
+            } else {
+                (glyph, theme.accent2)
             };
-            let path = px::Path::new(start, to);
-            if l.bounce {
-                if ms >= px::BOUNCE_MS {
-                    continue;
-                }
-                let head = path.at(px::bounce_p(ms), body);
-                let (g, c) = if ms * 2 >= px::BOUNCE_MS {
-                    (px::glyph(EvKind::Error, a), theme.error)
-                } else {
-                    (glyph, theme.accent2)
-                };
-                put(f, head, g, c, true);
-                continue;
-            }
-            if ms >= px::LETTER_MS {
-                continue;
-            }
-            for (k, cell) in px::trail(ms, &path, body).into_iter().enumerate() {
-                let sym = px::trail_glyph(k, a);
-                put(f, cell, sym, px::trail_color(theme, ground, k + 1), false);
-            }
-            let (head, g, c) = match px::leg(ms) {
-                px::Leg::Land(p) => {
-                    let done = p > 0.3;
-                    (
-                        path.at(1.0, body),
-                        if done { px::glyph(EvKind::MsgRead, a) } else { glyph },
-                        if done { theme.success } else { theme.accent2 },
-                    )
-                }
-                _ => (path.at(px::path_p(ms), body), glyph, theme.accent2),
-            };
-            put(f, head, g, c, true);
-            if l.count > 1 {
-                let label = format!("x{}", l.count);
-                for (k, ch) in label.chars().enumerate() {
-                    // the label stays inside the body, whatever the width left of the right edge
-                    let x = head.0 + 1 + k as u16;
-                    if x >= body.x + body.width {
+            put(f, (x, y), g, c, true);
+            if l.count > 1 && x + 1 < body.x + body.width {
+                for (k, ch) in format!("x{}", l.count).chars().enumerate() {
+                    let cx = x + 1 + k as u16;
+                    if cx >= body.x + body.width {
                         break;
                     }
-                    put(f, (x, head.1), &ch.to_string(), theme.accent2, false);
+                    put(f, (cx, y), &ch.to_string(), theme.accent2, false);
                 }
             }
         }
     }
 
-    /// The first letter, kept as it was: it leaves the left end of the rule under the header, runs along the
-    /// rule to the column of the card it is for, then down that column (the card borders and the gaps, never
-    /// the text) to the middle of the card's left edge, leaving a streak that fades behind it. It is gone on
-    /// landing, and the card pulses.
-    pub(super) fn draw_letter(
-        &self,
-        f: &mut Frame,
-        rule: Rect,
-        body: Rect,
-        shown: &[AgentRow],
-        theme: &Theme,
-        now: Instant,
-    ) {
+    /// The letter of a message the person sent: it leaves the footer rule in the padding column left of the
+    /// tree and climbs to the row it is for, leaving a streak that fades behind it. It is gone on landing, and
+    /// the row pulses. A row out of sight is flown to the edge of the tree where the scroll is; a row folded
+    /// away, to the line that holds it (its parent or its group's header).
+    pub(super) fn draw_letter(&self, f: &mut Frame, rule: Rect, body: Rect, theme: &Theme, now: Instant) {
         let Some((key, at)) = &self.flight else { return };
         if !within(Some(*at), now, FLIGHT_MS) {
             return;
         }
-        let Some(i) = shown.iter().position(|r| &r.key == key) else { return };
-        // a card out of sight is flown towards: to the foot of the body (or its head) where the scroll is
-        // lines carry their marks at the left edge, so the letter runs in the padding column just outside them
-        let lines = self.cards.first().is_some_and(|(_, r)| r.height == 1);
-        let lane = |x: u16| if lines { x.saturating_sub(1) } else { x };
-        let to = match self.cards.iter().find(|(c, _)| *c == i) {
-            Some((_, r)) => (lane(r.x), r.y + r.height / 2),
-            None if self.cards.iter().all(|(c, _)| *c < i) => (lane(body.x), body.y + body.height.saturating_sub(1)),
-            None => (lane(body.x), body.y),
+        let Some(target) = self.landing(key) else { return };
+        let x = body.x.saturating_sub(1);
+        let to = match self.lines.iter().find(|(i, _)| *i == target) {
+            Some((_, r)) => (x, r.y),
+            None if self.lines.iter().all(|(i, _)| *i < target) => (x, body.y + body.height.saturating_sub(1)),
+            None => (x, body.y),
         };
         let t = ease_in_out(progress(Some(*at), now, FLIGHT_MS)) as f32;
-        let (head, behind) = route((lane(rule.x), rule.y), to, t, TRAIL);
+        let (head, behind) = route((x, rule.y), to, t, TRAIL);
         let ground = theme.modal_bg;
-        for (k, ((x, y), across)) in behind.iter().enumerate() {
+        for (k, ((cx, cy), across)) in behind.iter().enumerate() {
             let strength = 1.0 - (k as f32 + 1.0) / (TRAIL as f32 + 1.0);
-            put(f, (*x, *y), if *across { "━" } else { "┃" }, fade(theme, ground, theme.accent2, strength), false);
+            put(f, (*cx, *cy), if *across { "━" } else { "┃" }, fade(theme, ground, theme.accent2, strength), false);
         }
         put(f, head, self.letter_glyph(), theme.accent2, true);
     }

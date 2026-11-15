@@ -166,9 +166,14 @@ fn view(a: &mut App) -> &mut AgentsView {
 
 /// A live app with the fleet open and drawn twice (the first look learns what is already there).
 fn live(w: u16, h: u16, theme: &str) -> (App, Instant) {
+    live_with(fleet(), w, h, theme)
+}
+
+/// A live app with these rows open and drawn twice.
+fn live_with(rows: Vec<AgentRow>, w: u16, h: u16, theme: &str) -> (App, Instant) {
     let mut a = app(true, theme);
     let t0 = Instant::now();
-    a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(fleet(), NOW, false))));
+    a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows, NOW, false))));
     for ms in [0, 3000] {
         a.fx.clock = Some(at(t0, ms));
         shot(&mut a, w, h);
@@ -180,6 +185,29 @@ fn still(w: u16, h: u16, theme: &str) -> Vec<String> {
     let mut a = app(false, theme);
     a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(fleet(), NOW, true))));
     shot(&mut a, w, h)
+}
+
+/// The still fleet with the cursor on the row of `key`.
+fn still_on(key: &str, w: u16, h: u16) -> Vec<String> {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app(false, "dark");
+    a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(fleet(), NOW, true))));
+    shot(&mut a, w, h);
+    for _ in 0..20 {
+        if view(&mut a).selected_key().as_deref() == Some(key) {
+            break;
+        }
+        view(&mut a).key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(view(&mut a).selected_key().as_deref(), Some(key));
+    shot(&mut a, w, h)
+}
+
+/// The whole picture, colours included (a wash changes colours, not text).
+fn frame(a: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    draw_frame(&mut t, a).unwrap();
+    t.backend().buffer().clone()
 }
 
 fn golden(name: &str, w: u16, h: u16, rows: &[String], wrong: &mut Vec<String>) {
@@ -234,8 +262,8 @@ fn every_line_of_the_busy_fleet_keeps_its_borders_aligned_at_every_size() {
 }
 
 #[test]
-fn the_ribbon_shows_the_last_twelve_events_as_glyphs_and_the_card_its_todo_and_tokens() {
-    let rows = still(200, 60, "dark");
+fn the_pane_of_a_session_shows_its_events_as_glyphs_its_todo_and_its_tokens() {
+    let rows = still_on("n1", 200, 60);
     let text = panel_of(&rows);
     for g in ["◦", "◎", "✎", "❯", "✘", "✔", "◉", "▤"] {
         assert!(text.contains(g), "the ribbon lacks {g}\n{text}");
@@ -247,22 +275,17 @@ fn the_ribbon_shows_the_last_twelve_events_as_glyphs_and_the_card_its_todo_and_t
 #[test]
 fn the_pulse_row_adds_up_the_fleet_and_drops_figures_before_the_count_of_who_needs_you() {
     let wide = panel_of(&still(200, 60, "dark"));
-    for s in ["2 live", "/min", "✔13", "$1.67", "! 1 need you"] {
+    for s in ["2 working", "/min", "✔13", "$1.67", "! 2 needs you"] {
         assert!(wide.contains(s), "no {s:?} in the pulse row\n{wide}");
     }
     let mut last = usize::MAX;
-    for w in [200u16, 120, 100, 80] {
-        let line = still(w, 40, "dark").into_iter().find(|r| r.contains("live ▕")).unwrap_or_default();
-        let figures = ["$", "commit", "✔", "✉", "/min", "live"].iter().filter(|f| line.contains(**f)).count();
+    for w in [200u16, 120, 100, 80, 40] {
+        let line = still(w, 40, "dark").into_iter().find(|r| r.contains("needs you")).unwrap_or_default();
+        assert!(!line.is_empty(), "{w}: the count of who needs you is never dropped");
+        let figures = ["$", "commit", "✔", "✉", "/min", "working"].iter().filter(|f| line.contains(**f)).count();
         assert!(figures <= last, "{w}: a figure came back as the row narrowed\n{line}");
         last = figures;
-        if !line.is_empty() {
-            assert!(line.contains("need you"), "{w}: the count of who needs you is never dropped\n{line}");
-        }
     }
-    // no room for the row at all: the figures fold into the header
-    let small = still(80, 21, "dark").join("\n");
-    assert!(!small.contains("live ▕"), "no pulse row in 21 rows\n{small}");
 }
 
 #[test]
@@ -355,28 +378,40 @@ fn ascii_mode_uses_only_plain_glyphs_for_the_ribbon_the_sparkline_and_the_pulse(
 #[test]
 fn a_new_test_run_a_compaction_and_an_error_start_a_one_shot_that_ends_by_itself() {
     let (w, h) = (120, 40);
+    // a calm fleet: no row breathes or pulses, so whatever moves is the one-shot
+    let calm = || -> Vec<AgentRow> {
+        fleet()
+            .into_iter()
+            .filter(|r| r.parent.is_none() && matches!(r.state, State::Working | State::Done))
+            .map(|mut r| {
+                if r.state == State::Working {
+                    r.state = State::Idle { min: 0 };
+                    r.subs.clear();
+                }
+                r
+            })
+            .collect()
+    };
     for (kind, ms) in
         [(EvKind::TestsPass, 400u64), (EvKind::TestsFail, 240), (EvKind::Compact, 360), (EvKind::Error, 450)]
     {
-        let (mut a, t0) = live(w, h, "dark");
-        let mut rows = fleet();
-        // only the working session's ribbon grows; the others stay as they were
+        let (mut a, t0) = live_with(calm(), w, h, "dark");
+        let mut rows = calm();
+        // only the first session's ribbon grows; the other stays as it was
         rows[0].ribbon.push(ev(0, kind));
         view(&mut a).set_rows(rows);
         a.fx.clock = Some(at(t0, 4000));
-        shot(&mut a, w, h);
-        // the fixture's own motion (a wait, a call in progress) keeps the loop awake; the one-shot is the
-        // difference between a draw inside it and one after it
-        let during = shot(&mut a, w, h);
+        frame(&mut a, w, h);
         a.fx.clock = Some(at(t0, 4000 + ms / 2));
-        let mid = shot(&mut a, w, h);
+        let mid = frame(&mut a, w, h);
+        assert!(view(&mut a).animating(at(t0, 4000 + ms / 2)), "{kind:?}: the loop draws while it plays");
         a.fx.clock = Some(at(t0, 4000 + ms + 200));
-        let after = shot(&mut a, w, h);
+        let after = frame(&mut a, w, h);
         a.fx.clock = Some(at(t0, 9000));
-        let later = shot(&mut a, w, h);
+        let later = frame(&mut a, w, h);
         assert_eq!(after, later, "{kind:?}: nothing changes once the effect is over");
         assert_ne!(mid, after, "{kind:?}: the effect shows while it plays");
-        let _ = during;
+        assert!(!view(&mut a).animating(at(t0, 9000)), "{kind:?}: and the loop sleeps again");
     }
 }
 
