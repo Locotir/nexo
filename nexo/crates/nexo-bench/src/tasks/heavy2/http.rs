@@ -2,7 +2,6 @@
 //! changed (`http-api-diff`) and a HAR-like capture with one cookie sent where it should not go
 //! (`http-har-leak`). The responder listens on `127.0.0.1` only.
 
-use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -505,9 +504,4 @@ fn check_har(wd: &Path) -> Outcome {
 
 fn solution_har(wd: &Path) {
     let _ = std::fs::write(wd.join("answer.txt"), format!("entry: {HAR_ENTRY}\ncookie: {}\n", har().1));
-}
-
-#[allow(dead_code)]
-fn flush(mut s: impl Write) {
-    let _ = s.flush();
 }

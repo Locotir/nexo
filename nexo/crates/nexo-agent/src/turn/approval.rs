@@ -267,7 +267,6 @@ impl InternalTaskPermit {
 /// This is only a point-in-time verdict, not a launch permit: policy, mode, session and
 /// cancellation can change before a job is registered. A caller must synchronize and
 /// revalidate those conditions at registration; this function does not launch or audit a job.
-#[allow(dead_code)] // Infrastructure for a future internal launcher; not connected yet.
 pub(super) async fn authorize_internal_task(
     state: &Shared,
     id: &str,
@@ -303,7 +302,6 @@ pub(super) async fn authorize_internal_task(
 /// Obtain a permit only if the policy observed on both sides of authorization
 /// still matches. Rule-only approvals additionally must be allowed by that policy,
 /// so a transient permissive policy cannot turn an Ask into an unasked launch.
-#[allow(dead_code)]
 pub(super) async fn permit_internal_task(
     state: &Shared,
     id: &str,

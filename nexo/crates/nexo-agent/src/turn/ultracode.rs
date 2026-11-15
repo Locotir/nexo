@@ -8,14 +8,12 @@ use nexo_providers::usage::{self, PlanUsage};
 /// value across the approval and execution boundary, never reparse model text.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 pub(super) struct Plan {
     pub steps: Vec<Step>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 pub(super) struct Step {
     pub agent: String,
     pub prompt: String,
@@ -24,7 +22,6 @@ pub(super) struct Step {
     pub start_clean: bool,
 }
 
-#[allow(dead_code)]
 impl Plan {
     /// Reject implicit launch choices and bound approval UI/input size.
     pub fn validate(&self, config: &Config, agents: &[String]) -> Result<(), String> {
@@ -100,7 +97,6 @@ impl Plan {
 
 /// Executes only the owned proposal displayed in the confirmation. This tool must
 /// not be exposed to a planning turn until direct task/workflow calls are gated.
-#[allow(dead_code)]
 pub(super) struct ExecutePlan {
     pub sub: std::sync::Arc<crate::subagent::SubAgent>,
     pub guard: std::sync::Arc<tokio::sync::OwnedRwLockWriteGuard<()>>,

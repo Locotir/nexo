@@ -5,7 +5,7 @@
 //! whose address is taken. Indirect calls have no target, so a missing route is never reported without
 //! saying how many calls could not be followed.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::json;
 
@@ -458,10 +458,4 @@ pub fn path_window(
         rest.push_str(&format!(" --routes {max_routes}"));
     }
     Ok(Output { op: "path", meta, rows, tail, command: command(img, "path", &rest) })
-}
-
-/// A map from node to name for tests and callers that need many at once.
-#[allow(dead_code)]
-pub(crate) fn names(img: &Image, nodes: &[u64]) -> BTreeMap<u64, String> {
-    nodes.iter().map(|&n| (n, node_name(img, n))).collect()
 }

@@ -1,5 +1,4 @@
 //! Helpers the browser tests share: a small HTTP server with a form page, a raw DevTools connection and a retry loop.
-#![allow(dead_code)]
 
 use async_tungstenite::tokio::connect_async;
 use async_tungstenite::tungstenite::Message;

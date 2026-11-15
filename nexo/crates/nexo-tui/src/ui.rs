@@ -14,7 +14,7 @@ use crate::modal::{Modal, PickKind};
 use crate::overlay;
 use crate::palette::{PaletteKind, MAX_ROWS};
 use crate::render::blocks::{fmt_k, todo_counts, SPINNER};
-use crate::render::markdown::{inline_md, text_of, tint_plain};
+use crate::render::markdown::{inline_md, tint_plain};
 use crate::render::wrap::{truncate, width, wrap_plain};
 use crate::scrollbar::{self, Bar, Target};
 use crate::select::style_cols;
@@ -308,11 +308,6 @@ pub fn rows_of(buf: &ratatui::buffer::Buffer) -> Vec<String> {
         rows.push(s.trim_end().to_string());
     }
     rows
-}
-
-#[allow(dead_code)]
-fn _unused(l: &Line) -> String {
-    text_of(l)
 }
 
 /// Below this the screen cannot hold a draft, a status line and a line of text: a notice is drawn instead.

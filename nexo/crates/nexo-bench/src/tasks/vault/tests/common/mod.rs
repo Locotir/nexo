@@ -1,7 +1,5 @@
 //! Shared setup for the integration tests: a scratch folder and a handler with a few users.
 
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

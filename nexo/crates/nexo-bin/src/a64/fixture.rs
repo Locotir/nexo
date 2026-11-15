@@ -20,8 +20,6 @@ pub struct Arm {
     pub f: u64,
     pub text_end: u64,
     pub string: u64,
-    #[allow(dead_code)]
-    pub table: u64,
     pub global: u64,
     /// Two 8-byte pointers, to B and to C.
     pub ptrs: u64,
@@ -75,7 +73,7 @@ pub fn elf(eh_frame: bool) -> Arm {
     let a = BASE + text_off as u64;
     let (b, c, d, e, f) = (a + 0x20, a + 0x40, a + 0x50, a + 0x60, a + 0x80);
     let data_addr = BASE + data_off as u64;
-    let (table, string, global, ptrs) = (data_addr, data_addr + 16, data_addr + 32, data_addr + 40);
+    let (string, global, ptrs) = (data_addr + 16, data_addr + 32, data_addr + 40);
     let lo = |x: u64| (x & 0xfff) as u32;
 
     let mut text = Vec::new();
@@ -206,5 +204,5 @@ pub fn elf(eh_frame: bool) -> Arm {
         p64(&mut out, 1);
         p64(&mut out, entsize);
     }
-    Arm { bytes: out, a, b, c, d, e, f, text_end, string, table, global, ptrs }
+    Arm { bytes: out, a, b, c, d, e, f, text_end, string, global, ptrs }
 }
