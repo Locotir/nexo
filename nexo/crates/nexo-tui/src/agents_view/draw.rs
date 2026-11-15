@@ -61,7 +61,7 @@ pub(super) fn tone(theme: &Theme, state: State, base: Color, wave: f32) -> Color
 }
 
 /// A step cut to `room` columns. A path at its end keeps its tail (the file is what tells steps apart), the verb in
-/// front stays whole; anything else keeps its start.
+/// front stays whole; a bare path (a session's folder) keeps its tail too; anything else keeps its start.
 pub(super) fn fit_step(step: &str, room: usize) -> String {
     if width(step) <= room {
         return step.to_string();
@@ -69,17 +69,28 @@ pub(super) fn fit_step(step: &str, room: usize) -> String {
     if let Some((head, path)) = step.rsplit_once(char::is_whitespace) {
         let left = room.saturating_sub(width(head) + 1);
         if path.contains('/') && left >= 6 {
-            let mut tail = String::new();
-            for g in unicode_segmentation::UnicodeSegmentation::graphemes(path, true).rev() {
-                if width(&tail) + width(g) + 1 > left {
-                    break;
-                }
-                tail.insert_str(0, g);
-            }
-            return format!("{head} …{tail}");
+            return format!("{head} {}", fit_path(path, left));
         }
+    } else if step.contains('/') && room >= 6 {
+        return fit_path(step, room);
     }
     truncate(step, room)
+}
+
+/// A path in `room` columns: whole when it fits, else `…` and as much of its end as fits, since the last folders
+/// are what tell two paths apart.
+pub(super) fn fit_path(path: &str, room: usize) -> String {
+    if width(path) <= room {
+        return path.to_string();
+    }
+    let mut tail = String::new();
+    for g in unicode_segmentation::UnicodeSegmentation::graphemes(path, true).rev() {
+        if width(&tail) + width(g) + 1 > room {
+            break;
+        }
+        tail.insert_str(0, g);
+    }
+    format!("…{tail}")
 }
 
 #[cfg(test)]

@@ -85,7 +85,7 @@ impl Show {
     pub(super) fn keeps(self, r: &AgentRow) -> bool {
         match self {
             Show::All => true,
-            Show::Working => r.state == State::Working || r.lane.as_ref().is_some_and(|l| l.state == "running"),
+            Show::Working => works(r),
             Show::NeedsYou => needs_you(r),
         }
     }
@@ -183,10 +183,27 @@ impl Group {
 /// Whether a row needs the person: a permission or a question waits, it is stuck or looping, its lane failed,
 /// or mail for it waits for the person's approval.
 pub fn needs_you(r: &AgentRow) -> bool {
-    attention(r.state)
-        || r.state == State::Looping
+    waits(r)
+        || (r.state == State::Looping && unheld(r))
         || r.lane.as_ref().is_some_and(|l| l.state == "failed")
         || r.held > 0
+}
+
+/// Whether a lane row's own state speaks for it. A lane without a live runner keeps whatever its last
+/// observation left (its spend note reads as work), so only its lane word counts; a row of no lane always speaks.
+fn unheld(r: &AgentRow) -> bool {
+    r.lane.as_ref().is_none_or(|l| l.runner)
+}
+
+/// Whether a row works now: its turn runs, or its lane's round does.
+pub(super) fn works(r: &AgentRow) -> bool {
+    r.lane.as_ref().is_some_and(|l| l.state == "running") || (r.state == State::Working && unheld(r))
+}
+
+/// Whether a row waits on the person or looks stuck, as its own state says (a lane without a runner waits on
+/// nothing).
+pub(super) fn waits(r: &AgentRow) -> bool {
+    attention(r.state) && unheld(r)
 }
 
 /// What the status bar's fleet chip counts: lanes that are on, this session's sub-agents at work, other live

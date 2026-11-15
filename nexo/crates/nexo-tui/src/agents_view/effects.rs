@@ -15,7 +15,7 @@ use ratatui::text::Span;
 use ratatui::Frame;
 
 use super::pulse::PulseFx;
-use super::{attention, needs_you, AgentsView, CHIP_MS, ENTER_MS, FLIGHT_MS, NEED_MS, POP_MS, TRAIL};
+use super::{needs_you, waits, works, AgentsView, CHIP_MS, ENTER_MS, FLIGHT_MS, NEED_MS, POP_MS, TRAIL};
 use crate::anim::{progress, PULSE_MS};
 use crate::motion::{ease_in_out, fade, route, within, Counter};
 use crate::panel_fx as px;
@@ -181,18 +181,14 @@ impl AgentsView {
             return false;
         }
         let l = &self.live;
-        self.rows.iter().any(|r| {
-            attention(r.state)
-                || r.state == State::Working
-                || r.retry_secs.is_some()
-                || Self::running_subs(r) > 0
-                || r.lane.as_ref().is_some_and(|l| l.state == "running")
-        }) || self.fx.values().any(|x| {
-            within(Some(x.born), now, x.delay_ms + ENTER_MS)
-                || within(x.changed, now, CHIP_MS)
-                || within(x.needs, now, NEED_MS)
-                || x.round.is_some_and(|(t, _)| within(Some(t), now, POP_MS))
-        }) || within(self.need_blink, now, NEED_MS)
+        self.rows.iter().any(|r| waits(r) || works(r) || r.retry_secs.is_some() || Self::running_subs(r) > 0)
+            || self.fx.values().any(|x| {
+                within(Some(x.born), now, x.delay_ms + ENTER_MS)
+                    || within(x.changed, now, CHIP_MS)
+                    || within(x.needs, now, NEED_MS)
+                    || x.round.is_some_and(|(t, _)| within(Some(t), now, POP_MS))
+            })
+            || within(self.need_blink, now, NEED_MS)
             || self.fly_key.is_some()
             || self.flight.as_ref().is_some_and(|(_, t)| within(Some(*t), now, FLIGHT_MS))
             || self.pulse_at.as_ref().is_some_and(|(_, t)| now < *t || within(Some(*t), now, PULSE_MS))

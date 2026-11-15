@@ -10,7 +10,7 @@ use nexo_agent::supervise::{AgentRow, EvKind, State};
 use ratatui::style::Color;
 use ratatui::text::Span;
 
-use super::{needs_you, AgentsView};
+use super::{needs_you, works, AgentsView};
 use crate::motion::{fade, within, Counter};
 use crate::panel_fx as px;
 use crate::render::wrap::width;
@@ -76,8 +76,7 @@ impl AgentsView {
     pub(super) fn totals(&self, rows: &[AgentRow]) -> Totals {
         let mut t = Totals { beat: vec![0; BEAT_MINUTES], ..Totals::default() };
         for r in rows {
-            let running = r.lane.as_ref().is_some_and(|l| l.state == "running");
-            if r.state == State::Working || running {
+            if works(r) {
                 t.live += 1;
             } else if matches!(r.state, State::Idle { .. }) || r.lane.is_some() {
                 t.idle += 1;

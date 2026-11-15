@@ -284,6 +284,43 @@ fn at_rest_two_draws_are_equal_and_ask_for_no_frame() {
 }
 
 #[test]
+fn a_stopped_or_failed_lane_counts_by_its_lane_word_whatever_its_last_observation_left() {
+    // a lane without a runner keeps the state its spend note left (working); its lane word is what counts
+    let mut failed = lane("lane:IOS", "IOS", "failed");
+    failed.lane.as_mut().unwrap().runner = false;
+    failed.state = State::Working;
+    let mut stopped = lane("lane:WINDOWS", "WINDOWS", "stopped");
+    stopped.lane.as_mut().unwrap().runner = false;
+    stopped.state = State::Stalled;
+    let mut v = AgentsView::with_rows(vec![failed, stopped], NOW, false);
+    let theme = Theme::dark();
+    let t0 = Instant::now();
+    let text = lines(&paint(&mut v, 170, 48, &theme, t0, true));
+    let head = &text[find(&text, "needs you")];
+    assert!(head.contains("0 working") && head.contains("2 idle") && head.contains("1 needs you"), "{head}");
+    paint(&mut v, 170, 48, &theme, t0 + Duration::from_secs(20), true);
+    assert!(!v.animating(t0 + Duration::from_secs(20)), "a lane that runs nothing moves nothing");
+}
+
+#[test]
+fn a_long_folder_keeps_its_end_in_the_row_and_in_the_pane() {
+    let mut peer = row("nexo:p1", "work2", State::Idle { min: 1 });
+    peer.cwd = Some("/tmp/a/very/long/folder/that/goes/on/and/on/until/it/cannot/fit/scratchpad/run1/work2".into());
+    let mut l = lane("lane:IOS", "IOS", "stopped");
+    l.lane.as_mut().unwrap().dir = format!("/srv/{}/run1/work", "deep/".repeat(30));
+    let mut v = AgentsView::with_rows(vec![peer, l], NOW, false);
+    let theme = Theme::dark();
+    for (key, end) in [("nexo:p1", "run1/work2 "), ("lane:IOS", "run1/work ")] {
+        select(&mut v, key);
+        let text = lines(&paint(&mut v, 170, 48, &theme, Instant::now(), false));
+        let at = &text[find(&text, "│ in      ")];
+        assert!(at.contains('…') && at.contains(end), "the folder line keeps its end on one line: {at}");
+    }
+    let text = lines(&paint(&mut v, 170, 48, &theme, Instant::now(), false));
+    assert!(text[find(&text, "work2 ")].contains("run1/work2"), "the row keeps the folder's end");
+}
+
+#[test]
 fn the_mono_theme_draws_no_motion_even_while_rows_work_and_wait() {
     let mut v = AgentsView::with_rows(fleet(), NOW, false);
     let theme = Theme::mono();

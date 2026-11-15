@@ -4,6 +4,7 @@
 
 use nexo_agent::supervise::{EvDetail, EvKind};
 
+use super::draw::fit_path;
 use super::row::{bar, clock_of, money, short_model, tilde};
 use super::*;
 use crate::panel_fx as px;
@@ -108,10 +109,10 @@ impl AgentsView {
         }
         out.push(Line::from(state));
         match &row.lane {
-            Some(l) => self.lane_lines(&mut out, row, l, theme, fx),
+            Some(l) => self.lane_lines(&mut out, row, l, w, theme, fx),
             None => match kind {
                 Kind::Sub | Kind::Job => self.job_lines(&mut out, row, w, theme),
-                _ => self.session_lines(&mut out, row, theme, fx),
+                _ => self.session_lines(&mut out, row, w, theme, fx),
             },
         }
         // its events, newest first, under a rule as wide as the pane (`── events ` takes ten cells)
@@ -148,6 +149,7 @@ impl AgentsView {
         out: &mut Vec<Line<'static>>,
         row: &AgentRow,
         l: &nexo_agent::supervise::LaneInfo,
+        w: usize,
         theme: &Theme,
         fx: bool,
     ) {
@@ -195,7 +197,11 @@ impl AgentsView {
             }
         }
         if !l.dir.is_empty() {
-            out.push(Self::field("in", vec![Span::styled(tilde(&l.dir), theme.dim())], theme));
+            out.push(Self::field(
+                "in",
+                vec![Span::styled(fit_path(&tilde(&l.dir), w.saturating_sub(8)), theme.dim())],
+                theme,
+            ));
         }
         if row.unread + row.held > 0 {
             out.push(Self::field("mail", self.mail_words(row, theme), theme));
@@ -213,7 +219,7 @@ impl AgentsView {
         v
     }
 
-    fn session_lines(&self, out: &mut Vec<Line<'static>>, row: &AgentRow, theme: &Theme, fx: bool) {
+    fn session_lines(&self, out: &mut Vec<Line<'static>>, row: &AgentRow, w: usize, theme: &Theme, fx: bool) {
         let a = self.ascii;
         if let Some(g) = &row.goal {
             out.push(Self::field("goal", vec![Span::styled(g.clone(), theme.style(theme.fg))], theme));
@@ -274,7 +280,11 @@ impl AgentsView {
             out.push(Self::field("team", vec![Span::styled(c, theme.dim())], theme));
         }
         if let Some(c) = &row.cwd {
-            out.push(Self::field("in", vec![Span::styled(tilde(c), theme.dim())], theme));
+            out.push(Self::field(
+                "in",
+                vec![Span::styled(fit_path(&tilde(c), w.saturating_sub(8)), theme.dim())],
+                theme,
+            ));
         }
     }
 

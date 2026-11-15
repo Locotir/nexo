@@ -87,7 +87,8 @@ impl AgentsView {
                 return (g, if ok { theme.success } else { theme.error }, true);
             }
         }
-        if let Some(l) = &row.lane {
+        // a lane speaks with its own word, unless its live session waits on the person
+        if let Some(l) = row.lane.as_ref().filter(|l| !(l.runner && attention(row.state))) {
             return match l.state.as_str() {
                 "running" => (if a { "*" } else { "●" }, breathe(theme.success, 0.5, BREATH_MS as u64), false),
                 "failed" => (if a { "x" } else { "✗" }, theme.error, true),
