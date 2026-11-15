@@ -36,6 +36,10 @@ pub(super) async fn compact_locked(st: &mut State, keep_from: usize, cancel: &Ca
         retries: st.config.agent.retries,
         max_tokens: SUMMARY_TOKENS,
         window: st.limits.context_window,
+        room: st
+            .limits
+            .context_window
+            .map(|w| u64::from(w).saturating_sub(u64::from(reply_tokens(st)) + fixed_tokens(&st.system, &offered(st)))),
     };
     let before = st.history.len();
     let (tokens_before, events) = (st.history.tokens(), st.events.clone());

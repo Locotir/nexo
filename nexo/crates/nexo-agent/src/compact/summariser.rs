@@ -16,7 +16,14 @@ pub struct Summariser {
     /// The model's context window in tokens, when known: the summary request and what the summary
     /// keeps word for word are sized to it.
     pub window: Option<u32>,
+    /// The tokens a request of the session has for the conversation once compacted: the window less the fixed text
+    /// (system prompt and tools) and the reply the session asks, when the window is known. The summary and what
+    /// is kept word for word share it, so the request after the compaction fits.
+    pub room: Option<u64>,
 }
+
+/// The least tokens a summary may be asked for, however small the room.
+const LEAST_SUMMARY_TOKENS: u32 = 256;
 
 /// What a compaction did: the model's summary and what its request spent.
 #[derive(Debug, Clone, Default)]
@@ -31,6 +38,11 @@ impl Summariser {
     pub async fn summarise(&self, msgs: &[Message]) -> anyhow::Result<Compaction> {
         let (_, cfg, model) = self.target.get();
         let reply = self.window.map_or(self.max_tokens, |w| self.max_tokens.min(w / 2));
+        // half of the room the compacted conversation has, so the kept messages and the newest ones fit with it
+        let reply = match self.room {
+            Some(room) => reply.min(u32::try_from(room / 2).unwrap_or(u32::MAX).max(LEAST_SUMMARY_TOKENS)),
+            None => reply,
+        };
         let transcript = transcript(msgs, transcript_chars(self.window, reply));
         let ask = format!(
             "Transcript of the session so far:\n\n{transcript}\n\nWrite the summary. Your reply may be up to {reply} \
@@ -57,9 +69,11 @@ impl Summariser {
         Ok(Compaction { summary: text, usage: c.usage, model })
     }
 
-    /// Tokens the kept messages of the person may take: a quarter of a known window at most.
+    /// Tokens the kept messages of the person may take: a quarter of a known window at most, and a quarter of
+    /// the room the compacted conversation has.
     fn requests_tokens(&self) -> u64 {
-        self.window.map_or(REQUESTS_TOKENS, |w| REQUESTS_TOKENS.min(u64::from(w) / 4))
+        let by_window = self.window.map_or(REQUESTS_TOKENS, |w| REQUESTS_TOKENS.min(u64::from(w) / 4));
+        self.room.map_or(by_window, |room| by_window.min(room / 4))
     }
 }
 

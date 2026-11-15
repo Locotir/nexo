@@ -624,7 +624,6 @@ async fn a_first_request_of_code_at_8k_fits_the_window_at_three_characters_a_tok
     }
 }
 
-
 /// The characters one tool result may take at window `w` for the first request `r` of a session: the view
 /// window (85% of what the reply leaves) less the fixed text, as the session works it out.
 fn result_budget(r: &ModelRequest, w: u32) -> usize {
@@ -671,6 +670,7 @@ async fn a_64k_read_at_200k_comes_back_as_it_always_did() {
 
 /// The first request of a session at window `w` (none when `None`) whose prompt hook answers with `chars`
 /// characters of context, under `policy`.
+#[cfg(unix)]
 async fn with_a_long_hook(w: Option<u32>, chars: usize, policy: &str) -> ModelRequest {
     let d = project();
     let mut cfg = cfg_window(w.unwrap_or(200_000));
@@ -744,4 +744,64 @@ async fn the_files_nexo_attaches_by_itself_at_8k_fit_what_the_window_leaves_and_
     none.providers.get_mut("mock").unwrap().context_window.clear();
     let unknown = first_request(none, d.path()).await;
     assert_eq!(serde_json::to_string(&big.messages).unwrap(), serde_json::to_string(&unknown.messages).unwrap());
+}
+
+/// The requests of a session at window `w` (none when `None`) that is given two long messages, compacted with a
+/// summary of `summary_chars` characters, and then given a third message.
+async fn compacted(w: Option<u32>, summary_chars: usize) -> Vec<ModelRequest> {
+    let d = project();
+    let client = Scripted::new(vec![
+        Reply::Events(uncounted(text("first answer"))),
+        Reply::Events(uncounted(text("second answer"))),
+        Reply::Events(uncounted(text(&"s".repeat(summary_chars)))),
+        Reply::Events(uncounted(text("third answer"))),
+    ]);
+    let mut cfg = cfg_window(w.unwrap_or(200_000));
+    if w.is_none() {
+        cfg.providers.get_mut("mock").unwrap().context_window.clear();
+    }
+    cfg.context.policy = "plain".into();
+    let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+    r.next().await;
+    for words in ["first", "second"] {
+        let long = format!("{words}: please look at the parser and say why it fails on empty input. ").repeat(130);
+        r.send(AgentCommand::Submit { text: long, attachments: vec![] });
+        r.turn().await;
+    }
+    r.send(AgentCommand::Compact);
+    r.until(|e| matches!(e, AgentEvent::Compacted { .. })).await;
+    r.send(AgentCommand::Submit { text: "and now the lexer".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    client.requests()
+}
+
+#[tokio::test]
+async fn a_summary_at_8k_is_asked_for_half_of_what_the_window_leaves_and_the_request_after_it_fits() {
+    let _g = config_lock().lock().await;
+    // a model that fills the whole reply it was allowed
+    let reqs = compacted(Some(8_000), 8_000).await;
+    let left = 8_000 - fixed_tokens(&reqs[0]) - u64::from(reqs[0].max_tokens);
+    let summary = &reqs[2];
+    eprintln!("room {left}; summary asked {} tokens", summary.max_tokens);
+    assert!(u64::from(summary.max_tokens) <= left / 2, "the summary is asked for {} of {left}", summary.max_tokens);
+    assert!(
+        summary.messages[0].text().contains(&format!("up to {} tokens", summary.max_tokens)),
+        "the summary request says its limit"
+    );
+    // the summary the model wrote fills what it was given (4 000 characters), then the request after it
+    let after = reqs.last().unwrap();
+    assert!(after.messages[0].text().contains("[summary]"), "the history was compacted");
+    let total = total_with_reply(after);
+    assert!(total <= 8_000, "the request after the compaction and its reply take {total} tokens of 8000");
+}
+
+#[tokio::test]
+async fn a_summary_at_200k_is_asked_for_as_before() {
+    let _g = config_lock().lock().await;
+    let at_200k = compacted(Some(200_000), 400).await;
+    let unknown = compacted(None, 400).await;
+    assert_eq!(at_200k[2].max_tokens, 4_096);
+    assert_eq!(at_200k[2].max_tokens, unknown[2].max_tokens);
+    assert_eq!(at_200k[3].messages[0].text(), unknown[3].messages[0].text(), "the kept messages are the same");
 }
