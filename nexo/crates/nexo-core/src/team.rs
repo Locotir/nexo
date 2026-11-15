@@ -54,17 +54,29 @@ pub fn age(ms: i64) -> String {
 /// What a lane is doing, as `status` says it.
 /// `clocked`: the lane has an `every`, so "mail only" is never its word.
 pub fn state_word(name: &str, st: &LaneState, alive: bool, clocked: bool, offset: Option<time::UtcOffset>) -> String {
+    word_of(st, alive, clocked, state::held(name), state::paused(), offset)
+}
+
+/// [`state_word`] once the marker files have been looked at.
+fn word_of(
+    st: &LaneState,
+    alive: bool,
+    clocked: bool,
+    held: bool,
+    paused: bool,
+    offset: Option<time::UtcOffset>,
+) -> String {
     if !alive {
         return match (st.state.as_str(), &st.why) {
             ("failed", Some(why)) => format!("failed: {why}"),
             ("failed", None) => "failed".into(),
-            _ if state::held(name) => "held".into(),
+            _ if held => "held".into(),
             _ => "stopped".into(),
         };
     }
     match st.state.as_str() {
         "running" => "running a round".into(),
-        _ if state::paused() => "paused".into(),
+        _ if paused => "paused".into(),
         // `start` has recorded the process but the runner has not written its own state yet
         _ if st.started.is_none() => "starting".into(),
         _ => match st.next_round {
@@ -244,12 +256,7 @@ mod tests {
 
     #[test]
     fn a_lane_just_started_is_starting_and_mail_only_is_only_for_a_lane_without_a_clock() {
-        // the marker files are looked for in a data folder of this test's own, never the person's
-        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("NEXO_DATA_DIR", dir.path());
-        let word = |st: &LaneState, clocked| state_word("T", st, true, clocked, None);
+        let word = |st: &LaneState, clocked| word_of(st, true, clocked, false, false, None);
         // what `start` leaves before the runner writes anything: a pid, "idle", no start time, no round planned
         let mut st = LaneState { pid: Some(1), state: "idle".into(), ..Default::default() };
         assert_eq!(word(&st, true), "starting");
@@ -261,7 +268,8 @@ mod tests {
         st.next_round = None;
         assert_eq!(word(&st, true), "idle");
         assert_eq!(word(&st, false), "idle (mail only)");
-        std::env::remove_var("NEXO_DATA_DIR");
+        assert_eq!(word_of(&st, true, true, false, true, None), "paused");
+        assert_eq!(word_of(&st, false, true, true, false, None), "held");
     }
 
     #[test]
