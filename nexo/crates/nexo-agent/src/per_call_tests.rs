@@ -53,12 +53,18 @@ fn variants() -> Vec<(&'static str, Vec<Message>)> {
     middle[150] = Message::user("a different request in the middle of the conversation");
     // the same length of JSON, other text: a size cache that only looked at lengths would miss it
     let mut same_len = base.clone();
-    same_len[40] = Message::user("please look at module 9 and fix the failing check, then say what changed".to_string());
+    same_len[40] =
+        Message::user("please look at module 9 and fix the failing check, then say what changed".to_string());
     let mut shorter = base.clone();
     shorter.pop();
     let mut longer = base.clone();
     longer.push(Message::user("and one more thing"));
-    vec![("middle edited", middle), ("same length edited", same_len), ("one removed", shorter), ("one appended", longer)]
+    vec![
+        ("middle edited", middle),
+        ("same length edited", same_len),
+        ("one removed", shorter),
+        ("one appended", longer),
+    ]
 }
 
 #[test]
