@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// A screen this tall or less has no row to spare for the section titles of a list that does not fit.
+pub const TITLES_ABOVE: u16 = 30;
+
 impl Palette {
     pub(super) fn row(&self, k: usize) -> Row {
         let i = self.ranked[k];
@@ -61,10 +64,18 @@ impl Palette {
     /// The lines that fit in `max`, section titles included, scrolled only as
     /// far as needed to keep the selection (and the title right above it) in sight.
     pub fn view(&mut self, max: usize) -> View {
+        self.view_titled(max, true)
+    }
+
+    /// `view`, with the section titles left out when `titles` is false and the list does not fit.
+    pub fn view_titled(&mut self, max: usize, titles: bool) -> View {
         let max = max.max(1);
         let mut lines: Vec<(bool, usize)> = Vec::new(); // (is a title, ranked index)
+        // short of rows, a title would push a command off the list: the list goes flat unless it all fits
+        let n_titles = (0..self.ranked.len()).filter(|&k| self.groups.get(k).is_some_and(Option::is_some)).count();
+        let flat = !titles && self.ranked.len() + n_titles > max;
         for k in 0..self.ranked.len() {
-            if self.groups.get(k).is_some_and(Option::is_some) {
+            if !flat && self.groups.get(k).is_some_and(Option::is_some) {
                 lines.push((true, k));
             }
             lines.push((false, k));

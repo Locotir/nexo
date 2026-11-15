@@ -108,7 +108,9 @@ pub(super) fn welcome(
     intro_ms: Option<u64>,
     detail: nexo_core::config::Detail,
 ) -> Vec<Line<'static>> {
-    let inner = w.saturating_sub(4).clamp(1, 72);
+    // 72 columns, more when the folder or the model would be cut short and the terminal has room
+    let want = (width(place).max(width(model) + width(permissions) + 3) + width(LOGO[0]) + 3).clamp(72, 104);
+    let inner = w.saturating_sub(4).clamp(1, want);
     let border = match intro_ms {
         Some(ms) if ms < BORDER_MS => theme.style(mix(theme.bg, theme.border, ms as f32 / BORDER_MS as f32)),
         _ => theme.style(theme.border),

@@ -23,10 +23,11 @@ pub(super) fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
     let preview_w = if is_files && tw >= 90 && !p.is_empty() { tw / 2 } else { 0 };
     let list_w = tw - preview_w;
     let cap = MAX_ROWS.min(transcript.height as usize);
-    let mut view = p.view(cap);
+    let titles = f.area().height > crate::palette::TITLES_ABOVE;
+    let mut view = p.view_titled(cap, titles);
     let footer = view.above + view.below > 0 && cap >= 3;
     if footer {
-        view = p.view(cap - 1);
+        view = p.view_titled(cap - 1, titles);
     }
     let list_h = view.entries.len().max(1) + usize::from(footer);
     let want_h = if preview_w > 0 { cap.max(list_h) } else { list_h } as u16;

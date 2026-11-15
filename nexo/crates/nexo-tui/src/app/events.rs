@@ -290,7 +290,7 @@ impl App {
         let now = self.now();
         if self.looks.iter().any(|l| {
             l.born.is_some_and(|t| now.saturating_duration_since(t).as_millis() <= settle)
-                || l.opened.is_some_and(|(t, _)| t.elapsed().as_millis() <= settle)
+                || l.opened.is_some_and(|(t, _)| now.saturating_duration_since(t).as_millis() <= settle)
         }) {
             any = true;
         }

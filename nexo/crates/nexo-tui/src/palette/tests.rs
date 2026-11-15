@@ -89,6 +89,15 @@ fn with_nothing_typed_it_lists_recent_commands_then_every_group() {
 }
 
 #[test]
+fn a_short_screen_lists_commands_with_no_section_titles_unless_they_all_fit() {
+    let mut p = Palette::commands_full("", 1, vec![], vec!["theme".into()]);
+    assert!(p.view_titled(13, false).entries.iter().all(|e| matches!(e, Entry::Item(..))));
+    assert_eq!(p.view_titled(13, false).entries.len(), 13);
+    assert!(p.view_titled(13, true).entries.iter().any(|e| matches!(e, Entry::Header(_))));
+    assert!(p.view_titled(500, false).entries.iter().any(|e| matches!(e, Entry::Header(_))), "all of it fits");
+}
+
+#[test]
 fn the_list_scrolls_only_when_the_selection_leaves_it() {
     let mut p = Palette::files("", 1, (0..20).map(|i| format!("f{i:02}")).collect());
     assert_eq!(p.view(5).below, 15);

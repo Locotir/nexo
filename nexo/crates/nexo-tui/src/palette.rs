@@ -13,6 +13,7 @@ mod values;
 mod view;
 
 pub use values::{arg_values, dir_values, live_values, project_files, recent_commands, wanted};
+pub use view::TITLES_ABOVE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteKind {

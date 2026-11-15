@@ -15,6 +15,8 @@ fn goal(state: GoalState) -> AgentEvent {
 /// An app with an active goal and a conversation (the home is not empty), its clock at `t0`.
 fn working(t0: Instant) -> App {
     let (mut a, _rx) = app();
+    // the banner lights up from when the interface opened: pin that to the test clock so two apps draw alike
+    a.opened = t0;
     fx_at(&mut a, t0, 0);
     a.push(Block::User { text: "make the tests pass".into(), at: None });
     a.handle_agent(goal(GoalState::Active));

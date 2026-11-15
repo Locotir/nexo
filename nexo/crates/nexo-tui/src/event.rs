@@ -135,6 +135,8 @@ pub fn handle(app: &mut App, ev: Event) {
             if app.selection.as_ref().is_some_and(|s| !s.dragging) {
                 app.selection = None;
             }
+            // a terminal may leave cells of the old size on screen (a scrollbar thumb): paint everything again
+            app.force_clear = true;
             app.dirty = true;
         }
         _ => {}

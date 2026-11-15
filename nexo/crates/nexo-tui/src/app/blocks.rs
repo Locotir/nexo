@@ -169,7 +169,7 @@ impl App {
             let busy = self.blocks[i].is_live()
                 || self.looks.get(i).is_some_and(|l| {
                     l.born.is_some_and(|t| now.saturating_duration_since(t).as_millis() <= FADE_MS as u128 + 100)
-                        || l.opened.is_some_and(|(t, _)| t.elapsed().as_millis() <= OPEN_MS as u128 + 100)
+                        || l.opened.is_some_and(|(t, _)| now.saturating_duration_since(t).as_millis() <= OPEN_MS as u128 + 100)
                 });
             if (end < lo || start > hi) && !busy {
                 *lines = None;
@@ -413,7 +413,7 @@ impl App {
         let n = self.height(i, width);
         match self.looks.get(i).and_then(|l| l.opened) {
             Some((at, from)) if from < n => {
-                let t = (at.elapsed().as_millis() as f32 / OPEN_MS as f32).min(1.0);
+                let t = (self.now().saturating_duration_since(at).as_millis() as f32 / OPEN_MS as f32).min(1.0);
                 let eased = 1.0 - (1.0 - t).powi(3);
                 from + ((n - from) as f32 * eased).ceil() as usize
             }
