@@ -425,3 +425,45 @@ fn the_model_list_marks_only_the_entry_in_use() {
     let used: Vec<&str> = v.iter().filter(|(_, h)| h == "in use").map(|(n, _)| n.as_str()).collect();
     assert_eq!(used, ["refuseless/luna"]);
 }
+
+#[test]
+fn clear_leaves_an_empty_screen_with_the_welcome_and_nothing_to_rewind_to() {
+    let (mut a, mut rx) = app();
+    a.push(Block::User { text: "hi".into(), at: None });
+    a.user_messages.push((1, "hi".into()));
+    a.run_command(Command::Clear);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Clear)));
+    assert!(matches!(a.blocks.as_slice(), [Block::Welcome { .. }]), "only the banner is left");
+    assert!(a.user_messages.is_empty(), "the rewind list starts over");
+    a.run_command(Command::Rewind);
+    assert!(a.modal.is_none(), "no rewind list with nothing to go back to");
+}
+
+#[test]
+fn an_interrupted_reply_says_it_stops_there() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::TextDelta { text: "she began running".into() });
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
+    let all: String = (0..a.blocks.len()).map(|i| head(&mut a, i)).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("interrupted · the reply above stops here"), "{all}");
+    // with nothing said yet there is no reply to point at
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
+    let all: String = (0..a.blocks.len()).map(|i| head(&mut a, i)).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("interrupted") && !all.contains("stops here"), "{all}");
+}
+
+#[test]
+fn a_long_request_never_hides_its_number_in_the_rewind_picker() {
+    let (mut a, _rx) = app();
+    let long = "Call your read tool on the notes file and then summarise every single line of it for me";
+    for (i, t) in ["short one", long, long].into_iter().enumerate() {
+        a.handle_agent(AgentEvent::History { index: i * 2, message: Message::user(t) });
+        a.handle_agent(AgentEvent::History { index: i * 2 + 1, message: Message::assistant("ok") });
+    }
+    a.open_rewind_picker();
+    let rows = screen(&mut a, 80, 24).join("\n");
+    for n in ["#2", "#3"] {
+        assert!(rows.contains(n), "{n} missing:\n{rows}");
+    }
+}

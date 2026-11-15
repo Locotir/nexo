@@ -293,3 +293,14 @@ nexo/doctor nexo/copy nexo/quit";
     // Headings hold spaces, so compare the joined text rather than splitting it.
     assert_eq!(rows.join(" "), want);
 }
+
+#[test]
+fn every_description_fits_a_narrow_palette_row_whole() {
+    // at 80 columns a row keeps about 42 cells for what a command does; a longer text is cut mid-word
+    let long: Vec<String> = COMMANDS
+        .iter()
+        .filter(|s| s.description.chars().count() > 42)
+        .map(|s| format!("/{}: {}", s.name, s.description))
+        .collect();
+    assert!(long.is_empty(), "too long for a narrow row:\n{}", long.join("\n"));
+}

@@ -1,5 +1,6 @@
 //! Fenced and indented code blocks: a labelled box of highlighted lines.
 
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::super::code;
@@ -18,11 +19,14 @@ impl<'t> Renderer<'t> {
         let (lines, shown) = code::view(lang, body, inner, self.theme, self.interpreted);
         let label = if lang.is_empty() { "code".to_string() } else { lang.to_string() };
         let label = if shown { format!("{label} · view") } else { label };
-        // the label stops one column short, so it never touches the scrollbar
+        // The tag leads, dim and italic, with a rule after it and never an icon or a bold name: a tool
+        // card starts with a status icon and a bold name, so text a model wrote as a fence (even a
+        // ```bash one) cannot pass for a call that ran. The rule stops one column short of the
+        // scrollbar.
         let bar = "─".repeat((inner + 1).saturating_sub(width(&label) + 1));
         let mut head = rest.clone();
-        head.push(Span::styled(format!("{bar} "), self.theme.dim2()));
-        head.push(Span::styled(label, self.theme.dim()));
+        head.push(Span::styled(label, self.theme.dim().add_modifier(Modifier::ITALIC)));
+        head.push(Span::styled(format!(" {bar}"), self.theme.dim2()));
         self.out.push(Line::from(head));
         let first_row = self.out.len();
         let bg = self.theme.code_block();

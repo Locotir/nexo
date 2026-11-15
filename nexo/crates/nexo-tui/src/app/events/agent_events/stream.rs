@@ -234,7 +234,19 @@ impl App {
                     self.status = None;
                 }
                 self.stop_rail();
-                self.notice(Level::Warn, "interrupted")
+                // a reply cut in the middle says so: nothing in its own text marks where it stopped
+                let cut = self
+                    .blocks
+                    .iter()
+                    .rev()
+                    .find(|b| !matches!(b, Block::Usage { .. }))
+                    .is_some_and(|b| matches!(b, Block::Assistant { text, .. } if !text.trim().is_empty()));
+                let what = if cut {
+                    "interrupted · the reply above stops here; send a message to go on"
+                } else {
+                    "interrupted"
+                };
+                self.notice(Level::Warn, what)
             }
             TurnEnd::Error => {}
             TurnEnd::MaxTurns => {

@@ -104,8 +104,12 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             for (i, &idx) in p.ranked.iter().enumerate() {
                 let it = &p.items[idx];
                 let armed = i == p.selected && p.armed.as_deref() == Some(it.value.as_str());
-                let label = truncate(&it.label, inner_w.saturating_sub(2));
                 let hint = if armed { "Del again delete · Esc keep" } else { it.hint.as_str() };
+                // a long label gives way, so the hint (a number, a time) is never the part that is cut
+                let label = truncate(
+                    &it.label,
+                    inner_w.saturating_sub(2 + if hint.is_empty() { 0 } else { width(hint) + 2 }).max(8),
+                );
                 let hint = truncate(hint, inner_w.saturating_sub(width(&label) + 4));
                 let pad = inner_w.saturating_sub(width(&label) + width(&hint) + 2);
                 let style = if armed {

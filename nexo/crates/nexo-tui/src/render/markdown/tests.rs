@@ -69,7 +69,7 @@ fn task_items_show_a_checkbox_in_place_of_the_bullet() {
 #[test]
 fn code_fences_carry_a_language_label_and_keep_lines() {
     let t = texts("Before\n\n```rust\nfn main() {\n    let x = 1;\n}\n```\n\nAfter", 40);
-    let i = t.iter().position(|l| l.starts_with("───") && l.ends_with(" rust")).expect("label");
+    let i = t.iter().position(|l| l.starts_with("rust ──")).expect("label");
     assert_eq!(t[i + 1].trim_end(), "▎ fn main() {");
     assert_eq!(t[i + 2].trim_end(), "▎     let x = 1;");
     assert_eq!(t[i + 3].trim_end(), "▎ }");
@@ -138,7 +138,7 @@ fn a_link_in_a_table_cell_stays_in_its_cell() {
 #[test]
 fn an_unclosed_fence_while_streaming_still_renders() {
     let t = texts("text\n\n```py\nprint(1)", 30);
-    assert!(t.iter().any(|l| l.ends_with(" py")));
+    assert!(t.iter().any(|l| l.starts_with("py ")));
     assert!(t.iter().any(|l| l.contains("print(1)")));
 }
 
@@ -188,13 +188,13 @@ fn label_row(cols: u16, rows: u16) -> Vec<char> {
     row.chars().collect()
 }
 
-/// The label is followed by one empty column, and only then the scrollbar's.
+/// The rule after the label stops one empty column short of the scrollbar's.
 fn assert_gap(cols: u16, rows: u16) {
     let row = label_row(cols, rows);
     let n = cols as usize;
     assert_eq!(row.len(), n, "{row:?}");
-    let label_end = row.iter().rposition(|c| *c == 't').expect("rust");
-    assert_eq!(label_end, n - 3, "label ends two columns before the edge: {row:?}");
+    let rule_end = row.iter().rposition(|c| *c == '─').expect("rule");
+    assert_eq!(rule_end, n - 3, "the rule ends two columns before the edge: {row:?}");
     assert_eq!(row[n - 2], ' ', "{row:?}");
     assert_ne!(row[n - 1], ' ', "the scrollbar is drawn: {row:?}");
 }

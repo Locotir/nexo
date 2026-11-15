@@ -15,7 +15,7 @@
    • the input is 3 1 2
    • the output must be 1 2 3
 
-   ────────────────────────────────────────────────────────────────────────────────────────────────────────────── rust
+   rust ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
    ▎ fn main() {}
 
    ✓ read tests/a.rs · 2 lines  12ms ▸
@@ -30,10 +30,10 @@
 
       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
 
- /model                [name]                        switch model, or set one up step by step (checked against the ser…
+ /model                [name]                        switch model, or set one up
  /permissions  (mode)  [ask|accept-edits|plan|yolo…  set the permission mode
- /memory               [user|add <text>|share [id]]  edit the instructions the agent reads (the project's file, or wit…
- /shared-memory        [read [epoch]|write <text>]   read or append coordination notes shared with agents
+ /memory               [user|add <text>|share [id]]  edit the instructions the agent reads
+ /shared-memory        [read [epoch]|write <text>]   coordination notes shared with agents
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56

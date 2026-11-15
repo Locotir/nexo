@@ -209,7 +209,7 @@ fn the_layout_at_100_by_30() {
     assert!(all.contains("▌ fix the failing test"));
     assert!(all.contains("▸ thinking · 1 line"));
     assert!(all.contains("◆ I will read the test first."));
-    assert!(all.contains("─ rust"));
+    assert!(all.contains("rust ─"));
     assert!(all.contains("fn main() {}"));
     assert!(all.contains("✓ read tests/a.rs · 2 lines"), "{all}");
     assert!(all.contains("✓ read tests/a.rs · 2 lines  12ms ▸"), "a finished read folds to its head: {all}");
@@ -300,7 +300,7 @@ fn modals_and_palette_draw_on_top() {
     let rows = draw(&mut a, 100, 30);
     let row = rows.iter().find(|r| r.contains("/resume")).cloned().unwrap_or_default();
     assert!(row.contains("/resume  (sessions)"), "{row}");
-    assert!(row.contains("pick a session to resume"), "{row}");
+    assert!(row.contains("pick a session"), "{row}");
     assert!(!rows.join("\n").contains("/sessions "), "sessions is not a row of its own");
 }
 

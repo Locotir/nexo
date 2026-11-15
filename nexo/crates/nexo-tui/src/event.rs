@@ -221,8 +221,8 @@ pub fn key(app: &mut App, k: KeyEvent) {
             app.force_clear = true;
             return;
         }
-        Some(Action::PageUp) => return app.scroll_by(-page),
-        Some(Action::PageDown) => return app.scroll_by(page),
+        Some(Action::PageUp) if app.palette.is_none() => return app.scroll_by(-page),
+        Some(Action::PageDown) if app.palette.is_none() => return app.scroll_by(page),
         Some(Action::Help) => return app.run_command(crate::commands::Command::Help),
         // the mode, as long as no card is selected (then it walks the cards back)
         Some(Action::Mode) if app.selected.is_none() && app.palette.is_none() => return app.cycle_mode(),

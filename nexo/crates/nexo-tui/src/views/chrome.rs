@@ -172,13 +172,15 @@ impl ChromeView {
             let head = Style::from_bold(theme);
             lines.push(Line::from(Span::styled("In your browser, on chrome://extensions:", head)));
             let folder = info.extension_dir.display();
+            // the folder sits on a line of its own, shortened at the front when it is too long, never broken
+            let folder = shorten_path(&folder.to_string(), w.saturating_sub(5));
             for step in [
                 "1. Turn on Developer mode (top right).".to_string(),
-                format!("2. Click Load unpacked and pick {folder}"),
+                "2. Click Load unpacked and pick:".to_string(),
+                format!("   {folder}"),
                 "3. Click the nexo button in the toolbar.".to_string(),
             ] {
-                for r in wrap_plain(&step, w.saturating_sub(2), Default::default(), &[]) {
-                    let mut r = r;
+                for mut r in wrap_plain(&step, w.saturating_sub(2), Default::default(), &[]) {
                     r.spans.insert(0, Span::raw("  "));
                     lines.push(r);
                 }
@@ -193,6 +195,19 @@ impl ChromeView {
         }
         lines
     }
+}
+
+/// `path` cut at the front to fit `max` columns (`…/rest/of/it`), at a folder boundary when it can.
+fn shorten_path(path: &str, max: usize) -> String {
+    if width(path) <= max || max < 4 {
+        return path.to_string();
+    }
+    let tail: String = path.chars().rev().take(max - 1).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail = match tail.find('/') {
+        Some(i) if i + 1 < tail.len() => tail[i..].to_string(),
+        _ => tail,
+    };
+    format!("…{tail}")
 }
 
 /// A short helper so the bold heading reads the same everywhere in this window.
@@ -230,7 +245,7 @@ fn host_text(i: &ChromeInfo) -> String {
 }
 
 fn files_text(i: &ChromeInfo) -> String {
-    let d = i.extension_dir.display();
+    let d = shorten_path(&i.extension_dir.display().to_string(), 40);
     match i.files {
         ChromeFiles::Current => format!("the extension files are in {d} and match this nexo"),
         ChromeFiles::Stale => format!("the extension files in {d} are from another nexo version: press s"),
@@ -336,7 +351,7 @@ mod tests {
         i.just_set_up = true;
         let t = text(&view(i));
         assert_eq!(t.matches('✓').count(), 2, "{t}");
-        assert!(t.contains("2. Click Load unpacked and pick /data/chrome-extension"), "{t}");
+        assert!(t.contains("2. Click Load unpacked and pick:\n     /data/chrome-extension"), "{t}");
         assert!(t.contains("1. Turn on Developer mode") && t.contains("3. Click the nexo button"), "{t}");
     }
 

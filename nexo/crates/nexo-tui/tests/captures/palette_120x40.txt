@@ -15,24 +15,24 @@
    • the input is 3 1 2
    • the output must be 1 2 3
 
-   ────────────────────────────────────────────────────────────────────────────────────────────────────────────── rust
+   rust ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
    ▎ fn main() {}
 
    ✓ read tests/a.rs · 2 lines  12ms ▸
    ✓ edit src/lib.rs · +1 −1  3ms
  common ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
- /model          [name]                        switch model, or set one up step by step (checked against the server)
+ /model          [name]                        switch model, or set one up
  /permissions    [ask|accept-edits|plan|yolo…  set the permission mode
- /resume         [session|tree|undelete]       pick a session to resume; with an id or a title: that one; `tree` shows…
- /plan           [text|off]                    plan mode: reads only, then a plan to approve; with text: sends it
- /ultracode      <task>                        plan a coordinated multi-agent task for approval
+ /resume         [session|tree|undelete]       pick a session, or `tree` for its forks
+ /plan           [text|off]                    plan mode: reads only, plan to approve
+ /ultracode      <task>                        plan a multi-agent task for approval
  /compact                                      replace the history with a summary
  /clear                                        start a new session here
  /help                                         keys and commands
- /effort         [level|default]               how much the model reasons, among the levels it takes
+ /effort         [level|default]               how much the model reasons
  session ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
- /fork                                         continue in a new session copied from an earlier point of this one
- /rewind                                       go back to before an earlier message, files included (also Esc Esc)
+ /fork                                         new session copied from an earlier point
+ /rewind                                       go back to before a message (also Esc Esc)
                                                      1/50                                                     39 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /

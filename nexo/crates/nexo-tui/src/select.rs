@@ -264,13 +264,17 @@ pub fn strip_rail(line: &str) -> String {
     }
 }
 
-/// A row drawn as a rule, `────── js`: the line over a code block with its language, or a
-/// horizontal rule; it has no text of its own to copy.
+/// A row drawn as a rule, `js ──────`: the line over a code block with its language, or a
+/// horizontal rule; it has no text of its own to copy. The older `────── js` shape counts too.
 fn is_rule(row: &str) -> bool {
     let row = row.trim();
     let label = row.trim_start_matches('─');
-    row.len() - label.len() >= 3 * '─'.len_utf8()
-        && (label.is_empty() || (label.starts_with(' ') && !label[1..].contains(' ')))
+    let lead = row.len() - label.len() >= 3 * '─'.len_utf8()
+        && (label.is_empty() || (label.starts_with(' ') && !label[1..].contains(' ')));
+    let body = row.trim_end_matches('─');
+    let trail = row.len() - body.len() >= 3 * '─'.len_utf8()
+        && (body.is_empty() || (body.ends_with(' ') && !body.trim_end().contains(' ')));
+    lead || trail
 }
 
 /// `lines` without their `  12│ ` gutters when every non-empty line has one.

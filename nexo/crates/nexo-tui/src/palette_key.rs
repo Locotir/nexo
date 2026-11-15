@@ -163,6 +163,18 @@ mod tests {
     }
 
     #[test]
+    fn page_keys_page_the_commands_list_and_not_the_transcript() {
+        let (mut a, _rx) = app();
+        open(&mut a);
+        let before = a.palette.as_ref().expect("window").selected;
+        key(&mut a, KeyCode::PageDown, KeyModifiers::NONE);
+        let after = a.palette.as_ref().expect("window").selected;
+        assert!(after > before, "PgDn moved the selection: {before} -> {after}");
+        key(&mut a, KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(a.palette.as_ref().expect("window").selected, before);
+    }
+
+    #[test]
     fn the_key_closes_a_slash_window_typed_by_hand() {
         let (mut a, _rx) = app();
         typed(&mut a, "/mo");

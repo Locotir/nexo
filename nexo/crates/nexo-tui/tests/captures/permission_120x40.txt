@@ -15,7 +15,7 @@
    • the in │ bash  cargo test                                                                             │
    • the ou │                                                                                              │
             │ $ cargo test                                                                                 │
-   ──────── │                                                                                              │ ──── rust
+   rust ─── │                                                                                              │ ─────────
    ▎ fn mai │ Allow always with a rule:                                                                    │
             │   1  bash(cargo *)                                                                           │
    ✓ read t │                                                                                              │

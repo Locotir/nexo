@@ -20,10 +20,11 @@ pub enum Tip {
     Files,
     Diff,
     CopyLast,
+    Thinking,
 }
 
 impl Tip {
-    const ALL: [Tip; 5] = [Tip::Search, Tip::History, Tip::Files, Tip::Diff, Tip::CopyLast];
+    const ALL: [Tip; 6] = [Tip::Search, Tip::History, Tip::Files, Tip::Diff, Tip::CopyLast, Tip::Thinking];
 
     fn id(self) -> &'static str {
         match self {
@@ -32,6 +33,7 @@ impl Tip {
             Tip::Files => "files",
             Tip::Diff => "diff",
             Tip::CopyLast => "copy_last",
+            Tip::Thinking => "thinking",
         }
     }
 
@@ -42,6 +44,7 @@ impl Tip {
             Tip::History => Some(Action::History),
             Tip::Diff => Some(Action::Diff),
             Tip::CopyLast => Some(Action::CopyLast),
+            Tip::Thinking => Some(Action::Reasoning),
             Tip::Files => None,
         }
     }
@@ -55,6 +58,7 @@ impl Tip {
             Tip::Files => "tip: @ picks a file to mention".to_string(),
             Tip::Diff => format!("tip: {} shows what the session changed", key(Action::Diff)?),
             Tip::CopyLast => format!("tip: {} copies the last reply", key(Action::CopyLast)?),
+            Tip::Thinking => format!("tip: {} shows or hides the model's thinking", key(Action::Reasoning)?),
         })
     }
 }
@@ -180,12 +184,13 @@ mod tests {
     #[test]
     fn the_tip_names_the_key_as_bound_and_is_skipped_when_unbound() {
         let mut s = HintState::default();
-        for t in [Tip::History, Tip::Files, Tip::Diff, Tip::CopyLast] {
+        for t in [Tip::History, Tip::Files, Tip::Diff, Tip::CopyLast, Tip::Thinking] {
             s.used_tip(t);
         }
         let (_, text) = s.tip(3, &keys()).unwrap();
         assert!(text.contains(&keys().label(Action::Search)), "{text}");
         assert!(Tip::Files.text(&keys()).unwrap().contains('@'));
+        assert!(Tip::Thinking.text(&keys()).unwrap().contains("thinking"));
     }
 
     #[test]

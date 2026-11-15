@@ -661,7 +661,8 @@ impl Block {
                     }
                     _ => parts.push("no prices known (/pricing in=… out=… cache=…)".to_string()),
                 }
-                if !source.is_empty() {
+                // "from unknown" says nothing: the source is named only when it is known
+                if !source.is_empty() && source != "unknown" {
                     parts.push(format!("from {source}"));
                 }
                 let text = format!("model {}", parts.join(" · "));
