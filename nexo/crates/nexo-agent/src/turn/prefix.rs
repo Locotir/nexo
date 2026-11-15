@@ -36,9 +36,12 @@ pub(super) fn settle(
             }
             // instruction files edited since, or read otherwise by a newer nexo (one that no longer reads a
             // home folder's): the session goes on with them as they are now, at the cost of one uncached request
-            let now = prompt::Volatile::capture(cwd, cfg).instructions;
-            if now != p.volatile.instructions {
-                p.volatile.instructions = now;
+            let now = prompt::Volatile::capture(cwd, cfg);
+            // a session saved before the files were kept apart gets them apart too, with the same text
+            if now.instructions != p.volatile.instructions || now.files != p.volatile.files {
+                p.volatile.instructions = now.instructions;
+                p.volatile.files = now.files;
+                p.volatile.nested = now.nested;
                 let _ = session.record_prefix(&p);
             }
             p

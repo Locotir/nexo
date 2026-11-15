@@ -349,3 +349,71 @@ fn claude_md_and_nested_files_reach_the_prompt() {
     assert!(p.contains("Use tabs.") && p.contains("Tabs are four wide."), "{p}");
     assert!(p.contains("- web/AGENTS.md") && !p.contains("Web rules."), "{p}");
 }
+
+/// A project with a 40 000-character `AGENTS.md`, preferences and an extra prompt of 6 000 characters each,
+/// the config folder holding the preferences.
+fn big_own_text() -> (tempfile::TempDir, tempfile::TempDir, AgentConfig) {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("prompt.md"), format!("{PREFS_TEMPLATE}{}", "Pref line.\n".repeat(550))).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir(d.path().join(".git")).unwrap();
+    let body = "- Keep functions short and name tests as sentences; run the gate before landing.\n";
+    std::fs::write(d.path().join("AGENTS.md"), body.repeat(40_000 / body.len() + 1)).unwrap();
+    let cfg = AgentConfig { system_prompt_extra: Some("Extra line.\n".repeat(500)), ..Default::default() };
+    (home, d, cfg)
+}
+
+#[test]
+fn a_small_window_cuts_the_persons_text_to_a_quarter_and_says_what_was_cut_and_where_the_rest_is() {
+    let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
+    let (home, d, cfg) = big_own_text();
+    std::env::set_var("NEXO_CONFIG_DIR", home.path());
+    let tools = ToolSet::new();
+    let whole = system_prompt_for(d.path(), &cfg, &tools, None);
+    for w in [8_000u64, 16_384] {
+        let p = system_prompt_for(d.path(), &cfg, &tools, Some(w));
+        // everything the person wrote together stays within a quarter of the window, in tokens
+        let own = &p[p.find("\n\nInstructions from").unwrap()..];
+        assert!(
+            own.chars().count() as u64 / 4 <= w / 4,
+            "{w}: the persons text takes {} characters",
+            own.chars().count()
+        );
+        let agents = d.path().join("AGENTS.md");
+        assert!(
+            p.contains("AGENTS.md cut to ")
+                && p.contains(&format!("characters for a {w}-token window; read {} for the rest", agents.display())),
+            "{w}: {own}"
+        );
+        assert!(p.contains("prompt.md cut to ") && p.contains("system_prompt_extra cut to "), "{w}");
+        assert!(p.contains(" of 40"), "{w}: the line says how much the file has");
+        // the head of each is kept
+        assert!(p.contains("- Keep functions short") && p.contains("Pref line.") && p.contains("Extra line."));
+        assert!(p.len() < whole.len());
+    }
+    std::env::remove_var("NEXO_CONFIG_DIR");
+}
+
+#[test]
+fn a_window_that_holds_the_persons_text_or_is_unknown_sends_it_whole() {
+    let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
+    let (home, d, cfg) = big_own_text();
+    std::env::set_var("NEXO_CONFIG_DIR", home.path());
+    let tools = ToolSet::new();
+    let whole = system_prompt_for(d.path(), &cfg, &tools, None);
+    assert!(!whole.contains(" cut to "), "{whole}");
+    assert_eq!(system_prompt_for(d.path(), &cfg, &tools, Some(200_000)), whole);
+    // a quarter of 200 000 tokens is 800 000 characters: also the 40 000 of the file are all there
+    let agents = std::fs::read_to_string(d.path().join("AGENTS.md")).unwrap();
+    assert!(whole.contains(agents.trim()));
+    std::env::remove_var("NEXO_CONFIG_DIR");
+}
+
+#[test]
+fn the_caps_leave_a_short_text_whole_and_share_the_rest_among_the_long_ones() {
+    assert_eq!(fit::caps(&[100, 5_000, 20_000], 4_000), vec![100, 1_950, 1_950]);
+    assert_eq!(fit::caps(&[10, 20], 100), vec![10, 20]);
+    assert_eq!(fit::budget(None), None);
+    assert_eq!(fit::budget(Some(8_192)), Some(8_192));
+    assert_eq!(fit::budget(Some(8_000)), Some(8_000));
+}

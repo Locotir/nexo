@@ -184,6 +184,7 @@ mod request_prefix;
 mod resume_and_rewind;
 mod session_commands;
 mod session_models;
+mod small_window;
 #[cfg(unix)]
 mod start_feedback;
 mod sub_agents;

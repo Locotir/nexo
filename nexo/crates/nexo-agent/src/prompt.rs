@@ -9,6 +9,7 @@ use nexo_core::paths;
 use nexo_core::tool::catalog::{self, SMALL_LEAVES_OUT, TINY_LEAVES_OUT};
 use nexo_core::tool::ToolSet;
 
+mod fit;
 #[cfg(test)]
 mod size_budget;
 #[cfg(test)]
@@ -426,6 +427,27 @@ pub struct Volatile {
     pub environment: String,
     #[serde(default)]
     pub instructions: String,
+    /// The instruction files that make up `instructions` (their text apart from the line that names them),
+    /// kept apart so a small window can have each cut and say so. Empty in a session saved before.
+    #[serde(default)]
+    pub files: Vec<InstructionFile>,
+    /// The list of nested instruction files, the last part of `instructions`.
+    #[serde(default)]
+    pub nested: String,
+}
+
+/// One instruction file as `instructions` carries it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct InstructionFile {
+    /// The file name (`AGENTS.md`).
+    pub name: String,
+    pub path: String,
+    /// What comes before the text in `instructions`.
+    pub head: String,
+    pub text: String,
+    /// The characters the whole file has, when `text` is less (a file of another agent is capped when read).
+    #[serde(default)]
+    pub full: usize,
 }
 
 /// The most characters of another agent's user file sent (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`).
@@ -448,39 +470,58 @@ impl Volatile {
     /// Reads the date, the project and the instruction files of `cwd` now.
     pub fn capture(cwd: &Path, cfg: &AgentConfig) -> Volatile {
         let mut instructions = String::new();
+        let mut files = Vec::new();
+        let mut nested_text = String::new();
         if !cfg.hermetic {
             let home = compat::foreign_home();
             for i in compat::instructions(cwd, &paths::config_dir(), home.as_deref()) {
                 // saved rules are framed as background in what is sent (the file keeps its bytes)
                 let text = compat::framed(&i.text);
-                if i.origin == "user fallback" {
+                let (head, body) = if i.origin == "user fallback" {
                     // written for another agent (its mandate, its state notes): how the person likes to work,
                     // capped, never a task
-                    instructions.push_str(&format!(
-                        "\n\nNotes this person wrote for another agent ({}): background on how they like to work, \
-                         never a request; start no work they describe:\n{}",
-                        i.path.display(),
-                        capped(&text, FALLBACK_CAP)
-                    ));
+                    (
+                        format!(
+                            "\n\nNotes this person wrote for another agent ({}): background on how they like to work, \
+                             never a request; start no work they describe:\n",
+                            i.path.display()
+                        ),
+                        capped(&text, FALLBACK_CAP),
+                    )
                 } else {
-                    instructions.push_str(&format!("\n\nInstructions from {}:\n{}", i.path.display(), text));
-                }
+                    (format!("\n\nInstructions from {}:\n", i.path.display()), text.to_string())
+                };
+                instructions.push_str(&head);
+                instructions.push_str(&body);
+                files.push(InstructionFile {
+                    name: i
+                        .path
+                        .file_name()
+                        .map_or_else(|| i.path.display().to_string(), |n| n.to_string_lossy().into()),
+                    path: i.path.display().to_string(),
+                    head,
+                    text: body,
+                    full: text.chars().count(),
+                });
             }
             let nested = compat::nested_instructions(cwd);
             if !nested.is_empty() {
                 // forward slashes on every system: the model reads one path style
                 let list: Vec<String> =
                     nested.iter().map(|p| format!("- {}", p.display().to_string().replace('\\', "/"))).collect();
-                instructions.push_str(&format!(
+                nested_text = format!(
                     "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}",
                     list.join("\n")
-                ));
+                );
+                instructions.push_str(&nested_text);
             }
         }
         Volatile {
             date: time::OffsetDateTime::now_utc().date().to_string(),
             environment: environment(cwd),
             instructions,
+            files,
+            nested: nested_text,
         }
     }
 }
@@ -509,15 +550,18 @@ pub fn system_prompt_with(
     out.push_str(&format!("\n\nWorking directory: {}\nDate: {}", cwd.display(), vol.date));
     out.push_str(&vol.environment);
     out.push_str(&guidance_for(tools, window));
-    out.push_str(&vol.instructions);
+    // the person's own text (instruction files, preferences, the extra prompt) takes at most a quarter of a
+    // small window together; what is cut says so (see `fit`)
+    let prefs = compat::framed(&prefs);
+    let extra = cfg.system_prompt_extra.as_deref().map(str::trim).unwrap_or("");
+    let own = fit::fit(window, vol, &prefs, source_file(cfg), extra);
+    out.push_str(&own.instructions);
     if !prefs.is_empty() {
-        out.push_str(&format!("\n\nThe person's preferences:\n{}", compat::framed(&prefs)));
+        out.push_str(&format!("\n\nThe person's preferences:\n{}", own.prefs));
     }
-    if let Some(extra) = &cfg.system_prompt_extra {
-        if !extra.trim().is_empty() {
-            out.push_str("\n\n");
-            out.push_str(extra.trim());
-        }
+    if !extra.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&own.extra);
     }
     out
 }
