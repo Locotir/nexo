@@ -143,7 +143,7 @@ fn a_narrow_bar_drops_the_count_before_the_model_name() {
     a.todo = list();
     let (rows, _) = render(&mut a, 40, 24);
     let bar = rows.last().unwrap();
-    assert!(!bar.contains("2/5") && bar.contains("deepsee…") && bar.contains("20261027…"), "{bar}");
+    assert!(!bar.contains("2/5") && bar.contains("deepseek-chat") && !bar.contains("20261027"), "{bar}");
     let mut wide = app(false, false);
     wide.todo = list();
     let (rows, _) = render(&mut wide, 100, 24);

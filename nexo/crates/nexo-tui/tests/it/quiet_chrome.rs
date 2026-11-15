@@ -221,8 +221,6 @@ fn a_message_and_the_queued_notice_ride_in_the_bar_and_take_no_row() {
     // a click on the notice takes the queue back
     let hit = a.hint_hits.iter().find(|(_, h)| *h == HintHit::Queued).map(|(r, _)| *r).expect("the notice answers");
     assert_eq!(hit.y as usize, n - 1, "it sits on the status bar");
-    // The active session remains visible alongside the notice.
-    assert!(bar.contains("20261027"));
 }
 
 #[test]

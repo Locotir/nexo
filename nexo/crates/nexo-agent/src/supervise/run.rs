@@ -603,23 +603,42 @@ impl Setup {
         let mut s = Supervisor::new(policy);
         s.nexo = Some(nexo.clone());
         s.add(Box::new(nexo));
-        if let Some(root) = &self.logs_root {
-            s.add(Box::new(JsonlSource::new(root.clone(), self.scan_hours)));
-        }
-        if let Some((prog, args)) = &self.list_cmd {
-            s.add(Box::new(ListSource::new(prog.clone(), args.clone(), self.list_every)));
+        for src in self.other_tool_sources() {
+            s.add(src);
         }
         // the other nexo sessions and the team lanes: from their heartbeats and state files under the person's own
         // folders, so only the setup that lists the other tool's sessions too (`detect`, this machine's) reads them; a
         // test setup with fake places never touches the real ones.
         if self.list_cmd.is_some() {
-            let root = nexo_core::mailbox::mail_root();
-            if root.is_dir() {
-                s.add(Box::new(LiveSource::new(root)));
+            for src in Self::fleet_sources() {
+                s.add(src);
             }
-            s.add(Box::new(super::source_team::TeamSource::new()));
         }
         s
+    }
+
+    /// What reads the other tool's sessions: its logs, and the program that lists the running ones.
+    pub fn other_tool_sources(&self) -> Vec<Box<dyn super::source::Source>> {
+        let mut out: Vec<Box<dyn super::source::Source>> = Vec::new();
+        if let Some(root) = &self.logs_root {
+            out.push(Box::new(JsonlSource::new(root.clone(), self.scan_hours)));
+        }
+        if let Some((prog, args)) = &self.list_cmd {
+            out.push(Box::new(ListSource::new(prog.clone(), args.clone(), self.list_every)));
+        }
+        out
+    }
+
+    /// The cheap sources of the status bar's fleet chip: the other nexo sessions' heartbeats and the team's
+    /// lane files, files only (the mail root is read when it exists).
+    pub fn fleet_sources() -> Vec<Box<dyn super::source::Source>> {
+        let mut out: Vec<Box<dyn super::source::Source>> = Vec::new();
+        let root = nexo_core::mailbox::mail_root();
+        if root.is_dir() {
+            out.push(Box::new(LiveSource::new(root)));
+        }
+        out.push(Box::new(super::source_team::TeamSource::new()));
+        out
     }
 }
 

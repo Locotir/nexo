@@ -59,10 +59,11 @@ pub(super) fn mode_hint(m: PermissionMode) -> &'static str {
     }
 }
 
-/// `HH:MM` now, local time when the offset is known.
+/// `HH:MM` now, local time: the one format of every time the bar or a message shows. The offset is the one read
+/// at start (reading it later fails once threads run, which would stamp UTC).
 pub(crate) fn clock() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    format!("{:02}:{:02}", now.hour(), now.minute())
+    let ms = time::OffsetDateTime::now_utc().unix_timestamp() * 1000;
+    nexo_core::team::clock(ms, nexo_agent::budget::local_offset())
 }
 
 /// A line that starts with a path (`/home/u/a.rs has a bug`), not a command: its first word has a second

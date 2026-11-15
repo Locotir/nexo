@@ -16,36 +16,25 @@ pub(super) fn segs_width(app: &App, segs: &[Vec<Seg>]) -> usize {
     brand_width(app) + segs.iter().map(|g| 3 + g.iter().map(|s| width(&s.text)).sum::<usize>()).sum::<usize>()
 }
 
-pub(in crate::ui) fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
-    let name = if app.session_title.trim().is_empty() {
-        app.session_id.as_deref().unwrap_or("")
-    } else {
-        app.session_title.as_str()
+/// The name at the bar's right end: the session's title, or the time it began. Whole or not at all; a title
+/// over `NAME_COLS` is left to the sessions list, since a cut name tells nobody anything.
+fn session_label(app: &App) -> Option<String> {
+    const NAME_COLS: usize = 24;
+    let id = app.session_id.as_deref()?;
+    let name = match app.session_title.trim() {
+        "" => super::super::hints::started_clock(id),
+        t => t.to_string(),
     };
-    if name.is_empty() || area.width < 32 || area.height == 0 {
-        draw_title_rest(f, app, area);
-        return;
-    }
-    // At 40 columns reserve nine cells for the name (including an ellipsis),
-    // while leaving the remaining bar to fit the model and other status pieces.
-    let room = match area.width {
-        0..=39 | 60..=99 => 8,
-        _ => 12,
-    };
-    let label = truncate(&format!(" │ {name}"), room);
-    let used = width(&label) as u16;
-    let rest = Rect::new(area.x, area.y, area.width - used, area.height);
-    let session = Rect::new(area.x + area.width - used, area.y, used, area.height);
-    draw_title_rest(f, app, rest);
-    let mut style = app.theme.bar().fg(app.theme.accent2);
-    if app.hover == Hover::Hint(HintHit::Session) {
-        style = style.add_modifier(Modifier::UNDERLINED);
-    }
-    f.render_widget(Paragraph::new(label).style(style), session);
-    app.hint_hits.push((session, HintHit::Session));
+    let label = format!(" │ {name}");
+    (!name.is_empty() && width(&label) <= NAME_COLS + 3).then_some(label)
 }
 
-fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
+pub(in crate::ui) fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
+    let label = if area.width < 32 { None } else { session_label(app) };
+    draw_title_rest(f, app, area, label);
+}
+
+fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<String>) {
     app.status_hits.clear();
     if area.height == 0 {
         return;
@@ -87,7 +76,10 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(line) = app.status_cmd.as_ref().and_then(|s| s.line.clone()) {
         right.push(Seg { text: " ".to_string(), style: base });
         let w = area.width as usize;
-        let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
+        // the name keeps its end of the bar only when the script's line still has most of it
+        let label = label.filter(|l| width(l) * 3 <= w);
+        let label_w = label.as_ref().map_or(0, |l| width(l));
+        let right_w: usize = right.iter().map(|s| width(&s.text)).sum::<usize>() + label_w;
         // quiet: the message, queued requests and jobs ride at the right of the script's line
         let (notes, notes_w) = quiet_notes(app, w, right_w);
         let mut pieces = crate::status_cmd::spans(&line, base);
@@ -108,6 +100,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
         app.hint_hits.extend(note_hits(&notes, used + w.saturating_sub(used + notes_w + right_w) + NOTE_GAP, area));
         spans.extend(note_spans(app, &notes, notes_w));
         spans.extend(right.into_iter().map(|s| Span::styled(s.text, s.style)));
+        spans.extend(label_span(app, label, area));
         f.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
@@ -179,6 +172,15 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
     let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
     let (notes, notes_w) = quiet_notes(app, w, right_w);
     let avail = w.saturating_sub(right_w + notes_w);
+    // the name is the least useful part: it stays only when the bar loses nothing by making room for it
+    let label = label.filter(|l| {
+        let lw = width(l);
+        let room = avail.saturating_sub(lw);
+        let with = segs_width(app, &title_segments(app, room));
+        with <= room && with == segs_width(app, &title_segments(app, avail))
+    });
+    let label_w = label.as_ref().map_or(0, |l| width(l));
+    let avail = avail.saturating_sub(label_w);
     let groups = title_segments(app, avail);
     let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
     if app.root {
@@ -282,7 +284,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
             hits.push((Rect::new(area.x + st as u16, area.y, rw as u16, 1), rh));
         }
     }
-    let pad = w.saturating_sub(used + notes_w + right_w);
+    let pad = w.saturating_sub(used + notes_w + right_w + label_w);
     spans.push(Span::styled(" ".repeat(pad), base));
     app.hint_hits.extend(note_hits(&notes, used + pad + NOTE_GAP, area));
     spans.extend(note_spans(app, &notes, notes_w));
@@ -301,6 +303,19 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
         let st = if i >= skip && i + 1 < n { s.style.add_modifier(cm) } else { s.style };
         spans.push(Span::styled(s.text, st));
     }
+    spans.extend(label_span(app, label, area));
     app.status_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The session name's span at the bar's right end, and its click.
+fn label_span(app: &mut App, label: Option<String>, area: Rect) -> Option<Span<'static>> {
+    let label = label?;
+    let w = width(&label) as u16;
+    let mut style = app.theme.bar().fg(app.theme.accent2);
+    if app.hover == Hover::Hint(HintHit::Session) {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    app.hint_hits.push((Rect::new(area.x + area.width - w, area.y, w, 1), HintHit::Session));
+    Some(Span::styled(label, style))
 }

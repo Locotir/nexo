@@ -512,19 +512,18 @@ fn session_title_persists_in_the_rendered_subscription_bar() {
     assert!(!rows.last().unwrap().contains("Alpha"));
     a.handle_agent(AgentEvent::SessionChanged { session_id: "fallback-id".into(), title: String::new() });
     let rows = frame(&mut a, 100, 20);
-    assert!(rows.last().unwrap().contains("│ fallback…"));
+    assert!(rows.last().unwrap().contains("│ fallback-id"), "a name that is no time is shown whole: {:?}", rows.last());
     a.session_title = "A very long session name that needs truncation".into();
     let rows = frame(&mut a, 40, 20);
-    assert!(rows.last().unwrap().contains("│ A very l…"), "{:?}", rows.last());
+    assert!(!rows.last().unwrap().contains("A very"), "{:?}", rows.last());
     a.status_cmd = None;
     a.opts.detail = nexo_core::config::Detail::Full;
     a.session_title = "Alpha project work".into();
     let alpha = frame(&mut a, 40, 20).last().unwrap().clone();
     a.session_title = "Beta project work".into();
     let beta = frame(&mut a, 40, 20).last().unwrap().clone();
-    assert!(alpha.contains("Alpha pr…"), "{alpha}");
-    assert!(beta.contains("Beta pro…"), "{beta}");
-    assert_ne!(alpha, beta);
+    // a name that would cost the bar a piece is left out whole, never cut
+    assert!(!alpha.contains("Alpha pr") && !beta.contains("Beta pro"), "{alpha} {beta}");
     assert!(alpha.contains("gpt-"), "model should remain visible: {alpha}");
 }
 

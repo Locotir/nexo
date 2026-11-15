@@ -8,5 +8,5 @@
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything
- Esc close         20261102-100000-ef56
- nexo │ deepsee… Σ 0 billed  │ 20261102…
+ Esc close                        10:00
+ nexo │ deepseek-chat │ ask  Σ 0 billed

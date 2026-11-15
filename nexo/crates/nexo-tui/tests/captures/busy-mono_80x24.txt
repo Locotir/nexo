@@ -20,5 +20,5 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
- Esc close                                                 20261102-100000-ef56
- nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ ~0% 0        Σ 0 billed  │ 2026…
+ Esc close                                                                10:00
+ nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ ~0% 0 Σ 0 billed

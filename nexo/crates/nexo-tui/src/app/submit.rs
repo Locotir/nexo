@@ -428,6 +428,7 @@ impl App {
             return;
         }
         self.fleet_at = Some(now);
+        self.start_fleet_watch();
         let rows = self.panel.as_ref().map(|p| p.rows(nexo_agent::supervise::run::now_secs())).unwrap_or_default();
         let mut count = crate::agents_view::FleetCount::of(&rows);
         count.subs = count.subs.max(self.sub_runs.iter().filter(|r| r.info.state.running()).count());

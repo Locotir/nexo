@@ -154,7 +154,13 @@ impl Source for TeamSource {
                 if i.st.session_id.is_none() {
                     match (facts.state.as_str(), before.as_deref()) {
                         ("running", _) => out.push(obs(&key, ObsKind::TurnBegin)),
-                        ("failed", _) => out.push(obs(&key, ObsKind::SystemError)),
+                        // a lane that failed has no runner and its round did not end: it reads as stalled, not as
+                        // the work its spend note and error would otherwise look like
+                        ("failed", _) => {
+                            out.push(obs(&key, ObsKind::TurnBegin));
+                            out.push(obs(&key, ObsKind::SystemError));
+                            out.push(obs(&key, ObsKind::Dead));
+                        }
                         (_, Some("running")) | (_, None) => {
                             out.push(obs(&key, ObsKind::Activity));
                             out.push(obs(&key, ObsKind::TurnEnd { last_text_tail: String::new() }));
@@ -337,5 +343,20 @@ mod tests {
         assert!(st.live_pid("X").is_none(), "this test process is not a lane runner");
         let _ = d;
         assert!(LaneState { pid: Some(u32::MAX - 1), ..LaneState::default() }.live_pid("X").is_none());
+    }
+
+    #[test]
+    fn a_failed_lane_row_reads_as_stalled_on_its_own() {
+        let now = NOW;
+        let st = LaneState { state: "failed".into(), why: Some("three rounds failed".into()), ..LaneState::default() };
+        let mut i = input("B", st, false);
+        i.lane.model = Some("xai/grok".into());
+        let mut s = Setup::none().supervisor(Policy::default(), NexoSource::default());
+        s.add(Box::new(src(vec![i], false)));
+        s.tick(now);
+        let rows = s.rows(now);
+        let r = rows.iter().find(|r| r.key == "lane:B").expect("the lane row");
+        assert_eq!(r.state, crate::supervise::State::Stalled, "{r:?}");
+        assert_eq!(r.lane.as_ref().map(|l| l.state.as_str()), Some("failed"));
     }
 }

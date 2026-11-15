@@ -141,6 +141,11 @@ pub struct App {
     pub fleet: Option<crate::agents_view::FleetCount>,
     /// When the fleet chip was last counted.
     pub fleet_at: Option<std::time::Instant>,
+    /// Whether the panel's poller was completed with what only `/panel` needs, and the notes and judge model it
+    /// was started with.
+    pub(super) panel_full: bool,
+    pub(super) panel_notes: Vec<String>,
+    pub(super) panel_policy: Option<nexo_agent::supervise::Policy>,
     pub spinner: usize,
     /// A conversation was loaded and the curator has not yet said what it keeps: the footer shows a spinner.
     pub context_wait: bool,
@@ -397,6 +402,9 @@ impl App {
             panel_filter: Default::default(),
             fleet: None,
             fleet_at: None,
+            panel_full: false,
+            panel_notes: Vec::new(),
+            panel_policy: None,
             spinner: 0,
             context_wait: false,
             session_usage: Usage::default(),

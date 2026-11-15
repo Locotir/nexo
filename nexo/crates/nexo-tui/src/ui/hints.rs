@@ -90,9 +90,9 @@ pub(super) fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
         let text = truncate(msg, status_room.saturating_sub(2).max(1));
         out.push((5, None, vec![Span::styled(format!(" {} ", text), base.fg(colour).add_modifier(Modifier::BOLD))]));
     } else if let Some(id) = &app.session_id {
-        // the whole id or title, or nothing: a piece of a name tells nobody anything
+        // the whole title or the time the session began, or nothing: a piece of a name tells nobody anything
         let span = if app.session_title.is_empty() {
-            Span::styled(format!(" {id} "), base.fg(theme.dim).add_modifier(lit(HintHit::Session)))
+            Span::styled(format!(" {} ", started_clock(id)), base.fg(theme.dim).add_modifier(lit(HintHit::Session)))
         } else {
             Span::styled(
                 format!(" {} ", truncate(&app.session_title, TITLE_COLS)),
@@ -345,4 +345,24 @@ pub(super) fn fit_hints(prefix: &str, base: &str, suffix: &str, keep_last: bool,
         }
     }
     truncate(&build(&parts, suffix), w)
+}
+
+/// The local `HH:MM` a session began, read from its id (`20261115-205700-ab12`, UTC); the id itself when it is
+/// not in that shape, so a renamed or imported session never shows a made-up time.
+pub(super) fn started_clock(id: &str) -> String {
+    let num = |r: std::ops::Range<usize>| id.get(r).and_then(|d| d.parse::<u32>().ok());
+    let parsed = (|| {
+        let date = time::Date::from_calendar_date(
+            num(0..4)? as i32,
+            time::Month::try_from(num(4..6)? as u8).ok()?,
+            num(6..8)? as u8,
+        )
+        .ok()?;
+        let at = time::Time::from_hms(num(9..11)? as u8, num(11..13)? as u8, num(13..15)? as u8).ok()?;
+        (id.as_bytes().get(8) == Some(&b'-')).then(|| time::PrimitiveDateTime::new(date, at).assume_utc())
+    })();
+    match parsed {
+        Some(t) => nexo_core::team::clock(t.unix_timestamp() * 1000, nexo_agent::budget::local_offset()),
+        None => id.to_string(),
+    }
 }

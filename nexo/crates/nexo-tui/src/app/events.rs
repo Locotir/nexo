@@ -174,47 +174,76 @@ impl App {
         format!("{v}\n")
     }
 
-    /// The poller behind `/panel`, started on first use.
+    /// The poller behind `/panel`: the fleet watch of the status bar, completed with the other tool's sessions,
+    /// the judge and the mail on first use.
     pub(super) fn panel_handle(&mut self) -> std::sync::Arc<nexo_agent::supervise::Panel> {
-        if let Some(p) = &self.panel {
-            return p.clone();
+        self.panel_with(true)
+    }
+
+    /// Starts the watching that feeds the status bar's fleet chip when this process has a mailbox and the mail
+    /// root exists: the heartbeats and the lane files only, read once a second, never a model call.
+    pub(super) fn start_fleet_watch(&mut self) {
+        if self.panel.is_none() && crate::mailbox().is_some() && nexo_core::mailbox::mail_root().is_dir() {
+            self.panel_with(false);
         }
+    }
+
+    /// The panel's poller. `full` adds what only `/panel` needs: the other tool's logs and list, the mail ledgers
+    /// and the judge (a model), once; without it the sources are the fleet's own files.
+    fn panel_with(&mut self, full: bool) -> std::sync::Arc<nexo_agent::supervise::Panel> {
         use nexo_agent::supervise::{run::Setup, Policy};
-        let user = nexo_core::paths::config_dir().join("supervisor.toml");
-        let project = std::path::Path::new(".nexo/supervisor.toml");
-        let loaded = Policy::load(Some(&user), Some(project));
-        let mut notes: Vec<String> = loaded.errors.iter().map(|e| e.to_string()).collect();
-        let policy = loaded.policy;
-        let model = policy.model.clone();
-        let setup = Setup::detect(&policy);
-        let started = nexo_agent::supervise::Panel::start_with(
-            &setup,
-            policy.clone(),
-            self.nexo_src.clone(),
-            &crate::supervise_options(),
-        )
-        .unwrap_or_else(|_| nexo_agent::supervise::Panel::start(&setup, policy, self.nexo_src.clone()));
-        if let Some(m) = &model {
-            match tokio::runtime::Handle::try_current() {
-                Ok(rt) => {
-                    let client = nexo_agent::supervise::model::default_client();
-                    match nexo_agent::supervise::model::judge_for(m, &self.opts.providers, client, rt) {
-                        Ok(j) => started.set_judge(j),
-                        Err(e) => notes.push(e),
-                    }
+        let p = match &self.panel {
+            Some(p) => p.clone(),
+            None => {
+                let user = nexo_core::paths::config_dir().join("supervisor.toml");
+                let project = std::path::Path::new(".nexo/supervisor.toml");
+                let loaded = Policy::load(Some(&user), Some(project));
+                self.panel_notes = loaded.errors.iter().map(|e| e.to_string()).collect();
+                let policy = loaded.policy;
+                let setup = Setup::none();
+                let started = nexo_agent::supervise::Panel::start_with(
+                    &setup,
+                    policy.clone(),
+                    self.nexo_src.clone(),
+                    &crate::supervise_options(),
+                )
+                .unwrap_or_else(|_| nexo_agent::supervise::Panel::start(&setup, policy.clone(), self.nexo_src.clone()));
+                for src in Setup::fleet_sources() {
+                    started.add_source(src);
                 }
-                Err(_) => notes.push("the model needs the async runtime, which is not running".into()),
+                started.set_notes(self.panel_notes.clone());
+                self.panel_policy = Some(policy);
+                let p = std::sync::Arc::new(started);
+                self.panel = Some(p.clone());
+                p
             }
+        };
+        if full && !self.panel_full {
+            self.panel_full = true;
+            let policy = self.panel_policy.clone().unwrap_or_default();
+            for src in Setup::detect(&policy).other_tool_sources() {
+                p.add_source(src);
+            }
+            if let Some(m) = policy.model.clone() {
+                match tokio::runtime::Handle::try_current() {
+                    Ok(rt) => {
+                        let client = nexo_agent::supervise::model::default_client();
+                        match nexo_agent::supervise::model::judge_for(&m, &self.opts.providers, client, rt) {
+                            Ok(j) => p.set_judge(j),
+                            Err(e) => self.panel_notes.push(e),
+                        }
+                    }
+                    Err(_) => self.panel_notes.push("the model needs the async runtime, which is not running".into()),
+                }
+            }
+            // the other sessions' mail (the ledgers and receipts on disk), only where this process has a mailbox
+            if crate::mailbox().is_some() {
+                p.add_source(Box::new(nexo_agent::supervise::source_mail::MailSource::new(
+                    nexo_core::mailbox::mail_root(),
+                )));
+            }
+            p.set_notes(self.panel_notes.clone());
         }
-        // the other sessions' mail (the ledgers and receipts on disk), only where this process has a mailbox
-        if crate::mailbox().is_some() {
-            started.add_source(Box::new(nexo_agent::supervise::source_mail::MailSource::new(
-                nexo_core::mailbox::mail_root(),
-            )));
-        }
-        started.set_notes(notes);
-        let p = std::sync::Arc::new(started);
-        self.panel = Some(p.clone());
         p
     }
 

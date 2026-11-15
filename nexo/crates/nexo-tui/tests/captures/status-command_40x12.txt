@@ -9,4 +9,4 @@
 
 ─ ask ──────────────────────────────────
 ›   ask anything
- deepseek-chat on deepseek…  │ 20261102…
+ deepseek-chat on deepseek | c…  │ 14:00

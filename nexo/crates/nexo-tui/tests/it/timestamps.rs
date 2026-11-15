@@ -88,7 +88,9 @@ fn the_toggle_shows_and_hides_it_at_once() {
     assert!(draw(&mut a, 80).iter().any(|r| r.contains("14:32")));
     a.input.set_text("/timestamps");
     a.submit();
-    assert!(draw(&mut a, 80).iter().all(|r| !r.contains("14:32")));
+    // the status bar (the last row) names the session by the time it began, which may be this very minute
+    let body = |rows: Vec<String>| rows[..rows.len() - 1].to_vec();
+    assert!(body(draw(&mut a, 80)).iter().all(|r| !r.contains("14:32")));
     a.input.set_text("/timestamps");
     a.submit();
     assert!(draw(&mut a, 80).iter().any(|r| r.contains("14:32 · 1m04s")));

@@ -9,4 +9,4 @@
 ─ ask ──────────────────────────────────
 › @ta
  ↑↓ choose · Tab or Enter insert
- nexo │ deepseek-c… $0.0031  │ 20261102…
+ nexo │ deepseek-chat │ ask     $0.0031

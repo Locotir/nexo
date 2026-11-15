@@ -8,6 +8,11 @@ impl App {
             self.last_call_input = call.total_input();
             self.last_call_cached = call.cache_read;
             self.call_inputs.push(call.total_input());
+            // the reply joins the history now, but the curator reports its count only before the next call:
+            // the bar's session figure grows by what the reply cost, so it moves with the turn
+            if let Some(c) = &mut self.context {
+                c.history_tokens += call.output;
+            }
         }
         self.turn_tally.steps += 1;
         self.turn_usage += turn;

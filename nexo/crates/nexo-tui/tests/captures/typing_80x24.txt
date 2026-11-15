@@ -21,4 +21,4 @@
   to see how the editor wraps it
   and a second line
 
- nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69% 6.2k/9.0k   $0.0031  │ 2026…
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031
