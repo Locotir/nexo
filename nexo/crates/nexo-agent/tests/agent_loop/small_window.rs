@@ -490,25 +490,36 @@ async fn a_plain_read_of(chars: usize, w: Option<u32>) -> (Vec<ModelRequest>, u6
     (reqs, est)
 }
 
-#[tokio::test]
-async fn a_plain_session_at_8k_with_room_for_a_short_reply_only_goes_from_the_curators_view_with_a_useful_reply() {
-    let _g = config_lock().lock().await;
-    // the size of read result that leaves the request at about 7 350 of 8 000 tokens: room for a 300-token reply,
-    // none for 1 000
-    // (measured with no window known, less what the system prompt and tools at 8k leave out)
+/// The characters of read result that leave the request after the read at about `tokens` estimated tokens in a
+/// session at 8k, and that session with no window known (where nothing is fitted). Measured with no window known,
+/// less what the system prompt and tools at 8k leave out.
+async fn read_for(tokens: f64) -> (usize, Vec<ModelRequest>, u64) {
     let (open, at_4k) = a_plain_read_of(4_000, None).await;
     let (_, at_8k) = a_plain_read_of(8_000, None).await;
     let (small, _) = a_plain_read_of(10, Some(8_000)).await;
     let fixed_less = fixed_tokens(&open[0]) - fixed_tokens(&small[0]);
     let per_char = (at_8k - at_4k) as f64 / 4_000.0;
-    let chars = 4_000 + ((7_350.0 + fixed_less as f64 - at_4k as f64) / per_char) as usize;
+    let chars = 4_000 + ((tokens + fixed_less as f64 - at_4k as f64) / per_char) as usize;
     let (whole, est) = a_plain_read_of(chars, None).await;
-    let est = est - fixed_less;
-    assert!(est > 7_000 && est + 300 <= 8_000, "the request takes {est} tokens at 8k");
+    (chars, whole, est - fixed_less)
+}
+
+/// The provider's count of `est` estimated tokens of code, at about 3 characters a token.
+fn as_code(est: u64) -> u64 {
+    (est as f64 * 1.33).ceil() as u64
+}
+
+#[tokio::test]
+async fn a_plain_session_at_8k_with_room_for_a_short_reply_only_goes_from_the_curators_view_with_a_useful_reply() {
+    let _g = config_lock().lock().await;
+    // a request of code at about 7 350 of 8 000 tokens before the provider has counted any: room for a 300-token
+    // reply, none for 1 000
+    let (chars, whole, est) = read_for(7_350.0 / 1.33).await;
+    assert!(as_code(est) > 7_000 && as_code(est) + 300 <= 8_000, "the request takes {} tokens at 8k", as_code(est));
     let (reqs, _) = a_plain_read_of(chars, Some(8_000)).await;
     let last = reqs.last().unwrap();
     assert!(last.max_tokens >= 1_000, "the reply has room for an edit: {}", last.max_tokens);
-    let total = total_with_reply(last);
+    let total = as_code(total_with_reply(last) - u64::from(last.max_tokens)) + u64::from(last.max_tokens);
     assert!(total <= 8_000, "the request and its reply take {total} tokens of 8000");
     let size = |r: &ModelRequest| serde_json::to_string(&r.messages).unwrap().len();
     assert!(size(last) < size(whole.last().unwrap()), "the curator's view is shorter than the whole read");
@@ -595,4 +606,20 @@ async fn a_main_agent_at_200k_and_its_sub_agent_at_8k_on_one_mcp_server_each_get
     let c2 = done_output(&evs, "c2");
     assert!(c2.contains("bad arguments") && !c2.contains("whole input schema"), "{c2}");
     assert!(mcp_notices(&evs).is_empty(), "the main agent's own tools were not shortened: {:?}", notices(&evs));
+}
+
+#[tokio::test]
+async fn a_first_request_of_code_at_8k_fits_the_window_at_three_characters_a_token() {
+    let _g = config_lock().lock().await;
+    // a request that fits at four characters a token with its whole reply, and passes the window at three
+    let (chars, _, est) = read_for(5_250.0).await;
+    assert!(est + 2_000 <= 8_000 && as_code(est) + 2_000 > 8_000, "the request takes {est} tokens at 8k");
+    // no reply carries a count, so every request goes before the first one
+    let (reqs, _) = a_plain_read_of(chars, Some(8_000)).await;
+    for (i, r) in reqs.iter().enumerate() {
+        let reply = u64::from(r.max_tokens);
+        let total = as_code(total_with_reply(r) - reply) + reply;
+        assert!(total <= 8_000, "request {i} and its reply take {total} tokens of 8000");
+        assert!(reply >= 1_000, "request {i} keeps a useful reply: {reply}");
+    }
 }
