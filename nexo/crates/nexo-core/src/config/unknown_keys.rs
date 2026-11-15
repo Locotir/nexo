@@ -14,10 +14,10 @@ pub(super) fn overlay(base: &mut toml::Table, over: &toml::Table, said: &toml::T
     }
 }
 
-/// The keys of a config file that nexo does not read (a typo, a section that does not exist, a
+/// The keys of a config file (`config.toml`, `team.toml`) that nexo does not read (a typo, a section that does not exist, a
 /// setting since retired), said in one line; None when it reads them all. Nothing stops for them:
 /// the file still loads, but a setting that silently does nothing is worse than a warning.
-pub fn unread_keys(text: &str, parsed: &Config) -> Option<String> {
+pub fn unread_keys<T: Serialize>(text: &str, parsed: &T) -> Option<String> {
     let raw: toml::Table = toml::from_str(text).ok()?;
     let toml::Value::Table(read) = toml::Value::try_from(parsed).ok()? else {
         return None;
