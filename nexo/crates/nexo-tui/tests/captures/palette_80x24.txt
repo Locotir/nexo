@@ -4,7 +4,6 @@
                                                                                │
    rust ────────────────────────────────────────────────────────────────────── │
    ▎ fn main() {}                                                              │
- common ───────────────────────────────────────────────────────────────────────
  /model          [name]              switch model, or set one up
  /permissions    [ask|accept-edits…  set the permission mode
  /resume         [session|tree…      pick a session, or `tree` for its forks
@@ -14,10 +13,11 @@
  /clear                              start a new session here
  /help                               keys and commands
  /effort         [level|default]     how much the model reasons
- session ──────────────────────────────────────────────────────────────────────
  /fork                               new session copied from an earlier point
  /rewind                             go back to before a message (also Esc Esc)
-                                 1/50                                 39 more ↓
+ /undo                               undo the last request and its file edits
+ /rename         <name>              give this session a name
+                                 1/50                                 37 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close
