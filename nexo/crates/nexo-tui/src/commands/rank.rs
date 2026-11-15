@@ -1,6 +1,6 @@
 //! Ranking for the palette: fuzzy matching of a query, the grouped listing and the closest name to a typo.
 
-use super::table::{COMMANDS, GROUPS};
+use super::table::COMMANDS;
 
 /// One row of the palette: the table index, the alias the query matched, if
 /// any, and the letters it matched (character positions in the alias when
@@ -58,22 +58,10 @@ pub fn hits(q: &str, s: &str) -> Vec<usize> {
     out
 }
 
-/// Every command once, by group: `(group, table index)`. A command no group
-/// names (none should be) comes last, under "more".
+/// Every command once, by group: `(group, table index)`, in palette order.
 pub fn grouped() -> Vec<(&'static str, usize)> {
-    let mut out: Vec<(&'static str, usize)> = Vec::new();
-    for (g, names) in GROUPS {
-        for n in names.iter() {
-            if let Some(i) = COMMANDS.iter().position(|s| s.name == *n) {
-                out.push((g, i));
-            }
-        }
-    }
-    for i in 0..COMMANDS.len() {
-        if !out.iter().any(|(_, j)| *j == i) {
-            out.push(("more", i));
-        }
-    }
+    let mut out: Vec<(&'static str, usize)> = COMMANDS.iter().enumerate().map(|(i, s)| (s.group, i)).collect();
+    out.sort_by_key(|(_, i)| COMMANDS[*i].slot);
     out
 }
 

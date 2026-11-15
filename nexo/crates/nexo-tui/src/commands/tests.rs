@@ -2,7 +2,7 @@ use super::rank::distance;
 use super::table::HIDDEN;
 use super::{
     closed_args, closest, fixed_args, grouped, lookup, names, parse, rank, takes_listed_args, Command, GoalArg,
-    COMMANDS, GROUPS,
+    COMMANDS,
 };
 use nexo_core::permission::PermissionMode;
 
@@ -193,16 +193,11 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
         assert!(COMMANDS.iter().all(|s| !s.aliases.contains(&old)), "/{old} is still a listed alias");
         assert!(lookup(old).is_some(), "/{old} no longer resolves");
-        assert!(GROUPS.iter().all(|(_, m)| !m.contains(&old)), "/{old} is in a menu group");
+        assert!(COMMANDS.iter().all(|s| s.name != old), "/{old} is a menu command");
     }
     assert_eq!(COMMANDS.len(), 49, "the menu has grown or shrunk: update this on purpose");
     for old in ["provider", "keys", "config", "yolo"] {
         assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
-    }
-    for (_, members) in GROUPS {
-        for m in *members {
-            assert!(lookup(m).is_some_and(|s| s.name == *m), "group lists /{m}, which has no line");
-        }
     }
 }
 
@@ -246,11 +241,10 @@ fn every_command_sits_in_one_group() {
     let g = grouped();
     assert_eq!(g.len(), COMMANDS.len());
     assert!(g.iter().all(|(name, _)| *name != "more"), "a command no group lists: {g:?}");
-    for (_, names) in GROUPS {
-        for n in names.iter() {
-            assert!(lookup(n).is_some_and(|s| s.name == *n), "{n} is not a command");
-        }
-    }
+    let mut slots: Vec<u8> = COMMANDS.iter().map(|s| s.slot).collect();
+    slots.sort_unstable();
+    assert_eq!(slots, (0..COMMANDS.len() as u8).collect::<Vec<_>>(), "every command has its own palette slot");
+    assert!(COMMANDS.iter().all(|s| !s.group.is_empty()), "a command has no group");
 }
 
 #[test]
@@ -273,4 +267,21 @@ fn knows_which_arguments_it_can_list() {
         assert!(PermissionMode::parse(v).is_some(), "{v}");
     }
     assert!(closed_args("permissions") && !closed_args("goal") && !closed_args("model"));
+}
+
+#[test]
+fn the_palette_lists_every_command_in_this_exact_order_under_these_headings() {
+    let rows: Vec<String> = grouped().iter().map(|(g, i)| format!("{g}/{}", COMMANDS[*i].name)).collect();
+    let want = "\
+common/model common/permissions common/resume common/plan common/ultracode common/compact common/clear common/help common/effort \
+session/fork session/rewind session/undo session/rename session/msg session/export session/goal session/queue \
+model/logout model/fast model/pricing model/prompt model/memory model/budget \
+context and tools/context context and tools/sent context and tools/cost context and tools/tools context and tools/hooks \
+context and tools/mcp context and tools/chrome context and tools/skills context and tools/plugins context and tools/jobs \
+context and tools/panel context and tools/todo context and tools/diff context and tools/shared-memory context and tools/init \
+context and tools/review context and tools/commit context and tools/pr context and tools/status \
+settings/settings settings/sandbox settings/add-dir settings/theme \
+nexo/doctor nexo/copy nexo/quit";
+    // Headings hold spaces, so compare the joined text rather than splitting it.
+    assert_eq!(rows.join(" "), want);
 }
