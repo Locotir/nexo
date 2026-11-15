@@ -418,6 +418,62 @@ fn lmstudio_info(m: &Value) -> ModelInfo {
     }
 }
 
+/// How the window Ollama serves with is raised: nexo talks to Ollama through its OpenAI-compatible routes, which take
+/// no window, so the server's own setting decides.
+const OLLAMA_RAISE: &str = "OLLAMA_CONTEXT_LENGTH on the server, or PARAMETER num_ctx in a Modelfile";
+
+/// Ollama's `/api/ps`: the models it has loaded now.
+async fn ollama_ps(root: &str) -> Option<Value> {
+    get(&format!("{root}/api/ps"), HeaderMap::new(), ASK).await.ok().map(|a| a.body)
+}
+
+/// The window `model` is loaded with, in an `/api/ps` answer.
+fn ollama_loaded(ps: &Value, model: &str) -> Option<u32> {
+    ps["models"]
+        .as_array()
+        .and_then(|ms| ms.iter().find(|m| m["name"] == model || m["model"] == model))
+        .and_then(|m| u32_of(&m["context_length"]))
+}
+
+/// `n`, the window the server has the model loaded with, as the model's window, and the fact of it: when it is below
+/// the size `info` held (the model's own, which nexo would otherwise take), both numbers and where it is raised.
+fn loaded_window(probe: &ServerProbe, info: &mut ModelInfo, n: u32) -> String {
+    let full = info.context_window.replace(n);
+    let (server, route, past, raise) = match probe.kind.as_str() {
+        "ollama" => ("Ollama", "/api/ps", "Ollama cuts a longer prompt without an error", OLLAMA_RAISE),
+        "llama.cpp" => {
+            ("llama.cpp", "/props", "a longer prompt does not fit", "--ctx-size (-c) when llama-server starts")
+        }
+        _ => (
+            "LM Studio",
+            "/api/v0/models",
+            "a longer prompt does not fit",
+            "the context length in the model's load settings",
+        ),
+    };
+    match full {
+        Some(f) if f > n => format!(
+            "context {n} from {server} {route}: the window it is loaded with now, below the {f} the model takes; {past} \
+             (raise it with {raise})"
+        ),
+        _ => format!("context {n} from {server} {route} (the window it is loaded with now)"),
+    }
+}
+
+/// What the server says of `model` once a request has loaded it, when that is new: Ollama loads a model on its first
+/// request, so the window it serves with, unknown at the probe while the model was not loaded, is known after the
+/// test request. `info` takes that window.
+pub async fn after_first_request(probe: &ServerProbe, model: &str, info: &mut ModelInfo) -> Option<String> {
+    if probe.kind != "ollama" {
+        return None;
+    }
+    let n = ollama_loaded(&ollama_ps(&root_of(&probe.base_url)).await?, model)?;
+    if info.context_window == Some(n) {
+        return None;
+    }
+    Some(loaded_window(probe, info, n))
+}
+
 /// What the server itself says of one model, beyond its list: Ollama's
 /// `/api/show` (the trained context, `thinking`, `tools`, `vision`) and the
 /// window it serves with now (`/api/ps`); llama.cpp's `/props` (the `n_ctx` it
@@ -459,24 +515,35 @@ pub async fn model_details(probe: &ServerProbe, model: &str) -> (ModelInfo, Vec<
                 }
             }
             // the window Ollama actually serves with is its own setting, often far below the model's
-            if let Ok(a) = get(&format!("{root}/api/ps"), HeaderMap::new(), ASK).await {
-                let loaded = a.body["models"]
-                    .as_array()
-                    .and_then(|ms| ms.iter().find(|m| m["name"] == model || m["model"] == model))
-                    .and_then(|m| u32_of(&m["context_length"]));
-                if let Some(n) = loaded {
-                    info.context_window = Some(n);
-                    said.push(format!("context {n} from Ollama /api/ps (the window it is loaded with now)"));
-                } else {
-                    said.push("Ollama serves with its own window (OLLAMA_CONTEXT_LENGTH, 4096 by default on older versions), which may be smaller than the model's".into());
+            if let Some(ps) = ollama_ps(&root).await {
+                match ollama_loaded(&ps, model) {
+                    Some(n) => said.push(loaded_window(probe, &mut info, n)),
+                    None => said.push(match info.context_window {
+                        Some(t) => format!(
+                            "context {t} assumed: {model} is not loaded in Ollama now, and Ollama serves with its own \
+                             window ({OLLAMA_RAISE}), which may be smaller"
+                        ),
+                        None => format!(
+                            "Ollama serves with its own window ({OLLAMA_RAISE}; 4096 by default on older versions), \
+                             which may be smaller than the model's"
+                        ),
+                    }),
                 }
             }
         }
         "llama.cpp" => {
             if let Ok(a) = get(&format!("{root}/props"), HeaderMap::new(), ASK).await {
                 if let Some(n) = u32_of(&a.body["default_generation_settings"]["n_ctx"]) {
-                    info.context_window = Some(n);
-                    said.push(format!("context {n} from llama.cpp /props (n_ctx it was started with)"));
+                    // the size the model was trained for is in llama.cpp's own model list, beside the OpenAI fields
+                    let trained = match get(&format!("{root}/v1/models"), HeaderMap::new(), ASK).await {
+                        Ok(l) => l.body["data"]
+                            .as_array()
+                            .and_then(|ms| ms.iter().find(|m| m["id"] == model))
+                            .and_then(|m| u32_of(&m["meta"]["n_ctx_train"])),
+                        Err(_) => None,
+                    };
+                    info.context_window = trained.or(info.context_window);
+                    said.push(loaded_window(probe, &mut info, n));
                 }
             }
         }
@@ -487,7 +554,23 @@ pub async fn model_details(probe: &ServerProbe, model: &str) -> (ModelInfo, Vec<
             ));
         }
         "lmstudio" if info.context_window.is_some() => {
-            said.push(format!("context {} from LM Studio /api/v0/models", info.context_window.unwrap_or_default()));
+            // the list said the loaded size when there is one: the model's own size is asked again to compare
+            let entry = match get(&format!("{root}/api/v0/models"), HeaderMap::new(), ASK).await {
+                Ok(a) => a.body["data"].as_array().and_then(|ms| ms.iter().find(|m| m["id"] == model).cloned()),
+                Err(_) => None,
+            };
+            match entry.map(|e| (u32_of(&e["loaded_context_length"]), u32_of(&e["max_context_length"]))) {
+                Some((Some(n), full)) => {
+                    info.context_window = full;
+                    said.push(loaded_window(probe, &mut info, n));
+                }
+                Some((None, _)) => said.push(format!(
+                    "context {} assumed from LM Studio /api/v0/models: the model's own size, as it is not loaded now",
+                    info.context_window.unwrap_or_default()
+                )),
+                None => said
+                    .push(format!("context {} from LM Studio /api/v0/models", info.context_window.unwrap_or_default())),
+            }
         }
         "openrouter" | "gemini" | "openai-compatible" => {
             if let Some(n) = info.context_window {
@@ -609,6 +692,89 @@ mod tests {
         assert!(said.iter().any(|l| l.contains("/api/ps")), "{said:?}");
         assert_eq!(effort_levels(&p.protocol, &p.kind, &p.base_url, "qwen3:8b", true), ["off", "on"]);
         assert_eq!(effort_levels(&p.protocol, &p.kind, &p.base_url, "gpt-oss:20b", true), ["low", "medium", "high"]);
+    }
+
+    /// An Ollama server whose `qwen3:8b` was trained for 40 960 tokens, loaded with `loaded` tokens when given.
+    fn ollama(loaded: Option<u32>) -> MockServer {
+        let s = MockServer::start();
+        s.mock(|w, t| {
+            w.method(GET).path("/api/version");
+            t.status(200).json_body(json!({"version": "0.12.6"}));
+        });
+        s.mock(|w, t| {
+            w.method(GET).path("/api/tags");
+            t.status(200).json_body(json!({"models": [{"name": "qwen3:8b"}]}));
+        });
+        s.mock(|w, t| {
+            w.method(POST).path("/api/show");
+            t.status(200).json_body(json!({"capabilities": ["tools"], "model_info": {"qwen3.context_length": 40960}}));
+        });
+        let models = match loaded {
+            Some(n) => json!([{"name": "qwen3:8b", "context_length": n}]),
+            None => json!([]),
+        };
+        s.mock(|w, t| {
+            w.method(GET).path("/api/ps");
+            t.status(200).json_body(json!({ "models": models }));
+        });
+        s
+    }
+
+    #[tokio::test]
+    async fn ollama_loaded_below_the_models_size_gives_both_numbers_and_how_to_raise_it() {
+        let s = ollama(Some(4096));
+        let p = server(&cfg("openai-chat", &s.base_url()), None).await.unwrap();
+        let (info, said) = model_details(&p, "qwen3:8b").await;
+        assert_eq!(info.context_window, Some(4096));
+        let line = said.iter().find(|l| l.contains("/api/ps")).unwrap();
+        assert!(line.contains("context 4096 ") && line.contains("below the 40960 the model takes"), "{line}");
+        assert!(line.contains("OLLAMA_CONTEXT_LENGTH") && line.contains("PARAMETER num_ctx"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn ollama_with_the_model_not_loaded_says_its_window_is_assumed_and_the_test_request_tells_it() {
+        let s = ollama(None);
+        let p = server(&cfg("openai-chat", &s.base_url()), None).await.unwrap();
+        let (mut info, said) = model_details(&p, "qwen3:8b").await;
+        assert_eq!(info.context_window, Some(40960), "the model's own size, until the server says more");
+        assert!(said.iter().any(|l| l.starts_with("context 40960 assumed: qwen3:8b is not loaded")), "{said:?}");
+        // nothing loaded yet: nothing new
+        assert_eq!(after_first_request(&p, "qwen3:8b", &mut info).await, None);
+        // the test request loaded it with Ollama's own window
+        let s2 = ollama(Some(8192));
+        let p2 = ServerProbe { base_url: format!("{}/v1", s2.base_url()), ..p.clone() };
+        let line = after_first_request(&p2, "qwen3:8b", &mut info).await.unwrap();
+        assert_eq!(info.context_window, Some(8192));
+        assert!(line.contains("below the 40960 the model takes"), "{line}");
+        assert_eq!(after_first_request(&p2, "qwen3:8b", &mut info).await, None, "said once");
+    }
+
+    #[tokio::test]
+    async fn lmstudio_and_llamacpp_loaded_below_the_models_size_give_both_numbers() {
+        let m = MockServer::start();
+        m.mock(|w, t| {
+            w.method(GET).path("/api/v0/models");
+            t.status(200).json_body(json!({"data": [{"id": "qwen", "type": "llm", "loaded_context_length": 4096, "max_context_length": 32768}]}));
+        });
+        let p = server(&cfg("openai-chat", &m.base_url()), None).await.unwrap();
+        assert_eq!(p.kind, "lmstudio");
+        let (info, said) = model_details(&p, "qwen").await;
+        assert_eq!(info.context_window, Some(4096));
+        assert!(said.iter().any(|l| l.contains("below the 32768") && l.contains("load settings")), "{said:?}");
+
+        let l = MockServer::start();
+        l.mock(|w, t| {
+            w.method(GET).path("/props");
+            t.status(200).json_body(json!({"default_generation_settings": {"n_ctx": 4096}, "build_info": "b6500"}));
+        });
+        l.mock(|w, t| {
+            w.method(GET).path("/v1/models");
+            t.status(200).json_body(json!({"data": [{"id": "local.gguf", "meta": {"n_ctx_train": 32768}}]}));
+        });
+        let p = server(&cfg("openai-chat", &l.base_url()), None).await.unwrap();
+        let (info, said) = model_details(&p, "local.gguf").await;
+        assert_eq!(info.context_window, Some(4096));
+        assert!(said.iter().any(|l| l.contains("below the 32768") && l.contains("--ctx-size")), "{said:?}");
     }
 
     #[tokio::test]

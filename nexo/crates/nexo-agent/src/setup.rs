@@ -105,6 +105,12 @@ pub async fn check(
         }
         Err(e) => check.error = Some(e),
     }
+    // Ollama loads a model on its first request: after the test request it says the window it serves with
+    if check.error.is_none() {
+        if let Some(line) = probe::after_first_request(probe, model, &mut check.info).await {
+            check.sources.push(line);
+        }
+    }
     check
 }
 
