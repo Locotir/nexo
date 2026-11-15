@@ -40,11 +40,13 @@ const EVENTS_MAX: usize = 256;
 
 mod fsx;
 mod ledger;
+mod live;
 mod peers;
 
 use fsx::{age_ms, make_dir, pid_alive, text_hash, write_atomic};
 pub use fsx::{mail_root, now_ms};
 pub use ledger::{read_ledgers, read_receipts, session_ids, SentRec};
+pub use live::{live_sessions, LiveJob, LiveSession};
 use peers::clean_name;
 pub use peers::describe;
 
@@ -58,6 +60,12 @@ struct SessionFile {
     started: i64,
     beat: i64,
     bypass: bool,
+    /// Whether a turn is running (absent in the heartbeat of an older nexo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    busy: Option<bool>,
+    /// The jobs running now, for `nexo sessions live`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    jobs: Vec<LiveJob>,
 }
 
 #[derive(Default)]
@@ -77,6 +85,7 @@ struct State {
     last_beat: i64,
     last_purge: i64,
     idle: bool,
+    jobs: Vec<LiveJob>,
     /// File names already read from the inbox.
     seen: HashSet<String>,
     ready: VecDeque<(Mail, PathBuf)>,
@@ -255,7 +264,11 @@ impl Mailbox {
 
     /// The host says whether the session can take a delivery now: true after `Idle`, false when a turn starts.
     pub fn set_idle(&self, idle: bool) {
-        self.lock().idle = idle;
+        let changed = std::mem::replace(&mut self.lock().idle, idle) != idle;
+        // a change of state shows in the session file now, not at the next beat
+        if changed {
+            self.write_session(self.now());
+        }
     }
 
     /// Rewrites the session file now (a session that is busy elsewhere keeps showing as live).
@@ -264,10 +277,10 @@ impl Mailbox {
     }
 
     fn write_session(&self, now: i64) {
-        let (id, name, bypass) = {
+        let (id, name, bypass, busy, jobs) = {
             let mut s = self.lock();
             s.last_beat = now;
-            (s.id.clone(), s.name.clone(), s.bypass)
+            (s.id.clone(), s.name.clone(), s.bypass, !s.idle, s.jobs.clone())
         };
         if id.is_empty() {
             return;
@@ -281,6 +294,8 @@ impl Mailbox {
             started: self.started,
             beat: now,
             bypass,
+            busy: Some(busy),
+            jobs,
         };
         if let Ok(b) = serde_json::to_vec(&f) {
             let _ = write_atomic(&self.dir().join("session.json"), &b);

@@ -249,6 +249,7 @@ impl App {
             return;
         }
         self.mail_polled = Some(now);
+        m.set_jobs(&self.jobs);
         let t = m.tick();
         for ev in t.events {
             self.handle_agent(ev);

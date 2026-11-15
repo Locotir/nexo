@@ -76,7 +76,7 @@ More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo
 
 | Command | What it does |
 |---|---|
-| `nexo sessions [rename\|delete\|restore]` | list, name, trash and bring back sessions |
+| `nexo sessions [rename\|delete\|restore\|live]` | list, name, trash and bring back sessions; `live [--json]` lists the ones running now with their jobs |
 | `nexo export` | write a session as HTML, markdown or JSON, keys and tokens removed |
 | `nexo review` | review the current diff for CI (see Git commands) |
 | `nexo mcp`, `nexo plugin`, `nexo worktree` | MCP servers, plugins ([docs/PLUGINS.md](docs/PLUGINS.md)), the worktrees nexo made ([docs/WORKTREES.md](docs/WORKTREES.md)) |

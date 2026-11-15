@@ -381,3 +381,65 @@ fn the_ledgers_are_read_once_from_an_offset() {
     api.send("web", "two", None, FromKind::Agent).unwrap();
     assert_eq!(read_ledgers(&rig.root, &mut off).len(), 1);
 }
+
+fn job(id: u32, kind: crate::jobs::JobKind, label: &str, status: crate::jobs::JobStatus) -> crate::jobs::JobInfo {
+    crate::jobs::JobInfo { id, kind, label: label.into(), status, elapsed_ms: 0, lines: 0 }
+}
+
+#[test]
+fn live_sessions_lists_the_fresh_heartbeats_and_not_the_stale_ones() {
+    let rig = Rig::new();
+    let _api = rig.session("aaaa1111", "api", false, Inbound::Auto);
+    let web = rig.session("bbbb2222", "web", false, Inbound::Auto);
+    // a session that stopped beating a minute ago, with its process still there
+    let old = rig.now.load(Ordering::SeqCst) - 60_000;
+    let _gone =
+        Mailbox::open_with_clock(&rig.root, "cccc3333", "gone", "/w", false, Inbound::Auto, Arc::new(move || old))
+            .unwrap();
+    web.set_idle(true);
+    let live = live_sessions(&rig.root, rig.now.load(Ordering::SeqCst));
+    let seen: Vec<(&str, Option<bool>)> = live.iter().map(|s| (s.id.as_str(), s.busy)).collect();
+    assert_eq!(seen, vec![("aaaa1111", Some(true)), ("bbbb2222", Some(false))]);
+    assert_eq!((live[0].name.as_str(), live[0].cwd.as_str()), ("api", "/work/x"));
+}
+
+#[test]
+fn live_sessions_carry_the_running_jobs_and_nothing_else_of_them() {
+    use crate::jobs::{JobKind, JobStatus};
+    let rig = Rig::new();
+    let api = rig.session("aaaa1111", "api", false, Inbound::Auto);
+    let long = "x".repeat(300);
+    api.set_jobs(&[
+        job(1, JobKind::Shell, "cargo test\n--all", JobStatus::Running),
+        job(2, JobKind::Agent, "review the diff", JobStatus::Running),
+        job(3, JobKind::Shell, "sleep 1", JobStatus::Done { ok: true, how: "exit 0".into() }),
+        job(4, JobKind::Shell, &long, JobStatus::Running),
+    ]);
+    let live = live_sessions(&rig.root, rig.now.load(Ordering::SeqCst));
+    let jobs = &live[0].jobs;
+    let ids: Vec<u32> = jobs.iter().map(|j| j.id).collect();
+    assert_eq!(ids, vec![1, 2, 4], "an ended job is not listed");
+    assert_eq!(
+        (jobs[0].kind, jobs[0].state.as_str(), jobs[0].title.as_str()),
+        (JobKind::Shell, "running", "cargo test--all")
+    );
+    assert_eq!(jobs[1].kind, JobKind::Agent);
+    assert_eq!(jobs[2].title.chars().count(), 80);
+    api.set_jobs(&[]);
+    assert!(live_sessions(&rig.root, rig.now.load(Ordering::SeqCst))[0].jobs.is_empty());
+}
+
+#[test]
+fn a_heartbeat_of_an_older_nexo_is_live_with_no_state() {
+    let rig = Rig::new();
+    let dir = rig.root.join("dddd4444");
+    fs::create_dir_all(&dir).unwrap();
+    let now = rig.now.load(Ordering::SeqCst);
+    let old = format!(
+        r#"{{"v":{MAIL_VERSION},"id":"dddd4444","name":"old","cwd":"/w","pid":{},"started":{now},"beat":{now},"bypass":false}}"#,
+        std::process::id()
+    );
+    fs::write(dir.join("session.json"), old).unwrap();
+    let live = live_sessions(&rig.root, now);
+    assert_eq!((live.len(), live[0].busy, live[0].jobs.len()), (1, None, 0));
+}

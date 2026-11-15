@@ -9,8 +9,20 @@ pub(super) const NAME_MAX: usize = 48;
 
 /// A session name that is safe to list and to put in a delivery: no secrets, no control characters, clipped.
 pub(super) fn clean_name(name: &str) -> String {
-    let s: String = redact(name).chars().filter(|c| !c.is_control()).take(NAME_MAX).collect();
+    clean(name, NAME_MAX)
+}
+
+/// Text of another session that is safe to list: no secrets, no control characters, at most `max` characters.
+pub(super) fn clean(text: &str, max: usize) -> String {
+    let s: String = redact(text).chars().filter(|c| !c.is_control()).take(max).collect();
     s.trim().to_string()
+}
+
+/// The session file of `sid` when its heartbeat is fresh and its process exists: the test of being live.
+pub(super) fn read_live(root: &Path, sid: &str, now: i64) -> Option<SessionFile> {
+    let text = fs::read_to_string(root.join(sid).join("session.json")).ok()?;
+    let f = serde_json::from_str::<SessionFile>(&text).ok()?;
+    (f.id == sid && f.v == MAIL_VERSION && now - f.beat < LIVE_MS && pid_alive(f.pid)).then_some(f)
 }
 
 /// `name [3fa9c1] cwd`: a session as an ambiguity lists it.
@@ -54,11 +66,7 @@ impl Mailbox {
                 if sid == self.id() {
                     continue;
                 }
-                let Ok(text) = fs::read_to_string(e.path().join("session.json")) else { continue };
-                let Ok(f) = serde_json::from_str::<SessionFile>(&text) else { continue };
-                if f.id != sid || f.v != MAIL_VERSION || now - f.beat >= LIVE_MS || !pid_alive(f.pid) {
-                    continue;
-                }
+                let Some(f) = read_live(&self.root, &sid, now) else { continue };
                 rest.push(PeerInfo {
                     id: f.id,
                     name: f.name,

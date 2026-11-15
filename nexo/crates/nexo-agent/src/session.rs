@@ -274,6 +274,11 @@ pub fn list_in(dir: &Path) -> Vec<SessionMeta> {
     out
 }
 
+/// The metadata of one session in `dir`, or none when there is no such session.
+pub fn meta_in(dir: &Path, id: &str) -> Option<SessionMeta> {
+    read_meta(&dir.join(format!("{}.jsonl", checked_id(id).ok()?)))
+}
+
 /// Where deleted sessions wait: a folder inside the sessions folder, so a delete can be undone.
 pub fn trash_dir_in(dir: &Path) -> PathBuf {
     dir.join("trash")

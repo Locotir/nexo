@@ -21,6 +21,7 @@ mod plugin_cmd;
 mod re_cmd;
 mod re_mcp;
 mod schema;
+mod sessions_live;
 mod setup;
 mod supervise;
 mod team;

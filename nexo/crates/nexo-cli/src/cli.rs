@@ -315,6 +315,18 @@ pub enum SessionsCmd {
     Delete { ids: Vec<String> },
     /// Bring sessions back from the trash.
     Restore { ids: Vec<String> },
+    /// List the sessions that are live now, with their running jobs (a session is live while its heartbeat is fresh).
+    ///
+    /// `--json` prints an array with one object per live session and the keys `id`, `title`, `provider`,
+    /// `model` (both null when the session has no file yet), `cwd`, `state` ("busy", "idle" or "unknown"),
+    /// `pid`, `started_ms`, `last_beat_ms`, `beat_age_ms` and `jobs`: an array of `id`, `kind` ("shell" or
+    /// "agent"), `state` ("running") and `title`. Lanes of `nexo team` are live sessions like any other.
+    /// Messages, prompts and tool output are never printed.
+    Live {
+        /// Print JSON (for scripts and dashboards).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -576,6 +588,9 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         }
         Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }) }) => {
             return Ok(setup::trash_sessions(ids, true))
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Live { json }) }) => {
+            return Ok(crate::sessions_live::run(*json));
         }
         Some(Cmd::Prompt { edit: false, tools: show_tools, builtin, window }) => {
             let tools = setup::prompt_tools(&config, &cwd);
