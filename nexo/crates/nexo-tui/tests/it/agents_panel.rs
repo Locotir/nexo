@@ -216,7 +216,9 @@ fn live_view() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Pane
 
 fn peers(n: usize) -> Vec<AgentRow> {
     (0..n)
-        .map(|i| row(&format!("nexo:k{i}"), &format!("job{i:02}"), SourceKind::Nexo, State::Working, Some(i as u64), None))
+        .map(|i| {
+            row(&format!("nexo:k{i}"), &format!("job{i:02}"), SourceKind::Nexo, State::Working, Some(i as u64), None)
+        })
         .collect()
 }
 

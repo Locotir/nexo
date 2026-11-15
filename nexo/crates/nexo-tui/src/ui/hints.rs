@@ -45,10 +45,7 @@ pub(super) fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
         out.push((
             3,
             Some(HintHit::Fleet),
-            vec![Span::styled(
-                format!(" {}", fleet.text(false)),
-                base.fg(colour).add_modifier(lit(HintHit::Fleet)),
-            )],
+            vec![Span::styled(format!(" {}", fleet.text(false)), base.fg(colour).add_modifier(lit(HintHit::Fleet)))],
         ));
     }
     if !app.shared.is_empty() {

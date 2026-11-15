@@ -223,13 +223,17 @@ fn n_on_a_running_sub_agent_writes_into_its_run_and_on_another_session_sends_mai
     select(&mut v, "s1.3");
     press(&mut v, KeyCode::Char('n'));
     match type_in(&mut v, "look at caps") {
-        ModalOut::Send(AgentCommand::SubSubmit { id, text }) => assert_eq!((id.as_str(), text.as_str()), ("s1#3", "look at caps")),
+        ModalOut::Send(AgentCommand::SubSubmit { id, text }) => {
+            assert_eq!((id.as_str(), text.as_str()), ("s1#3", "look at caps"))
+        }
         _ => panic!("a running sub-agent gets the message in its run"),
     }
     select(&mut v, "nexo:ceo-1");
     press(&mut v, KeyCode::Char('n'));
     match type_in(&mut v, "rebase please") {
-        ModalOut::Send(AgentCommand::SendMail { to, text }) => assert_eq!((to.as_str(), text.as_str()), ("ceo-1", "rebase please")),
+        ModalOut::Send(AgentCommand::SendMail { to, text }) => {
+            assert_eq!((to.as_str(), text.as_str()), ("ceo-1", "rebase please"))
+        }
         _ => panic!("another nexo session gets mail"),
     }
     select(&mut v, "lane:WINDOWS");

@@ -40,7 +40,7 @@ fn detail_words(d: &EvDetail) -> String {
 
 /// `2h`, `30m`, `45s`: a lane's clock.
 fn every_words(secs: u64) -> String {
-    if secs >= 3600 && secs % 3600 == 0 {
+    if secs >= 3600 && secs.is_multiple_of(3600) {
         format!("{}h", secs / 3600)
     } else if secs >= 60 {
         format!("{}m", secs / 60)
@@ -58,7 +58,15 @@ impl AgentsView {
     }
 
     /// The pane's lines for `row` in `w` columns.
-    pub(super) fn pane_lines(&self, row: &AgentRow, kind: Kind, w: usize, theme: &Theme, now: Instant, fx: bool) -> Vec<Line<'static>> {
+    pub(super) fn pane_lines(
+        &self,
+        row: &AgentRow,
+        kind: Kind,
+        w: usize,
+        theme: &Theme,
+        now: Instant,
+        fx: bool,
+    ) -> Vec<Line<'static>> {
         let a = self.ascii;
         let mut out: Vec<Line<'static>> = Vec::new();
         let quiet = age((self.clock - row.since).max(0) as u64);
@@ -135,7 +143,14 @@ impl AgentsView {
         out
     }
 
-    fn lane_lines(&self, out: &mut Vec<Line<'static>>, row: &AgentRow, l: &nexo_agent::supervise::LaneInfo, theme: &Theme, fx: bool) {
+    fn lane_lines(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        row: &AgentRow,
+        l: &nexo_agent::supervise::LaneInfo,
+        theme: &Theme,
+        fx: bool,
+    ) {
         let a = self.ascii;
         let spend = self.rolled(&row.key, l.spend_today, fx);
         let spent = match l.cap_day.filter(|c| *c > 0.0) {
@@ -167,7 +182,7 @@ impl AgentsView {
         marks.push(Span::styled(format!(" {} {word}", l.rounds), theme.dim()));
         if let Some((at, result, cost)) = &l.last_round {
             let c = if result == "ok" { theme.success } else { theme.error };
-            marks.push(Span::styled(format!("   last {result}", ), theme.style(c)));
+            marks.push(Span::styled(format!("   last {result}",), theme.style(c)));
             marks.push(Span::styled(format!(" {} · ${cost:.2}", self.since_action(*at)), theme.dim()));
         }
         out.push(Self::field("rounds", marks, theme));
@@ -229,7 +244,8 @@ impl AgentsView {
             ));
         }
         if let Some((p, fl)) = row.tests {
-            let mut v = vec![Span::styled(format!("{} {p} passed", if a { "+" } else { "✔" }), theme.style(theme.success))];
+            let mut v =
+                vec![Span::styled(format!("{} {p} passed", if a { "+" } else { "✔" }), theme.style(theme.success))];
             if fl > 0 {
                 v.push(Span::styled(format!("  {} {fl} failed", if a { "x" } else { "✘" }), theme.style(theme.error)));
             }
@@ -275,14 +291,19 @@ impl AgentsView {
         if let Some(c) = &row.last_conclusion {
             out.push(Self::field("last", vec![Span::styled(c.clone(), theme.dim())], theme));
         }
-        let job = (Kind::of(row) == Kind::Sub).then(|| row.key.rsplit_once('.').and_then(|(_, n)| n.parse::<u32>().ok())).flatten();
+        let job = (Kind::of(row) == Kind::Sub)
+            .then(|| row.key.rsplit_once('.').and_then(|(_, n)| n.parse::<u32>().ok()))
+            .flatten();
         if let Some(id) = job {
             out.push(Line::from(Span::styled(format!("output of job {id}"), theme.dim2())));
             match self.tails.get(&id) {
                 Some(t) if !t.trim().is_empty() => {
                     let lines: Vec<&str> = t.lines().collect();
                     for l in &lines[lines.len().saturating_sub(TAIL_LINES)..] {
-                        out.push(Line::from(Span::styled(truncate(&crate::render::wrap::one_line(l), w), theme.style(theme.fg))));
+                        out.push(Line::from(Span::styled(
+                            truncate(&crate::render::wrap::one_line(l), w),
+                            theme.style(theme.fg),
+                        )));
                     }
                 }
                 Some(_) => out.push(Line::from(Span::styled("no output yet", theme.dim()))),
@@ -333,7 +354,15 @@ impl AgentsView {
         f.render_widget(Paragraph::new(Text::from(shown)), area);
         if self.pane_max > 0 && area.height > 1 {
             let mark = if self.pane_scroll >= self.pane_max { "↑ more" } else { "↓ more" };
-            let mark = if self.ascii { if self.pane_scroll >= self.pane_max { "^ more" } else { "v more" } } else { mark };
+            let mark = if self.ascii {
+                if self.pane_scroll >= self.pane_max {
+                    "^ more"
+                } else {
+                    "v more"
+                }
+            } else {
+                mark
+            };
             let x = area.x + area.width.saturating_sub(width(mark) as u16);
             f.render_widget(
                 Paragraph::new(Span::styled(mark, theme.style(theme.accent2))),

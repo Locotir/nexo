@@ -20,7 +20,7 @@ mod window;
 
 use self::chips::{age, attention, chip, chip_color};
 pub use self::lanes::Starter;
-pub use self::view::{needs_you, FleetCount, Filter, Group, Kind, Show};
+pub use self::view::{needs_you, Filter, FleetCount, Group, Kind, Show};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};

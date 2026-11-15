@@ -219,7 +219,8 @@ impl AgentsView {
                     }
                 }
             }
-            self.draw_row_fx(f, glyph, at.x + at.width, tree, &row.key, theme, now);
+            let line = Rect::new(glyph.0, glyph.1, (at.x + at.width).saturating_sub(glyph.0), 1);
+            self.draw_row_fx(f, line, tree, &row.key, theme, now);
         }
     }
 
@@ -353,10 +354,7 @@ impl AgentsView {
             let t = self.find.clone().unwrap_or_default();
             let tail = "  Enter keep · Esc clear";
             let shown = tail_of(&format!("filter › {t}▏"), w.saturating_sub(width(tail)), "filter › ".chars().count());
-            return Line::from(vec![
-                Span::styled(shown, theme.style(theme.accent)),
-                Span::styled(tail, theme.dim2()),
-            ]);
+            return Line::from(vec![Span::styled(shown, theme.style(theme.accent)), Span::styled(tail, theme.dim2())]);
         }
         if self.form.is_some() {
             return Line::from(Span::styled(truncate("Enter answer · Esc give up", w), theme.dim2()));

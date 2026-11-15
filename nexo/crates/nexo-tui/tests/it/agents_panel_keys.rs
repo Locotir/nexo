@@ -54,7 +54,6 @@ fn app() -> App {
     a
 }
 
-
 /// Another live nexo session named `name`.
 fn job(name: &str) -> AgentRow {
     AgentRow {
@@ -148,7 +147,6 @@ fn supervised(rows: Vec<AgentRow>) -> (tempfile::TempDir, App) {
 fn text(a: &mut App, w: u16, h: u16) -> String {
     capture(a, w, h).join("\n")
 }
-
 
 #[test]
 fn the_selection_follows_its_session_when_the_others_come_and_go() {
@@ -255,7 +253,16 @@ fn a_click_outside_does_not_throw_away_a_message_being_written() {
     let mut a = scene(vec![job("alpha")]);
     // a window smaller than the screen, so a click can land outside it
     let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    t.draw(|f| view(&mut a).draw(f, ratatui::layout::Rect::new(4, 2, 100, 24), &nexo_tui::theme::Theme::dark(), std::time::Instant::now(), false)).unwrap();
+    t.draw(|f| {
+        view(&mut a).draw(
+            f,
+            ratatui::layout::Rect::new(4, 2, 100, 24),
+            &nexo_tui::theme::Theme::dark(),
+            std::time::Instant::now(),
+            false,
+        )
+    })
+    .unwrap();
     press(&mut a, KeyCode::Char('n'));
     type_in(&mut a, "hi");
     assert_eq!(view(&mut a).click(0, 0), ModalOut::Nothing);

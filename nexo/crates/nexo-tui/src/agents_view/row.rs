@@ -130,7 +130,14 @@ impl AgentsView {
 
     /// The fields of a row, most useful first (the last ones go first when the line is short), and its step,
     /// which takes the room left in the middle.
-    fn fields(&self, row: &AgentRow, kind: Kind, theme: &Theme, now: Instant, fx: bool) -> (Vec<Field>, Option<String>) {
+    fn fields(
+        &self,
+        row: &AgentRow,
+        kind: Kind,
+        theme: &Theme,
+        now: Instant,
+        fx: bool,
+    ) -> (Vec<Field>, Option<String>) {
         let a = self.ascii;
         let mut out: Vec<Field> = Vec::new();
         let quiet = |r: &AgentRow| age((self.clock - r.since).max(0) as u64);
@@ -161,8 +168,11 @@ impl AgentsView {
                 out.push((quiet(row), theme.dim));
                 let spark = px::spark(&row.spark, 4);
                 if !spark.is_empty() {
-                    let spark =
-                        if a { spark.chars().map(|c| crate::ascii::fold_char(c).unwrap_or(c)).collect() } else { spark };
+                    let spark = if a {
+                        spark.chars().map(|c| crate::ascii::fold_char(c).unwrap_or(c)).collect()
+                    } else {
+                        spark
+                    };
                     out.push((spark, theme.accent2));
                 }
                 if let Some(c) = row.cost_usd.filter(|c| *c >= 0.005) {
@@ -231,7 +241,9 @@ impl AgentsView {
                 let blink = fx && needs && within(self.need_blink, now, NEED_MS);
                 let color = if needs { theme.warn2 } else { theme.accent };
                 let mut st = theme.bold(color);
-                if blink && px::hump_ms(self.need_blink.map_or(0, |t| now.duration_since(t).as_millis() as u64), NEED_MS) > 0.5
+                if blink
+                    && px::hump_ms(self.need_blink.map_or(0, |t| now.duration_since(t).as_millis() as u64), NEED_MS)
+                        > 0.5
                 {
                     st = st.add_modifier(Modifier::REVERSED);
                 }

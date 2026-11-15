@@ -95,7 +95,6 @@ impl Fleet {
     }
 }
 
-
 fn is_bad(s: Stage) -> bool {
     matches!(s, Stage::Refused | Stage::Expired | Stage::Failed)
 }
@@ -536,7 +535,7 @@ impl AgentsView {
         }
         if let Some((k, t)) = &self.pulse_at {
             if k == key && now >= *t {
-                take(theme.accent2, 0.7 * px::hump_ms(ms_since(Some(*t), now), PULSE_MS as u64));
+                take(theme.accent2, 0.7 * px::hump_ms(ms_since(Some(*t), now), PULSE_MS));
             }
         }
         if let Some(x) = self.fx.get(key) {
@@ -551,12 +550,16 @@ impl AgentsView {
     }
 
     /// The effects drawn over a row's line after its text: the particles of a passing run around the glyph
-    /// (on blank cells of the tree only), the shake of a failing one, the squash of a compaction. `at` is the
-    /// glyph's cell and `end` the line's last column; `tree` bounds the particles.
-    pub(super) fn draw_row_fx(&self, f: &mut Frame, at: (u16, u16), end: u16, tree: Rect, key: &str, theme: &Theme, now: Instant) {
+    /// (on blank cells of the tree only), the shake of a failing one, the squash of a compaction. `line` runs
+    /// from the glyph's cell to the line's end; `tree` bounds the particles.
+    pub(super) fn draw_row_fx(&self, f: &mut Frame, line: Rect, tree: Rect, key: &str, theme: &Theme, now: Instant) {
+        let (at, end) = ((line.x, line.y), line.x + line.width);
         let a = self.ascii;
         let inside = |x: i32, y: i32| {
-            x >= tree.x as i32 && x < (tree.x + tree.width) as i32 && y >= tree.y as i32 && y < (tree.y + tree.height) as i32
+            x >= tree.x as i32
+                && x < (tree.x + tree.width) as i32
+                && y >= tree.y as i32
+                && y < (tree.y + tree.height) as i32
         };
         for b in self.live.bursts.iter().filter(|b| b.key == key) {
             let ms = ms_since(Some(b.born), now);

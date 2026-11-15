@@ -81,7 +81,9 @@ impl AgentsView {
             KeyCode::Up if self.focus => self.pane_scroll = self.pane_scroll.saturating_sub(1),
             KeyCode::Down if self.focus => self.pane_scroll = (self.pane_scroll + 1).min(self.pane_max),
             KeyCode::PageUp if self.focus => self.pane_scroll = self.pane_scroll.saturating_sub(self.pane_page()),
-            KeyCode::PageDown if self.focus => self.pane_scroll = (self.pane_scroll + self.pane_page()).min(self.pane_max),
+            KeyCode::PageDown if self.focus => {
+                self.pane_scroll = (self.pane_scroll + self.pane_page()).min(self.pane_max)
+            }
             KeyCode::Up => self.move_to(self.selected as i64 - 1),
             KeyCode::Down => self.move_to(self.selected as i64 + 1),
             KeyCode::PageUp => self.move_to(self.selected as i64 - self.tree_area.height.max(1) as i64),

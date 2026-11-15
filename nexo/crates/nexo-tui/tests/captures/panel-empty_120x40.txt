@@ -1,13 +1,13 @@
 ╭ panel ────────────────────────────────────────────────────────────────────────────────────────────────── 13:46 ─[✗]──╮
 │ ● 0 working  ○ 0 idle  ! 0 needs you   ▕▁▁▁▁▁▁▁▁▏ 0/min                                                    read-only │
 ├───────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────┤
-│ Nothing running besides this session yet.         │ NEEDS YOU     a wait for permission, an error, a failed lane,    │
-│ Rows appear here on their own:                    │ held mail                                                        │
-│ this session after your message, its sub-agents,  │ THIS SESSION  this session, its sub-agents and its jobs          │
-│ nexo team lanes, other nexo sessions,             │ LANES         nexo team lanes: s starts, x stops, p pauses them  │
-│ and other agents whose logs nexo reads.           │ all                                                              │
-│                                                   │ NEXO SESSIONS nexo running in other terminals                    │
-│                                                   │ other programsone group each, folded to a count                  │
+│ Nothing running besides this session yet.         │ NEEDS YOU      permission waits, errors, failed lanes, held mail │
+│ Rows appear here on their own:                    │ THIS SESSION   this session, its sub-agents and its jobs         │
+│ this session after your message, its sub-agents,  │ LANES          nexo team lanes: s start, x stop, p pause all     │
+│ nexo team lanes, other nexo sessions,             │ NEXO SESSIONS  nexo running in other terminals                   │
+│ and other agents whose logs nexo reads.           │ other programs one group per program, folded to its count        │
+│                                                   │                                                                  │
+│                                                   │                                                                  │
 │                                                   │                                                                  │
 │                                                   │                                                                  │
 │                                                   │                                                                  │

@@ -5,7 +5,6 @@ use nexo_agent::supervise::{AgentRow, Secs};
 
 use super::{age, AgentsView};
 
-
 impl AgentsView {
     pub(super) fn since_action(&self, at: Secs) -> String {
         let d = (self.clock - at).max(0) as u64;

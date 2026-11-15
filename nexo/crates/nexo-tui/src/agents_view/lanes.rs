@@ -141,10 +141,8 @@ impl AgentsView {
         if alive {
             if now.duration_since(w.since) >= OPEN_WAIT {
                 self.wait = None;
-                self.note = Some(format!(
-                    "{} is still in its round; it stops when the round ends, then press o again",
-                    w.name
-                ));
+                self.note =
+                    Some(format!("{} is still in its round; it stops when the round ends, then press o again", w.name));
                 return true;
             }
             return false;

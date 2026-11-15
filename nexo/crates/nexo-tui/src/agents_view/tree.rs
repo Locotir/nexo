@@ -243,8 +243,7 @@ impl AgentsView {
         programs.dedup();
         order.extend(programs);
         for g in order {
-            let members: Vec<AgentRow> =
-                (0..rows.len()).filter(|&i| groups[i] == g).map(|i| rows[i].clone()).collect();
+            let members: Vec<AgentRow> = (0..rows.len()).filter(|&i| groups[i] == g).map(|i| rows[i].clone()).collect();
             if members.is_empty() && !(g == Group::Lanes && self.lanes_first) {
                 continue;
             }
@@ -289,7 +288,8 @@ impl AgentsView {
         let mut i = rows.iter().position(|r| r.key == key)?;
         loop {
             let k = &rows[i].key;
-            let drawn = items.iter().position(|it| it.group() != &Group::Needs && it.row().is_some_and(|r| &r.key == k));
+            let drawn =
+                items.iter().position(|it| it.group() != &Group::Needs && it.row().is_some_and(|r| &r.key == k));
             if drawn.is_some() {
                 return drawn;
             }

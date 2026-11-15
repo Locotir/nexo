@@ -177,10 +177,7 @@ impl AgentsView {
             )],
         });
         let idle = n("idle", t.idle as f64);
-        out.push(Piece {
-            drop: 3,
-            spans: vec![Span::styled(format!("{} {idle} idle", sym("○", "o")), theme.dim())],
-        });
+        out.push(Piece { drop: 3, spans: vec![Span::styled(format!("{} {idle} idle", sym("○", "o")), theme.dim())] });
 
         // who needs the person: always last to go
         let need = n("need", t.need as f64);
@@ -189,7 +186,10 @@ impl AgentsView {
 
         let cost = self.fig("cost", t.cost, fx);
         if cost >= 0.005 {
-            out.push(Piece { drop: 2, spans: vec![Span::styled(format!(" ${cost:.2} today"), theme.style(theme.money))] });
+            out.push(Piece {
+                drop: 2,
+                spans: vec![Span::styled(format!(" ${cost:.2} today"), theme.style(theme.money))],
+            });
         }
 
         let mails = n("mails", t.mails as f64);
@@ -232,7 +232,10 @@ impl AgentsView {
             let word = if commits == 1 { "commit" } else { "commits" };
             out.push(Piece {
                 drop: 7,
-                spans: vec![Span::styled(format!("{} {commits} {word}", sym("◉", "c")), theme.style(hot(theme.accent)))],
+                spans: vec![Span::styled(
+                    format!("{} {commits} {word}", sym("◉", "c")),
+                    theme.style(hot(theme.accent)),
+                )],
             });
         }
         out
@@ -270,5 +273,4 @@ impl AgentsView {
         }
         out
     }
-
 }
