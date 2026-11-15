@@ -62,6 +62,28 @@ fn variants() -> Vec<(&'static str, Vec<Message>)> {
 }
 
 #[test]
+fn a_request_is_counted_and_compared_as_before_whatever_changed() {
+    let base = synthetic(300);
+    for (name, next) in variants() {
+        let mut sent = Sent::default();
+        assert_eq!(sent.follow(&base), (0, old_bytes(&base)), "{name}: a first request has nothing before it");
+        assert_eq!(sent.messages(), &base[..]);
+        let got = sent.follow(&next);
+        assert_eq!(got, (old_same(&base, &next), old_bytes(&next)), "{name}");
+        assert_eq!(sent.messages(), &next[..], "{name}: what is kept is the request just made");
+        // and back to the first one: the sizes followed the source both ways
+        assert_eq!(sent.follow(&base), (old_same(&next, &base), old_bytes(&base)), "{name}: back");
+        assert_eq!(sent.messages(), &base[..]);
+    }
+    let mut sent = Sent::default();
+    sent.follow(&base);
+    assert_eq!(sent.follow(&base), (300, old_bytes(&base)), "the same request twice repeats whole");
+    sent.clear();
+    assert!(sent.is_empty());
+    assert_eq!(sent.follow(&base[..3]), (0, old_bytes(&base[..3])), "after a clear nothing repeats");
+}
+
+#[test]
 fn the_map_counts_each_message_as_the_serialization_did() {
     let base = synthetic(300);
     for (name, next) in variants() {
@@ -85,8 +107,8 @@ async fn per_call_cost_of_each_copy() {
     let mut policy = BuiltIn::new("").unwrap();
     let mut last_sent: Vec<Message> = Vec::new();
     let mut sent = Sent::default();
-    let mut t_follow = vec![];
-    let (mut t_view, mut t_convert, mut t_bytes, mut t_last, mut t_map) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut t_view, mut t_convert, mut t_old_bytes, mut t_old_last) = (vec![], vec![], vec![], vec![]);
+    let (mut t_map, mut t_follow) = (vec![], vec![]);
     for call in 0..100 {
         history.push(Message::user(format!("and then call {call}")));
         policy.history_version(history.version());
@@ -101,46 +123,29 @@ async fn per_call_cost_of_each_copy() {
         assert_eq!(back.len(), view.messages.len());
         let t = Instant::now();
         let bytes = old_bytes(&view.messages);
-        t_bytes.push(t.elapsed());
+        t_old_bytes.push(t.elapsed());
         let t = Instant::now();
         let same = old_same(&last_sent, &view.messages);
         last_sent = view.messages.clone();
-        t_last.push(t.elapsed());
-        let t = Instant::now();
-        assert_eq!(sent.follow(&view.messages), same);
-        t_follow.push(t.elapsed());
+        t_old_last.push(t.elapsed());
         let t = Instant::now();
         let cells = crate::context_map::map(&history, &view.messages);
         t_map.push(t.elapsed());
-        assert!(bytes > 0 && cells.len() == history.len() && (call == 0 || same > 0));
+        let t = Instant::now();
+        let got = sent.follow(&view.messages);
+        t_follow.push(t.elapsed());
+        assert_eq!(got, (same, bytes));
+        assert_eq!(cells.len(), history.len());
     }
+    let old = p50(t_old_bytes.clone()) + p50(t_old_last.clone());
     eprintln!(
-        "p50 over 100 calls: view {:?} (of it, from_value alone {:?}), bytes {:?}, last_sent {:?}, last_sent after {:?}, map {:?}",
+        "p50 over 100 calls: view {:?} (of it, from_value alone {:?}); counting+copying before {:?} (bytes {:?}, last_sent {:?}), after {:?}; map after {:?}",
         p50(t_view),
         p50(t_convert),
-        p50(t_bytes),
-        p50(t_last),
+        old,
+        p50(t_old_bytes),
+        p50(t_old_last),
         p50(t_follow),
         p50(t_map)
     );
-}
-
-#[test]
-fn a_request_is_compared_with_the_last_as_before_whatever_changed() {
-    let base = synthetic(300);
-    for (name, next) in variants() {
-        let mut sent = Sent::default();
-        assert_eq!(sent.follow(&base), 0, "{name}: a first request has nothing before it");
-        assert_eq!(sent.messages(), &base[..]);
-        assert_eq!(sent.follow(&next), old_same(&base, &next), "{name}");
-        assert_eq!(sent.messages(), &next[..], "{name}: what is kept is the request just made");
-        assert_eq!(sent.follow(&base), old_same(&next, &base), "{name}: back");
-        assert_eq!(sent.messages(), &base[..]);
-    }
-    let mut sent = Sent::default();
-    sent.follow(&base);
-    assert_eq!(sent.follow(&base), 300, "the same request twice repeats whole");
-    sent.clear();
-    assert!(sent.is_empty());
-    assert_eq!(sent.follow(&base[..3]), 0, "after a clear nothing repeats");
 }

@@ -26,10 +26,12 @@ fn sizes(m: &Message) -> (u64, u64, u64) {
     (size_of(m), message_tokens(m), reasoning_tokens(m))
 }
 
-/// The messages of the last request, to tell how much of the next one repeats it (the provider's cache).
+/// The messages of the last request with the JSON length of each, to tell how much of the next one
+/// repeats it (the provider's cache) and to count the bytes of the next without serializing what repeats.
 #[derive(Default)]
 pub struct Sent {
     messages: Vec<Message>,
+    sizes: Vec<u64>,
 }
 
 impl Sent {
@@ -43,15 +45,21 @@ impl Sent {
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.sizes.clear();
     }
 
     /// Takes `view` as the request just made. Returns how many of its first messages equal those of the
-    /// request before; only the messages after that part are copied.
-    pub fn follow(&mut self, view: &[Message]) -> usize {
+    /// request before, and the JSON bytes of all of `view`. Only the messages after that part are copied
+    /// and measured; each size was taken from a message equal to the one in `view` now.
+    pub fn follow(&mut self, view: &[Message]) -> (usize, u64) {
         let same = self.messages.iter().zip(view).take_while(|(a, b)| a == b).count();
         self.messages.truncate(same);
-        self.messages.extend_from_slice(&view[same..]);
-        same
+        self.sizes.truncate(same);
+        for m in &view[same..] {
+            self.sizes.push(size_of(m));
+            self.messages.push(m.clone());
+        }
+        (same, self.sizes.iter().sum())
     }
 }
 

@@ -778,9 +778,8 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
         }
     }
     st.reads.note_view(&view.messages);
-    let bytes = |ms: &[Message]| -> u64 {
-        ms.iter().map(|m| serde_json::to_string(m).map(|s| s.len() as u64).unwrap_or(0)).sum()
-    };
+    // what repeats the last request is neither copied nor measured again
+    let (same, view_bytes) = st.last_sent.follow(&view.messages);
     let history_tokens = st.history.tokens();
     let last = std::mem::replace(&mut st.last_view, (history_tokens, view.tokens));
     st.est_sent = system_tokens + view.tokens;
@@ -791,7 +790,7 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
             view_tokens: view.tokens,
             history_tokens,
             history_bytes: st.history.bytes(),
-            view_bytes: bytes(&view.messages),
+            view_bytes,
             messages_in_view: view.messages.len(),
             messages_total: st.history.len(),
             policy: st.policy.name().to_string(),
@@ -804,7 +803,6 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
         Some(map) => map,
         None => (crate::context_map::map(&st.history, &view.messages), Vec::new()),
     };
-    let same = st.last_sent.follow(&view.messages);
     let calls = crate::context_map::calls(&st.history, &cells, &view.messages, same);
     let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
     emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
