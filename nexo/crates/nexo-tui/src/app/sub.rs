@@ -89,6 +89,7 @@ impl Parked {
 /// The open run's conversation.
 pub struct SubView {
     pub id: String,
+    #[cfg(any(unix, test))]
     pub(super) remote: Option<RemoteView>,
     /// The transcript that is not on show (the main chat's while the view is up).
     parked: Parked,
@@ -113,6 +114,7 @@ pub struct SubView {
     again: bool,
 }
 
+#[cfg(any(unix, test))]
 pub(super) struct RemoteView {
     rx: std::sync::mpsc::Receiver<Result<RemoteUpdate, String>>,
     snapshot: Option<nexo_core::agent::ObservationSnapshot>,
@@ -126,24 +128,40 @@ pub(super) struct RemoteView {
     abandon_unknown_confirm: bool,
 }
 
+#[cfg(any(unix, test))]
 pub(super) enum RemoteUpdate {
     Initial(nexo_core::agent::ObservationSnapshot),
     Delta(nexo_core::agent::ObservationSnapshot),
     Resync(nexo_core::agent::ObservationSnapshot),
 }
 
+#[cfg(any(unix, test))]
 pub(super) enum RemoteDelivery {
     Ready,
     Sending { text: String, request_id: String, rx: std::sync::mpsc::Receiver<RemoteReceipt> },
     Unknown { text: String, request_id: String },
 }
 
+#[cfg(any(unix, test))]
 #[derive(Debug)]
 pub(super) enum RemoteReceipt {
     Accepted,
     Rejected(String),
     Unknown,
     BeforeSend(String),
+}
+
+impl SubView {
+    fn is_remote(&self) -> bool {
+        #[cfg(any(unix, test))]
+        {
+            self.remote.is_some()
+        }
+        #[cfg(not(any(unix, test)))]
+        {
+            false
+        }
+    }
 }
 
 impl App {
@@ -160,7 +178,7 @@ impl App {
     /// The open run's title and whether it ended, for the rule over the box.
     pub fn sub_label(&self) -> Option<(String, bool)> {
         let v = self.sub_view.as_ref().filter(|v| !v.main_in)?;
-        if v.remote.is_some() {
+        if v.is_remote() {
             return Some((format!("remote · {} · directed", v.id), false));
         }
         Some(match self.sub_runs.iter().find(|r| r.info.id == v.id) {
@@ -230,6 +248,7 @@ impl App {
         let draft = self.input.take_draft();
         self.sub_view = Some(SubView {
             id: id.to_string(),
+            #[cfg(any(unix, test))]
             remote: None,
             parked: Parked::empty(),
             main_in: true,
@@ -296,6 +315,7 @@ impl App {
         self.open_remote_receiver(id, rx);
     }
 
+    #[cfg(any(unix, test))]
     pub(super) fn open_remote_receiver(
         &mut self,
         id: &str,
@@ -339,6 +359,7 @@ impl App {
         self.dirty = true;
     }
 
+    #[cfg(any(unix, test))]
     fn remote_tick(&mut self) {
         self.remote_delivery_tick();
         let result = self.sub_view.as_ref().and_then(|v| v.remote.as_ref()).and_then(|r| match r.rx.try_recv() {
@@ -431,6 +452,7 @@ impl App {
         }
     }
 
+    #[cfg(any(unix, test))]
     fn remote_delivery_tick(&mut self) {
         let Some(r) = self.sub_view.as_mut().and_then(|v| v.remote.as_mut()) else { return };
         let (text, request_id, result) = match &r.delivery {
@@ -486,6 +508,7 @@ impl App {
         }
     }
 
+    #[cfg(any(unix, test))]
     fn submit_remote(&mut self, text: String) {
         let Some(r) = self.sub_view.as_mut().and_then(|v| v.remote.as_mut()) else { return };
         match &r.delivery {
@@ -536,6 +559,7 @@ impl App {
         if self.sub_view.is_none() {
             return;
         }
+        #[cfg(any(unix, test))]
         if self
             .sub_view
             .as_ref()
@@ -586,6 +610,7 @@ impl App {
 
     /// Flush a coalesced refresh even if no more events arrive.
     pub(super) fn sub_tick(&mut self) {
+        #[cfg(any(unix, test))]
         self.remote_tick();
         if self.sub_view.as_ref().is_some_and(|v| !v.main_in && v.again && v.asking.is_none()) {
             self.sub_ask();
@@ -620,7 +645,7 @@ impl App {
                 let Some(r) = self.sub_runs.iter_mut().find(|r| r.info.id == id) else { return };
                 r.seen += 1;
                 let (count, exact) = (r.seen, r.exact);
-                let Some(v) = self.sub_view.as_mut().filter(|v| v.remote.is_none() && v.id == id && !v.main_in) else {
+                let Some(v) = self.sub_view.as_mut().filter(|v| !v.is_remote() && v.id == id && !v.main_in) else {
                     return;
                 };
                 if matches!(item, SubItem::Person { .. }) && v.pending > 0 {
@@ -645,12 +670,12 @@ impl App {
             AgentEvent::SubDelta { id, .. } => {
                 // Deltas and snapshot answers travel on different queues. Re-read the
                 // authoritative bounded partial, coalescing events while a read is pending.
-                if self.sub_view.as_ref().is_some_and(|v| v.remote.is_none() && v.id == id && !v.main_in) {
+                if self.sub_view.as_ref().is_some_and(|v| !v.is_remote() && v.id == id && !v.main_in) {
                     self.sub_ask();
                 }
             }
             AgentEvent::SubNotDelivered { id, why, text } => {
-                if let Some(v) = self.sub_view.as_mut().filter(|v| v.remote.is_none() && v.id == id && !v.main_in) {
+                if let Some(v) = self.sub_view.as_mut().filter(|v| !v.is_remote() && v.id == id && !v.main_in) {
                     v.pending = v.pending.saturating_sub(1);
                     let draft = self.input.full_text();
                     let recovered = recover_rejected(&draft, &text);
@@ -667,7 +692,7 @@ impl App {
                 if self
                     .sub_view
                     .as_ref()
-                    .is_some_and(|v| v.remote.is_none() && v.id == id && !v.main_in && v.asking == Some(request)) =>
+                    .is_some_and(|v| !v.is_remote() && v.id == id && !v.main_in && v.asking == Some(request)) =>
             {
                 self.sub_answer(&id, transcript)
             }
@@ -709,7 +734,7 @@ impl App {
             v.set_runs(runs);
             self.dirty = true;
         }
-        if self.sub_view.as_ref().is_some_and(|v| v.remote.is_none() && v.id == id && !v.main_in) {
+        if self.sub_view.as_ref().is_some_and(|v| !v.is_remote() && v.id == id && !v.main_in) {
             self.dirty = true;
             if resync {
                 self.sub_ask();
@@ -765,7 +790,7 @@ impl App {
         for l in &mut self.looks {
             l.born = None;
         }
-        if self.sub_view.as_ref().is_some_and(|v| v.remote.is_none()) {
+        if self.sub_view.as_ref().is_some_and(|v| !v.is_remote()) {
             if let Some(r) = self.sub_runs.iter_mut().find(|r| r.info.id == id) {
                 if !r.exact || r.seen > n {
                     r.exact = false;
@@ -901,7 +926,8 @@ impl App {
             self.toast(Kind::Info, "commands run in the main chat · Esc back");
             return;
         }
-        if self.sub_view.as_ref().is_some_and(|v| v.remote.is_some()) {
+        #[cfg(any(unix, test))]
+        if self.sub_view.as_ref().is_some_and(|v| v.is_remote()) {
             self.submit_remote(trimmed.to_owned());
             return;
         }
@@ -919,6 +945,7 @@ impl App {
 
     /// Esc in the view: the text goes first, then the view. Nothing is interrupted.
     pub(super) fn esc_sub(&mut self) {
+        #[cfg(any(unix, test))]
         if let Some(r) = self.sub_view.as_mut().and_then(|v| v.remote.as_mut()) {
             match &r.delivery {
                 RemoteDelivery::Sending { .. } => {
@@ -961,6 +988,7 @@ impl App {
 }
 
 // Merge only contiguous, identity-consistent deltas; retain at most the host's bounded suffix.
+#[cfg(any(unix, test))]
 fn merge_remote(
     slot: &mut Option<nexo_core::agent::ObservationSnapshot>,
     update: RemoteUpdate,
@@ -1058,6 +1086,7 @@ fn safe_tool_args(text: &str) -> serde_json::Value {
 
 /// Rebuild from the retained atomic event suffix. History is indexed, whereas live
 /// assistant completion and tool events overlap their streamed representations.
+#[cfg(any(unix, test))]
 fn remote_items(snapshot: &nexo_core::agent::ObservationSnapshot) -> (Vec<SubItem>, String) {
     use std::collections::HashSet;
     let mut items = Vec::new();
@@ -1200,6 +1229,7 @@ fn remote_items(snapshot: &nexo_core::agent::ObservationSnapshot) -> (Vec<SubIte
     (items, partial)
 }
 
+#[cfg(any(unix, test))]
 fn remote_call(
     items: &mut Vec<SubItem>,
     calls: &mut std::collections::HashSet<String>,
@@ -1220,6 +1250,7 @@ fn remote_call(
     }
 }
 
+#[cfg(any(unix, test))]
 fn remote_result(
     items: &mut Vec<SubItem>,
     calls: &mut std::collections::HashSet<String>,
@@ -1248,6 +1279,7 @@ fn remote_result(
     }
 }
 
+#[cfg(any(unix, test))]
 fn remote_result_text(parts: &serde_json::Value) -> String {
     parts
         .as_array()
