@@ -105,7 +105,8 @@ fn the_script_gets_the_session_and_its_first_line_is_the_bar() {
         assert!(bar.chars().count() <= w as usize, "{bar:?}");
         assert!(!rows.iter().any(|r| r.contains("second line")), "only the first line: {rows:?}");
         if w == 80 {
-            assert!(bar.contains(want), "{bar:?}");
+            assert!(bar.contains("deepseek-chat on deepseek | ctx 42% | $0.0123"), "{bar:?}");
+            assert!(bar.contains("2026"), "session remains visible: {bar:?}");
             // the colours of the script reach the screen
             let buf = t.backend().buffer();
             let y = h - 1;
@@ -116,7 +117,7 @@ fn the_script_gets_the_session_and_its_first_line_is_the_bar() {
             assert_eq!(buf[(x, y)].fg, Color::Indexed(2));
         } else {
             // cut at the width, the cut marked
-            assert!(bar.trim_end().ends_with('…'), "{bar:?}");
+            assert!(bar.contains('…'), "{bar:?}");
             assert!(bar.contains("deepseek-chat on"), "{bar:?}");
         }
         let text = rows.join("\n") + "\n";

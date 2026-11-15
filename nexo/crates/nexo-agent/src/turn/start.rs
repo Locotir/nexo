@@ -398,7 +398,17 @@ fn push_user_checked(
     for (path, bytes, header) in whole {
         st.reads.attached(path, &bytes, header);
     }
+    let previous_title = st.session.meta().title.clone();
     let _ = st.session.append(&m);
+    if st.session.meta().title != previous_title {
+        emit(
+            &st.events,
+            AgentEvent::SessionChanged {
+                session_id: st.session.id().to_string(),
+                title: st.session.meta().title.clone(),
+            },
+        );
+    }
     saving(st);
     let index = st.history.len() - 1;
     emit(&st.events, AgentEvent::History { index, message: m });

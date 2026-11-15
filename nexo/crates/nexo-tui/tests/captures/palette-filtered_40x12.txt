@@ -9,4 +9,4 @@
 ─ ask ──────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run
- nexo │ deepseek-chat │ ask     $0.0031
+ nexo │ deepseek-c… $0.0031  │ 20261102…

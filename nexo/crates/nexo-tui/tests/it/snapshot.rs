@@ -146,13 +146,14 @@ fn the_layout_at_100_by_30() {
     fill(&mut a);
     let rows = draw(&mut a, 100, 30);
     let all = rows.join("\n");
-    // at 100 columns the directory is the first piece to go (the memory is kept)
+    // At 100 columns the session takes priority over the directory and curator detail.
     assert!(
-        rows[rows.len() - 1].starts_with(" nexo │ deepseek/deepseek-chat │ ask │ ━━━━━──━ 69% 6.2k/9.0k curator"),
+        rows[rows.len() - 1].starts_with(" nexo │ deepseek/deepseek-chat │ ask │ ━━━━━──━ 69% 6.2k/9.0k")
+            && rows[rows.len() - 1].contains("20261027"),
         "{}",
         rows[rows.len() - 1]
     );
-    assert!(!rows[rows.len() - 1].contains('…'), "pieces are dropped, never cut: {}", rows[rows.len() - 1]);
+    assert!(rows[rows.len() - 1].ends_with("20261027…"), "session is truncated cleanly: {}", rows[rows.len() - 1]);
     a.root = true;
     let as_root = draw(&mut a, 100, 30);
     assert!(
@@ -162,7 +163,7 @@ fn the_layout_at_100_by_30() {
     );
     let narrow_root = draw(&mut a, 40, 30);
     assert!(
-        narrow_root[narrow_root.len() - 1].starts_with(" nexo # root │"),
+        narrow_root[narrow_root.len() - 1].starts_with(" nexo # root"),
         "root never drops out: {}",
         narrow_root[narrow_root.len() - 1]
     );
@@ -186,10 +187,7 @@ fn the_layout_at_100_by_30() {
     assert!(wide[wide.len() - 1].contains("81% cached · 1 call"), "{}", wide[wide.len() - 1]);
     let mid = draw(&mut a, 150, 30);
     let mid = &mid[mid.len() - 1];
-    assert!(
-        mid.contains("81% cached") && !mid.contains("/tmp/project"),
-        "the directory goes before the cache share: {mid}"
-    );
+    assert!(mid.contains("20261027") && mid.contains("/tmp/project"), "session and directory stay visible: {mid}");
     assert!(
         wide[wide.len() - 1].contains("━━━━━──━ 69% 6.2k/9.0k curator +1 in │ session 9.0k tok"),
         "{}",

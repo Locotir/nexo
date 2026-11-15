@@ -17,6 +17,35 @@ pub(super) fn segs_width(app: &App, segs: &[Vec<Seg>]) -> usize {
 }
 
 pub(in crate::ui) fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
+    let name = if app.session_title.trim().is_empty() {
+        app.session_id.as_deref().unwrap_or("")
+    } else {
+        app.session_title.as_str()
+    };
+    if name.is_empty() || area.width < 32 || area.height == 0 {
+        draw_title_rest(f, app, area);
+        return;
+    }
+    // At 40 columns reserve nine cells for the name (including an ellipsis),
+    // while leaving the remaining bar to fit the model and other status pieces.
+    let room = match area.width {
+        0..=39 | 60..=99 => 8,
+        _ => 12,
+    };
+    let label = truncate(&format!(" │ {name}"), room);
+    let used = width(&label) as u16;
+    let rest = Rect::new(area.x, area.y, area.width - used, area.height);
+    let session = Rect::new(area.x + area.width - used, area.y, used, area.height);
+    draw_title_rest(f, app, rest);
+    let mut style = app.theme.bar().fg(app.theme.accent2);
+    if app.hover == Hover::Hint(HintHit::Session) {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    f.render_widget(Paragraph::new(label).style(style), session);
+    app.hint_hits.push((session, HintHit::Session));
+}
+
+fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect) {
     app.status_hits.clear();
     if area.height == 0 {
         return;

@@ -9,4 +9,4 @@
 ─ ask ──────────────────────────────────
 ›   ask anything
  ↑↓ choose · Enter pick · y yes
- nexo │ deepseek-chat │ ask  Σ 0 billed
+ nexo │ deepsee… Σ 0 billed  │ 20261102…

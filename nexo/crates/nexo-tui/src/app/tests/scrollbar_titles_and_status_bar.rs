@@ -476,3 +476,54 @@ fn the_status_bar_pieces_follow_the_configured_order_and_the_fast_marker_has_its
     pointer(&mut a, K::Moved, model.x, 0);
     assert_ne!(a.hover, Hover::Status(StatusHit::Model));
 }
+
+#[test]
+fn session_title_persists_in_the_rendered_subscription_bar() {
+    let (mut a, _rx) = app();
+    a.provider = "codex".into();
+    a.model = "gpt-subscription".into();
+    a.plan_usage = Some(nexo_providers::usage::PlanUsage {
+        kind: "codex".into(),
+        meters: vec![nexo_providers::usage::Meter {
+            slot: "primary".into(),
+            label: "5h".into(),
+            used_pct: 37.0,
+            counts: None,
+            window_minutes: Some(300),
+            resets_at: None,
+        }],
+        ..Default::default()
+    });
+    a.opts.detail = nexo_core::config::Detail::Quiet;
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "one".into(), title: "Alpha".into() });
+    a.input.set_text("draft");
+    a.flash("a notice");
+    let rows = frame(&mut a, 100, 20);
+    assert!(rows.last().unwrap().contains("│ Alpha"), "{:?}", rows.last());
+    assert!(a.hint_hits.iter().any(|(r, h)| *h == HintHit::Session && r.y == 19));
+    a.status_cmd = crate::status_cmd::StatusCommand::new("echo custom", &a.cwd);
+    a.status_cmd.as_mut().unwrap().line = Some("custom status".into());
+    let rows = frame(&mut a, 100, 20);
+    assert!(rows.last().unwrap().contains("│ Alpha"));
+    assert!(rows.last().unwrap().contains("custom status"));
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "two".into(), title: "Beta".into() });
+    let rows = frame(&mut a, 60, 20);
+    assert!(rows.last().unwrap().contains("│ Beta"));
+    assert!(!rows.last().unwrap().contains("Alpha"));
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "fallback-id".into(), title: String::new() });
+    let rows = frame(&mut a, 100, 20);
+    assert!(rows.last().unwrap().contains("│ fallback…"));
+    a.session_title = "A very long session name that needs truncation".into();
+    let rows = frame(&mut a, 40, 20);
+    assert!(rows.last().unwrap().contains("│ A very l…"), "{:?}", rows.last());
+    a.status_cmd = None;
+    a.opts.detail = nexo_core::config::Detail::Full;
+    a.session_title = "Alpha project work".into();
+    let alpha = frame(&mut a, 40, 20).last().unwrap().clone();
+    a.session_title = "Beta project work".into();
+    let beta = frame(&mut a, 40, 20).last().unwrap().clone();
+    assert!(alpha.contains("Alpha pr…"), "{alpha}");
+    assert!(beta.contains("Beta pro…"), "{beta}");
+    assert_ne!(alpha, beta);
+    assert!(alpha.contains("gpt-"), "model should remain visible: {alpha}");
+}

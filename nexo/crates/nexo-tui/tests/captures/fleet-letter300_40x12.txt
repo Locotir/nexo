@@ -9,4 +9,4 @@
 ─ ask ──────────────────────────────────
 ›   ask anything
  Esc close         20261102-100000-ef56
- nexo │ deepseek-chat │ ask  Σ 0 billed
+ nexo │ deepsee… Σ 0 billed  │ 20261102…

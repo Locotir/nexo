@@ -9,4 +9,4 @@
   on, longer than the narrow screen is
   wide, to see how the editor wraps it
   and a second line
- nexo │ deepseek-chat │ ask     $0.0031
+ nexo │ deepseek-c… $0.0031  │ 20261102…

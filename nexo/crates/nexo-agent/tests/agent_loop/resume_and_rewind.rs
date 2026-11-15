@@ -1,6 +1,31 @@
 use super::*;
 
 #[tokio::test]
+async fn session_title_is_announced_at_start_on_first_message_and_resume() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("ok")), Reply::Events(text("again"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!("no Ready") };
+    assert!(
+        matches!(r.next().await, AgentEvent::SessionChanged { session_id, title } if session_id == id && title.is_empty())
+    );
+    r.send(AgentCommand::Submit { text: "first request".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::SessionChanged { session_id, title } if session_id == &id && title == "first request")));
+    r.send(AgentCommand::Submit { text: "second request".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::SessionChanged { .. })));
+    r.stop().await;
+
+    let mut r = start(Scripted::new(vec![]), config(PermissionMode::Ask), Some(id.clone()), d.path()).await;
+    assert!(matches!(r.next().await, AgentEvent::Ready { session_id, .. } if session_id == id));
+    assert!(
+        matches!(r.next().await, AgentEvent::SessionChanged { session_id, title } if session_id == id && title == "first request")
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn every_request_of_a_session_carries_its_id_also_after_a_resume() {
     let d = test_tmpdir().unwrap();
     let client =
@@ -197,6 +222,7 @@ async fn a_session_another_nexo_holds_is_not_resumed() {
         AgentEvent::Ready { session_id, .. } => session_id,
         _ => panic!(),
     };
+    assert!(matches!(r.next().await, AgentEvent::SessionChanged { session_id, .. } if session_id == b));
     r.send(AgentCommand::Resume { id: a.clone() });
     let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
     assert!(!evs.iter().any(|e| matches!(e, AgentEvent::HistoryCleared | AgentEvent::SessionChanged { .. })));

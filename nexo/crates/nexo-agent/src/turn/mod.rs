@@ -233,6 +233,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             permission_mode: perm.mode,
         },
     );
+    emit(
+        &events,
+        AgentEvent::SessionChanged { session_id: session.id().to_string(), title: session.meta().title.clone() },
+    );
     for n in &config.notices {
         notice(&events, Level::Warn, n.clone());
     }

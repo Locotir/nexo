@@ -21,7 +21,8 @@ async fn attachments_shell_model_and_clear() {
         .filter(|e| {
             !matches!(
                 e,
-                AgentEvent::ModelLimits { .. }
+                AgentEvent::SessionChanged { .. }
+                    | AgentEvent::ModelLimits { .. }
                     | AgentEvent::Effort { .. }
                     | AgentEvent::ContextMap { .. }
                     | AgentEvent::Curated { .. }
@@ -61,7 +62,8 @@ async fn attachments_shell_model_and_clear() {
         .filter(|e| {
             !matches!(
                 e,
-                AgentEvent::ModelLimits { .. }
+                AgentEvent::SessionChanged { .. }
+                    | AgentEvent::ModelLimits { .. }
                     | AgentEvent::Effort { .. }
                     | AgentEvent::ContextMap { .. }
                     | AgentEvent::Curated { .. }

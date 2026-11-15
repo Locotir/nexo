@@ -33,7 +33,9 @@ impl App {
     }
 
     pub(super) fn on_session_changed(&mut self, session_id: String, title: String) {
-        self.flash(&format!("session: {}", if title.is_empty() { session_id.clone() } else { title.clone() }));
+        if self.session_id.as_deref() != Some(session_id.as_str()) {
+            self.flash(&format!("session: {}", if title.is_empty() { session_id.clone() } else { title.clone() }));
+        }
         self.session_id = Some(session_id);
         self.session_title = title;
     }

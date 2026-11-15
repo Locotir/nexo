@@ -14,7 +14,8 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
         .filter(|e| {
             !matches!(
                 e,
-                AgentEvent::ModelLimits { .. }
+                AgentEvent::SessionChanged { .. }
+                    | AgentEvent::ModelLimits { .. }
                     | AgentEvent::Effort { .. }
                     | AgentEvent::ContextMap { .. }
                     | AgentEvent::Curated { .. }
