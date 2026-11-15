@@ -75,7 +75,7 @@ pub const VENDORS: &[Vendor] = &[
     Vendor {
         id: "openai",
         key_env: Some("OPENAI_API_KEY"),
-        key_prefix: Some(concat!("s", "k-proj-")),
+        key_prefix: Some("sk-proj-"),
         key_page: Some("https://platform.openai.com/api-keys"),
         ..BLANK
     },
@@ -83,7 +83,7 @@ pub const VENDORS: &[Vendor] = &[
         id: "anthropic",
         protocol: Some(anthropic::ID),
         key_env: Some("ANTHROPIC_API_KEY"),
-        key_prefix: Some(concat!("s", "k-ant-")),
+        key_prefix: Some("sk-ant-"),
         key_page: Some("https://platform.claude.com/settings/keys"),
         list: Some(ListKind::Anthropic),
         efforts: Some(Efforts { any: &["off", "low", "medium", "high"], pro: None }),
@@ -126,7 +126,7 @@ pub const VENDORS: &[Vendor] = &[
     Vendor {
         id: "openrouter",
         key_env: Some("OPENROUTER_API_KEY"),
-        key_prefix: Some(concat!("s", "k-or-v1-")),
+        key_prefix: Some("sk-or-v1-"),
         key_page: Some("https://openrouter.ai/keys"),
         ..BLANK
     },
@@ -145,7 +145,7 @@ pub const VENDORS: &[Vendor] = &[
         directory_ids: &["fireworks-ai"],
         ..BLANK
     },
-    Vendor { id: "cerebras", key_env: Some("CEREBRAS_API_KEY"), key_prefix: Some(concat!("cs", "k-")), ..BLANK },
+    Vendor { id: "cerebras", key_env: Some("CEREBRAS_API_KEY"), key_prefix: Some("csk-"), ..BLANK },
     Vendor {
         id: "moonshot",
         key_env: Some("MOONSHOT_API_KEY"),

@@ -61,27 +61,27 @@ fn key_pages_are_the_ones_known_today() {
 fn key_starts_name_the_service_they_belong_to() {
     let tail = "madeupmadeupmadeup";
     let want: &[(&str, &str)] = &[
-        ("s\u{6b}-ant-", "anthropic"),
-        ("s\u{6b}-or-v1-", "openrouter"),
-        ("s\u{6b}-proj-", "openai"),
+        ("sk-ant-", "anthropic"),
+        ("sk-or-v1-", "openrouter"),
+        ("sk-proj-", "openai"),
         ("gsk_", "groq"),
         ("AIza", "gemini"),
-        ("cs\u{6b}-", "cerebras"),
+        ("csk-", "cerebras"),
     ];
     for (start, name) in want {
         assert_eq!(keys::recognise(&format!("{start}{tail}")), Some(*name), "{start}");
         assert!(keys::starts_like_key(&format!("{start}x"), 1), "{start}");
         assert_eq!(
             keys::starts_like_key(start, 1),
-            start.starts_with("s\u{6b}-"),
-            "{start} alone is a key start only through the shared s\u{6b}-"
+            start.starts_with("sk-"),
+            "{start} alone is a key start only through the shared sk-"
         );
         // exactly 8 characters after the start name nothing yet, 9 do
         assert_eq!(keys::recognise(&format!("{start}12345678")), None, "{start}");
         assert_eq!(keys::recognise(&format!("{start}123456789")), Some(*name), "{start}");
     }
-    assert_eq!(keys::recognise("s\u{6b}-0123456789abcdef"), None);
-    assert!(keys::starts_like_key("s\u{6b}-ab", 2) && !keys::starts_like_key("s\u{6b}-ab", 3));
+    assert_eq!(keys::recognise("sk-madeup-0123456789"), None);
+    assert!(keys::starts_like_key("sk-ab", 2) && !keys::starts_like_key("sk-ab", 3));
     assert!(!keys::starts_like_key("gpt-5", 0) && !keys::starts_like_key("", 0));
     assert_eq!(keys::recognise("  gsk_madeupmadeupmade "), Some("groq"), "surrounding spaces are ignored");
 }
