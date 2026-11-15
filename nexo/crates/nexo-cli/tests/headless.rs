@@ -118,6 +118,7 @@ fn a_key_kept_with_auth_login_sets_up_a_directory_provider() {
             .env("NEXO_CONFIG_DIR", dir.path().join("config"))
             .env("NEXO_DATA_DIR", dir.path().join("data"))
             .env("NEXO_CACHE_DIR", dir.path().join("cache"))
+            .env("NEXO_AUTH_FILE", dir.path().join("auth.json"))
             .env_remove("NEXO_PROVIDER")
             .env_remove("NEXO_MODEL")
             .env_remove("CHUTES_API_KEY")
