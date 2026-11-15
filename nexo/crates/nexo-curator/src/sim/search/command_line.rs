@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "offline.rs"]
+mod offline;
+
 /// One evaluated config.
 struct Scored {
     spec: String,
@@ -42,12 +45,14 @@ struct Opts {
     pareto_max: usize,
     pareto_min: usize,
     allow_missing: bool,
+    corpus: Option<String>,
 }
 
 const USAGE: &str = "usage: sim search [--knobs sim/knobs.toml] [--tier fast|mid|all] [--configs N] [--workers W] [--seed X]
                   [--stage lhs|coord|confirm] [--from FILE] [--folds 3] [--weights sim/weights.toml] [--params sim/params.json]
                   [--out DIR] [--fixtures DIR[:DIR...]] [--price live|legacy] [--life S] [--slots K] [--max-steps 40] [--blind-c C]
                   [--holdout K] [--sweeps 3] [--starts 20] [--pareto-max 50] [--pareto-min 5] [--allow-missing]
+  offline --corpus manifest.tsv: isolated project-labelled search/test, see offline.rs
   lhs     sample N configs by Latin hypercube, score them on the tier, write configs.tsv, pareto.tsv, folds.tsv
   coord    --from configs.tsv: coordinate descent from its best --starts configs and D_SPEC (N evaluations in all)
   confirm  --from pareto.tsv: rerun its configs on all 21 fixtures, write confirm.tsv
@@ -78,6 +83,7 @@ fn parse_opts(mut args: impl Iterator<Item = String>) -> Result<Opts, String> {
         pareto_max: 50,
         pareto_min: 5,
         allow_missing: false,
+        corpus: None,
     };
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| format!("{a} needs a value\n{USAGE}"));
@@ -106,6 +112,7 @@ fn parse_opts(mut args: impl Iterator<Item = String>) -> Result<Opts, String> {
             "--pareto-max" => o.pareto_max = num(val()?)? as usize,
             "--pareto-min" => o.pareto_min = num(val()?)? as usize,
             "--allow-missing" => o.allow_missing = true,
+            "--corpus" => o.corpus = Some(val()?),
             _ => return Err(format!("unknown option {a:?}\n{USAGE}")),
         }
     }
@@ -360,6 +367,7 @@ pub fn cli(args: impl Iterator<Item = String>) -> Result<(), String> {
     let dir = o.out.clone().unwrap_or_else(|| format!("sim/reports/search-{}-{}-s{}", o.stage, o.tier, o.seed));
     let t0 = Instant::now();
     match o.stage.as_str() {
+        "offline" => offline::run(&o, &space, &dir)?,
         "lhs" => {
             let setup = build_setup(&o, &o.tier)?;
             println!(
@@ -456,12 +464,12 @@ pub fn cli(args: impl Iterator<Item = String>) -> Result<(), String> {
             let (scored, bad) = evaluate_all(&setup, &space, configs, o.workers);
             summary_line(&setup, &scored, bad, t1.elapsed().as_secs_f64());
             let dspec = scored.first().ok_or("D_SPEC does not run")?;
-            // The configs were chosen on the fast tier, which sits inside these 21 fixtures and their folds:
-            // the fold columns are in sample. Only the fixtures outside the fast tier were never seen.
+            // The input may have been searched on any tier; these folds are not independent.
+            // The input file does not record its search tier; outside FAST is not necessarily unseen.
             let unseen = |i: usize| setup.unseen(i);
             let n_unseen = (0..setup.fixtures.len()).filter(|&i| unseen(i)).count();
             println!(
-                "{n_unseen} of {} fixtures are outside the fast tier (never seen by the search)",
+                "{n_unseen} of {} fixtures are outside the fast tier (not necessarily unseen by the search)",
                 setup.fixtures.len()
             );
             let mut t = format!(
@@ -489,16 +497,16 @@ pub fn cli(args: impl Iterator<Item = String>) -> Result<(), String> {
                     s.spec
                 );
                 println!(
-                    "{id:>6}: J weighted {:.6}, unweighted {:.6}; in sample, folds beaten {beaten}/{}; unseen fixtures J {uw:.6} weighted, {uf:.6} unweighted{}",
+                    "{id:>6}: J weighted {:.6}, unweighted {:.6}; in sample, folds beaten {beaten}/{}; outside-fast fixtures J {uw:.6} weighted, {uf:.6} unweighted{}",
                     setup.j(&s.fix, &|_| true),
                     setup.j_flat(&s.fix, &|_| true),
                     setup.folds,
                     if id == "D_SPEC" {
                         " (reference)".to_string()
                     } else if wins {
-                        " : beats D_SPEC on the unseen fixtures".into()
+                        " : beats D_SPEC on outside-fast fixtures".into()
                     } else {
-                        " : does not beat D_SPEC on the unseen fixtures".into()
+                        " : does not beat D_SPEC on outside-fast fixtures".into()
                     }
                 );
             }
@@ -507,13 +515,13 @@ pub fn cli(args: impl Iterator<Item = String>) -> Result<(), String> {
                 notes.push(format!("# Family {fam} weighs {w} in J and has no fixture: its load is not scored."));
             }
             notes.push(
-                "# folds_beaten_in_sample and beats_dspec_all_folds_in_sample use fixtures the configs were chosen on; beats_dspec_unseen (unweighted J on the fixtures outside the fast tier) is the held-out claim."
+                "# folds_beaten_in_sample and beats_dspec_all_folds_in_sample use fixtures the configs were chosen on; outside-fast results are only held out if the input was selected exclusively on the fast tier; this is not verified."
                     .to_string(),
             );
             t += &(notes.join("\n") + "\n");
             write(&dir, "confirm.tsv", &t)?;
         }
-        other => return Err(format!("unknown stage {other:?} (lhs, coord, confirm)\n{USAGE}")),
+        other => return Err(format!("unknown stage {other:?} (lhs, coord, confirm, offline)\n{USAGE}")),
     }
     println!("wrote {dir}/ in {:.1} s", t0.elapsed().as_secs_f64());
     Ok(())

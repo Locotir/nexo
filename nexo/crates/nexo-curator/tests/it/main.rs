@@ -19,5 +19,6 @@ mod sim_search;
 mod sim_unsent;
 mod standing;
 mod stress;
+mod structured_facts;
 mod topic_switch;
 mod window;

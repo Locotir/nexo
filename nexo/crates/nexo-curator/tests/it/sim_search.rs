@@ -128,3 +128,142 @@ fn a_missing_fixture_stops_the_search_unless_allowed() {
     assert!(e.contains("no fixture of tier fast"), "{e}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn offline_cycle_is_reproducible_and_rejects_leaks() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let knobs = root.join("knobs.toml");
+    let weights = root.join("weights.toml");
+    let manifest = root.join("corpus.tsv");
+    // Deliberately exclude the production default protect=12 from the search range.
+    std::fs::write(&knobs, "[int]\nprotect = [30, 40]\n").unwrap();
+    std::fs::write(&weights, "# equal-weight fallback for axes\n").unwrap();
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dev = fixtures.join("nexo-mock-edab.jsonl");
+    let test = fixtures.join("protocol-msgs.jsonl");
+    std::fs::write(&manifest, format!("dev\tproject-a\t{}\ntest\tproject-b\t{}\n", dev.display(), test.display()))
+        .unwrap();
+    let args = |out: &std::path::Path| {
+        [
+            "--stage",
+            "offline",
+            "--corpus",
+            manifest.to_str().unwrap(),
+            "--knobs",
+            knobs.to_str().unwrap(),
+            "--weights",
+            weights.to_str().unwrap(),
+            "--configs",
+            "3",
+            "--workers",
+            "1",
+            "--out",
+            out.to_str().unwrap(),
+        ]
+        .map(String::from)
+        .into_iter()
+    };
+    let a = root.join("a");
+    let b = root.join("b");
+    cli(args(&a)).unwrap();
+    cli(args(&b)).unwrap();
+    for name in ["cases.tsv", "selection.tsv", "inputs.tsv", "metadata.txt"] {
+        assert_eq!(std::fs::read(a.join(name)).unwrap(), std::fs::read(b.join(name)).unwrap());
+    }
+    let cases = std::fs::read_to_string(a.join("cases.tsv")).unwrap();
+    let baseline: Vec<_> = cases.lines().filter(|line| line.contains("\tbaseline_D_SPEC\t")).collect();
+    assert_eq!(baseline.len(), 2);
+    for line in baseline {
+        assert_eq!(line.rsplit('\t').next().unwrap(), nexo_curator::D_SPEC);
+    }
+    assert!(
+        cases.contains("protect=30")
+            || cases.contains("protect=31")
+            || cases.contains("protect=32")
+            || cases.contains("protect=33")
+            || cases.contains("protect=34")
+            || cases.contains("protect=35")
+            || cases.contains("protect=36")
+            || cases.contains("protect=37")
+            || cases.contains("protect=38")
+            || cases.contains("protect=39")
+            || cases.contains("protect=40")
+    );
+    assert!(!cases.contains(root.to_str().unwrap()));
+    assert!(cli(args(&a)).unwrap_err().contains("output directory is not empty"));
+    std::fs::write(&manifest, format!("dev\tsame\t{}\ntest\tsame\t{}\n", dev.display(), test.display())).unwrap();
+    assert!(cli(args(&root.join("leak1"))).unwrap_err().contains("project appears"));
+    let copy = root.join("copy.jsonl");
+    std::fs::copy(&dev, &copy).unwrap();
+    std::fs::write(&manifest, format!("dev\ta\t{}\ntest\tb\t{}\n", dev.display(), copy.display())).unwrap();
+    assert!(cli(args(&root.join("leak2"))).unwrap_err().contains("identical corpus"));
+}
+
+#[test]
+fn offline_reports_labelled_literal_coverage_and_missing_annotations() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let clauses = [
+        "Never deploy atlas.",
+        "Retry limit is 2, not 3.",
+        "Correction: port 5433, not 5432.",
+        "Run offline; never use network.",
+    ];
+    for (name, suffix) in [("dev", "A"), ("test", "B")] {
+        let messages: Vec<_> = clauses.iter().map(|s| serde_json::json!({"role":"user", "content":s})).collect();
+        let request = serde_json::json!({"req":{"messages":messages}, "now":1, "tag":suffix});
+        std::fs::write(root.join(format!("{name}.jsonl")), format!("{request}\n")).unwrap();
+        let labels = ["negation", "number", "correction", "constraint"]
+            .iter()
+            .zip(clauses)
+            .map(|(kind, clause)| format!("{kind}\t0\t{clause}\n"))
+            .collect::<String>();
+        std::fs::write(root.join(format!("{name}.tsv")), labels).unwrap();
+    }
+    std::fs::write(root.join("knobs"), "[int]\nprotect = [30, 40]\n").unwrap();
+    std::fs::write(root.join("weights"), "").unwrap();
+    std::fs::write(root.join("manifest"), "dev\ta\tdev.jsonl\tdev.tsv\ntest\tb\ttest.jsonl\ttest.tsv\n").unwrap();
+    let args = |out: &str| {
+        [
+            "--stage",
+            "offline",
+            "--corpus",
+            "manifest",
+            "--knobs",
+            "knobs",
+            "--weights",
+            "weights",
+            "--configs",
+            "1",
+            "--out",
+            out,
+        ]
+        .iter()
+        .enumerate()
+        .map(
+            |(i, s)| {
+                if [3, 5, 7, 11].contains(&i) {
+                    root.join(s).to_string_lossy().into_owned()
+                } else {
+                    s.to_string()
+                }
+            },
+        )
+        .collect::<Vec<_>>()
+        .into_iter()
+    };
+    cli(args("out")).unwrap();
+    let facts = std::fs::read_to_string(root.join("out/facts.tsv")).unwrap();
+    for kind in ["negation", "number", "correction", "constraint"] {
+        assert!(facts.contains(&format!("\t{kind}\t0\ttrue")), "{facts}");
+    }
+    assert!(facts.contains("test\tbaseline_D_SPEC"));
+    std::fs::write(root.join("manifest"), "dev\ta\tdev.jsonl\ntest\tb\ttest.jsonl\n").unwrap();
+    cli(args("unannotated")).unwrap();
+    let facts = std::fs::read_to_string(root.join("unannotated/facts.tsv")).unwrap();
+    assert!(facts.contains("\tNA\tNA\tNA\tNA"));
+    std::fs::write(root.join("manifest"), "dev\ta\tdev.jsonl\tdev.tsv\ntest\tb\ttest.jsonl\n").unwrap();
+    std::fs::write(root.join("dev.tsv"), "negation\t0\tDeploy atlas.\n").unwrap();
+    assert!(cli(args("invalid")).unwrap_err().contains("literal absent"));
+}
