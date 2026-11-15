@@ -29,6 +29,8 @@ pub mod sse;
 pub mod testing;
 pub use nexo_http::tls;
 pub mod usage;
+#[cfg(test)]
+mod vendors_pin;
 
 pub use client::{registry, Client, Registry};
 pub use nexo_http::build_client;
