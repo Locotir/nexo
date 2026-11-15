@@ -149,7 +149,7 @@ mod tests {
             &f,
             "deepseek",
             "deepseek-chat",
-            Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 },
+            Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 },
         )
         .unwrap();
         set_limit(&f, "deepseek", "deepseek-chat", "context_window", 131_072).unwrap();

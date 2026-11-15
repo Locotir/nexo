@@ -282,8 +282,13 @@ pub fn verdict(session: f64, day: f64, session_limit: Option<f64>, day_limit: Op
 mod tests {
     use super::*;
 
-    const PRICES: nexo_core::pricing::Pricing =
-        nexo_core::pricing::Pricing { input: 1.0, output: 10.0, cache_read: 0.0, cache_write: 0.0 };
+    const PRICES: nexo_core::pricing::Pricing = nexo_core::pricing::Pricing {
+        input: 1.0,
+        output: 10.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+        cache_write_1h: 0.0,
+    };
 
     #[test]
     fn calls_in_flight_count_against_the_limit_at_their_estimated_cost() {

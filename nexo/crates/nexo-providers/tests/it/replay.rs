@@ -49,7 +49,10 @@ async fn openai_chat_fixture() {
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("openai-chat", text, chunk).await;
         check(&c, &evs, false);
-        assert_eq!(c.usage, Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, reasoning: 9 });
+        assert_eq!(
+            c.usage,
+            Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 9 }
+        );
     }
 }
 
@@ -59,7 +62,10 @@ async fn openai_responses_fixture() {
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("openai-responses", text, chunk).await;
         check(&c, &evs, true);
-        assert_eq!(c.usage, Usage { input: 176, output: 40, cache_read: 1024, cache_write: 0, reasoning: 12 });
+        assert_eq!(
+            c.usage,
+            Usage { input: 176, output: 40, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 12 }
+        );
         let enc = c.message().content.iter().find_map(|p| match p {
             Part::Reasoning { encrypted, signature, .. } => Some((encrypted.clone(), signature.clone())),
             _ => None,
@@ -74,7 +80,10 @@ async fn anthropic_fixture() {
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("anthropic", text, chunk).await;
         check(&c, &evs, true);
-        assert_eq!(c.usage, Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, reasoning: 0 });
+        assert_eq!(
+            c.usage,
+            Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 0 }
+        );
     }
 }
 
@@ -84,7 +93,10 @@ async fn gemini_fixture() {
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("gemini", text, chunk).await;
         check(&c, &evs, true);
-        assert_eq!(c.usage, Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, reasoning: 12 });
+        assert_eq!(
+            c.usage,
+            Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 12 }
+        );
         assert!(c.message().tool_calls().next().unwrap().0.starts_with("call_"), "ids are synthesised");
     }
 }

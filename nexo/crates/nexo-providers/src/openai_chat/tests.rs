@@ -164,7 +164,14 @@ fn parses_fragmented_tool_calls_reasoning_and_deepseek_usage() {
     assert_eq!(evs[7], StreamEvent::Finish(FinishReason::ToolUse));
     assert_eq!(
         evs[8],
-        StreamEvent::Usage(Usage { input: 36, output: 7, cache_read: 64, cache_write: 0, reasoning: 3 })
+        StreamEvent::Usage(Usage {
+            input: 36,
+            output: 7,
+            cache_read: 64,
+            cache_write: 0,
+            cache_write_1h: 0,
+            reasoning: 3
+        })
     );
     assert_eq!(evs.len(), 9, "[DONE] adds nothing after a finish");
 }

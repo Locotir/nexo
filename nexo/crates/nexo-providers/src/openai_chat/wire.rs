@@ -49,6 +49,7 @@ pub fn usage(u: &Value) -> Usage {
         output: count(&u["completion_tokens"]).unwrap_or(0),
         cache_read: cached,
         cache_write: 0,
+        cache_write_1h: 0,
         reasoning: count(&u["completion_tokens_details"]["reasoning_tokens"]).unwrap_or(0),
     }
 }

@@ -215,7 +215,7 @@ fn model_card_and_welcome_box() {
     let b = Block::Model {
         provider: "deepseek".into(),
         model: "deepseek-chat".into(),
-        pricing: Some(Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 }),
+        pricing: Some(Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 }),
         context_window: Some(128_000),
         max_output: Some(8192),
         source: "catalogue".into(),

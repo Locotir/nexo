@@ -223,7 +223,7 @@ fn the_gauge_uses_the_last_call_and_the_window() {
 fn pricing_parses_and_reaches_the_agent() {
     assert_eq!(
         parse_pricing("in=0.28 out=0.42 cache=0.028").unwrap(),
-        Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 }
+        Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 }
     );
     assert_eq!(parse_pricing("input=$1, output=2").unwrap().output, 2.0);
     assert!(parse_pricing("in=x").is_err());

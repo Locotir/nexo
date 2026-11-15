@@ -163,7 +163,14 @@ fn parses_typed_events() {
     );
     assert_eq!(
         evs[8],
-        StreamEvent::Usage(Usage { input: 30, output: 9, cache_read: 20, cache_write: 0, reasoning: 4 })
+        StreamEvent::Usage(Usage {
+            input: 30,
+            output: 9,
+            cache_read: 20,
+            cache_write: 0,
+            cache_write_1h: 0,
+            reasoning: 4
+        })
     );
     assert_eq!(evs[9], StreamEvent::Finish(FinishReason::ToolUse));
 }

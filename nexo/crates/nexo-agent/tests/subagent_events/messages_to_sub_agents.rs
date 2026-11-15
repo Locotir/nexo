@@ -164,7 +164,13 @@ async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_i
     let mut cfg = config(PermissionMode::Auto);
     cfg.providers.get_mut("mock").unwrap().pricing.insert(
         "m1".into(),
-        nexo_core::pricing::Pricing { input: 1_000_000.0, output: 2_000_000.0, cache_read: 0.0, cache_write: 0.0 },
+        nexo_core::pricing::Pricing {
+            input: 1_000_000.0,
+            output: 2_000_000.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            cache_write_1h: 0.0,
+        },
     );
     let mut r = start(client.clone(), cfg, d.path()).await;
     let id = held_sub_agent(&mut r, &client).await;

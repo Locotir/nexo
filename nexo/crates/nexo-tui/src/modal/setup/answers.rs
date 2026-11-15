@@ -174,7 +174,13 @@ impl Setup {
         if let (Some(input), Some(output)) = (f("price in"), f("price out")) {
             cfg.pricing.insert(
                 m.clone(),
-                Pricing { input, output, cache_read: f("price cached").unwrap_or(0.0), cache_write: 0.0 },
+                Pricing {
+                    input,
+                    output,
+                    cache_read: f("price cached").unwrap_or(0.0),
+                    cache_write: 0.0,
+                    cache_write_1h: 0.0,
+                },
             );
         }
         if !self.efforts.is_empty() {

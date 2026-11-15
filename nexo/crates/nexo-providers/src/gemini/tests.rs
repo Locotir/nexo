@@ -64,7 +64,14 @@ fn parses_thoughts_text_whole_calls_and_usage() {
     assert_eq!(evs[5], StreamEvent::ToolCallEnd { id: id.clone(), name: "read".into(), args: json!({"path": "a"}) });
     assert_eq!(
         evs[6],
-        StreamEvent::Usage(Usage { input: 60, output: 16, cache_read: 40, cache_write: 0, reasoning: 6 })
+        StreamEvent::Usage(Usage {
+            input: 60,
+            output: 16,
+            cache_read: 40,
+            cache_write: 0,
+            cache_write_1h: 0,
+            reasoning: 6
+        })
     );
     assert_eq!(evs[7], StreamEvent::Finish(FinishReason::ToolUse));
     // a second response never reuses an id

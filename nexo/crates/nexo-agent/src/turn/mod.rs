@@ -50,6 +50,7 @@ use crate::AgentSetup;
 
 pub(crate) mod approval;
 mod background;
+mod cache_ttl;
 mod chrome;
 mod commands;
 mod compaction;
@@ -340,6 +341,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         flow_slot: Default::default(),
         plan,
         last_prompt: None,
+        pauses: Default::default(),
         est_sent: 0,
         compact_failed_at: None,
         tok_ratio: None,

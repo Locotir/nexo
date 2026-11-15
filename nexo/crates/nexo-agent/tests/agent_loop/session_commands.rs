@@ -205,7 +205,7 @@ async fn limits_are_reported_and_prices_can_be_set() {
         }
         _ => unreachable!(),
     }
-    let p = Pricing { input: 5.0, output: 10.0, cache_read: 0.5, cache_write: 0.0 };
+    let p = Pricing { input: 5.0, output: 10.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0 };
     r.send(AgentCommand::SetPricing { pricing: p });
     let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
     assert!(evs.iter().any(

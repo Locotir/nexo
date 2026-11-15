@@ -87,7 +87,13 @@ fn the_picker_price_column_reads_plan_for_a_login_provider() {
         base_url: "https://codex.example".into(),
         models: vec![ModelInfo {
             id: "gpt-x".into(),
-            pricing: Some(nexo_core::Pricing { input: 1.0, output: 2.0, cache_read: 0.0, cache_write: 0.0 }),
+            pricing: Some(nexo_core::Pricing {
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                cache_write_1h: 0.0,
+            }),
             ..Default::default()
         }],
         ..Default::default()

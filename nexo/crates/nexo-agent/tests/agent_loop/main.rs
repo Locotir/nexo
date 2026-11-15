@@ -217,7 +217,10 @@ fn config(mode: PermissionMode) -> Config {
     let mut cfg = Config::default();
     let mut p = ProviderConfig::new("mock", "http://mock", None);
     p.models = vec!["m1".into(), "m2".into()];
-    p.pricing.insert("m1".into(), Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0 });
+    p.pricing.insert(
+        "m1".into(),
+        Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 },
+    );
     cfg.providers.insert("mock".into(), p);
     cfg.permissions.mode = mode;
     // these tests script every call: no curator between them

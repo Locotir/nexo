@@ -43,6 +43,10 @@ pub struct AgentConfig {
     pub check_at_start: bool,
     /// Retries on retryable provider errors.
     pub retries: u32,
+    /// Tokens of context over which a conversation that has already paused more than 5 minutes between two
+    /// requests writes its prompt cache for an hour, where the provider sells that and its prices make it pay
+    /// (the short cache would be re-written in full after each pause). 0: never.
+    pub long_cache_over: u32,
     /// Gives the model the `task` tool: a read-only sub-agent for wide searches.
     pub subagents: bool,
     /// Several `task` calls of one message run at the same time, also sub-agents that change files; a
@@ -125,6 +129,7 @@ impl Default for AgentConfig {
             attach_budget: 6000,
             check_at_start: true,
             retries: 4,
+            long_cache_over: 50_000,
             subagents: true,
             parallel_tasks: true,
             detach_on_message: true,

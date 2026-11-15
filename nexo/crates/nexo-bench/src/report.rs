@@ -744,8 +744,13 @@ mod tests {
     #[test]
     fn prices_from_the_command_line_are_named_in_the_summary() {
         let mut h = head(1);
-        h.price =
-            Some(price_line(&nexo_core::Pricing { input: 0.14, output: 0.28, cache_read: 0.0028, cache_write: 0.0 }));
+        h.price = Some(price_line(&nexo_core::Pricing {
+            input: 0.14,
+            output: 0.28,
+            cache_read: 0.0028,
+            cache_write: 0.0,
+            cache_write_1h: 0.0,
+        }));
         let s = summary(&h, &grid(1, 1));
         assert!(s.contains("Prices given with --price: $0.14 input on a cache miss, $0.0028 on a cache hit, $0.28 output, per million tokens."), "{s}");
         assert!(!s.contains("Prices unknown"), "{s}");

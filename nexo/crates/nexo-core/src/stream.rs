@@ -67,8 +67,15 @@ pub struct Usage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    /// Of `cache_write`, the tokens written with the 1-hour lifetime (0 where a vendor has no such split).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_1h: u64,
     /// Reasoning tokens (already counted in `output` where the vendor does so).
     pub reasoning: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Usage {
@@ -89,6 +96,7 @@ impl Add for Usage {
             output: self.output + o.output,
             cache_read: self.cache_read + o.cache_read,
             cache_write: self.cache_write + o.cache_write,
+            cache_write_1h: self.cache_write_1h + o.cache_write_1h,
             reasoning: self.reasoning + o.reasoning,
         }
     }

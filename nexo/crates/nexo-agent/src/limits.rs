@@ -192,8 +192,10 @@ mod tests {
         assert_eq!(l.pricing.unwrap().cache_read, 0.028);
         assert_eq!(l.max_output, Some(8_192), "from the catalogue");
         // a configured price that differs from the preset's is the configuration's
-        cfg.pricing
-            .insert("deepseek-chat".into(), Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0 });
+        cfg.pricing.insert(
+            "deepseek-chat".into(),
+            Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 },
+        );
         let l = resolve("deepseek", &cfg, "deepseek-chat", None);
         assert_eq!((l.source.as_str(), l.pricing.unwrap().input), ("config", 1.0));
         // an unknown model: only the vendor's list can say
@@ -325,7 +327,10 @@ mod cap_late_tests {
     fn a_priced_model_whose_window_was_only_the_cap_also_gives_way() {
         let mut cfg = ProviderConfig::new("openai-chat", "https://x.invalid", None);
         cfg.window_cap = Some(272_000);
-        cfg.pricing.insert("m".into(), Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0 });
+        cfg.pricing.insert(
+            "m".into(),
+            Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 },
+        );
         let old = resolve("nobody", &cfg, "m", None);
         assert_eq!(old.context_window, Some(272_000));
         assert!(old.window_is_cap_only(), "{}", old.source);

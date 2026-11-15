@@ -156,7 +156,14 @@ fn parses_named_events_with_cache_usage() {
     assert_eq!(evs[8], StreamEvent::Finish(FinishReason::ToolUse));
     assert_eq!(
         evs[9],
-        StreamEvent::Usage(Usage { input: 10, output: 12, cache_read: 90, cache_write: 5, reasoning: 0 })
+        StreamEvent::Usage(Usage {
+            input: 10,
+            output: 12,
+            cache_read: 90,
+            cache_write: 5,
+            cache_write_1h: 0,
+            reasoning: 0
+        })
     );
     assert_eq!(evs.len(), 10);
 }
@@ -493,7 +500,8 @@ fn usage_counts_cache_writes_and_reads_and_prices_them() {
     evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#));
     let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
     assert_eq!((u.input, u.output, u.cache_read, u.cache_write), (10, 40, 500, 2000));
-    let price = nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50 };
+    let price =
+        nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 2000.0 * 2.50) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
 }
@@ -566,4 +574,69 @@ fn pin_an_error_body_is_shown_as_type_and_message() {
         matches!(&evs[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::Overloaded && e.message == "overloaded_error: busy"),
         "{evs:?}"
     );
+}
+
+fn cached_req() -> ModelRequest {
+    let mut person = Message::user("[22:36] hi");
+    person.content.push(Part::text("[now 22:36 · turn running]"));
+    let mut req = ModelRequest::new("claude-x", "sys", vec![person]);
+    req.tools = vec![ToolSpec { name: "read".into(), description: "d".into(), parameters: json!({"type": "object"}) }];
+    req
+}
+
+#[test]
+fn the_long_cache_puts_one_hour_on_every_breakpoint() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    let mut req = cached_req();
+    req.cache_long = true;
+    let b = Anthropic::body(&cfg, &req);
+    let hour = json!({"type": "ephemeral", "ttl": "1h"});
+    assert_eq!(b["system"][0]["cache_control"], hour);
+    assert_eq!(b["tools"][0]["cache_control"], hour);
+    assert_eq!(b["messages"][0]["content"][0]["cache_control"], hour);
+    assert!(b["messages"][0]["content"][1].get("cache_control").is_none());
+    // nothing else changes: only the lifetime of the breakpoints
+    let short = Anthropic::body(&cfg, &cached_req());
+    let strip = |mut v: serde_json::Value| {
+        for p in ["/system/0", "/tools/0", "/messages/0/content/0"] {
+            v.pointer_mut(p).unwrap().as_object_mut().unwrap().remove("cache_control");
+        }
+        v
+    };
+    assert_eq!(strip(b), strip(short));
+}
+
+#[test]
+fn without_the_long_cache_the_breakpoints_are_the_short_ones() {
+    let b = Anthropic::body(&ProviderConfig::new(ID, "https://api.anthropic.com", None), &cached_req());
+    let short = json!({"type": "ephemeral"});
+    assert_eq!(b["system"][0]["cache_control"], short);
+    assert_eq!(b["tools"][0]["cache_control"], short);
+    assert_eq!(b["messages"][0]["content"][0]["cache_control"], short);
+}
+
+#[test]
+fn the_long_cache_is_off_where_the_provider_config_says_so_or_the_cache_is_off() {
+    let mut cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    let mut req = cached_req();
+    req.cache_long = true;
+    let short = Anthropic::body(&cfg, &cached_req());
+    cfg.extra.insert("cache_ttl_1h".into(), toml::Value::Boolean(false));
+    assert_eq!(Anthropic::body(&cfg, &req), short);
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    req.cache = false;
+    assert!(Anthropic::body(&cfg, &req)["system"][0].get("cache_control").is_none());
+}
+
+#[test]
+fn usage_reads_the_one_hour_part_of_the_writes_and_prices_it() {
+    let mut p = MessagesParser::default();
+    let mut evs = p.feed(r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10,"cache_creation_input_tokens":2000,"cache_read_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":500,"ephemeral_1h_input_tokens":1500}}}}"#);
+    evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#));
+    let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
+    assert_eq!((u.cache_write, u.cache_write_1h), (2000, 1500));
+    let price =
+        nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
+    let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 500.0 * 2.50 + 1500.0 * 4.0) / 1e6;
+    assert!((price.cost(&u) - want).abs() < 1e-12);
 }

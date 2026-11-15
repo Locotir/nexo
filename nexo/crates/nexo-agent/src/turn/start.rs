@@ -683,6 +683,16 @@ pub(super) async fn prepare(
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
     req.session_id = Some(st.session.id().to_string());
+    // the hour write is for a conversation that has shown it pauses: the prices and the pauses seen decide, the
+    // provider decides whether it has one
+    st.pauses.start(Instant::now());
+    let prices = st.limits.pricing.or_else(|| cfg.pricing_for(&req.model));
+    req.cache_long = super::cache_ttl::wants_long(
+        st.pauses.seen(),
+        request_tokens(st, &req.tools),
+        st.config.agent.long_cache_over,
+        prices.as_ref(),
+    );
     if let (true, Some((key, value))) = (st.fast, fast::option(&cfg)) {
         req.extra.insert(key.into(), Value::from(value));
     }

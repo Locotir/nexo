@@ -4,7 +4,8 @@ use nexo_core::{Pricing, Usage};
 
 /// DeepSeek's list prices ($ per million: input on a cache miss, cache hit, output). It charges
 /// nothing extra for a cache write, so those tokens are billed as input (`cache_write` 0 here).
-pub const DEEPSEEK: Pricing = Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 };
+pub const DEEPSEEK: Pricing =
+    Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 };
 
 /// The prices of `model`: the DeepSeek models, then whatever a nexo provider preset prices. None for
 /// a model nexo has no prices for: its cost is unknown, never guessed from another vendor.

@@ -97,6 +97,7 @@ impl Feed for GeminiParser {
                 output: u["candidatesTokenCount"].as_u64().unwrap_or(0) + thoughts,
                 cache_read: cached,
                 cache_write: 0,
+                cache_write_1h: 0,
                 reasoning: thoughts,
             });
         }

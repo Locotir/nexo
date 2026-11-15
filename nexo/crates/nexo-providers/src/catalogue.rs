@@ -201,6 +201,7 @@ fn entry_of(m: &Value) -> Entry {
             output: num(c.get("output")).unwrap_or(0.0),
             cache_read: num(c.get("cache_read")).unwrap_or(0.0),
             cache_write: num(c.get("cache_write")).unwrap_or(0.0),
+            cache_write_1h: 0.0,
         };
         // a free model is a price too: input and output present, both 0
         (p.is_known() || (c.get("input").is_some() && c.get("output").is_some())).then_some(p)

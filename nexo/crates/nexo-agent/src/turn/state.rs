@@ -101,6 +101,8 @@ pub(super) struct State {
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
     /// length of the history then: what the `compact` policy measures the next request from.
     pub(super) last_prompt: Option<(u64, usize)>,
+    /// When the requests of this session started: whether it has shown a pause the short prompt cache does not outlast.
+    pub(super) pauses: super::cache_ttl::Pauses,
     /// The estimate (4 characters a token) of the prompt of the last request, and the provider's
     /// tokens per estimated token learned so far: code, logs and other scripts hold more tokens than
     /// 4 characters each, so the view is fitted to the window in the provider's own count.

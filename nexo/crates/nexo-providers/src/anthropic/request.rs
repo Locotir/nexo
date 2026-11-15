@@ -55,7 +55,9 @@ impl Anthropic {
 
     pub fn body(cfg: &ProviderConfig, req: &ModelRequest) -> Value {
         let cache = req.cache && cfg.extra.get("cache").and_then(|v| v.as_bool()).unwrap_or(true);
-        let bp = json!({"type": "ephemeral"});
+        // every breakpoint takes the same lifetime, so the rule that a longer one comes first holds
+        let long = cache && req.cache_long && cfg.extra.get("cache_ttl_1h").and_then(|v| v.as_bool()).unwrap_or(true);
+        let bp = if long { json!({"type": "ephemeral", "ttl": "1h"}) } else { json!({"type": "ephemeral"}) };
         let mut body = json!({"model": req.model, "max_tokens": req.max_tokens, "stream": true});
         if !req.system.is_empty() {
             let mut sys = json!({"type": "text", "text": req.system});

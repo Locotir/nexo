@@ -68,7 +68,13 @@ pub async fn check(
     }
     // a server on one's own hardware costs nothing per token
     if info.pricing.is_none() && matches!(probe.kind.as_str(), "ollama" | "llama.cpp" | "lmstudio" | "vllm") {
-        info.pricing = Some(nexo_core::Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 });
+        info.pricing = Some(nexo_core::Pricing {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            cache_write_1h: 0.0,
+        });
         sources.push(format!("prices 0 from {}: it runs on your own hardware", probe::kind_label(&probe.kind)));
     }
     info.efforts = probe::effort_levels(&probe.protocol, &probe.kind, &probe.base_url, model, info.reasoning);
@@ -566,7 +572,10 @@ mod tests {
         std::fs::write(&f, "# mine\n[ui]\ntheme = \"nexo\"\n").unwrap();
         let mut cfg = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
         cfg.context_window.insert("qwen3:8b".into(), 8192);
-        cfg.pricing.insert("qwen3:8b".into(), Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 });
+        cfg.pricing.insert(
+            "qwen3:8b".into(),
+            Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+        );
         cfg.efforts.insert("qwen3:8b".into(), vec!["off".into(), "on".into()]);
         cfg.effort.insert("qwen3:8b".into(), "on".into());
         save(&f, "ollama", &cfg, "qwen3:8b").unwrap();

@@ -22,11 +22,31 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.openai.com/v1",
         models: &[
-            ("gpt-5", Pricing { input: 1.25, output: 10.0, cache_read: 0.125, cache_write: 0.0 }, 400_000),
-            ("gpt-5-mini", Pricing { input: 0.25, output: 2.0, cache_read: 0.025, cache_write: 0.0 }, 400_000),
-            ("gpt-4.1", Pricing { input: 2.0, output: 8.0, cache_read: 0.5, cache_write: 0.0 }, 1_047_576),
-            ("o3", Pricing { input: 2.0, output: 8.0, cache_read: 0.5, cache_write: 0.0 }, 200_000),
-            ("o4-mini", Pricing { input: 1.1, output: 4.4, cache_read: 0.275, cache_write: 0.0 }, 200_000),
+            (
+                "gpt-5",
+                Pricing { input: 1.25, output: 10.0, cache_read: 0.125, cache_write: 0.0, cache_write_1h: 0.0 },
+                400_000,
+            ),
+            (
+                "gpt-5-mini",
+                Pricing { input: 0.25, output: 2.0, cache_read: 0.025, cache_write: 0.0, cache_write_1h: 0.0 },
+                400_000,
+            ),
+            (
+                "gpt-4.1",
+                Pricing { input: 2.0, output: 8.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_047_576,
+            ),
+            (
+                "o3",
+                Pricing { input: 2.0, output: 8.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0 },
+                200_000,
+            ),
+            (
+                "o4-mini",
+                Pricing { input: 1.1, output: 4.4, cache_read: 0.275, cache_write: 0.0, cache_write_1h: 0.0 },
+                200_000,
+            ),
         ],
         headers: &[],
     },
@@ -37,16 +57,36 @@ const PRESETS: &[Preset] = &[
         models: &[
             // 5.5 line: 1M window, 128K reply; cache write is the 5-minute rate (the 1-hour one is not kept);
             // Haiku 5.5 is the rate for prompts up to 100K tokens (above it: 0.50 / 2.50 / 0.05 / 0.625)
-            ("claude-sonnet-5-5", Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50 }, 1_000_000),
-            ("claude-opus-5-5", Pricing { input: 4.0, output: 20.0, cache_read: 0.20, cache_write: 5.0 }, 1_000_000),
             (
-                "claude-haiku-5-5",
-                Pricing { input: 0.10, output: 0.50, cache_read: 0.01, cache_write: 0.125 },
+                "claude-sonnet-5-5",
+                Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 },
                 1_000_000,
             ),
-            ("claude-fable-5-2", Pricing { input: 8.0, output: 40.0, cache_read: 0.20, cache_write: 10.0 }, 1_000_000),
-            ("claude-sonnet-4-5", Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 }, 200_000),
-            ("claude-haiku-4-5", Pricing { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25 }, 200_000),
+            (
+                "claude-opus-5-5",
+                Pricing { input: 4.0, output: 20.0, cache_read: 0.20, cache_write: 5.0, cache_write_1h: 0.0 },
+                1_000_000,
+            ),
+            (
+                "claude-haiku-5-5",
+                Pricing { input: 0.10, output: 0.50, cache_read: 0.01, cache_write: 0.125, cache_write_1h: 0.0 },
+                1_000_000,
+            ),
+            (
+                "claude-fable-5-2",
+                Pricing { input: 8.0, output: 40.0, cache_read: 0.20, cache_write: 10.0, cache_write_1h: 0.0 },
+                1_000_000,
+            ),
+            (
+                "claude-sonnet-4-5",
+                Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75, cache_write_1h: 0.0 },
+                200_000,
+            ),
+            (
+                "claude-haiku-4-5",
+                Pricing { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25, cache_write_1h: 0.0 },
+                200_000,
+            ),
         ],
         headers: &[],
     },
@@ -55,8 +95,16 @@ const PRESETS: &[Preset] = &[
         protocol: gemini::ID,
         base_url: "https://generativelanguage.googleapis.com",
         models: &[
-            ("gemini-2.5-pro", Pricing { input: 1.25, output: 10.0, cache_read: 0.31, cache_write: 0.0 }, 1_048_576),
-            ("gemini-2.5-flash", Pricing { input: 0.3, output: 2.5, cache_read: 0.075, cache_write: 0.0 }, 1_048_576),
+            (
+                "gemini-2.5-pro",
+                Pricing { input: 1.25, output: 10.0, cache_read: 0.31, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_048_576,
+            ),
+            (
+                "gemini-2.5-flash",
+                Pricing { input: 0.3, output: 2.5, cache_read: 0.075, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_048_576,
+            ),
         ],
         headers: &[],
     },
@@ -67,10 +115,26 @@ const PRESETS: &[Preset] = &[
         // List prices outside DeepSeek's off-peak hours (off-peak is half). `deepseek-chat` and
         // `deepseek-reasoner` are the older names: their replies stop at 8192 tokens.
         models: &[
-            ("deepseek-flash", Pricing { input: 0.3, output: 1.2, cache_read: 0.006, cache_write: 0.0 }, 1_048_576),
-            ("deepseek-v4-pro", Pricing { input: 1.32, output: 3.96, cache_read: 0.044, cache_write: 0.0 }, 1_048_576),
-            ("deepseek-chat", Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 }, 128_000),
-            ("deepseek-reasoner", Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 }, 128_000),
+            (
+                "deepseek-flash",
+                Pricing { input: 0.3, output: 1.2, cache_read: 0.006, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_048_576,
+            ),
+            (
+                "deepseek-v4-pro",
+                Pricing { input: 1.32, output: 3.96, cache_read: 0.044, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_048_576,
+            ),
+            (
+                "deepseek-chat",
+                Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 },
+                128_000,
+            ),
+            (
+                "deepseek-reasoner",
+                Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 },
+                128_000,
+            ),
         ],
         headers: &[],
     },
@@ -81,18 +145,34 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.x.ai/v1",
         models: &[
-            ("grok-4.7", Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0 }, 500_000),
-            ("grok-build-0.1", Pricing { input: 1.0, output: 2.0, cache_read: 0.2, cache_write: 0.0 }, 256_000),
-            ("grok-4.6", Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0 }, 500_000),
-            ("grok-4.3", Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0 }, 1_000_000),
+            (
+                "grok-4.7",
+                Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0 },
+                500_000,
+            ),
+            (
+                "grok-build-0.1",
+                Pricing { input: 1.0, output: 2.0, cache_read: 0.2, cache_write: 0.0, cache_write_1h: 0.0 },
+                256_000,
+            ),
+            (
+                "grok-4.6",
+                Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0 },
+                500_000,
+            ),
+            (
+                "grok-4.3",
+                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_000_000,
+            ),
             (
                 "grok-4.20-0309-reasoning",
-                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0 },
+                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0, cache_write_1h: 0.0 },
                 1_000_000,
             ),
             (
                 "grok-4.20-0309-non-reasoning",
-                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0 },
+                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0, cache_write_1h: 0.0 },
                 1_000_000,
             ),
         ],
@@ -103,15 +183,19 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.groq.com/openai/v1",
         models: &[
-            ("openai/gpt-oss-120b", Pricing { input: 0.15, output: 0.75, cache_read: 0.0, cache_write: 0.0 }, 131_072),
+            (
+                "openai/gpt-oss-120b",
+                Pricing { input: 0.15, output: 0.75, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                131_072,
+            ),
             (
                 "moonshotai/kimi-k2-instruct",
-                Pricing { input: 1.0, output: 3.0, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 1.0, output: 3.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 131_072,
             ),
             (
                 "llama-3.3-70b-versatile",
-                Pricing { input: 0.59, output: 0.79, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.59, output: 0.79, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 131_072,
             ),
         ],
@@ -122,9 +206,21 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.mistral.ai/v1",
         models: &[
-            ("mistral-large-latest", Pricing { input: 2.0, output: 6.0, cache_read: 0.0, cache_write: 0.0 }, 128_000),
-            ("devstral-medium-latest", Pricing { input: 0.4, output: 2.0, cache_read: 0.0, cache_write: 0.0 }, 128_000),
-            ("codestral-latest", Pricing { input: 0.3, output: 0.9, cache_read: 0.0, cache_write: 0.0 }, 256_000),
+            (
+                "mistral-large-latest",
+                Pricing { input: 2.0, output: 6.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                128_000,
+            ),
+            (
+                "devstral-medium-latest",
+                Pricing { input: 0.4, output: 2.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                128_000,
+            ),
+            (
+                "codestral-latest",
+                Pricing { input: 0.3, output: 0.9, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                256_000,
+            ),
         ],
         headers: &[],
     },
@@ -135,16 +231,24 @@ const PRESETS: &[Preset] = &[
         models: &[
             (
                 "anthropic/claude-sonnet-4.5",
-                Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+                Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75, cache_write_1h: 0.0 },
                 200_000,
             ),
-            ("openai/gpt-5", Pricing { input: 1.25, output: 10.0, cache_read: 0.125, cache_write: 0.0 }, 400_000),
+            (
+                "openai/gpt-5",
+                Pricing { input: 1.25, output: 10.0, cache_read: 0.125, cache_write: 0.0, cache_write_1h: 0.0 },
+                400_000,
+            ),
             (
                 "deepseek/deepseek-chat-v3.1",
-                Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 128_000,
             ),
-            ("qwen/qwen3-coder", Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }, 262_144),
+            (
+                "qwen/qwen3-coder",
+                Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                262_144,
+            ),
         ],
         headers: &[("HTTP-Referer", "https://github.com/Locotir/nexo"), ("X-Title", "nexo")],
     },
@@ -155,17 +259,17 @@ const PRESETS: &[Preset] = &[
         models: &[
             (
                 "deepseek-ai/DeepSeek-V3.1",
-                Pricing { input: 0.6, output: 1.7, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.6, output: 1.7, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 128_000,
             ),
             (
                 "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
-                Pricing { input: 2.0, output: 2.0, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 2.0, output: 2.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 262_144,
             ),
             (
                 "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-                Pricing { input: 0.88, output: 0.88, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.88, output: 0.88, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 131_072,
             ),
         ],
@@ -178,17 +282,17 @@ const PRESETS: &[Preset] = &[
         models: &[
             (
                 "accounts/fireworks/models/kimi-k2-instruct-0905",
-                Pricing { input: 0.6, output: 2.5, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.6, output: 2.5, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 262_144,
             ),
             (
                 "accounts/fireworks/models/deepseek-v3p1",
-                Pricing { input: 0.56, output: 1.68, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.56, output: 1.68, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 163_840,
             ),
             (
                 "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
-                Pricing { input: 0.45, output: 1.8, cache_read: 0.0, cache_write: 0.0 },
+                Pricing { input: 0.45, output: 1.8, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 262_144,
             ),
         ],
@@ -199,13 +303,21 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.cerebras.ai/v1",
         models: &[
-            ("gpt-oss-120b", Pricing { input: 0.25, output: 0.69, cache_read: 0.0, cache_write: 0.0 }, 131_072),
             (
-                "qwen-3-235b-a22b-instruct-2507",
-                Pricing { input: 0.6, output: 1.2, cache_read: 0.0, cache_write: 0.0 },
+                "gpt-oss-120b",
+                Pricing { input: 0.25, output: 0.69, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
                 131_072,
             ),
-            ("llama-3.3-70b", Pricing { input: 0.85, output: 1.2, cache_read: 0.0, cache_write: 0.0 }, 131_072),
+            (
+                "qwen-3-235b-a22b-instruct-2507",
+                Pricing { input: 0.6, output: 1.2, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                131_072,
+            ),
+            (
+                "llama-3.3-70b",
+                Pricing { input: 0.85, output: 1.2, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                131_072,
+            ),
         ],
         headers: &[],
     },
@@ -214,10 +326,14 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.moonshot.ai/v1",
         models: &[
-            ("kimi-k2-0905-preview", Pricing { input: 0.6, output: 2.5, cache_read: 0.15, cache_write: 0.0 }, 262_144),
+            (
+                "kimi-k2-0905-preview",
+                Pricing { input: 0.6, output: 2.5, cache_read: 0.15, cache_write: 0.0, cache_write_1h: 0.0 },
+                262_144,
+            ),
             (
                 "kimi-k2-turbo-preview",
-                Pricing { input: 1.15, output: 8.0, cache_read: 0.15, cache_write: 0.0 },
+                Pricing { input: 1.15, output: 8.0, cache_read: 0.15, cache_write: 0.0, cache_write_1h: 0.0 },
                 262_144,
             ),
         ],
@@ -228,9 +344,21 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         models: &[
-            ("qwen3-coder-plus", Pricing { input: 1.0, output: 5.0, cache_read: 0.0, cache_write: 0.0 }, 1_000_000),
-            ("qwen-plus", Pricing { input: 0.4, output: 1.2, cache_read: 0.0, cache_write: 0.0 }, 131_072),
-            ("qwen-max", Pricing { input: 1.6, output: 6.4, cache_read: 0.0, cache_write: 0.0 }, 32_768),
+            (
+                "qwen3-coder-plus",
+                Pricing { input: 1.0, output: 5.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                1_000_000,
+            ),
+            (
+                "qwen-plus",
+                Pricing { input: 0.4, output: 1.2, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                131_072,
+            ),
+            (
+                "qwen-max",
+                Pricing { input: 1.6, output: 6.4, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+                32_768,
+            ),
         ],
         headers: &[],
     },
@@ -239,8 +367,16 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.z.ai/api/paas/v4",
         models: &[
-            ("glm-4.6", Pricing { input: 0.6, output: 2.2, cache_read: 0.11, cache_write: 0.0 }, 200_000),
-            ("glm-4.5-air", Pricing { input: 0.2, output: 1.1, cache_read: 0.03, cache_write: 0.0 }, 128_000),
+            (
+                "glm-4.6",
+                Pricing { input: 0.6, output: 2.2, cache_read: 0.11, cache_write: 0.0, cache_write_1h: 0.0 },
+                200_000,
+            ),
+            (
+                "glm-4.5-air",
+                Pricing { input: 0.2, output: 1.1, cache_read: 0.03, cache_write: 0.0, cache_write_1h: 0.0 },
+                128_000,
+            ),
         ],
         headers: &[],
     },
@@ -248,7 +384,11 @@ const PRESETS: &[Preset] = &[
         name: "minimax",
         protocol: openai_chat::ID,
         base_url: "https://api.minimax.io/v1",
-        models: &[("MiniMax-M2", Pricing { input: 0.3, output: 1.2, cache_read: 0.0, cache_write: 0.0 }, 204_800)],
+        models: &[(
+            "MiniMax-M2",
+            Pricing { input: 0.3, output: 1.2, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+            204_800,
+        )],
         headers: &[],
     },
     Preset {
@@ -447,8 +587,14 @@ mod tests {
         assert_eq!((f.input, f.output, f.cache_read, f.cache_write), (8.0, 40.0, 0.20, 10.0));
         assert_eq!(a.context_window["claude-fable-5-2"], 1_000_000);
         // 1M fresh input, 1M output, 1M read, 1M written to the cache
-        let u =
-            Usage { input: 1_000_000, output: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000, reasoning: 0 };
+        let u = Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_write: 1_000_000,
+            cache_write_1h: 0,
+            reasoning: 0,
+        };
         let cost = |m: &str| a.pricing_for(m).unwrap().cost(&u);
         assert!((cost("claude-sonnet-5-5") - (2.0 + 10.0 + 0.10 + 2.50)).abs() < 1e-9);
         assert!((cost("claude-opus-5-5") - (4.0 + 20.0 + 0.20 + 5.0)).abs() < 1e-9);

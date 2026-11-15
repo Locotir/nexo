@@ -387,7 +387,10 @@ async fn a_sub_agent_goes_to_the_provider_and_model_asked_for_and_is_priced_ther
     let mut cfg = config(PermissionMode::Ask);
     let mut other = ProviderConfig::new("mock", "http://other", None);
     other.models = vec!["o1".into()];
-    other.pricing.insert("o1".into(), Pricing { input: 10.0, output: 20.0, cache_read: 1.0, cache_write: 0.0 });
+    other.pricing.insert(
+        "o1".into(),
+        Pricing { input: 10.0, output: 20.0, cache_read: 1.0, cache_write: 0.0, cache_write_1h: 0.0 },
+    );
     cfg.providers.insert("other".into(), other);
     let mut r = start(client.clone(), cfg, None, d.path()).await;
     r.next().await;

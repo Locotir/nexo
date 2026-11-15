@@ -88,6 +88,10 @@ pub struct ModelRequest {
     /// Ask the protocol to mark cache breakpoints where it has explicit ones.
     #[serde(default = "yes")]
     pub cache: bool,
+    /// Write the cache for the longest lifetime the protocol sells (an hour) instead of the short one: the agent
+    /// sets it when the pauses of the conversation make the dearer write pay. Protocols with one lifetime ignore it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cache_long: bool,
     /// What every request of one conversation shares (the session id; a sub-agent run has its own).
     /// Protocols that route their prompt cache by an id send it, so the prefix of one conversation
     /// is found again on the next request.
@@ -115,6 +119,7 @@ impl ModelRequest {
             stop: Vec::new(),
             no_tool_call: false,
             cache: true,
+            cache_long: false,
             session_id: None,
             extra: BTreeMap::new(),
         }

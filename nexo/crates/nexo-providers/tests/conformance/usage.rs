@@ -9,7 +9,10 @@ async fn t4_chat_usage_in_the_last_chunk_after_finish_with_openai_cache_and_reas
             "prompt_tokens_details":{"cached_tokens":64},"completion_tokens_details":{"reasoning_tokens":20}})),
     ]);
     let s = play("openai-chat", &text).await;
-    assert_eq!(s.usage, Usage { input: 36, output: 30, cache_read: 64, cache_write: 0, reasoning: 20 });
+    assert_eq!(
+        s.usage,
+        Usage { input: 36, output: 30, cache_read: 64, cache_write: 0, cache_write_1h: 0, reasoning: 20 }
+    );
 }
 
 #[tokio::test]
@@ -84,7 +87,10 @@ async fn t4_anthropic_usage_start_and_delta_with_cache_fields() {
     ) + &a_text(0, "x")
         + &a_end("end_turn", json!({"output_tokens":30}));
     let s = play("anthropic", &text).await;
-    assert_eq!(s.usage, Usage { input: 12, output: 30, cache_read: 4, cache_write: 2, reasoning: 0 });
+    assert_eq!(
+        s.usage,
+        Usage { input: 12, output: 30, cache_read: 4, cache_write: 2, cache_write_1h: 0, reasoning: 0 }
+    );
 }
 
 #[tokio::test]
@@ -94,7 +100,10 @@ async fn t4_gemini_usage_cached_and_thought_tokens_in_a_chunk_of_their_own() {
         json!({"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":40,"candidatesTokenCount":5,"thoughtsTokenCount":20,"totalTokenCount":125}}),
     ]);
     let s = play("gemini", &text).await;
-    assert_eq!(s.usage, Usage { input: 60, output: 25, cache_read: 40, cache_write: 0, reasoning: 20 });
+    assert_eq!(
+        s.usage,
+        Usage { input: 60, output: 25, cache_read: 40, cache_write: 0, cache_write_1h: 0, reasoning: 20 }
+    );
     assert_eq!(s.finish, FinishReason::Stop);
 }
 
@@ -107,7 +116,10 @@ async fn t4_responses_usage_with_cached_reasoning_and_float_counts() {
             "output_tokens_details":{"reasoning_tokens":4.0}})),
     ]);
     let s = play("openai-responses", &text).await;
-    assert_eq!(s.usage, Usage { input: 40, output: 9, cache_read: 60, cache_write: 0, reasoning: 4 });
+    assert_eq!(
+        s.usage,
+        Usage { input: 40, output: 9, cache_read: 60, cache_write: 0, cache_write_1h: 0, reasoning: 4 }
+    );
 }
 
 // ================= t5: finish reasons =================

@@ -204,6 +204,10 @@ impl MessagesParser {
         if let Some(n) = u["cache_creation_input_tokens"].as_u64() {
             self.usage.cache_write = n;
         }
+        // the split of the writes by lifetime, where the response gives one
+        if let Some(n) = u["cache_creation"]["ephemeral_1h_input_tokens"].as_u64() {
+            self.usage.cache_write_1h = n;
+        }
     }
 
     fn end_calls(&mut self) -> Vec<StreamEvent> {

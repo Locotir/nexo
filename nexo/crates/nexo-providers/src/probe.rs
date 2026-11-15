@@ -384,6 +384,7 @@ fn openai_info(m: &Value) -> Option<ModelInfo> {
             output,
             cache_read: per_token("input_cache_read").unwrap_or(0.0),
             cache_write: per_token("input_cache_write").unwrap_or(0.0),
+            cache_write_1h: 0.0,
         }),
         _ => None,
     };
