@@ -15,9 +15,10 @@ fn provider_tokens(est: u64, ratio: Option<f64>) -> u64 {
 }
 
 /// Fits `req`, built from the session's view, to the model's window when it and its reply would pass it. In order:
-/// a shorter reply, down to `limits::REPLY_FLOOR`; then, when the session's policy does not keep its view under the
-/// window (plain, compact), the same request from the curator's view, as long as that view holds the person's newest
-/// message as they wrote it; and when it still does not fit, the request goes as it is and the person is told once a
+/// when the session's policy does not keep its view under the window (plain, compact) and the request leaves no
+/// useful reply (an eighth of the window, at least `limits::REPLY_FLOOR`), the same request from the curator's view,
+/// as long as that view holds the person's newest message as they wrote it; then a shorter reply, down to
+/// `limits::REPLY_FLOOR`; and when it still does not fit, the request goes as it is and the person is told once a
 /// turn what it holds, so the provider's answer (and the lesson the loop takes from an error) decides what follows.
 /// `notes` is the text this request alone carries on its last message, and `extra` its estimated tokens.
 pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&str>, extra: u64) {
@@ -28,7 +29,9 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
         return;
     }
     let floor = wanted.min(limits::REPLY_FLOOR);
-    if used + u64::from(floor) > window && !st.policy.fits_window() {
+    // a reply with room for an edit call: an eighth of the window, never under the floor nor over what was asked
+    let useful = wanted.min(limits::REPLY_FLOOR.max(u32::try_from(window / 8).unwrap_or(u32::MAX)));
+    if used + u64::from(useful) > window && !st.policy.fits_window() {
         if let Some(messages) = curator_view(st, req, notes, extra).await {
             st.reads.note_view(&messages);
             st.last_sent.follow(&messages);

@@ -425,3 +425,84 @@ async fn the_same_plain_session_at_200k_sends_the_requests_it_sent_before() {
         assert_eq!(a.max_tokens, b.max_tokens);
     }
 }
+
+/// A read that answers as many characters of code as it holds, whatever the window: a tool with no cap of its own.
+struct Fill(usize);
+
+#[async_trait]
+impl Tool for Fill {
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "read".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        ToolKind::Read
+    }
+    fn summary(&self, _args: &Value) -> String {
+        "read".into()
+    }
+    async fn run(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
+        let body: String =
+            (0..).map(|i| format!("fn item_{i:05}(x: u32) -> u32 {{ x + {i} }}\n")).take(self.0 / 36 + 1).collect();
+        ToolOutput::ok(body.chars().take(self.0).collect::<String>())
+    }
+}
+
+/// The requests of a plain session at window `w` (none when `None`) whose read answers `chars` characters, and
+/// what the request after the read takes by nexo's own estimate, without its reply.
+async fn a_plain_read_of(chars: usize, w: Option<u32>) -> (Vec<ModelRequest>, u64) {
+    let d = project();
+    let client = Scripted::new(vec![
+        Reply::Events(uncounted(call("c1", "read", json!({"path": "lib.rs"})))),
+        Reply::Events(uncounted(text("read it"))),
+    ]);
+    let mut cfg = cfg_window(w.unwrap_or(200_000));
+    if w.is_none() {
+        cfg.providers.get_mut("mock").unwrap().context_window.clear();
+    }
+    cfg.context.policy = "plain".into();
+    let tools = ToolSet::new().with(Arc::new(Fill(chars)));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), tools).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look at lib.rs".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let last = reqs.last().unwrap();
+    let est = total_with_reply(last) - u64::from(last.max_tokens);
+    (reqs, est)
+}
+
+#[tokio::test]
+async fn a_plain_session_at_8k_with_room_for_a_short_reply_only_goes_from_the_curators_view_with_a_useful_reply() {
+    let _g = config_lock().lock().await;
+    // the size of read result that leaves the request at about 7 350 of 8 000 tokens: room for a 300-token reply,
+    // none for 1 000
+    // (measured with no window known, less what the system prompt and tools at 8k leave out)
+    let (open, at_4k) = a_plain_read_of(4_000, None).await;
+    let (_, at_8k) = a_plain_read_of(8_000, None).await;
+    let (small, _) = a_plain_read_of(10, Some(8_000)).await;
+    let fixed_less = fixed_tokens(&open[0]) - fixed_tokens(&small[0]);
+    let per_char = (at_8k - at_4k) as f64 / 4_000.0;
+    let chars = 4_000 + ((7_350.0 + fixed_less as f64 - at_4k as f64) / per_char) as usize;
+    let (whole, est) = a_plain_read_of(chars, None).await;
+    let est = est - fixed_less;
+    assert!(est > 7_000 && est + 300 <= 8_000, "the request takes {est} tokens at 8k");
+    let (reqs, _) = a_plain_read_of(chars, Some(8_000)).await;
+    let last = reqs.last().unwrap();
+    assert!(last.max_tokens >= 1_000, "the reply has room for an edit: {}", last.max_tokens);
+    let total = total_with_reply(last);
+    assert!(total <= 8_000, "the request and its reply take {total} tokens of 8000");
+    let size = |r: &ModelRequest| serde_json::to_string(&r.messages).unwrap().len();
+    assert!(size(last) < size(whole.last().unwrap()), "the curator's view is shorter than the whole read");
+    assert!(last.messages.iter().any(|m| m.text().contains("look at lib.rs")), "the person's words stay");
+    // at 200k the same session sends what it sends with no window known
+    let (at_200k, _) = a_plain_read_of(chars, Some(200_000)).await;
+    assert_eq!(at_200k.len(), whole.len());
+    for (a, b) in at_200k.iter().zip(&whole) {
+        assert_eq!(serde_json::to_string(&a.messages).unwrap(), serde_json::to_string(&b.messages).unwrap());
+        assert_eq!(a.max_tokens, b.max_tokens);
+    }
+}
