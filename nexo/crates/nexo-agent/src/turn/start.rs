@@ -658,7 +658,8 @@ pub(super) async fn prepare(
     let hidden = (!st.hidden.is_empty()).then(|| crate::supervise::watch::hidden_block(&st.hidden));
     // an active goal: the counts of its run and, once its work brings nothing new, the facts of that (see `goal_note`)
     let goal_facts = goal_note(st);
-    let view = view_now(st, request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>())).await;
+    let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>());
+    let view = view_now(st, extra).await;
     let (_, cfg, model) = st.target.get();
     let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
@@ -674,12 +675,15 @@ pub(super) async fn prepare(
     // the notes of this request only go as one text part: a provider puts its cache breakpoint before one trailing
     // text part, so with two the breakpoint would land on a note the next request does not carry
     let notes: Vec<String> = hidden.into_iter().chain(goal_facts).collect();
-    if !notes.is_empty() {
-        attach_hidden(&mut req.messages, notes.join("\n\n"));
+    let notes = (!notes.is_empty()).then(|| notes.join("\n\n"));
+    if let Some(n) = &notes {
+        attach_hidden(&mut req.messages, n.clone());
     }
     req.tools = specs;
     req.no_tool_call = no_tool_call;
     req.max_tokens = reply_tokens(st);
+    // the request and its reply within the window, or the person told why not
+    super::window_fit::fit(st, &mut req, notes.as_deref(), extra).await;
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
     req.session_id = Some(st.session.id().to_string());

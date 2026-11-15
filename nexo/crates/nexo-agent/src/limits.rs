@@ -11,6 +11,9 @@ use nexo_core::config::{ProviderConfig, DEFAULT_MAX_TOKENS};
 use nexo_core::pricing::Pricing;
 use nexo_core::provider::ModelInfo;
 
+/// The smallest reply asked of a model with a known window: below it a reply has no room for a tool call.
+pub const REPLY_FLOOR: u32 = 256;
+
 const CAP_ONLY: &str = "provider cap";
 const CAP_ONLY_SUFFIX: &str = ", window from the provider cap";
 
@@ -41,7 +44,7 @@ impl Limits {
     /// a small window (16k asked of an 8k local model) would leave no room for the conversation.
     pub fn max_tokens(&self, wanted: u32) -> u32 {
         let wanted = self.max_output.map(|m| wanted.min(m)).unwrap_or(wanted);
-        self.context_window.map(|w| wanted.min((w / 4).max(256))).unwrap_or(wanted)
+        self.context_window.map(|w| wanted.min((w / 4).max(REPLY_FLOOR))).unwrap_or(wanted)
     }
 
     /// The reply size to ask for. A thinking model's reasoning counts inside the reply, and a reply cut while

@@ -67,6 +67,7 @@ mod queue;
 mod round;
 mod settings;
 mod start;
+mod window_fit;
 // what a sub-agent's loop shares with the main turn's to build its view
 pub(crate) use start::{fixed_tokens, learn_ratio, view_window};
 mod state;
@@ -294,6 +295,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         prefix,
         history: crate::history::History::new(history),
         policy,
+        fit_view: None,
         last_view: (0, 0),
         last_sent: crate::history::Sent::default(),
         last_request: None,

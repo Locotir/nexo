@@ -342,3 +342,86 @@ async fn thirty_mcp_tools_on_a_large_window_are_offered_whole_as_before() {
     assert_eq!(outputs[0], "ran");
     assert!(!outputs[1].contains("whole input schema"), "{}", outputs[1]);
 }
+
+/// A scripted reply with no usage: a local server that counts nothing, so nexo goes by its own estimate alone.
+fn uncounted(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    events.into_iter().filter(|e| !matches!(e, StreamEvent::Usage(_))).collect()
+}
+
+/// The requests of a session under `policy` at window `w` (none when `None`) that reads a 64 000-character file
+/// and then answers, and what the turn said.
+async fn a_big_read(w: Option<u32>, policy: &str) -> (Vec<ModelRequest>, Vec<AgentEvent>) {
+    let d = project();
+    let body: String = (0..1_400).map(|i| format!("fn item_{i:05}(x: u32) -> u32 {{ x + {i} }} // line\n")).collect();
+    std::fs::write(d.path().join("big.rs"), &body).unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(uncounted(call("c1", "read", json!({"path": "big.rs"})))),
+        Reply::Events(uncounted(text("read it"))),
+    ]);
+    let mut cfg = cfg_window(w.unwrap_or(200_000));
+    if w.is_none() {
+        cfg.providers.get_mut("mock").unwrap().context_window.clear();
+    }
+    cfg.context.policy = policy.into();
+    let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look at the file big.rs".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    r.stop().await;
+    (client.requests(), evs)
+}
+
+fn over_window(evs: &[AgentEvent]) -> Vec<String> {
+    notices(evs).into_iter().filter(|n| n.starts_with("request over the window")).collect()
+}
+
+#[tokio::test]
+async fn a_64k_read_under_the_plain_policy_at_8k_is_sent_from_the_curators_view_and_fits_with_its_reply() {
+    let _g = config_lock().lock().await;
+    let (reqs, evs) = a_big_read(Some(8_000), "plain").await;
+    let last = reqs.last().unwrap();
+    let total = total_with_reply(last);
+    assert!(total <= 8_000, "the request after the read and its reply take {total} tokens of 8000");
+    assert!(last.max_tokens >= 256, "the reply keeps room for a call: {}", last.max_tokens);
+    assert!(last.messages.iter().any(|m| m.text().contains("look at the file big.rs")), "the person's words stay");
+    assert!(over_window(&evs).is_empty(), "{:?}", notices(&evs));
+}
+
+#[tokio::test]
+async fn a_request_that_cannot_fit_keeps_the_persons_message_whole_and_says_once_what_it_holds() {
+    let _g = config_lock().lock().await;
+    let d = project();
+    let words = "please look at the parser and say why it fails on empty input ".repeat(600);
+    let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+    let mut cfg = cfg_window(8_000);
+    cfg.context.policy = "plain".into();
+    let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: words.clone(), attachments: vec![] });
+    let evs = r.turn().await;
+    r.stop().await;
+    let req = &client.requests()[0];
+    assert!(req.messages.iter().any(|m| m.text().contains(words.trim())), "the person's message goes whole");
+    assert_eq!(req.max_tokens, 256, "the reply is asked at its floor");
+    let told = over_window(&evs);
+    assert_eq!(told.len(), 1, "{:?}", notices(&evs));
+    let n = &told[0];
+    for part in ["for a 8000-token window (system ", ", tools ", ", conversation ", ", reply 256)"] {
+        assert!(n.contains(part), "{part:?} in {n}");
+    }
+    assert!(n.contains("the largest part is your message (message "), "{n}");
+}
+
+#[tokio::test]
+async fn the_same_plain_session_at_200k_sends_the_requests_it_sent_before() {
+    let _g = config_lock().lock().await;
+    let (at_200k, evs) = a_big_read(Some(200_000), "plain").await;
+    assert!(over_window(&evs).is_empty(), "{:?}", notices(&evs));
+    // with no window known nothing is fitted: the same session at 200k sends the same messages and reply size
+    let (unknown, _) = a_big_read(None, "plain").await;
+    assert_eq!(at_200k.len(), unknown.len());
+    for (a, b) in at_200k.iter().zip(&unknown) {
+        assert_eq!(serde_json::to_string(&a.messages).unwrap(), serde_json::to_string(&b.messages).unwrap());
+        assert_eq!(a.max_tokens, b.max_tokens);
+    }
+}

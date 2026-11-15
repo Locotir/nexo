@@ -11,6 +11,9 @@ pub(super) struct State {
     pub(super) prefix: crate::session::Prefix,
     pub(super) history: crate::history::History,
     pub(super) policy: Box<dyn ContextPolicy>,
+    /// The curator that builds a request the session's own policy left over the window (see `window_fit.rs`): made
+    /// the first time one is, and kept so each later one converts only the messages that changed.
+    pub(super) fit_view: Option<context::BuiltIn>,
     /// The tokens of the history and of the last view sent, for /status.
     pub(super) last_view: (u64, u64),
     /// The messages of the last request, to tell which part of the next one repeats it (the cache).
