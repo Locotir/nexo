@@ -107,12 +107,25 @@ pub(super) fn suggest_request(last: &ModelRequest, reply: Message, levels: &[Str
     req
 }
 
-/// A suggestion as one line without the quotes a model puts round it; None when it holds nothing.
+/// A suggestion as one line without the quotes a model puts round it; None when it holds nothing or is not a
+/// next request: a model that cannot guess says so in a long line, a question or a first-person apology, and
+/// grey text like that in the prompt reads as the person's own words.
 pub(super) fn tidy_suggestion(text: &str) -> Option<String> {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let line = line.trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”')).trim();
-    (!line.is_empty()).then(|| line.to_string())
+    if line.is_empty() || line.chars().count() > SUGGESTION_MAX || line.ends_with('?') {
+        return None;
+    }
+    let first = line.split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’').next().unwrap_or("");
+    let refusal = ["i", "i'm", "i’m", "i've", "sorry", "unfortunately", "apologies", "as"];
+    if refusal.iter().any(|w| first.eq_ignore_ascii_case(w)) {
+        return None;
+    }
+    Some(line.to_string())
 }
+
+/// The longest suggestion shown, in characters: a next request is a few words.
+const SUGGESTION_MAX: usize = 70;
 
 /// `AgentCommand::Suggest`: a guess at the person's next message, in a task of its own so the chat never waits
 /// for it. It is let go when the reply calls a tool or holds nothing, or when a new request started (or the
@@ -383,6 +396,37 @@ pub(super) fn spawn_vendor_fill(state: &Shared) {
     });
 }
 
+/// After a switch: asks the server for its models and, when it lists the new one nowhere, says so at once with
+/// the closest names, instead of leaving the failure for the first message. A server with no list, or one
+/// that does not answer in time, says nothing.
+pub(super) fn spawn_model_check(state: &Shared) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let (provider, cfg, model, client) = {
+            let st = state.lock().await;
+            let (p, c, m) = st.target.get();
+            (p, c, m, st.client.clone())
+        };
+        if cfg.models.contains(&model) {
+            return;
+        }
+        let list = match tokio::time::timeout(Duration::from_secs(8), client.list_models(&cfg)).await {
+            Ok(Ok(l)) => l,
+            _ => return,
+        };
+        let names: Vec<String> = list.into_iter().map(|m| m.id).collect();
+        let st = state.lock().await;
+        // the person may have moved on while the server answered
+        if st.target.get().2 != model || names.is_empty() || names.contains(&model) {
+            return;
+        }
+        let close = hints::closest(&model, names.iter().map(String::as_str), 5);
+        let hint =
+            if close.is_empty() { String::new() } else { format!("; closest: {} (`/model <name>`)", close.join(", ")) };
+        notice(&st.events, Level::Warn, format!("{provider} does not list the model `{model}`{hint}"));
+    });
+}
+
 #[cfg(test)]
 mod suggest_tests {
     use super::*;
@@ -397,5 +441,16 @@ mod suggest_tests {
         assert_eq!(r(&["minimal", "low", "medium", "high"]), Some(ReasoningConfig::Effort(Effort::Minimal)));
         assert_eq!(r(&["low", "high"]), Some(ReasoningConfig::Effort(Effort::Low)));
         assert_eq!(suggest_request(&last, Message::assistant("ok"), &[]).max_tokens, SUGGEST_TOKENS);
+    }
+
+    #[test]
+    fn only_a_short_request_shaped_line_is_shown_as_a_suggestion() {
+        assert_eq!(tidy_suggestion("  \"run the\ntests\" ").as_deref(), Some("run the tests"));
+        assert_eq!(tidy_suggestion("commit it").as_deref(), Some("commit it"));
+        let apology = "I don't have enough conversation history in this session to reliably guess.";
+        assert_eq!(tidy_suggestion(apology), None, "a refusal is not a request");
+        assert_eq!(tidy_suggestion("Could you provide the previous messages?"), None, "a question is not either");
+        assert_eq!(tidy_suggestion(&"word ".repeat(30)), None, "too long to be a next message");
+        assert_eq!(tidy_suggestion("  "), None);
     }
 }

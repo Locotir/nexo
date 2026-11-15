@@ -97,7 +97,12 @@ fn field(front: &str, key: &str) -> Option<String> {
         let s = s.trim();
         for q in ['"', '\''] {
             if let Some(inner) = s.strip_prefix(q).and_then(|r| r.strip_suffix(q)) {
-                return inner.to_string();
+                // the escapes of a quoted scalar: `\"` in double quotes, `''` in single ones
+                return if q == '"' {
+                    inner.replace("\\\"", "\"").replace("\\\\", "\\")
+                } else {
+                    inner.replace("''", "'")
+                };
             }
         }
         s.to_string()
@@ -315,6 +320,13 @@ mod tests {
         write(d.path(), "bad name/SKILL.md", "---\ndescription: x\n---\n");
         assert!(load(&d.path().join("bad name"), "x").is_none());
         assert!(load(&d.path().join("missing"), "x").is_none());
+    }
+
+    #[test]
+    fn the_escapes_of_a_quoted_description_are_decoded() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "q/SKILL.md", "---\nname: q\ndescription: \"Use for \\\"review this\\\", it's ok\"\n---\nGo\n");
+        assert_eq!(load(&d.path().join("q"), "x").unwrap().description, "Use for \"review this\", it's ok");
     }
 
     #[test]

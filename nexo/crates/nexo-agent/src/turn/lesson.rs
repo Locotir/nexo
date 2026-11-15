@@ -44,14 +44,7 @@ pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Les
         return Lesson::Output;
     }
     if hints::unknown_model(e) {
-        let mut names: Vec<String> = cfg.models.clone();
-        if let Some(c) = catalogue::cached() {
-            names.extend(c.model_names(&provider));
-        }
-        let close = hints::closest(model, names.iter().map(String::as_str), 5);
-        let hint =
-            if close.is_empty() { String::new() } else { format!("; closest: {} (`/model <name>`)", close.join(", ")) };
-        notice(&st.events, Level::Warn, format!("{provider} does not know the model `{model}`{hint}"));
+        // no notice of its own: the problem that follows says it once, with the closest names
         return Lesson::UnknownModel;
     }
     Lesson::None
@@ -102,5 +95,16 @@ pub(super) async fn problem_of(state: &Shared, e: &ProviderError) -> Problem {
     let (provider, cfg, model) = st.target.get();
     let mut ctx = ProblemCtx::from_config(&provider, &model, &cfg);
     ctx.window = st.limits.context_window.or_else(|| hints::context_window(&e.message)).or(ctx.window);
-    Problem::of(e, &ctx)
+    let mut p = Problem::of(e, &ctx);
+    if hints::unknown_model(e) {
+        let mut names: Vec<String> = cfg.models.clone();
+        if let Some(c) = catalogue::cached() {
+            names.extend(c.model_names(&provider));
+        }
+        let close = hints::closest(&model, names.iter().map(String::as_str), 5);
+        if !close.is_empty() {
+            p = p.step(format!("Closest names: {} (`/model <name>`).", close.join(", ")));
+        }
+    }
+    p
 }

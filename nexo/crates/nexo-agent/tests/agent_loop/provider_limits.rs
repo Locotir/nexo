@@ -138,9 +138,11 @@ async fn an_unknown_model_is_reported_with_the_closest_names() {
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Error);
     assert!(
-        evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("does not know the model `m3`") && text.contains("m1"))),
+        evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("has no model `m3`") && text.contains("Closest names") && text.contains("m1"))),
         "{evs:?}"
     );
+    let notices = evs.iter().filter(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("m3"))).count();
+    assert_eq!(notices, 1, "one block for one failure: {evs:?}");
     assert_eq!(client.requests().len(), 1, "no retry");
     r.stop().await;
 }
@@ -240,5 +242,24 @@ async fn a_large_window_gets_the_largest_reply_from_the_first_request() {
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     assert_eq!(client.requests()[0].max_tokens, 32_768);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_model_the_server_does_not_list_is_flagged_at_the_switch() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![]);
+    *client.listed.lock().unwrap() = vec!["m1".into(), "m2".into()];
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::SetModel { provider: None, model: "m3".into() });
+    let evs = r
+        .until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("does not list the model `m3`")))
+        .await;
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("closest") && text.contains("m1"))),
+        "{evs:?}"
+    );
     r.stop().await;
 }

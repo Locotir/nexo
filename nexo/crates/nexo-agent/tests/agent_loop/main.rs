@@ -16,7 +16,7 @@ use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::message::{Message, Part, Role};
 use nexo_core::permission::{PermissionDecision, PermissionMode};
 use nexo_core::pricing::Pricing;
-use nexo_core::provider::{EventStream, ModelRequest, ToolSpec};
+use nexo_core::provider::{EventStream, ModelInfo, ModelRequest, ToolSpec};
 use nexo_core::stream::{FinishReason, StreamEvent, Usage};
 use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
@@ -37,6 +37,8 @@ struct Scripted {
     bases: Mutex<Vec<String>>,
     /// Each wait the loop asked for before sending a request again itself, by its number.
     waits: Mutex<Vec<u32>>,
+    /// The model names the server lists; none means it has no list.
+    listed: Mutex<Vec<String>>,
 }
 
 impl Scripted {
@@ -46,6 +48,7 @@ impl Scripted {
             requests: Mutex::new(Vec::new()),
             bases: Mutex::new(Vec::new()),
             waits: Mutex::new(Vec::new()),
+            listed: Mutex::new(Vec::new()),
         })
     }
 
@@ -82,6 +85,14 @@ impl ModelClient for Scripted {
     fn backoff(&self, n: u32, _e: &ProviderError) -> Duration {
         self.waits.lock().unwrap().push(n);
         Duration::ZERO
+    }
+
+    async fn list_models(&self, _cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError> {
+        let l = self.listed.lock().unwrap().clone();
+        if l.is_empty() {
+            return Err(ProviderError::new(ErrorKind::Other, "no model list"));
+        }
+        Ok(l.into_iter().map(|id| ModelInfo { id, ..Default::default() }).collect())
     }
 }
 

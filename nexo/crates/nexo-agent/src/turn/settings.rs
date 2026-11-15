@@ -38,6 +38,7 @@ async fn switch_model(state: &Shared, provider: Option<String>, model: String) -
             }
             drop(st);
             spawn_vendor_fill(state);
+            spawn_model_check(state);
             true
         }
     }
