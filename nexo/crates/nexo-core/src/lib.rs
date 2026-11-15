@@ -38,6 +38,7 @@ pub mod shell;
 pub mod skills;
 pub mod stream;
 pub mod subs;
+pub mod team;
 pub mod tool;
 pub mod trust;
 pub mod version;

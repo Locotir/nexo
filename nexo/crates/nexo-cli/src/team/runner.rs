@@ -13,7 +13,7 @@ use nexo_core::config::Lane;
 use nexo_core::mailbox::{now_ms, Mailbox};
 use nexo_core::permission::PermissionMode;
 
-use super::state::{self, LaneState, Round};
+use nexo_core::team::state::{self, LaneState, Round};
 use crate::setup;
 
 /// Failed rounds in a row that end the runner.
@@ -24,7 +24,7 @@ const TICK: Duration = Duration::from_millis(500);
 
 /// The configuration, folder and model of the lane, as `nexo -p` in that folder would have them.
 async fn prepare(lane: &Lane) -> anyhow::Result<(nexo_core::Config, PathBuf, setup::Picked)> {
-    let dir = super::lane_dir(lane);
+    let dir = nexo_core::team::lane_dir(lane);
     let cwd = std::fs::canonicalize(&dir).map_err(|e| anyhow::anyhow!("dir {}: {e}", dir.display()))?;
     let provider = lane.model.as_deref().and_then(|m| m.split_once('/')).map(|(p, _)| p);
     let mut config = crate::cli::load_config_for(provider, &cwd)?;

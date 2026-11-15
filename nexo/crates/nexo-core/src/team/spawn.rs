@@ -19,16 +19,20 @@ pub fn rotate(log: &Path, max: u64) {
     }
 }
 
-/// Starts `nexo team run <name>` detached; its pid.
+/// Starts `nexo team run <name>` detached, with this program as the runner; its pid.
+pub fn runner(name: &str) -> std::io::Result<u32> {
+    runner_of(&std::env::current_exe()?, name)
+}
+
+/// Starts `<exe> team run <name>` detached; its pid. The program is a parameter so a test can start a stand-in.
 // the runner is meant to outlive this command, so it is never waited on
 #[allow(clippy::zombie_processes)]
-pub fn runner(name: &str) -> std::io::Result<u32> {
+pub fn runner_of(exe: &Path, name: &str) -> std::io::Result<u32> {
     std::fs::create_dir_all(state::dir())?;
     let log = state::log_file(name);
     rotate(&log, LOG_MAX);
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
     let err = out.try_clone()?;
-    let exe = std::env::current_exe()?;
     let mut c = Command::new(exe);
     c.args(["team", "run", name]).stdin(Stdio::null()).stdout(out).stderr(err).current_dir(state::dir());
     #[cfg(unix)]

@@ -45,7 +45,7 @@ pub struct LaneState {
 }
 
 pub fn dir() -> PathBuf {
-    nexo_core::paths::data_dir().join("team")
+    crate::paths::data_dir().join("team")
 }
 
 pub fn state_file(name: &str) -> PathBuf {
