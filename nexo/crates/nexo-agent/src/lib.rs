@@ -26,6 +26,8 @@ pub mod gitcmds;
 pub mod goal_brief;
 mod hint_cmd;
 mod history;
+#[cfg(test)]
+mod per_call_tests;
 pub mod hooks;
 pub mod limits;
 mod missing;

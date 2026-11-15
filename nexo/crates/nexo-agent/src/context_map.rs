@@ -2,10 +2,11 @@
 //! it the next model call carries; with the curator, also the zone of its
 //! memory (anchor or topic) the message is in.
 
-use nexo_core::message::{message_tokens, Message, Part, Role};
+use nexo_core::message::{Message, Part, Role};
 use nexo_core::{CallMark, CellKind, CellState, ContextCell, ContextZone};
 
 use crate::context::Memory;
+use crate::history::History;
 
 fn kind(m: &Message) -> CellKind {
     let has = |f: fn(&Part) -> bool| m.content.iter().any(f);
@@ -42,12 +43,13 @@ fn key(m: &Message) -> Vec<String> {
 
 /// Each message of `history` as whole, shrunk or dropped in `view`. Both keep
 /// the history's order, so a message is looked for after the last one found.
-pub fn map(history: &[Message], view: &[Message]) -> Vec<ContextCell> {
+pub fn map(history: &History, view: &[Message]) -> Vec<ContextCell> {
     let mut from = 0;
     history
         .iter()
-        .map(|h| {
-            let tokens = message_tokens(h).max(1);
+        .enumerate()
+        .map(|(i, h)| {
+            let tokens = history.message_tokens_at(i).max(1);
             let k = key(h);
             let state = match view[from..].iter().position(|v| v == h) {
                 Some(i) => {
@@ -165,7 +167,7 @@ mod tests {
             Message::user("second question"),
         ];
         let view = vec![call, result("c1", "[curator] read output left out"), Message::user("second question")];
-        let states: Vec<_> = map(&history, &view).iter().map(|c| (c.kind, c.state)).collect();
+        let states: Vec<_> = map(&History::new(history.clone()), &view).iter().map(|c| (c.kind, c.state)).collect();
         assert_eq!(
             states,
             [
@@ -207,7 +209,7 @@ mod tests {
     #[test]
     fn everything_sent_is_all_whole() {
         let h = vec![Message::user("a"), Message::assistant("b")];
-        assert!(map(&h, &h).iter().all(|c| c.state == CellState::Whole));
+        assert!(map(&History::new(h.clone()), &h).iter().all(|c| c.state == CellState::Whole));
     }
 
     #[test]
@@ -227,7 +229,7 @@ mod tests {
         ];
         // the first three messages repeat the request before, c2 is paid in full, c3 left out
         let view = history[..5].to_vec();
-        let cells = map(&history, &view);
+        let cells = map(&History::new(history.clone()), &view);
         let got = calls(&history, &cells, &view, 3);
         assert_eq!(
             got,

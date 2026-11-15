@@ -119,6 +119,11 @@ impl History {
         self.sizes[start..].iter().map(|s| s.2).sum()
     }
 
+    /// The `message_tokens` of message `i`, as stored when it came in.
+    pub fn message_tokens_at(&self, i: usize) -> u64 {
+        self.sizes[i].1
+    }
+
     /// The JSON bytes of the whole history.
     pub fn bytes(&self) -> u64 {
         self.bytes
@@ -137,6 +142,9 @@ mod tests {
     fn exact(h: &History) {
         assert_eq!(h.tokens(), estimate_tokens(h));
         assert_eq!(h.bytes(), h.iter().map(size_of).sum::<u64>());
+        for (i, m) in h.iter().enumerate() {
+            assert_eq!(h.message_tokens_at(i), message_tokens(m));
+        }
         for from in [0, 1, h.len() / 2, h.len(), h.len() + 3] {
             assert_eq!(h.tokens_from(from), estimate_tokens(&h[from.min(h.len())..]));
         }
