@@ -38,7 +38,7 @@ pub(super) fn caps(lens: &[usize], budget: usize) -> Vec<usize> {
 }
 
 /// The first `cap` characters of `text`, ended at the last line end in their second half when there is one.
-fn head(text: &str, cap: usize) -> &str {
+pub(crate) fn head(text: &str, cap: usize) -> &str {
     let end = text.char_indices().nth(cap).map_or(text.len(), |(i, _)| i);
     let cut = &text[..end];
     match cut.rfind('\n') {

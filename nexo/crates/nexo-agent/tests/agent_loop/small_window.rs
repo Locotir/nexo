@@ -82,3 +82,87 @@ async fn the_same_agents_file_at_200k_is_sent_whole_as_before() {
     let from = |r: &ModelRequest| r.system[r.system.find("\n\nInstructions from").unwrap()..].to_string();
     assert_eq!(from(&req), from(&unknown));
 }
+
+/// The request a sub-agent on the model `s1` of another provider, whose window is `w`, sends first, and what
+/// the main agent was told when it ended; the task is 24 300 characters.
+async fn sub_agent_on_a_small_model(w: u32, max_output: Option<u32>) -> (ModelRequest, String, String) {
+    let d = project();
+    let task = "Find where the config is parsed and list every key it reads, with file and line. ".repeat(300);
+    let client = Scripted::new(vec![
+        Reply::Events(call(
+            "t1",
+            "task",
+            json!({"prompt": task, "provider": "small", "model": "s1", "description": "look"}),
+        )),
+        Reply::Events(text("found it")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = cfg_window(200_000);
+    let mut small = ProviderConfig::new("mock", "http://small", None);
+    small.models = vec!["s1".into()];
+    small.context_window.insert("s1".into(), w);
+    if let Some(m) = max_output {
+        small.max_output.insert("s1".into(), m);
+    }
+    cfg.providers.insert("small".into(), small);
+    let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look with s1 on small".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let bases = client.bases.lock().unwrap().clone();
+    let i = bases.iter().position(|b| b == "http://small").expect("the sub-agent asked its model");
+    let result = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.content.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    (reqs[i].clone(), task, result)
+}
+
+#[tokio::test]
+async fn a_sub_agent_on_a_4k_and_a_6k_window_asks_a_quarter_for_its_reply_and_keeps_a_cut_task_in_the_window() {
+    let _g = config_lock().lock().await;
+    for w in [4_096u32, 6_000] {
+        let (req, task, result) = sub_agent_on_a_small_model(w, None).await;
+        assert!(req.max_tokens <= w / 4, "{w}: the reply asked for {} tokens", req.max_tokens);
+        let total = total_with_reply(&req);
+        assert!(total <= u64::from(w), "{w}: the request and its reply take {total} tokens");
+        let first = req.messages[0].text();
+        let line = first
+            .lines()
+            .find_map(|l| l.strip_prefix("[nexo: task cut to ").and_then(|l| l.strip_suffix("]")))
+            .unwrap_or_else(|| panic!("{w}: no cut line in {first:.300}"));
+        let (kept, rest) = line.split_once(" of ").unwrap();
+        let kept: usize = kept.parse().unwrap();
+        assert_eq!(rest, format!("{} characters for a {w}-token window", task.len()), "{w}");
+        // the head of the brief is what stays
+        assert!(first.starts_with(&task[..200]) && first.contains(&task[..kept]), "{w}");
+        assert!(!first.contains(&task[..kept + 100]), "{w}: only the head is kept");
+        // the main agent sees the same fact in the job result
+        assert!(
+            result.contains(&format!("task cut to {kept} of {} characters for a {w}-token window", task.len())),
+            "{w}: {result}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_sub_agent_on_a_large_window_gets_its_whole_task_and_the_usual_reply() {
+    let _g = config_lock().lock().await;
+    let (req, task, result) = sub_agent_on_a_small_model(200_000, None).await;
+    assert_eq!(req.max_tokens, 4_096);
+    let first = req.messages[0].text();
+    assert!(first.contains(&task) && !first.contains("task cut to"), "the task is whole");
+    assert!(!result.contains("task cut to"), "{result}");
+}
+
+#[tokio::test]
+async fn a_sub_agent_asks_no_more_than_its_models_largest_reply() {
+    let _g = config_lock().lock().await;
+    let (req, _, _) = sub_agent_on_a_small_model(32_000, Some(1_000)).await;
+    assert_eq!(req.max_tokens, 1_000);
+}

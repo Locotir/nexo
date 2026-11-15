@@ -4,7 +4,8 @@ use super::*;
 pub(super) const ROUND_RETRIES: u32 = 3;
 /// The longest wait before asking again, whatever the server said.
 pub(super) const MAX_WAIT: Duration = Duration::from_secs(60);
-/// The most tokens a sub-agent's reply takes.
+/// The tokens a sub-agent asks for in a reply; its model's own limits (a quarter of the window, its largest
+/// reply) can lower it, as they do the main agent's.
 pub(super) const REPLY_TOKENS: u32 = 4096;
 
 /// Why a request of a round gave no reply.
@@ -12,6 +13,27 @@ pub(super) enum Failure {
     /// The person stopped the sub-agent.
     Stopped,
     Model(ProviderError),
+}
+
+/// The least tokens of its task a sub-agent is given, however small its window.
+const TASK_FLOOR_TOKENS: u64 = 256;
+
+/// `prompt` as a sub-agent whose model has `window` tokens (`None`: unknown, nothing is cut) can be given it: at
+/// most half of what its view leaves after the system prompt and tools (`fixed` tokens), the reply (`reply`) and
+/// the briefing (`brief` tokens), so the rounds that follow have the other half. A task that does not fit keeps
+/// its head, and the second value says how much was cut.
+fn fit_task(prompt: &str, window: Option<u32>, reply: u32, fixed: u64, brief: u64) -> (String, Option<String>) {
+    let Some(w) = window else { return (prompt.to_string(), None) };
+    let view = crate::turn::view_window(w.saturating_sub(reply), None);
+    let room = (view.saturating_sub(fixed) / 2).saturating_sub(brief).max(TASK_FLOOR_TOKENS);
+    let cap = usize::try_from(room).unwrap_or(usize::MAX).saturating_mul(4);
+    let whole = prompt.chars().count();
+    if whole <= cap {
+        return (prompt.to_string(), None);
+    }
+    let kept = crate::prompt::fit::head(prompt, cap);
+    let note = format!("task cut to {} of {whole} characters for a {w}-token window", kept.chars().count());
+    (kept.to_string(), Some(note))
 }
 
 /// A message the person or the parent sent a sub-agent joins its conversation as a user message: after the
@@ -114,13 +136,32 @@ pub(super) struct Run {
 }
 
 impl Run {
-    /// The report, or why there is none. `say` gets a line per step.
+    /// The report, or why there is none. `say` gets a line per step. When the task did not fit the model's
+    /// window and was cut, the report (or the failure) ends with that fact, as the sub-agent's first message has it.
     pub(super) async fn go(
         &self,
         prompt: &str,
         brief: Option<&Brief>,
         ctx: &ToolContext,
         say: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String, String> {
+        let mut cut = None;
+        let res = self.rounds(prompt, brief, ctx, say, &mut cut).await;
+        match (res, cut) {
+            (Ok(report), Some(c)) => Ok(format!("{report}\n\n{c}")),
+            (Err(e), Some(c)) => Err(format!("{e}\n\n{c}")),
+            (res, None) => res,
+        }
+    }
+
+    /// [`Run::go`]; `cut` gets the line that says the task was cut to fit the window, when it was.
+    async fn rounds(
+        &self,
+        prompt: &str,
+        brief: Option<&Brief>,
+        ctx: &ToolContext,
+        say: &(dyn Fn(String) + Send + Sync),
+        cut: &mut Option<String>,
     ) -> Result<String, String> {
         let (main_provider, main_cfg, main_model) = self.target.get();
         let model = self
@@ -157,11 +198,6 @@ impl Run {
         }
         let rounds = self.profile.rounds;
         let system = format!("{BASE}\nYou have {rounds} rounds of tool calls.\n\n{}", self.profile.prompt);
-        let first = match brief {
-            Some(b) => Message::new(Role::User, vec![Part::text(b.text.clone()), Part::text(prompt)]),
-            None => Message::user(prompt),
-        };
-        let mut messages = vec![first];
         // what it sends is the session's context policy over its own messages, as in the main turn: everything
         // with `plain`, and with the curator what it keeps, under the model's window and priced over the rounds
         // left (a cut the run ends before paying back is not made)
@@ -176,6 +212,23 @@ impl Run {
         }
         let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
         let system_tokens = crate::turn::fixed_tokens(&system, &specs);
+        // the reply it asks for, under its model's own limits; the task is cut to what its window leaves
+        let reply = limits.max_tokens(REPLY_TOKENS);
+        let brief_tokens = brief.map_or(0, |b| b.tokens as u64);
+        let (task, note) = fit_task(prompt, limits.context_window, reply, system_tokens, brief_tokens);
+        if let Some(n) = &note {
+            say(n.clone());
+            *cut = Some(n.clone());
+        }
+        let mut parts = vec![];
+        if let Some(b) = brief {
+            parts.push(Part::text(b.text.clone()));
+        }
+        parts.push(Part::text(task));
+        if let Some(n) = note {
+            parts.push(Part::text(format!("[nexo: {n}]")));
+        }
+        let mut messages = vec![Message::new(Role::User, parts)];
         let mut tok_ratio: Option<f64> = None;
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
         let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -200,8 +253,8 @@ impl Run {
                 }
             }
             policy.tools(&names);
-            if let Some(w) = limits.context_window.filter(|w| *w > REPLY_TOKENS) {
-                policy.window(crate::turn::view_window(w - REPLY_TOKENS, tok_ratio));
+            if let Some(w) = limits.context_window.filter(|w| *w > reply) {
+                policy.window(crate::turn::view_window(w - reply, tok_ratio));
             }
             if let Some(p) = prices {
                 policy.prices(p.input, p.cache_read);
@@ -223,7 +276,7 @@ impl Run {
             let (sent, _) = nexo_core::message::well_formed(view.messages);
             let mut req = ModelRequest::new(model.clone(), system.clone(), sent);
             req.tools = specs.clone();
-            req.max_tokens = REPLY_TOKENS;
+            req.max_tokens = reply;
             req.session_id = Some(cache_id.clone());
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away

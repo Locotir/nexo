@@ -9,7 +9,7 @@ use nexo_core::paths;
 use nexo_core::tool::catalog::{self, SMALL_LEAVES_OUT, TINY_LEAVES_OUT};
 use nexo_core::tool::ToolSet;
 
-mod fit;
+pub(crate) mod fit;
 #[cfg(test)]
 mod size_budget;
 #[cfg(test)]
