@@ -101,7 +101,9 @@ impl Tool for SendMessage {
                         return out;
                     }
                 }
-                ToolOutput::error(match job_fact(&word, &named) {
+                // a name that is no session and no job of this session: the jobs it could have meant
+                let fact = job_fact(&word, &named).or_else(|| running_jobs(&ctx.jobs));
+                ToolOutput::error(match fact {
                     Some(f) => format!("{e}\n{f}"),
                     None => e,
                 })
@@ -204,6 +206,36 @@ fn job_fact(word: &str, named: &[nexo_core::jobs::JobInfo]) -> Option<String> {
             ))
         }
     }
+}
+
+/// The jobs of this session still running, by number and kind, for a name that matched none of them: a
+/// sub-agent is told by its kind and description, a command by its text. None when nothing runs.
+fn running_jobs(jobs: &nexo_core::jobs::Jobs) -> Option<String> {
+    use nexo_core::jobs::{duration, JobKind};
+    const SHOWN: usize = 8;
+    let subs = jobs.subs().list();
+    let running: Vec<_> = jobs.list().into_iter().filter(|j| j.status.running()).collect();
+    if running.is_empty() {
+        return None;
+    }
+    let mut out = String::from("Running jobs of this session (a job number reaches a sub-agent):");
+    for j in running.iter().take(SHOWN) {
+        let label: String = j.label.chars().take(40).collect();
+        let what = match j.kind {
+            JobKind::Agent => {
+                let n = j.id.to_string();
+                let kind =
+                    subs.iter().find(|s| s.id.rsplit('#').next() == Some(n.as_str())).map(|s| s.profile.as_str());
+                format!("{} \"{label}\"", kind.unwrap_or("sub-agent"))
+            }
+            JobKind::Shell => format!("command `{label}`"),
+        };
+        out.push_str(&format!("\njob {}: {what}, running {}", j.id, duration(j.elapsed_ms)));
+    }
+    if running.len() > SHOWN {
+        out.push_str(&format!("\nand {} more", running.len() - SHOWN));
+    }
+    Some(out)
 }
 
 #[async_trait]
@@ -384,8 +416,34 @@ mod tests {
             ]
         );
         let none = send.run(say("99"), &c).await;
-        assert_eq!(none.content, "Not sent: no live session \"99\". Live sessions: web.");
+        // the one job still running is named, so a model that guessed a number sees the ones it can use
+        let want = "Not sent: no live session \"99\". Live sessions: web.\nRunning jobs of this session (a job number \
+                    reaches a sub-agent):\njob 1: command `npm test`, running ";
+        assert!(none.content.starts_with(want), "{}", none.content);
         assert!(!a.drain_events().iter().any(|e| matches!(e, nexo_core::agent::AgentEvent::MailSent { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_name_that_is_no_session_lists_the_running_jobs_by_number_and_kind() {
+        use nexo_core::jobs::JobKind;
+        let (_d, a, _b) = pair();
+        let ts = tools(a);
+        let send = ts.get("send_message").unwrap();
+        let c = ctx();
+        let say = |to: &str| json!({"to": to, "text": "hi"});
+        // nothing runs: the error is only the refusal
+        assert_eq!(send.run(say(".."), &c).await.content, "Not sent: no live session \"..\". Live sessions: web.");
+        let _shell = c.jobs.start(JobKind::Shell, "npm test");
+        let agent = c.jobs.start(JobKind::Agent, "review the parser");
+        let _sub = c.jobs.subs().begin(&format!("call#{}", agent.id()), "explore", "review the parser", true);
+        let out = send.run(say(".."), &c).await;
+        assert!(out.is_error);
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines[0], "Not sent: no live session \"..\". Live sessions: web.");
+        assert_eq!(lines[1], "Running jobs of this session (a job number reaches a sub-agent):");
+        assert!(lines[2].starts_with("job 1: command `npm test`, running "), "{lines:?}");
+        assert!(lines[3].starts_with("job 2: explore \"review the parser\", running "), "{lines:?}");
+        assert_eq!(lines.len(), 4);
     }
 
     #[tokio::test]
