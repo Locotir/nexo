@@ -62,19 +62,6 @@ fn parse(line: &'static str) -> Option<Entry> {
     Some(Entry { id: f[0], name: f[1], protocol: f[2], base_url: f[3], key_env: f[4], doc: f[5], models })
 }
 
-/// Directory ids a preset already covers under another name.
-pub const ALIASES: &[(&str, &str)] = &[
-    ("google", "gemini"),
-    ("togetherai", "together"),
-    ("fireworks-ai", "fireworks"),
-    ("moonshotai", "moonshot"),
-    ("alibaba", "qwen"),
-    ("zhipuai", "zhipu"),
-    ("zai", "zhipu"),
-    ("github-copilot", "copilot"),
-    ("lmstudio", "lmstudio"),
-];
-
 /// The entry for `id`, by its own id (not an alias of a preset).
 pub fn get(id: &str) -> Option<Entry> {
     all().into_iter().find(|e| e.id == id)
@@ -82,7 +69,7 @@ pub fn get(id: &str) -> Option<Entry> {
 
 /// The preset a directory id stands for, when one does.
 pub fn alias(id: &str) -> Option<&'static str> {
-    ALIASES.iter().find(|(d, _)| *d == id).map(|(_, p)| *p)
+    crate::vendors::VENDORS.iter().find(|v| v.directory_ids.contains(&id)).map(|v| v.id)
 }
 
 #[cfg(test)]

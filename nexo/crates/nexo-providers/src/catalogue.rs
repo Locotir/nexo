@@ -45,35 +45,19 @@ pub struct Catalogue {
     pub providers: BTreeMap<String, BTreeMap<String, Entry>>,
 }
 
-/// models.dev provider id → nexo preset name, where they differ.
-const ALIASES: &[(&str, &str)] = &[
-    ("google", "gemini"),
-    ("togetherai", "together"),
-    ("fireworks-ai", "fireworks"),
-    ("moonshotai", "moonshot"),
-    ("alibaba", "qwen"),
-    ("alibaba-cn", "qwen"),
-    ("zhipuai", "zhipu"),
-    ("zai", "zhipu"),
-    ("llama.cpp", "llamacpp"),
-    ("lmstudio", "lmstudio"),
-];
-
 /// Subscription presets that serve the models of an API provider: nexo preset -> models.dev id.
 const PARENTS: &[(&str, &str)] = &[("codex", "openai")];
 
 /// The preset name a models.dev provider id maps to.
 pub fn preset_name(id: &str) -> &str {
-    ALIASES.iter().find(|(from, _)| *from == id).map(|(_, to)| *to).unwrap_or(id)
+    crate::vendors::VENDORS.iter().find(|v| v.catalogue_ids.contains(&id)).map(|v| v.id).unwrap_or(id)
 }
 
 /// The models.dev ids that map to a preset name (the name itself first).
 pub fn catalogue_ids(preset: &str) -> Vec<String> {
     let mut out = vec![preset.to_string()];
-    for (from, to) in ALIASES {
-        if *to == preset && *from != preset {
-            out.push(from.to_string());
-        }
+    for v in crate::vendors::VENDORS.iter().filter(|v| v.id == preset) {
+        out.extend(v.catalogue_ids.iter().filter(|c| **c != preset).map(|c| c.to_string()));
     }
     out
 }

@@ -158,24 +158,18 @@ pub async fn server(cfg: &ProviderConfig, key: Option<&str>) -> Result<ServerPro
     let base = normalize_url(&cfg.base_url);
     let mut cfg = cfg.clone();
     cfg.base_url = base.clone();
-    match cfg.protocol.as_str() {
-        "anthropic" => return cloud_list(&cfg, key, "anthropic").await,
-        "gemini" => return cloud_list(&cfg, key, "gemini").await,
-        "mock" => {
-            return Ok(ServerProbe {
-                kind: "mock".into(),
-                protocol: cfg.protocol.clone(),
-                base_url: base,
-                models: cfg
-                    .models
-                    .iter()
-                    .map(|m| ModelInfo { id: m.clone(), tools: true, ..Default::default() })
-                    .collect(),
-                trail: vec!["mock: the built-in test provider".into()],
-                ..Default::default()
-            })
-        }
-        _ => {}
+    if let Some(list) = crate::vendors::by_protocol(&cfg.protocol).and_then(|v| v.list) {
+        return cloud_list(&cfg, key, list.as_str()).await;
+    }
+    if cfg.protocol == "mock" {
+        return Ok(ServerProbe {
+            kind: "mock".into(),
+            protocol: cfg.protocol.clone(),
+            base_url: base,
+            models: cfg.models.iter().map(|m| ModelInfo { id: m.clone(), tools: true, ..Default::default() }).collect(),
+            trail: vec!["mock: the built-in test provider".into()],
+            ..Default::default()
+        });
     }
     // a subscription backend lists no models to an account: the ones nexo knows are offered, and the
     // test request is the proof that the login works
@@ -517,13 +511,13 @@ pub fn effort_levels(protocol: &str, kind: &str, base_url: &str, model: &str, re
     }
     let m = model.to_ascii_lowercase();
     let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
-    if base_url.contains("deepseek.com") {
+    if crate::vendors::VENDORS.iter().any(|v| v.fixed_reasoning_host.is_some_and(|h| base_url.contains(h))) {
         return Vec::new();
     }
+    if let Some(e) = crate::vendors::by_protocol(protocol).and_then(|v| v.efforts) {
+        return v(if m.contains("pro") { e.pro.unwrap_or(e.any) } else { e.any });
+    }
     match protocol {
-        "anthropic" => v(&["off", "low", "medium", "high"]),
-        "gemini" if m.contains("pro") => v(&["low", "medium", "high"]),
-        "gemini" => v(&["off", "low", "medium", "high"]),
         _ if kind == "ollama" && !m.contains("gpt-oss") => v(&["off", "on"]),
         _ if m.contains("gpt-5") => v(&["minimal", "low", "medium", "high"]),
         _ => v(&["low", "medium", "high"]),
@@ -534,8 +528,10 @@ pub fn effort_levels(protocol: &str, kind: &str, base_url: &str, model: &str, re
 /// thinking budget of 0, Anthropic as `anthropic::off_thinks_less` says (Copilot serves Claude by it); the
 /// OpenAI protocols send nothing for off, the same request as no level.
 pub fn off_thinks_less(protocol: &str, model: &str) -> bool {
+    if crate::vendors::by_protocol(protocol).is_some_and(|v| v.off_is_zero_budget) {
+        return true;
+    }
     match protocol {
-        gemini::ID => true,
         anthropic::ID => anthropic::off_thinks_less(model),
         crate::copilot::ID => {
             crate::copilot::route(model) == crate::copilot::Route::Messages && anthropic::off_thinks_less(model)

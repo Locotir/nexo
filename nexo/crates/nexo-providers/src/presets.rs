@@ -12,7 +12,6 @@ struct Preset {
     name: &'static str,
     protocol: &'static str,
     base_url: &'static str,
-    key: Option<&'static str>,
     models: &'static [(&'static str, Pricing, u32)],
     headers: &'static [(&'static str, &'static str)],
 }
@@ -22,7 +21,6 @@ const PRESETS: &[Preset] = &[
         name: "openai",
         protocol: openai_chat::ID,
         base_url: "https://api.openai.com/v1",
-        key: Some("OPENAI_API_KEY"),
         models: &[
             ("gpt-5", Pricing { input: 1.25, output: 10.0, cache_read: 0.125, cache_write: 0.0 }, 400_000),
             ("gpt-5-mini", Pricing { input: 0.25, output: 2.0, cache_read: 0.025, cache_write: 0.0 }, 400_000),
@@ -36,7 +34,6 @@ const PRESETS: &[Preset] = &[
         name: "anthropic",
         protocol: anthropic::ID,
         base_url: "https://api.anthropic.com",
-        key: Some("ANTHROPIC_API_KEY"),
         models: &[
             // 5.5 line: 1M window, 128K reply; cache write is the 5-minute rate (the 1-hour one is not kept);
             // Haiku 5.5 is the rate for prompts up to 100K tokens (above it: 0.50 / 2.50 / 0.05 / 0.625)
@@ -57,7 +54,6 @@ const PRESETS: &[Preset] = &[
         name: "gemini",
         protocol: gemini::ID,
         base_url: "https://generativelanguage.googleapis.com",
-        key: Some("GEMINI_API_KEY"),
         models: &[
             ("gemini-2.5-pro", Pricing { input: 1.25, output: 10.0, cache_read: 0.31, cache_write: 0.0 }, 1_048_576),
             ("gemini-2.5-flash", Pricing { input: 0.3, output: 2.5, cache_read: 0.075, cache_write: 0.0 }, 1_048_576),
@@ -68,7 +64,6 @@ const PRESETS: &[Preset] = &[
         name: "deepseek",
         protocol: openai_chat::ID,
         base_url: "https://api.deepseek.com",
-        key: Some("DEEPSEEK_API_KEY"),
         // List prices outside DeepSeek's off-peak hours (off-peak is half). `deepseek-chat` and
         // `deepseek-reasoner` are the older names: their replies stop at 8192 tokens.
         models: &[
@@ -85,7 +80,6 @@ const PRESETS: &[Preset] = &[
         name: "xai",
         protocol: openai_chat::ID,
         base_url: "https://api.x.ai/v1",
-        key: Some("XAI_API_KEY"),
         models: &[
             ("grok-4.7", Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0 }, 500_000),
             ("grok-build-0.1", Pricing { input: 1.0, output: 2.0, cache_read: 0.2, cache_write: 0.0 }, 256_000),
@@ -108,7 +102,6 @@ const PRESETS: &[Preset] = &[
         name: "groq",
         protocol: openai_chat::ID,
         base_url: "https://api.groq.com/openai/v1",
-        key: Some("GROQ_API_KEY"),
         models: &[
             ("openai/gpt-oss-120b", Pricing { input: 0.15, output: 0.75, cache_read: 0.0, cache_write: 0.0 }, 131_072),
             (
@@ -128,7 +121,6 @@ const PRESETS: &[Preset] = &[
         name: "mistral",
         protocol: openai_chat::ID,
         base_url: "https://api.mistral.ai/v1",
-        key: Some("MISTRAL_API_KEY"),
         models: &[
             ("mistral-large-latest", Pricing { input: 2.0, output: 6.0, cache_read: 0.0, cache_write: 0.0 }, 128_000),
             ("devstral-medium-latest", Pricing { input: 0.4, output: 2.0, cache_read: 0.0, cache_write: 0.0 }, 128_000),
@@ -140,7 +132,6 @@ const PRESETS: &[Preset] = &[
         name: "openrouter",
         protocol: openai_chat::ID,
         base_url: "https://openrouter.ai/api/v1",
-        key: Some("OPENROUTER_API_KEY"),
         models: &[
             (
                 "anthropic/claude-sonnet-4.5",
@@ -161,7 +152,6 @@ const PRESETS: &[Preset] = &[
         name: "together",
         protocol: openai_chat::ID,
         base_url: "https://api.together.xyz/v1",
-        key: Some("TOGETHER_API_KEY"),
         models: &[
             (
                 "deepseek-ai/DeepSeek-V3.1",
@@ -185,7 +175,6 @@ const PRESETS: &[Preset] = &[
         name: "fireworks",
         protocol: openai_chat::ID,
         base_url: "https://api.fireworks.ai/inference/v1",
-        key: Some("FIREWORKS_API_KEY"),
         models: &[
             (
                 "accounts/fireworks/models/kimi-k2-instruct-0905",
@@ -209,7 +198,6 @@ const PRESETS: &[Preset] = &[
         name: "cerebras",
         protocol: openai_chat::ID,
         base_url: "https://api.cerebras.ai/v1",
-        key: Some("CEREBRAS_API_KEY"),
         models: &[
             ("gpt-oss-120b", Pricing { input: 0.25, output: 0.69, cache_read: 0.0, cache_write: 0.0 }, 131_072),
             (
@@ -225,7 +213,6 @@ const PRESETS: &[Preset] = &[
         name: "moonshot",
         protocol: openai_chat::ID,
         base_url: "https://api.moonshot.ai/v1",
-        key: Some("MOONSHOT_API_KEY"),
         models: &[
             ("kimi-k2-0905-preview", Pricing { input: 0.6, output: 2.5, cache_read: 0.15, cache_write: 0.0 }, 262_144),
             (
@@ -240,7 +227,6 @@ const PRESETS: &[Preset] = &[
         name: "qwen",
         protocol: openai_chat::ID,
         base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        key: Some("DASHSCOPE_API_KEY"),
         models: &[
             ("qwen3-coder-plus", Pricing { input: 1.0, output: 5.0, cache_read: 0.0, cache_write: 0.0 }, 1_000_000),
             ("qwen-plus", Pricing { input: 0.4, output: 1.2, cache_read: 0.0, cache_write: 0.0 }, 131_072),
@@ -252,7 +238,6 @@ const PRESETS: &[Preset] = &[
         name: "zhipu",
         protocol: openai_chat::ID,
         base_url: "https://api.z.ai/api/paas/v4",
-        key: Some("ZHIPU_API_KEY"),
         models: &[
             ("glm-4.6", Pricing { input: 0.6, output: 2.2, cache_read: 0.11, cache_write: 0.0 }, 200_000),
             ("glm-4.5-air", Pricing { input: 0.2, output: 1.1, cache_read: 0.03, cache_write: 0.0 }, 128_000),
@@ -263,7 +248,6 @@ const PRESETS: &[Preset] = &[
         name: "minimax",
         protocol: openai_chat::ID,
         base_url: "https://api.minimax.io/v1",
-        key: Some("MINIMAX_API_KEY"),
         models: &[("MiniMax-M2", Pricing { input: 0.3, output: 1.2, cache_read: 0.0, cache_write: 0.0 }, 204_800)],
         headers: &[],
     },
@@ -271,7 +255,6 @@ const PRESETS: &[Preset] = &[
         name: "ollama",
         protocol: openai_chat::ID,
         base_url: "http://localhost:11434/v1",
-        key: None,
         models: &[],
         headers: &[],
     },
@@ -279,23 +262,14 @@ const PRESETS: &[Preset] = &[
         name: "lmstudio",
         protocol: openai_chat::ID,
         base_url: "http://localhost:1234/v1",
-        key: None,
         models: &[],
         headers: &[],
     },
-    Preset {
-        name: "vllm",
-        protocol: openai_chat::ID,
-        base_url: "http://localhost:8000/v1",
-        key: None,
-        models: &[],
-        headers: &[],
-    },
+    Preset { name: "vllm", protocol: openai_chat::ID, base_url: "http://localhost:8000/v1", models: &[], headers: &[] },
     Preset {
         name: "llamacpp",
         protocol: openai_chat::ID,
         base_url: "http://localhost:8080/v1",
-        key: None,
         models: &[],
         headers: &[],
     },
@@ -360,7 +334,8 @@ fn written() -> BTreeMap<String, ProviderConfig> {
     PRESETS
         .iter()
         .map(|pr| {
-            let mut cfg = ProviderConfig::new(pr.protocol, pr.base_url, pr.key);
+            let key = crate::vendors::get(pr.name).and_then(|v| v.key_env);
+            let mut cfg = ProviderConfig::new(pr.protocol, pr.base_url, key);
             for (m, price, ctx) in pr.models {
                 cfg.models.push(m.to_string());
                 if price.is_known() {

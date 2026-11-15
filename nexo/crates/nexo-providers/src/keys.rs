@@ -19,15 +19,11 @@ pub fn clean(text: &str) -> String {
     s.to_string()
 }
 
-/// The starts of the keys of one service only; each is the service's own, published in its documentation.
-const STARTS: &[(&str, &str)] = &[
-    ("sk-ant-", "anthropic"),
-    ("sk-or-v1-", "openrouter"),
-    ("sk-proj-", "openai"),
-    ("gsk_", "groq"),
-    ("AIza", "gemini"),
-    ("csk-", "cerebras"),
-];
+/// The starts of the keys of one service only, each with its service; every one is the service's own,
+/// published in its documentation, and comes from the vendor table.
+fn starts() -> impl Iterator<Item = (&'static str, &'static str)> {
+    crate::vendors::VENDORS.iter().filter_map(|v| v.key_prefix.map(|p| (p, v.id)))
+}
 
 /// The start several services share (OpenAI's older keys, DeepSeek and others): it marks a key, but names
 /// no service.
@@ -38,9 +34,8 @@ const SHARED_START: &str = "sk-";
 /// never is.
 pub fn starts_like_key(text: &str, more: usize) -> bool {
     let t = text.trim();
-    STARTS
-        .iter()
-        .map(|(p, _)| *p)
+    starts()
+        .map(|(p, _)| p)
         .chain([SHARED_START])
         .any(|p| t.starts_with(p) && t.chars().count() >= p.chars().count() + more)
 }
@@ -49,11 +44,7 @@ pub fn starts_like_key(text: &str, more: usize) -> bool {
 /// share (a bare `sk-`) names none: the person is asked.
 pub fn recognise(key: &str) -> Option<&'static str> {
     let key = key.trim();
-    STARTS
-        .iter()
-        .filter(|(p, _)| key.starts_with(p) && key.len() > p.len() + 8)
-        .max_by_key(|(p, _)| p.len())
-        .map(|(_, n)| *n)
+    starts().filter(|(p, _)| key.starts_with(p) && key.len() > p.len() + 8).max_by_key(|(p, _)| p.len()).map(|(_, n)| n)
 }
 
 /// Whether a text looks like a key rather than a name or a sentence: one word, long enough, no spaces.
@@ -74,17 +65,7 @@ pub fn mask(key: &str) -> String {
 
 /// The page where the key of this service is made, for the services whose page is known.
 pub fn page(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "openai" => "https://platform.openai.com/api-keys",
-        "anthropic" => "https://platform.claude.com/settings/keys",
-        "gemini" => "https://aistudio.google.com/apikey",
-        "deepseek" => "https://platform.deepseek.com/api_keys",
-        "openrouter" => "https://openrouter.ai/keys",
-        "groq" => "https://console.groq.com/keys",
-        "mistral" => "https://console.mistral.ai/api-keys",
-        "together" => "https://api.together.ai/settings/api-keys",
-        _ => return None,
-    })
+    crate::vendors::get(name)?.key_page
 }
 
 #[cfg(test)]

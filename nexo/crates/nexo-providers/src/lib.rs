@@ -29,6 +29,7 @@ pub mod sse;
 pub mod testing;
 pub use nexo_http::tls;
 pub mod usage;
+pub mod vendors;
 #[cfg(test)]
 mod vendors_pin;
 
