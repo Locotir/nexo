@@ -179,7 +179,14 @@ impl Tool for Bash {
         let mut content = if outcome.output.trim().is_empty() {
             "(no output)".to_string()
         } else {
-            cap_text(&outcome.output, MAX_OUTPUT_CHARS)
+            // held to what the window leaves of a request, and said so
+            let cap = ctx.cap(MAX_OUTPUT_CHARS);
+            let mut text = cap_text(&outcome.output, cap);
+            let rest = "run it again with `head`, `tail` or `grep` for a part of the output";
+            if let Some(fact) = ctx.cut_fact(MAX_OUTPUT_CHARS, cap, outcome.output.chars().count(), rest) {
+                text.push_str(&format!("\n[{fact}]"));
+            }
+            text
         };
         if truncated {
             content.push_str(&highlights);

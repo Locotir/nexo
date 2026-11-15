@@ -144,3 +144,32 @@ fn a_question_is_in_the_background_only_for_its_own_run() {
     assert!(!d.is_gone("call_0#1.s1"));
     assert!(d.is_gone("call_0#2.s1"));
 }
+
+#[test]
+fn a_report_in_the_ended_note_is_cut_to_the_room_of_a_small_window_and_says_how_to_read_it_whole() {
+    let report = "found it in the parser\n".repeat(1_300);
+    let ended = |jobs: &Jobs| {
+        let h = jobs.start(JobKind::Agent, "look");
+        h.set_report(&report);
+        h.finish(true, "reported");
+        jobs.take_ended()
+    };
+    let room = crate::tool::ResultRoom { chars: 4_000, window: 8_000 };
+    let jobs = Jobs::new();
+    let note = jobs.note_ended_within(&ended(&jobs), Some(room));
+    assert!(note.chars().count() < 4_000 + 400, "the note takes {} characters", note.chars().count());
+    assert!(
+        note.contains(&format!(
+            "cut to 3700 of {} characters for a 8000-token window; read the whole report with the `jobs` tool (action \"output\", job 1)",
+            report.chars().count()
+        )),
+        "{note}"
+    );
+    // a room as large as the report keeps it whole, and no room is the note as before
+    let jobs = Jobs::new();
+    let large = crate::tool::ResultRoom { chars: 200_000, window: 200_000 };
+    let whole = jobs.note_ended_within(&ended(&jobs), Some(large));
+    let jobs = Jobs::new();
+    assert_eq!(whole, jobs.note_ended(&ended(&jobs)));
+    assert!(!whole.contains("-token window"));
+}

@@ -800,3 +800,23 @@ async fn raw_log_is_exact_private_and_bounded() {
     assert_eq!(std::fs::metadata(path).unwrap().len(), MAX_LOG_BYTES as u64);
     wipe_tmp(&ctx.session_id);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn output_is_held_to_the_room_of_a_small_window_and_says_what_was_kept() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ToolContext::new(d.path().to_path_buf());
+    c.room = Some(nexo_core::ResultRoom { chars: 4_000, window: 8_000 });
+    let out = Bash.run(json!({"command": "seq 1 5000"}), &c).await;
+    assert!(!out.is_error);
+    assert!(out.content.chars().count() <= 4_000, "{} characters", out.content.chars().count());
+    assert!(out.content.starts_with("1\n2\n") && out.content.contains("5000"), "head and tail stay");
+    assert!(
+        out.content.contains("characters for a 8000-token window; run it again with `head`, `tail` or `grep`"),
+        "{}",
+        out.content
+    );
+    // a short output is as it always was
+    let out = Bash.run(json!({"command": "seq 1 5"}), &c).await;
+    assert_eq!(out.content.trim(), "1\n2\n3\n4\n5");
+}

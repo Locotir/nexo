@@ -43,7 +43,7 @@ const WALK_CAP: usize = 4000;
 const CHECK_CHARS: usize = 1500;
 /// The size, in estimated tokens, the first model call of a request stays under (a margin below the 20k target, for the estimate) with what is attached: the
 /// system prompt, the tool list, the conversation so far, the request and the files together.
-const FIRST_CALL: u64 = 19_000;
+pub(super) const FIRST_CALL: u64 = 19_000;
 
 /// The most request spans kept to tell files the model's work changed.
 const WORKED_SPANS: usize = 64;
@@ -210,10 +210,10 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
     if budget == 0 || !st.config.agent.attach_named_files {
         return Vec::new();
     }
-    // a long request leaves less room: the first call stays under FIRST_CALL tokens
+    // a long request leaves less room: the first call stays under FIRST_CALL tokens, or what the window's view leaves when that is less
     let tools = serde_json::to_string(&offered(st)).map_or(0, |t| t.len() as u64 / 4);
     let fixed = st.system.len() as u64 / 4 + tools + text.len() as u64 / 4 + CHECK_CHARS as u64 / 4;
-    let room = FIRST_CALL.saturating_sub(fixed + nexo_core::message::estimate_tokens(&st.history));
+    let room = room::first_call(st).saturating_sub(fixed + nexo_core::message::estimate_tokens(&st.history));
     let budget = budget.min(room);
     let mut skip = Vec::new();
     let mut used = 0u64;

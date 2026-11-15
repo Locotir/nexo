@@ -343,9 +343,14 @@ impl Jobs {
 
     /// The note for jobs that ended (see [`ended_note`]), with the report of each sub-agent inline.
     pub fn note_ended(&self, ended: &[JobInfo]) -> String {
+        self.note_ended_within(ended, None)
+    }
+
+    /// [`Jobs::note_ended`] with each report held to its part of `room`, the room one result may take of the model's window.
+    pub fn note_ended_within(&self, ended: &[JobInfo], room: Option<crate::tool::ResultRoom>) -> String {
         let reports: Vec<Option<String>> =
             ended.iter().map(|j| if j.kind == JobKind::Agent { self.report_of(j.id) } else { None }).collect();
-        note(ended, &reports)
+        note(ended, &reports, room)
     }
 
     /// Every start and end, as they happen.

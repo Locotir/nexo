@@ -229,7 +229,7 @@ async fn prepare_turn(
         let text = if ended.is_empty() || text.starts_with("[background jobs ended]") {
             text
         } else {
-            let note = st.jobs.note_ended(&ended);
+            let note = room::ended_note(&st, &ended);
             added.push(AddedPart::new(AddedKind::Jobs, "background jobs that ended", note.clone()));
             if person {
                 first.insert(0, note);
@@ -242,12 +242,12 @@ async fn prepare_turn(
         let text = if st.hook_context.is_empty() {
             text
         } else {
-            let block = format!(
-                "{}\n{}\n{}",
-                nexo_core::agent::HOOK_CONTEXT_START,
-                std::mem::take(&mut st.hook_context).join("\n\n"),
-                nexo_core::agent::HOOK_CONTEXT_END
-            );
+            // a hook's text is as long as the hook wrote it: it is held to the room one result may take of the window
+            let hooked = std::mem::take(&mut st.hook_context).join("\n\n");
+            let hooked =
+                room::held(hooked, room::result_room(&st), "hook context", "the rest of the hook's output is not kept");
+            let block =
+                format!("{}\n{}\n{}", nexo_core::agent::HOOK_CONTEXT_START, hooked, nexo_core::agent::HOOK_CONTEXT_END);
             added.insert(0, AddedPart::new(AddedKind::Hook, "hook context", block.clone()));
             if person {
                 first.insert(0, block);
@@ -452,7 +452,7 @@ pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bo
     st.detach.clear();
     let ended = st.jobs.take_ended();
     if !ended.is_empty() {
-        let note = st.jobs.note_ended(&ended);
+        let note = room::ended_note(&st, &ended);
         push_user(&mut st, note, None, Vec::new(), &[], Vec::new());
     }
     if st.inbox.is_empty() {

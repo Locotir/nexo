@@ -106,6 +106,7 @@ mod tests {
             claims: Default::default(),
             detach: None,
             tool_names: Default::default(),
+            room: None,
         }
     }
 

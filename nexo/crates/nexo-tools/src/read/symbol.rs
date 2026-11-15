@@ -1,9 +1,9 @@
-use nexo_core::{ToolDisplay, ToolOutput};
+use nexo_core::{ToolContext, ToolDisplay, ToolOutput};
 
 use super::{FILE_CAP, LINE_CHARS};
 use crate::util::cut_line;
 /// Parse Rust rather than guessing brace boundaries in comments, strings or macros.
-pub(super) fn read_symbol(shown: &str, text: &str, name: &str) -> ToolOutput {
+pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str) -> ToolOutput {
     use syn::spanned::Spanned;
     use syn::visit::{self, Visit};
     struct Find<'a> {
@@ -62,11 +62,13 @@ pub(super) fn read_symbol(shown: &str, text: &str, name: &str) -> ToolOutput {
             let mut raw = String::new();
             let mut last = start - 1;
             let mut chars = 0;
+            // the call's cap, held to what the window leaves of a request
+            let cap = ctx.cap(FILE_CAP);
             for (i, line) in text.lines().enumerate().skip(start - 1).take(end - start + 1) {
                 let line = cut_line(line, LINE_CHARS);
                 let numbered = format!("{:>6}│ {line}\n", i + 1);
                 let len = numbered.chars().count();
-                if last >= start && chars + len > FILE_CAP {
+                if last >= start && chars + len > cap {
                     break;
                 }
                 out.push_str(&numbered);
@@ -76,11 +78,20 @@ pub(super) fn read_symbol(shown: &str, text: &str, name: &str) -> ToolOutput {
                 last = i + 1;
             }
             if last < end {
-                out.push_str(&format!(
-                    "… symbol truncated at line {last} of {end}; read with offset {} and limit {} to continue\n",
-                    last + 1,
-                    end - last
-                ));
+                let rest = format!("read with offset {} and limit {} to continue", last + 1, end - last);
+                // where the window made the cut, the fact says how much of the symbol was kept
+                let whole = chars
+                    + text
+                        .lines()
+                        .enumerate()
+                        .skip(last)
+                        .take(end - last)
+                        .map(|(i, l)| format!("{:>6}│ {}\n", i + 1, cut_line(l, LINE_CHARS)).chars().count())
+                        .sum::<usize>();
+                match (cap < FILE_CAP).then(|| ctx.cut_fact(FILE_CAP, chars, whole, &rest)).flatten() {
+                    Some(fact) => out.push_str(&format!("… symbol truncated at line {last} of {end}; {fact}\n")),
+                    None => out.push_str(&format!("… symbol truncated at line {last} of {end}; {rest}\n")),
+                }
             }
             ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown.into(), text: raw, start_line: start })
         }

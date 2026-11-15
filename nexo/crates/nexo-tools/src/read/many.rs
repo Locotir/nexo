@@ -18,12 +18,14 @@ pub(super) async fn read_many(args: &Value, ctx: &ToolContext, files: &[String])
     let mut content = String::new();
     let mut items = Vec::new();
     let mut images = Vec::new();
-    let (mut left, mut failed) = (MULTI_CAP, 0usize);
+    // the cap of the call, held to what the window leaves of a request
+    let cap = ctx.cap(MULTI_CAP);
+    let (mut left, mut failed) = (cap, 0usize);
     for p in files {
         let shown = shown_of(ctx, p);
         if left < MIN_ROOM {
             content.push_str(&format!(
-                "=== {shown} (not read) ===\nthe combined output of a call is capped at {MULTI_CAP} characters; read this file in its own call\n"
+                "=== {shown} (not read) ===\nthe combined output of a call is capped at {cap} characters; read this file in its own call\n"
             ));
             items.push(format!("{shown}: not read (cap)"));
             failed += 1;

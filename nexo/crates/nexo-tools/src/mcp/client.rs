@@ -662,7 +662,14 @@ impl Tool for McpTool {
                     }
                 }
                 // a server may send megabytes; the model gets the head and the tail
-                let text = crate::util::cap_text(text.trim_end(), MAX_RESULT_CHARS);
+                let text = text.trim_end();
+                let cap = ctx.cap(MAX_RESULT_CHARS);
+                let mut capped = crate::util::cap_text(text, cap);
+                let rest = "call the tool again with arguments that ask for less";
+                if let Some(fact) = ctx.cut_fact(MAX_RESULT_CHARS, cap, text.chars().count(), rest) {
+                    capped.push_str(&format!("\n[{fact}]"));
+                }
+                let text = capped;
                 let text = if text.is_empty() { "(no content)".to_string() } else { text };
                 ToolOutput { content: text, is_error, display: nexo_core::ToolDisplay::Plain, images: Vec::new() }
             }

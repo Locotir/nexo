@@ -507,7 +507,20 @@ pub(super) async fn run_call(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, claims, detach, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs, tool_names) = {
+            let (
+                jobs,
+                claims,
+                detach,
+                seen,
+                perm,
+                rules_cwd,
+                sandbox,
+                vision,
+                post_check,
+                check_secs,
+                tool_names,
+                result_room,
+            ) = {
                 let mut st = state.lock().await;
                 let tool_names = Arc::new(st.tools.names().map(String::from).collect::<Vec<_>>());
                 count_step(&mut st);
@@ -532,6 +545,7 @@ pub(super) async fn run_call(
                     post_check,
                     check_secs,
                     tool_names,
+                    super::room::result_room(&st),
                 )
             };
             let ctx = ToolContext {
@@ -545,6 +559,7 @@ pub(super) async fn run_call(
                 claims,
                 detach: Some(detach),
                 tool_names,
+                room: result_room,
                 seen,
                 sandbox,
                 vision,
@@ -560,7 +575,7 @@ pub(super) async fn run_call(
             };
             let t0 = Instant::now();
             let out = if name == "recall" {
-                crate::recall::answer(&state.lock().await.history, args)
+                crate::recall::answer_within(&state.lock().await.history, args, ctx.room)
             } else if name == "goal_brief" {
                 goal_brief(state, args).await
             } else if let Some(recorded) = repeated_check(state, name, args, cwd).await {

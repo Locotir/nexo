@@ -69,7 +69,8 @@ pub use provider::{
 };
 pub use stream::{Collector, FinishReason, StreamEvent, Usage};
 pub use tool::{
-    Compact, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolProgress, ToolSet,
+    Compact, ResultRoom, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolProgress,
+    ToolSet,
 };
 
 #[cfg(test)]

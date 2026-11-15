@@ -542,7 +542,15 @@ impl Tool for ResourceTool {
             r = self.hub.read_resource(server, uri) => r,
         };
         match r {
-            Ok(t) => ToolOutput::ok(crate::util::cap_text(&t, crate::mcp::MAX_RESULT_CHARS)),
+            Ok(t) => {
+                let cap = ctx.cap(crate::mcp::MAX_RESULT_CHARS);
+                let mut text = crate::util::cap_text(&t, cap);
+                let rest = "the rest of the resource is not returned by this tool";
+                if let Some(fact) = ctx.cut_fact(crate::mcp::MAX_RESULT_CHARS, cap, t.chars().count(), rest) {
+                    text.push_str(&format!("\n[{fact}]"));
+                }
+                ToolOutput::ok(text)
+            }
             Err(e) => ToolOutput::error(format!("mcp {server}:{uri}: {e}")),
         }
     }

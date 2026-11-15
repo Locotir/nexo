@@ -623,3 +623,125 @@ async fn a_first_request_of_code_at_8k_fits_the_window_at_three_characters_a_tok
         assert!(reply >= 1_000, "request {i} keeps a useful reply: {reply}");
     }
 }
+
+
+/// The characters one tool result may take at window `w` for the first request `r` of a session: the view
+/// window (85% of what the reply leaves) less the fixed text, as the session works it out.
+fn result_budget(r: &ModelRequest, w: u32) -> usize {
+    let view = u64::from(w - r.max_tokens) * 17 / 20;
+    view.saturating_sub(fixed_tokens(r)).max(2_000) as usize
+}
+
+/// What the tool call `id` answered in a turn.
+fn tool_answer(evs: &[AgentEvent], id: &str) -> String {
+    evs.iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id: i, output, .. } if i == id => Some(output.content.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_66k_read_under_the_plain_policy_at_8k_comes_back_within_the_room_and_says_what_was_kept() {
+    let _g = config_lock().lock().await;
+    let (reqs, evs) = a_big_read(Some(8_000), "plain").await;
+    let answer = tool_answer(&evs, "c1");
+    let budget = result_budget(&reqs[0], 8_000);
+    eprintln!("read at 8k: {} characters of a budget of {budget}", answer.chars().count());
+    assert!(answer.chars().count() <= budget, "the read took {} of {budget} characters", answer.chars().count());
+    assert!(answer.contains("item_00000"), "the head of the file is there");
+    let line = answer.lines().last().unwrap();
+    assert!(line.contains("characters for a 8000-token window; read with offset "), "{line}");
+    assert!(line.ends_with("to continue"), "{line}");
+    // the second request carries that result as it came
+    let last = reqs.last().unwrap();
+    assert!(total_with_reply(last) <= 8_000, "{}", total_with_reply(last));
+}
+
+#[tokio::test]
+async fn a_64k_read_at_200k_comes_back_as_it_always_did() {
+    let _g = config_lock().lock().await;
+    let (_, evs) = a_big_read(Some(200_000), "plain").await;
+    let (_, unknown) = a_big_read(None, "plain").await;
+    let (a, b) = (tool_answer(&evs, "c1"), tool_answer(&unknown, "c1"));
+    assert_eq!(a, b);
+    assert!(!a.contains("-token window"), "{}", a.lines().last().unwrap());
+}
+
+/// The first request of a session at window `w` (none when `None`) whose prompt hook answers with `chars`
+/// characters of context, under `policy`.
+async fn with_a_long_hook(w: Option<u32>, chars: usize, policy: &str) -> ModelRequest {
+    let d = project();
+    let mut cfg = cfg_window(w.unwrap_or(200_000));
+    if w.is_none() {
+        cfg.providers.get_mut("mock").unwrap().context_window.clear();
+    }
+    cfg.context.policy = policy.into();
+    cfg.hooks.push(hook_cfg("UserPromptSubmit", None, &format!("head -c {chars} /dev/zero | tr '\\0' 'h'")));
+    first_request(cfg, d.path()).await
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hook_that_answers_with_40k_characters_at_8k_is_cut_and_the_request_fits() {
+    let _g = config_lock().lock().await;
+    let req = with_a_long_hook(Some(8_000), 40_000, "plain").await;
+    let sent = req.messages[0].text();
+    let line = sent.lines().find(|l| l.starts_with("[hook context cut to ")).unwrap_or_else(|| panic!("{sent:.400}"));
+    assert!(
+        line.contains(" of 40000 characters for a 8000-token window; the rest of the hook's output is not kept]"),
+        "{line}"
+    );
+    assert!(sent.contains(&"h".repeat(1_000)), "the head of the hook's text stays");
+    let total = total_with_reply(&req);
+    assert!(total <= 8_000, "the request and its reply take {total} tokens of 8000");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_same_hook_at_200k_is_sent_whole_as_before() {
+    let _g = config_lock().lock().await;
+    let at_200k = with_a_long_hook(Some(200_000), 40_000, "plain").await;
+    let unknown = with_a_long_hook(None, 40_000, "plain").await;
+    assert_eq!(serde_json::to_string(&at_200k.messages).unwrap(), serde_json::to_string(&unknown.messages).unwrap());
+    assert!(!at_200k.messages[0].text().contains("-token window"));
+}
+
+/// A project of `n` source files of about 1 000 characters each.
+fn many_files(n: usize) -> tempfile::TempDir {
+    let d = project();
+    std::fs::create_dir_all(d.path().join("src")).unwrap();
+    for i in 0..n {
+        let body: String = (0..14).map(|k| format!("fn f{i}_{k}(x: u32) -> u32 {{ x + {k} }} // padding\n")).collect();
+        std::fs::write(d.path().join(format!("src/m{i:02}.rs")), body).unwrap();
+    }
+    d
+}
+
+#[tokio::test]
+async fn the_files_nexo_attaches_by_itself_at_8k_fit_what_the_window_leaves_and_at_200k_are_as_before() {
+    let _g = config_lock().lock().await;
+    let attached = |r: &ModelRequest| r.messages[0].text().matches("(project file, included in full by nexo").count();
+    let d = many_files(40);
+    let with_files = |w: u32| {
+        let mut cfg = cfg_window(w);
+        cfg.agent.attach_budget = 6_000;
+        cfg
+    };
+    let small = first_request(with_files(8_000), d.path()).await;
+    let total = total_with_reply(&small);
+    assert!(total <= 8_000, "the request and its reply take {total} tokens of 8000");
+    let big = first_request(with_files(200_000), d.path()).await;
+    eprintln!("attached at 8k: {} files; at 200k: {}", attached(&small), attached(&big));
+    assert!(attached(&small) < attached(&big), "the small window gets fewer files");
+    // what is attached stays within what the window leaves after the fixed text and the reply
+    let room = 8_000 - fixed_tokens(&small) - u64::from(small.max_tokens);
+    let files = nexo_core::message::estimate_tokens(&small.messages);
+    assert!(files <= room, "{files} tokens of messages in {room} left");
+    // with no window known the same files are attached as at 200k
+    let mut none = with_files(200_000);
+    none.providers.get_mut("mock").unwrap().context_window.clear();
+    let unknown = first_request(none, d.path()).await;
+    assert_eq!(serde_json::to_string(&big.messages).unwrap(), serde_json::to_string(&unknown.messages).unwrap());
+}

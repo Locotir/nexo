@@ -181,6 +181,42 @@ pub struct ToolContext {
     pub detach: Option<crate::jobs::Detach>,
     /// The names of the session's tools (`bash` says a missing command that is one of them is a tool, not a program).
     pub tool_names: Arc<Vec<String>>,
+    /// What one result may take of a small window (see [`ResultRoom`]). None: the window is not known.
+    pub room: Option<ResultRoom>,
+}
+
+/// The room one tool result may take in the model's context, as the session works it out from the window: the
+/// view window less the fixed text of a request (the system prompt and the tools) and the reply, in characters.
+/// A tool holds its own cap to it ([`ResultRoom::cap`]) and says so when it cuts to it ([`ResultRoom::cut`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultRoom {
+    /// Characters one result may carry.
+    pub chars: usize,
+    /// The model's window, in tokens, as the cut line says it.
+    pub window: u64,
+}
+
+/// The characters of a cut result kept back for the line that says it was cut, so that the result with its line stays
+/// within the room.
+pub const CUT_LINE_CHARS: usize = 300;
+
+impl ResultRoom {
+    /// `today`, the cap a tool has without a window, held to this room: where the room is the smaller, what the cut
+    /// line takes is left out of it.
+    pub fn cap(self, today: usize) -> usize {
+        if self.chars < today {
+            self.chars.saturating_sub(CUT_LINE_CHARS)
+        } else {
+            today
+        }
+    }
+
+    /// The fact for a result of `whole` characters cut to `kept` where the window, not the tool's own cap `today`,
+    /// made the cut; `rest` says how to get the rest. None when the result was not cut to the window.
+    pub fn cut(self, today: usize, kept: usize, whole: usize, rest: &str) -> Option<String> {
+        (self.chars < today && whole > kept)
+            .then(|| format!("cut to {kept} of {whole} characters for a {}-token window; {rest}", self.window))
+    }
 }
 
 /// What the permission rules would do with a call, without asking anyone.
@@ -213,7 +249,18 @@ impl ToolContext {
             claims: Default::default(),
             detach: None,
             tool_names: Default::default(),
+            room: None,
         }
+    }
+
+    /// `today`, a tool's own cap on a result, held to the room the window leaves ([`ResultRoom::cap`]).
+    pub fn cap(&self, today: usize) -> usize {
+        self.room.map_or(today, |r| r.cap(today))
+    }
+
+    /// The line that says a result was cut to the window, when it was ([`ResultRoom::cut`]).
+    pub fn cut_fact(&self, today: usize, kept: usize, whole: usize, rest: &str) -> Option<String> {
+        self.room.and_then(|r| r.cut(today, kept, whole, rest))
     }
 
     pub fn report(&self, line: impl Into<String>) {
@@ -499,5 +546,27 @@ mod tests {
         assert!(call_paths(&serde_json::json!({})).is_empty());
         let l = |n: usize| paths_label(&(0..n).map(|i| format!("f{i}")).collect::<Vec<_>>());
         assert_eq!((l(0).as_str(), l(1).as_str(), l(2).as_str(), l(4).as_str()), ("", "f0", "f0, f1", "f0, f1 (+2)"));
+    }
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+
+    #[test]
+    fn a_room_holds_a_cap_below_it_and_says_so_only_where_it_made_the_cut() {
+        let room = ResultRoom { chars: 4_000, window: 8_000 };
+        assert_eq!(room.cap(30_000), 4_000 - CUT_LINE_CHARS);
+        assert_eq!(room.cap(3_000), 3_000, "a cap below the room is the tool's own");
+        assert_eq!(
+            room.cut(30_000, 3_700, 66_000, "read with offset 90 to continue").as_deref(),
+            Some("cut to 3700 of 66000 characters for a 8000-token window; read with offset 90 to continue")
+        );
+        assert_eq!(room.cut(3_000, 3_000, 5_000, "x"), None, "the tool's own cap made that cut");
+        assert_eq!(room.cut(30_000, 100, 100, "x"), None, "nothing was cut");
+        let mut ctx = ToolContext::new(PathBuf::from("."));
+        assert_eq!(ctx.cap(30_000), 30_000, "no window known: the tool's own cap");
+        ctx.room = Some(room);
+        assert_eq!(ctx.cap(30_000), 3_700);
     }
 }

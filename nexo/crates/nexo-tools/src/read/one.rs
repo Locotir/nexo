@@ -62,7 +62,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
             Ok(text) => text,
             Err(_) => return ToolOutput::error("read: Rust symbol lookup requires UTF-8"),
         };
-        return read_symbol(&shown, text, symbol);
+        return read_symbol(ctx, &shown, text, symbol);
     }
     let text = String::from_utf8_lossy(&bytes);
     // a notebook is JSON whose outputs can hold megabytes of base64: show its cells as text instead
@@ -95,13 +95,15 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
     let mut n = 0usize;
     let mut capped = false;
     let mut chars = out.chars().count();
+    // the call's cap, held to what the window leaves of a request
+    let cap = ctx.cap(FILE_CAP);
     for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
         let shown_line = cut_line(line, LINE_CHARS);
         let numbered = format!("{:>6}│ {}\n", i + 1, shown_line);
         // always one line, so that a file that gets any room shows something
         let here = numbered.chars().count();
         let over_room = room.is_some_and(|r| out.len() + numbered.len() > r);
-        if n >= offset && (over_room || chars + here > FILE_CAP) {
+        if n >= offset && (over_room || chars + here > cap) {
             capped = true;
             break;
         }
@@ -112,11 +114,27 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         n = i + 1;
     }
     if capped {
-        out.push_str(&format!(
-            "… lines {offset}-{n} of {total} returned, {} more; the call hit its size cap, so read with offset {} to continue\n",
-            total - n,
-            n + 1
-        ));
+        // where the window, not the tool's own cap, made the cut, the fact says how much of the whole was kept
+        let window = if cap < FILE_CAP {
+            let rest: usize = text
+                .lines()
+                .enumerate()
+                .skip(n)
+                .take(offset - 1 + limit - n)
+                .map(|(i, l)| format!("{:>6}│ {}\n", i + 1, cut_line(l, LINE_CHARS)).chars().count())
+                .sum();
+            ctx.cut_fact(FILE_CAP, chars, chars + rest, &format!("read with offset {} to continue", n + 1))
+        } else {
+            None
+        };
+        out.push_str(&match window {
+            Some(fact) => format!("… lines {offset}-{n} of {total} returned, {} more; {fact}\n", total - n),
+            None => format!(
+                "… lines {offset}-{n} of {total} returned, {} more; the call hit its size cap, so read with offset {} to continue\n",
+                total - n,
+                n + 1
+            ),
+        });
     } else if n < total {
         out.push_str(&format!("… {} more lines (of {total}); read with offset {} to continue\n", total - n, n + 1));
     }

@@ -64,6 +64,7 @@ mod notices;
 mod orient;
 mod prefix;
 mod queue;
+mod room;
 mod round;
 mod settings;
 mod start;
@@ -1012,7 +1013,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 let ended = matches!(&change, Ok(c) if !c.0.status.running());
                 // a job ended while the agent waited for the person: it goes on with the result
                 if ended && turn.is_none() && !jobs.untold().is_empty() {
-                    let note = jobs.note_ended(&jobs.take_ended());
+                    let note = room::ended_note_now(&state, &jobs).await;
                     turn = Some(start_turn(&state, note, Vec::new(), cancel.child_token()).await);
                 }
             }
@@ -1075,7 +1076,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 }
                 // a job that ended after the turn's last model call
                 if turn.is_none() && reason == TurnEnd::Done && !jobs.untold().is_empty() {
-                    let note = jobs.note_ended(&jobs.take_ended());
+                    let note = room::ended_note_now(&state, &jobs).await;
                     turn = Some(start_turn(&state, note, Vec::new(), cancel.child_token()).await);
                 }
                 if turn.is_none() {

@@ -66,6 +66,16 @@ fn outputs_at(history: &[Message], i: usize) -> Option<String> {
 
 /// The answer to a `recall` call over the whole `history`.
 pub fn answer(history: &[Message], args: &Value) -> ToolOutput {
+    answer_within(history, args, None)
+}
+
+/// [`answer`] held to the room one result may take of the model's window, when it is smaller than [`MAX_CHARS`]: a part
+/// that is cut to it says so, besides where the rest is.
+pub fn answer_within(history: &[Message], args: &Value, room: Option<nexo_core::ResultRoom>) -> ToolOutput {
+    let max = room.map_or(MAX_CHARS, |r| r.cap(MAX_CHARS));
+    let window =
+        room.filter(|_| max < MAX_CHARS).map(|r| format!("; cut to {max} characters for a {}-token window", r.window));
+    let window = window.unwrap_or_default();
     let Some(name) = args.get("message").and_then(Value::as_str) else {
         return ToolOutput::error("`message` is required: the name the message was left out under, like m00042");
     };
@@ -85,21 +95,21 @@ pub fn answer(history: &[Message], args: &Value) -> ToolOutput {
     let first = lines.get(from - 1).copied().unwrap_or("");
     // a line longer than one answer holds (a minified file, a dump) comes back in parts of its own
     // characters: `skip` says how many of the line's characters were already brought back
-    if skip > 0 || first.len() + 1 > MAX_CHARS {
+    if skip > 0 || first.len() + 1 > max {
         let len = first.chars().count();
         let skip = skip.min(len);
         let mut end = skip;
         let mut bytes = 0;
         for c in first.chars().skip(skip) {
             bytes += c.len_utf8();
-            if bytes > MAX_CHARS {
+            if bytes > max {
                 break;
             }
             end += 1;
         }
         let piece: String = first.chars().skip(skip).take(end - skip).collect();
         let more = if end < len {
-            format!(" (the rest of this line: recall with from={from}, skip={end})")
+            format!(" (the rest of this line: recall with from={from}, skip={end}{window})")
         } else if from < to {
             format!(" (the next line: recall with from={})", from + 1)
         } else {
@@ -112,7 +122,7 @@ pub fn answer(history: &[Message], args: &Value) -> ToolOutput {
     let mut body = String::new();
     let mut last = from - 1;
     for l in lines.iter().take(to).skip(from - 1) {
-        if body.len() + l.len() + 1 > MAX_CHARS && last >= from {
+        if body.len() + l.len() + 1 > max && last >= from {
             break;
         }
         body.push_str(l);
@@ -122,7 +132,11 @@ pub fn answer(history: &[Message], args: &Value) -> ToolOutput {
     let head = if from == 1 && last == total {
         format!("m{:05}{what}, as it was:", i + 1)
     } else if last < to {
-        format!("m{:05}{what}, lines {from}-{last} of {total} (the rest: recall with from={}):", i + 1, last + 1)
+        format!(
+            "m{:05}{what}, lines {from}-{last} of {total} (the rest: recall with from={}{window}):",
+            i + 1,
+            last + 1
+        )
     } else {
         format!("m{:05}{what}, lines {from}-{last} of {total}:", i + 1)
     };
