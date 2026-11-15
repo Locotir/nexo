@@ -259,6 +259,11 @@ pub enum Cmd {
     Re(crate::re_cmd::ReArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
     Acp,
+    /// Lanes that run on their own in the background (`<config dir>/team.toml`): start, status, stop, pause, hold, open.
+    Team {
+        #[command(subcommand)]
+        what: crate::team::TeamCmd,
+    },
     #[cfg(feature = "bench")]
     #[command(hide = true)]
     /// Measure the agent on the benchmark tasks with each context policy (see https://github.com/Locotir/nexo/blob/main/nexo/crates/nexo-bench/README.md).
@@ -372,6 +377,10 @@ pub async fn main() -> i32 {
             },
         };
     }
+    // the lanes read their own folders' configuration, not this one's
+    if let Some(Cmd::Team { what }) = &args.cmd {
+        return crate::team::run(what).await;
+    }
     if let Some(Cmd::Bin(b)) = &args.cmd {
         return crate::bin_cmd::run(b);
     }
@@ -421,10 +430,15 @@ async fn run(args: Args) -> anyhow::Result<i32> {
 
 /// The configuration of `cwd` with the presets and the providers the person asked for.
 fn load_config(args: &Args, cwd: &std::path::Path) -> anyhow::Result<nexo_core::Config> {
+    load_config_for(args.provider.as_deref(), cwd)
+}
+
+/// The configuration of `cwd` with the presets and `provider` (the one asked for, if any) ready to use.
+pub(crate) fn load_config_for(provider: Option<&str>, cwd: &std::path::Path) -> anyhow::Result<nexo_core::Config> {
     let mut config = nexo_core::Config::load(cwd)?;
     setup::apply_presets(&mut config);
     // a provider asked for by a name nexo knows works without a block in the file
-    for p in [args.provider.clone(), config.provider.clone()].into_iter().flatten() {
+    for p in [provider.map(String::from), config.provider.clone()].into_iter().flatten() {
         crate::account::adopt(&mut config, &p);
     }
     config.name_auth_entries();
@@ -626,6 +640,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Dbg(_)) => return Ok(0),
         Some(Cmd::ChromeSetup(_)) => return Ok(0),
         Some(Cmd::Re(_)) => return Ok(0),
+        Some(Cmd::Team { .. }) => return Ok(0),
     }
 
     if args.prompt.is_none() && args.headless.any() {

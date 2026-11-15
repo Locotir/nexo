@@ -26,6 +26,11 @@ pub fn init_local_offset() {
     let _ = OFFSET.set(time::UtcOffset::current_local_offset().ok());
 }
 
+/// The local UTC offset read at start; None when it could not be read (UTC is used then).
+pub fn local_offset() -> Option<time::UtcOffset> {
+    OFFSET.get().copied().flatten()
+}
+
 /// Today, as the file keys it (`2026-10-28`, local time where known).
 pub fn today() -> String {
     let utc = time::OffsetDateTime::now_utc();

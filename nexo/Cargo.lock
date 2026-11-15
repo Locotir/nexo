@@ -1881,6 +1881,7 @@ dependencies = [
  "nexo-tools",
  "nexo-tui",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",

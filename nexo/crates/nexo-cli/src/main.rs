@@ -23,6 +23,7 @@ mod re_mcp;
 mod schema;
 mod setup;
 mod supervise;
+mod team;
 mod update;
 mod worktree;
 
