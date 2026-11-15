@@ -166,3 +166,45 @@ async fn a_sub_agent_asks_no_more_than_its_models_largest_reply() {
     let (req, _, _) = sub_agent_on_a_small_model(32_000, Some(1_000)).await;
     assert_eq!(req.max_tokens, 1_000);
 }
+
+/// The tool text of a request as the wire counts it: characters of the tools' JSON.
+fn tools_chars(r: &ModelRequest) -> usize {
+    serde_json::to_string(&r.tools).unwrap().chars().count()
+}
+
+#[tokio::test]
+async fn a_sub_agent_on_an_8k_window_gets_the_compact_tool_text_the_main_agent_gets_there() {
+    let _g = config_lock().lock().await;
+    let (req, _, _) = sub_agent_on_a_small_model(8_000, None).await;
+    // the budget the main agent's compact tool text is held to at 8k (`prompt::size_budget`)
+    assert!(tools_chars(&req) <= 6_000, "the sub-agent's tools take {} characters", tools_chars(&req));
+    let names: Vec<_> = req.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(!names.contains(&"web_search"), "a tool the window leaves out: {names:?}");
+    assert!(names.contains(&"read") && names.contains(&"grep"), "{names:?}");
+    let all = nexo_tools::builtin();
+    for t in &req.tools {
+        let compact = all.compact_specs().into_iter().find(|s| s.name == t.name);
+        // the session adds a few tools of its own (shared memory); the builtin ones are the compact text
+        if let Some(c) = compact {
+            assert_eq!(&c, t, "{} is not the compact text", t.name);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_sub_agent_on_a_large_window_gets_the_full_tool_text_as_before() {
+    let _g = config_lock().lock().await;
+    let (req, _, _) = sub_agent_on_a_small_model(200_000, None).await;
+    let names: Vec<_> = req.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"web_search"), "{names:?}");
+    let all = nexo_tools::builtin();
+    for t in &req.tools {
+        let full = all.specs_for(false).into_iter().find(|s| s.name == t.name);
+        // the session adds a few tools of its own (shared memory); the builtin ones are the whole text
+        if let Some(f) = full {
+            // `recall` is whole in a sub-agent whatever the main agent is offered
+            let f = if t.name == "recall" { nexo_core::tool::Tool::spec(&nexo_tools::recall::Recall) } else { f };
+            assert_eq!(&f, t, "{} is not the full text", t.name);
+        }
+    }
+}

@@ -205,10 +205,23 @@ impl Run {
             Some(c) => crate::context::from_config(c),
             None => Box::new(crate::context::Plain::default()),
         };
-        let mut specs = self.tools.specs_for(false);
+        // the tool text of a small window, and without the tools it leaves out, as the main agent is offered them
+        let window = limits.context_window.map(u64::from);
+        let mut specs: Vec<_> = self
+            .tools
+            .specs_for(crate::prompt::is_compact(window))
+            .into_iter()
+            .filter(|s| !crate::prompt::left_out(window, &s.name))
+            .collect();
         // a policy that leaves messages out offers `recall`, answered from this run's own messages
         if policy.recall() && !specs.iter().any(|s| s.name == "recall") {
-            specs.push(nexo_tools::recall::Recall.spec());
+            // in the text of a small window when the window is small, as the main agent has it; whole otherwise
+            if crate::prompt::is_compact(window) {
+                let recall = ToolSet::new().with(std::sync::Arc::new(nexo_tools::recall::Recall));
+                specs.extend(recall.specs_for(true));
+            } else {
+                specs.push(nexo_tools::recall::Recall.spec());
+            }
         }
         let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
         let system_tokens = crate::turn::fixed_tokens(&system, &specs);
