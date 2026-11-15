@@ -3,6 +3,9 @@
 //! else PowerShell. Every command nexo runs (the `bash` tool, hooks,
 //! `api_key_cmd`) goes through here, so they all agree.
 
+mod lex;
+pub use lex::{ansi_escape, is_assignment, lex, Cmd, End, Heredoc, Lexed, Redirect, Subst};
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 

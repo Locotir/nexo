@@ -6,134 +6,60 @@
 /// operator (`${x@P}` runs what it expands), or a redirection that writes a file other than
 /// `/dev/null`. With `subst` the substitutions are split out as commands too (for deny rules).
 pub(super) fn simple_commands(cmd: &str, subst: bool) -> (Vec<String>, bool) {
-    let chars: Vec<char> = cmd.chars().collect();
-    let (mut parts, mut cur, mut complex) = (Vec::new(), String::new(), false);
-    let (mut single, mut double, mut ansi) = (false, false, false);
-    let mut i = 0;
-    let cut = |cur: &mut String, parts: &mut Vec<String>| {
-        let t = cur.trim();
+    use nexo_core::shell::{lex, End, Redirect};
+    let lx = lex(cmd, false);
+    let mut complex = !lx.substs.is_empty() || lx.ansi || lx.braced_at;
+    let mut parts: Vec<String> = Vec::new();
+    let push = |parts: &mut Vec<String>, text: String| {
+        let t = text.trim();
         if !t.is_empty() {
             parts.push(t.to_string());
         }
-        cur.clear();
     };
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if single {
-            single = c != '\'';
-            cur.push(c);
-        } else if ansi {
-            // inside `$'..'` a backslash escapes the next character, `\'` included
-            cur.push(c);
-            if c == '\\' {
-                if let Some(n) = next {
-                    cur.push(n);
-                    i += 1;
-                }
-            } else {
-                ansi = c != '\'';
+    let harmless = |r: &Redirect| -> bool {
+        if r.op.starts_with('>') || r.op.starts_with('&') {
+            r.raw_target == "/dev/null" || r.dup
+        } else {
+            r.op != "<>"
+        }
+    };
+    let mut from: Option<usize> = None;
+    let mut s = 0;
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    for c in &lx.cmds {
+        for r in &c.redirects {
+            complex |= !harmless(r);
+        }
+        if let Some(h) = &c.heredoc {
+            if let Some(b) = &h.body {
+                bodies.push((b.clone(), h.delim.clone()));
             }
-        } else if !double && c == '$' && next == Some('\'') {
-            ansi = true;
-            complex = true;
-            cur.push_str("$'");
-            i += 1;
-        } else if c == '$' && next == Some('{') {
-            complex |= braced_has_at(&chars, i + 2);
-            cur.push(c);
-        } else if c == '\\' {
-            cur.push(c);
-            if let Some(n) = next {
-                cur.push(n);
-                i += 1;
-            }
-        } else if c == '`'
-            || (c == '$' && next == Some('('))
-            || (!double && matches!(c, '<' | '>') && next == Some('('))
-        {
-            complex = true;
+        }
+        let start = from.take().unwrap_or(c.span.start);
+        if c.end == End::Subst {
+            let sub = lx.substs[s];
+            s += 1;
             if subst {
-                cut(&mut cur, &mut parts);
-                i += usize::from(c != '`');
+                push(&mut parts, lx.text(start..c.span.end));
+            } else if sub.backtick || sub.quoted {
+                from = Some(start);
+                continue;
             } else {
-                cur.push(c);
-            }
-        } else if double {
-            double = c != '"';
-            cur.push(c);
-        } else if c == '\'' {
-            single = true;
-            cur.push(c);
-        } else if c == '"' {
-            double = true;
-            cur.push(c);
-        } else if c == '>' || (c == '<' && next == Some('>')) {
-            complex |= !harmless_redirect(&chars, i);
-            cur.push(c);
-            if c == '>' && next == Some('|') {
-                // `>|` is one operator, not a pipe
-                cur.push('|');
-                i += 1;
-            }
-        } else if matches!(c, ';' | '|' | '\n' | '(' | ')') {
-            cut(&mut cur, &mut parts);
-        } else if c == '&' {
-            // `2>&1` and `&>file` are redirections
-            let prev = i.checked_sub(1).map(|p| chars[p]);
-            if matches!(prev, Some('>') | Some('<')) || next == Some('>') {
-                cur.push(c);
-            } else {
-                cut(&mut cur, &mut parts);
+                push(&mut parts, lx.text(start..c.span.end + 1));
             }
         } else {
-            cur.push(c);
+            push(&mut parts, lx.text(start..c.span.end));
         }
-        i += 1;
-    }
-    cut(&mut cur, &mut parts);
-    (parts, complex)
-}
-
-/// Whether the `${` whose inside starts at `from` holds an `@` operator (`${x@P}`, `${a[@]}`);
-/// unclosed counts as holding one.
-pub(super) fn braced_has_at(chars: &[char], from: usize) -> bool {
-    let mut depth = 1;
-    for &c in chars.iter().skip(from) {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return false;
-                }
+        if c.end == End::Newline {
+            for (b, d) in bodies.drain(..) {
+                let (p, cx) = simple_commands(&b, subst);
+                parts.extend(p);
+                complex |= cx;
+                parts.push(d);
             }
-            '@' => return true,
-            _ => {}
         }
     }
-    true
-}
-
-/// The redirection at `at` (`>`, `>>`, `>|`, `>&`, `<>`) only duplicates a descriptor (`2>&1`)
-/// or writes to `/dev/null`.
-pub(super) fn harmless_redirect(chars: &[char], at: usize) -> bool {
-    if chars[at] == '<' {
-        return false;
-    }
-    let mut j = at + 1;
-    if matches!(chars.get(j), Some('>' | '|')) {
-        j += 1;
-    }
-    let dup = chars.get(j) == Some(&'&');
-    j += usize::from(dup);
-    while chars.get(j).is_some_and(|c| *c == ' ' || *c == '\t') {
-        j += 1;
-    }
-    let target: String =
-        chars[j.min(chars.len())..].iter().take_while(|c| !c.is_whitespace() && !";|&<>()".contains(**c)).collect();
-    target == "/dev/null"
-        || (dup && (target == "-" || (!target.is_empty() && target.chars().all(|c| c.is_ascii_digit()))))
+    (parts, complex)
 }
 
 /// The words of a simple command as the program receives them: quotes and backslashes removed,
@@ -228,65 +154,14 @@ pub(super) fn words(s: &str) -> Vec<String> {
     out
 }
 
-/// Decodes the escape of `$'..'` whose letter is at `at` into `out`; the index after it.
-pub(super) fn ansi_escape(chars: &[char], at: usize, out: &mut String) -> usize {
-    let radix_run = |from: usize, radix: u32, max: usize| {
-        let digits: String = chars[from..].iter().take(max).take_while(|c| c.is_digit(radix)).collect();
-        let n = digits.len();
-        (u32::from_str_radix(&digits, radix).ok().and_then(char::from_u32), n)
-    };
-    let simple = match chars[at] {
-        'n' => Some('\n'),
-        't' => Some('\t'),
-        'r' => Some('\r'),
-        'a' => Some('\x07'),
-        'b' => Some('\x08'),
-        'e' | 'E' => Some('\x1b'),
-        'f' => Some('\x0c'),
-        'v' => Some('\x0b'),
-        '\\' | '\'' | '"' | '?' => Some(chars[at]),
-        _ => None,
-    };
-    if let Some(c) = simple {
-        out.push(c);
-        return at + 1;
-    }
-    let (decoded, used) = match chars[at] {
-        'x' => radix_run(at + 1, 16, 2),
-        'u' => radix_run(at + 1, 16, 4),
-        'U' => radix_run(at + 1, 16, 8),
-        '0'..='7' => {
-            let (c, n) = radix_run(at, 8, 3);
-            (c, n.saturating_sub(1))
-        }
-        'c' if at + 1 < chars.len() => (char::from_u32(chars[at + 1] as u32 & 0x1f), 1),
-        _ => (None, 0),
-    };
-    match decoded {
-        Some(c) if used > 0 || chars[at].is_digit(8) => {
-            out.push(c);
-            at + 1 + used
-        }
-        _ => {
-            out.push('\\');
-            out.push(chars[at]);
-            at + 1
-        }
-    }
-}
+pub(super) use nexo_core::shell::ansi_escape;
 
 /// `rm` of `/bin/rm`.
 pub(super) fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
 }
 
-/// `NAME=value`, a variable set for the command that follows.
-pub(super) fn is_assignment(w: &str) -> bool {
-    w.split_once('=').is_some_and(|(n, _)| {
-        n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
-}
+pub(super) use nexo_core::shell::is_assignment;
 
 /// The simple commands of `cmd` for deny rules: each as written, and as the program it runs sees it
 /// (wrappers like `sudo`, `env` and `nice` skipped, `/bin/rm` as `rm`), and the scripts handed to a

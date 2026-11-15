@@ -5,14 +5,7 @@ pub fn program(word: &str) -> String {
     name.strip_suffix(".exe").map(str::to_string).unwrap_or(name)
 }
 
-/// `NAME=value`: a variable set for the command that follows.
-pub(super) fn is_assignment(w: &str) -> bool {
-    w.split_once('=').is_some_and(|(n, _)| {
-        !n.is_empty()
-            && !n.starts_with(|c: char| c.is_ascii_digit())
-            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
-}
+pub(super) use nexo_core::shell::is_assignment;
 
 /// The script of `sh -c '...'` (also `-lc`, `-ec`).
 pub(super) fn shell_script(words: &[String]) -> Option<String> {

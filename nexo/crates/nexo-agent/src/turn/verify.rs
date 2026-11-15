@@ -61,8 +61,9 @@ fn writes_to_file(cmd: &str) -> bool {
     false
 }
 
-/// A `VAR=value` word.
-fn is_assignment(w: &str) -> bool {
+/// A word with an `=` that does not start with `-` or `=`: looser than a shell variable assignment, so `a.b=1`
+/// counts as one too.
+fn has_assignment_shape(w: &str) -> bool {
     w.contains('=') && !w.starts_with('-') && !w.starts_with('=')
 }
 
@@ -87,7 +88,7 @@ fn skip_opts(w: &[&str], mut i: usize, with_value: &[&str]) -> usize {
 fn program_index(w: &[&str]) -> Option<usize> {
     let mut i = 0;
     loop {
-        while w.get(i).is_some_and(|x| is_assignment(x)) {
+        while w.get(i).is_some_and(|x| has_assignment_shape(x)) {
             i += 1;
         }
         let name = w.get(i)?.rsplit('/').next()?;

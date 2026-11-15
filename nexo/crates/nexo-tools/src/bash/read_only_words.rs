@@ -9,73 +9,22 @@ pub(super) fn only_looks(command: &str) -> bool {
 /// text, and nothing run or expanded. `None` for a command that redirects to a file, groups, or
 /// substitutes (`$(...)`, backticks), or leaves a quote open: its words say too little to judge.
 pub fn command_words(command: &str) -> Option<Vec<Vec<String>>> {
+    use nexo_core::shell::{lex, End};
     let cleaned = command.replace("2>&1", " ").replace("&>/dev/null", " ").replace(">/dev/null", " ");
-    let mut segments: Vec<Vec<String>> = vec![Vec::new()];
-    let mut word = String::new();
-    let mut has_word = false;
-    let mut quote: Option<char> = None;
-    let mut chars = cleaned.chars().peekable();
-    macro_rules! end_word {
-        () => {
-            if has_word {
-                segments.last_mut().unwrap().push(std::mem::take(&mut word));
-                has_word = false;
-            }
-        };
-    }
-    while let Some(c) = chars.next() {
-        match quote {
-            Some(q) => {
-                if c == q {
-                    quote = None;
-                } else if q == '"' && (c == '`' || (c == '$' && chars.peek() == Some(&'('))) {
-                    return None;
-                } else if q == '"' && c == '\\' {
-                    word.extend(chars.next());
-                } else {
-                    word.push(c);
-                }
-            }
-            None => match c {
-                '\'' | '"' => {
-                    quote = Some(c);
-                    has_word = true;
-                }
-                '\\' => {
-                    has_word = true;
-                    word.extend(chars.next());
-                }
-                '>' | '<' | '`' | '(' | ')' | '{' | '}' => return None,
-                '$' if chars.peek() == Some(&'(') => return None,
-                '|' | ';' | '\n' => {
-                    end_word!();
-                    if c == '|' && chars.peek() == Some(&'|') {
-                        chars.next();
-                    }
-                    segments.push(Vec::new());
-                }
-                '&' => {
-                    if chars.next() != Some('&') {
-                        return None;
-                    }
-                    end_word!();
-                    segments.push(Vec::new());
-                }
-                c if c.is_whitespace() => end_word!(),
-                c => {
-                    word.push(c);
-                    has_word = true;
-                }
-            },
-        }
-    }
-    if quote.is_some() {
+    let lx = lex(&cleaned, true);
+    if lx.open_quote || !lx.substs.is_empty() || lx.braces || lx.bad_heredoc {
         return None;
     }
-    if has_word {
-        segments.last_mut().unwrap().push(word);
+    let mut segs = Vec::new();
+    for c in &lx.cmds {
+        if !c.redirects.is_empty() || c.heredoc.is_some() || matches!(c.end, End::Amp | End::Open | End::Close) {
+            return None;
+        }
+        if !c.words.is_empty() {
+            segs.push(c.words.clone());
+        }
     }
-    Some(segments.into_iter().filter(|s| !s.is_empty()).collect())
+    Some(segs)
 }
 
 use nexo_dbg::{dbg_class, DbgClass};
