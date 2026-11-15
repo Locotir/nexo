@@ -14,10 +14,6 @@ impl App {
             self.palette = None;
             return;
         }
-        // a draft that has text is no longer the empty box the suggestion belongs to
-        if !self.input.is_empty() {
-            self.suggestion = None;
-        }
         let draft = self.input.text();
         let cursor = self.input.cursor_offset();
         match palette::wanted(&draft, cursor) {

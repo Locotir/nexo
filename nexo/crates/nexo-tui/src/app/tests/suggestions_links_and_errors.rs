@@ -29,20 +29,24 @@ fn a_suggestion_is_asked_for_at_a_normal_end_and_taken_whole_by_tab_or_right() {
     press(&mut a, KeyCode::Right);
     assert_eq!(a.input.text(), "commit it");
 
-    // typing anything hides it for good, even when the draft is emptied again
+    // Typing hides the suggestion, and deleting the draft shows it again.
     a.input.clear();
     a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
     press(&mut a, KeyCode::Char('x'));
     assert_eq!(a.input.text(), "x");
     assert_eq!(a.suggestion_shown(), None);
-    a.input.clear();
-    assert_eq!(a.suggestion, None);
+    press(&mut a, KeyCode::Backspace);
+    assert_eq!(a.suggestion_shown(), Some("commit it"));
 
-    // a late suggestion is let go: a draft with text, a turn in progress
+    // A suggestion arriving while typing is retained, but not shown until the draft is empty.
     a.input.set_text("hello");
-    a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
-    assert_eq!(a.suggestion, None);
-    a.input.clear();
+    a.handle_agent(AgentEvent::Suggestion { text: "run tests".into() });
+    assert_eq!(a.suggestion_shown(), None);
+    for _ in 0..5 {
+        press(&mut a, KeyCode::Backspace);
+    }
+    assert_eq!(a.suggestion_shown(), Some("run tests"));
+    a.suggestion = None;
     a.busy = true;
     a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
     assert_eq!(a.suggestion, None);
@@ -63,7 +67,7 @@ fn a_suggestion_is_asked_for_at_a_normal_end_and_taken_whole_by_tab_or_right() {
     a.input.set_text("/he");
     a.suggestion = Some("commit it".into());
     a.refresh_palette();
-    assert_eq!(a.suggestion, None);
+    assert_eq!(a.suggestion_shown(), None);
     press(&mut a, KeyCode::Tab);
     assert!(a.input.text().starts_with("/help"), "{}", a.input.text());
 }

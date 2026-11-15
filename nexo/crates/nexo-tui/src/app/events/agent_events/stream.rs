@@ -256,10 +256,10 @@ impl App {
     }
 
     pub(super) fn on_suggestion(&mut self, text: String) {
-        // only into an empty box, between turns; a reply that comes late is let go
-        // (and not while a sub-agent's view is open: its box is not the main chat's)
+        // Keep it between turns even if the user is typing; it shows when the draft is empty.
+        // Drop replies during a turn or while a sub-agent's view is open.
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if self.opts.suggest && !self.busy && self.sub_view.is_none() && self.input.is_empty() && !text.is_empty() {
+        if self.opts.suggest && !self.busy && self.sub_view.is_none() && !text.is_empty() {
             self.suggestion = Some(text);
             self.dirty = true;
         }
