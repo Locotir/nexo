@@ -1,12 +1,15 @@
 //! `grep`: lines matching a regular expression, across a tree or in one file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use globset::GlobBuilder;
+use ignore::WalkState;
 use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 
 use crate::glob::walker;
@@ -21,6 +24,10 @@ pub const DEFAULT_MAX_RESULTS: u64 = 200;
 /// One file shows at most this many matches by default: in recorded sessions 6 % of the files with hits
 /// held more than 20, and one such file could fill the whole answer while the others got nothing.
 pub const DEFAULT_MAX_PER_FILE: u64 = 20;
+/// Files searched together before their answers are merged in path order.
+const BATCH: usize = 128;
+/// Once this many matches are left out of the answer, the rest of the files are not counted (the answer says so).
+const COUNT_LEFT_UP_TO: usize = 2000;
 const LINE_CHARS: usize = 300;
 /// A multi-line match shows at most this many of its lines.
 const MAX_SPAN_LINES: usize = 10;
@@ -131,154 +138,109 @@ impl Tool for Grep {
         let files_only = bool_arg(&args, "files_only");
         let max = int_arg(&args, "max_results").unwrap_or(DEFAULT_MAX_RESULTS).max(1) as usize;
         let max_per_file = int_arg(&args, "max_per_file").unwrap_or(DEFAULT_MAX_PER_FILE).max(1) as usize;
-        let cwd = ctx.cwd.clone();
+        let search = Search { re, multiline, files_only, context, keep: max_per_file.min(max), cwd: ctx.cwd.clone() };
         let root2 = root.clone();
         let joined = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + TIME_CAP;
             let mut cut = false;
             // files that hold keys are searched only when named as `path` (the permission asks then)
             let mut kept_out = 0usize;
-            let files: Vec<PathBuf> = if root2.is_file() {
+            let mut files: Vec<PathBuf> = if root2.is_file() {
                 vec![root2.clone()]
             } else {
-                let mut v: Vec<PathBuf> = Vec::new();
-                for e in walker(&root2).build().flatten() {
-                    if Instant::now() > deadline {
-                        cut = true;
-                        break;
-                    }
-                    if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                        continue;
-                    }
-                    let p = e.into_path();
-                    if nexo_core::paths::holds_keys(&p) {
-                        kept_out += 1;
-                        continue;
-                    }
-                    let hit = |g: &globset::GlobMatcher| {
-                        if by_name {
-                            p.file_name().map(|n| g.is_match(std::path::Path::new(n))).unwrap_or(false)
-                        } else {
-                            g.is_match(p.strip_prefix(&root2).unwrap_or(&p))
+                let found = Mutex::new((Vec::<PathBuf>::new(), 0usize));
+                let timed_out = AtomicBool::new(false);
+                walker(&root2).build_parallel().run(|| {
+                    let (timed_out, root2, name_filter) = (&timed_out, &root2, &name_filter);
+                    let mut hand = Hand { into: &found, files: Vec::new(), kept_out: 0 };
+                    Box::new(move |entry| {
+                        if Instant::now() > deadline {
+                            timed_out.store(true, Ordering::Relaxed);
+                            return WalkState::Quit;
                         }
-                    };
-                    if name_filter.as_ref().map(hit).unwrap_or(true) {
-                        v.push(p);
-                    }
-                }
-                v.sort();
+                        let Ok(e) = entry else { return WalkState::Continue };
+                        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                            return WalkState::Continue;
+                        }
+                        let p = e.into_path();
+                        if nexo_core::paths::holds_keys(&p) {
+                            hand.kept_out += 1;
+                            return WalkState::Continue;
+                        }
+                        let hit = |g: &globset::GlobMatcher| {
+                            if by_name {
+                                p.file_name().map(|n| g.is_match(std::path::Path::new(n))).unwrap_or(false)
+                            } else {
+                                g.is_match(p.strip_prefix(root2).unwrap_or(&p))
+                            }
+                        };
+                        if name_filter.as_ref().map(hit).unwrap_or(true) {
+                            hand.files.push(p);
+                        }
+                        WalkState::Continue
+                    })
+                });
+                cut = timed_out.load(Ordering::Relaxed);
+                let (v, k) = found.into_inner().unwrap_or_default();
+                kept_out = k;
                 v
             };
-            let mut items: Vec<String> = Vec::new();
-            let mut total = 0usize;
-            // matches shown, and the ones not shown (over `max_results` or `max_per_file`) with their files
-            let mut shown_total = 0usize;
-            let mut left = 0usize;
-            let mut left_files = 0usize;
-            let mut hit_files = 0usize;
-            let mut too_big = 0usize;
-            let mut unreadable = 0usize;
-            for f in files {
+            // the threads finish in any order; the answer is always in path order
+            files.sort();
+            let mut m = Merge::default();
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 8);
+            let mut searched = 0usize;
+            for batch in files.chunks(BATCH) {
                 if Instant::now() > deadline {
                     cut = true;
                     break;
                 }
-                match std::fs::metadata(&f) {
-                    Ok(m) if m.len() > MAX_FILE_BYTES => {
-                        too_big += 1;
-                        continue;
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        unreadable += 1;
-                        continue;
-                    }
-                }
-                let Ok(bytes) = std::fs::read(&f) else {
-                    unreadable += 1;
-                    continue;
-                };
-                if is_binary(&bytes) {
-                    continue;
-                }
-                let text = String::from_utf8_lossy(&bytes);
-                let lines: Vec<&str> = text.lines().collect();
-                let shown = display_path(&cwd, &f);
-                let mut file_hit = false;
-                let mut file_shown = 0usize;
-                let mut file_left = 0usize;
-                // the first and last line (0-based) of each match
-                let mut spans: Vec<(usize, usize)> = Vec::new();
-                if multiline {
-                    let nl: Vec<usize> = text.match_indices('\n').map(|(i, _)| i).collect();
-                    let line_of = |off: usize| nl.partition_point(|&p| p < off);
-                    for m in re.find_iter(&text) {
-                        let a = line_of(m.start());
-                        let b = line_of(if m.end() > m.start() { m.end() - 1 } else { m.start() });
-                        if spans.last().is_some_and(|&(_, e)| a <= e) {
-                            continue; // a second match on lines already shown
-                        }
-                        spans.push((a, b.max(a)));
-                    }
-                } else {
-                    for (i, line) in lines.iter().enumerate() {
-                        if re.is_match(line) {
-                            spans.push((i, i));
-                        }
-                    }
-                }
-                for (a, b) in spans {
-                    total += 1;
-                    if files_only {
-                        if !file_hit {
-                            hit_files += 1;
-                            if items.len() < max {
-                                items.push(shown.clone());
+                // a batch is searched by several threads and merged in path order, so the answer does not
+                // depend on which thread was faster
+                let next = AtomicUsize::new(0);
+                let outs: Vec<Mutex<Option<FileOut>>> = batch.iter().map(|_| Mutex::new(None)).collect();
+                std::thread::scope(|sc| {
+                    for _ in 0..threads.min(batch.len()) {
+                        sc.spawn(|| loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i >= batch.len() || Instant::now() > deadline {
+                                break;
                             }
-                            file_hit = true;
+                            let out = search.file(&batch[i]);
+                            if let Ok(mut slot) = outs[i].lock() {
+                                *slot = Some(out);
+                            }
+                        });
+                    }
+                });
+                for slot in outs {
+                    match slot.into_inner().ok().flatten() {
+                        Some(out) => m.add(out, max, max_per_file, files_only),
+                        None => {
+                            cut = true;
+                            break;
                         }
-                        continue;
                     }
-                    if shown_total >= max || file_shown >= max_per_file {
-                        left += 1;
-                        file_left += 1;
-                        continue;
-                    }
-                    shown_total += 1;
-                    file_shown += 1;
-                    if context > 0 {
-                        for (j, l) in lines.iter().enumerate().take(a).skip(a.saturating_sub(context)) {
-                            items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
-                        }
-                    }
-                    let last = b.min(a + MAX_SPAN_LINES - 1);
-                    for (j, l) in lines.iter().enumerate().take(last + 1).skip(a) {
-                        items.push(format!("{shown}:{}: {}", j + 1, cut_line(l, LINE_CHARS)));
-                    }
-                    if b > last {
-                        items.push(format!("{shown}:… {} more lines in this match", b - last));
-                    }
-                    if context > 0 {
-                        for (j, l) in lines.iter().enumerate().skip(b + 1).take(context) {
-                            items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
-                        }
-                        items.push("--".into());
-                    }
+                    searched += 1;
                 }
-                if file_left > 0 {
-                    left_files += 1;
-                    // a file past `max_results` shows nothing, so there is nothing to put the note under
-                    if file_shown > 0 {
-                        items.push(format!("… {file_left} more in this file"));
-                    }
+                if cut {
+                    break;
+                }
+                // Past `max_results` the rest of the search only counts. Enough has been counted for the
+                // model to see how broad the pattern is: stop here, between batches, so that the answer
+                // is the same on every run.
+                if !files_only && m.left >= COUNT_LEFT_UP_TO && searched < files.len() {
+                    m.counting_stopped = Some((searched, files.len()));
+                    break;
                 }
             }
-            (items, total, left, left_files, cut, kept_out, hit_files, too_big, unreadable)
+            (m, cut, kept_out)
         })
         .await;
-        let Ok((items, total, left, left_files, cut, kept_out, hit_files, too_big, unreadable)) = joined else {
+        let Ok((m, cut, kept_out)) = joined else {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
+        let Merge { items, total, left, left_files, hit_files, too_big, unreadable, counting_stopped, .. } = m;
         let mut content = if total == 0 {
             let mut s = format!("grep: no match for `{pattern}` in {shown_root}");
             if !multiline && (pattern.contains('\n') || pattern.contains("\\n")) {
@@ -286,13 +248,19 @@ impl Tool for Grep {
             }
             s
         } else if !files_only && left > 0 {
-            format!(
-                "{}\n… {} more {} in {} ({total} in all); narrow the pattern or the path",
-                items.join("\n"),
-                left,
-                if left == 1 { "match" } else { "matches" },
-                nexo_core::count(left_files, "file")
-            )
+            let matches = if left == 1 { "match" } else { "matches" };
+            let files = nexo_core::count(left_files, "file");
+            match counting_stopped {
+                // the counts are what the files searched so far hold
+                Some((done, all)) => format!(
+                    "{}\n… at least {left} more {matches} in at least {files} (at least {total} in all; counting stopped after {done} of {all} files); narrow the pattern or the path",
+                    items.join("\n")
+                ),
+                None => format!(
+                    "{}\n… {left} more {matches} in {files} ({total} in all); narrow the pattern or the path",
+                    items.join("\n")
+                ),
+            }
         } else if files_only {
             let mut s = format!(
                 "{} in {}\n{}",
@@ -329,6 +297,185 @@ impl Tool for Grep {
                 .push_str(&format!("\n[search stopped after {} s; narrow the path or the glob]", TIME_CAP.as_secs()));
         }
         ToolOutput::ok(content).with_display(ToolDisplay::List { items })
+    }
+}
+
+/// What every search of one file shares.
+struct Search {
+    re: Regex,
+    multiline: bool,
+    files_only: bool,
+    context: usize,
+    /// Matches of one file kept for the answer (`max_per_file`, and never more than `max_results`).
+    keep: usize,
+    cwd: PathBuf,
+}
+
+enum FileOut {
+    /// Binary, or nothing to say.
+    Skip,
+    TooBig,
+    Unreadable,
+    Hits {
+        shown: String,
+        total: usize,
+        /// The lines of each of the first `keep` matches, with their context.
+        chunks: Vec<Vec<String>>,
+    },
+}
+
+impl Search {
+    fn file(&self, f: &Path) -> FileOut {
+        match std::fs::metadata(f) {
+            Ok(m) if m.len() > MAX_FILE_BYTES => return FileOut::TooBig,
+            Ok(_) => {}
+            Err(_) => return FileOut::Unreadable,
+        }
+        let Ok(bytes) = std::fs::read(f) else {
+            return FileOut::Unreadable;
+        };
+        if is_binary(&bytes) {
+            return FileOut::Skip;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        // the first and last line (0-based) of each match
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut lines: Vec<&str> = Vec::new();
+        if self.multiline {
+            lines = text.lines().collect();
+            let nl: Vec<usize> = text.match_indices('\n').map(|(i, _)| i).collect();
+            let line_of = |off: usize| nl.partition_point(|&p| p < off);
+            for m in self.re.find_iter(&text) {
+                let a = line_of(m.start());
+                let b = line_of(if m.end() > m.start() { m.end() - 1 } else { m.start() });
+                if spans.last().is_some_and(|&(_, e)| a <= e) {
+                    continue; // a second match on lines already shown
+                }
+                spans.push((a, b.max(a)));
+            }
+        } else if self.context > 0 && !self.files_only {
+            lines = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if self.re.is_match(line) {
+                    spans.push((i, i));
+                }
+            }
+        } else {
+            // no line is needed again afterwards: do not hold them all
+            for (i, line) in text.lines().enumerate() {
+                if self.re.is_match(line) {
+                    spans.push((i, i));
+                }
+            }
+        }
+        if spans.is_empty() {
+            return FileOut::Skip;
+        }
+        let shown = display_path(&self.cwd, f);
+        let total = spans.len();
+        let mut chunks: Vec<Vec<String>> = Vec::new();
+        if !self.files_only {
+            if lines.is_empty() {
+                // plain search without context: the lines of the few matches kept are read again
+                let wanted: std::collections::BTreeSet<usize> = spans.iter().take(self.keep).map(|&(a, _)| a).collect();
+                let last = wanted.last().copied().unwrap_or(0);
+                lines = vec![""; last + 1];
+                for (i, l) in text.lines().enumerate().take(last + 1) {
+                    if wanted.contains(&i) {
+                        lines[i] = l;
+                    }
+                }
+            }
+            for &(a, b) in spans.iter().take(self.keep) {
+                let mut items: Vec<String> = Vec::new();
+                if self.context > 0 {
+                    for (j, l) in lines.iter().enumerate().take(a).skip(a.saturating_sub(self.context)) {
+                        items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
+                    }
+                }
+                let last = b.min(a + MAX_SPAN_LINES - 1);
+                for (j, l) in lines.iter().enumerate().take(last + 1).skip(a) {
+                    items.push(format!("{shown}:{}: {}", j + 1, cut_line(l, LINE_CHARS)));
+                }
+                if b > last {
+                    items.push(format!("{shown}:… {} more lines in this match", b - last));
+                }
+                if self.context > 0 {
+                    for (j, l) in lines.iter().enumerate().skip(b + 1).take(self.context) {
+                        items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
+                    }
+                    items.push("--".into());
+                }
+                chunks.push(items);
+            }
+        }
+        FileOut::Hits { shown, total, chunks }
+    }
+}
+
+/// The answer being put together from the files in path order.
+#[derive(Default)]
+struct Merge {
+    items: Vec<String>,
+    total: usize,
+    shown_total: usize,
+    /// Matches not shown (over `max_results` or `max_per_file`) and the files that hold them.
+    left: usize,
+    left_files: usize,
+    hit_files: usize,
+    too_big: usize,
+    unreadable: usize,
+    /// Files searched and files in all, when the counting was stopped early.
+    counting_stopped: Option<(usize, usize)>,
+}
+
+impl Merge {
+    fn add(&mut self, out: FileOut, max: usize, max_per_file: usize, files_only: bool) {
+        match out {
+            FileOut::Skip => {}
+            FileOut::TooBig => self.too_big += 1,
+            FileOut::Unreadable => self.unreadable += 1,
+            FileOut::Hits { shown, total, chunks } => {
+                self.total += total;
+                if files_only {
+                    self.hit_files += 1;
+                    if self.items.len() < max {
+                        self.items.push(shown);
+                    }
+                    return;
+                }
+                let take = chunks.len().min(max.saturating_sub(self.shown_total)).min(max_per_file);
+                for c in chunks.into_iter().take(take) {
+                    self.items.extend(c);
+                }
+                self.shown_total += take;
+                let file_left = total - take;
+                if file_left > 0 {
+                    self.left += file_left;
+                    self.left_files += 1;
+                    // a file past `max_results` shows nothing, so there is nothing to put the note under
+                    if take > 0 {
+                        self.items.push(format!("… {file_left} more in this file"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What one walker thread found, handed in when the thread is done.
+struct Hand<'a> {
+    into: &'a Mutex<(Vec<PathBuf>, usize)>,
+    files: Vec<PathBuf>,
+    kept_out: usize,
+}
+
+impl Drop for Hand<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut all) = self.into.lock() {
+            all.0.append(&mut self.files);
+            all.1 += self.kept_out;
+        }
     }
 }
 
@@ -507,5 +654,48 @@ mod tests {
         let (_d, c) = crowded();
         let out = Grep.run(json!({"pattern": "hit", "files_only": true, "max_per_file": 1}), &c).await;
         assert_eq!(out.content, "57 matches in 3 files\na.txt\nb.txt\nc.txt");
+    }
+
+    #[tokio::test]
+    async fn files_searched_together_come_back_in_path_order_every_time() {
+        let d = tempfile::tempdir().unwrap();
+        // more files than one batch, in folders, written in the opposite order of their names
+        for i in (0..300).rev() {
+            let dir = d.path().join(format!("d{}", i % 7));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("f{i:03}.txt")), format!("needle {i}\nhay\n")).unwrap();
+        }
+        let c = ToolContext::new(d.path().to_path_buf());
+        let first = Grep.run(json!({"pattern": "needle", "max_results": 300}), &c).await.content;
+        let paths: Vec<&str> = first.lines().map(|l| l.split(':').next().unwrap()).collect();
+        assert_eq!(paths.len(), 300, "{first}");
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted, "the answer is in path order");
+        for _ in 0..3 {
+            assert_eq!(Grep.run(json!({"pattern": "needle", "max_results": 300}), &c).await.content, first);
+        }
+    }
+
+    #[tokio::test]
+    async fn counting_stops_between_batches_once_enough_is_left_and_the_answer_says_so() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..300 {
+            let body: String = (0..30).map(|j| format!("hit {j}\n")).collect();
+            std::fs::write(d.path().join(format!("f{i:03}.txt")), body).unwrap();
+        }
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Grep.run(json!({"pattern": "hit"}), &c).await.content;
+        // 10 files show 20 matches each; the first batch (128 files) holds 3840 matches, 3640 of them left
+        assert_eq!(
+            out.lines().last().unwrap(),
+            "… at least 3640 more matches in at least 128 files (at least 3840 in all; counting stopped after 128 of 300 files); narrow the pattern or the path",
+            "{out}"
+        );
+        assert_eq!(out.lines().filter(|l| l.contains(":")).count(), 200, "{out}");
+        assert_eq!(Grep.run(json!({"pattern": "hit"}), &c).await.content, out, "the same on every run");
+        // files_only counts every file
+        let out = Grep.run(json!({"pattern": "hit", "files_only": true, "max_results": 1}), &c).await.content;
+        assert!(out.starts_with("9000 matches in 300 files\n"), "{out}");
     }
 }
