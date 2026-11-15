@@ -344,7 +344,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         compact_failed_at: None,
         tok_ratio: None,
         last_call: None,
-        mcp_gen: mcp.as_ref().map_or(0, |h| h.generation()),
+        // the tools given may predate servers that connected since: the first turn brings them in
+        mcp_gen: 0,
         mcp: mcp.clone(),
         mail,
         mail_wait: Vec::new(),

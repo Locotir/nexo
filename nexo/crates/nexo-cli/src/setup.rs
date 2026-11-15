@@ -206,6 +206,30 @@ pub async fn agent_setup(
     gate: Option<Arc<dyn PermissionGate>>,
     mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
 ) -> anyhow::Result<nexo_agent::AgentSetup> {
+    agent_setup_with(cfg, cwd, picked, resume, gate, mail, false).await
+}
+
+/// As `agent_setup`, but the MCP servers connect while the interface starts: the setup does not wait for
+/// them, and each one's tools join the next turn's request (the first request waits for any still connecting).
+pub async fn agent_setup_in_background(
+    cfg: &Config,
+    cwd: &Path,
+    picked: &Picked,
+    resume: Option<String>,
+    mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
+) -> anyhow::Result<nexo_agent::AgentSetup> {
+    agent_setup_with(cfg, cwd, picked, resume, None, mail, true).await
+}
+
+async fn agent_setup_with(
+    cfg: &Config,
+    cwd: &Path,
+    picked: &Picked,
+    resume: Option<String>,
+    gate: Option<Arc<dyn PermissionGate>>,
+    mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
+    mcp_in_background: bool,
+) -> anyhow::Result<nexo_agent::AgentSetup> {
     let client: Arc<dyn nexo_agent::client::ModelClient> =
         Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
     nexo_tools::edit_check::set_enabled(cfg.tools.edit_diagnostics);
@@ -242,13 +266,20 @@ pub async fn agent_setup(
         let project = cwd.to_path_buf();
         let persist: nexo_tools::mcp_hub::Persist =
             Arc::new(move |name, on| crate::mcp_cmd::persist_enabled(&project, name, on));
-        let hub = nexo_tools::mcp_hub::McpHub::start(&servers, &nexo_core::auth::file(), Some(persist)).await;
-        for (name, why) in hub.failures() {
-            eprintln!("nexo: MCP server {name:?} not started: {why}");
-        }
-        for t in hub.tools() {
-            tools.add(t);
-        }
+        let auth = nexo_core::auth::file();
+        let hub = if mcp_in_background {
+            // the tools come with the first request (`McpHub::sync_tools`), the failures with the /mcp window
+            nexo_tools::mcp_hub::McpHub::start_in_background(&servers, &auth, Some(persist))
+        } else {
+            let hub = nexo_tools::mcp_hub::McpHub::start(&servers, &auth, Some(persist)).await;
+            for (name, why) in hub.failures() {
+                eprintln!("nexo: MCP server {name:?} not started: {why}");
+            }
+            for t in hub.tools() {
+                tools.add(t);
+            }
+            hub
+        };
         Some(hub)
     };
     Ok(nexo_agent::AgentSetup {

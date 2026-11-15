@@ -349,3 +349,31 @@ async fn the_child_is_gone_when_the_client_or_hub_ends() {
     drop(hub);
     assert!(gone(pid).await, "dropping the hub leaves no process");
 }
+
+// ---- the hub in the background ----
+
+#[tokio::test]
+async fn a_hub_started_in_the_background_returns_at_once_and_each_server_joins_when_it_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfgs = std::collections::BTreeMap::new();
+    cfgs.insert("slow".to_string(), cfg(script("", &format!("sleep 2; {INIT_REPLY}"), &ok_reply(LIST), "")));
+    cfgs.insert("fast".to_string(), cfg(good_script("")));
+    let t0 = Instant::now();
+    let hub = McpHub::start_in_background(&cfgs, &dir.path().join("auth.json"), None);
+    assert!(t0.elapsed() < Duration::from_millis(500), "the start did not wait for the servers");
+    assert!(hub.tools().is_empty() && hub.generation() == 0, "nothing has answered yet");
+    // the quick one joins while the slow one is still starting
+    let mut rx = hub.watch();
+    while hub.tools().is_empty() {
+        tokio::time::timeout(Duration::from_secs(10), rx.changed()).await.expect("the fast server joins").unwrap();
+    }
+    assert!(t0.elapsed() < Duration::from_millis(1900), "the fast server did not wait for the slow one");
+    let names = |hub: &std::sync::Arc<McpHub>| hub.tools().iter().map(|t| t.name().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&hub), vec!["mcp__fast__t"]);
+    // `ready` is the wait for the rest, which the first request makes
+    hub.ready().await;
+    assert!(t0.elapsed() >= Duration::from_secs(2), "ready waited for the slow server");
+    assert_eq!(names(&hub), vec!["mcp__fast__t", "mcp__slow__t"]);
+    hub.ready().await;
+    hub.close().await;
+}

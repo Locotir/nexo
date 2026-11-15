@@ -779,7 +779,7 @@ async fn interactive(
             nexo_core::mail::Inbound::parse(&config.mail.inbound),
         )
     });
-    let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume.clone(), None, mailbox.clone()).await?;
+    let agent_setup = setup::agent_setup_in_background(&config, &cwd, &picked, resume.clone(), mailbox.clone()).await?;
     // A session nothing was said in has nothing to resume.
     let sessions = listing
         .await

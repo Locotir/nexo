@@ -156,6 +156,13 @@ async fn prepare_turn(
 ) -> bool {
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
+    if let Some(h) = &hub {
+        // servers still connecting from the start of the session: their tools come with this request
+        tokio::select! {
+            _ = h.ready() => {}
+            _ = cancel.cancelled() => return false,
+        }
+    }
     let typed = text.clone();
     let text = match &hub {
         Some(h) => h.expand_mentions(text).await,

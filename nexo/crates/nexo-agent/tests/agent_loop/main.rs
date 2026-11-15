@@ -170,6 +170,8 @@ mod hooks;
 mod literal_notes;
 mod loop_guards;
 mod mail;
+#[cfg(unix)]
+mod mcp_startup;
 mod model_setup;
 mod nexo_bin_hint;
 mod own_replies;

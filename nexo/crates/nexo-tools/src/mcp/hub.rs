@@ -50,6 +50,8 @@ pub struct McpHub {
     auth_file: PathBuf,
     /// Goes up whenever anything about a server changes.
     gen: watch::Sender<u64>,
+    /// How many servers given at the start are still connecting.
+    starting: watch::Sender<usize>,
     persist: Option<Persist>,
 }
 
@@ -78,28 +80,53 @@ fn transport_of(cfg: &McpServerConfig) -> &'static str {
 }
 
 impl McpHub {
-    /// Connects every server of `cfgs` that is not turned off, all at once.
+    /// Connects every server of `cfgs` that is not turned off, all at once, and returns when each has
+    /// answered or timed out.
     pub async fn start(
         cfgs: &BTreeMap<String, McpServerConfig>,
         auth_file: &Path,
         persist: Option<Persist>,
     ) -> Arc<McpHub> {
-        let mut tasks = Vec::new();
-        for (name, cfg) in cfgs {
-            let (n, c, a) = (name.clone(), cfg.clone(), auth_file.to_path_buf());
-            tasks.push((name.clone(), cfg.clone(), tokio::spawn(async move { connect_one(&n, &c, &a).await })));
-        }
+        let hub = Self::start_in_background(cfgs, auth_file, persist);
+        hub.ready().await;
+        hub
+    }
+
+    /// As [`McpHub::start`], but returns at once: each server joins the hub when it answers (the
+    /// generation goes up each time, so the interface and the next turn see it). [`McpHub::ready`]
+    /// waits for the ones still connecting.
+    pub fn start_in_background(
+        cfgs: &BTreeMap<String, McpServerConfig>,
+        auth_file: &Path,
+        persist: Option<Persist>,
+    ) -> Arc<McpHub> {
         let hub = Arc::new(McpHub {
             entries: Mutex::new(BTreeMap::new()),
             auth_file: auth_file.to_path_buf(),
             gen: watch::channel(0).0,
+            starting: watch::channel(cfgs.len()).0,
             persist,
         });
-        for (name, cfg, task) in tasks {
-            let (status, client) = task.await.unwrap_or((McpStatus::Failed("start crashed".into()), None));
-            hub.put(&name, cfg, status, client);
+        for (name, cfg) in cfgs {
+            let (hub, name, cfg, auth) = (hub.clone(), name.clone(), cfg.clone(), auth_file.to_path_buf());
+            tokio::spawn(async move {
+                let task = {
+                    let (name, cfg) = (name.clone(), cfg.clone());
+                    tokio::spawn(async move { connect_one(&name, &cfg, &auth).await })
+                };
+                let (status, client) = task.await.unwrap_or((McpStatus::Failed("start crashed".into()), None));
+                hub.put(&name, cfg, status, client);
+                hub.starting.send_modify(|n| *n -= 1);
+            });
         }
         hub
+    }
+
+    /// Waits until every server given at the start has connected, failed or timed out (each is bound by
+    /// the connect timeout). At once when none is still connecting.
+    pub async fn ready(&self) {
+        let mut rx = self.starting.subscribe();
+        let _ = rx.wait_for(|n| *n == 0).await;
     }
 
     /// Stores a server's new state and starts watching its lists.
