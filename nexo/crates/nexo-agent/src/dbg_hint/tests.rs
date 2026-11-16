@@ -270,7 +270,7 @@ fn once_per_session_per_kind_and_found_again_in_a_kept_history() {
     ];
     let mut now = Told::default();
     let out = round(&mut now, &calls, res.clone(), d.path());
-    assert_eq!(now, Told { gdb: true, trace: true, fault: true });
+    assert_eq!(now, Told { gdb: true, trace: true, fault: true, attach: false });
     let text = |p: &Part| match p {
         Part::ToolResult { content, .. } => content.iter().filter_map(Part::as_text).collect::<String>(),
         _ => String::new(),
@@ -279,16 +279,16 @@ fn once_per_session_per_kind_and_found_again_in_a_kept_history() {
         text(&out[0]).contains(HEAD_FAULT) && text(&out[1]).contains(HEAD_GDB) && text(&out[2]).contains(HEAD_TRACE)
     );
     assert_eq!(text(&out[3]), "gdb again", "one line per kind");
-    assert_eq!(told(&[Message::tool_results(out)]), Told { gdb: true, trace: true, fault: true });
+    assert_eq!(told(&[Message::tool_results(out)]), Told { gdb: true, trace: true, fault: true, attach: false });
     let again = round(&mut now, &calls, res, d.path());
     assert_eq!(text(&again[1]), "gdb out");
     assert_eq!(told(&[Message::tool_results(again)]), Told::default());
     // a fault line is a fault and nothing else: a later gdb still earns its line
     let fault = Message::tool_results(vec![Part::tool_result("x", format!("out\n\n{HEAD_FAULT} debug {{}}]"), false)]);
-    assert_eq!(told(&[fault]), Told { gdb: false, trace: false, fault: true });
+    assert_eq!(told(&[fault]), Told { gdb: false, trace: false, fault: true, attach: false });
     // a line of a session saved before the kinds covers a fault and a gdb
     let old = Message::tool_results(vec![Part::tool_result("x", format!("out\n\n{HEAD} debug {{}}]"), false)]);
-    assert_eq!(told(&[old]), Told { gdb: true, trace: false, fault: true });
+    assert_eq!(told(&[old]), Told { gdb: true, trace: false, fault: true, attach: false });
 }
 
 #[test]
@@ -346,8 +346,56 @@ fn the_line_follows_the_results_text_joined_by_newlines_and_a_full_set_changes_n
     assert_eq!(content.len(), 1);
     assert!(content[0].as_text().unwrap().starts_with("one\ntwo\n\n[nexo: "), "{:?}", content[0].as_text());
     assert!(now.gdb);
-    let mut all = Told { gdb: true, trace: true, fault: true };
+    let mut all = Told { gdb: true, trace: true, fault: true, attach: true };
     let same = round(&mut all, &calls, vec![two.clone()], d.path());
     assert_eq!(same, vec![two]);
     assert_eq!(told(&[]), Told::default());
+}
+
+/// A child that runs until it is killed, and is killed when the test ends however it ends.
+#[cfg(target_os = "linux")]
+struct Sleeper(std::process::Child);
+
+#[cfg(target_os = "linux")]
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A running process of this user looked at by its number gets the program it runs and the `attach` that stops
+/// it, once per session; nexo's own process, one that is gone and one with no number get nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_looked_at_by_its_number_names_its_program_and_the_attach_call() {
+    let Ok(child) = std::process::Command::new("sleep").arg("30").spawn() else { return };
+    let child = Sleeper(child);
+    let pid = child.0.id();
+    let exe = slashed(hint_cmd::exe_of(&pid.to_string()).unwrap());
+    let d = tempfile::tempdir().unwrap();
+    let want = format!(
+        "[nexo: process {pid} runs {exe}{ATTACH_MARK}debug {{\"command\": \"attach {pid}\"}} stops it where it is]"
+    );
+    for c in [
+        format!("gdb -p {pid} -batch -ex bt"),
+        format!("strace -f -p {pid}"),
+        format!("ltrace -p{pid}"),
+        format!("pmap -x {pid}"),
+        format!("lsof -p {pid} | head"),
+        format!("ps -o pid,cmd -p {pid}"),
+        format!("cat /proc/{pid}/maps"),
+        format!("ls -l /proc/{pid}/fd"),
+    ] {
+        assert_eq!(fresh(&c, "out", d.path()), Some((Kind::Attach, want.clone())), "{c}");
+    }
+    let me = std::process::id();
+    for c in [format!("pmap {me}"), "pmap 4294967295".into(), "ps aux".into(), "lsof -i :8080".into()] {
+        assert_eq!(fresh(&c, "out", d.path()), None, "{c}");
+    }
+    // once: a session that has the line gets no other, and finds it in a kept history
+    let told_now = Told { attach: true, ..Told::default() };
+    assert_eq!(line(&format!("pmap {pid}"), "out", d.path(), &told_now), None);
+    let kept = Message::tool_results(vec![Part::tool_result("x", format!("out\n\n{want}"), false)]);
+    assert_eq!(told(&[kept]), told_now);
 }

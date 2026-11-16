@@ -2,7 +2,9 @@
 //! 4096-byte magic test of `nexo_binmagic::opens`) or asks to reverse or debug a binary, the start note of that request
 //! carries one line saying that `bin` reads a program without running it and `debug` runs it under a debugger, so
 //! the model reaches for them before `gdb`, `objdump` or `strings`. Nothing about it is in the system prompt or in a
-//! request that is not about a compiled program.
+//! request that is not about a compiled program. An installed program named by a noun beside it (`the jq command`)
+//! counts, as the shell finds it on the PATH. A compaction that takes the line out gives it again with the person's
+//! next message, and a sub-agent whose task is about a compiled program starts with it.
 //!
 //! The words are looked at as text and a name is only opened as bytes (4096 at most, regular files only): nothing is
 //! run, loaded or expanded. The trigger words are English and Spanish, with or without accents, in any case, and a
@@ -68,11 +70,23 @@ const PROGRAM_WORDS: [&str; 12] = [
     "ejecutables",
     "compilado",
 ];
+/// Nouns that make the word before them the name of an installed program (`the jq command`), and the Spanish ones
+/// that make the word after them one (`el comando jq`). The other order is ordinary prose: `the binary size`, `the
+/// program which`.
+const NAME_BEFORE: [&str; 6] = ["command", "program", "binary", "executable", "daemon", "utility"];
+const NAME_AFTER: [&str; 6] = ["comando", "programa", "binario", "ejecutable", "demonio", "utilidad"];
+/// English words that also name a program on most systems: before one of those nouns they are prose (`the test
+/// program`, `run the install command`), not the program asked about.
+const PROSE: [&str; 32] = [
+    "test", "time", "install", "find", "sort", "size", "which", "true", "false", "yes", "more", "less", "link",
+    "touch", "watch", "top", "free", "kill", "wait", "sleep", "join", "split", "cut", "paste", "head", "tail", "date",
+    "who", "users", "script", "line", "env",
+];
 
 /// The line for the person's message `text` (their own words, never what nexo added), or `None` when it is not
 /// about a compiled program. `offer` says which tools can take the call.
 pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
-    let file = named(text, cwd);
+    let file = named(text, cwd).or_else(|| installed(text));
     if file.is_none() && !asks(text) {
         return None;
     }
@@ -98,12 +112,12 @@ pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
     }
     if !offer.debug || !runs {
         return Some(format!(
-            "{HEAD} {bin}, then funcs, fn, decomp, xref, strings; use that before objdump, strings or xxd."
+            "{HEAD} {bin}, then funcs, fn, decomp, xref, strings: what objdump, strings and xxd show, with names and references."
         ));
     }
     let run = hint_cmd::tool_call("debug", &format!("run {f}; cont"));
     Some(format!(
-        "{HEAD} {bin}; {run} runs it under a debugger (break, bt, regs, mem, strace); use them before gdb, objdump or strings."
+        "{HEAD} {bin}; {run} runs it under a debugger (break, bt, regs, mem, strace): what gdb, objdump and strings show, one call each."
     ))
 }
 
@@ -152,6 +166,25 @@ fn named(text: &str, cwd: &Path) -> Option<String> {
     })
 }
 
+/// The installed program a bare word names by a noun beside it (`the jq command`, `what does jq do`, `el comando
+/// jq`), as the shell finds it on the PATH, when the kit reads it. A shell, compiler or reader the session uses
+/// (`the make command`) is a means, not the program asked about.
+fn installed(text: &str) -> Option<String> {
+    let words = name_words(text);
+    let folded: Vec<String> = words.iter().map(|w| w.chars().map(fold).collect()).collect();
+    let is = |i: usize, set: &[&str]| folded.get(i).is_some_and(|w| set.contains(&w.as_str()));
+    words.iter().enumerate().find_map(|(i, w)| {
+        let before = is(i + 1, &NAME_BEFORE) && !is(i, &PROSE);
+        let after = i > 0 && is(i - 1, &NAME_AFTER);
+        let does = i > 0 && folded[i - 1] == "does" && folded.get(i + 1).is_some_and(|w| w == "do");
+        if !(before || after || does) || is(i, &NAME_BEFORE) || is(i, &NAME_AFTER) {
+            return None;
+        }
+        let path = hint_cmd::on_path(w)?;
+        hint_cmd::reads(Path::new(""), &path).then_some(path)
+    })
+}
+
 /// A letter as the trigger words spell it: lower case, no Spanish accent.
 fn fold(c: char) -> char {
     match c.to_lowercase().next().unwrap_or(c) {
@@ -190,6 +223,15 @@ pub fn told(messages: &[Message]) -> bool {
     messages.iter().any(|m| m.role == Role::User && m.text().contains(HEAD))
 }
 
+/// The last line `messages` carry in a message of the person's, to give again when a compaction takes it out.
+pub fn said(messages: &[Message]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::User)
+        .find_map(|m| m.text().lines().find(|l| l.contains(HEAD)).map(|l| l.trim().to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,7 +250,7 @@ mod tests {
         assert_eq!(
             l,
             format!(
-                "{HEAD} bin {{\"command\": \"overview c-lcrypt\"}} reads one without running it; debug {{\"command\": \"run c-lcrypt; cont\"}} runs it under a debugger (break, bt, regs, mem, strace); use them before gdb, objdump or strings."
+                "{HEAD} bin {{\"command\": \"overview c-lcrypt\"}} reads one without running it; debug {{\"command\": \"run c-lcrypt; cont\"}} runs it under a debugger (break, bt, regs, mem, strace): what gdb, objdump and strings show, one call each."
             )
         );
         let abs = d.path().join("c-lcrypt");
@@ -331,5 +373,50 @@ mod tests {
         assert!(!told(&[Message::assistant(HEAD)]));
         assert!(!told(&[Message::user("hi")]));
         assert!(!told(&[]));
+    }
+
+    /// A program on the PATH named by the noun beside it, as people ask about a command: the line names the file
+    /// the shell runs. Prose where the same nouns stand next to an ordinary word gets nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_installed_program_named_as_a_command_gets_the_line_with_the_file_the_shell_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let Some(ls) = nexo_core::shell::find_program("ls") else { return };
+        let ls = hint_cmd::slash(&ls.display().to_string());
+        // a system whose `ls` is a script has nothing to tell
+        if !hint_cmd::reads(d.path(), &ls) {
+            return;
+        }
+        let call = hint_cmd::tool_call("bin", &format!("overview {}", hint_cmd::quoted(&ls)));
+        for t in [
+            "what does the ls command print for a broken link?",
+            "why is the `ls` binary so big",
+            "what does ls do with -Z",
+            "qué hace el comando ls con -Z",
+        ] {
+            let l = line(t, d.path(), BOTH).unwrap_or_else(|| panic!("no line for {t:?}"));
+            assert!(l.contains(&call), "{t}: {l}");
+        }
+        for t in [
+            "the test program crashes",
+            "run the install command again",
+            "the program which prints the total",
+            "the binary size grew",
+            "use the make command",
+            "what does make do here",
+            "the nosuch-program-xyz command",
+            "ls the folder",
+        ] {
+            assert_eq!(line(t, d.path(), BOTH), None, "{t}");
+        }
+    }
+
+    #[test]
+    fn said_gives_the_last_line_a_message_of_the_person_carries() {
+        let first = Message::user(format!("[project at the start of this request]\n{HEAD} one\n\nthe words"));
+        let second = Message::user(format!("{HEAD} two\n\nmore words"));
+        assert_eq!(said(&[first.clone(), second]), Some(format!("{HEAD} two")));
+        assert_eq!(said(std::slice::from_ref(&first)), Some(format!("{HEAD} one")));
+        assert_eq!(said(&[Message::assistant(HEAD), Message::user("hi")]), None);
     }
 }

@@ -21,12 +21,16 @@ fn it_is_a_read_tool_and_every_request_carries_only_the_short_text() {
     )
     .unwrap();
     eprintln!("bin tool as offered: {} chars: {sent}", sent.len());
-    // 298 chars before the text named `debug` (+12)
+    // 298 chars before the text named `debug` (+12); the questions it names since fit the same
     assert!(sent.len() <= 310, "{} chars: {sent}", sent.len());
     assert!(Bin.rare() && Bin.kind() == ToolKind::Read);
     assert!(Bin.spec().description.len() > spec.description.len(), "the full text lists the ops");
-    // the short text names the ops a model reaches for first
-    for w in ["overview", "funcs", "fn", "decomp", "xref", "strings", "objdump", "--help"] {
+    // the short text names the questions a model brings to a compiled file, the ops it reaches for first, the tools
+    // it would use otherwise and the one that runs the file
+    for w in [
+        "imports", "exports", "calls", "asm", "pseudo-C", "PE", "overview", "funcs", "fn", "decomp", "xref", "strings",
+        "objdump", "`debug`", "--help",
+    ] {
         assert!(spec.description.contains(w), "{w}");
     }
 }

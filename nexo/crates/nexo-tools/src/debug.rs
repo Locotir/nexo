@@ -67,10 +67,12 @@ gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info 
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
 
+/// The short text every request carries: the questions the tool answers (run on chosen input, stop, registers and
+/// memory, traced calls, hooks, a running process), in the words a model asks them, and the `bin` tool beside it.
 const COMPACT: &str = if NO_SYSCALLS {
-    "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as does break. `bin` reads the file. `help`"
+    "Runs a program on input, stops it (`run ./p <<< \"in\"; cont`: a crash's file:line, cause, locals); reads or sets regs, memory; ltrace, hooks; attaches to a pid. gdb forms work. `bin` reads the file. `help`"
 } else {
-    "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as do break, strace. `bin` reads the file. `help`"
+    "Runs a program on input, stops it (`run ./p <<< \"in\"; cont`: a crash's file:line, cause, locals); reads or sets regs, memory; ltrace, strace, hooks; attaches to a pid. gdb forms work. `bin` reads the file. `help`"
 };
 
 /// A debug session for the model. `steer_only` refuses everything that starts, attaches or writes.
@@ -360,8 +362,14 @@ mod tests {
         )
         .unwrap();
         eprintln!("debug tool as offered: {} chars: {sent}", sent.len());
-        // 320 chars before the text said gdb forms work and named `bin` (+27 for that, nothing else)
+        // 320 chars before the text said gdb forms work and named `bin` (+27); the questions it names fit the same
         assert!(sent.len() <= 347, "{} chars: {sent}", sent.len());
+        // it names the questions a model brings to a running program, and the tool that reads the file
+        for w in
+            ["input", "crash", "regs", "memory", "ltrace", "strace", "hooks", "attaches to a pid", "gdb forms", "`bin`"]
+        {
+            assert!(spec.description.contains(w), "{w}: {}", spec.description);
+        }
         // the full text keeps every argument, and the flags the short one leaves out parse at the head of a command
         let full = set.specs_for(true).len() + Debug::new().spec().parameters["properties"].as_object().unwrap().len();
         assert!(full >= 5);
@@ -371,7 +379,7 @@ mod tests {
         }
     }
 
-    /// The short text says what is true: gdb forms work (and the three it names do), `bin` is named, and the old
+    /// The short text says what is true: gdb forms work (the three most used do), `bin` is named, and the old
     /// claim that they do not is gone.
     #[tokio::test]
     async fn the_gdb_forms_the_short_text_names_work_in_a_live_session() {
@@ -382,7 +390,7 @@ mod tests {
         let t = Debug::in_dir(dir.path());
         let first = call(&t, &format!("run {} 30", sleep_bin())).await;
         assert!(!first.is_error, "{}", first.content);
-        // the three it names, and the spellings the dialect maps next to them
+        // the three most used, and the spellings the dialect maps next to them
         for c in ["x/8x $rsp", "p/x $rsp", "set $v = 5", "print $v", "backtrace", "info registers"] {
             let o = call(&t, c).await;
             assert!(!o.is_error, "{c}: {}", o.content);

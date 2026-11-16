@@ -135,3 +135,72 @@ fn small_helpers() {
     );
     assert!(!ran("Permission denied: [exit code ]") && !ran("[exit code 1] and more") && !ran("exit code 1"));
 }
+
+#[test]
+fn the_process_a_command_looks_at_is_its_pid_option_the_number_pmap_takes_or_a_proc_path() {
+    let pid = |c: &str| pid_of(&words(c)[0]);
+    for c in [
+        "gdb -p 1234",
+        "gdb -q --pid 1234 -batch -ex bt",
+        "gdb --pid=1234",
+        "lldb --attach-pid 1234",
+        "strace -p1234",
+        "strace -f -p 1234 -e trace=openat",
+        "ltrace -p 1234",
+        "lsof -p 1234",
+        "ps -fp 1234",
+        "ps -o pid,rss,cmd -p 1234",
+        "pmap 1234",
+        "pmap -x 1234",
+        "cat /proc/1234/maps",
+        "ls -l /proc/1234/exe",
+        "/usr/bin/gdb -p 1234",
+    ] {
+        assert_eq!(pid(c).as_deref(), Some("1234"), "{c}");
+    }
+    // no process: an option of another meaning, a number that is no pid, a word too long to be one
+    for c in [
+        "objdump -p prog",
+        "gcc -pthread prog.c",
+        "ps aux",
+        "gdb -p",
+        "gdb -p self",
+        "strace -p -1",
+        "lsof -i :8080",
+        "head -c 1234 prog",
+        "cat /proc/self/maps",
+        "pmap 12345678901",
+    ] {
+        assert_eq!(pid(c), None, "{c}");
+    }
+}
+
+#[test]
+fn a_proc_exe_path_is_the_program_it_links_to_and_anything_else_is_not() {
+    assert_eq!(resolved("prog"), None);
+    assert_eq!(resolved("/proc/x/exe"), None);
+    assert_eq!(resolved("/proc//exe"), None);
+    assert_eq!(resolved("/proc/1234/maps"), None);
+    #[cfg(target_os = "linux")]
+    {
+        let me = std::process::id().to_string();
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        assert_eq!(resolved(&format!("/proc/{me}/exe")), Some(exe.clone()));
+        assert_eq!(exe_of(&me).map(|p| p.display().to_string()), Some(exe));
+    }
+    // a process that is not there: a pid past the kernel's highest
+    assert_eq!(exe_of("4294967295"), None);
+}
+
+#[test]
+fn a_bare_name_on_the_path_is_the_file_the_shell_runs_unless_it_is_a_tool_of_the_session() {
+    for w in ["gdb", "objdump", "aarch64-linux-gnu-gcc", "python3.12", "cargo", "", "-v", "./prog", "a/b", "nexo"] {
+        assert_eq!(on_path(w), None, "{w}");
+    }
+    assert_eq!(on_path("no-such-program-anywhere-xyz"), None);
+    #[cfg(target_os = "linux")]
+    {
+        let ls = nexo_core::shell::find_program("ls").map(|p| p.display().to_string());
+        assert_eq!(on_path("ls"), ls);
+    }
+}

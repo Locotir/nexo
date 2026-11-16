@@ -1,9 +1,11 @@
-//! Three one-line hints that name the `debug` call doing what the model just did by hand, each once per session:
+//! Four one-line hints that name the `debug` call doing what the model just did by hand, each once per session:
 //!
 //! - `gdb` on a program of the project: the same session as one `debug` call (its `-ex` lines, the script of
 //!   `-x file` or of a heredoc, with the breakpoints, `x`, `p`, `info registers` it holds);
 //! - `strace` or `ltrace` on one: the `strace`/`ltrace` of the debugger, then `cont` and `show`;
-//! - a program of the project that died by a fault signal (exit 128+N, a segfault is 139): the run that stops at it.
+//! - a program of the project that died by a fault signal (exit 128+N, a segfault is 139): the run that stops at it;
+//! - a running process of this user looked at by its number (`gdb -p`, `strace -p`, `pmap`, `lsof -p`, `ps -p`,
+//!   `/proc/N/...`): the program it runs and the `attach` that stops it where it is.
 //!
 //! Only when the `debug` tool is offered and the file is one `nexo bin` opens. Nothing is run or loaded: the command
 //! is split by `hint_cmd` (heredocs, redirections, `cd x &&`, wrappers) and a gdb script is only read as text. A
@@ -35,6 +37,10 @@ pub const HEAD_FAULT: &str = "[nexo: the debug tool runs this to the fault in on
 pub const HEAD_GDB: &str = "[nexo: the debug tool takes this gdb session in one call:";
 /// Starts the line for strace and ltrace.
 pub const HEAD_TRACE: &str = "[nexo: the debug tool traces these calls in one call:";
+/// Starts the line for a running process, before its number.
+const HEAD_ATTACH: &str = "[nexo: process ";
+/// Follows the process number and its program in that line: `told` finds the line by it.
+pub const ATTACH_MARK: &str = "; the debug tool attaches to it in one call: ";
 
 /// Exit codes of a shell whose program died by a fault signal: SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV.
 const FAULTS: [i32; 5] = [132, 134, 135, 136, 139];
@@ -75,6 +81,7 @@ pub enum Kind {
     Gdb,
     Trace,
     Fault,
+    Attach,
 }
 
 /// The hint a command earns, from its result text, among the kinds not told yet.
@@ -82,6 +89,9 @@ pub fn line(command: &str, result: &str, cwd: &Path, told: &Told) -> Option<(Kin
     let segs = hint_cmd::segments(command, cwd)?;
     for (k, s) in segs.iter().enumerate() {
         let Some(first) = s.words.first() else { continue };
+        if let Some(l) = (!told.attach).then(|| attach(&s.words)).flatten() {
+            return Some((Kind::Attach, l));
+        }
         let (kind, call) = match hint_cmd::program(first).as_str() {
             "gdb" if !told.gdb => (Kind::Gdb, gdb_call(&segs, k, cwd)),
             "strace" | "ltrace" if !told.trace => (Kind::Trace, trace_call(&segs, k, cwd)),
@@ -96,6 +106,19 @@ pub fn line(command: &str, result: &str, cwd: &Path, told: &Told) -> Option<(Kin
         return None;
     }
     fault(&segs, result, cwd).map(|l| (Kind::Fault, l))
+}
+
+/// The line for a command that looks at a running process of this user by its number: the program the process
+/// runs, and the call that attaches to it.
+fn attach(words: &[String]) -> Option<String> {
+    let pid = hint_cmd::pid_of(words)?;
+    // nexo itself is not a program to stop
+    if pid == std::process::id().to_string() {
+        return None;
+    }
+    let exe = hint_cmd::slash(&hint_cmd::exe_of(&pid)?.display().to_string());
+    let call = hint_cmd::tool_call("debug", &format!("attach {pid}"));
+    Some(format!("{HEAD_ATTACH}{pid} runs {exe}{ATTACH_MARK}{call} stops it where it is]"))
 }
 
 #[cfg(test)]

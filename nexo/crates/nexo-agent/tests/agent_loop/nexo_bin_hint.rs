@@ -203,3 +203,91 @@ async fn an_attached_program_is_told_by_what_it_is_and_the_call_that_reads_it() 
     // the `@` of the mention names the file for the start note too
     assert!(sent.contains("compiled programs, with nexo's own tools: bin {\"command\": \"overview prog\"}"), "{sent}");
 }
+
+/// A compaction keeps the person's words and leaves out what nexo put before them, the line about compiled programs
+/// with it: the next message of theirs carries it again, and only that one.
+#[tokio::test]
+async fn the_line_comes_again_with_the_next_message_after_a_compaction_took_it_out() {
+    let d = test_tmpdir().unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), d.path().join("c-lcrypt")).unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("one")),
+        Reply::Events(text("two")),
+        Reply::Err(ProviderError::new(ErrorKind::ContextLength, "too long")),
+        Reply::Events(text("SUMMARY OF ALL")),
+        Reply::Events(text("three")),
+        Reply::Events(text("four")),
+        Reply::Events(text("five")),
+    ]);
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), kit_tools()).await;
+    r.next().await;
+    for words in ["try nexo against c-lcrypt, please", "two", "three", "four", "five"] {
+        r.send(AgentCommand::Submit { text: words.into(), attachments: vec![] });
+        r.turn().await;
+    }
+    r.stop().await;
+    let reqs = client.requests();
+    let head = "compiled programs, with nexo's own tools:";
+    let said = |req: &ModelRequest| user_texts(req).iter().map(|t| t.matches(head).count()).sum::<usize>();
+    // one, two, three cut by the window, the summary, three again, four, five
+    assert_eq!(reqs.len(), 7);
+    let counts: Vec<usize> = [0, 1, 2, 4, 5, 6].iter().map(|&i| said(&reqs[i])).collect();
+    assert_eq!(counts, [1, 1, 1, 0, 1, 1], "after the summary, the fourth message carries it and the fifth keeps it");
+    let four = user_texts(&reqs[5]);
+    let note = four.iter().find(|t| t.contains(head)).unwrap();
+    assert!(note.contains("bin {\"command\": \"overview c-lcrypt\"}") && note.ends_with("four"), "{note}");
+}
+
+/// A sub-agent sees none of the main agent's start notes: a task about a compiled program starts with the line,
+/// for the tools that run has.
+#[tokio::test]
+async fn a_sub_agent_whose_task_names_a_compiled_program_starts_with_the_line() {
+    let d = test_tmpdir().unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), d.path().join("c-lcrypt")).unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"description": "read it", "prompt": "what does c-lcrypt print?"}))),
+        Reply::Events(text("it prints a key")),
+        Reply::Events(text("done")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "find out what it prints".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let head = "compiled programs, with nexo's own tools:";
+    assert!(!user_texts(&reqs[0]).iter().any(|t| t.contains(head)), "the person's words name no program");
+    assert!(reqs[1].system.starts_with("You are a sub-agent"));
+    let first = user_texts(&reqs[1]).join("\n");
+    assert!(first.contains(head) && first.contains("overview c-lcrypt"), "{first}");
+}
+
+/// With a window of 32k tokens or less neither `bin` nor `debug` is offered: the lines name the shell form that
+/// works there, and none names a `debug` call the model cannot make.
+#[tokio::test]
+async fn in_a_small_window_the_lines_name_the_shell_form_and_no_debug_call() {
+    let d = test_tmpdir().unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), d.path().join("c-lcrypt")).unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b0", "bash", json!({"command": "objdump -d c-lcrypt | head"}))),
+        Reply::Events(call("b1", "bash", json!({"command": "gdb -batch -ex run ./c-lcrypt"}))),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.providers.get_mut("mock").unwrap().context_window.insert("m1".into(), 32_768);
+    cfg.context.policy = "auto".into();
+    let mut r = start_with(client.clone(), cfg, None, d.path(), kit_tools()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look at c-lcrypt".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let names: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(!names.contains(&"bin") && !names.contains(&"debug"), "{names:?}");
+    let note = user_texts(&reqs[0]).join("\n");
+    assert!(note.contains("nexo bin overview c-lcrypt reads one") && !note.contains("debug {"), "{note}");
+    let last = result_texts(reqs.last().unwrap());
+    assert_eq!(last.len(), 2, "{last:?}");
+    assert!(last[0].contains("; nexo bin overview c-lcrypt reads it") && !last[0].contains("bin {"), "{}", last[0]);
+    assert_eq!(last[1], "bash:gdb -batch -ex run ./c-lcrypt", "no debug line, and the bin line was said");
+}

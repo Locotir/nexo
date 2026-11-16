@@ -522,7 +522,7 @@ pub(super) async fn run_call(
                 result_room,
             ) = {
                 let mut st = state.lock().await;
-                let tool_names = Arc::new(st.tools.names().map(String::from).collect::<Vec<_>>());
+                let tool_names = super::state::offered_names(&st);
                 count_step(&mut st);
                 let (provider, _, model) = st.target.get();
                 // a picture is withheld only where the model catalogue says the model cannot see it

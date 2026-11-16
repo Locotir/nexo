@@ -12,10 +12,12 @@
 
 use std::path::{Path, PathBuf};
 
+mod process;
 mod scan;
 mod words;
 
 pub use nexo_tools::program::{callable, quoted, shell_quoted, slash, tool_call};
+pub use process::{exe_of, on_path, pid_of, resolved};
 use scan::Scan;
 pub use words::program;
 

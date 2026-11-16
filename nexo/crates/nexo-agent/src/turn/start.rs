@@ -351,9 +351,16 @@ async fn prepare_turn(
     true
 }
 
-/// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`).
+/// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`), and again
+/// after a compaction took it out.
 fn ask_line(st: &mut State, person: bool, text: &str) -> Option<String> {
-    if !person || st.ask_told {
+    if !person {
+        return None;
+    }
+    if let Some(again) = st.ask_again.take() {
+        return Some(again);
+    }
+    if st.ask_told {
         return None;
     }
     let line = crate::ask_hint::line(text, &st.cwd, offer_of(st))?;

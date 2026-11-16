@@ -245,6 +245,13 @@ impl Run {
         if let Some(n) = note {
             parts.push(Part::text(format!("[nexo: {n}]")));
         }
+        // a task about a compiled program starts with the line a message of the person's about one carries, for the
+        // tools this run is offered (see `ask_hint.rs`): the sub-agent sees no start note of the main agent's
+        let has = |t: &str| names.iter().any(|n| n == t);
+        let offer = crate::hint_cmd::Offer { bin: has("bin"), debug: has("debug") };
+        if let Some(l) = crate::ask_hint::line(prompt, &ctx.cwd, offer) {
+            parts.push(Part::text(l));
+        }
         let mut messages = vec![Message::new(Role::User, parts)];
         let mut tok_ratio: Option<f64> = None;
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'

@@ -253,7 +253,6 @@ fn not_for_text_missing_other_commands_or_nexo_bin_itself() {
         format!("dd if='{exe}' of=copy"),
         format!("grep main '{exe}'"),
         format!("python3 -c 'print(1)' '{exe}x'"),
-        format!("ls -l '{exe}'"),
         format!("echo objdump '{exe}'"),
         format!("which objdump '{exe}'"),
         String::new(),
@@ -499,4 +498,80 @@ fn another_file_is_told_again_only_after_a_long_stretch_and_a_resumed_session_co
         assert!(!run(&mut told, "strings p"), "a file already told is not told again");
     }
     assert_eq!(super::told(&history), told, "the history gives back the same count");
+}
+
+/// `ls -l` and `stat` give a program's size and dates, the moment before it is read by hand: the same line.
+#[test]
+fn a_program_listed_or_statted_by_name_gets_the_line_and_a_folder_or_text_file_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    small_in(dir.path(), "p");
+    std::fs::write(dir.path().join("notes.txt"), "hi\n").unwrap();
+    let op = |c: &str| op_in(c, dir.path());
+    assert_eq!(op("ls -l p"), "info p");
+    assert_eq!(op("ls -la ./p"), "info ./p");
+    assert_eq!(op("stat p"), "info p");
+    for c in ["ls", "ls -la", "ls -l notes.txt", "stat notes.txt", "stat ."] {
+        assert!(!wanted(c, dir.path()), "{c}");
+    }
+}
+
+/// `which`, `command -v` and `type` name a program by the file the shell runs for it: the line is about that file.
+/// The session's own tools asked for by name (`which gdb`) are a question of whether one is installed, not a
+/// program to read.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_looked_up_on_the_path_is_told_by_the_file_the_shell_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(ls) = nexo_core::shell::find_program("ls") else { return };
+    // a system whose `ls` is a script, or a link `nexo bin` does not read, has nothing to tell
+    if hint_cmd::kind(dir.path(), &ls.display().to_string()).is_none() {
+        return;
+    }
+    let ls = slashed(&ls);
+    for c in ["which ls", "which -a ls", "command -v ls", "type ls"] {
+        let l = line(c, dir.path(), TOOL).unwrap_or_else(|| panic!("no line for {c}"));
+        assert!(l.starts_with(&format!("[nexo: {ls}: ")), "{c}: {l}");
+        assert!(l.contains(&hint_cmd::tool_call("bin", &format!("overview {}", hint_cmd::quoted(&ls)))), "{c}: {l}");
+    }
+    for c in ["which gdb objdump", "command -v cc", "type python3", "which no-such-program-xyz", "command ls"] {
+        assert!(!wanted(c, dir.path()), "{c}");
+    }
+}
+
+/// A running process looked at by its number (`pmap`, `lsof -p`, `ps -p`, a tracer's `-p`) with no `debug` tool to
+/// attach with: its program is the file to read. `/proc/N/exe` is that file with any reader, and the call names
+/// the file, which stays when the process ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_running_process_looked_at_by_its_number_is_told_by_the_program_it_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid = std::process::id();
+    let exe = slashed(this_binary());
+    let bin_only = Offer { bin: true, debug: false };
+    let starts = format!("[nexo: {exe}: ");
+    for c in [
+        format!("pmap {pid}"),
+        format!("pmap -x {pid} | head"),
+        format!("lsof -p {pid}"),
+        format!("ps -fp {pid}"),
+        format!("ps -o pid,rss,cmd -p {pid}"),
+        format!("gdb -p {pid} -batch -ex bt"),
+        format!("strace -p{pid}"),
+        format!("ltrace -p {pid}"),
+        format!("readelf -h /proc/{pid}/exe"),
+        format!("ls -l /proc/{pid}/exe"),
+    ] {
+        let l = line(&c, dir.path(), bin_only).unwrap_or_else(|| panic!("no line for {c}"));
+        assert!(l.starts_with(&starts), "{c}: {l}");
+    }
+    // with the `debug` tool the number is for `debug attach` (see `dbg_hint`); the file of `/proc/N/exe` is still
+    // read by a reader
+    for c in [format!("pmap {pid}"), format!("lsof -p {pid}"), format!("gdb -p {pid}")] {
+        assert!(line(&c, dir.path(), TOOL).is_none(), "{c}");
+    }
+    assert!(line(&format!("readelf -h /proc/{pid}/exe"), dir.path(), TOOL).unwrap().starts_with(&starts));
+    // a process that is not there, and a listing of every process, name no file
+    for c in ["pmap 4294967295", "ps aux", "lsof -i :8080", "strace -p 4294967295"] {
+        assert!(line(c, dir.path(), bin_only).is_none(), "{c}");
+    }
 }

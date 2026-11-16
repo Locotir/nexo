@@ -125,7 +125,9 @@ pub(super) fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>
         }
         // a dump of bytes or a look at the headers: the map first, then `bytes <file> <addr> <len>` for the part
         // wanted
-        "xxd" | "hexdump" | "hd" | "od" | "file" | "otool" | "cat" | "head" | "tail" | "dd" => format!("info {f}"),
+        "xxd" | "hexdump" | "hd" | "od" | "file" | "otool" | "cat" | "head" | "tail" | "dd" | "ls" | "stat" => {
+            format!("info {f}")
+        }
         // `ldd`, a script that parses the file, and gdb with no debug tool offered
         _ => format!("overview {f}"),
     }

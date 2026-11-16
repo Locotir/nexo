@@ -161,6 +161,7 @@ impl Runtime {
             bin_told,
             dbg_told,
             ask_told,
+            ask_again: None,
             epoch: 0,
             flow_slot: Default::default(),
             plan,

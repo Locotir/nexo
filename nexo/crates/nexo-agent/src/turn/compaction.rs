@@ -66,6 +66,11 @@ pub(super) async fn compact_locked(st: &mut State, keep_from: usize, cancel: &Ca
             }
             // the turn in progress starts where its first kept message now sits
             st.turn_start = if st.turn_start >= from { st.turn_start - from + shift } else { 0 };
+            // a summary of the message that held the line about compiled programs takes the line out of what the
+            // model reads: the next message of the person's carries it again
+            if st.ask_told && !crate::ask_hint::told(&work) {
+                st.ask_again = crate::ask_hint::said(&st.history);
+            }
             st.history.replace(work);
             // the failures it held are out of the history: a line pointing back at them would point at nothing
             st.repeats = Default::default();

@@ -69,7 +69,7 @@ impl Tool for Bin {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Read a compiled program (ELF, PE, Mach-O, wasm) without running it, instead of objdump or strings: `overview ./p`, `funcs`, `fn ./p main`, `decomp`, `xref`. `debug` runs it. `--help`",
+            description: "What an ELF, PE, Mach-O, wasm file imports, exports, calls, its asm, pseudo-C (objdump, strings): `overview ./p`, `funcs`, `fn ./p main`, `decomp`, `xref`. `debug` runs it. `--help`",
             params: &[],
         })
     }

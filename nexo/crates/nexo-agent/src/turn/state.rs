@@ -97,6 +97,8 @@ pub(super) struct State {
     pub(super) dbg_told: crate::dbg_hint::Told,
     /// The same for the line in a start note that names a compiled program's tools (see `ask_hint.rs`).
     pub(super) ask_told: bool,
+    /// That line, when a compaction took it out of the history: the person's next message carries it again.
+    pub(super) ask_again: Option<String>,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
     pub(super) epoch: u64,
     /// The one-run slot of a workflow started by name: 0 when free, else the number of the start that holds it.
@@ -150,9 +152,20 @@ pub(super) struct State {
 
 pub(super) type Shared = Arc<Mutex<State>>;
 
-/// Which of the tools the hints name this session offers.
+/// Which of the tools the hints name this session offers. A small window leaves `bin` and `debug` out of
+/// the request (`prompt::left_out`) though they stay registered, and a hint naming a call the model was
+/// not offered would send it to a tool it cannot call.
 pub(super) fn offer_of(st: &State) -> crate::hint_cmd::Offer {
-    crate::hint_cmd::Offer { bin: st.tools.get("bin").is_some(), debug: st.tools.get("debug").is_some() }
+    let window = super::start::window_of(&st.limits);
+    let has = |name: &str| st.tools.get(name).is_some() && !crate::prompt::left_out(window, name);
+    crate::hint_cmd::Offer { bin: has("bin"), debug: has("debug") }
+}
+
+/// The names of the tools the model is offered, for the tools that name another tool in what they answer:
+/// the registered tools less those a small window leaves out.
+pub(super) fn offered_names(st: &State) -> Arc<Vec<String>> {
+    let window = super::start::window_of(&st.limits);
+    Arc::new(st.tools.names().filter(|n| !crate::prompt::left_out(window, n)).map(String::from).collect())
 }
 
 /// A directed item keeps its identity and receipt until it is consumed or removed.

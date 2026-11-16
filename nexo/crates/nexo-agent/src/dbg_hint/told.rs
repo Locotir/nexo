@@ -5,7 +5,7 @@ use std::path::Path;
 use nexo_core::message::{Message, Part};
 use serde_json::Value;
 
-use super::{line, Kind, HEAD, HEAD_FAULT, HEAD_GDB, HEAD_TRACE};
+use super::{line, Kind, ATTACH_MARK, HEAD, HEAD_FAULT, HEAD_GDB, HEAD_TRACE};
 use crate::hint_cmd;
 
 /// Which hints the session has had.
@@ -14,6 +14,7 @@ pub struct Told {
     pub gdb: bool,
     pub trace: bool,
     pub fault: bool,
+    pub attach: bool,
 }
 
 impl Told {
@@ -22,6 +23,7 @@ impl Told {
             Kind::Gdb => self.gdb,
             Kind::Trace => self.trace,
             Kind::Fault => self.fault,
+            Kind::Attach => self.attach,
         }
     }
 
@@ -30,11 +32,12 @@ impl Told {
             Kind::Gdb => self.gdb = true,
             Kind::Trace => self.trace = true,
             Kind::Fault => self.fault = true,
+            Kind::Attach => self.attach = true,
         }
     }
 
     pub(super) fn all(&self) -> bool {
-        self.gdb && self.trace && self.fault
+        self.gdb && self.trace && self.fault && self.attach
     }
 }
 
@@ -48,6 +51,7 @@ pub fn told(messages: &[Message]) -> Told {
                 t.gdb |= text.contains(HEAD_GDB) || text.contains(HEAD);
                 t.trace |= text.contains(HEAD_TRACE);
                 t.fault |= text.contains(HEAD_FAULT) || text.contains(HEAD);
+                t.attach |= text.contains(ATTACH_MARK);
             }
         }
     }

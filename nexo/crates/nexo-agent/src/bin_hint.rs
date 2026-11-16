@@ -1,5 +1,6 @@
-//! When a model reads a compiled program by hand (`objdump`, `readelf`, `nm`, `strings`, `xxd`, `file`, `ldd`,
-//! `cat`, `head`, `grep -a`, a `python` script that opens it, ...), the result of that command ends with one line
+//! When a model reads or looks for a compiled program by hand (`objdump`, `readelf`, `nm`, `strings`, `xxd`, `file`,
+//! `ldd`, `ls`, `stat`, `which`, `pmap 1234`, `/proc/1234/exe`, `cat`, `head`, `grep -a`, a `python` script that
+//! opens it, ...), the result of that command ends with one line
 //! of facts: what the file is (format, architecture, system, size, stripped or not) and the exact call of nexo's
 //! kit that gives the same, the `bin` tool when it is offered and `nexo bin` in the shell when it is not. Only
 //! when the file the command names is one `nexo bin` reads; once per session, and again only for another file
@@ -37,10 +38,11 @@ const THEN_WASM: &str = ", then fn|funcs|xref|calls|strings";
 const THEN_MANAGED: &str = ", then a class or method by name";
 
 /// The programs people use to read a compiled program by hand, by the names [`op_for`] knows them; `gdb` too
-/// when there is no `debug` tool.
-const READERS: [&str; 18] = [
+/// when there is no `debug` tool. `ls`, `stat` and `which` find a program and its size, the moment before it is
+/// read; `pmap`, `lsof` and `ps` look at a running one, whose program is the file.
+const READERS: [&str; 24] = [
     "objdump", "readelf", "nm", "strings", "xxd", "hexdump", "hd", "od", "r2", "radare2", "rizin", "file", "ldd",
-    "otool", "cat", "head", "tail", "dd",
+    "otool", "cat", "head", "tail", "dd", "ls", "stat", "which", "pmap", "lsof", "ps",
 ];
 
 /// The most words of one command, and of quoted strings of a script, whose file is looked at.
@@ -59,7 +61,7 @@ fn found(command: &str, cwd: &Path, offer: Offer) -> Option<(String, String)> {
     }
     for (k, s) in segs.iter().enumerate() {
         let Some(prog) = s.words.first().and_then(|w| reader(&hint_cmd::program(w), s, offer)) else { continue };
-        let Some((file, kind)) = file_of(prog, s) else { continue };
+        let Some((file, kind)) = file_of(prog, s, offer) else { continue };
         let path = hint_cmd::shown(cwd, &s.dir, &file);
         // what goes inside a double-quoted JSON string or a shell word must be plain
         if !hint_cmd::callable(&path) {
@@ -95,6 +97,11 @@ fn reader(prog: &str, s: &Seg, offer: Offer) -> Option<&'static str> {
     match tool {
         "readobj" => Some("readelf"),
         "gdb" if !offer.debug => Some("gdb"),
+        // `command -v x` and `type x` find a program as `which` does
+        "command" if s.words.get(1).is_some_and(|w| w == "-v" || w == "-V") => Some("which"),
+        "type" => Some("which"),
+        // a tracer given a running process: with no `debug` tool to attach with, its program is the file to read
+        "lldb" | "strace" | "ltrace" if !offer.debug && hint_cmd::pid_of(&s.words).is_some() => Some("pmap"),
         "cat" | "head" | "tail" | "dd" if copies => None,
         "grep" | "egrep" | "fgrep" | "rg" | "ugrep" if s.words.iter().skip(1).any(text) => Some("grep"),
         "perl" => Some("python"),
@@ -110,19 +117,30 @@ fn is_short(w: &str) -> bool {
 
 /// The file of `s` that `nexo bin` reads, as the command wrote it, and what it is: one of its first words (`if=`
 /// of `dd`), its `< file`, and for a script (`python -c`, `perl -e`, a heredoc) a quoted string of it. A script
-/// counts only when its code reads files and starts no program (see [`Code`]).
-fn file_of(prog: &str, s: &Seg) -> Option<(String, nexo_binmagic::Compiled)> {
-    let mut words: Vec<&str> = s.words[1..]
+/// counts only when its code reads files and starts no program (see [`Code`]). The name `which` looks up is the
+/// file the shell runs for it; a process number, when there is no `debug` tool to attach with, the program that
+/// process runs; `/proc/N/exe` the file it links to, so that the call names a file that stays when the process
+/// ends.
+fn file_of(prog: &str, s: &Seg, offer: Offer) -> Option<(String, nexo_binmagic::Compiled)> {
+    let mut words: Vec<String> = s.words[1..]
         .iter()
         .take(WORDS)
         .map(|w| if prog == "dd" { w.strip_prefix("if=").unwrap_or(w) } else { w })
+        .map(|w| hint_cmd::resolved(w).unwrap_or_else(|| w.to_string()))
         .collect();
+    if prog == "which" {
+        words = words.iter().filter_map(|w| hint_cmd::on_path(w)).collect();
+    }
+    if matches!(prog, "pmap" | "lsof" | "ps" | "gdb") && !offer.debug {
+        let exe = hint_cmd::pid_of(&s.words).and_then(|n| hint_cmd::exe_of(&n));
+        words.splice(0..0, exe.map(|p| p.display().to_string()));
+    }
     if let Some(hint_cmd::Input::File(f)) = &s.input {
-        words.push(f);
+        words.push(f.clone());
     }
     let code = (prog == "python").then(|| Code::of(s));
-    words.extend(code.as_ref().map(Code::literals).unwrap_or_default());
-    let found = words.into_iter().find_map(|w| hint_cmd::kind(&s.dir, w).map(|k| (w.to_string(), k)))?;
+    words.extend(code.as_ref().map(Code::literals).unwrap_or_default().into_iter().map(str::to_string));
+    let found = words.into_iter().find_map(|w| hint_cmd::kind(&s.dir, &w).map(|k| (w, k)))?;
     // looked at last: a script file is opened only when the command names a compiled one
     code.is_none_or(|c| c.reads(&s.dir)).then_some(found)
 }
