@@ -499,9 +499,8 @@ impl App {
     /// Asks the agent for a model. Choosing the model already in use while the home is locked opens
     /// the home: the person said that is the model, and the agent has no change to report for it.
     pub fn set_model(&mut self, provider: Option<String>, model: String) {
-        let in_use = !self.provider.is_empty()
-            && model == self.model
-            && provider.as_deref().is_none_or(|p| p == self.provider);
+        let in_use =
+            !self.provider.is_empty() && model == self.model && provider.as_deref().is_none_or(|p| p == self.provider);
         if self.locked && in_use {
             self.unlock();
         }
