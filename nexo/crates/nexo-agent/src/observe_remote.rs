@@ -965,7 +965,8 @@ mod tests {
     #[tokio::test]
     async fn intervention_bind_reports_once_and_recovers() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("private-root");
+        // short: a socket path holds 100 bytes at most here, and a macOS temp folder takes 60 of them already
+        let root = dir.path().join("private");
         std::fs::create_dir_all(root.join("control")).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::set_permissions(root.join("control"), std::fs::Permissions::from_mode(0o700)).unwrap();

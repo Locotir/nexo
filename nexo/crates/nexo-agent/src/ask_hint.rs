@@ -226,23 +226,22 @@ mod tests {
     fn a_name_typed_in_other_case_finds_the_file_of_the_folder() {
         let d = tempfile::tempdir().unwrap();
         exe_in(d.path(), "c-lcrypt");
-        // the file as it is, not as it was typed, so the call works where names are case-sensitive
-        #[cfg(unix)]
-        {
+        // names are not case-sensitive on Windows, nor on macOS's default disk format: the word as typed is
+        // already a file there, and the call works. The folder says which kind this one is.
+        if !d.path().join("C-LCRYPT").exists() {
+            // the file as it is, not as it was typed, so the call works where names are case-sensitive
             let l = line("prueba nexo contra mi programa opensource C-LCRYPT", d.path(), BOTH).unwrap();
             assert!(l.contains("overview c-lcrypt\"") && l.contains("run c-lcrypt; cont"), "{l}");
             assert_eq!(named("C-LCRYPT.", d.path()), Some("c-lcrypt".to_string()));
             // a path is taken as written
             assert_eq!(named("./C-LCRYPT", d.path()), None);
-        }
-        // names are not case-sensitive on Windows: the word as typed is already a file there, and the call works
-        #[cfg(windows)]
-        {
+        } else {
             let l = line("prueba nexo contra mi programa opensource C-LCRYPT", d.path(), BOTH).unwrap();
             assert!(l.contains("overview C-LCRYPT\"") && l.contains("run C-LCRYPT; cont"), "{l}");
             assert_eq!(named("./C-LCRYPT", d.path()), Some("./C-LCRYPT".to_string()));
         }
-        // a word that is no file of the folder, or a text file, is nothing        std::fs::write(d.path().join("notes.txt"), "hello\n").unwrap();
+        // a word that is no file of the folder, or a text file, is nothing
+        std::fs::write(d.path().join("notes.txt"), "hello\n").unwrap();
         assert_eq!(named("NOTES.txt Other", d.path()), None);
     }
 

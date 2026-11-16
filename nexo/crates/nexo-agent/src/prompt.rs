@@ -331,21 +331,33 @@ fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
         }
     }
     let total = top.len() + second.len();
-    if total > entries {
-        lines.push(format!("- ... {} more entries", total - entries));
-    }
     if lines.is_empty() {
         return String::new();
     }
-    let mut out = format!("\n{head}:\n{}", lines.join("\n"));
+    let mut tail = String::new();
     manifests.sort();
     if !manifests.is_empty() {
-        out.push_str(&format!("\nManifests: {}", manifests.join(", ")));
+        tail.push_str(&format!("\nManifests: {}", manifests.join(", ")));
     }
     if let Some(check) = nexo_tools::project::check_command(cwd) {
-        out.push_str(&format!("\ncheck: {}", check.command));
+        tail.push_str(&format!("\ncheck: {}", check.command));
     }
     let room = PROJECT_CAP - if missing.is_empty() { 0 } else { missing.len() + 1 };
+    // over the cap, whole entries leave the tree and its last line counts them: a line cut short would name
+    // a file that is not there, and the count of the rest would go with it
+    let more = |shown: usize| {
+        if total > shown {
+            format!("\n- ... {} more entries", total - shown)
+        } else {
+            String::new()
+        }
+    };
+    let mut size = head.len() + 3 + lines.join("\n").len() + tail.len();
+    while lines.len() > 1 && size + more(entries).len() > room {
+        size -= lines.pop().map_or(0, |l| l.len() + 1);
+        entries -= 1;
+    }
+    let mut out = format!("\n{head}:\n{}{}{tail}", lines.join("\n"), more(entries));
     if out.len() > room {
         let mut cut = room;
         while !out.is_char_boundary(cut) {

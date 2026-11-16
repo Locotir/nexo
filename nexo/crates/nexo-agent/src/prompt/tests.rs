@@ -53,6 +53,21 @@ fn environment_block_stays_under_its_cap() {
 }
 
 #[test]
+fn a_tree_over_the_cap_loses_whole_entries_and_counts_them() {
+    // with a missing-commands line the tree no longer fits: the count of the rest stays, and no name is cut short
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir(d.path().join("data")).unwrap();
+    for i in 0..500 {
+        std::fs::write(d.path().join(format!("data/another_long_file_name_{i}.txt")), "").unwrap();
+    }
+    let missing = "Not installed here: wget, python, pip, node, npm.";
+    let b = project_block_with(d.path(), missing);
+    assert!(b.len() <= PROJECT_CAP && b.ends_with(missing), "{}", b.len());
+    assert!(b.contains(" more entries\nNot installed"), "{b}");
+    assert!(b.lines().filter(|l| l.contains("another_long")).all(|l| l.ends_with(".txt")), "{b}");
+}
+
+#[test]
 fn names_the_request_gives_are_kept() {
     // configure-git-webserver: asked for user@server, the model pushed as the account it found
     assert!(built_in().contains("use them exactly. When one does not exist yet, create it"));

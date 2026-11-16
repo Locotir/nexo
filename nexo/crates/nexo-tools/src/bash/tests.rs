@@ -554,6 +554,16 @@ async fn a_failed_probe_in_a_chain_adds_a_note_to_the_result() {
     assert!(!out.is_error && !out.content.contains("skipped the commands"), "{}", out.content);
 }
 
+/// The length of a tool result as it reads where the temp folder is `/tmp`: the path of the full log is in it,
+/// and macOS puts its temp folders some 45 characters deeper (`/var/folders/../T`).
+fn chars_as_in_tmp(content: &str) -> usize {
+    let tmp = std::env::temp_dir();
+    match tmp.to_string_lossy().trim_end_matches('/') {
+        "" => content.chars().count(),
+        t => content.replace(t, "/tmp").chars().count(),
+    }
+}
+
 #[tokio::test]
 async fn caps_long_output() {
     if nexo_core::shell::shell().kind == "powershell" {
@@ -564,7 +574,7 @@ async fn caps_long_output() {
     let c = ToolContext::new(d.path().to_path_buf());
     let out = Bash.run(json!({"command": "seq 1 20000"}), &c).await;
     assert!(!out.is_error);
-    assert!(out.content.chars().count() < MAX_OUTPUT_CHARS + 200);
+    assert!(chars_as_in_tmp(&out.content) < MAX_OUTPUT_CHARS + 200, "{}", &out.content[out.content.len() - 600..]);
     assert!(out.content.starts_with("1\n2\n"));
     assert!(out.content.contains("20000"));
     assert!(out.content.contains("characters omitted"));
@@ -578,7 +588,7 @@ async fn caps_long_output() {
         "{}",
         &out.content[out.content.len() - 40..]
     );
-    assert!(out.content.chars().count() < MAX_OUTPUT_CHARS + 200);
+    assert!(chars_as_in_tmp(&out.content) < MAX_OUTPUT_CHARS + 200);
     match &out.display {
         ToolDisplay::Shell { stdout, .. } => {
             assert!(stdout.chars().count() < MAX_OUTPUT_CHARS + 200, "the display is bounded too")

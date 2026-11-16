@@ -36,6 +36,9 @@ fn sessions_born_in_the_same_second_are_all_saved() {
     let d = tempfile::tempdir().unwrap();
     let mut ids = std::collections::HashSet::new();
     let mut kept = Vec::new();
+    // each open session holds its file: more than the 256 open files macOS gives a process to begin with
+    #[cfg(unix)]
+    allow_open_files(8192);
     for _ in 0..3000 {
         let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
         assert!(ids.insert(s.id().to_string()));
@@ -47,6 +50,19 @@ fn sessions_born_in_the_same_second_are_all_saved() {
         .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "jsonl"))
         .count();
     assert_eq!(files, 3000);
+}
+
+/// Raises this process's soft limit of open files to `n`, or to its hard limit when that is lower.
+#[cfg(unix)]
+fn allow_open_files(n: libc::rlim_t) {
+    let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: both calls only read or write the struct passed, which lives for the call
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) == 0 && l.rlim_cur < n {
+            l.rlim_cur = n.min(l.rlim_max);
+            libc::setrlimit(libc::RLIMIT_NOFILE, &l);
+        }
+    }
 }
 #[test]
 fn a_cut_last_line_does_not_swallow_the_next_message() {
@@ -430,7 +446,8 @@ fn a_live_writer_keeps_its_lock_however_old() {
     two_days_old(&pid1_stamp());
     let mut s = Session::open_path(&p).unwrap();
     let r = s.append(&Message::user("x"));
-    if cfg!(target_os = "linux") {
+    // Linux and macOS tell when a process started (`/proc`, `ps`)
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         assert!(r.unwrap_err().to_string().contains("in use"));
     } else {
         r.unwrap(); // no start time here: a pid in use may be another process, the age decides

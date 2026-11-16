@@ -396,7 +396,7 @@ mod tests {
         // with a terminal the sequence counts; without one the error says what to install
         match got {
             Ok(how) => assert_eq!(how, "terminal (OSC 52)"),
-            Err(e) => assert!(e.contains("Install wl-clipboard or xclip"), "{e}"),
+            Err(e) => assert!(e.ends_with(failure_hint(cfg!(target_os = "macos"))), "{e}"),
         }
     }
 
@@ -404,7 +404,8 @@ mod tests {
     fn a_text_too_long_for_osc52_is_an_error_never_a_false_copy() {
         let got = copy_with(&"a".repeat(200_000), false, &[]);
         let e = got.expect_err("nothing took the text");
-        assert!(e.contains("Install wl-clipboard or xclip"), "{e}");
+        // what to try next, for this system (macOS has no wl-clipboard or xclip)
+        assert!(e.ends_with(failure_hint(cfg!(target_os = "macos"))), "{e}");
     }
 
     #[test]
