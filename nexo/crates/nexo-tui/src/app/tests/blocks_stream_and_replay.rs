@@ -107,6 +107,29 @@ fn the_reasoning_of_a_reply_sent_again_is_closed_and_not_joined_to_the_new_one()
 }
 
 #[test]
+fn a_notice_during_the_stream_leaves_one_thinking_and_one_reply() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::AssistantStart);
+    a.handle_agent(AgentEvent::ReasoningDelta { text: "reading ".into() });
+    // `/goal` set while the model thinks: the agent says so with a notice and the turn goes on
+    let said = "goal set: pass the tests · checked when this turn ends; the model reads it from the next turn";
+    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: said.into(), problem: None });
+    a.handle_agent(AgentEvent::ReasoningDelta { text: "the file".into() });
+    a.handle_agent(AgentEvent::TextDelta { text: "it ".into() });
+    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "another".into(), problem: None });
+    a.handle_agent(AgentEvent::TextDelta { text: "works".into() });
+    a.handle_agent(AgentEvent::AssistantDone { message: Message::assistant("it works") });
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+    assert!(matches!(&a.blocks[0], Block::Reasoning { text, streaming: false, .. } if text == "reading the file"));
+    assert!(matches!(&a.blocks[1], Block::Notice { .. }));
+    assert!(matches!(&a.blocks[2], Block::Assistant { text, streaming: false, .. } if text == "it works"));
+    assert!(matches!(&a.blocks[3], Block::Notice { .. }));
+    assert_eq!(a.blocks.len(), 4, "{:?}", a.blocks.len());
+    assert!(!a.blocks.iter().any(|b| b.is_live()), "no spinner left");
+}
+
+#[test]
 fn web_cards_are_summarised_on_replay() {
     assert_eq!(summarise("web_search", &serde_json::json!({"query": "tokio select"})), "web_search: tokio select");
     assert_eq!(

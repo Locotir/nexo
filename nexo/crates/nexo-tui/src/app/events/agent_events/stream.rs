@@ -30,6 +30,13 @@ impl App {
         }
     }
 
+    /// The block a reply or thinking delta goes on: the last one, past the notices that came while it
+    /// streamed (a `/goal` set during the turn, a warning). Those sit under it, and the reply or the
+    /// thinking stays one block.
+    fn stream_tail(&self) -> Option<usize> {
+        self.blocks.iter().rposition(|b| !matches!(b, Block::Notice { .. }))
+    }
+
     pub(super) fn on_assistant_start(&mut self) {
         self.close_streaming();
         self.reply_started = Some(self.now());
@@ -43,10 +50,11 @@ impl App {
             self.fx.ink.note(now, text.chars().filter(|c| *c != '\n').count());
         }
         self.close_reasoning();
-        match self.blocks.last_mut() {
-            Some(Block::Assistant { text: t, streaming: true, .. }) => {
-                t.push_str(&text);
-                let i = self.blocks.len() - 1;
+        match self.stream_tail() {
+            Some(i) if matches!(self.blocks[i], Block::Assistant { streaming: true, .. }) => {
+                if let Block::Assistant { text: t, .. } = &mut self.blocks[i] {
+                    t.push_str(&text);
+                }
                 self.invalidate(i);
             }
             _ => {
@@ -59,10 +67,11 @@ impl App {
     pub(super) fn on_reasoning_delta(&mut self, text: String) {
         self.prep = None;
         self.streamed_chars += text.len();
-        match self.blocks.last_mut() {
-            Some(Block::Reasoning { text: t, streaming: true, .. }) => {
-                t.push_str(&text);
-                let i = self.blocks.len() - 1;
+        match self.stream_tail() {
+            Some(i) if matches!(self.blocks[i], Block::Reasoning { streaming: true, .. }) => {
+                if let Block::Reasoning { text: t, .. } = &mut self.blocks[i] {
+                    t.push_str(&text);
+                }
                 self.invalidate(i);
             }
             _ => {
