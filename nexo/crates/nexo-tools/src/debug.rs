@@ -59,6 +59,7 @@ call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with 
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
 bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
+dump <A..B|A+LEN|fn> [path], dump module <name> [path]  memory to a file (a range raw at its address, a whole module rebuilt as ELF/PE); the answer names the `bin` call that reads it (asks)
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return
 hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args, result, counters; set/ret change the program
@@ -333,6 +334,12 @@ impl Debug {
                 }
             }
         }
+        // the file a `dump` writes is relative to the project too
+        if let Some(i) = nexo_dbg::dump_path_at(&words) {
+            if Path::new(&words[i]).is_relative() {
+                words[i] = ctx.cwd.join(&words[i]).display().to_string();
+            }
+        }
         if let Some(s) = args.get("session").and_then(Value::as_str).filter(|s| !s.is_empty()) {
             words.splice(0..0, ["-s".to_string(), s.to_string()]);
         }
@@ -501,6 +508,7 @@ mod tests {
         assert_eq!(kind("run ./a.out"), ToolKind::Exec);
         assert_eq!(kind("attach 12"), ToolKind::Exec);
         assert_eq!(kind("write 0x10 90"), ToolKind::Exec);
+        assert_eq!(kind("dump module libc out.bin"), ToolKind::Exec);
         // a hook that only reads is control; one that sets an argument or the result asks
         assert_eq!(kind("hook check bt 3"), ToolKind::Read);
         assert_eq!(kind("hook check set arg0 5"), ToolKind::Exec);

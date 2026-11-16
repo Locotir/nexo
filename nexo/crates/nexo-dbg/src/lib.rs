@@ -20,6 +20,7 @@ mod modules;
 mod pe_unwind;
 mod places;
 mod platform;
+mod rebuild;
 mod regs;
 mod remote;
 mod rsp;
@@ -47,7 +48,7 @@ mod windows;
 pub use client::{
     dbg_class, do_parts, execute, header, parse, parse_header, read_only_refusal, Call, DbgClass, Header, Host,
 };
-pub use cmds::{help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY};
+pub use cmds::{dump_path_at, help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY};
 pub use commands::{canonical, COMMANDS};
 pub use engine::{Session, State, StopInfo};
 pub use gdbdialect::Plan as GdbPlan;

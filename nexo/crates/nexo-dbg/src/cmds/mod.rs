@@ -10,9 +10,12 @@ use crate::engine::{rows, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind
 use crate::platform::{Access, Fault, HwSlot, Os, Tid};
 use crate::{fail, usage, Result};
 
+pub use dump::dump_path_at;
+
 mod breaks;
 mod calls;
 mod catch;
+mod dump;
 mod frame;
 mod gdb;
 mod help;
@@ -225,6 +228,7 @@ impl Session {
             "stop" => self.stop_now(),
             "mem" | "x" => self.cmd_mem(&a),
             "write" => self.cmd_write(&a),
+            "dump" => self.cmd_dump(&a),
             "print" | "p" => self.cmd_print(&a),
             "call" => self.cmd_call(&a),
             "ptype" | "whatis" => self.cmd_ptype(&a),

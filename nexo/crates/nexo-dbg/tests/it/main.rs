@@ -16,6 +16,7 @@ mod core_file;
 mod dbg_linux;
 mod dbg_macos;
 mod dbg_windows;
+mod dump_mem;
 mod frames;
 mod gdb_script;
 mod launch_opts;

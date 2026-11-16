@@ -55,7 +55,7 @@ pub enum Host {
 pub enum DbgClass {
     /// Looks at, or steers, a program the person already let the debugger start.
     Control,
-    /// Writes into the program, or attaches to a process that was not started here.
+    /// Writes into the program or (`dump`) into a file, or attaches to a process that was not started here.
     Change,
     /// Starts a program (judged like running it in the shell), or is not a known command.
     Other,
@@ -155,7 +155,7 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let Some(first) = rest.first() else { return DbgClass::Control };
     let head = crate::gdbdialect::base_name(first);
     match head {
-        "attach" | "connect" | "write" | "setreg" | "call" => DbgClass::Change,
+        "attach" | "connect" | "write" | "setreg" | "call" | "dump" => DbgClass::Change,
         // an expression that calls a function of the program runs that code
         "print" | "p" | "output" if crate::expr::has_call(&rest[1..].join(" ")) => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
@@ -393,6 +393,15 @@ pub fn parse(words: &[String]) -> Result<Call, Error> {
         }
     }
     o.ask().check()?;
+    // the session may run in another folder: the file a `dump` writes is named from the caller's
+    if let Some(i) = crate::dump_path_at(&o.words) {
+        let p = PathBuf::from(&o.words[i]);
+        if p.is_relative() {
+            if let Ok(d) = std::env::current_dir() {
+                o.words[i] = d.join(p).display().to_string();
+            }
+        }
+    }
     // gdb's way out: `quit` as a call of its own closes the session, as `end` does
     if matches!(o.words.as_slice(), [w] if matches!(w.as_str(), "quit" | "q" | "exit")) {
         o.words[0] = "end".to_string();
@@ -582,6 +591,12 @@ fn print(
     prefix: &str,
 ) -> String {
     out.command = format!("{prefix} -s {id} {}", words.iter().map(|x| shell_word(x)).collect::<Vec<_>>().join(" "));
+    // an answer names a `bin` call in the tool's form; from the shell the same call is `nexo bin`
+    if prefix != "debug" {
+        for r in out.rows.iter_mut().filter(|r| r.text.contains("`bin ")) {
+            r.text = r.text.replace("`bin ", "`nexo bin ");
+        }
+    }
     let ask = o.ask();
     let page = ask.page(&out).unwrap_or_else(|_| out.page_as(o.from, ask.budget(), o.json));
     if o.json {
@@ -932,6 +947,28 @@ mod tests {
         assert_eq!(dbg_class(&words("nosuch")), DbgClass::Other);
         assert_eq!(dbg_class(&["do".into(), "break f; cont; setreg rax 1".into()]), DbgClass::Change);
         assert_eq!(dbg_class(&["do".into(), "break f; run x".into()]), DbgClass::Other);
+        // a dump writes a file
+        assert_eq!(dbg_class(&words("dump 0x1000..0x2000 out.bin")), DbgClass::Change);
+        assert_eq!(dbg_class(&["do".into(), "break f; cont; dump module libc out".into()]), DbgClass::Change);
+    }
+
+    #[test]
+    fn a_dump_names_its_file_from_the_callers_folder_and_its_bin_call_in_the_surfaces_form() {
+        let o = parse(&words("dump $rdi 64 out.bin")).unwrap();
+        let here = std::env::current_dir().unwrap().join("out.bin");
+        assert_eq!(o.words, ["dump", "$rdi", "64", &here.display().to_string()]);
+        assert_eq!(parse(&words("dump $rdi 64 /tmp/a.bin")).unwrap().words[3], "/tmp/a.bin");
+        let out = || {
+            crate::engine::rows(
+                "dump",
+                vec!["read it: `bin fn /tmp/a.bin 0x1000 --raw --base 0x1000 --arch x86-64`".into()],
+                json!({}),
+            )
+        };
+        let tool = print(out(), "s", &o.words, &o, None, "stopped", "debug");
+        assert!(tool.contains("`bin fn /tmp/a.bin"), "{tool}");
+        let shell = print(out(), "s", &o.words, &o, None, "stopped", "nexo dbg");
+        assert!(shell.contains("`nexo bin fn /tmp/a.bin 0x1000 --raw"), "{shell}");
     }
 
     #[test]

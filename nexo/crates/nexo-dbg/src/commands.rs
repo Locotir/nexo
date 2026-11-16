@@ -54,6 +54,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("setreg", "change a register (asks)"),
     ("call", "run a function of the stopped program and give its value: call f(1, \"abc\"); print f(x) + 1 too; registers back after (asks)"),
     ("write", "write bytes into memory (asks)"),
+    ("dump", "memory to a file: dump <A..B|fn> [path] | dump module <name> [path]; raw or rebuilt ELF/PE, with the bin call (asks)"),
     ("name note", "save a name or a note for an address"),
     ("do", "several commands in one call: do \"break f; cont; bt\""),
 ];
