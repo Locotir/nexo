@@ -1092,6 +1092,31 @@ impl Target for Mac {
         self.set_state(tid as Port, &regs.to_mach())
     }
 
+    fn vector_state(&mut self, tid: Tid) -> Option<Vec<u8>> {
+        let mut s = vec![0u32; X86_FLOAT_STATE64_COUNT as usize];
+        let mut n = X86_FLOAT_STATE64_COUNT;
+        // SAFETY: `s` holds the `n` words the call may write.
+        let kr = unsafe { thread_get_state(tid as Port, X86_FLOAT_STATE64, s.as_mut_ptr(), &mut n) };
+        (kr == KERN_SUCCESS).then(|| s[..n as usize].iter().flat_map(|w| w.to_le_bytes()).collect())
+    }
+
+    fn set_vector_state(&mut self, tid: Tid, state: &[u8]) -> Result<()> {
+        let s: Vec<u32> = state.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+        // SAFETY: `s` holds the words `thread_get_state` gave.
+        let kr = unsafe { thread_set_state(tid as Port, X86_FLOAT_STATE64, s.as_ptr(), s.len() as u32) };
+        if kr != KERN_SUCCESS {
+            return fail(format!("set the vector registers of thread {tid}: {}", kr_text(kr)));
+        }
+        Ok(())
+    }
+
+    fn take_signal(&mut self, tid: Tid) -> u64 {
+        // the fault or signal the thread stopped on is not handed to the program when it runs again
+        let Some(t) = self.th.get_mut(&(tid as Port)) else { return 0 };
+        t.fault = false;
+        std::mem::take(&mut t.sig) as u32 as u64
+    }
+
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> usize {
         let mut done = 0;
         while done < buf.len() {

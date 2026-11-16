@@ -142,7 +142,7 @@ pub(super) fn dbg_tools() -> Vec<Tool> {
         },
         Tool {
             name: "dbg_command".into(),
-            description: "nexo dbg: one command on the live session, such as `break main`, `cont`, `bt`, `regs`, `mem <addr> 32`, or `do \"break f; cont; bt\"` (`help` lists them). Without --allow-changes only reading commands run; write, setreg, name, note, serve, calls, stdin, watch, hooks that set values and any unknown command need --allow-changes.".into(),
+            description: "nexo dbg: one command on the live session, such as `break main`, `cont`, `bt`, `regs`, `mem <addr> 32`, or `do \"break f; cont; bt\"` (`help` lists them). Without --allow-changes only reading commands run; write, setreg, call (and print of an expression that calls a function), name, note, serve, calls, stdin, watch, hooks that set values and any unknown command need --allow-changes.".into(),
             schema: json!({"type": "object", "properties": {
                 "command": {"type": "string"},
                 "session": {"type": "string", "description": "session id, when more than one is live"},

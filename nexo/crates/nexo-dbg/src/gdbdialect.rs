@@ -596,7 +596,6 @@ pub fn per_line(fmt: char, size: usize) -> usize {
 pub fn hint(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "list" | "l" => "`dis [addr] [N]` shows the code; a stop shows file:line when the program has DWARF lines",
-        "call" => "no calls into the program: `hook <name> ret <v>` changes a result, `print` works out values",
         "return" | "jump" => "`setreg rip <addr>` moves the program counter (asks); `finish` runs to the caller",
         "rwatch" | "awatch" => "`watch <addr> [len] r|w|x` stops on a read, a write or a fetch",
         "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program",

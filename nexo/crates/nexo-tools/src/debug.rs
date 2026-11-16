@@ -55,6 +55,7 @@ break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak on
 breaks, delete <id>, enable|disable <id>
 cont|step|next|finish|until <addr>  [--wait N]  resume; a stop shows where, why, changed regs, next instructions
 regs, setreg <reg> <v>  (asks)
+call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with these arguments and give its value; every register is put back after; a stop inside it says so, `kill call` ends it (asks)
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
 bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history

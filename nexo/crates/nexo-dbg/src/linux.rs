@@ -25,6 +25,13 @@ const SINGLESTEP: c_long = 9;
 const SYSCALL: c_long = 24;
 const GETREGS: c_long = 12;
 const SETREGS: c_long = 13;
+const GETFPREGS: c_long = 14;
+const SETFPREGS: c_long = 15;
+const GETREGSET: c_long = 0x4204;
+const SETREGSET: c_long = 0x4205;
+const NT_X86_XSTATE: u64 = 0x202;
+/// Room for the whole XSAVE area: x87, SSE, AVX, AVX-512 and AMX tiles fit in 16 KiB.
+const XSTATE_ROOM: usize = 16 << 10;
 const DETACH: c_long = 17;
 const GETEVENTMSG: c_long = 0x4201;
 const GETSIGINFO: c_long = 0x4202;
@@ -573,6 +580,44 @@ impl Target for Linux {
         pt(SETREGS, tid as i32, 0, u.as_ptr() as u64)
             .map_err(|e| os_err(&format!("set registers of thread {tid}"), e))?;
         Ok(())
+    }
+
+    fn vector_state(&mut self, tid: Tid) -> Option<Vec<u8>> {
+        // The XSAVE area (first byte 0), or the 512-byte FXSAVE one (first byte 1) on a kernel without it.
+        let mut b = vec![0u8; XSTATE_ROOM];
+        let mut iov = [b.as_mut_ptr() as u64, b.len() as u64];
+        if pt(GETREGSET, tid as i32, NT_X86_XSTATE, iov.as_mut_ptr() as u64).is_ok() {
+            b.truncate(iov[1] as usize);
+            b.insert(0, 0);
+            return Some(b);
+        }
+        let mut f = vec![0u8; 512];
+        pt(GETFPREGS, tid as i32, 0, f.as_mut_ptr() as u64).ok()?;
+        f.insert(0, 1);
+        Some(f)
+    }
+
+    fn set_vector_state(&mut self, tid: Tid, state: &[u8]) -> Result<()> {
+        let Some((kind, body)) = state.split_first() else { return Ok(()) };
+        let mut b = body.to_vec();
+        let r = if *kind == 0 {
+            let mut iov = [b.as_mut_ptr() as u64, b.len() as u64];
+            pt(SETREGSET, tid as i32, NT_X86_XSTATE, iov.as_mut_ptr() as u64)
+        } else {
+            pt(SETFPREGS, tid as i32, 0, b.as_mut_ptr() as u64)
+        };
+        r.map_err(|e| os_err(&format!("set the vector registers of thread {tid}"), e))?;
+        Ok(())
+    }
+
+    fn take_signal(&mut self, tid: Tid) -> u64 {
+        self.th.get_mut(&(tid as i32)).map_or(0, |t| std::mem::take(&mut t.sig) as u64)
+    }
+
+    fn give_signal(&mut self, tid: Tid, sig: u64) {
+        if let Some(t) = self.th.get_mut(&(tid as i32)) {
+            t.sig = sig as i32;
+        }
     }
 
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> usize {

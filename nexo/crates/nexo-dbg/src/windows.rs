@@ -521,6 +521,45 @@ impl Target for Windows {
         Ok(())
     }
 
+    fn vector_state(&mut self, tid: Tid) -> Option<Vec<u8>> {
+        let h = self.thread(tid).ok()?;
+        let mut c = ctx(CONTEXT_FLOATING_POINT_AMD64);
+        // SAFETY: as in `regs`.
+        if unsafe { GetThreadContext(h, &mut c.0) } == 0 {
+            return None;
+        }
+        // SAFETY: CONTEXT is plain data; its bytes are read while `c` lives.
+        let bytes =
+            unsafe { std::slice::from_raw_parts((&raw const c.0).cast::<u8>(), std::mem::size_of::<CONTEXT>()) };
+        Some(bytes.to_vec())
+    }
+
+    fn set_vector_state(&mut self, tid: Tid, state: &[u8]) -> Result<()> {
+        if state.len() != std::mem::size_of::<CONTEXT>() {
+            return fail("the saved vector registers do not fit a CONTEXT");
+        }
+        let h = self.thread(tid)?;
+        let mut c = ctx(0);
+        // SAFETY: `state` holds exactly the bytes of a CONTEXT, copied into an aligned one.
+        unsafe { std::ptr::copy_nonoverlapping(state.as_ptr(), (&raw mut c.0).cast::<u8>(), state.len()) };
+        c.0.ContextFlags = CONTEXT_FLOATING_POINT_AMD64;
+        // SAFETY: as in `set_regs`.
+        if unsafe { SetThreadContext(h, &c.0) } == 0 {
+            return Err(last_error("SetThreadContext"));
+        }
+        Ok(())
+    }
+
+    fn take_signal(&mut self, tid: Tid) -> u64 {
+        // the exception the thread stopped on is not passed to the program when it runs again
+        match &mut self.pending {
+            Some((_, t, status)) if *t == tid && *status != DBG_CONTINUE => {
+                std::mem::replace(status, DBG_CONTINUE) as u32 as u64
+            }
+            _ => 0,
+        }
+    }
+
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> usize {
         let mut done = 0usize;
         while done < buf.len() {

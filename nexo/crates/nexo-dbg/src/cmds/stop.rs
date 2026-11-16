@@ -61,6 +61,7 @@ impl Session {
             Why::Exec => "the program started another program (exec): addresses are new".to_string(),
             Why::Syscall(t) => format!("system call {t}"),
             Why::Hook(_, t) => format!("hook {t}"),
+            Why::Returned => "a call returned".to_string(),
             Why::Exited(c) => format!("the program exited with code {c}"),
             Why::Killed(s) => {
                 format!("the program was killed by {}", crate::engine::signal_name_on(self.t.os(), *s as u32))
@@ -80,6 +81,7 @@ impl Session {
             Why::Exec => "exec",
             Why::Syscall(_) => "syscall",
             Why::Hook(..) => "hook",
+            Why::Returned => "call",
             Why::Exited(_) => "exit",
             Why::Killed(_) => "killed",
         };
@@ -89,6 +91,7 @@ impl Session {
         };
         if matches!(why, Why::Exited(_) | Why::Killed(_)) {
             l.push(headline);
+            l.extend(self.call_gone());
             l.extend(self.unhit_lines());
             if let Some(o) = self.new_output_line() {
                 l.push(o);
@@ -102,6 +105,7 @@ impl Session {
         // a stop always selects the frame it stopped in: `up` and `frame N` read its callers
         self.frame = 0;
         l.push(format!("{headline} (thread {tid}, frame #0)"));
+        l.extend(self.call_note());
         if let Ok(r) = self.t.regs(tid) {
             let name = self.mods.label(r.rip, false).unwrap_or_default();
             let at = self.mods.source(r.rip).map(|s| format!("  ({s})")).unwrap_or_default();

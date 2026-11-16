@@ -153,6 +153,22 @@ pub trait Target {
     fn threads(&self) -> Vec<Tid>;
     fn regs(&mut self, tid: Tid) -> Result<Regs>;
     fn set_regs(&mut self, tid: Tid, regs: &Regs) -> Result<()>;
+    /// The x87, SSE and AVX registers of `tid` as the system saves them, for [`Target::set_vector_state`] to put
+    /// back; `None` where they are not read.
+    fn vector_state(&mut self, _tid: Tid) -> Option<Vec<u8>> {
+        None
+    }
+    fn set_vector_state(&mut self, _tid: Tid, _state: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    /// The signal (Linux, macOS) or exception status (Windows) `tid` gets when it runs again, taken away so it runs
+    /// without it: 0 when there is none. A fault comes back by itself when its instruction runs again.
+    fn take_signal(&mut self, _tid: Tid) -> u64 {
+        0
+    }
+    /// Hand back what [`Target::take_signal`] took. Only Linux keeps a signal across other stops; elsewhere this
+    /// does nothing.
+    fn give_signal(&mut self, _tid: Tid, _sig: u64) {}
     /// Read memory as it is (breakpoint bytes included); the count read stops at the first byte that cannot be read.
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> usize;
     fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<()>;

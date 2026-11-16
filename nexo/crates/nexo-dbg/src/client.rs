@@ -154,7 +154,9 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let Some(first) = rest.first() else { return DbgClass::Control };
     let head = crate::gdbdialect::base_name(first);
     match head {
-        "attach" | "connect" | "write" | "setreg" => DbgClass::Change,
+        "attach" | "connect" | "write" | "setreg" | "call" => DbgClass::Change,
+        // an expression that calls a function of the program runs that code
+        "print" | "p" | "output" if crate::expr::has_call(&rest[1..].join(" ")) => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
         "hook" if rest.iter().any(|w| w == "set" || w == "ret") => DbgClass::Change,
         "hook" => DbgClass::Control,
@@ -330,6 +332,7 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
     if !READ_ALLOWED.contains(&name) {
         return Some(match name {
             "write" | "setreg" => format!("`{name}` writes into the program"),
+            "call" => "`call` runs code of the program".to_string(),
             "name" | "note" => format!("`{name}` saves a name or note"),
             "attach" | "connect" => format!("`{name}` attaches to a process or a remote stub"),
             "run" => "`run` starts a program".to_string(),
@@ -342,6 +345,9 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
     }
     let rest = &words[1..];
     match name {
+        "print" | "p" | "output" if crate::expr::has_call(&rest.join(" ")) => {
+            Some(format!("`{name}` of an expression that calls a function runs code of the program"))
+        }
         "hook" if rest.iter().any(|w| w == "set" || w == "ret") => {
             Some("a hook that sets an argument or the result changes the program".to_string())
         }
@@ -856,6 +862,19 @@ mod tests {
         assert_eq!(dbg_class(&words("nosuch")), DbgClass::Other);
         assert_eq!(dbg_class(&["do".into(), "break f; cont; setreg rax 1".into()]), DbgClass::Change);
         assert_eq!(dbg_class(&["do".into(), "break f; run x".into()]), DbgClass::Other);
+    }
+
+    #[test]
+    fn a_call_into_the_program_is_classed_as_a_change_and_a_cast_is_not() {
+        for c in ["call add(2, 3)", "print add(1, 2) + 1", "p hash(\"abc\")", "output f(1)", "call *(0x401000)(1)"] {
+            assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Change, "{c}");
+            assert!(read_only_refusal(&crate::split_words(c)).is_some_and(|r| r.contains("runs code")), "{c}");
+        }
+        for c in ["print (int)x", "print sizeof(int)", "print *(u32*)(rdi+8)", "p (rax + 8) * 2"] {
+            assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Control, "{c}");
+            assert!(read_only_refusal(&crate::split_words(c)).is_none(), "{c}");
+        }
+        assert_eq!(dbg_class(&["do".into(), "break f; cont; call g(1)".into()]), DbgClass::Change);
     }
 
     fn script(s: &str) -> Vec<String> {

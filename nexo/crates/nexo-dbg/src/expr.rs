@@ -25,6 +25,17 @@ pub trait Env {
     fn missing(&mut self, _name: &str) -> Option<String> {
         None
     }
+    /// Run the function at `target` in the program with these arguments and give back what it returns in rax.
+    fn call(&mut self, _target: u64, _args: &[Arg]) -> Result<u64> {
+        fail("a call into the program runs from `call <expr>` and `print <expr>`, not from here")
+    }
+}
+
+/// An argument of a call into the program: a number, or text in quotes that the call gets the address of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Arg {
+    Num(u64),
+    Text(Vec<u8>),
 }
 
 /// A C type as far as an address calculation needs it: the size of what is at the end of the pointers.
@@ -165,6 +176,8 @@ enum Tok {
     Num(u64),
     Id(String),
     Op(&'static str),
+    /// Text in double quotes, its escapes worked out (`\n`, `\t`, `\0`, `\\`, `\"`, `\xNN`).
+    Str(Vec<u8>),
 }
 
 const OPS: [&str; 27] = [
@@ -195,6 +208,10 @@ fn lex(s: &str) -> Result<Vec<Tok>> {
         } else if c == '\'' && i + 2 < b.len() && b[i + 2] == '\'' {
             out.push(Tok::Num(b[i + 1] as u64));
             i += 3;
+        } else if c == '"' {
+            let (text, next) = string_at(&b, i + 1)?;
+            out.push(Tok::Str(text));
+            i = next;
         } else if c.is_alphabetic() || matches!(c, '_' | '$' | '.' | '@' | ':') {
             let st = i;
             i += 1;
@@ -214,6 +231,92 @@ fn lex(s: &str) -> Result<Vec<Tok>> {
         }
     }
     Ok(out)
+}
+
+/// The bytes of a string whose text starts at `from` (after its `"`), and the index after its closing `"`.
+fn string_at(b: &[char], from: usize) -> Result<(Vec<u8>, usize)> {
+    let mut out = Vec::new();
+    let mut i = from;
+    while i < b.len() {
+        let c = b[i];
+        i += 1;
+        match c {
+            '"' => return Ok((out, i)),
+            '\\' => {
+                let Some(&e) = b.get(i) else { break };
+                i += 1;
+                match e {
+                    'n' => out.push(b'\n'),
+                    't' => out.push(b'\t'),
+                    'r' => out.push(b'\r'),
+                    '0' => out.push(0),
+                    'x' => {
+                        let hex: String = b[i..].iter().take(2).take_while(|c| c.is_ascii_hexdigit()).collect();
+                        let Ok(v) = u8::from_str_radix(&hex, 16) else {
+                            return fail("`\\x` in a string needs one or two hex digits");
+                        };
+                        out.push(v);
+                        i += hex.len();
+                    }
+                    other => {
+                        let mut buf = [0u8; 4];
+                        out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+                    }
+                }
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    fail("a string has no closing `\"`")
+}
+
+/// The expression calls a function of the program (`f(1)`, `(*p)(2)`, `0x401000(3)`) or has text in quotes, so
+/// working it out runs code of the program. False when it cannot be read at all.
+pub fn has_call(src: &str) -> bool {
+    let Ok(t) = lex(src) else { return false };
+    if t.iter().any(|x| matches!(x, Tok::Str(_))) {
+        return true;
+    }
+    t.windows(2).enumerate().any(|(i, w)| {
+        if w[1] != Tok::Op("(") {
+            return false;
+        }
+        match &w[0] {
+            Tok::Id(n) => n != "sizeof",
+            Tok::Num(_) | Tok::Op("]") => true,
+            // `(char*)(p)` is a cast; `(f)(1)` and `(*p)(2)` are calls
+            Tok::Op(")") => !is_cast_before(&t, i),
+            _ => false,
+        }
+    })
+}
+
+/// The `)` at `close` ends a C type in parentheses: what is between it and its `(` is type words and `*` only.
+fn is_cast_before(t: &[Tok], close: usize) -> bool {
+    let mut depth = 0usize;
+    let mut j = close;
+    loop {
+        match &t[j] {
+            Tok::Op(")") => depth += 1,
+            Tok::Op("(") => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        if j == 0 {
+            return false;
+        }
+        j -= 1;
+    }
+    let inner = &t[j + 1..close];
+    inner.iter().any(|x| matches!(x, Tok::Id(n) if is_type_word(n)))
+        && inner.iter().all(|x| matches!(x, Tok::Op("*")) || matches!(x, Tok::Id(n) if is_type_word(n)))
 }
 
 struct P<'a> {
@@ -415,16 +518,45 @@ impl P<'_> {
 
     fn postfix(&mut self) -> Result<Val> {
         let mut v = self.atom()?;
-        // `p[i]` reads element i of what a typed pointer points at
-        while self.eat("[") {
-            let i = self.ternary()?;
-            if !self.eat("]") {
-                return fail("`[` needs a `]`");
+        loop {
+            // `p[i]` reads element i of what a typed pointer points at
+            if self.eat("[") {
+                let i = self.ternary()?;
+                if !self.eat("]") {
+                    return fail("`[` needs a `]`");
+                }
+                let (step, ty) = if v.ty.is_ptr() { (v.ty.step(), v.ty.pointee().with_plain(v.ty)) } else { (8, U64) };
+                v = self.deref(v.v.wrapping_add(i.v.wrapping_mul(step)), ty)?;
+            } else if self.eat("(") {
+                // `f(a, b)` runs the function at that address in the program
+                let args = self.call_args()?;
+                v = plain(self.env.call(v.v, &args)?);
+            } else {
+                return Ok(v);
             }
-            let (step, ty) = if v.ty.is_ptr() { (v.ty.step(), v.ty.pointee().with_plain(v.ty)) } else { (8, U64) };
-            v = self.deref(v.v.wrapping_add(i.v.wrapping_mul(step)), ty)?;
         }
-        Ok(v)
+    }
+
+    /// The arguments of a call, after its `(`, through its `)`.
+    fn call_args(&mut self) -> Result<Vec<Arg>> {
+        let mut args = Vec::new();
+        if self.eat(")") {
+            return Ok(args);
+        }
+        loop {
+            if let Some(Tok::Str(s)) = self.t.get(self.i).cloned() {
+                self.i += 1;
+                args.push(Arg::Text(s));
+            } else {
+                args.push(Arg::Num(self.ternary()?.v));
+            }
+            if self.eat(")") {
+                return Ok(args);
+            }
+            if !self.eat(",") {
+                return fail("the arguments of a call are separated by `,` and end with `)`");
+            }
+        }
     }
 
     fn atom(&mut self) -> Result<Val> {
@@ -466,6 +598,7 @@ impl P<'_> {
                 }
                 Ok(v)
             }
+            Some(Tok::Str(_)) => fail("text in quotes stands only as an argument of a call: `call f(\"text\")`"),
             Some(t) => fail(format!("unexpected {t:?} in the expression")),
             None => fail("the expression ends too soon"),
         }
@@ -565,6 +698,7 @@ mod tests {
     #[derive(Default)]
     struct T {
         vars: HashMap<String, Val>,
+        calls: Vec<(u64, Vec<Arg>)>,
     }
     impl Env for T {
         fn reg(&mut self, n: &str) -> Option<u64> {
@@ -599,6 +733,10 @@ mod tests {
         fn set_var(&mut self, n: &str, v: Val) -> bool {
             self.vars.insert(n.to_string(), v);
             true
+        }
+        fn call(&mut self, target: u64, args: &[Arg]) -> Result<u64> {
+            self.calls.push((target, args.to_vec()));
+            Ok(target + args.len() as u64)
         }
     }
 
@@ -679,5 +817,46 @@ mod tests {
         let mut e = T::default();
         assert_eq!(v("_ZN6LCRYPT7encryptEv.cold+0x59d", &mut e), 0x4100 + 0x59d);
         assert_eq!(v("(_ZN6LCRYPT7encryptEv.cold + 0x59d)", &mut e), 0x4100 + 0x59d);
+    }
+
+    #[test]
+    fn a_call_passes_numbers_and_text_and_gives_back_its_result() {
+        let mut e = T::default();
+        assert_eq!(v("main(1, rax + 1, \"a\\n\\x41\\0\")", &mut e), 0x4003);
+        assert_eq!(e.calls, [(0x4000, vec![Arg::Num(1), Arg::Num(8), Arg::Text(b"a\nA\0".to_vec())])]);
+        // the result takes part in the expression, a call through a pointer and an empty list included
+        assert_eq!(v("main() + 1", &mut e), 0x4001);
+        assert_eq!(v("(*(u64*)0x2008)(2)", &mut e), 0x1008 + 1);
+        assert!(value("\"text\"", &mut e).unwrap_err().to_string().contains("argument of a call"));
+        assert!(value("main(1 2)", &mut e).is_err());
+        assert!(value("main(\"open", &mut e).unwrap_err().to_string().contains("closing"));
+    }
+
+    #[test]
+    fn has_call_tells_a_call_from_a_cast_or_sizeof() {
+        for c in ["f(1)", "main(\"x\")", "(*p)(2)", "0x401000(3)", "(f)(1)", "t[1](2)", "x + g()", "\"s\""] {
+            assert!(has_call(c), "{c}");
+        }
+        for c in ["(char*)(p)", "(unsigned long)(rax)", "sizeof(int)", "*(u32*)(rdi+8)", "rax + 8", "(rax) + (main)"] {
+            assert!(!has_call(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_call_elsewhere_than_call_and_print_says_where_it_runs() {
+        struct NoCalls;
+        impl Env for NoCalls {
+            fn reg(&mut self, _: &str) -> Option<u64> {
+                None
+            }
+            fn sym(&mut self, _: &str) -> Option<u64> {
+                Some(0x10)
+            }
+            fn load(&mut self, _: u64, _: usize) -> Option<u64> {
+                None
+            }
+        }
+        let e = value("f(1)", &mut NoCalls).unwrap_err().to_string();
+        assert!(e.contains("`call <expr>` and `print <expr>`"), "{e}");
     }
 }

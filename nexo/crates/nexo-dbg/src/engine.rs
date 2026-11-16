@@ -13,6 +13,8 @@ use crate::platform::{Event, Fault, HwSlot, Os, Resume, Stop, Target, Tid};
 use crate::regs::Regs;
 use crate::{fail, Result};
 
+mod call;
+
 /// Stops remembered for `history`.
 pub const HISTORY: usize = 64;
 /// Bytes of the program's output kept.
@@ -75,6 +77,8 @@ pub enum Why {
     Syscall(String),
     /// A hook with `stop`: its id and its line.
     Hook(u32, String),
+    /// A call made by `call` or `print` came back to its return address.
+    Returned,
     Exited(i32),
     Killed(i32),
 }
@@ -151,6 +155,8 @@ pub struct Session {
     /// Lines ever written to the log, and how many of them an answer already showed.
     pub log_total: u64,
     pub log_shown: u64,
+    /// The call into the program under way (`call`, `print f(x)`), until it returns or ends.
+    calling: Option<call::Pending>,
 }
 
 /// A stop in the words of the header line of an answer: its number, the event, the place and the address.
@@ -433,6 +439,7 @@ impl Session {
             displays: Vec::new(),
             log_total: 0,
             log_shown: 0,
+            calling: None,
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -495,6 +502,9 @@ impl Session {
             w.insert(t.addr);
         }
         w.extend(self.hook_addrs());
+        if let Some(p) = &self.calling {
+            w.insert(p.ret);
+        }
         w
     }
 
@@ -531,6 +541,10 @@ impl Session {
         }
         for tid in self.t.threads() {
             let Ok(r) = self.t.regs(tid) else { continue };
+            // a call that just starts at a breakpoint stops there, as gdb does
+            if self.call_starts_at(tid, r.rip) {
+                continue;
+            }
             if !wanted.contains(&r.rip) {
                 continue;
             }
@@ -721,6 +735,9 @@ impl Session {
 
     /// A thread is at one of our breakpoints: does it stop?
     fn hit(&mut self, tid: Tid, addr: u64) -> Result<Option<(Tid, Why)>> {
+        if self.call_returned(tid, addr)? {
+            return Ok(Some((tid, Why::Returned)));
+        }
         // the trace and the hooks see every pass, whatever a breakpoint there decides
         let traced = self.hook_hit(tid, addr)?;
         let mut stop_ids: Vec<u32> = Vec::new();
@@ -984,6 +1001,12 @@ impl Session {
         loop {
             let slice = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(200));
             if let Some((tid, why)) = self.poll(slice)? {
+                if let Some(text) = self.call_under_way() {
+                    return Ok(match self.call_stop(tid, why) {
+                        call::Called::Value(v) => self.call_value(&text, tid, v),
+                        call::Called::Told(o) => o,
+                    });
+                }
                 return Ok(self.stopped(tid, why));
             }
             if Instant::now() >= deadline {

@@ -51,6 +51,8 @@ pub const X86_THREAD_STATE64: c_int = 4;
 pub const X86_THREAD_STATE64_COUNT: u32 = 42;
 pub const X86_DEBUG_STATE64: c_int = 11;
 pub const X86_DEBUG_STATE64_COUNT: u32 = 16;
+pub const X86_FLOAT_STATE64: c_int = 5;
+pub const X86_FLOAT_STATE64_COUNT: u32 = 131;
 pub const TASK_DYLD_INFO: u32 = 17;
 pub const TASK_DYLD_INFO_COUNT: u32 = 5;
 

@@ -37,7 +37,7 @@ impl Session {
         }
     }
 
-    pub(super) fn frames(&mut self, max: usize) -> Result<Vec<crate::modules::Frame>> {
+    pub(crate) fn frames(&mut self, max: usize) -> Result<Vec<crate::modules::Frame>> {
         let r = self.tid_regs()?;
         // a library may have come in since the last look: the chain goes through it
         self.mods.refresh(&mut *self.t);
@@ -66,12 +66,16 @@ impl Session {
         self.go(Run { step: None, temp: Some(Temp { addr, min_sp: 0, kind: TempKind::Until }) }, w)
     }
 
-    pub(super) fn cmd_kill(&mut self) -> Result<Output> {
+    pub(super) fn cmd_kill(&mut self, a: &Args) -> Result<Output> {
+        if a.pos.first().is_some_and(|w| w == "call") {
+            return self.call_abort();
+        }
         self.uninsert_all();
         self.t.kill()?;
         self.state = State::Exited;
         self.exit = Some("killed by the debugger".into());
         let mut l = vec!["program killed".to_string()];
+        l.extend(self.call_gone());
         l.extend(self.unhit_lines());
         Ok(rows("kill", l, json!({})))
     }
@@ -103,13 +107,19 @@ impl Session {
     }
 
     pub(super) fn cmd_detach(&mut self) -> Result<Output> {
+        // a call stopped half way would go on in the program without its return breakpoint
+        let mut l = Vec::new();
+        if self.state == State::Stopped && self.call_under_way().is_some() {
+            l.extend(self.call_abort()?.rows.into_iter().map(|r| r.text));
+        }
         if self.state == State::Stopped {
             self.uninsert_all();
         }
         self.t.detach()?;
         self.state = State::Exited;
         self.exit = Some("detached".into());
-        Ok(rows("detach", vec!["the program goes on without the debugger".into()], json!({})))
+        l.push("the program goes on without the debugger".into());
+        Ok(rows("detach", l, json!({})))
     }
 
     /// Several commands in one call: `do "break f; cont; args; bt"`, or a whole gdb script (one command per line,

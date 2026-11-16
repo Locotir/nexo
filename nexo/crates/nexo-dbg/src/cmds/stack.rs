@@ -10,13 +10,28 @@ impl Session {
         self.need_stopped()?;
         let src = a.pos.join(" ");
         let view = a.flag("as");
-        if view.is_none() {
+        let calls = crate::expr::has_call(&src);
+        if view.is_none() && !calls {
             if let Some(r) = self.print_var(&src) {
                 return r;
             }
         }
-        let val = self.eval_any(&src)?;
+        let tid = self.cur;
+        let val = if calls {
+            match self.eval_calling(&src, a.wait()?)? {
+                Ok(v) => v,
+                // a call that did not come back with a value: what happened instead
+                Err(told) => return Ok(told),
+            }
+        } else {
+            self.eval_any(&src)?
+        };
         let v = val.v;
+        if calls && view.is_none() {
+            let mut l = vec![format!("{src} = {}", self.value_text(v)), self.back_line(tid)];
+            l.extend(self.new_output_line());
+            return Ok(rows("print", l, json!({"value": v, "thread": tid})));
+        }
         // `--as string` and `--as vector` read the object at that address as libstdc++ lays it out
         if let Some(kind) = view.filter(|k| *k != "str") {
             if kind.starts_with("string") || kind.starts_with("std::") || kind.starts_with("vector") {
@@ -36,6 +51,25 @@ impl Session {
             s.push_str(&format!(" {t}"));
         }
         Ok(rows("print", vec![s], json!({"value": v})))
+    }
+
+    /// `call f(1, "abc")`: run a function of the stopped program and give its value; `print` does the same when its
+    /// expression calls one.
+    pub(super) fn cmd_call(&mut self, a: &Args) -> Result<Output> {
+        if a.pos.is_empty() {
+            return usage("call <function>(<args>)   (numbers, expressions and \"text\" as arguments)");
+        }
+        let src = a.pos.join(" ");
+        if !crate::expr::has_call(&src) {
+            return usage(format!(
+                "`{src}` calls nothing: `call {src}(...)` runs it with those arguments, `print {src}` gives its value"
+            ));
+        }
+        let mut o = self.cmd_print(a)?;
+        if o.op == "print" {
+            o.op = "call";
+        }
+        Ok(o)
     }
 
     /// `ptype <type|variable>`: the type, its size and fields, or the type of a variable of the stopped program.
@@ -117,7 +151,13 @@ impl Session {
     }
 
     pub fn frame_lines(&mut self, f: &[crate::modules::Frame]) -> Vec<String> {
-        f.iter().enumerate().map(|(i, fr)| self.frame_line(i, fr)).collect()
+        // the frames past the return address of a call made by the debugger are the stopped code's, unwound from
+        // registers the call changed: the chain ends there with what the thread was doing before the call
+        let cut = self.call_cut(f);
+        let shown = cut.as_ref().map_or(f.len(), |(i, _)| *i);
+        let mut l: Vec<String> = f[..shown].iter().enumerate().map(|(i, fr)| self.frame_line(i, fr)).collect();
+        l.extend(cut.map(|(_, line)| line));
+        l
     }
 
     pub(super) fn cmd_dis(&mut self, a: &Args) -> Result<Output> {

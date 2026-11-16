@@ -403,6 +403,11 @@ impl Session {
             let l = self.displays.iter().map(|(i, w)| format!("{i}: {}", w.join(" "))).collect();
             return Ok(rows("display", l, json!({})));
         }
+        if crate::expr::has_call(&rest.join(" ")) {
+            return usage(
+                "a display is worked out at every stop and runs no function of the program: `call f(x)` runs one now",
+            );
+        }
         let simple = fmt.is_some_and(|f| f.len() == 1 && "xduotacfz".contains(f));
         let head = match fmt {
             Some(f) if !simple => format!("x/{f}"),
