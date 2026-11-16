@@ -53,6 +53,8 @@ pub const X86_DEBUG_STATE64: c_int = 11;
 pub const X86_DEBUG_STATE64_COUNT: u32 = 16;
 pub const X86_FLOAT_STATE64: c_int = 5;
 pub const X86_FLOAT_STATE64_COUNT: u32 = 131;
+pub const X86_AVX_STATE64: c_int = 17;
+pub const X86_AVX_STATE64_COUNT: u32 = 211;
 pub const TASK_DYLD_INFO: u32 = 17;
 pub const TASK_DYLD_INFO_COUNT: u32 = 5;
 

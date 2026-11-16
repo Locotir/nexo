@@ -55,7 +55,7 @@ attach <pid>  attach (asks)
 break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once
 breaks, delete <id>, enable|disable <id>
 cont|step|next|finish|until <addr>  [--wait N]  resume; a stop shows where, why, changed regs, next instructions
-regs, setreg <reg> <v>  (asks)
+regs [name|xmm0 --as f64|f32|u32x4] [--all], setreg <reg> <v>, setreg xmm0 <lanes> [--as f32]  (asks)
 call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with these arguments and give its value; every register is put back after; a stop inside it says so, `kill call` ends it (asks)
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
 bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
@@ -63,8 +63,8 @@ watch <addr|A..B> [len] [w|r|x] [hw|page|step] [if expr] [after N] [log [text]] 
 catch <signal>, stdin <text>, out, history
 dump <A..B|A+LEN|fn> [path], dump module <name> [path]  memory to a file (a range raw at its address, a whole module rebuilt as ELF/PE); the answer names the `bin` call that reads it (asks)
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
-ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return
-hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args, result, counters; set/ret change the program
+ltrace [names], ltrace show [names], ltrace off  library calls with typed args (printf/scanf `...` read off the format) and result, written at return
+hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args (ints, floats, stack ones), result, counters; set/ret change the program
 cover [funcs], cover show [func], cover save <A>, cover diff <A> <B>|now, cover off  basic blocks passed in the program's own code
 do \"c1; c2\"  several commands in one call
 gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info registers|breakpoints|frame|proc mappings, break *(f+0x10), `commands N ... end` (log, x, printf, continue at every hit, no round trip); a whole gdb script (newlines or `;`, `file p` or `run p args` last) is one call; `print a --as string|vector`

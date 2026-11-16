@@ -1098,17 +1098,26 @@ impl Target for Mac {
     }
 
     fn vector_state(&mut self, tid: Tid) -> Option<Vec<u8>> {
-        let mut s = vec![0u32; X86_FLOAT_STATE64_COUNT as usize];
-        let mut n = X86_FLOAT_STATE64_COUNT;
-        // SAFETY: `s` holds the `n` words the call may write.
-        let kr = unsafe { thread_get_state(tid as Port, X86_FLOAT_STATE64, s.as_mut_ptr(), &mut n) };
-        (kr == KERN_SUCCESS).then(|| s[..n as usize].iter().flat_map(|w| w.to_le_bytes()).collect())
+        // The AVX state (the float state, then the upper ymm halves) where the CPU has it, else the float state.
+        let flavors = [(X86_AVX_STATE64, X86_AVX_STATE64_COUNT), (X86_FLOAT_STATE64, X86_FLOAT_STATE64_COUNT)];
+        for (flavor, count) in flavors {
+            let mut s = vec![0u32; count as usize];
+            let mut n = count;
+            // SAFETY: `s` holds the `n` words the call may write.
+            let kr = unsafe { thread_get_state(tid as Port, flavor, s.as_mut_ptr(), &mut n) };
+            if kr == KERN_SUCCESS {
+                return Some(s[..n as usize].iter().flat_map(|w| w.to_le_bytes()).collect());
+            }
+        }
+        None
     }
 
     fn set_vector_state(&mut self, tid: Tid, state: &[u8]) -> Result<()> {
         let s: Vec<u32> = state.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+        // the flavor `vector_state` read, told by its length
+        let flavor = if s.len() >= X86_AVX_STATE64_COUNT as usize { X86_AVX_STATE64 } else { X86_FLOAT_STATE64 };
         // SAFETY: `s` holds the words `thread_get_state` gave.
-        let kr = unsafe { thread_set_state(tid as Port, X86_FLOAT_STATE64, s.as_ptr(), s.len() as u32) };
+        let kr = unsafe { thread_set_state(tid as Port, flavor, s.as_ptr(), s.len() as u32) };
         if kr != KERN_SUCCESS {
             return fail(format!("set the vector registers of thread {tid}: {}", kr_text(kr)));
         }

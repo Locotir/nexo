@@ -17,6 +17,7 @@ mod dbg_linux;
 mod dbg_macos;
 mod dbg_windows;
 mod dump_mem;
+mod float_args;
 mod follow_fork;
 mod frames;
 mod gdb_script;

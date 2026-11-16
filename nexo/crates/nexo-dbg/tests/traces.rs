@@ -115,7 +115,7 @@ fn ltrace_writes_each_library_call_with_typed_arguments_and_its_result() {
     assert!(t.contains("open(\"/nonexistent/nexo-hooks\", 0, ...) = -1"), "{t}");
     assert!(t.contains("write(1, 0x") && t.contains(", 6) = 6"), "{t}");
     assert!(t.contains("atoi(\"12\") = 12"), "{t}");
-    assert!(t.contains("printf(\"r=%d v=%d fd=%d long=%d\\n\", ...) = 21"), "{t}");
+    assert!(t.contains("printf(\"r=%d v=%d fd=%d long=%d\\n\", 1, 7, -1, 1) = 21"), "{t}");
     // never returns to its caller: said so, not made up (on macOS dyld calls main itself, not through an import)
     if cfg!(target_os = "linux") {
         assert!(t.contains("__libc_start_main(") && t.contains("= ? (its return was not seen)"), "{t}");

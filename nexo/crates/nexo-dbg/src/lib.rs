@@ -4,6 +4,7 @@
 //!
 //! Nothing here hides the debugger from the program it runs.
 
+mod callargs;
 mod client;
 mod cmds;
 mod commands;
@@ -35,6 +36,7 @@ mod syscalls;
 mod tests_harden;
 mod trace;
 mod vars;
+mod vector;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
