@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! `run <exe> <<< "A\x00\xff\n"` carries raw bytes (a NUL, a byte above 0x7f) to the program's input.
 //! Skipped without `cc`.
 

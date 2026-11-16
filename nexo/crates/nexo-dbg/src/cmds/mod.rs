@@ -6,7 +6,7 @@ use std::time::Duration;
 use nexo_bin::{decode_live, parse_addr, parse_pattern, LiveIns, Output, Place};
 use serde_json::json;
 
-use crate::engine::{rows, signal_name, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind, Why, Wp, HISTORY};
+use crate::engine::{rows, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind, Why, Wp, HISTORY};
 use crate::platform::{Access, Fault, HwSlot, Os, Tid};
 use crate::{fail, usage, Result};
 

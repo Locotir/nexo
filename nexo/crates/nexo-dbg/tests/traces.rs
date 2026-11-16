@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! `strace`, `ltrace`, hooks and coverage on a small C program of our own (skipped when there is no C
 //! compiler). Every line checked is one the program really produced.
 
@@ -36,7 +36,10 @@ fn build(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     std::fs::write(&src, SRC).unwrap();
     let exe = dir.join("hooks");
     let ok = std::process::Command::new(cc)
-        .args(["-g", "-O0", "-no-pie", "-o"])
+        .args(["-g", "-O0"])
+        // a fixed load address on Linux; a macOS program is always position independent
+        .args(if cfg!(target_os = "linux") { &["-no-pie"][..] } else { &[] })
+        .arg("-o")
         .arg(&exe)
         .arg(&src)
         .status()
@@ -44,6 +47,11 @@ fn build(dir: &std::path::Path) -> Option<std::path::PathBuf> {
         .success();
     (ok && exe.is_file()).then_some(exe)
 }
+
+/// Whether the debugger has the program's own types and names. On macOS `cc -g` leaves the DWARF in the object
+/// files (a debug map), which nexo does not read yet (MACOS-MAP re:M9): a hook on the program's own function has no
+/// prototype there and shows the raw argument registers in hex. Library functions keep their known prototypes.
+const DWARF: bool = cfg!(target_os = "linux");
 
 fn start(args: &[&str]) -> Option<(tempfile::TempDir, Session)> {
     let dir = tempfile::tempdir().unwrap();
@@ -55,6 +63,9 @@ fn start(args: &[&str]) -> Option<(tempfile::TempDir, Session)> {
     Some((dir, s))
 }
 
+// The system call tests are Linux only: macOS has no system call tracing a user can turn on (dtruss needs root
+// and System Integrity Protection off), and there the command says so (`strace_on_macos_says_why_and_what_to_use`).
+#[cfg(target_os = "linux")]
 #[test]
 fn strace_writes_down_each_system_call_with_its_arguments_and_result() {
     let Some((_d, mut s)) = start(&[]) else { return };
@@ -72,6 +83,7 @@ fn strace_writes_down_each_system_call_with_its_arguments_and_result() {
     assert!(s.exec(&split_words("strace show nonsense")).is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn strace_with_a_group_keeps_only_that_group() {
     let Some((_d, mut s)) = start(&[]) else { return };
@@ -82,6 +94,7 @@ fn strace_with_a_group_keeps_only_that_group() {
     assert!(!t.contains("exit_group") && !t.contains("brk("), "{t}");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn catch_syscall_stops_at_the_start_and_the_end_of_the_call() {
     let Some((_d, mut s)) = start(&[]) else { return };
@@ -108,8 +121,10 @@ fn ltrace_writes_each_library_call_with_typed_arguments_and_its_result() {
     assert!(t.contains("write(1, 0x") && t.contains(", 6) = 6"), "{t}");
     assert!(t.contains("atoi(\"12\") = 12"), "{t}");
     assert!(t.contains("printf(\"r=%d v=%d fd=%d long=%d\\n\", ...) = 21"), "{t}");
-    // never returns to its caller: said so, not made up
-    assert!(t.contains("__libc_start_main(") && t.contains("= ? (its return was not seen)"), "{t}");
+    // never returns to its caller: said so, not made up (on macOS dyld calls main itself, not through an import)
+    if cfg!(target_os = "linux") {
+        assert!(t.contains("__libc_start_main(") && t.contains("= ? (its return was not seen)"), "{t}");
+    }
     let f = run(&mut s, "ltrace show atoi");
     assert!(f.contains("atoi(") && !f.contains("printf("), "{f}");
 }
@@ -130,14 +145,17 @@ fn ltrace_with_names_keeps_only_those_and_refuses_an_unknown_one() {
 fn a_hook_writes_typed_arguments_the_result_a_backtrace_and_counts() {
     let Some((_d, mut s)) = start(&["12"]) else { return };
     let h = run(&mut s, "hook check bt 2");
-    assert!(h.contains("hook #") && h.contains("check(i32 x)"), "{h}");
+    let proto = if DWARF { "check(i32 x)" } else { "check: no prototype: raw registers" };
+    assert!(h.contains("hook #") && h.contains(proto), "{h}");
     let a = run(&mut s, "hook atoi");
     assert!(a.contains("int atoi(const char * nptr)"), "{a}");
     let end = run(&mut s, "cont");
     assert!(end.contains("exited with code 1"), "{end}");
     assert!(end.contains("hook: ") && end.contains("new lines"), "{end}");
     let t = run(&mut s, "hook show");
-    assert!(t.contains("check(x=12) from main") && t.contains("[hit 1] = 1"), "{t}");
+    let (call, result) =
+        if DWARF { ("check(x=12) from main", "[hit 1] = 1") } else { ("check(rdi=0xc,", "[hit 1] = 0x1") };
+    assert!(t.contains(call) && t.contains("from main") && t.contains(result), "{t}");
     assert!(t.contains("atoi(nptr=\"12\")") && t.contains("= 12"), "{t}");
     let l = run(&mut s, "hooks");
     assert!(l.contains("check entries 1 returns 1"), "{l}");
@@ -156,8 +174,13 @@ fn a_hook_can_change_an_argument_and_the_result_and_says_so() {
     // 3 is not above 10, but the hook made it 50: check said yes and big ran
     assert!(end.contains("exited with code 1"), "{end}");
     let t = run(&mut s, "hook show");
-    assert!(t.contains("check(x=3) [changed arg0=0x32]") && t.contains("= 1"), "{t}");
-    assert!(t.contains("big() [hit 1] = 7, changed to 42"), "{t}");
+    if DWARF {
+        assert!(t.contains("check(x=3) [changed arg0=0x32]") && t.contains("= 1"), "{t}");
+        assert!(t.contains("big() [hit 1] = 7, changed to 42"), "{t}");
+    } else {
+        assert!(t.contains("check(rdi=0x3,") && t.contains("[changed arg0=0x32] [hit 1] = 0x1"), "{t}");
+        assert!(t.contains("big(") && t.contains("[hit 1] = 0x7, changed to 0x2a"), "{t}");
+    }
     let o = run(&mut s, "out");
     assert!(o.contains("r=1 v=42"), "{o}");
 }
@@ -167,11 +190,13 @@ fn a_hook_with_stop_stops_the_program_at_the_entry() {
     let Some((_d, mut s)) = start(&["12"]) else { return };
     run(&mut s, "hook check stop");
     let a = run(&mut s, "cont");
-    assert!(a.contains("hook #") && a.contains("check(x=12)"), "{a}");
+    let call = if DWARF { "check(x=12)" } else { "check(rdi=0xc," };
+    assert!(a.contains("hook #") && a.contains(call), "{a}");
     assert_eq!(s.last_stop.as_ref().map(|x| x.event.as_str()), Some("hook"));
     let end = run(&mut s, "cont");
     assert!(end.contains("exited with code 1"), "{end}");
-    assert!(run(&mut s, "hook show").contains("check(x=12) [hit 1] = 1"));
+    let shown = run(&mut s, "hook show");
+    assert!(shown.contains(call) && shown.contains(if DWARF { "[hit 1] = 1" } else { "[hit 1] = 0x1" }), "{shown}");
     run(&mut s, "hook del all");
     assert!(run(&mut s, "hooks").contains("no hooks"));
 }
@@ -201,4 +226,18 @@ fn cover_counts_the_blocks_passed_and_diff_tells_two_runs_apart() {
     assert!(d.contains("only now ") && d.contains(" small"), "{d}");
     assert!(lo.exec(&split_words("cover diff high nosuch")).is_err());
     assert!(lo.exec(&split_words("cover save ../x")).is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn strace_on_macos_says_why_and_what_to_use() {
+    let Some((_d, mut s)) = start(&[]) else { return };
+    for cmd in ["strace", "strace file", "catch syscall write"] {
+        let e = s.exec(&split_words(cmd)).unwrap_err().to_string();
+        assert!(e.contains("system call tracing is not available on macOS") && e.contains("`ltrace`"), "{cmd}: {e}");
+    }
+    // what it points to works: the library calls are written
+    run(&mut s, "ltrace write");
+    assert!(run(&mut s, "cont").contains("exited with code 0"));
+    assert!(run(&mut s, "ltrace show").contains("write(1, 0x"));
 }

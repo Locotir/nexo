@@ -112,7 +112,7 @@ impl Mods {
         }
         if let Some(m) = self.list.get(idx) {
             if !self.others.contains_key(&m.path) {
-                let img = Image::open(Path::new(&m.path)).ok();
+                let img = Image::open_arch(Path::new(&m.path), crate::platform::NATIVE_SLICE).ok();
                 self.others.insert(m.path.clone(), img);
             }
         }
@@ -311,6 +311,11 @@ impl Mods {
                 n[7] += 8;
                 return Some((ra, n, Some(gp[7] + 8)));
             }
+            if first {
+                if let Some(s) = self.macho_prologue(idx, look, gp, rd) {
+                    return Some(s);
+                }
+            }
         }
         // the frame pointer chain
         let bp = gp[6];
@@ -323,6 +328,36 @@ impl Mods {
         n[6] = obp;
         n[7] = bp + 16;
         Some((ra, n, Some(bp + 16)))
+    }
+
+    /// A Mach-O program stopped on the first instruction of a function, or on the second after `push rbp`: its frame
+    /// is not made yet, so the return address sits on top of the stack (under the pushed rbp on the second). Past
+    /// `mov rbp, rsp` the frame pointer chain is right, as clang keeps frame pointers on macOS. The compact unwind
+    /// table (`__unwind_info`), which functions without a frame pointer need, is not read (MACOS-MAP re:M10).
+    #[allow(clippy::type_complexity)]
+    fn macho_prologue(
+        &self,
+        idx: usize,
+        pc: u64,
+        gp: &[u64; 16],
+        rd: &mut dyn FnMut(u64) -> Option<u64>,
+    ) -> Option<(u64, [u64; 16], Option<u64>)> {
+        let img = self.image(idx).filter(|i| i.format == nexo_bin::Format::MachO)?;
+        let (_, off) = nexo_bin::nearest_symbol(img, pc.wrapping_sub(self.bias(idx)))?;
+        let (sp, mut n) = (gp[7], *gp);
+        match off {
+            0 => {
+                n[7] = sp + 8;
+                Some((rd(sp)?, n, Some(sp + 8)))
+            }
+            // 0x55 is `push rbp`
+            1 if rd(pc - 1)? & 0xff == 0x55 => {
+                n[6] = rd(sp)?;
+                n[7] = sp + 16;
+                Some((rd(sp + 8)?, n, Some(sp + 16)))
+            }
+            _ => None,
+        }
     }
 
     fn in_plt(&self, idx: usize, addr: u64) -> bool {

@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! `calls <site>` logs one indirect call site and saves what it went to in the per-binary names file,
 //! where `nexo bin decomp` reads it back. The program is a small C file; skipped when there is no C compiler.
 

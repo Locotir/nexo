@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! `calls`: the real target of each indirect call, named, read from the run. The program is a small C file
 //! that calls through a function-pointer table; skipped when there is no C compiler.
 
@@ -42,13 +42,17 @@ fn the_real_target_of_each_call_through_a_pointer_is_logged_by_name() {
     };
     let (mut s, _) = open(&Kind::Run { exe, args: vec![] }).expect("start");
     let on = run(&mut s, "calls");
-    // the program's own call, and the start-up code's call to the C library's start
-    assert!(on.contains("logging 2 indirect calls"), "{on}");
-    assert!(run(&mut s, "breaks").contains("indirect-call logging on 2 sites"));
+    // the program's own call, and on Linux the start-up code's call to the C library's start (a macOS program has
+    // no start-up code of its own: dyld calls `main`)
+    let sites = if cfg!(target_os = "macos") { 1 } else { 2 };
+    assert!(on.contains(&format!("logging {sites} indirect calls")), "{on}");
+    assert!(run(&mut s, "breaks").contains(&format!("indirect-call logging on {sites} sites")));
     let end = run(&mut s, "cont");
     assert!(end.contains("exited with code 0"), "{end}");
     let log = run(&mut s, "log");
-    assert!(log.contains("-> 0x") && log.contains("libc_start_main") || log.contains("__libc_start"), "{log}");
+    if cfg!(target_os = "linux") {
+        assert!(log.contains("-> 0x") && log.contains("libc_start_main") || log.contains("__libc_start"), "{log}");
+    }
     let seen: Vec<&str> = log.lines().filter(|l| l.contains("main+")).collect();
     assert_eq!(seen.len(), 4, "{log}");
     let names: Vec<&str> = seen
@@ -81,6 +85,13 @@ fn the_call_chain_goes_through_the_c_library_up_to_its_start() {
     let bt = run(&mut s, "bt");
     eprintln!("{bt}");
     assert!(bt.contains("add_one") && bt.contains("main"), "{bt}");
+    if cfg!(target_os = "macos") {
+        // The line table of a macOS program sits in its object files or a .dSYM, which nexo-bin does not read yet
+        // (MACOS-MAP re:M9), and dyld, which called main, lives in the shared cache, whose symbols it does not read
+        // either (re:M11): the chain goes on past main, without names.
+        assert!(bt.lines().any(|l| l.trim_start().starts_with("#2")), "the chain goes on past main: {bt}");
+        return;
+    }
     assert!(bt.contains("table.c:"), "{bt}");
     assert!(bt.contains("libc_start"), "the chain reaches the C library's start: {bt}");
 }

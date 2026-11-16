@@ -67,7 +67,7 @@ impl Session {
     pub(super) fn cmd_args(&mut self, _a: &Args) -> Result<Output> {
         let r = self.tid_regs()?;
         let regs = match self.t.os() {
-            Os::Linux => ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
+            Os::Linux | Os::MacOS => ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
             Os::Windows => ["rcx", "rdx", "r8", "r9", "", ""],
         };
         // the named parameters when the program carries variable info, then the registers they came in:

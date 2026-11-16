@@ -7,7 +7,9 @@ impl Session {
         if self.t.os() == Os::Windows {
             return self.cmd_catch_windows(a);
         }
-        let names: Vec<(u32, &str)> = (1..32).map(|n| (n, signal_name(n))).filter(|(_, s)| *s != "signal").collect();
+        let os = self.t.os();
+        let names: Vec<(u32, &str)> =
+            (1..32).map(|n| (n, crate::engine::signal_name_on(os, n))).filter(|(_, s)| *s != "signal").collect();
         let by = |w: &str| -> Result<u32> {
             names
                 .iter()
@@ -26,11 +28,17 @@ impl Session {
                     self.catch.remove(&by(w)?);
                 }
             }
-            Some("all") => self.catch = names.iter().map(|(n, _)| *n).filter(|n| ![17, 28].contains(n)).collect(),
+            Some("all") => {
+                self.catch = names
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .filter(|n| !matches!(crate::engine::signal_name_on(os, *n), "SIGCHLD" | "SIGWINCH"))
+                    .collect()
+            }
             Some(_) => return usage("catch [add|del <signal>...] | catch all"),
             None => {}
         }
-        let l: Vec<String> = self.catch.iter().map(|n| signal_name(*n).to_string()).collect();
+        let l: Vec<String> = self.catch.iter().map(|n| crate::engine::signal_name_on(os, *n).to_string()).collect();
         Ok(rows("catch", vec![format!("stops on: {}", l.join(" "))], json!({})))
     }
 

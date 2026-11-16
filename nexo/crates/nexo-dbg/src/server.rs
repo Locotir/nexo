@@ -206,7 +206,7 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
         Kind::Run { exe, .. } => exe.clone(),
         _ => PathBuf::from(mods.first().map(|m| m.path.clone()).unwrap_or_default()),
     };
-    let img = match Image::open(&path) {
+    let img = match Image::open_arch(&path, platform::NATIVE_SLICE) {
         Ok(i) => i,
         Err(e) => {
             let _ = t.kill();
@@ -318,6 +318,9 @@ fn run_to_entry(s: &mut Session) -> Output {
             let mut o = o;
             let pid = s.t.pid();
             o.rows.insert(0, Row { key: 0, text: format!("started pid {pid}"), json: None });
+            if let Some(note) = s.t.note() {
+                o.rows.insert(1, Row { key: 0, text: note, json: None });
+            }
             for (i, r) in o.rows.iter_mut().enumerate() {
                 r.key = i as u64;
             }

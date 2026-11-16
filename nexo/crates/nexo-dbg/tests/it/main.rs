@@ -13,6 +13,7 @@ mod calls_sites;
 mod common;
 mod core_file;
 mod dbg_linux;
+mod dbg_macos;
 mod dbg_windows;
 mod gdb_script;
 mod one_line_locals;

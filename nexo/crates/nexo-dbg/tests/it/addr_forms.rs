@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! One address syntax for `bin` and `debug`: each form names the same place in a running program as in the
 //! file, moved by the load bias of a position-independent build. Registers and memory reads work only here.
 //! Skipped (with a line saying so) when there is no C compiler.
@@ -49,7 +49,14 @@ fn each_form_names_the_file_address_plus_the_load_bias() {
     let Some((mut s, img, _d)) = start("each_form_names_the_file_address") else { return };
     let file = |t: &str| nexo_bin::addr_in(&img, t).unwrap_or_else(|e| panic!("{t}: {e}"));
     let bias = s.addr_of("main").unwrap().wrapping_sub(file("main"));
-    assert_ne!(bias, 0, "a PIE program is loaded away from its link address");
+    // Linux loads a PIE program away from its link address (0); a macOS program links at 0x100000000 and, with
+    // address randomization off for the program the debugger starts, loads right there
+    if cfg!(target_os = "linux") {
+        assert_ne!(bias, 0, "a PIE program is loaded away from its link address");
+    }
+    // the sections as each format names them
+    let (text, data) =
+        if cfg!(target_os = "macos") { ("__TEXT,__text", "__DATA,__data+8") } else { (".text", ".data+8") };
     let apply = file("apply");
     for form in [
         "main".to_string(),
@@ -57,8 +64,8 @@ fn each_form_names_the_file_address_plus_the_load_bias() {
         "apply+0x4".into(),
         "apply+4".into(),
         "add_one-0x1".into(),
-        ".text".into(),
-        ".data+8".into(),
+        text.into(),
+        data.into(),
         "table".into(),
         format!("{apply:#x}"),
         format!("{apply}"),

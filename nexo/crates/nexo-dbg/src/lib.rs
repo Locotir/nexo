@@ -28,13 +28,19 @@ mod shellsyn;
 mod stdin;
 mod stub;
 mod syscalls;
-#[cfg(test)]
+// Not on macOS: `cc -g` there leaves the DWARF in the object files (the program carries a debug map to them), so the
+// program it builds has no debug sections to damage, and nexo-bin does not read the debug map yet (MACOS-MAP re:M9).
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests_harden;
 mod trace;
 mod vars;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
+#[cfg(target_os = "macos")]
+mod mach;
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+mod macos;
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;
 
@@ -47,7 +53,7 @@ pub use engine::{Session, State, StopInfo};
 pub use gdbdialect::Plan as GdbPlan;
 pub use knowledge::set_data_dir;
 pub use platform::{
-    attach, launch, Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid, Touch,
+    attach, launch, runs_here, Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid, Touch,
 };
 pub use regs::Regs;
 pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply, Start, IDLE};

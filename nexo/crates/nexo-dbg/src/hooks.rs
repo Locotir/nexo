@@ -69,7 +69,7 @@ pub struct Pending {
 /// The registers that carry the first integer arguments.
 fn arg_regs(os: Os) -> &'static [&'static str] {
     match os {
-        Os::Linux => &["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
+        Os::Linux | Os::MacOS => &["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
         Os::Windows => &["rcx", "rdx", "r8", "r9"],
     }
 }

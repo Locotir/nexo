@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! `calls <sites>`: naming sites replaces what was logged (and says so), repeats count once, and an address
 //! that is not an indirect call is refused with the next step. The program is a small C file; skipped (with a
 //! line saying so) when there is no C compiler.
@@ -8,6 +8,10 @@ use nexo_dbg::{open, split_words, Kind, Session};
 fn run(s: &mut Session, cmd: &str) -> String {
     s.exec(&split_words(cmd)).unwrap_or_else(|e| panic!("{cmd}: {e}")).text_all()
 }
+
+/// The indirect calls `calls` finds in the program: the one in `apply`, and on Linux the start-up code's call to
+/// the C library's start. A macOS program has no start-up code of its own: dyld calls `main`.
+const SITES: usize = if cfg!(target_os = "macos") { 1 } else { 2 };
 
 /// A session on a program with one indirect call (in `apply`), and that call's address.
 fn start(test: &str) -> Option<(Session, String, tempfile::TempDir)> {
@@ -62,10 +66,15 @@ fn the_same_site_named_twice_is_logged_once_and_the_answer_says_so() {
 fn naming_sites_says_what_it_replaced() {
     let Some((mut s, site, _d)) = start("naming_sites_says_what_it_replaced") else { return };
     let all = run(&mut s, "calls");
-    assert!(all.contains("logging 2 indirect calls"), "{all}");
+    assert!(all.contains(&format!("logging {SITES} indirect calls")), "{all}");
     let one = run(&mut s, &format!("calls {site}"));
     assert!(one.contains("logging 1 indirect call site:"), "{one}");
-    assert!(one.contains("replaced the 2 sites that were being logged"), "{one}");
+    let replaced = if SITES == 1 {
+        "replaced the 1 site that was being logged"
+    } else {
+        "replaced the 2 sites that were being logged"
+    };
+    assert!(one.contains(replaced), "{one}");
     // nothing was on before: nothing to say about replacing
     run(&mut s, "calls off");
     let fresh = run(&mut s, &format!("calls {site}"));

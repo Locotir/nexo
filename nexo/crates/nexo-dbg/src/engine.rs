@@ -186,6 +186,41 @@ pub fn signal_name(n: u32) -> &'static str {
     }
 }
 
+/// The name of a macOS signal: past 6 the numbers are not the Linux ones (SIGBUS is 10, SIGUSR1 30).
+pub fn mac_signal_name(n: u32) -> &'static str {
+    match n {
+        7 => "SIGEMT",
+        10 => "SIGBUS",
+        12 => "SIGSYS",
+        16 => "SIGURG",
+        17 => "SIGSTOP",
+        18 => "SIGTSTP",
+        19 => "SIGCONT",
+        20 => "SIGCHLD",
+        21 => "SIGTTIN",
+        22 => "SIGTTOU",
+        23 => "SIGIO",
+        24 => "SIGXCPU",
+        25 => "SIGXFSZ",
+        26 => "SIGVTALRM",
+        27 => "SIGPROF",
+        28 => "SIGWINCH",
+        29 => "SIGINFO",
+        30 => "SIGUSR1",
+        31 => "SIGUSR2",
+        1..=6 | 8 | 9 | 11 | 13..=15 => signal_name(n),
+        _ => "signal",
+    }
+}
+
+/// The name of signal `n` on `os`.
+pub fn signal_name_on(os: Os, n: u32) -> &'static str {
+    match os {
+        Os::MacOS => mac_signal_name(n),
+        Os::Linux | Os::Windows => signal_name(n),
+    }
+}
+
 /// The name of a Windows exception code (`STATUS_` left off), when it is one a program is likely to die of.
 pub fn exception_name(code: u32) -> Option<&'static str> {
     Some(match code {
@@ -224,10 +259,46 @@ pub fn exception_name(code: u32) -> Option<&'static str> {
 pub fn fault_text(os: Os, number: u32) -> String {
     match os {
         Os::Linux => format!("{} (signal {number})", signal_name(number)),
+        Os::MacOS => format!("{} (signal {number})", mac_signal_name(number)),
         Os::Windows => match exception_name(number) {
             Some(n) => format!("{n} (exception {number:#010x})"),
             None => format!("exception {number:#010x}"),
         },
+    }
+}
+
+/// The Mach exception behind a macOS hardware fault and the name of its code, as crash reports print them.
+fn mach_exception(number: u32, code: i32) -> Option<(&'static str, &'static str)> {
+    let exc = match number {
+        10 | 11 => "EXC_BAD_ACCESS",
+        4 => "EXC_BAD_INSTRUCTION",
+        8 => "EXC_ARITHMETIC",
+        _ => return None,
+    };
+    let name = match (exc, code) {
+        ("EXC_BAD_ACCESS", 1) => "KERN_INVALID_ADDRESS",
+        ("EXC_BAD_ACCESS", 2) => "KERN_PROTECTION_FAILURE",
+        ("EXC_BAD_ACCESS", 13) => "EXC_I386_GPFLT",
+        ("EXC_BAD_INSTRUCTION", 1) => "EXC_I386_INVOP",
+        ("EXC_ARITHMETIC", 1) => "EXC_I386_DIV",
+        ("EXC_ARITHMETIC", 2) => "EXC_I386_INTO",
+        ("EXC_ARITHMETIC", 5) => "EXC_I386_EXTERR",
+        ("EXC_ARITHMETIC", 8) => "EXC_I386_SSEEXTERR",
+        _ => "",
+    };
+    Some((exc, name))
+}
+
+/// The headline of a fault stop. A macOS fault the processor raised (its `code` is the Mach code) is named by its
+/// Mach exception as well: `EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS (signal 11)`.
+pub fn fault_line(os: Os, f: &crate::platform::Fault) -> String {
+    match (os, mach_exception(f.number, f.code)) {
+        (Os::MacOS, Some((exc, name))) if f.code != 0 => {
+            let sig = mac_signal_name(f.number);
+            let code = if name.is_empty() { format!("code {}", f.code) } else { name.to_string() };
+            format!("{exc} ({sig}) {code} (signal {})", f.number)
+        }
+        _ => fault_text(os, f.number),
     }
 }
 
@@ -245,6 +316,8 @@ pub fn exception_by(word: &str) -> Option<u32> {
 pub fn default_catch(os: Os) -> BTreeSet<u32> {
     match os {
         Os::Linux => [4, 5, 6, 7, 8, 11, 31].into_iter().collect(),
+        // the same faults in macOS numbers: SIGBUS is 10 and SIGSYS 12 there
+        Os::MacOS => [4, 5, 6, 8, 10, 11, 12].into_iter().collect(),
         // the faults a program dies of; a first-chance one the program may still handle itself, so it
         // stops here only for these. Any other exception stops when no handler took it (second chance).
         Os::Windows => [
@@ -551,7 +624,7 @@ impl Session {
                     return Ok(Some((self.cur, Why::Exited(code))));
                 }
                 Event::Killed { signal } => {
-                    self.ended(format!("killed by {}", signal_name(signal as u32)));
+                    self.ended(format!("killed by {}", signal_name_on(self.t.os(), signal as u32)));
                     return Ok(Some((self.cur, Why::Killed(signal))));
                 }
                 Event::Stopped { tid, stop: Stop::Breakpoint } => {
@@ -688,6 +761,10 @@ impl Session {
                 let sp = self.t.regs(tid)?.rsp();
                 if sp >= t.min_sp {
                     let why = match t.kind {
+                        TempKind::Entry if self.t.os() == Os::MacOS => {
+                            self.back_to_the_call_of(tid, addr);
+                            Why::Entry
+                        }
                         TempKind::Entry => Why::Entry,
                         TempKind::Next => Why::Next,
                         TempKind::Finish => Why::Finish,
@@ -698,6 +775,44 @@ impl Session {
             }
         }
         Ok(traced)
+    }
+
+    /// macOS: a program's entry (LC_MAIN) is its `main`, which dyld calls once the libraries are loaded and their
+    /// initializers ran. The entry stop goes back to the instruction in dyld that calls it (rip on the call, the
+    /// return address off the stack), so a breakpoint set there on `main` is hit by the next `cont`, as after the
+    /// entry stop on Linux. Left at `main` when no call there goes to it.
+    fn back_to_the_call_of(&mut self, tid: Tid, main: u64) {
+        let Ok(mut r) = self.t.regs(tid) else { return };
+        let Ok(back) = <[u8; 8]>::try_from(self.read_vec(r.rsp(), 8)) else { return };
+        let back = u64::from_le_bytes(back);
+        let word = |s: &mut Self, a: u64| <[u8; 8]>::try_from(s.read_vec(a, 8)).ok().map(u64::from_le_bytes);
+        for len in 2..=7u64 {
+            let at = back.wrapping_sub(len);
+            let mut bytes = self.read_vec(at, len as usize);
+            for (i, b) in bytes.iter_mut().enumerate() {
+                if let Some(o) = self.inserted.get(&(at + i as u64)) {
+                    *b = *o;
+                }
+            }
+            let Some(ins) = nexo_bin::decode_live(&bytes, at, &|n| r.get(n)) else { continue };
+            if !ins.call || ins.len as u64 != len {
+                continue;
+            }
+            let goes = match ins.target {
+                Some((t, false)) => Some(t),
+                Some((slot, true)) => word(self, slot),
+                None => nexo_bin::indirect_call_target(&bytes, at, &|n| r.get(n), &|_| None).or_else(|| {
+                    let slot = ins.mem.iter().find(|m| m.read && !m.write)?.addr?;
+                    word(self, slot)
+                }),
+            };
+            if goes == Some(main) {
+                r.rip = at;
+                r.set("rsp", r.rsp() + 8);
+                let _ = self.t.set_regs(tid, &r);
+                return;
+            }
+        }
     }
 
     /// The byte our own int3 replaced at `addr`, if one sits there.
@@ -891,5 +1006,25 @@ impl Session {
         }
         self.t.interrupt()?;
         self.settle(Duration::from_secs(5))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Fault;
+
+    #[test]
+    fn a_macos_fault_is_named_by_its_mach_exception_and_signal_in_macos_numbers() {
+        let f = |number, code| Fault { number, code, addr: Some(0), touch: None, first_chance: true };
+        assert_eq!(fault_line(Os::MacOS, &f(11, 1)), "EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS (signal 11)");
+        assert_eq!(fault_line(Os::MacOS, &f(10, 2)), "EXC_BAD_ACCESS (SIGBUS) KERN_PROTECTION_FAILURE (signal 10)");
+        assert_eq!(fault_line(Os::MacOS, &f(8, 1)), "EXC_ARITHMETIC (SIGFPE) EXC_I386_DIV (signal 8)");
+        // a signal another process sent carries no Mach code
+        assert_eq!(fault_line(Os::MacOS, &f(30, 0)), "SIGUSR1 (signal 30)");
+        assert_eq!(fault_line(Os::Linux, &f(10, 1)), "SIGUSR1 (signal 10)");
+        assert_eq!(signal_name_on(Os::MacOS, 12), "SIGSYS");
+        let catch = default_catch(Os::MacOS);
+        assert!(catch.contains(&10) && catch.contains(&12) && !catch.contains(&31), "{catch:?}");
     }
 }

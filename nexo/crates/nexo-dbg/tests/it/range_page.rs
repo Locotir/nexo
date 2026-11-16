@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! One range and page contract for `bin` and `debug`: the same range text names the same bytes in the file and
 //! in the running program, and `--lines`, `--from` and `--grep` page every answer the same way.
 //! Skipped (with a line saying so) when there is no C compiler.
@@ -84,9 +84,10 @@ fn the_same_range_text_gives_the_same_rows_in_bin_and_debug() {
         let (a, b) = nexo_bin::range_in(&img, form).unwrap();
         assert!(f.iter().all(|&x| x >= a && x + 2 <= b), "{form}");
     }
-    // a section name is a range too, in both tools
-    let (a, b) = nexo_bin::range_in(&img, ".text").unwrap();
-    assert_eq!(s.range_of(".text").unwrap(), (a, b));
+    // a section name is a range too, in both tools (named as the format names it)
+    let text = if cfg!(target_os = "macos") { "__TEXT,__text" } else { ".text" };
+    let (a, b) = nexo_bin::range_in(&img, text).unwrap();
+    assert_eq!(s.range_of(text).unwrap(), (a, b));
 }
 
 #[test]

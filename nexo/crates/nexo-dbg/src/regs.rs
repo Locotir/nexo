@@ -29,7 +29,34 @@ pub struct Regs {
 /// Where each [`GP`] register sits in Linux's `user_regs_struct` (and in a core file's `pr_reg`).
 const USER_GP: [usize; 16] = [10, 5, 11, 12, 13, 14, 4, 19, 9, 8, 7, 6, 3, 2, 1, 0];
 
+/// Where each [`GP`] register sits in macOS's `x86_thread_state64_t` (rdi comes before rsi there).
+const MACH_GP: [usize; 16] = [0, 1, 2, 3, 5, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
 impl Regs {
+    /// From macOS's `x86_thread_state64_t`: 21 words, the last five rip, rflags, cs, fs, gs. It holds no segment
+    /// bases.
+    pub fn from_mach(m: &[u64; 21]) -> Regs {
+        let mut r = Regs::default();
+        for (i, &at) in MACH_GP.iter().enumerate() {
+            r.gp[i] = m[at];
+        }
+        r.rip = m[16];
+        r.eflags = m[17];
+        r.seg = [m[18], 0, 0, 0, m[19], m[20]];
+        r
+    }
+
+    pub fn to_mach(&self) -> [u64; 21] {
+        let mut m = [0u64; 21];
+        for (i, &at) in MACH_GP.iter().enumerate() {
+            m[at] = self.gp[i];
+        }
+        m[16] = self.rip;
+        m[17] = self.eflags;
+        (m[18], m[19], m[20]) = (self.seg[0], self.seg[4], self.seg[5]);
+        m
+    }
+
     /// From Linux's `user_regs_struct`: 27 words.
     pub fn from_user(u: &[u64; 27]) -> Regs {
         let mut r = Regs { has_bases: true, ..Regs::default() };
@@ -187,6 +214,19 @@ mod tests {
         assert_eq!(r.get("xmm0"), None);
         assert!(r.set("rdi", 7) && r.get("edi") == Some(7));
         assert!(!r.set("eax", 1));
+    }
+
+    #[test]
+    fn the_macos_layout_round_trips_with_rdi_before_rsi() {
+        let mut m = [0u64; 21];
+        for (i, w) in m.iter_mut().enumerate() {
+            *w = 0x2000 + i as u64;
+        }
+        let r = Regs::from_mach(&m);
+        assert_eq!(r.to_mach(), m);
+        assert_eq!((r.get("rdi"), r.get("rsi")), (Some(0x2004), Some(0x2005)));
+        assert_eq!((r.get("rsp"), r.get("rip"), r.get("r15")), (Some(0x2007), Some(0x2010), Some(0x200f)));
+        assert!(!r.has_bases);
     }
 
     #[test]

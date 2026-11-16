@@ -15,11 +15,15 @@ use crate::{fail, usage, Result};
 
 /// The answer to a system call command on a system that has no such trace: it says what is true and what to use.
 fn no_syscalls(os: Os, what: &str) -> Option<String> {
-    (os == Os::Windows).then(|| {
-        format!(
+    match os {
+        Os::Linux => None,
+        Os::Windows => Some(format!(
             "{what}: system call tracing is not available on Windows; break on the API instead (`break <function>` stops on one, `ltrace` writes the program's imported calls, `hook <function>` follows one)"
-        )
-    })
+        )),
+        Os::MacOS => Some(format!(
+            "{what}: system call tracing is not available on macOS (its tracer, dtruss, needs root and System Integrity Protection turned off); break on the library function instead (`break <function>` stops on one, `ltrace` writes the program's imported calls, `hook <function>` follows one)"
+        )),
+    }
 }
 
 /// Trace lines kept; older ones are dropped and counted.
@@ -284,5 +288,12 @@ mod tests {
             assert!(e.contains("break on the API instead"), "{e}");
         }
         assert_eq!(no_syscalls(Os::Linux, "strace"), None);
+    }
+
+    #[test]
+    fn system_call_commands_on_macos_say_why_and_what_to_use_instead() {
+        let e = no_syscalls(Os::MacOS, "strace").unwrap();
+        assert!(e.starts_with("strace: system call tracing is not available on macOS"), "{e}");
+        assert!(e.contains("dtruss, needs root") && e.contains("`break <function>`"), "{e}");
     }
 }

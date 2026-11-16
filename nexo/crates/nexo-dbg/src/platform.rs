@@ -15,6 +15,7 @@ pub type Tid = u32;
 pub enum Os {
     Linux,
     Windows,
+    MacOS,
 }
 
 /// One piece of the program's address space.
@@ -67,7 +68,7 @@ pub struct HwSlot {
 pub struct Fault {
     /// The signal number or the exception code.
     pub number: u32,
-    /// Linux `si_code`; 0 on Windows.
+    /// Linux `si_code`; on macOS the Mach exception code of a fault (0 for a signal); 0 on Windows.
     pub code: i32,
     /// The address the fault is about, when the system says.
     pub addr: Option<u64>,
@@ -182,35 +183,79 @@ pub trait Target {
     /// Let the program go on without the debugger.
     fn detach(&mut self) -> Result<()>;
     fn kill(&mut self) -> Result<()>;
+    /// A fact about how the program was started that the start banner says (macOS: the signed copy that runs).
+    fn note(&self) -> Option<String> {
+        None
+    }
+}
+
+/// The system nexo runs on, as the messages name it.
+const HOST: &str = if cfg!(windows) {
+    "Windows"
+} else if cfg!(target_os = "macos") {
+    "macOS"
+} else {
+    "Linux"
+};
+
+/// The Mach-O CPU type of this host (`CPU_TYPE_ARM64` or `CPU_TYPE_X86_64`).
+const HOST_CPU: u32 = if cfg!(target_arch = "aarch64") { 0x0100_000c } else { 0x0100_0007 };
+
+/// The slice of a universal (fat) Mach-O file the debugger reads: the one this Mac runs. `None` off macOS, where
+/// the file is read as it always was.
+pub const NATIVE_SLICE: Option<&str> = if !cfg!(target_os = "macos") {
+    None
+} else if cfg!(target_arch = "aarch64") {
+    Some("arm64")
+} else {
+    Some("x86-64")
+};
+
+/// Whether `run` and `attach` start or open programs on this host: x86-64 Linux, Windows and macOS. Elsewhere they
+/// fail with the reason; `nexo dbg core` reads a core file anywhere.
+pub const fn runs_here() -> bool {
+    cfg!(all(target_arch = "x86_64", any(target_os = "linux", windows, target_os = "macos")))
 }
 
 /// What kind of program `exe` is when this host cannot run it: a Windows program on Linux, a Linux or macOS one on
 /// Windows. `None` when it can run here (or the file is not one of those formats: the launch says what is wrong).
 pub fn foreign_program(exe: &std::path::Path) -> Option<String> {
     use std::io::Read;
-    let mut head = [0u8; 64];
-    let n = std::fs::File::open(exe).and_then(|mut f| f.read(&mut head)).ok()?;
-    let head = &head[..n];
-    let pe = head.starts_with(b"MZ");
-    let elf = head.starts_with(b"\x7fELF");
-    let macho =
-        [[0xfe, 0xed, 0xfa, 0xce], [0xfe, 0xed, 0xfa, 0xcf], [0xce, 0xfa, 0xed, 0xfe], [0xcf, 0xfa, 0xed, 0xfe]]
-            .iter()
-            .any(|m| head.starts_with(m));
-    let (kind, here) = match (pe, elf, macho) {
-        (true, ..) => ("a Windows (PE) program", cfg!(windows)),
-        (_, true, _) => ("a Linux (ELF) program", cfg!(target_os = "linux")),
-        (.., true) => ("a macOS (Mach-O) program", false),
-        _ => return None,
-    };
-    if here {
-        return None;
-    }
-    let host = if cfg!(windows) { "Windows" } else { "Linux" };
+    let mut head = Vec::with_capacity(512);
+    std::fs::File::open(exe).and_then(|f| f.take(512).read_to_end(&mut head)).ok()?;
+    let (kind, host) = foreign_on(&head, HOST, HOST_CPU)?;
     Some(format!(
         "{} is {kind}; this host runs {host} programs only, so `run` cannot start it here (`bin` reads it without running it)",
         exe.display()
     ))
+}
+
+/// The kind of program a file starting with `head` is, and what a `host` with the Mach-O CPU type `cpu` runs, when
+/// that host cannot run it. A Mach-O file runs on a Mac when it holds code for the Mac's processor: thin, or one
+/// slice of a universal file. A universal header shares its magic with a Java class file, whose version number
+/// (45 or more) sits where the universal file counts its few slices.
+fn foreign_on(head: &[u8], host: &str, cpu: u32) -> Option<(&'static str, String)> {
+    let pe = head.starts_with(b"MZ");
+    let elf = head.starts_with(b"\x7fELF");
+    let thin = [[0xfe, 0xed, 0xfa, 0xce], [0xfe, 0xed, 0xfa, 0xcf], [0xce, 0xfa, 0xed, 0xfe], [0xcf, 0xfa, 0xed, 0xfe]]
+        .iter()
+        .any(|m| head.starts_with(m));
+    let word = |o: usize| head.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    let fat = matches!(word(0), Some(0xcafe_babe | 0xcafe_babf)) && word(4).is_some_and(|n| (1..32).contains(&n));
+    let (kind, here) = match (pe, elf, thin || fat) {
+        (true, ..) => ("a Windows (PE) program", host == "Windows"),
+        (_, true, _) => ("a Linux (ELF) program", host == "Linux"),
+        (.., true) if host == "macOS" => {
+            if nexo_bin::macho_runs_on(head, cpu) {
+                return None;
+            }
+            let arch = if cpu == 0x0100_000c { "arm64" } else { "x86-64" };
+            return Some(("a macOS (Mach-O) program with no code for this processor", format!("macOS {arch}")));
+        }
+        (.., true) => ("a macOS (Mach-O) program", false),
+        _ => return None,
+    };
+    (!here).then(|| (kind, host.to_string()))
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -233,16 +278,42 @@ pub fn attach(pid: u32) -> Result<Box<dyn Target>> {
     Ok(Box::new(crate::windows::Windows::attach(pid)?))
 }
 
-#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
-const ONLY: &str =
-    "nexo dbg runs programs on Linux x86-64 and Windows x86-64 only (`nexo dbg core` reads a core file anywhere)";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub fn launch(l: &Launch) -> Result<Box<dyn Target>> {
+    Ok(Box::new(crate::macos::Mac::launch(l)?))
+}
 
-#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub fn attach(pid: u32) -> Result<Box<dyn Target>> {
+    Ok(Box::new(crate::macos::Mac::attach(pid)?))
+}
+
+// An Apple-silicon Mac builds and runs everything else; only a live program is refused, with the reason.
+#[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
+const ONLY: &str = "nexo dbg on macOS runs x86-64 programs only for now: arm64 (Apple silicon) registers, breakpoints and stepping are not written yet (`nexo dbg core` reads a core file anywhere)";
+
+#[cfg(not(any(
+    target_os = "macos",
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(windows, target_arch = "x86_64")
+)))]
+const ONLY: &str =
+    "nexo dbg runs programs on Linux, Windows and macOS x86-64 only (`nexo dbg core` reads a core file anywhere)";
+
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "x86_64")
+)))]
 pub fn launch(_: &Launch) -> Result<Box<dyn Target>> {
     crate::fail(ONLY)
 }
 
-#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "x86_64")
+)))]
 pub fn attach(_: u32) -> Result<Box<dyn Target>> {
     crate::fail(ONLY)
 }
@@ -265,16 +336,42 @@ mod tests {
         let (_m, mach) = file(&[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1]);
         let (_t, text) = file(b"#!/bin/sh\n");
         let (pe, elf, mach) = (foreign_program(&pe), foreign_program(&elf), foreign_program(&mach));
-        assert!(mach.unwrap().contains("macOS (Mach-O) program"));
         assert_eq!(foreign_program(&text), None);
         if cfg!(windows) {
             assert_eq!(pe, None);
             assert!(elf.unwrap().contains("a Linux (ELF) program; this host runs Windows programs only"));
+            assert!(mach.unwrap().contains("macOS (Mach-O) program"));
+        } else if cfg!(target_os = "macos") {
+            assert!(pe.unwrap().contains("a Windows (PE) program; this host runs macOS programs only"));
+            assert!(elf.unwrap().contains("a Linux (ELF) program; this host runs macOS programs only"));
+            assert_eq!(mach.is_none(), cfg!(target_arch = "x86_64"));
         } else {
             assert_eq!(elf, None);
+            assert!(mach.unwrap().contains("macOS (Mach-O) program"));
             let e = pe.unwrap();
             assert!(e.contains("a Windows (PE) program; this host runs Linux programs only"), "{e}");
             assert!(e.contains("`bin` reads it without running it"), "{e}");
         }
+    }
+
+    #[test]
+    fn on_a_mac_a_mach_o_file_with_code_for_its_processor_runs_and_elf_and_pe_do_not() {
+        let (x86, arm) = (0x0100_0007u32, 0x0100_000cu32);
+        let thin = |cpu: u32| [0xfeed_facfu32.to_le_bytes(), cpu.to_le_bytes()].concat();
+        let mut fat = [0xcafe_babeu32.to_be_bytes(), 2u32.to_be_bytes()].concat();
+        for cpu in [x86, arm] {
+            fat.extend(cpu.to_be_bytes());
+            fat.extend([0u8; 16]);
+        }
+        assert_eq!(foreign_on(&thin(x86), "macOS", x86), None);
+        assert_eq!(foreign_on(&fat, "macOS", x86), None);
+        assert_eq!(foreign_on(&fat, "macOS", arm), None);
+        let (kind, host) = foreign_on(&thin(arm), "macOS", x86).unwrap();
+        assert_eq!((kind, host.as_str()), ("a macOS (Mach-O) program with no code for this processor", "macOS x86-64"));
+        assert_eq!(foreign_on(b"\x7fELF\x02\x01\x01\0", "macOS", x86).unwrap().0, "a Linux (ELF) program");
+        assert_eq!(foreign_on(b"MZ\x90\0", "macOS", x86).unwrap().0, "a Windows (PE) program");
+        // a Java class file of version 52 is not a universal file
+        assert_eq!(foreign_on(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52], "macOS", x86), None);
+        assert_eq!(foreign_on(&fat, "Linux", x86).unwrap().0, "a macOS (Mach-O) program");
     }
 }

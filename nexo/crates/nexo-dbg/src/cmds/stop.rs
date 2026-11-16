@@ -33,7 +33,13 @@ impl Session {
         self.nstop += 1;
         self.drain_output();
         let mut l: Vec<String> = Vec::new();
+        // macOS: the entry stop sits on dyld's call of main (engine.rs back_to_the_call_of)
+        let in_dyld =
+            self.t.os() == Os::MacOS && self.t.entry().is_some_and(|e| self.t.regs(tid).is_ok_and(|r| r.rip != e));
         let headline = match &why {
+            Why::Entry if in_dyld => {
+                "stopped at the program's entry: dyld's call of main, after it loaded the libraries".to_string()
+            }
             Why::Entry => "stopped at the program's entry".to_string(),
             Why::Step => "step".to_string(),
             Why::Next => "next".to_string(),
@@ -44,7 +50,7 @@ impl Session {
             }
             Why::Watch(ids) => format!("watch {}", ids.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(" ")),
             Why::Signal(f) => {
-                let mut t = crate::engine::fault_text(self.t.os(), f.number);
+                let mut t = crate::engine::fault_line(self.t.os(), f);
                 if self.t.os() == Os::Windows && !f.first_chance {
                     t.push_str(", not handled by the program");
                 }
@@ -56,7 +62,9 @@ impl Session {
             Why::Syscall(t) => format!("system call {t}"),
             Why::Hook(_, t) => format!("hook {t}"),
             Why::Exited(c) => format!("the program exited with code {c}"),
-            Why::Killed(s) => format!("the program was killed by {}", signal_name(*s as u32)),
+            Why::Killed(s) => {
+                format!("the program was killed by {}", crate::engine::signal_name_on(self.t.os(), *s as u32))
+            }
         };
         let event = match &why {
             Why::Entry => "entry",
@@ -263,6 +271,13 @@ impl Session {
             11
         } else if win {
             1000 + (f.number & 0xff)
+        } else if self.t.os() == Os::MacOS {
+            // macOS SIGBUS (10) is Linux 7; its own 7 is SIGEMT, which says nothing about memory
+            match f.number {
+                10 => 7,
+                7 => 0,
+                n => n,
+            }
         } else {
             f.number
         };

@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! A breakpoint inside an instruction is refused with the instruction and its neighbours; gdb's `disas` is `dis`;
 //! a stray input line says how program input is given. Skipped when there is no C compiler.
 
@@ -116,6 +116,10 @@ fn a_breakpoint_never_reached_is_listed_when_the_program_ends() {
     assert!(out.contains("exited with code 0"), "{out}");
     assert!(out.contains("breakpoint #1 at 0x"), "{out}");
     assert!(out.contains("divide") && out.contains("was never hit (hits 0)"), "{out}");
-    assert!(out.contains("file address 0x") && out.contains("loaded at +0x"), "{out}");
+    // the line names the load offset of a program loaded away from its link address: a PIE on Linux; a macOS
+    // program the debugger starts loads at its link address, so there it has none
+    if cfg!(target_os = "linux") {
+        assert!(out.contains("file address 0x") && out.contains("loaded at +0x"), "{out}");
+    }
     assert!(!out.contains("breakpoint #2 at"), "main was hit: {out}");
 }
