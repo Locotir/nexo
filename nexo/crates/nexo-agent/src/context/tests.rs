@@ -578,3 +578,159 @@ fn the_saved_state_sits_next_to_the_session_and_moves_with_it() {
     crate::session::restore_in(dir.path(), "20261116-080000-ab12").unwrap();
     assert_eq!(saved::read(&session).as_deref(), Some(&b"state"[..]));
 }
+
+/// Where a turn of `h` ends: the history up to there ends with a model reply and the person writes next, so a
+/// session can be closed and resumed at that point.
+fn turn_ends(h: &[Message]) -> Vec<usize> {
+    (1..h.len())
+        .filter(|&e| {
+            h[e - 1].role == Role::Assistant
+                && h[e].role == Role::User
+                && !h[e].content.iter().any(|p| p.is_tool_result())
+        })
+        .collect()
+}
+
+/// A hash of what a view sends.
+fn view_hash(v: &View) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut s = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(&v.messages).unwrap().hash(&mut s);
+    v.tokens.hash(&mut s);
+    s.finish()
+}
+
+/// What a session resumed from its saved state sends, and what a full replay sends, as the agent runs them.
+struct Resumed {
+    /// The hashes of the views after the later turn end: the one shown at the resume and the requests after it,
+    /// from the state saved at that turn end, from the one saved at the first resume (a nexo that died mid-way),
+    /// with no saved state (a full replay), and in the session that was never closed there.
+    saved: Vec<u64>,
+    crashed: Vec<u64>,
+    replayed: Vec<u64>,
+    kept: Vec<u64>,
+    /// The size of the file saved at the later turn end, and the time to encode it.
+    bytes: usize,
+    encode: std::time::Duration,
+    /// The time from the resume's start to the view it shows, with the saved state and without it.
+    resume: (std::time::Duration, std::time::Duration),
+}
+
+/// A session first resumed at message `k` with no saved state (the replay, the view shown, the state saved right
+/// after them), run with one request per model reply up to message `m` (the first of them sent twice, as a retried
+/// request is), closed there and resumed again; then at most `next` requests after `m`. `system_tokens` is the same
+/// for every view: a full replay cannot know another.
+async fn resumed_twice(h: &[Message], k: usize, m: usize, next: usize) -> Resumed {
+    use std::time::Instant;
+    let replies = |from: usize, to: usize| (from + 1..to).filter(move |&p| h[p].role == Role::Assistant);
+    async fn after(c: &mut BuiltIn, h: &[Message], m: usize, next: usize) -> Vec<u64> {
+        let mut out = Vec::new();
+        for p in (m + 1..h.len()).filter(|&p| h[p].role == Role::Assistant).take(next) {
+            out.push(view_hash(&c.view(3000, &h[..p]).await.unwrap()));
+        }
+        out
+    }
+    // the first resume, with no saved state
+    let mut open = BuiltIn::new("").unwrap();
+    open.view(3000, &h[..k]).await.unwrap();
+    let at_k = open.save().expect("a resume that replayed replies saves the state")();
+    let mut retried = false;
+    for p in replies(k, m) {
+        open.view(3000, &h[..p]).await.unwrap();
+        if !retried {
+            retried = true;
+            open.view(3000, &h[..p]).await.unwrap();
+        }
+    }
+    let t = Instant::now();
+    let job = open.save().expect("the turns after the resume are saved");
+    let at_m = job();
+    let encode = t.elapsed();
+    let mut kept = vec![view_hash(&open.view(3000, &h[..m]).await.unwrap())];
+    kept.extend(after(&mut open, h, m, next).await);
+    drop(open);
+    // the second resume, from the state saved at its turn end
+    let t = Instant::now();
+    let mut c = BuiltIn::new("").unwrap();
+    c.restore(at_m.clone());
+    let mut saved = vec![view_hash(&c.view(3000, &h[..m]).await.unwrap())];
+    let with = t.elapsed();
+    saved.extend(after(&mut c, h, m, next).await);
+    // from the state of the first resume: the turns after it are taken again
+    let mut c = BuiltIn::new("").unwrap();
+    c.restore(at_k);
+    let mut crashed = vec![view_hash(&c.view(3000, &h[..m]).await.unwrap())];
+    crashed.extend(after(&mut c, h, m, next).await);
+    // no saved state at all
+    let t = Instant::now();
+    let mut c = BuiltIn::new("").unwrap();
+    let mut replayed = vec![view_hash(&c.view(3000, &h[..m]).await.unwrap())];
+    let without = t.elapsed();
+    replayed.extend(after(&mut c, h, m, next).await);
+    Resumed { saved, crashed, replayed, kept, bytes: at_m.len(), encode, resume: (with, without) }
+}
+
+/// A session resumed twice, with turns, a retried request and the view each resume shows in between, sends from
+/// its saved state what a full replay of its history sends: the views the open session made and a replay never
+/// makes leave nothing behind that changes a later view.
+#[tokio::test]
+async fn a_session_resumed_twice_from_its_saved_state_sends_what_a_full_replay_sends() {
+    let h = read_session(120);
+    let ends = turn_ends(&h);
+    let (k, m) = (ends[ends.len() / 3], ends[2 * ends.len() / 3]);
+    let r = resumed_twice(&h, k, m, usize::MAX).await;
+    assert!(r.replayed.len() > 20, "{} views after the resume", r.replayed.len());
+    assert_eq!(r.saved, r.replayed, "resumed from the state saved at the turn end");
+    assert_eq!(r.crashed, r.replayed, "resumed from the state saved at the first resume");
+    assert_eq!(r.kept, r.replayed, "never closed");
+}
+
+/// The check above on a large session file, to run by hand with
+/// `NEXO_RESUME_CHECK=<session.jsonl> cargo test -p nexo-agent --lib -- --ignored --nocapture a_large_session`
+/// (`NEXO_RESUME_CHECK_AT=50,75`: the two resumes, in percent of the history; `NEXO_RESUME_CHECK_NEXT`: the
+/// requests compared after the second, 400 by default). It prints the size of the saved state and the times.
+/// The saved state always sends what the session never closed sends. A full replay sends the same only while it
+/// takes every reply one by one: past `REPLAY` replies it takes the older ones in one step, and its decisions on
+/// them are not the ones the open session took.
+#[tokio::test]
+#[ignore = "minutes on a large session; reads the session file NEXO_RESUME_CHECK names"]
+async fn a_large_session_resumed_from_its_saved_state_sends_what_a_full_replay_sends() {
+    let Ok(path) = std::env::var("NEXO_RESUME_CHECK") else { return };
+    let h = crate::session::Session::open_path(std::path::Path::new(&path)).unwrap().messages().to_vec();
+    let at: Vec<usize> = std::env::var("NEXO_RESUME_CHECK_AT")
+        .unwrap_or_else(|_| "50,75".into())
+        .split(',')
+        .map(|s| s.trim().parse().unwrap())
+        .collect();
+    let next = std::env::var("NEXO_RESUME_CHECK_NEXT").map_or(400, |s| s.parse().unwrap());
+    let ends = turn_ends(&h);
+    // the turn end nearest to a share of the history
+    let end_at = |pc: usize| *ends.iter().min_by_key(|&&e| (e * 100).abs_diff(h.len() * pc)).unwrap();
+    let (k, m) = (end_at(at[0]), end_at(at[1]));
+    assert!(k < m, "the two resumes fall on one turn end ({k}): other NEXO_RESUME_CHECK_AT");
+    let replies = |to: usize| (1..to).filter(|&p| h[p].role == Role::Assistant).count();
+    let r = resumed_twice(&h, k, m, next).await;
+    let differ = |a: &[u64]| a.iter().zip(&r.kept).position(|(x, y)| x != y);
+    eprintln!(
+        "messages {} resumes at {k} and {m} ({} and {} replies, {} replayed at most) | saved state {} bytes, \
+         encoded in {} ms | resume with it {} ms, without {} ms | views compared {} | first that differs from the \
+         session never closed: saved {:?}, crashed {:?}, full replay {:?}",
+        h.len(),
+        replies(k),
+        replies(m),
+        super::policies::REPLAY,
+        r.bytes,
+        r.encode.as_millis(),
+        r.resume.0.as_millis(),
+        r.resume.1.as_millis(),
+        r.replayed.len(),
+        differ(&r.saved),
+        differ(&r.crashed),
+        differ(&r.replayed),
+    );
+    assert_eq!(r.saved, r.kept, "resumed from the state saved at the turn end");
+    assert_eq!(r.crashed, r.kept, "resumed from the state saved at the first resume");
+    if replies(m) <= super::policies::REPLAY {
+        assert_eq!(r.replayed, r.kept, "a full replay that took every reply");
+    }
+}
