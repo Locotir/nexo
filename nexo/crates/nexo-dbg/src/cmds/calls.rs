@@ -43,6 +43,7 @@ impl Session {
                     once: false,
                     call: true,
                     actions: Vec::new(),
+                    name: None,
                 });
             }
             let mut l = vec![format!(
@@ -87,6 +88,7 @@ impl Session {
                 once: false,
                 call: true,
                 actions: Vec::new(),
+                name: None,
             });
         }
         let mut l = vec![format!(

@@ -16,6 +16,7 @@ mod expr;
 mod gdbdialect;
 mod hooks;
 mod knowledge;
+mod libs;
 mod lines;
 mod minidump;
 mod modules;

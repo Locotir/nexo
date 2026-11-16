@@ -1362,6 +1362,20 @@ impl Target for Mac {
         }
     }
 
+    fn load_hook(&mut self) -> Option<u64> {
+        // dyld_all_image_infos: after the image count and the image array comes the function dyld calls each time
+        // it adds or removes images; the module list is read again from that array at the hit
+        let mut info = [0u32; TASK_DYLD_INFO_COUNT as usize];
+        let mut n = TASK_DYLD_INFO_COUNT;
+        // SAFETY: `info` holds the words `n` says.
+        let kr = unsafe { libc::task_info(self.task, TASK_DYLD_INFO, info.as_mut_ptr().cast(), &mut n) };
+        let all = u64::from(info[0]) | u64::from(info[1]) << 32;
+        if kr != KERN_SUCCESS || all == 0 {
+            return None;
+        }
+        self.read_word(all + 16).filter(|&f| f != 0)
+    }
+
     fn interrupt(&mut self) -> Result<()> {
         if self.gone || !self.running {
             return fail("the program is already stopped");

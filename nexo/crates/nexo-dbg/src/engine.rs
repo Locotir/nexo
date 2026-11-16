@@ -47,6 +47,9 @@ pub struct Bp {
     /// gdb-style `commands`: read-only commands run at every hit, as words. A `continue` among them lets the
     /// program go on without a stop; without one the breakpoint stops after them.
     pub actions: Vec<Vec<String>>,
+    /// The name it was set by when that name is in a library: the address is found again when the library loads
+    /// again. `addr` is 0 while no loaded file has the name (a pending breakpoint).
+    pub name: Option<String>,
 }
 
 pub struct Wp {
@@ -89,6 +92,8 @@ pub enum Why {
     Exec,
     /// `catch syscall`: the call, as the trace writes it.
     Syscall(String),
+    /// `catch load` or `catch unload`: the libraries that came or went.
+    Load(String),
     /// A hook with `stop`: its id and its line.
     Hook(u32, String),
     /// A call made by `call` or `print` came back to its return address.
@@ -187,6 +192,8 @@ pub struct Session {
     pub watch_lines: Vec<String>,
     /// The thread a step watch stepped and the instruction it ran.
     step_from: Option<(Tid, u64)>,
+    /// Libraries loaded and unloaded while the program runs: pending names, `catch load`.
+    pub libs: crate::libs::Loads,
 }
 
 /// A child the program forked.
@@ -502,6 +509,7 @@ impl Session {
             guards: Vec::new(),
             watch_lines: Vec::new(),
             step_from: None,
+            libs: Default::default(),
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -580,11 +588,12 @@ impl Session {
     }
 
     fn wanted(&self) -> BTreeSet<u64> {
-        let mut w: BTreeSet<u64> = self.bps.iter().filter(|b| b.enabled).map(|b| b.addr).collect();
+        let mut w: BTreeSet<u64> = self.bps.iter().filter(|b| b.enabled && b.addr != 0).map(|b| b.addr).collect();
         if let Some(t) = &self.run.temp {
             w.insert(t.addr);
         }
         w.extend(self.hook_addrs());
+        w.extend(self.libs.armed);
         if let Some(p) = &self.calling {
             w.insert(p.ret);
         }
@@ -606,6 +615,13 @@ impl Session {
         let patches: Vec<(u64, u8)> = self.inserted.iter().map(|(a, b)| (*a, *b)).collect();
         self.t.set_patches(&patches);
         Ok(())
+    }
+
+    /// A library went away with the bytes under our breakpoints in `lo..hi`: they are forgotten, not written back.
+    pub(crate) fn forget_inserted(&mut self, lo: u64, hi: u64) {
+        self.inserted.retain(|a, _| *a < lo || *a >= hi);
+        let patches: Vec<(u64, u8)> = self.inserted.iter().map(|(a, b)| (*a, *b)).collect();
+        self.t.set_patches(&patches);
     }
 
     /// Put the program's own bytes back everywhere.
@@ -683,6 +699,7 @@ impl Session {
             self.state = State::Running;
             return Ok(());
         }
+        self.arm_loads();
         // guarded before a thread steps off a breakpoint, so a write by that one instruction is seen too
         self.guard_pages()?;
         self.step_over_wanted()?;
@@ -795,6 +812,12 @@ impl Session {
                     }
                 }
                 Event::Stopped { stop: Stop::Exec, .. } => self.on_exec(),
+                Event::Stopped { tid, stop: Stop::Load } => {
+                    let v = self.on_load(tid);
+                    if verdict.is_none() {
+                        verdict = v;
+                    }
+                }
                 _ => {}
             }
         }
@@ -858,8 +881,10 @@ impl Session {
         if self.call_returned(tid, addr)? {
             return Ok(Some((tid, Why::Returned)));
         }
+        // the loader's hook: libraries came or went, which may set breakpoints before the ones at this address
+        let loaded = if self.libs.armed == Some(addr) { self.on_load(tid) } else { None };
         // the trace and the hooks see every pass, whatever a breakpoint there decides
-        let traced = self.hook_hit(tid, addr)?;
+        let traced = self.hook_hit(tid, addr)?.or(loaded);
         let mut stop_ids: Vec<u32> = Vec::new();
         let mut spent: Vec<u32> = Vec::new();
         let ids: Vec<u32> = self.bps.iter().filter(|b| b.enabled && b.addr == addr).map(|b| b.id).collect();
@@ -1150,6 +1175,7 @@ impl Session {
     fn on_exec(&mut self) {
         self.inserted.clear();
         self.t.set_patches(&[]);
+        self.libs.forget();
         self.tr.pending.clear();
         let mut off = Vec::new();
         for b in self.bps.iter_mut().filter(|b| b.enabled) {

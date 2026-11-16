@@ -22,6 +22,7 @@ mod float_args;
 mod follow_fork;
 mod frames;
 mod gdb_script;
+mod late_libs;
 mod launch_opts;
 mod one_line_locals;
 mod page_guards;

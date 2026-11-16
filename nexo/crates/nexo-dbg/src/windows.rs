@@ -65,6 +65,8 @@ pub struct Windows {
     held: Vec<HANDLE>,
     stepping: Option<Tid>,
     seen_first_break: bool,
+    /// Report each DLL load and unload as a stop (`Target::stop_at_loads`).
+    stop_loads: bool,
     interrupting: bool,
     exited: bool,
     /// The code the program ended with, once its exit event has been seen.
@@ -284,6 +286,7 @@ impl Windows {
             held: Vec::new(),
             stepping: None,
             seen_first_break: false,
+            stop_loads: false,
             interrupting: false,
             exited: false,
             exit_code: None,
@@ -778,12 +781,25 @@ impl Target for Windows {
                     // SAFETY: the loader's break is answered and the program goes on.
                     unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
                 }
+                // every thread is held until the event is answered, so a breakpoint can go into the new DLL first;
+                // the start-up DLLs come before the loader's first break, and a single step is left alone
+                LOAD_DLL_DEBUG_EVENT | UNLOAD_DLL_DEBUG_EVENT
+                    if self.stop_loads && self.seen_first_break && self.stepping.is_none() =>
+                {
+                    self.pending = Some((ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE));
+                    return Ok(vec![Event::Stopped { tid: ev.dwThreadId, stop: Stop::Load }]);
+                }
                 _ => {
                     // SAFETY: bookkeeping events are answered at once.
                     unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
                 }
             }
         }
+    }
+
+    fn stop_at_loads(&mut self, on: bool) -> bool {
+        self.stop_loads = on;
+        true
     }
 
     fn interrupt(&mut self) -> Result<()> {

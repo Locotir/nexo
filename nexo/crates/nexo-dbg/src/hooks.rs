@@ -58,6 +58,9 @@ pub struct Hook {
     pub ret: Option<u64>,
     pub hits: u64,
     pub returns: u64,
+    /// On the program's own stub for an import: the stubs and `call [slot]` sites for the same import in libraries
+    /// loaded later, which reach the function without passing the program's stub. `None` elsewhere.
+    pub also: Option<Vec<(u64, Option<u8>)>>,
 }
 
 /// A call whose entry was seen, waiting for its return.
@@ -793,7 +796,8 @@ impl Session {
         if let Some(l) = &self.tr.lib {
             v.extend(l.sites.keys());
         }
-        v.extend(self.tr.hooks.iter().map(|h| h.addr));
+        v.extend(self.tr.hooks.iter().map(|h| h.addr).filter(|&a| a != 0));
+        v.extend(self.tr.hooks.iter().flat_map(|h| h.also.iter().flatten().map(|s| s.0)));
         v.extend(self.cover_addrs());
         v
     }
@@ -848,10 +852,18 @@ impl Session {
             let (text, ret) = self.call_args(tid, &s.name, sig.as_ref(), &r, false, s.call_len);
             self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret)?;
         }
-        let ids: Vec<u32> = self.tr.hooks.iter().filter(|h| h.addr == addr).map(|h| h.id).collect();
-        for id in ids {
+        let ids: Vec<(u32, Option<u8>)> = self
+            .tr
+            .hooks
+            .iter()
+            .filter_map(|h| match h.also.iter().flatten().find(|s| s.0 == addr) {
+                Some(s) => Some((h.id, s.1)),
+                None => (h.addr == addr).then_some((h.id, h.call_len)),
+            })
+            .collect();
+        for (id, call_len) in ids {
             let Some(i) = self.tr.hooks.iter().position(|h| h.id == id) else { continue };
-            let h = self.tr.hooks[i].clone();
+            let h = Hook { call_len, ..self.tr.hooks[i].clone() };
             self.tr.hooks[i].hits += 1;
             let mut r = self.t.regs(tid)?;
             let (mut text, ret) = self.call_args(tid, &h.name, h.sig.as_ref(), &r, true, h.call_len);
@@ -968,7 +980,8 @@ impl Session {
                     return fail("this program calls no library function through an import (a static program?): `hook <function>` follows one");
                 }
                 let known: Vec<&str> = sites.values().map(|s| s.name.as_str()).collect();
-                if let Some(bad) = names.iter().find(|n| !known.contains(&n.as_str())) {
+                let later = self.loads_libraries();
+                if let Some(bad) = names.iter().find(|n| !known.contains(&n.as_str())).filter(|_| !later) {
                     let mut k = known.clone();
                     k.sort();
                     k.dedup();
@@ -977,13 +990,13 @@ impl Session {
                 let n = sites.values().filter(|s| names.is_empty() || names.contains(&s.name)).count();
                 self.tr.lib = Some(crate::hooks::Lib { sites, names: names.clone() });
                 let what = if names.is_empty() { "every imported function".to_string() } else { names.join(",") };
-                Ok(rows(
-                    "ltrace",
-                    vec![format!(
-                        "tracing library calls: {what} ({n} call sites); `cont`, then `ltrace show`; a call is written when it returns"
-                    )],
-                    json!({"sites": n}),
-                ))
+                let mut l = vec![format!(
+                    "tracing library calls: {what} ({n} call sites); `cont`, then `ltrace show`; a call is written when it returns"
+                )];
+                if later {
+                    l.push("a library the program loads from now on adds its own import calls to the trace".into());
+                }
+                Ok(rows("ltrace", l, json!({"sites": n})))
             }
         }
     }
@@ -1114,12 +1127,20 @@ impl Session {
             ),
             None => "no prototype: raw registers (`nexo bin proto` gives one)".into(),
         };
-        let mut l = vec![format!("hook #{id} at {addr:#x} {name}: {typed}")];
+        let mut l = vec![if addr == 0 {
+            format!(
+                "hook #{id} pending on {name}: no loaded file has it (loaded: {}); it is set when a library that has it loads: {typed}",
+                self.loaded_names()
+            )
+        } else {
+            format!("hook #{id} at {addr:#x} {name}: {typed}")
+        }];
         if !set.is_empty() || ret.is_some() {
             l.push("this hook changes the program: arguments are set at the entry, the result at the return".into());
         }
         l.push("`cont`, then `hook show`; `hooks` lists the counters".into());
-        self.tr.hooks.push(Hook { id, addr, name, sig, call_len, bt, stop, set, ret, hits: 0, returns: 0 });
+        let also = (addr != 0 && call_len.is_none() && self.lib_sites().contains_key(&addr)).then(Vec::new);
+        self.tr.hooks.push(Hook { id, addr, name, sig, call_len, bt, stop, set, ret, hits: 0, returns: 0, also });
         Ok(rows("hook", l, json!({"id": id, "addr": addr})))
     }
 
@@ -1151,11 +1172,13 @@ impl Session {
                     Some((a, s)) if s.call_len.is_none() => Ok((a, None, bare.to_string(), None)),
                     _ => match self.resolve_place(&format!("!{bare}")) {
                         Ok(Place::Code(x)) => Ok((x, None, bare.to_string(), None)),
-                        _ => fail(format!("{bare} is an import with no stub and its library is not loaded yet: `cont` past the entry first")),
+                        // pending: set when its library loads
+                        _ => Ok((0, None, bare.to_string(), None)),
                     },
                 }
             }
             Ok(Place::Data(x)) => fail(format!("{place} ({x:#x}) is data, not code")),
+            Err(_) if crate::libs::may_load_later(place) => Ok((0, None, place.to_string(), None)),
             Err(e) => Err(e),
         }
     }
@@ -1183,9 +1206,9 @@ impl Session {
                 what.push(format!("ret {}", shown(h.sig.as_ref().and_then(|s| s.ret.scalar()), v)));
             }
             l.push(format!(
-                "hook #{} {:#x} {} entries {} returns {}{}",
+                "hook #{} {} {} entries {} returns {}{}",
                 h.id,
-                h.addr,
+                if h.addr == 0 { "pending".to_string() } else { format!("{:#x}", h.addr) },
                 h.name,
                 h.hits,
                 h.returns,

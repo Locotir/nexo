@@ -52,7 +52,7 @@ const COMMANDS: &str = "\
 run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); env, folder, ASLR (off by default) and argv[0] as given; input is sent, then closed
 a; b  several commands in one call (`run ./p <<< \"1 2\"; cont` runs to the crash)
 attach <pid>  attach (asks)
-break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once
+break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once; a name no loaded file has is pending until a library with it loads
 breaks, delete <id>, enable|disable <id>
 cont|step|next|finish|until <addr>  [--wait N]  resume; a stop shows where, why, changed regs, next instructions
 regs [name|xmm0 --as f64|f32|u32x4] [--all], setreg <reg> <v>, setreg xmm0 <lanes> [--as f32]  (asks)
@@ -60,10 +60,10 @@ call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with 
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
 bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr|A..B> [len] [w|r|x] [hw|page|step] [if expr] [after N] [log [text]]  any length (debug registers, then guarded pages, then single steps; the answer says which and its cost); $old, $new, $at hold the change; a log watch writes a line per hit and does not stop
-catch <signal>, stdin <text>, out, history
+catch <signal>, catch load|unload [NAME|off], stdin <text>, out, history
 dump <A..B|A+LEN|fn> [path], dump module <name> [path]  memory to a file (a range raw at its address, a whole module rebuilt as ELF/PE); the answer names the `bin` call that reads it (asks)
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
-ltrace [names], ltrace show [names], ltrace off  library calls with typed args (printf/scanf `...` read off the format) and result, written at return
+ltrace [names], ltrace show [names], ltrace off  library calls with typed args (printf/scanf `...` read off the format) and result, written at return; a library loaded later adds its import calls
 hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args (ints, floats, stack ones), result, counters; set/ret change the program
 cover [funcs], cover show [func], cover save <A>, cover diff <A> <B>|now, cover off  basic blocks passed in the program's own code
 do \"c1; c2\"  several commands in one call

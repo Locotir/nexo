@@ -184,6 +184,13 @@ impl Mods {
         }
     }
 
+    /// The image of loaded file `idx`, read on first use, and what to add to its file addresses.
+    pub fn image_bias(&mut self, idx: usize) -> Option<(&Image, u64)> {
+        self.ensure(idx);
+        let bias = self.bias(idx);
+        Some((self.image(idx)?, bias))
+    }
+
     /// The short file name of a module.
     pub fn short(&self, idx: usize) -> String {
         self.list.get(idx).map(|m| m.path.rsplit(['/', '\\']).next().unwrap_or(&m.path).to_string()).unwrap_or_default()

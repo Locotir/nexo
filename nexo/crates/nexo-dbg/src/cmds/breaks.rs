@@ -59,6 +59,8 @@ impl Session {
         let spec = &spec.trim_start_matches('*').to_string();
         let by_line = self.source_place(spec, !exact);
         let from_line = by_line.is_some();
+        // a name no loaded file has yet: the breakpoint waits for a library that has it
+        let mut pending: Option<String> = None;
         let addr = match by_line {
             Some(r) => r?,
             None => match self.resolve_place(spec) {
@@ -70,6 +72,10 @@ impl Session {
                     let of = if name == *spec { String::new() } else { format!(" ({spec} is its slot, {slot:#x})") };
                     match self.resolve_place(&format!("!{name}")) {
                         Ok(Place::Code(x)) => x,
+                        _ if crate::libs::may_load_later(&name) => {
+                            pending = Some(name);
+                            0
+                        }
                         _ => {
                             return fail(format!(
                                 "{name} is an import{of} and its library is not loaded yet: run to the entry first (`cont`), or break at <library>!{name}"
@@ -90,11 +96,36 @@ impl Session {
                 // selected frame has no value for is the reason (`break *$rax` after `up`)
                 Err(e) => match self.addr_of(spec) {
                     Ok(x) if self.maps_exec(x) => x,
+                    Err(_) if !exact && crate::libs::may_load_later(spec) => {
+                        pending = Some(spec.clone());
+                        0
+                    }
                     Err(why) => return Err(why),
                     Ok(_) => return Err(e),
                 },
             },
         };
+        if let Some(name) = pending {
+            let id = self.new_id();
+            let loaded = self.loaded_names();
+            self.bps.push(Bp {
+                id,
+                addr: 0,
+                enabled: true,
+                cond,
+                after,
+                hits: 0,
+                log,
+                once,
+                call: false,
+                actions: Vec::new(),
+                name: Some(name.clone()),
+            });
+            let l = vec![format!(
+                "breakpoint #{id} pending on {name}: no loaded file has it (loaded: {loaded}); it is set when a library that has it loads"
+            )];
+            return Ok(rows("break", l, json!({"id": id, "addr": 0, "pending": name})));
+        }
         if let Some(c) = &cond {
             if self.state == State::Stopped {
                 // a hit works the condition out with the hitting thread's own registers (frame #0), so it is
@@ -113,6 +144,9 @@ impl Session {
         if let Some(src) = self.mods.source(addr).filter(|s| !label.contains(s.as_str())) {
             label = format!("{label} ({src})");
         }
+        // set by name in a library: found again by that name if the library is unloaded and loaded again
+        let name = (!from_line && crate::libs::may_load_later(spec) && self.mods.in_main(addr).is_none())
+            .then(|| spec.clone());
         self.bps.push(Bp {
             id,
             addr,
@@ -124,6 +158,7 @@ impl Session {
             once,
             call: false,
             actions: Vec::new(),
+            name,
         });
         let mut l = vec![format!("breakpoint #{id} at {addr:#x} {label}")];
         l.extend(note);
@@ -198,6 +233,11 @@ impl Session {
             .collect();
         let mut l = Vec::new();
         for (id, addr, en, cond) in todo {
+            if addr == 0 {
+                let name = self.bps.iter().find(|b| b.id == id).and_then(|b| b.name.clone()).unwrap_or_default();
+                l.push(format!("breakpoint #{id} pending on {name} was never set: no library that has {name} loaded"));
+                continue;
+            }
             let label = self.mods.label(addr, false).unwrap_or_default();
             let mut s = format!("breakpoint #{id} at {addr:#x} {label} was never hit (hits 0)");
             if !en {
@@ -268,7 +308,13 @@ impl Session {
             l.push(format!("indirect-call logging on {sites} sites, {hits} calls seen (`calls off`)"));
         }
         for (id, addr, en, cond, after, hits, log, once, acts) in bps {
-            let label = self.mods.label(addr, false).unwrap_or_default();
+            let label = match addr {
+                0 => {
+                    let name = self.bps.iter().find(|b| b.id == id).and_then(|b| b.name.clone()).unwrap_or_default();
+                    format!("{name} (pending: no loaded file has it)")
+                }
+                _ => self.mods.label(addr, false).unwrap_or_default(),
+            };
             let mut s = format!("#{id} {addr:#x} {label} hits {hits}");
             if !en {
                 s.push_str(" (disabled)");

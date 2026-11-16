@@ -103,6 +103,8 @@ pub enum Stop {
     /// The program forked this child, kept as its own target (`Target::forks`); the parent waits here only under
     /// `Follow::Child`, so the debugger can let it go.
     Fork(u32),
+    /// The loader added or removed a library (only while `Target::stop_at_loads` is on).
+    Load,
 }
 
 /// Which side of a fork the debugger keeps (`follow`).
@@ -304,6 +306,17 @@ pub trait Target {
         Vec::new()
     }
     fn resume(&mut self, how: Resume) -> Result<()>;
+    /// The address the system's loader calls each time it adds or removes a library, for a breakpoint there to see
+    /// the change; `None` where the backend tells loads itself ([`Target::stop_at_loads`]) or the engine finds the
+    /// address in the loader's symbols (Linux: `_dl_debug_state`).
+    fn load_hook(&mut self) -> Option<u64> {
+        None
+    }
+    /// Report every library load and unload as `Stop::Load` from the next resume on. `false`: this backend has no
+    /// such event, and a breakpoint on [`Target::load_hook`] stands for it.
+    fn stop_at_loads(&mut self, _on: bool) -> bool {
+        false
+    }
     /// Stop at every system call's start and end from the next resume on (`Stop::Syscall`).
     fn trace_syscalls(&mut self, _on: bool) -> Result<()> {
         crate::fail("system call tracing runs on Linux only")
