@@ -98,6 +98,11 @@ impl Image {
     pub(crate) fn dwarf(&self) -> &crate::dwarf::Dwarf {
         self.dwarf.get_or_init(|| {
             let mut d = crate::dwarf::read(&self.data);
+            if self.format == Format::MachO && d.protos.is_empty() && d.structs.is_empty() {
+                if let Some(bytes) = self.dsym() {
+                    d = crate::dwarf::read(&bytes);
+                }
+            }
             if let Some(p) = &self.pdb {
                 for (k, v) in &p.types.protos {
                     d.protos.entry(*k).or_insert_with(|| v.clone());
@@ -111,6 +116,20 @@ impl Image {
             }
             d
         })
+    }
+
+    /// The DWARF file of the dSYM bundle beside a Mach-O program. The macOS linker leaves the debug info in
+    /// the object files, and `dsymutil` (which `cc -g` runs on a one-step build) gathers it into
+    /// `prog.dSYM/Contents/Resources/DWARF/prog`. A dSYM from another build would put wrong names on the
+    /// code, so its UUID must match the program's.
+    fn dsym(&self) -> Option<Vec<u8>> {
+        use object::Object;
+        let mut bundle = self.path.clone().into_os_string();
+        bundle.push(".dSYM");
+        let file = std::path::Path::new(&bundle).join("Contents/Resources/DWARF").join(self.path.file_name()?);
+        let bytes = std::fs::read(file).ok()?;
+        let uuid = |b: &[u8]| object::File::parse(b).ok()?.mach_uuid().ok().flatten();
+        (uuid(&bytes)? == uuid(&self.data)?).then_some(bytes)
     }
 
     /// The strings found in the data sections, sorted by address.

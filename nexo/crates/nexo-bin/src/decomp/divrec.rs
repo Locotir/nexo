@@ -203,6 +203,15 @@ fn candidate(e: &Expr) -> bool {
         Expr::Bin(Bin::UDiv | Bin::SDiv, _, c) if c.as_const().is_some() => sig = true,
         Expr::Bin(Bin::Mul, _, c) if c.as_const().is_some_and(|v| v > 0xff) => sig = true,
         Expr::Bin(Bin::Sar | Bin::Shr, _, c) if c.as_const().is_some() => sig = true,
+        // clang rounds a signed `x % 2^k` with a select and a mask and no shift: x - ((x < 0 ? x + 2^k-1 : x) & -2^k)
+        Expr::Bin(Bin::And, _, c)
+            if c.as_const().is_some_and(|v| {
+                let n = v.wrapping_neg() & mask(c.bits());
+                n > 1 && n.is_power_of_two()
+            }) =>
+        {
+            sig = true
+        }
         _ => {}
     });
     sig
@@ -491,6 +500,28 @@ mod tests {
         recover(&mut e);
         let want = Expr::Zext(Box::new(Expr::bin(Bin::UDiv, Expr::Var(Var::Reg(7), 32), Expr::Const(10, 32))), 64);
         assert_eq!(e, want, "{e:?}");
+    }
+
+    #[test]
+    fn clangs_signed_mod8_with_a_select_and_a_mask_reads_back() {
+        // x - ((x >= 0 ? x : x + 7) & -8), the shape clang gives `int x % 8` (no shift in it)
+        let x = || Expr::Var(Var::Reg(7), 32);
+        let pick = Expr::Select(
+            Box::new(Expr::Cmp(Cmp::Ge, Box::new(x()), Box::new(Expr::Const(0, 32)))),
+            Box::new(x()),
+            Box::new(Expr::bin(Bin::Add, x(), Expr::Const(7, 32))),
+        );
+        let mut e = Expr::bin(Bin::Sub, x(), Expr::bin(Bin::And, pick, Expr::Const(0xffff_fff8, 32)));
+        recover(&mut e);
+        assert_eq!(e, Expr::bin(Bin::SMod, x(), Expr::Const(8, 32)), "{e:?}");
+    }
+
+    #[test]
+    fn an_align_down_mask_stays() {
+        let mut e = Expr::bin(Bin::And, Expr::bin(Bin::Add, v(32), Expr::Const(7, 32)), Expr::Const(0xffff_fff8, 32));
+        let before = e.clone();
+        recover(&mut e);
+        assert_eq!(e, before);
     }
 
     #[test]

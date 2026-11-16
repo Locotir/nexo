@@ -45,6 +45,9 @@ pub(super) fn call(m: &mut Machine, name: &str) -> Option<Answer> {
         "abs" | "labs" | "llabs" => abs(m, name),
         "toupper" | "tolower" | "isdigit" | "isalpha" | "isalnum" | "isspace" | "isupper" | "islower" | "isxdigit"
         | "isprint" | "ispunct" | "iscntrl" | "isgraph" => ctype_fn(m, name),
+        // macOS's <ctype.h> turns toupper and tolower into calls to these
+        "__toupper" => ctype_fn(m, "toupper"),
+        "__tolower" => ctype_fn(m, "tolower"),
         "__ctype_b_loc" | "__ctype_toupper_loc" | "__ctype_tolower_loc" => ctype_loc(m, name),
         "exit" | "_exit" | "_Exit" => a(m, 0, name).and_then(|c| Err(Stop::Exit(c as i32 as i64))),
         "abort" => Err(Stop::Abort("the program called abort()".into())),

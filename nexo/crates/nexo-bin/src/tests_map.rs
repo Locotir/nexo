@@ -41,6 +41,14 @@ pub(crate) fn compile(dir: &Path, src: &str, flags: &[&str]) -> Option<PathBuf> 
         eprintln!("skipped: no C compiler that builds the sample");
         return None;
     }
+    // the macOS linker ignores -s (it only warns that the flag is obsolete): strip the program as asked
+    if cfg!(target_os = "macos")
+        && flags.contains(&"-s")
+        && !Command::new("strip").arg(&exe).status().is_ok_and(|s| s.success())
+    {
+        eprintln!("skipped: -s asks for a stripped program and strip failed");
+        return None;
+    }
     Some(exe)
 }
 
@@ -71,11 +79,21 @@ fn overview_finds_the_real_main_with_its_evidence_even_when_stripped() {
         }
         if flags.contains(&"-s") {
             // stripped: no symbol, but the address is the one the unstripped build has for its own layout
-            assert!(img.symbols.iter().all(|s| s.name != "main"));
+            if img.format == Format::MachO {
+                // a stripped Mach-O still names main, since LC_MAIN gives its address exactly; the rest are gone
+                assert!(img.symbols.iter().all(|s| s.name != "leaf" && s.name != "mid"), "not stripped");
+            } else {
+                assert!(img.symbols.iter().all(|s| s.name != "main"));
+            }
             assert_eq!(first["addr"], addr_of(&reference, "main"), "same code, same layout\n{t}");
         }
         let ev = first["evidence"].as_str().unwrap();
-        assert!(ev.contains("__libc_start_main") && ev.contains("rdi"), "{ev}");
+        if img.format == Format::MachO {
+            // the macOS loader calls main itself, at the address LC_MAIN names: there is no libc start call
+            assert!(ev.contains("LC_MAIN"), "{ev}");
+        } else {
+            assert!(ev.contains("__libc_start_main") && ev.contains("rdi"), "{ev}");
+        }
         assert!(t.contains("network") && t.contains("socket("), "{t}");
         assert!(t.contains("files") && t.contains("fopen("), "{t}");
         assert!(t.contains("\"usage: prog\""), "{t}");

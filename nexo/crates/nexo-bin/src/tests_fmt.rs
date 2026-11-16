@@ -33,7 +33,8 @@ fn cxx_image(dir: &Path) -> Option<Image> {
 fn an_itanium_name_is_shown_demangled_and_the_raw_name_still_finds_it() {
     let dir = tempfile::tempdir().unwrap();
     let Some(img) = cxx_image(dir.path()) else { return };
-    let raw = "_ZNK3geo5Shape4areaEi";
+    // a Mach-O symbol carries the C underscore in front of the Itanium name, and that is its raw name
+    let raw = if img.format == Format::MachO { "__ZNK3geo5Shape4areaEi" } else { "_ZNK3geo5Shape4areaEi" };
     let f = img.funcs().iter().find(|f| f.name.contains("geo::Shape::area")).expect("demangled name");
     assert_eq!(img.raw_name_at(f.start), Some(raw));
     // the raw name finds the function, in fn, xref and funcs --grep
@@ -44,7 +45,8 @@ fn an_itanium_name_is_shown_demangled_and_the_raw_name_still_finds_it() {
     assert_eq!(by_raw, by_name);
     let x = whole(&xref(&img, raw).unwrap());
     assert!(x.contains("geo::Shape::area"), "{x}");
-    let l = whole(&func_list(&img, FuncSort::Addr, Some("^_ZNK3geo"), 0).unwrap());
+    let grep = format!("^{}", raw.strip_suffix("5Shape4areaEi").unwrap());
+    let l = whole(&func_list(&img, FuncSort::Addr, Some(&grep), 0).unwrap());
     assert!(l.contains("geo::Shape::area"), "{l}");
     // callers show the demangled name too
     let m = whole(&func(&img, "main", false).unwrap());

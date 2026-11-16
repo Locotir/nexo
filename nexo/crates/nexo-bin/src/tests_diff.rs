@@ -12,13 +12,15 @@ use crate::*;
 
 const ITEMS_V1: &str = r#"
 int table[8] = {3, 1, 4, 1, 5, 9, 2, 6};
-__attribute__((noinline)) int get_item(int i) { return table[i] * 2 + 1; }
+/* a long index: clang widens an int one with movsxd here but with mov after the bounds check of v2, while
+   gcc keeps the same instruction in both; with no widening both compilers keep the old body whole */
+__attribute__((noinline)) int get_item(long i) { return table[i] * 2 + 1; }
 "#;
 
 const ITEMS_V2: &str = r#"
 int table[8] = {3, 1, 4, 1, 5, 9, 2, 6};
 __attribute__((noinline)) int added_fn(int x) { return x * 5 + table[1]; }
-__attribute__((noinline)) int get_item(int i) {
+__attribute__((noinline)) int get_item(long i) {
     if (i < 0 || i >= 8) return added_fn(i);
     return table[i] * 2 + 1;
 }
@@ -39,7 +41,7 @@ __attribute__((noinline)) int sum_to(int n) {
 const MAIN: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
-int get_item(int i);
+int get_item(long i);
 int sum_to(int n);
 int main(int argc, char **argv) {
     int n = argc > 1 ? atoi(argv[1]) : 3;

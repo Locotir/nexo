@@ -521,8 +521,9 @@ int main(int argc, char **argv) {
     fn dwarf_names_and_types_reach_decomp() {
         let dir = tempfile::tempdir().unwrap();
         let Some(exe) = build(dir.path()) else { return };
-        let data = std::fs::read(&exe).unwrap();
-        let d = read(&data);
+        // the image's DWARF: in the program on Linux, in the dSYM bundle cc writes beside it on macOS
+        let img = Image::open(&exe).unwrap();
+        let d = img.dwarf();
         let total = d.protos.values().find(|p| p.contains(" total(")).expect("prototype of total");
         assert_eq!(total, "i32 total(struct item *it, i32 limit)");
         let area = d.protos.values().find(|p| p.contains(" area(")).expect("prototype of area");
@@ -531,7 +532,6 @@ int main(int argc, char **argv) {
         assert!(d.structs["point_t"].contains("0x4:i32:y"), "{:?}", d.structs);
         assert!(d.vars.values().any(|m| m.values().any(|n| n == "sum")), "{:?}", d.vars);
 
-        let img = Image::open(&exe).unwrap();
         let data_dir = dir.path().join("data");
         let o = decomp_window(&img, &data_dir, &["total".to_string()], false, None, 200).unwrap();
         let text = o.text_all();

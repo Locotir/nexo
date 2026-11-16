@@ -234,6 +234,10 @@ pub(super) fn lane_op(mn: M, d: u128, s: u128, imm: u64) -> Option<u128> {
             let v: Vec<u64> = (0..4).map(|i| lane(s, 4, ((imm >> (2 * i)) & 3) as usize)).collect();
             join(&v, 4)
         }
+        // clang copies the odd floats of a vector down this way (movshdup) to add or compare them in pairs
+        M::Movsldup => join(&[lane(s, 4, 0), lane(s, 4, 0), lane(s, 4, 2), lane(s, 4, 2)], 4),
+        M::Movshdup => join(&[lane(s, 4, 1), lane(s, 4, 1), lane(s, 4, 3), lane(s, 4, 3)], 4),
+        M::Movddup => join(&[lane(s, 8, 0), lane(s, 8, 0)], 8),
         M::Pshuflw | M::Pshufhw => {
             let base = if mn == M::Pshuflw { 0 } else { 4 };
             let mut v: Vec<u64> = (0..8).map(|i| lane(s, 2, i)).collect();
@@ -376,15 +380,28 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
             let bits = (0..16 / w).fold(0u64, |acc, i| acc | ((lane(s, w, i) >> (w * 8 - 1)) << i));
             cpu.set_reg(ins.op0_register(), bits)?;
         }
-        M::Pextrw => {
-            let (s, imm) = (get(cpu, mem, ins, 1)?, ins.immediate(2));
-            // into a general register the word is zero-extended
-            put(cpu, mem, ins, 0, 2, lane(s, 2, (imm & 7) as usize) as u128)?;
+        M::Pextrb | M::Pextrw | M::Pextrd | M::Pextrq => {
+            let w = match mn {
+                M::Pextrb => 1,
+                M::Pextrw => 2,
+                M::Pextrd => 4,
+                _ => 8,
+            };
+            let (s, imm) = (get(cpu, mem, ins, 1)?, ins.immediate(2) as usize);
+            // into a general register the lane is zero-extended
+            put(cpu, mem, ins, 0, w, lane(s, w, imm & (16 / w - 1)) as u128)?;
         }
-        M::Pinsrw => {
-            let (d, s, imm) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, ins.immediate(2));
-            let sh = (imm & 7) * 16;
-            put(cpu, mem, ins, 0, 16, (d & !(0xffffu128 << sh)) | ((s & 0xffff) << sh))?;
+        M::Pinsrb | M::Pinsrw | M::Pinsrd | M::Pinsrq => {
+            // clang packs two ints into a vector this way (pinsrd), so SSE4.1 code reaches here from plain C
+            let w = match mn {
+                M::Pinsrb => 1,
+                M::Pinsrw => 2,
+                M::Pinsrd => 4,
+                _ => 8,
+            };
+            let (d, s, imm) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, ins.immediate(2) as usize);
+            let (sh, m) = ((imm & (16 / w - 1)) * w * 8, (1u128 << (w * 8)) - 1);
+            put(cpu, mem, ins, 0, 16, (d & !(m << sh)) | ((s & m) << sh))?;
         }
         _ => {
             if lane_op(mn, 0, 0, 0).is_none() {
@@ -392,6 +409,7 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
             }
             let (d, s, imm) = match mn {
                 M::Pshufd | M::Pshuflw | M::Pshufhw => (0, get(cpu, mem, ins, 1)?, ins.immediate(2)),
+                M::Movsldup | M::Movshdup | M::Movddup => (0, get(cpu, mem, ins, 1)?, 0),
                 M::Shufps | M::Shufpd => (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, ins.immediate(2)),
                 M::Pslldq | M::Psrldq => (get(cpu, mem, ins, 0)?, 0, ins.immediate(1)),
                 _ => (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, 0),
@@ -414,6 +432,19 @@ mod tests {
             let ins = d.decode();
             assert!(exec(cpu, mem, &ins).unwrap(), "{ins:?}");
         }
+    }
+
+    #[test]
+    fn dup_moves_copy_the_even_or_odd_lanes() {
+        let mut cpu = Cpu::new();
+        let mut mem = Mem::default();
+        let v = |l: [u32; 4]| l.iter().enumerate().fold(0u128, |a, (i, x)| a | (*x as u128) << (32 * i));
+        cpu.xmm[0] = v([1, 2, 3, 4]);
+        // movshdup xmm1,xmm0 ; movsldup xmm2,xmm0 ; movddup xmm3,xmm0
+        run(&[0xf3, 0x0f, 0x16, 0xc8, 0xf3, 0x0f, 0x12, 0xd0, 0xf2, 0x0f, 0x12, 0xd8], &mut cpu, &mut mem);
+        assert_eq!(cpu.xmm[1], v([2, 2, 4, 4]));
+        assert_eq!(cpu.xmm[2], v([1, 1, 3, 3]));
+        assert_eq!(cpu.xmm[3], v([1, 2, 1, 2]));
     }
 
     #[test]
