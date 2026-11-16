@@ -143,15 +143,15 @@ impl Session {
         let (word, text) = match self.follow {
             Follow::Parent => (
                 "parent",
-                "follow parent: a forked child is let go with the breakpoints taken out (a vfork child shares the parent's memory, so it keeps them until its exec)",
+                "follow parent: a forked child is let go with the breakpoints taken out; a vfork child shares the parent's memory, so it runs under the debugger, past the breakpoints without stopping, until its exec, and is let go there",
             ),
             Follow::Child => (
                 "child",
-                "follow child: a forked child becomes a session of its own, stopped where it was made, with the breakpoints copied, and the parent is let go there (a vfork parent stays, as it shares the child's memory)",
+                "follow child: a forked child becomes a session of its own, stopped where it was made, with the breakpoints copied, and the parent is let go there; a vfork child runs past the breakpoints until its exec and becomes a session there, and the parent is let go then",
             ),
             Follow::Both => (
                 "both",
-                "follow both: a forked child becomes a session of its own, stopped where it was made, with the breakpoints copied; the parent goes on",
+                "follow both: a forked child becomes a session of its own, stopped where it was made, with the breakpoints copied; a vfork child runs past the breakpoints until its exec and becomes a session there; the parent goes on",
             ),
         };
         let mut l = vec![text.to_string()];

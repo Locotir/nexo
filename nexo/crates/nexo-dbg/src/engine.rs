@@ -713,7 +713,7 @@ impl Session {
             if events.is_empty() {
                 return Ok(None);
             }
-            if let Some(stop) = self.process(events)? {
+            if let Some(mut stop) = self.process(events)? {
                 if self.state == State::Running {
                     self.state = State::Stopped;
                     self.cur = stop.0;
@@ -721,8 +721,13 @@ impl Session {
                     self.uninsert_all();
                 }
                 self.run = Run::default();
-                if matches!(stop.1, Why::LetGo(_)) {
-                    // `follow child`: the parent goes on alone, its own bytes back in place
+                if let Why::LetGo(text) = &mut stop.1 {
+                    // `follow child`: the parent goes on alone, its own bytes back in place, and a call it forked in
+                    // undone, or the thread would go on inside the call with nowhere to return to
+                    if let Some(l) = self.call_let_go() {
+                        text.push_str("; ");
+                        text.push_str(&l);
+                    }
                     let _ = self.t.detach();
                     self.ended("let go at a fork (`follow child`)".into());
                 }
@@ -1054,10 +1059,10 @@ impl Session {
             let place = if name.is_empty() { format!("{at:#x}") } else { format!("{at:#x} {name}") };
             let session = target.and_then(|t| self.adopt(t, pid, &place, vfork, &patches));
             if let Some(id) = &session {
-                if self.follow == Follow::Both || vfork {
+                if self.follow == Follow::Both {
+                    let (kind, when) = if vfork { ("vfork", "at its exec") } else { ("fork", "where it was made") };
                     self.log_line(format!(
-                        "pid {pid} ({} at {place}) is session {id}, stopped where it was made: `-s {id} cont` runs it",
-                        if vfork { "vfork" } else { "fork" }
+                        "pid {pid} ({kind} at {place}) is session {id}, stopped {when}: `-s {id} cont` runs it"
                     ));
                 }
             }
@@ -1065,8 +1070,8 @@ impl Session {
         }
     }
 
-    /// A forked child the backend kept: a session of its own, stopped where fork returned 0 in it, with the
-    /// breakpoints copied. `None` when its program cannot be read; the child then goes when `t` is dropped.
+    /// A forked child the backend kept: a session of its own, stopped where fork returned 0 in it (a vfork child: at
+    /// its exec), with the breakpoints copied. `None` when its program cannot be read; the child then goes when `t` is dropped.
     fn adopt(
         &mut self,
         t: Box<dyn Target>,
@@ -1088,34 +1093,41 @@ impl Session {
         kid.bps = self.bps.iter().filter(|b| !b.once).cloned().map(|b| Bp { hits: 0, ..b }).collect();
         kid.next_id = self.next_id;
         kid.catch = self.catch.clone();
-        // the child's memory holds 0xcc where the parent's did at the fork; a stopped session holds the program's
-        // own bytes, and the child's next run puts its breakpoints back. A vfork child shares the parent's memory
-        // until it execs: writing the bytes back there would take the parent's breakpoints and hooks out too, so
-        // the child starts with them counted as its own (reads still show the program's bytes through the patches)
-        kid.inserted = patches.iter().copied().collect();
-        kid.t.set_patches(patches);
-        if !vfork {
+        let ids: Vec<String> = kid.bps.iter().filter(|b| !b.call).map(|b| format!("#{}", b.id)).collect();
+        let parent = self.t.pid();
+        let text = if vfork {
+            // a vfork child comes at its exec: the memory it shared is the parent's alone again, and the copied
+            // breakpoints are addresses in the parent's program, so they are off; names come from the new program
+            kid.on_exec();
+            let mods: Vec<String> = kid.mods.list.iter().map(|m| format!("{} at {:#x}", m.path, m.base)).collect();
+            let copied = if ids.is_empty() {
+                "no breakpoints to copy".to_string()
+            } else {
+                format!("breakpoints {} copied and off (addresses in pid {parent}'s program)", ids.join(" "))
+            };
+            format!(
+                "pid {pid}, made by vfork in pid {parent} at {place}: stopped at its exec of {}; modules now: {}; {copied} (watches, hooks and traces stay with pid {parent})",
+                kid.mods.exe_path().display(),
+                mods.join(", ")
+            )
+        } else {
+            // the child's memory holds 0xcc where the parent's did at the fork; a stopped session holds the
+            // program's own bytes, and the child's next run puts its breakpoints back
+            kid.inserted = patches.iter().copied().collect();
+            kid.t.set_patches(patches);
             // the child's copy of a guarded page is guarded too, and its watch stays with the parent
             kid.guards = self.guards.iter().filter(|g| g.armed).copied().collect();
             kid.uninsert_all();
             kid.guards.clear();
-        }
-        let parent = self.t.pid();
-        let kind = if vfork { "vfork" } else { "fork" };
-        let ids: Vec<String> = kid.bps.iter().filter(|b| !b.call).map(|b| format!("#{}", b.id)).collect();
-        let copied = if ids.is_empty() {
-            "no breakpoints to copy".to_string()
-        } else {
-            format!("breakpoints {} copied", ids.join(" "))
+            let copied = if ids.is_empty() {
+                "no breakpoints to copy".to_string()
+            } else {
+                format!("breakpoints {} copied", ids.join(" "))
+            };
+            format!(
+                "pid {pid}, made by fork in pid {parent} at {place}: stopped where fork returned 0 in it; {copied} (watches, hooks and traces stay with pid {parent})"
+            )
         };
-        let mut text = format!(
-            "pid {pid}, made by {kind} in pid {parent} at {place}: stopped where {kind} returned 0 in it; {copied} (watches, hooks and traces stay with pid {parent})"
-        );
-        if vfork {
-            text.push_str(&format!(
-                "; it shares pid {parent}'s memory until it execs or exits, and pid {parent} waits until then"
-            ));
-        }
         let first = kid.answer(pid as Tid, Why::Fork(text));
         let id = crate::server::new_id();
         self.kids.push(Kid { id: id.clone(), sess: kid, first });

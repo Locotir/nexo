@@ -123,11 +123,13 @@ pub struct Forked {
     /// The thread that forked and its program counter just after the fork call.
     pub tid: Tid,
     pub at: u64,
-    /// A vfork child shares the parent's memory until it execs or exits; the parent waits for that.
+    /// A vfork child shares the parent's memory until it execs or exits, and the parent waits for that; the backend
+    /// hands it over then, at its exec when it is kept.
     pub vfork: bool,
     /// The bytes under the breakpoints at that moment: the child's memory has `0xcc` at each address.
     pub patches: Vec<(u64, u8)>,
-    /// The child, stopped where fork returned in it, when the backend keeps children (`Follow::Child` or `Both`).
+    /// The child, stopped where fork returned in it (a vfork child: at its exec), when the backend keeps children
+    /// (`Follow::Child` or `Both`).
     pub target: Option<Box<dyn Target>>,
 }
 

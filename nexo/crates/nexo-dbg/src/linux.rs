@@ -97,6 +97,23 @@ struct Th {
     step: bool,
     /// Born while we were not looking: the watch slots are not on it yet.
     fresh: bool,
+    /// It made a vfork child that has not exec'd or exited yet: it stays at that stop until then (see `Vkid`).
+    held: bool,
+    /// Held, and the last resume would have let it go: it goes when its child execs or exits.
+    go: bool,
+}
+
+/// A vfork child, run by the parent's target until it execs or exits. It shares the parent's memory, breakpoint
+/// bytes included, and the parent thread that made it waits in the kernel where `PTRACE_INTERRUPT` does not reach
+/// it; so that thread is held at its vfork stop (it never waits in the kernel), and the child is stepped past our
+/// breakpoints here. At its exec it is kept as a target of its own (`follow child|both`) or let go.
+struct Vkid {
+    pid: i32,
+    /// The parent thread, held at its vfork stop.
+    parent: i32,
+    at: u64,
+    /// The breakpoint address the child is stepping past with the program's byte in place: 0xcc goes back after.
+    over: Option<u64>,
 }
 
 pub struct Linux {
@@ -117,6 +134,8 @@ pub struct Linux {
     follow: Follow,
     /// The children forked since `Target::forks` last took them.
     forks: Vec<Forked>,
+    /// The vfork children that have not exec'd or exited yet.
+    vkids: Vec<Vkid>,
 }
 
 /// The ptrace order that lets a thread go: one instruction, up to the next system call, or on.
@@ -313,6 +332,7 @@ impl Linux {
             sys: false,
             follow: Follow::Parent,
             forks: Vec::new(),
+            vkids: Vec::new(),
         };
         me.open_mem();
         Ok(me)
@@ -342,6 +362,7 @@ impl Linux {
             sys: false,
             follow: Follow::Parent,
             forks: Vec::new(),
+            vkids: Vec::new(),
         };
         loop {
             let mut new = 0;
@@ -391,7 +412,9 @@ impl Linux {
     }
 
     fn stopped_tid(&self) -> Result<i32> {
-        match self.th.iter().find(|(_, t)| !t.running) {
+        // a thread held at its vfork runs no code of its own before the child execs or exits
+        let free = self.th.iter().find(|(_, t)| !t.running && !t.held);
+        match free.or_else(|| self.th.iter().find(|(_, t)| !t.running)) {
             Some((tid, _)) if !self.gone => Ok(*tid),
             _ => fail("the program is not stopped"),
         }
@@ -442,34 +465,36 @@ impl Linux {
         }
     }
 
-    /// A child the program forked: put the original bytes back over our breakpoints and let it go. A vfork child
-    /// shares the parent's memory, so its bytes stay as they are: putting them back would take the parent's
-    /// breakpoints out, and the child's exec drops them anyway.
-    fn release_child(&self, child: i32, vfork: bool) {
+    /// Write one byte through stopped thread `tid` (ptrace writes whole words).
+    fn poke_byte(tid: i32, addr: u64, byte: u8) -> bool {
+        let base = addr & !7;
+        let mut w = 0u64;
+        if pt(PEEKDATA, tid, base, (&raw mut w) as u64).is_err() {
+            return false;
+        }
+        let mut b = w.to_le_bytes();
+        b[(addr - base) as usize] = byte;
+        pt(POKEDATA, tid, base, u64::from_le_bytes(b)).is_ok()
+    }
+
+    /// A child the program forked: put the original bytes back over our breakpoints and let it go. `shared`: it
+    /// shares the memory it was made in (a thread or a vfork child of a vfork child), so the bytes stay.
+    fn release_child(&self, child: i32, shared: bool) {
         if !Self::first_stop(child) {
             return;
         }
-        if !vfork {
+        if !shared {
             for &(addr, byte) in &self.patches {
-                let base = addr & !7;
-                let mut w = 0u64;
-                if pt(PEEKDATA, child, base, (&raw mut w) as u64).is_ok() {
-                    let mut b = w.to_le_bytes();
-                    b[(addr - base) as usize] = byte;
-                    let _ = pt(POKEDATA, child, base, u64::from_le_bytes(b));
-                }
+                Self::poke_byte(child, addr, byte);
             }
         }
         let _ = pt(DETACH, child, 0, 0);
     }
 
-    /// A child the program forked, kept as a target of its own: one thread, stopped where fork returned in it, with
-    /// the parent's breakpoint bytes in its memory. It is killed at the end when the parent was started here, as
-    /// `PTRACE_O_EXITKILL` passes to it.
-    fn keep_child(&self, child: i32) -> Option<Linux> {
-        if !Self::first_stop(child) {
-            return None;
-        }
+    /// A child the program forked, kept as a target of its own: one thread, stopped where fork returned in it (with
+    /// the parent's breakpoint bytes, `patches`, in its memory) or at its exec. It is killed at the end when the
+    /// parent was started here, as `PTRACE_O_EXITKILL` passes to it.
+    fn kid(&self, child: i32, patches: Vec<(u64, u8)>) -> Linux {
         let mut th = BTreeMap::new();
         th.insert(child, Th::default());
         let mut kid = Linux {
@@ -482,15 +507,16 @@ impl Linux {
             // SIGPIPE in the child) when the parent's session ends first
             out: self.out.as_ref().and_then(|f| f.try_clone().ok()),
             watch: [None; 4],
-            patches: self.patches.clone(),
+            patches,
             gone: false,
             want_stop: false,
             sys: false,
             follow: self.follow,
             forks: Vec::new(),
+            vkids: Vec::new(),
         };
         kid.open_mem();
-        Some(kid)
+        kid
     }
 
     /// The program forked: keep the child or let it go as `follow` says, and write the fork down.
@@ -504,12 +530,36 @@ impl Linux {
         }
         let child = child as i32;
         let at = self.regs(tid as Tid).map_or(0, |r| r.rip);
+        if vfork {
+            if Self::first_stop(child) && pt(CONT, child, 0, 0).is_ok() {
+                self.vkids.push(Vkid { pid: child, parent: tid, at, over: None });
+                if let Some(t) = self.th.get_mut(&tid) {
+                    t.held = true;
+                    t.go = !stopping;
+                }
+                return;
+            }
+            self.forks.push(Forked {
+                pid: child as u32,
+                tid: tid as Tid,
+                at,
+                vfork,
+                patches: Vec::new(),
+                target: None,
+            });
+            if !stopping {
+                self.again(tid);
+            }
+            return;
+        }
         let target: Option<Box<dyn Target>> = match self.follow {
             Follow::Parent => {
-                self.release_child(child, vfork);
+                self.release_child(child, false);
                 None
             }
-            Follow::Child | Follow::Both => self.keep_child(child).map(|k| Box::new(k) as Box<dyn Target>),
+            Follow::Child | Follow::Both => {
+                Self::first_stop(child).then(|| Box::new(self.kid(child, self.patches.clone())) as Box<dyn Target>)
+            }
         };
         let kept = target.is_some();
         self.forks.push(Forked {
@@ -520,11 +570,184 @@ impl Linux {
             patches: self.patches.clone(),
             target,
         });
-        // A vfork parent cannot run before its child execs or exits, so it is never the one that waits here.
-        if kept && self.follow == Follow::Child && !vfork {
+        if kept && self.follow == Follow::Child {
             events.push(Event::Stopped { tid: tid as Tid, stop: Stop::Fork(child as u32) });
         } else if !stopping {
             self.again(tid);
+        }
+    }
+
+    /// Look at the vfork children: step one past a breakpoint, hand it its signals, see it exec or end.
+    fn tend_vkids(&mut self, events: &mut Vec<Event>) {
+        let mut i = 0;
+        while i < self.vkids.len() {
+            let pid = self.vkids[i].pid;
+            let st = match waitpid(pid, libc::WNOHANG) {
+                Ok(None) => {
+                    i += 1;
+                    continue;
+                }
+                Ok(Some(st)) => Some(st),
+                Err(_) => None,
+            };
+            let stepped = match self.vkids[i].over.take() {
+                Some(a) => {
+                    self.rearm(a, self.vkids[i].parent);
+                    true
+                }
+                None => false,
+            };
+            let Some(st) = st.filter(|&st| libc::WIFSTOPPED(st)) else {
+                self.vfork_done(i, false, events);
+                continue;
+            };
+            let sig = libc::WSTOPSIG(st);
+            match st >> 16 {
+                EVENT_EXEC => {
+                    self.vfork_done(i, true, events);
+                    continue;
+                }
+                EVENT_FORK | EVENT_VFORK | EVENT_CLONE => {
+                    // what the vfork child starts before its exec is not followed
+                    let mut new = 0u64;
+                    if pt(GETEVENTMSG, pid, 0, (&raw mut new) as u64).is_ok() && new > 0 {
+                        self.release_child(new as i32, st >> 16 != EVENT_FORK);
+                    }
+                    let _ = pt(CONT, pid, 0, 0);
+                }
+                0 if sig == libc::SIGTRAP => self.vkid_trap(i, stepped),
+                0 => {
+                    let _ = pt(CONT, pid, 0, sig as u64);
+                }
+                _ => {
+                    let _ = pt(CONT, pid, 0, 0);
+                }
+            }
+            i += 1;
+        }
+    }
+
+    /// `Some(a)` when the SIGTRAP vfork child `pid` stopped on came from one of our int3 bytes at `a`, there now or
+    /// taken out since (its pc is set back to `a` then); `None` when the trap is its own.
+    fn our_trap(&mut self, pid: i32) -> Option<u64> {
+        let mut info = [0u64; 16];
+        pt(GETSIGINFO, pid, 0, info.as_mut_ptr() as u64).ok()?;
+        if !matches!((info[1] & 0xffff_ffff) as u32, 0x80 | 1) {
+            return None;
+        }
+        let mut r = self.regs(pid as Tid).ok()?;
+        let a = r.rip.wrapping_sub(1);
+        let mut b = [0u8; 1];
+        if !self.patches.iter().any(|p| p.0 == a) && !(self.read(a, &mut b) == 1 && b[0] != 0xcc) {
+            return None;
+        }
+        r.rip = a;
+        self.set_regs(pid as Tid, &r).ok()?;
+        Some(a)
+    }
+
+    /// Vfork child `i` stopped on SIGTRAP. At one of our breakpoints it runs that one instruction with the program's
+    /// byte in place (0xcc goes back when the step ends); at one taken out since, it runs the program's byte; the end
+    /// of our step (`stepped`) goes on; any other trap is its own and it gets the signal.
+    fn vkid_trap(&mut self, i: usize, stepped: bool) {
+        let pid = self.vkids[i].pid;
+        let Some(a) = self.our_trap(pid) else {
+            let sig = if stepped { 0 } else { libc::SIGTRAP as u64 };
+            let _ = pt(CONT, pid, 0, sig);
+            return;
+        };
+        match self.patches.iter().find(|p| p.0 == a).map(|p| p.1) {
+            Some(byte) if Self::poke_byte(pid, a, byte) => {
+                self.vkids[i].over = Some(a);
+                let _ = pt(SINGLESTEP, pid, 0, 0);
+            }
+            _ => {
+                let _ = pt(CONT, pid, 0, 0);
+            }
+        }
+    }
+
+    /// 0xcc back at `a` after a vfork child stepped past it, through the parent thread `parent` (the step may have
+    /// been the exec); not when the breakpoint was taken out meanwhile.
+    fn rearm(&self, a: u64, parent: i32) {
+        if self.patches.iter().any(|p| p.0 == a) {
+            Self::poke_byte(parent, a, 0xcc);
+        }
+    }
+
+    /// Vfork child `i` exec'd (`exec`) or ended: the parent's memory is its own again, so the thread that made it
+    /// goes on, and the child is kept at its exec as a target of its own (`follow child|both`) or let go.
+    fn vfork_done(&mut self, i: usize, exec: bool, events: &mut Vec<Event>) {
+        let v = self.vkids.remove(i);
+        let target: Option<Box<dyn Target>> = match self.follow {
+            _ if !exec => None,
+            Follow::Parent => {
+                let _ = pt(DETACH, v.pid, 0, 0);
+                None
+            }
+            // none of our bytes are in the new program's memory
+            Follow::Child | Follow::Both => Some(Box::new(self.kid(v.pid, Vec::new()))),
+        };
+        let kept = target.is_some();
+        self.forks.push(Forked {
+            pid: v.pid as u32,
+            tid: v.parent as Tid,
+            at: v.at,
+            vfork: true,
+            patches: Vec::new(),
+            target,
+        });
+        let Some(t) = self.th.get_mut(&v.parent) else { return };
+        t.held = false;
+        let go = std::mem::take(&mut t.go);
+        if kept && self.follow == Follow::Child {
+            events.push(Event::Stopped { tid: v.parent as Tid, stop: Stop::Fork(v.pid as u32) });
+        } else if go {
+            self.again(v.parent);
+        }
+    }
+
+    /// The vfork children go with the program: killed (`kill`), or let go (`detach`); one stopped at a trap of ours
+    /// has its pc set back before the int3 first.
+    fn drop_vkids(&mut self, kill: bool) {
+        for v in std::mem::take(&mut self.vkids) {
+            if let Some(t) = self.th.get_mut(&v.parent) {
+                t.held = false;
+                t.go = false;
+            }
+            if kill {
+                // SAFETY: a process we trace.
+                unsafe { libc::kill(v.pid, libc::SIGKILL) };
+            } else {
+                let _ = pt(INTERRUPT, v.pid, 0, 0);
+            }
+            let until = Instant::now() + Duration::from_secs(1);
+            loop {
+                match waitpid(v.pid, libc::WNOHANG) {
+                    Ok(Some(st)) if libc::WIFSTOPPED(st) && kill => {
+                        let _ = pt(CONT, v.pid, 0, 0);
+                    }
+                    Ok(Some(st)) if libc::WIFSTOPPED(st) => {
+                        let sig = libc::WSTOPSIG(st);
+                        let hand = match st >> 16 {
+                            0 if sig == libc::SIGTRAP => self.our_trap(v.pid).is_none() && v.over.is_none(),
+                            0 => true,
+                            EVENT_FORK | EVENT_VFORK | EVENT_CLONE => {
+                                let mut new = 0u64;
+                                if pt(GETEVENTMSG, v.pid, 0, (&raw mut new) as u64).is_ok() && new > 0 {
+                                    self.release_child(new as i32, st >> 16 != EVENT_FORK);
+                                }
+                                false
+                            }
+                            _ => false,
+                        };
+                        let _ = pt(DETACH, v.pid, 0, if hand { sig as u64 } else { 0 });
+                        break;
+                    }
+                    Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(1)),
+                    _ => break,
+                }
+            }
         }
     }
 
@@ -628,6 +851,10 @@ impl Linux {
 
     /// Stop every thread that still runs and take in what each one was doing.
     fn stop_all(&mut self, events: &mut Vec<Event>) {
+        // a held thread is stopped already; the program is reported stopped, so it stays when its child execs
+        for t in self.th.values_mut() {
+            t.go = false;
+        }
         while !self.gone {
             let running: Vec<i32> = self.th.iter().filter(|(_, t)| t.running).map(|(k, _)| *k).collect();
             if running.is_empty() {
@@ -813,6 +1040,11 @@ impl Target for Linux {
         // (`int 0x80` in a 32-bit program) put for one step where a stopped thread stands, then every byte and
         // register goes back as it was.
         let tid = self.stopped_tid()?;
+        if self.th.get(&tid).is_some_and(|t| t.held) {
+            return fail(
+                "mprotect: every stopped thread waits for a vfork child to exec or exit, and runs no instruction before that",
+            );
+        }
         let mut saved = [0u64; 27];
         pt(GETREGS, tid, 0, saved.as_mut_ptr() as u64).map_err(|e| os_err("registers for mprotect", e))?;
         let rip = saved[16];
@@ -910,6 +1142,10 @@ impl Target for Linux {
                 continue;
             }
             t.step = one.is_some();
+            if t.held {
+                t.go = true;
+                continue;
+            }
             let sig = std::mem::take(&mut t.sig);
             match pt(order(t.step, sys), *tid, 0, sig as u64) {
                 Ok(_) => t.running = true,
@@ -934,9 +1170,19 @@ impl Target for Linux {
         let mut events = Vec::new();
         let mut round = 0u32;
         loop {
-            let running: Vec<i32> = self.th.iter().filter(|(_, t)| t.running).map(|(k, _)| *k).collect();
-            if running.is_empty() {
-                return fail("the program is stopped: nothing to wait for");
+            self.tend_vkids(&mut events);
+            let held = self.th.iter().find(|(_, t)| t.held && t.go).map(|(k, _)| *k);
+            // a held thread is looked at too: it ends with the process
+            let running: Vec<i32> = self.th.iter().filter(|(_, t)| t.running || t.held).map(|(k, _)| *k).collect();
+            if !self.th.values().any(|t| t.running) && events.is_empty() {
+                match held {
+                    None => return fail("the program is stopped: nothing to wait for"),
+                    Some(tid) if self.want_stop => {
+                        self.want_stop = false;
+                        events.push(Event::Stopped { tid: tid as Tid, stop: Stop::Interrupt });
+                    }
+                    Some(_) => {}
+                }
             }
             for tid in running {
                 match waitpid(tid, libc::WNOHANG) {
@@ -973,6 +1219,11 @@ impl Target for Linux {
 
     fn interrupt(&mut self) -> Result<()> {
         let Some(tid) = self.th.iter().find(|(_, t)| t.running).map(|(k, _)| *k) else {
+            // only threads held at a vfork that would go on: the next wait reports one of them stopped
+            if self.th.values().any(|t| t.held && t.go) {
+                self.want_stop = true;
+                return Ok(());
+            }
             return fail("the program is already stopped");
         };
         self.want_stop = true;
@@ -1017,12 +1268,19 @@ impl Target for Linux {
     }
 
     fn detach(&mut self) -> Result<()> {
+        self.drop_vkids(false);
         if self.gone {
             return Ok(());
         }
         let mut events = Vec::new();
         self.stop_all(&mut events);
+        // a watch left in a thread's debug registers would end it with SIGTRAP once nobody traces it
+        let watched = self.watch.iter().any(Option::is_some);
+        self.watch = [None; 4];
         for (tid, t) in &self.th {
+            if watched {
+                let _ = pt(POKEUSER, *tid, DEBUGREG + 7 * 8, 0);
+            }
             let _ = pt(DETACH, *tid, 0, t.sig as u64);
         }
         self.th.clear();
@@ -1031,6 +1289,7 @@ impl Target for Linux {
     }
 
     fn kill(&mut self) -> Result<()> {
+        self.drop_vkids(true);
         if self.gone {
             return Ok(());
         }

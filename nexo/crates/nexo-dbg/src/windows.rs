@@ -818,6 +818,14 @@ impl Target for Windows {
     }
 
     fn detach(&mut self) -> Result<()> {
+        // a watch left in a thread's debug registers would end the program with a single-step exception nobody
+        // handles once it is let go
+        if self.pending.is_some() && self.watch.iter().any(Option::is_some) {
+            for h in self.threads.values() {
+                let _ = self.put_watch(*h, &[None; 4]);
+            }
+            self.watch = [None; 4];
+        }
         self.release_held();
         if let Some((pid, tid, status)) = self.pending.take() {
             // SAFETY: the stopped event is answered before the program is let go.

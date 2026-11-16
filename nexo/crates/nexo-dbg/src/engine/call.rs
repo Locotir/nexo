@@ -339,6 +339,18 @@ impl Session {
         ))
     }
 
+    /// The process goes on without the debugger in the middle of the call (it forked inside it under `follow
+    /// child`): its thread is put back as before the call first. The line that says so.
+    pub(crate) fn call_let_go(&mut self) -> Option<String> {
+        let (tid, text) = self.calling.as_ref().map(|p| (p.tid, p.text.clone()))?;
+        Some(match self.call_restore() {
+            Ok(()) => format!("`{text}` did not return: the fork was inside it; {}", self.back_line(tid)),
+            Err(e) => format!(
+                "`{text}` did not return: the fork was inside it, and the registers of thread {tid} could not be put back: {e}"
+            ),
+        })
+    }
+
     /// The program ended while a call was under way: the call is gone with it.
     pub(crate) fn call_gone(&mut self) -> Option<String> {
         let p = self.calling.take()?;
