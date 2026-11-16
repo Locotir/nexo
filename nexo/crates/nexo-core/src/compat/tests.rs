@@ -316,12 +316,33 @@ fn the_nested_search_reads_no_more_entries_than_its_cap_and_says_where_it_stoppe
 }
 
 #[test]
-fn the_nested_search_stops_at_its_most_files_and_says_so() {
+fn the_nested_search_counts_the_ignored_files_it_reads_and_drops() {
+    let p = repo();
+    w(p.path().join(".gitignore"), "*.npy\n");
+    for i in 0..300 {
+        w(p.path().join(format!("data/x{i}.npy")), "");
+    }
+    w(p.path().join("web/AGENTS.md"), "web");
+    // the walk gives a handful of entries here, all of data/ being ignored, but it reads 300 to drop them
+    let cut = nested_scan_with(p.path(), true, None, 100);
+    assert_eq!(cut.stopped_after, Some(100), "{cut:?}");
+    let whole = nested_scan_with(p.path(), true, None, NESTED_WALK);
+    assert_eq!(whole, NestedScan { files: vec![PathBuf::from("web/AGENTS.md")], stopped_after: None });
+}
+
+#[test]
+fn the_nested_search_stops_at_its_most_files_with_a_list_that_other_files_leave_alone() {
     let p = repo();
     for i in 0..NESTED_MAX + 5 {
         w(p.path().join(format!("pkg{i:02}/AGENTS.md")), "x");
     }
     let scan = nested_scan_with(p.path(), true, None, NESTED_WALK);
     assert_eq!(scan.files.len(), NESTED_MAX);
-    assert!(scan.stopped_after.is_some(), "{scan:?}");
+    assert_eq!(scan.stopped_after, None, "{scan:?}");
+    // a file in each package moves the place of the last one found in the walk; the list, and the system text
+    // a resumed session compares, stay as they were
+    for i in 0..NESTED_MAX + 5 {
+        w(p.path().join(format!("pkg{i:02}/notes.txt")), "");
+    }
+    assert_eq!(nested_scan_with(p.path(), true, None, NESTED_WALK), scan);
 }

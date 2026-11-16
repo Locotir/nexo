@@ -77,14 +77,41 @@ fn the_project_walk_reads_no_more_entries_than_its_cap_and_the_block_says_so() {
         }
     }
     let cut = scan_project(d.path(), 25).unwrap();
-    assert!(cut.cut && cut.read == 25, "{cut:?}");
+    assert!(cut.stopped_after == Some(25) && cut.read <= 26, "{cut:?}");
     let files: usize = cut.top.values().map(|(_, n)| n).sum();
     assert!(files < 60, "{cut:?}");
     let b = project_block_head(d.path(), Some(&cut), String::new, PROJECT_HEAD);
     assert!(b.contains("(from the first 25 entries of the tree; the counts leave out the rest)"), "{b}");
     let whole = scan_project(d.path(), PROJECT_WALK).unwrap();
-    assert!(!whole.cut && whole.read == 64, "{whole:?}");
+    assert!(whole.stopped_after.is_none() && whole.read == 63, "{whole:?}");
     assert!(!project_block_head(d.path(), Some(&whole), String::new, PROJECT_HEAD).contains("first"));
+}
+
+#[test]
+fn the_project_walks_cap_counts_the_ignored_and_hidden_files_it_reads_and_drops() {
+    // the walk reads each file in .gitignore and each dot file to drop it, and gives none of them: a cap on
+    // the entries it gives let a folder of them be read in full before the first request
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join(".gitignore"), "*.npy\n").unwrap();
+    std::fs::create_dir(d.path().join("data")).unwrap();
+    for i in 0..300 {
+        std::fs::write(d.path().join(format!("data/x{i}.npy")), "").unwrap();
+        std::fs::write(d.path().join(format!("data/.x{i}")), "").unwrap();
+    }
+    std::fs::write(d.path().join("data/README.md"), "").unwrap();
+    let cut = scan_project(d.path(), 100).unwrap();
+    assert!(cut.stopped_after == Some(100) && cut.read <= 101, "{cut:?}");
+    let b = project_block_head(d.path(), Some(&cut), String::new, PROJECT_HEAD);
+    assert!(b.contains("\n- data/ (0 files)"), "the folder past the cap is named: {b}");
+    assert!(b.contains("(from the first 100 entries of the tree"), "{b}");
+    let whole = scan_project(d.path(), PROJECT_WALK).unwrap();
+    assert!(whole.stopped_after.is_none() && whole.read == 603, "{whole:?}");
+    assert!(project_block_head(d.path(), Some(&whole), String::new, PROJECT_HEAD).contains("- data/ (1 files)"));
+    // a folder whose own entries pass the cap is not walked at all, and the block says why it lists nothing
+    let root = scan_project(&d.path().join("data"), 100).unwrap();
+    assert!(root.top.is_empty() && root.read == 101, "{root:?}");
+    let b = project_block_head(&d.path().join("data"), Some(&root), String::new, PROJECT_HEAD);
+    assert_eq!(b, format!("\n{PROJECT_HEAD}:\n(the folder holds more than 100 entries, too many to map)"));
 }
 
 #[test]

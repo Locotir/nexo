@@ -45,6 +45,7 @@ pub mod todo;
 pub mod tool;
 pub mod trust;
 pub mod version;
+pub mod walk;
 pub mod worktree;
 
 /// `n` and the word, plural unless `n` is one: `count(1, "line")` is "1 line".

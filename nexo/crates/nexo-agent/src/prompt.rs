@@ -264,22 +264,24 @@ fn environment_with(cwd: &Path, scan: Option<&ProjectScan>) -> String {
 const PROJECT_CAP: usize = 2500;
 /// The most tree entries the Project block lists.
 const PROJECT_ENTRIES: usize = 60;
-/// The most entries the project walk reads. A session can start in a folder of any size, and the walk runs
-/// before its first request (and before each later one, for the tree note), so it reads a fixed number of
-/// entries however big the tree is; the block then says that it covers those only.
+/// The most entries the project walk reads, those in `.gitignore` and the hidden ones included (see
+/// [`nexo_core::walk::BoundedWalk`]). A session can start in a folder of any size, and the walk runs before its
+/// first request (and before each later one, for the tree note), so it reads a fixed number of entries however
+/// big the tree is; the block then says that it covers those only.
 const PROJECT_WALK: usize = 20_000;
 
-/// One walk of a project: its top two levels with their file counts and the manifests, and whether the walk
-/// stopped at its cap before the end of the tree. The Project block and the tree note are both drawn from
-/// it, so a new session reads the tree once.
+/// One walk of a project: its top two levels with their file counts and the manifests, and the walk's cap on
+/// entries when it stopped there before the end of the tree. The Project block and the tree note are both
+/// drawn from it, so a new session reads the tree once.
 #[derive(Debug, Default)]
 struct ProjectScan {
     top: std::collections::BTreeMap<String, (bool, usize)>,
     second: std::collections::BTreeMap<String, (bool, usize)>,
     manifests: Vec<String>,
-    /// The entries the walk read, the folder itself included.
+    /// The directory entries the walk read, those it left out included, so a test can bound its work.
+    #[cfg(test)]
     read: usize,
-    cut: bool,
+    stopped_after: Option<usize>,
 }
 
 #[cfg(test)]
@@ -299,13 +301,10 @@ fn scan_project(cwd: &Path, cap: usize) -> Option<ProjectScan> {
     #[cfg(test)]
     WALKS.with(|w| w.set(w.get() + 1));
     let mut s = ProjectScan::default();
-    let walk = ignore::WalkBuilder::new(cwd).require_git(false).build();
-    for e in walk.flatten() {
-        if s.read >= cap {
-            s.cut = true;
-            break;
-        }
-        s.read += 1;
+    let mut builder = ignore::WalkBuilder::new(cwd);
+    builder.require_git(false);
+    let mut walk = nexo_core::walk::BoundedWalk::new(cwd, builder, None, cap);
+    for e in walk.by_ref() {
         let Ok(rel) = e.path().strip_prefix(cwd) else { continue };
         let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
         if parts.is_empty() {
@@ -323,6 +322,11 @@ fn scan_project(cwd: &Path, cap: usize) -> Option<ProjectScan> {
             sub.1 += files;
         }
     }
+    #[cfg(test)]
+    {
+        s.read = walk.read();
+    }
+    s.stopped_after = walk.stopped().then_some(cap);
     s.manifests.sort();
     Some(s)
 }
@@ -418,7 +422,7 @@ fn map_key(line: &str) -> String {
 }
 
 fn project_block_head(cwd: &Path, scan: Option<&ProjectScan>, missing: impl FnOnce() -> String, head: &str) -> String {
-    let Some(ProjectScan { top, second, manifests, read, cut }) = scan else {
+    let Some(ProjectScan { top, second, manifests, stopped_after, .. }) = scan else {
         return String::new();
     };
     let mut lines = Vec::new();
@@ -443,14 +447,16 @@ fn project_block_head(cwd: &Path, scan: Option<&ProjectScan>, missing: impl FnOn
     }
     let total = top.len() + second.len();
     if lines.is_empty() {
-        return String::new();
+        // a folder that holds more entries than the walk reads gives it nothing to list, and is no empty folder
+        return stopped_after
+            .map(|n| format!("\n{head}:\n(the folder holds more than {n} entries, too many to map)"))
+            .unwrap_or_default();
     }
-    // first, so the cap on characters never cuts it: without it, a folder past the walk's cap would read as absent
-    let partial = if *cut {
-        format!("\n(from the first {read} entries of the tree; the counts leave out the rest)")
-    } else {
-        String::new()
-    };
+    // first, so the cap on characters never cuts it: without it, a folder past the walk's cap would read as absent.
+    // The number is the cap, not the place where the walk stopped, which would move with every file added before it
+    let partial = stopped_after
+        .map(|n| format!("\n(from the first {n} entries of the tree; the counts leave out the rest)"))
+        .unwrap_or_default();
     let mut tail = String::new();
     if !manifests.is_empty() {
         tail.push_str(&format!("\nManifests: {}", manifests.join(", ")));

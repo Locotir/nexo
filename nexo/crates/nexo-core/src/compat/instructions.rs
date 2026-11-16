@@ -8,13 +8,15 @@ use super::*;
 pub(super) const IMPORT_DEPTH: usize = 5;
 /// The most nested instruction files listed.
 pub(super) const NESTED_MAX: usize = 20;
-/// The most tree entries the search for nested instruction files reads. A session starts in a tree of any
-/// size, a home-sized one included, and this search runs before its first request, so it reads a fixed
-/// number of entries however big the tree is.
+/// The most tree entries the search for nested instruction files reads, those its filters leave out included
+/// (see [`crate::walk::BoundedWalk`]). A session starts in a tree of any size, a home-sized one included, and
+/// this search runs before its first request, so it reads a fixed number of entries however big the tree is.
 pub const NESTED_WALK: usize = 20_000;
 
-/// What the search for nested instruction files found, and where it stopped when it did not read the whole
-/// tree (the number of entries it read), so the list can say which part of the tree it covers.
+/// What the search for nested instruction files found, and its cap on entries when it stopped there before
+/// the end of the tree, so the list can say which part of the tree it covers. Stopping at [`NESTED_MAX`]
+/// files leaves it None: the place of the last file in the walk moves with every file added before it, and
+/// a number that moved would change the system text on each resume with no instruction file changed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NestedScan {
     pub files: Vec<PathBuf>,
@@ -265,13 +267,8 @@ pub(super) fn nested_scan_with(cwd: &Path, claude: bool, own_home: Option<&Path>
     let root = project_root_with(cwd, own_home);
     let loaded: Vec<&Path> = cwd.ancestors().take_while(|d| d.starts_with(&root)).collect();
     let mut found = Vec::new();
-    let mut stopped_after = None;
-    let walk = ignore::WalkBuilder::new(&root).max_depth(Some(5)).build();
-    for (seen, e) in walk.flatten().enumerate() {
-        if seen >= cap || found.len() >= NESTED_MAX {
-            stopped_after = Some(seen);
-            break;
-        }
+    let mut walk = crate::walk::BoundedWalk::new(&root, ignore::WalkBuilder::new(&root), Some(5), cap);
+    for e in walk.by_ref() {
         let name = e.file_name().to_string_lossy();
         let wanted = match name.as_ref() {
             "AGENTS.md" => true,
@@ -286,7 +283,10 @@ pub(super) fn nested_scan_with(cwd: &Path, claude: bool, own_home: Option<&Path>
             continue;
         }
         found.push(e.path().strip_prefix(&root).unwrap_or(e.path()).to_path_buf());
+        if found.len() >= NESTED_MAX {
+            break;
+        }
     }
     found.sort();
-    NestedScan { files: found, stopped_after }
+    NestedScan { stopped_after: walk.stopped().then_some(cap), files: found }
 }
