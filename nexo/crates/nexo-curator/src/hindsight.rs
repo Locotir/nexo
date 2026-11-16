@@ -259,6 +259,9 @@ fn folded(v: &Value) -> i64 {
     }
 }
 
+/// How many tool results back a call is looked for in the results of the files it names.
+const RESULTS_BACK: usize = 64 * 8;
+
 /// The trace grown one message at a time.
 #[derive(Default, Clone)]
 pub struct Tracer {
@@ -273,6 +276,14 @@ pub struct Tracer {
     runs: Runs,
     tool_names: FxHashMap<String, String>,
     call_paths: FxHashMap<String, Vec<String>>,
+    /// The lines of the tool results a call was looked for in (`quoted_in`), squashed, by unit. A session edits
+    /// the same files again and again, and each call that names one is looked for in the reads of it: without
+    /// this, the same reads are squashed again at every such call, and a resumed session does it all at once.
+    /// A unit's text never changes (a rewritten history starts a new tracer), and only the units `quoted_in`
+    /// still reaches are kept.
+    held: FxHashMap<usize, Arc<[String]>>,
+    /// The results squashed for `held`: what the tests bound.
+    squashed: usize,
 }
 
 /// The file names (behind the folders of a path) and the code-shaped names of a unit, with which a reply that
@@ -378,12 +389,51 @@ impl Tracer {
         (0..self.units.len())
             .rev()
             .filter(|&i| self.units[i].kind == UKind::Result)
-            .take(64 * 8)
+            .take(RESULTS_BACK)
             .find(|&i| self.units[i].src.iter().any(|p| evidence::same_path(p, path)) && ok(i))
     }
 
+    /// The most recent tool result of a file `path`, from the end back as `result_of_path` goes, that holds one of
+    /// `lines` (squashed) within one of its lines, its viewer's numbers left out.
+    fn quoted_in(&mut self, path: &str, lines: &[String]) -> Option<usize> {
+        let mut reached = 0;
+        let mut found = Vec::new();
+        for i in (0..self.units.len()).rev().filter(|&i| self.units[i].kind == UKind::Result).take(RESULTS_BACK) {
+            reached = i;
+            if self.units[i].src.iter().any(|p| evidence::same_path(p, path)) {
+                found.push(i);
+            }
+        }
+        // what lies before the results this search reached is out of reach of every later one too
+        if self.held.len() > RESULTS_BACK {
+            self.held.retain(|&i, _| i >= reached);
+        }
+        for i in found {
+            let held = match self.held.get(&i) {
+                Some(h) => h.clone(),
+                None => {
+                    let h: Arc<[String]> =
+                        self.unit_text(i).lines().map(|l| evidence::squash(evidence::unnumbered(l))).collect();
+                    self.squashed += 1;
+                    self.held.insert(i, h.clone());
+                    h
+                }
+            };
+            if lines.iter().any(|q| held.iter().any(|l| l.contains(q.as_str()))) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// The tool results squashed for `quoted_in` so far.
+    #[cfg(test)]
+    fn squashed(&self) -> usize {
+        self.squashed
+    }
+
     /// The units a reply (its units `mu`) used, each with the word that proves it when a word does.
-    fn credits(&self, mu: &[(Unit, String)], int: &Interner) -> Vec<(usize, Option<Sym>)> {
+    fn credits(&mut self, mu: &[(Unit, String)], int: &Interner) -> Vec<(usize, Option<Sym>)> {
         let mut out: Vec<(usize, Option<Sym>)> = Vec::new();
         for (u, text) in mu {
             if !matches!(u.kind, UKind::Text | UKind::Call | UKind::Thinking) {
@@ -400,12 +450,7 @@ impl Tracer {
             if u.kind == UKind::Call {
                 let lines = evidence::quotable_lines(text);
                 for p in evidence::paths_of(text, &path_ext) {
-                    let hit = self.result_of_path(&p, |i| {
-                        let held: Vec<String> =
-                            self.unit_text(i).lines().map(|l| evidence::squash(evidence::unnumbered(l))).collect();
-                        lines.iter().any(|q| held.iter().any(|l| l.contains(q.as_str())))
-                    });
-                    if let Some(h) = hit {
+                    if let Some(h) = self.quoted_in(&p, &lines) {
                         out.push((h, None));
                         directed = true;
                     }
@@ -590,6 +635,50 @@ mod tests {
         assert!(words_of("rax 0x1c8 456 in 2024 for job_0042").iter().all(|w| w == "job_0042"));
         assert_eq!(words_of("pointer 140737488348120 and 0xdeadbeef"), ["140737488348120", "deadbeef"]);
         assert_eq!(words_of("version 1.2.3 of pkg_7f"), ["1.2.3", "pkg_7f"]);
+    }
+
+    #[test]
+    fn each_read_of_a_file_is_squashed_once_however_many_calls_name_the_file() {
+        let mut int = Interner::default();
+        let mut tr = Tracer::default();
+        let file: String = (0..200).map(|n| format!("{n:>6}\tlet value_{n} = compute_{n}(input, {n});\n")).collect();
+        tr.add(serde_json::json!({"role": "user", "content": "Tidy src/app.rs"}), &mut int);
+        let mut id = 0;
+        let mut step = |tr: &mut Tracer, input: Value, output: &str| {
+            id += 1;
+            let call = format!("c{id}");
+            tr.add(
+                serde_json::json!({"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": "edit", "input": input}]}),
+                &mut int,
+            );
+            tr.add(
+                serde_json::json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": output}]}),
+                &mut int,
+            );
+        };
+        for _ in 0..40 {
+            step(&mut tr, serde_json::json!({"path": "src/app.rs"}), &file);
+        }
+        // edits whose text no read holds: each looks through every read of the file within reach
+        for n in 0..40 {
+            let old = format!("a line written nowhere before number {n}");
+            step(&mut tr, serde_json::json!({"path": "src/app.rs", "old_string": old, "new_string": "x"}), "ok");
+        }
+        let results = tr.units.iter().filter(|u| u.kind == UKind::Result).count();
+        assert_eq!(results, 80);
+        assert!(tr.squashed() <= results, "{} squashes for {results} results", tr.squashed());
+        // an edit that quotes a line of the file is still the use of the latest read that holds it
+        step(
+            &mut tr,
+            serde_json::json!({"path": "src/app.rs", "old_string": "let value_7 = compute_7(input, 7);", "new_string": "y"}),
+            "ok",
+        );
+        let last_read = (0..tr.units.len())
+            .rev()
+            .find(|&i| tr.units[i].kind == UKind::Result && tr.unit_text(i).contains("value_7"))
+            .unwrap();
+        let reply = tr.msgs.len() - 2;
+        assert!(tr.units[last_read].uses.contains(&reply), "{:?}", tr.units[last_read].uses);
     }
 
     #[test]
