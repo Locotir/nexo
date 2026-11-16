@@ -16,7 +16,9 @@ pub(crate) fn bin_error(e: &clap::Error, words: &[String]) -> Option<String> {
             }
             Some(out)
         }
-        ErrorKind::InvalidSubcommand => Some(not_an_op(op).unwrap_or_else(|| unknown_op(op))),
+        ErrorKind::InvalidSubcommand => {
+            Some(not_an_op(op, words.get(1..).unwrap_or(&[])).unwrap_or_else(|| unknown_op(op)))
+        }
         ErrorKind::MissingRequiredArgument | ErrorKind::WrongNumberOfValues | ErrorKind::TooFewValues => {
             // clap's first line, then the op's own usage line instead of its whole block
             let usage = op_usage(op).or_else(|| {
@@ -58,8 +60,9 @@ pub(super) fn op_flags(op: &str) -> Option<String> {
 }
 
 /// A word that starts an op line but is not an op: a shell word, or the name of another tool, gets a fact that
-/// names what does the job here; anything else is left to clap's own answer.
-pub(super) fn not_an_op(word: &str) -> Option<String> {
+/// names what does the job here; anything else is left to clap's own answer. `rest` are the words after it, whose
+/// first one that is not a flag is taken as the file, so the fact carries the real command.
+pub(super) fn not_an_op(word: &str, rest: &[String]) -> Option<String> {
     if word.starts_with('-') {
         return None;
     }
@@ -68,11 +71,33 @@ pub(super) fn not_an_op(word: &str) -> Option<String> {
         return None;
     }
     let w = word.to_ascii_lowercase();
+    let file = rest
+        .iter()
+        .find(|a| !a.is_empty() && !a.starts_with('-'))
+        .map_or_else(|| "./prog".into(), |f| nexo_bin::shell_word(f));
+    let syms = |kind: &str, what: &str| format!("`{word}` is not a bin op; `syms {file}{kind}` lists {what}");
     match w.as_str() {
         "disasm" | "disassemble" | "disassembly" | "dis" | "objdump" | "listing" => Some(format!(
             "`{word}` is not a bin op. `fn ./prog <name or addr>` shows the disassembly of a function (`--to ADDR` for a range, `--bytes` for the bytes); `decomp` gives pseudo-C; `asm` assembles."
         )),
-        "nm" | "readelf" | "ldd" | "xxd" | "hexdump" | "od" | "file" => Some(format!(
+        "imports" | "import" | "imp" => Some(syms(" --kind import", "the imports with their library, stub and GOT/IAT slot")),
+        "exports" | "export" | "exp" => Some(syms(" --kind export", "the exports")),
+        "symbols" | "symbol" | "sym" | "symtab" | "nm" => Some(syms(
+            "",
+            "the needed libraries, imports, exports and function and data symbols (`--kind all` adds sections, slots and relocations)",
+        )),
+        "dynsym" | "dynsyms" => Some(syms(" --kind import,export", "the dynamic symbols: imports and exports")),
+        "readelf" | "otool" | "dumpbin" => Some(format!(
+            "`{word}` is a shell tool, not a bin op; `syms {file} --kind all` lists the file's tables (libraries, imports, exports, symbols, sections, slots, relocations) and `info {file}` its headers and hardening"
+        )),
+        "sections" | "section" | "segments" | "shdr" => Some(syms(" --kind section", "the sections with address, size, flags and file offset")),
+        "relocs" | "relocations" | "reloc" | "rela" | "rel" => Some(syms(" --kind reloc", "the relocations with type, symbol and target")),
+        "got" | "plt" | "iat" | "slots" => Some(syms(" --kind got", "the import slots (puts@got, __imp_X) with the stub that jumps through each")),
+        "needed" | "libs" | "libraries" | "deps" | "dylibs" | "dlls" => Some(syms(" --kind needed", "the libraries the file names")),
+        "ldd" => Some(format!(
+            "`ldd` is a shell tool that runs the program's loader; `syms {file} --kind needed` lists the libraries the file names, without running it"
+        )),
+        "xxd" | "hexdump" | "od" | "file" => Some(format!(
             "`{word}` is a shell tool, not a bin op; `info`, `overview`, `funcs` and `bytes` read a program here (`--help` lists the ops)"
         )),
         "echo" | "printf" => Some(format!(

@@ -14,7 +14,8 @@ use crate::{parse_addr, Error, Image, Result};
 
 /// What an address may be, for error messages.
 pub const ADDR_FORMS: &str = "an address is 0x401000, 4198400, a name (function, symbol, import, section like .text), \
-     name+0x10 or name-0x10";
+     name+0x10 or name-0x10; puts@got and __imp_puts are the slot an import's address is written to; main and \
+     entry name those places in a stripped file too";
 /// What a range may be, for error messages.
 pub const RANGE_FORMS: &str =
     "a range is A..B (B not included), A+LEN, or a function or section name (all of it); A and B are addresses";
@@ -141,10 +142,14 @@ pub fn range_in(img: &Image, text: &str) -> Result<(u64, u64)> {
         }
         RangeExpr::Whole(t) => match img.sections.iter().find(|s| s.name == t) {
             Some(s) => (s.addr, s.addr.saturating_add(s.size)),
-            None => {
-                let f = resolve(img, &t)?;
-                (f.start, f.end)
-            }
+            // a slot is one pointer of data, not the function its stub belongs to
+            None => match known_place(img, &t) {
+                Some(Known::Slot(_, slot)) => (slot, slot.saturating_add(img.ptr_size() as u64)),
+                _ => {
+                    let f = resolve(img, &t)?;
+                    (f.start, f.end)
+                }
+            },
         },
     };
     if hi <= lo {
@@ -194,7 +199,71 @@ fn exact_addr(img: &Image, t: &str) -> Option<u64> {
     if let Some(e) = img.exports.iter().find(|e| e.name == t) {
         return Some(e.addr);
     }
-    img.sections.iter().find(|s| s.name == t).map(|s| s.addr)
+    if let Some(s) = img.sections.iter().find(|s| s.name == t) {
+        return Some(s.addr);
+    }
+    known_place(img, t).map(|k| match k {
+        Known::Slot(_, a) | Known::Main(a) | Known::Entry(a) => a,
+    })
+}
+
+/// A place the file's tables do not name but that has a name all the same.
+pub(crate) enum Known {
+    /// An import's slot (`puts@got`, `__imp_ExitProcess`): the import's index and the slot's address.
+    Slot(usize, u64),
+    /// `main`, found from the code that starts the program.
+    Main(u64),
+    /// `entry`, `start` or `_start`: the entry point the file's header gives.
+    Entry(u64),
+}
+
+/// The place `t` names when it is an import's slot, `main` or the entry point. A name the file itself has comes
+/// first, so this is asked only after the file's own names gave nothing.
+pub(crate) fn known_place(img: &Image, t: &str) -> Option<Known> {
+    if let Some(i) = slot_import(img, t) {
+        return img.imports[i].slot.map(|s| Known::Slot(i, s));
+    }
+    match t {
+        "main" => main_addr(img).map(Known::Main),
+        "entry" | "start" | "_start" => img.section_at(img.entry).map(|_| Known::Entry(img.entry)),
+        _ => None,
+    }
+}
+
+/// The import whose slot `t` names: `NAME@got` on every format, or `__imp_NAME` (the name Windows linkers give the
+/// slot; `__imp__NAME` on 32-bit Windows, whose C names start with `_`).
+pub(crate) fn slot_import(img: &Image, t: &str) -> Option<usize> {
+    let want = t.strip_suffix("@got").or_else(|| t.strip_prefix("__imp_"))?;
+    let at = |w: &str| {
+        img.imports.iter().position(|i| i.slot.is_some() && (i.name == w || (!i.raw.is_empty() && i.raw == w)))
+    };
+    at(want).or_else(|| want.strip_prefix('_').and_then(at))
+}
+
+/// The name of an import's slot, the one [`slot_import`] reads back: `__imp_NAME` on PE, `NAME@got` elsewhere.
+pub(crate) fn slot_name(img: &Image, imp: &crate::Import) -> String {
+    if img.format == crate::Format::Pe {
+        format!("__imp_{}", imp.name)
+    } else {
+        format!("{}@got", imp.name)
+    }
+}
+
+/// The program's `main`: the C `main` when the start code shows one, else the first one found (`WinMain`,
+/// Rust's main).
+pub(crate) fn main_addr(img: &Image) -> Option<u64> {
+    let hits = crate::mainfind::find_main(img);
+    hits.iter().find(|h| h.role == "main").or(hits.first()).map(|h| h.addr)
+}
+
+/// The stub that jumps through import `i`'s slot (`puts@plt`; on PE a stub carries the import's own name).
+pub(crate) fn stub_of(img: &Image, i: usize) -> Option<&crate::funcs::Func> {
+    let imp = &img.imports[i];
+    if img.format == crate::Format::Pe {
+        img.funcs().iter().find(|f| f.name == imp.name && Some(f.start) != imp.slot)
+    } else {
+        img.funcs().iter().find(|f| f.name.strip_suffix("@plt") == Some(imp.name.as_str()))
+    }
 }
 
 /// The function `text` points into, for an address written with an offset, a section or a register.

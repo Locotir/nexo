@@ -230,17 +230,16 @@ async fn a_program_path_is_said_to_be_taken_as_an_op() {
     assert!(!o.content.contains("similar subcommand"), "{}", o.content);
 }
 
-/// t1: `symbols` got no hint.
+/// t1: `symbols` got no hint; now `syms` is the op that lists the symbol tables.
 #[test]
 fn an_unknown_op_names_the_close_real_op_or_lists_them() {
     assert!(unknown_op("function").contains("`funcs`"), "{}", unknown_op("function"));
     assert!(unknown_op("decompile").contains("`decomp`"), "{}", unknown_op("decompile"));
     assert!(unknown_op("string").contains("`strings`"), "{}", unknown_op("string"));
-    let far = unknown_op("symbols");
+    assert!(unknown_op("symbols").contains("`syms`"), "{}", unknown_op("symbols"));
+    let far = unknown_op("zzzzqq");
     assert!(
-        far.starts_with("`symbols` is not a bin op. The ops are: ")
-            && far.contains("overview")
-            && far.contains("funcs"),
+        far.starts_with("`zzzzqq` is not a bin op. The ops are: ") && far.contains("overview") && far.contains("funcs"),
         "{far}"
     );
     assert!(!far.contains("did you mean"), "{far}");
@@ -355,9 +354,42 @@ async fn cd_and_variables_are_not_run_and_the_real_ops_are() {
     assert!(!v.content.contains("cannot read") && !v.content.contains("unrecognized subcommand"), "{}", v.content);
     assert!(v.content.contains("> bin info $c\nnot run: `$c` is not expanded, write the path"), "{}", v.content);
     // `cd` and `true` are shell, not separators
-    assert!(not_an_op("cd").unwrap().contains("bin runs no shell") && !not_an_op("cd").unwrap().contains("separator"));
-    assert!(not_an_op("true").unwrap().contains("bin runs no shell"));
-    assert!(not_an_op("echo").unwrap().contains("separator"));
+    assert!(
+        not_an_op("cd", &[]).unwrap().contains("bin runs no shell")
+            && !not_an_op("cd", &[]).unwrap().contains("separator")
+    );
+    assert!(not_an_op("true", &[]).unwrap().contains("bin runs no shell"));
+    assert!(not_an_op("echo", &[]).unwrap().contains("separator"));
+}
+
+/// The names other tools give a file's tables lead to the `syms` call that lists them, written with the file.
+#[test]
+fn table_words_from_other_tools_lead_to_syms_with_the_file() {
+    let rest = |l: &str| l.split(' ').map(String::from).collect::<Vec<_>>();
+    let fact = |w: &str, l: &str| not_an_op(w, &rest(l)).unwrap();
+    assert!(fact("imports", "./calc").contains("`syms ./calc --kind import`"), "{}", fact("imports", "./calc"));
+    assert!(fact("exports", "--json ./lib.so").contains("`syms ./lib.so --kind export`"));
+    assert!(fact("nm", "-D ./calc").contains("`syms ./calc`"));
+    assert!(fact("dynsym", "./calc").contains("`syms ./calc --kind import,export`"));
+    assert!(
+        fact("readelf", "-a ./calc").contains("`syms ./calc --kind all`")
+            && fact("readelf", "./calc").contains("`info ./calc`")
+    );
+    assert!(fact("sections", "./calc").contains("--kind section"));
+    assert!(fact("relocs", "./calc").contains("--kind reloc"));
+    for w in ["got", "plt", "iat"] {
+        assert!(fact(w, "./calc").contains("`syms ./calc --kind got`"), "{w}");
+    }
+    assert!(
+        fact("ldd", "./calc").contains("`syms ./calc --kind needed`")
+            && fact("ldd", "./calc").contains("without running")
+    );
+    assert!(not_an_op("libs", &[]).unwrap().contains("`syms ./prog --kind needed`"));
+    let spaced = not_an_op("imports", &["my prog".to_string()]).unwrap();
+    assert!(spaced.contains("`syms 'my prog' --kind import`"), "{spaced}");
+    // the same fact comes back from the tool, whose op line is parsed by clap's rules
+    let e = crate::cli::Args::try_parse_from(["nexo", "bin", "imports", "./calc"]).unwrap_err();
+    assert!(bin_error(&e, &rest("imports ./calc")).unwrap().contains("`syms ./calc --kind import`"));
 }
 
 /// `nexo bin disasm ./calc main` and `nexo bin fn ./calc main --asm` say what the tool says.
@@ -370,7 +402,7 @@ fn the_command_line_gets_the_same_facts_as_the_tool() {
         bin_error(&e, &words(l))
     };
     let d = err("disasm ./calc main").unwrap();
-    assert_eq!(d, not_an_op("disasm").unwrap());
+    assert_eq!(d, not_an_op("disasm", &[]).unwrap());
     assert!(d.contains("`fn ./prog <name or addr>` shows the disassembly"), "{d}");
     let f = err("fn ./calc main --asm").unwrap();
     assert!(f.starts_with("unexpected argument '--asm' found\n`fn` takes: "), "{f}");

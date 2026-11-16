@@ -70,6 +70,21 @@ fn a_wasm_module_is_found_by_its_signature_and_answers_the_same_ops() {
     assert!(t.contains("second string") && t.contains("<- func[4]"), "{t}");
     let e = ask(&["decomp", &path, "greet"]).unwrap_err().to_string();
     assert!(e.contains("does not read WebAssembly modules yet; use one of: info, overview"), "{e}");
+    let t = ask(&["syms", &path, "--kind", "import"]).unwrap();
+    assert!(t.contains("log") && t.contains("env"), "{t}");
+}
+
+/// `nexo bin syms FILE --kind import,got` reaches the same table the tool reads, with the IAT slot named.
+#[test]
+fn syms_from_the_command_line_lists_a_pe_import_with_its_dll_and_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "x.exe", &fixtures::pe64_xref());
+    let t = ask(&["syms", &path, "--kind", "import,got"]).unwrap();
+    assert!(t.contains("ExitProcess") && t.contains("KERNEL32.dll") && t.contains("__imp_ExitProcess"), "{t}");
+    let j = ask(&["syms", &path, "--kind", "got", "--json"]).unwrap();
+    assert!(j.contains("\"items\"") && j.contains("__imp_ExitProcess"), "{j}");
+    let e = crate::cli::Args::try_parse_from(["nexo", "bin", "syms", &path, "--kind", "everything"]).unwrap_err();
+    assert!(e.to_string().contains("possible values"), "{e}");
 }
 
 #[test]

@@ -11,6 +11,7 @@ pub(super) fn wasm_in(op: &BinOp) -> Result<String, Error> {
     match op {
         BinOp::Info { .. } => ask.op = "info",
         BinOp::Overview { .. } => ask.op = "overview",
+        BinOp::Syms { kind, .. } => (ask.op, ask.kinds) = ("syms", kind.as_slice()),
         BinOp::Funcs { sort, min_size, .. } => {
             (ask.op, ask.sort, ask.grep, ask.min_size) = ("funcs", sort.as_str(), op_grep.as_deref(), *min_size)
         }

@@ -17,8 +17,8 @@ pub fn try_managed(op: &BinOp) -> Option<Result<String, Error>> {
             },
             file,
         ),
-        // `info` on a class or jar gives the map of types instead of an error
-        BinOp::Info { file, .. } => {
+        // `info` and `syms` on a class, a jar or a .NET assembly give the map of types instead of an error
+        BinOp::Info { file, .. } | BinOp::Syms { file, .. } => {
             let mut head = vec![0u8; nexo_bin::MANAGED_HEAD];
             let n = std::fs::File::open(file).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).ok()?;
             if !nexo_bin::is_managed(&head[..n]) {

@@ -41,6 +41,8 @@ mod sigs;
 mod slice;
 mod slice_fwd;
 mod strings;
+mod syms;
+mod syms_read;
 mod typeview;
 mod wasm;
 mod wasm_dis;
@@ -71,6 +73,8 @@ mod tests_patch;
 mod tests_place;
 #[cfg(test)]
 mod tests_sigs;
+#[cfg(test)]
+mod tests_syms;
 #[cfg(test)]
 mod tests_wasm;
 #[cfg(test)]
@@ -110,7 +114,7 @@ pub use ops::{
     strings_window, StrSort,
 };
 pub use overview::{overview, overview_window};
-pub use page::{Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
+pub use page::{shell_word, Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
 pub use patch::{patch, PatchData, PatchTarget};
 pub use place::{addr_in, any_addr_in, close_names, is_span, range_in, AddrExpr, RangeExpr, ADDR_FORMS, RANGE_FORMS};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
@@ -119,6 +123,7 @@ pub use sigs::{
 };
 pub use slice::slice_window;
 pub use slice_fwd::slice_forward;
+pub use syms::{syms_window, SYM_KINDS, SYM_KIND_WORDS};
 pub use typeview::{resolve as resolve_type, Layout, Member, Ty, TypeView};
 pub use wasm_ops::{is_wasm, wasm_answer, wasm_answer_bytes, WasmAsk, WASM_OPS};
 pub use xops::{

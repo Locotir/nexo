@@ -164,6 +164,25 @@ pub(crate) fn func_at_addr(img: &Image, a: u64) -> Result<&crate::funcs::Func> {
     })
 }
 
+/// The function a known place stands for: the one at `main` or the entry, or the stub that jumps through a slot.
+fn known_func<'a>(img: &'a Image, t: &str, k: crate::place::Known) -> Result<&'a crate::funcs::Func> {
+    use crate::place::Known;
+    match k {
+        Known::Main(a) | Known::Entry(a) => func_at_addr(img, a),
+        Known::Slot(i, slot) => crate::place::stub_of(img, i).ok_or_else(|| {
+            let imp = &img.imports[i];
+            let sec = img.section_at(slot).map_or(String::new(), |s| format!(" in {}", s.name));
+            Error::Bad(format!(
+                "{t} is the slot at {slot:#x}{sec} that the loader fills with the address of {}; it holds data, not \
+                 code, and no stub in this file jumps through it; its bytes: {}; who reads it: {}",
+                imp.name,
+                command(img, "bytes", &format!("{t} --as ptr")),
+                command(img, "xref", t)
+            ))
+        }),
+    }
+}
+
 /// A function by its name, part of it, or a section name (the function at its start).
 fn resolve_name<'a>(img: &'a Image, t: &str) -> Result<&'a crate::funcs::Func> {
     let funcs = img.funcs();
@@ -172,6 +191,10 @@ fn resolve_name<'a>(img: &'a Image, t: &str) -> Result<&'a crate::funcs::Func> {
     }
     if let Some(f) = img.addr_of_raw(t).and_then(|a| img.func_at(a)) {
         return Ok(f);
+    }
+    // before the names that only contain `t`: in a stripped file `main` is otherwise `__libc_start_main@plt`
+    if let Some(k) = crate::place::known_place(img, t) {
+        return known_func(img, t, k);
     }
     let raw_has = |f: &crate::funcs::Func| img.raw_name_at(f.start).is_some_and(|r| r.contains(t));
     let mut hits: Vec<_> =

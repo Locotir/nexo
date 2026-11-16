@@ -1,4 +1,4 @@
-//! The ops for WebAssembly modules: `info`, `overview`, `funcs`, `fn`, `calls`, `xref` and `strings`,
+//! The ops for WebAssembly modules: `info`, `overview`, `syms`, `funcs`, `fn`, `calls`, `xref` and `strings`,
 //! answered in the same bounded rows as for ELF and PE (see `nexo-bin`'s `Output`).
 
 use std::collections::BTreeMap;
@@ -31,12 +31,14 @@ pub struct WasmAsk<'a> {
     pub insensitive: bool,
     /// `fn`: show the instruction bytes.
     pub with_bytes: bool,
+    /// `syms`: the kinds of row (see [`crate::SYM_KIND_WORDS`]); none gives imports, exports and functions.
+    pub kinds: &'a [String],
     pub from: Option<u64>,
     pub budget: usize,
 }
 
 /// The `nexo bin` ops that read a WebAssembly module.
-pub const WASM_OPS: [&str; 7] = ["info", "overview", "funcs", "fn", "calls", "xref", "strings"];
+pub const WASM_OPS: [&str; 8] = ["info", "overview", "syms", "funcs", "fn", "calls", "xref", "strings"];
 
 /// `true` when the file starts with the WebAssembly signature. The file is only opened and 4 bytes read.
 pub fn is_wasm(path: &Path) -> bool {
@@ -68,6 +70,7 @@ pub fn wasm_answer_bytes(data: &[u8], path: &str, ask: &WasmAsk<'_>) -> Result<O
     match ask.op {
         "info" => Ok(info(&m, path)),
         "overview" => Ok(overview(&m, path)),
+        "syms" => crate::syms::wasm_syms(&m, path, ask.kinds, ask.from, budget),
         "funcs" => funcs(&m, path, ask, budget),
         "fn" => fn_view(&m, path, need(ask)?, ask.with_bytes),
         "calls" => calls(&m, path, need(ask)?),

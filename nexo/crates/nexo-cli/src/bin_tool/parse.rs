@@ -21,7 +21,7 @@ pub(super) fn parse(unit: &str) -> Result<Parsed, String> {
     match words.first().map(String::as_str) {
         None | Some("help") => argv.push("--help".into()),
         Some(w) => {
-            if let Some(fact) = not_an_op(w) {
+            if let Some(fact) = not_an_op(w, &words[1..]) {
                 return Err(fact);
             }
             argv.extend(words.iter().cloned())

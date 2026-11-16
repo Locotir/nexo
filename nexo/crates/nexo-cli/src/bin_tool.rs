@@ -29,8 +29,9 @@ use shell::{scan_shell, units};
 const OPS: &str = "\
 overview <file>  the map in one call: main, imports by capability, top functions and strings, next commands (start here)
 info <file>  format, entry, sections, hardening
+syms <file> [--kind needed|import|export|func|data|section|got|reloc|all]  the file's own tables (what nm, readelf and ldd show): needed libraries, imports with library, stub and GOT/IAT slot, exports, symbols; puts@got and __imp_X name a slot for bytes, xref and fn
 funcs <file> [--grep RE] [--sort size|callers] [--min-size N]  functions with size, callers, callees
-fn <file> <name|addr> [--bytes] [--to ADDR]  one function disassembled (Intel syntax)
+fn <file> <name|addr> [--bytes] [--to ADDR]  one function disassembled (Intel syntax); main and entry also name it in a stripped file
 decomp <file> <name|addr>...  pseudo-C
 xref <file> <name|addr> [--to ADDR|FN], xref <file> --str TEXT  who calls, reads, writes or points at it
 calls <file> <name>, tree <file> <name> [--up], path <file> <from> <to>  callers, callees, call chains

@@ -133,7 +133,7 @@ fn bad_input_names_what_is_wrong() {
     let m = fx::module();
     let cut = e(&m[..m.len() - 30]);
     assert!(cut.contains("not a readable WebAssembly module") && cut.contains("file offset"), "{cut}");
-    assert!(err("decomp", None).contains("use one of: info, overview, funcs, fn, calls, xref, strings"));
+    assert!(err("decomp", None).contains("use one of: info, overview, syms, funcs, fn, calls, xref, strings"));
 }
 
 #[test]

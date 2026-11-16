@@ -44,6 +44,15 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// What the file's own tables list: needed libraries, imports with their library, GOT/IAT slot (puts@got, __imp_X) and stub, exports, function and data symbols; also sections, slots and relocations.
+    Syms {
+        file: PathBuf,
+        /// needed, import, export, func, data, section, got (plt and iat are got), reloc or all; several with commas. Without it: needed, import, export, func and data.
+        #[arg(long, value_delimiter = ',', value_parser = nexo_bin::SYM_KIND_WORDS)]
+        kind: Vec<String>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// The map of the file in one call: main, imports by capability, top strings and functions, next commands.
     Overview {
         file: PathBuf,

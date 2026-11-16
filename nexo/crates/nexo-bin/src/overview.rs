@@ -143,7 +143,8 @@ pub fn overview_window(img: &Image, from: Option<u64>, budget: usize) -> Result<
         imps.lines.push("  none of the imports is a network, file, process, crypto, registry or loading call".into());
     }
     imps.lines.push(format!(
-        "  ({other} other imports; the number in () is the places that use the import; list all: nexo bin xref {file} <name>)"
+        "  ({other} other imports; the number in () is the places that use the import; all of them with library and \
+         slot: nexo bin syms {file} --kind import; who uses one: nexo bin xref {file} <name>)"
     ));
     if groups.iter().any(|g| g.0 == "dynamic loading" && !g.1.is_empty()) {
         imps.lines.push("  note: dynamic loading is used, so some calls are not in the import table".into());

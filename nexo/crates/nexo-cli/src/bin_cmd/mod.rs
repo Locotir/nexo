@@ -55,6 +55,7 @@ impl BinOp {
         match self {
             BinOp::Patch { file, .. }
             | BinOp::Info { file, .. }
+            | BinOp::Syms { file, .. }
             | BinOp::Overview { file, .. }
             | BinOp::Path { file, .. }
             | BinOp::Slice { file, .. }
@@ -89,6 +90,7 @@ impl BinOp {
             BinOp::Diff { file, other, .. } => vec![file, other],
             BinOp::Patch { file, .. }
             | BinOp::Info { file, .. }
+            | BinOp::Syms { file, .. }
             | BinOp::Overview { file, .. }
             | BinOp::Path { file, .. }
             | BinOp::Slice { file, .. }
@@ -130,6 +132,7 @@ impl BinOp {
             BinOp::Asm { common, .. }
             | BinOp::Patch { common, .. }
             | BinOp::Info { common, .. }
+            | BinOp::Syms { common, .. }
             | BinOp::Overview { common, .. }
             | BinOp::Path { common, .. }
             | BinOp::Slice { common, .. }
@@ -210,6 +213,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             return render_copy_op(&nexo_bin::patch(&img, out, target, data)?, c.json);
         }
         BinOp::Info { .. } => nexo_bin::info(&img),
+        BinOp::Syms { kind, .. } => nexo_bin::syms_window(&img, kind, from, lines)?,
         BinOp::Overview { .. } => nexo_bin::overview_window(&img, from, lines)?,
         BinOp::Crypto { save, .. } => nexo_bin::crypto_window(&img, save.then_some(data_dir), from, lines)?,
         BinOp::Slice { at, reg, mem, forward: true, .. } => {
