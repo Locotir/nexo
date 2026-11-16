@@ -26,7 +26,7 @@ const RODATA_OFF: u32 = 0x80;
 const TEXT: &str = "hand built x86-32";
 
 /// A minimal ELF32 i386 executable: one load segment, .text, .rodata, .symtab, .strtab, .shstrtab.
-fn elf32_by_hand() -> Vec<u8> {
+pub(crate) fn elf32_by_hand() -> Vec<u8> {
     let text_at = BASE + TEXT_OFF;
     let str_at = BASE + RODATA_OFF;
     let (start, main, helper) = (text_at, text_at + 6, text_at + 24);

@@ -469,7 +469,7 @@ impl Session {
     /// Where a hook goes: (memory address, call length when on a `call [slot]`, name, file address in the program).
     fn hook_place(&mut self, place: &str) -> Result<(u64, Option<u8>, String, Option<u64>)> {
         let bias = self.mods.main_bias();
-        match self.mods.resolve(place) {
+        match self.resolve_place(place) {
             Ok(Place::Code(x)) => {
                 let fa = x.wrapping_sub(bias);
                 let in_main = self.mods.main_image().section_at(fa).is_some();
@@ -484,13 +484,15 @@ impl Session {
                     .unwrap_or_else(|| place.to_string());
                 Ok((x, None, name, in_main.then_some(fa)))
             }
-            Ok(Place::ImportSlot(_)) => {
-                let bare = place.trim_start_matches('!');
+            Ok(Place::ImportSlot(slot)) => {
+                // the import's own name: the stubs and the library know it by that, not by `puts@got`
+                let bare = self.mods.import_of_slot(slot).unwrap_or_else(|| place.trim_start_matches('!').into());
+                let bare = bare.as_str();
                 // the program's way into the import: its stub, or each `call [slot]`
                 let s = self.lib_sites().into_iter().find(|(_, s)| s.name == bare);
                 match s {
                     Some((a, s)) if s.call_len.is_none() => Ok((a, None, bare.to_string(), None)),
-                    _ => match self.mods.resolve(&format!("!{bare}")) {
+                    _ => match self.resolve_place(&format!("!{bare}")) {
                         Ok(Place::Code(x)) => Ok((x, None, bare.to_string(), None)),
                         _ => fail(format!("{bare} is an import with no stub and its library is not loaded yet: `cont` past the entry first")),
                     },

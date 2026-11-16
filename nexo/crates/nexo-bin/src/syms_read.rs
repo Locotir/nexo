@@ -246,8 +246,10 @@ pub(crate) fn reloc_type(img: &Image, ty: u32) -> String {
 /// and `IRELATIVE`'s resolver), or for a PE base relocation and an ELF32 REL entry, the value the slot holds.
 pub(crate) fn reloc_value(img: &Image, r: &Reloc) -> Option<u64> {
     use object::elf::*;
+    // `read_at` gives up to `n` bytes: a slot cut by the section's end or the file's end (a carved or broken file)
+    // has no value to show
     let read = |n: usize| {
-        let b = img.read_at(r.at, n)?;
+        let b = img.read_at(r.at, n).filter(|b| n <= 8 && b.len() == n)?;
         let mut v = [0u8; 8];
         v[..n].copy_from_slice(b);
         Some(u64::from_le_bytes(v))

@@ -308,6 +308,18 @@ fn battery(file: Vec<u8>) -> std::result::Result<(), String> {
     step!("find-imm", find_imm(&img, 1337));
     step!("find-bytes", find_bytes(&img, "48 89 ??"));
     step!("names", Ok::<_, Error>(names_list_window(&img, None, DEFAULT_LINES)));
+    // each kind alone, so its rows (relocations read the pointer they move) are on the first page
+    for kind in ["all", "needed", "import", "export", "func", "data", "section", "got", "reloc"] {
+        step!("syms", syms_window(&img, &[kind.to_string()], None, DEFAULT_LINES));
+    }
+    step!("syms-default", syms_window(&img, &[], None, DEFAULT_LINES));
+    // the names `syms` gives places that are not in the file's tables: main and the entry point of a stripped file,
+    // and an import's slot
+    let slot = img.imports.iter().find(|i| i.slot.is_some()).map(|i| format!("{}@got", i.name));
+    for t in ["main", "entry"].into_iter().map(String::from).chain(slot) {
+        step!("fn-named", func_view(&img, &FnQuery { budget: DEFAULT_LINES, ..FnQuery::new(&t) }));
+        step!("xref-named", xref_window(&img, &t, None, DEFAULT_LINES));
+    }
     Ok(())
 }
 

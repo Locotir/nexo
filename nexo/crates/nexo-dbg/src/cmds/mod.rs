@@ -93,6 +93,20 @@ impl Session {
         self.t.regs(self.cur)
     }
 
+    /// [`crate::modules::Mods::resolve`], reading the list of loaded files again when the name is not found: the
+    /// list is read at the start and when an address falls outside it, so a library the loader brought in since
+    /// (libc after the entry, a DLL after `LoadLibrary`) is not in it yet. A stopped program only: the list of an
+    /// ended one is empty.
+    pub(crate) fn resolve_place(&mut self, text: &str) -> Result<Place> {
+        match self.mods.resolve(text) {
+            Err(_) if self.state == State::Stopped => {
+                self.mods.refresh(&mut *self.t);
+                self.mods.resolve(text)
+            }
+            r => r,
+        }
+    }
+
     /// A place as a number: a plain number is the program's file address when it falls in the program (the numbers
     /// `nexo bin` prints) and a memory address otherwise; anything else is an expression.
     ///

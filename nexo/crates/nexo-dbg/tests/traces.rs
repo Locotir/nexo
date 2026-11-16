@@ -229,3 +229,26 @@ fn strace_on_macos_says_why_and_what_to_use() {
     assert!(run(&mut s, "cont").contains("exited with code 0"));
     assert!(run(&mut s, "ltrace show").contains("write(1, 0x"));
 }
+
+/// `atoi@got`, the slot the loader writes atoi's address to, names the import for `break` and `hook` as `atoi` and
+/// the slot's number do: the library is searched for `atoi`, and a library the loader brought in after the last
+/// look at the loaded files is found.
+#[test]
+fn an_import_slot_name_breaks_and_hooks_at_the_import_whose_address_it_holds() {
+    let Some((d, mut s)) = start(&["12"]) else { return };
+    let img = nexo_bin::Image::open(&d.path().join("hooks")).unwrap();
+    let slot = img.imports.iter().find(|i| i.name == "atoi").and_then(|i| i.slot).expect("atoi has a slot");
+    let b = run(&mut s, "break atoi@got");
+    assert!(b.contains("breakpoint #1 at 0x") && b.contains("!atoi") && !b.contains("@got"), "{b}");
+    let at = b.split_whitespace().nth(3).unwrap().to_string();
+    let n = run(&mut s, &format!("break {slot:#x}"));
+    assert!(n.contains(&format!("breakpoint #2 at {at} ")) && n.contains("!atoi"), "{n}");
+    let h = run(&mut s, "hook strlen@got");
+    assert!(h.contains("strlen: size_t strlen(const char * s)"), "{h}");
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("breakpoint #1 #2") && stop.contains(&format!("pc {at} ")), "{stop}");
+    let end = run(&mut s, "cont");
+    assert!(end.contains("exited with code 1"), "{end}");
+    let t = run(&mut s, "hook show");
+    assert!(t.contains("strlen(s=\"") && t.contains("[hit 1]"), "{t}");
+}

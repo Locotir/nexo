@@ -61,18 +61,21 @@ impl Session {
         let from_line = by_line.is_some();
         let addr = match by_line {
             Some(r) => r?,
-            None => match self.mods.resolve(spec) {
+            None => match self.resolve_place(spec) {
                 Ok(Place::Code(x)) => x,
-                Ok(Place::ImportSlot(_)) => {
-                    // an import: stop in the library code when it is loaded, in the stub otherwise
-                    match self.mods.resolve(&format!("!{}", spec.trim_start_matches('!'))) {
-                    Ok(Place::Code(x)) => x,
-                    _ => {
-                        return fail(format!(
-                            "{spec} is an import and its library is not loaded yet: run to the entry first (`cont`), or break at <library>!{spec}"
-                        ))
+                Ok(Place::ImportSlot(slot)) => {
+                    // an import: stop in the library code when it is loaded; the library knows it by the import's
+                    // name, not by `puts@got` or `__imp_puts`
+                    let name = self.mods.import_of_slot(slot).unwrap_or_else(|| spec.trim_start_matches('!').into());
+                    let of = if name == *spec { String::new() } else { format!(" ({spec} is its slot, {slot:#x})") };
+                    match self.resolve_place(&format!("!{name}")) {
+                        Ok(Place::Code(x)) => x,
+                        _ => {
+                            return fail(format!(
+                                "{name} is an import{of} and its library is not loaded yet: run to the entry first (`cont`), or break at <library>!{name}"
+                            ))
+                        }
                     }
-                }
                 }
                 Ok(Place::Data(x)) => {
                     if self.mods.locate(x).is_some() && self.maps_exec(x) {

@@ -187,3 +187,38 @@ fn a_wasm_module_lists_its_imports_exports_and_named_functions() {
     let t = wasm_answer_bytes(&crate::wasm_fixture::module(), "/fx/m.wasm", &a).unwrap().page(None, 1000).text();
     assert!(t.contains("reloc: not in WebAssembly"), "{t}");
 }
+
+/// A relocation whose pointer starts in the last bytes a section holds in the file: `read_at` gives fewer bytes
+/// than the pointer has.
+fn cut_reloc(img: &Image, ty: u32, size: u8) -> crate::syms_read::Reloc {
+    let s = img
+        .sections
+        .iter()
+        .find(|s| s.alloc && img.section_bytes(s).len() >= 4)
+        .unwrap_or_else(|| panic!("a section with bytes in {}", img.path.display()));
+    let at = s.addr + img.section_bytes(s).len() as u64 - 2;
+    assert_eq!(img.read_at(at, 8).map(<[u8]>::len), Some(2), "the pointer is cut");
+    crate::syms_read::Reloc { at, ty, sym: None, addend: 0, size }
+}
+
+#[test]
+fn a_pe_base_relocation_cut_by_its_section_end_has_no_value_and_no_panic() {
+    let img = Image::from_bytes(fixtures::pe64(false).bytes, PathBuf::from("/fx/cut.exe")).unwrap();
+    let dir64 = u32::from(object::pe::IMAGE_REL_BASED_DIR64.0);
+    assert_eq!(crate::syms_read::reloc_value(&img, &cut_reloc(&img, dir64, 8)), None);
+    let highlow = u32::from(object::pe::IMAGE_REL_BASED_HIGHLOW.0);
+    assert_eq!(crate::syms_read::reloc_value(&img, &cut_reloc(&img, highlow, 4)), None);
+    // a size no pointer has, from a type the reader does not know, is no value either
+    assert_eq!(crate::syms_read::reloc_value(&img, &cut_reloc(&img, 99, 200)), None);
+}
+
+#[test]
+fn an_elf32_relative_relocation_cut_by_its_section_end_has_no_value_and_no_panic() {
+    let img = Image::from_bytes(crate::tests_x86_32::elf32_by_hand(), PathBuf::from("/fx/elf32")).unwrap();
+    assert_eq!(img.bits, 32);
+    let r = cut_reloc(&img, object::elf::R_386_RELATIVE.0, 4);
+    assert_eq!(crate::syms_read::reloc_value(&img, &r), None);
+    // a whole word is read as before
+    let whole_word = crate::syms_read::Reloc { at: r.at - 2, ..r };
+    assert!(crate::syms_read::reloc_value(&img, &whole_word).is_some());
+}

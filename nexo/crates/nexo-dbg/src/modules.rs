@@ -49,6 +49,14 @@ impl Mods {
         &self.main
     }
 
+    /// The name of the program's import whose slot is at memory address `slot` (a [`Place::ImportSlot`]), the
+    /// name its library exports. A slot may be written `puts`, `puts@got`, `__imp_puts` or as a number, so the
+    /// library is searched by this name, never by the text typed.
+    pub fn import_of_slot(&self, slot: u64) -> Option<String> {
+        let fa = slot.wrapping_sub(self.main_bias());
+        self.main.imports.iter().find(|i| i.slot == Some(fa)).map(|i| i.name.clone())
+    }
+
     /// A range of the program's file (`A+LEN`'s whole function or section forms of `nexo_bin::range_in`) as the
     /// addresses it has in memory.
     pub fn file_range(&mut self, text: &str) -> crate::Result<(u64, u64)> {
