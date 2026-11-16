@@ -69,6 +69,14 @@ fn a_drag_of_the_window_edge_renders_only_what_is_near_the_view() {
     eprintln!("layout alone {layout:?}, eviction alone {evict:?}");
     eprintln!("3000 blocks: drag of 60 widths {drag:?}, steady frame {steady:?}, rendered blocks {}", rendered(&a));
     assert!(rendered(&a) < 400, "{} blocks hold lines after the drag", rendered(&a));
+    // the yardstick of the cost: wrapping the whole history at one width, which a drag must not do per width
+    a.invalidate_all();
+    let start = Clock::now();
+    frame(&mut t, &mut a);
+    let full = start.elapsed();
+    eprintln!("one full re-render {full:?}");
+    assert!(drag / 60 < full / 3, "a width of the drag cost {:?}, a full re-render {full:?}", drag / 60);
+    assert!(steady < full / 20, "a steady frame cost {steady:?}, a full re-render {full:?}");
 }
 
 #[test]
@@ -96,4 +104,64 @@ fn the_line_at_the_top_stays_under_the_reader_through_a_resize() {
         })
         .sum();
     assert_eq!(a.total_lines, exact);
+}
+
+#[test]
+fn a_steady_frame_at_a_new_width_does_not_search_the_history_again() {
+    let mut a = long_history(600);
+    a.opts.animations = true;
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    frame(&mut t, &mut a);
+    a.follow = false;
+    a.scroll = a.total_lines / 2;
+    frame(&mut t, &mut a);
+    t.backend_mut().resize(70, 30);
+    t.resize(ratatui::layout::Rect::new(0, 0, 70, 30)).unwrap();
+    // the blocks at the edge of the range settle over a few frames, each shifting the text above by a line
+    for _ in 0..8 {
+        frame(&mut t, &mut a);
+    }
+    assert!(a.estimated, "far blocks keep their estimate until the view comes near them");
+    // a glide the reader started must run on, not be cut short by a frame that changed nothing
+    let before = a.total_lines;
+    let runs = a.near_runs;
+    for _ in 0..3 {
+        let now = a.now();
+        a.scroll_fx.retarget(a.scroll as f64 + 3.0, now);
+        a.layout(a.last_width);
+        assert!(a.scroll_fx.is_moving(a.now()), "a steady layout snapped the scroll glide");
+    }
+    assert_eq!(a.total_lines, before);
+    assert_eq!(a.near_runs, runs, "a layout that changed nothing searched the whole history again");
+}
+
+#[test]
+fn far_blocks_estimated_at_a_new_width_settle_once_the_view_reaches_them() {
+    let mut a = long_history(600);
+    a.opts.animations = false;
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    frame(&mut t, &mut a);
+    a.follow = false;
+    a.scroll = 0;
+    frame(&mut t, &mut a);
+    t.backend_mut().resize(63, 30);
+    t.resize(ratatui::layout::Rect::new(0, 0, 63, 30)).unwrap();
+    frame(&mut t, &mut a);
+    assert!(a.estimated);
+    // walk the view down the history at the new width: every block it passes is wrapped for real
+    while a.scroll < a.max_scroll(30) {
+        a.scroll_by(25);
+        frame(&mut t, &mut a);
+    }
+    for _ in 0..3 {
+        frame(&mut t, &mut a);
+    }
+    let exact: usize = (0..a.blocks.len())
+        .map(|i| {
+            let n = a.shown(i, 63);
+            n + a.gap_after(i, n)
+        })
+        .sum();
+    assert_eq!(a.total_lines, exact, "offsets are exact once the view has been everywhere");
+    assert!(!a.estimated, "nothing is left estimated");
 }

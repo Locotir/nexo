@@ -172,6 +172,10 @@ impl App {
     /// screens of the view, found from the estimated heights of all. `anchor` is the block at the top of
     /// the view, none when it follows the end.
     fn near_view(&mut self, width: usize, anchor: Option<usize>) -> (usize, usize) {
+        #[cfg(test)]
+        {
+            self.near_runs += 1;
+        }
         let h = match self.transcript_area.height {
             0 => 40,
             h => h as usize,
@@ -334,7 +338,11 @@ impl App {
     pub fn layout(&mut self, width: usize) {
         // a new width re-wraps every line: keep the block and the line inside it at the top of the
         // view, so the text the person was reading stays under their eyes
-        let stale = width != self.last_width || self.estimated;
+        // Far blocks keep an estimated height until the view comes near them, so the estimate can stand for many
+        // frames: it only asks for a new pass (and a new anchor) when the width, the view or the history moved
+        let key = (width, self.scroll, self.blocks.len());
+        let moved = self.near.map(|(k, _)| k) != Some(key);
+        let stale = width != self.last_width || (self.estimated && moved);
         let anchor = (stale && !self.follow && !self.offsets.is_empty()).then(|| {
             let bi = match self.offsets.binary_search(&self.scroll) {
                 Ok(i) => i,
@@ -350,7 +358,12 @@ impl App {
         // a first pass costs nothing: a block last wrapped at another width is given the height that
         // width implies. Only the blocks near the view are then wrapped for real, so dragging the edge of
         // the window does not render a long history at every width it passes through.
-        let (lo, hi) = if stale { self.near_view(width, anchor.map(|(bi, _)| bi)) } else { (0, self.blocks.len()) };
+        let (lo, hi) = match (stale, self.estimated, self.near) {
+            (true, _, _) => self.near_view(width, anchor.map(|(bi, _)| bi)),
+            (false, true, Some((_, range))) => range,
+            _ => (0, self.blocks.len()),
+        };
+        let range = (lo, hi);
         self.estimated = false;
         let mut off = 0;
         self.offsets.clear();
@@ -389,10 +402,14 @@ impl App {
         if let Some((bi, j)) = anchor.filter(|(bi, _)| *bi < self.offsets.len()) {
             let end = self.offsets.get(bi + 1).copied().unwrap_or(self.total_lines);
             let top = self.offsets[bi];
-            self.scroll = (top + j).min(end.saturating_sub(1).max(top));
-            // the view lands at once: no glide across a re-wrapped text
-            self.scroll_fx.snap(self.scroll as f64);
+            let landed = (top + j).min(end.saturating_sub(1).max(top));
+            // the view lands at once: no glide across a re-wrapped text. A text that kept its place has
+            // nothing to land, and the glide of a scroll the person just made runs on.
+            if landed != std::mem::replace(&mut self.scroll, landed) {
+                self.scroll_fx.snap(landed as f64);
+            }
         }
+        self.near = Some(((width, self.scroll, self.blocks.len()), range));
     }
 
     /// Blank lines after block `i`, which shows `n` lines.

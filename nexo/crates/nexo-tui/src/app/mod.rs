@@ -202,6 +202,12 @@ pub struct App {
     pub last_width: usize,
     /// Some block still has the height estimated from another width, not the one wrapped for real.
     pub(super) estimated: bool,
+    /// The width, scroll line and block count of the layout that last chose the blocks to wrap for real,
+    /// and the range it chose: while the estimate stands and none of them moved, a frame reuses the range.
+    near: Option<((usize, usize, usize), (usize, usize))>,
+    /// How many times a layout searched the whole history for the blocks near the view.
+    #[cfg(test)]
+    pub(super) near_runs: usize,
     /// A block was wrapped since `evict_far` last ran.
     wrapped: bool,
     /// The window `evict_far` last swept: lines first, last and the block count.
@@ -459,6 +465,9 @@ impl App {
             files: None,
             last_width: 80,
             estimated: false,
+            near: None,
+            #[cfg(test)]
+            near_runs: 0,
             wrapped: false,
             swept: None,
             held: None,
