@@ -5,7 +5,7 @@ use serde_json::json;
 const TOOL: Offer = Offer { bin: true, debug: true };
 const SHELL: Offer = Offer { bin: false, debug: false };
 
-/// This test program: an ELF or PE x86-64 file `nexo_bin::opens`, read as bytes only.
+/// This test program: an ELF or PE x86-64 file `nexo_binmagic::opens`, read as bytes only.
 fn this_binary() -> std::path::PathBuf {
     std::env::current_exe().unwrap()
 }
@@ -103,7 +103,7 @@ fn a_named_pipe_is_not_opened() {
         let _ = std::fs::OpenOptions::new().read(true).write(true).open(&pipe);
     }
     assert_eq!(got, Ok(false), "the check must come back at once and say no");
-    assert!(!nexo_bin::opens(dir.path()), "a folder is not a program either");
+    assert!(!nexo_binmagic::opens(dir.path()), "a folder is not a program either");
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn a_webassembly_module_asks_for_the_line_too() {
 #[test]
 fn the_line_tells_what_the_file_is_and_the_exact_call_as_a_tool_call_or_in_the_shell() {
     let dir = tempfile::tempdir().unwrap();
-    let size = nexo_bin::size_words(small_in(dir.path(), "prog"));
+    let size = nexo_binmagic::size_words(small_in(dir.path(), "prog"));
     let l = line("objdump -d prog | head -50", dir.path(), TOOL).unwrap();
     assert_eq!(
         l,

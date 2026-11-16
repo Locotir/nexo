@@ -94,28 +94,7 @@ pub struct ManagedQuery<'a> {
     pub grep: Option<&'a str>,
 }
 
-/// How many leading bytes `is_managed` and `is_mixed_mode` need: the CLI header sits at the start of the
-/// first section, usually well inside this.
-pub const HEAD: usize = 64 * 1024;
-
-/// A mixed-mode .NET assembly (C++/CLI: managed metadata plus native code) is not claimed here: the
-/// native ops read it, and this says `managed` reads its metadata too.
-pub fn is_mixed_mode(head: &[u8]) -> bool {
-    dotnet::is_mixed_mode(head)
-}
-
-/// True when the first bytes say the file is managed bytecode this module reads whole. A .NET assembly
-/// counts only when its CLI header (inside `head`) has the IL-only flag.
-pub fn is_managed(head: &[u8]) -> bool {
-    is_class(head) || zip::looks_like_zip(head) || dotnet::is_dotnet(head)
-}
-
-/// A class file and a Mach-O universal binary share the CAFEBABE magic: the next four bytes are the
-/// class version (45 or more) or the architecture count (a handful).
-pub(crate) fn is_class(d: &[u8]) -> bool {
-    d.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE])
-        && d.get(4..8).is_some_and(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]) >= 45)
-}
+use nexo_binmagic::{is_class, looks_like_zip};
 
 fn text_row(t: impl Into<String>) -> Row {
     Row { key: 0, text: t.into(), json: None }
@@ -129,7 +108,7 @@ pub(crate) fn load(path: &std::path::Path, data: &[u8]) -> Result<Module> {
         facts.retain(|f| !f.is_empty());
         return Ok(Module { kind: "JVM class".into(), file, types: vec![p.ty], strings: p.strings, facts });
     }
-    if zip::looks_like_zip(data) {
+    if looks_like_zip(data) {
         return load_jar(file, data);
     }
     if dotnet::has_cli_header(data) {

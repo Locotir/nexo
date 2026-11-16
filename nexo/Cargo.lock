@@ -1771,6 +1771,7 @@ dependencies = [
  "ignore",
  "libc",
  "nexo-bin",
+ "nexo-binmagic",
  "nexo-core",
  "nexo-curator",
  "nexo-dbg",
@@ -1820,6 +1821,7 @@ dependencies = [
  "iced-x86",
  "miniz_oxide 0.8.9",
  "msvc-demangler",
+ "nexo-binmagic",
  "object",
  "pdb",
  "regex",
@@ -1828,6 +1830,13 @@ dependencies = [
  "sha2",
  "tempfile",
  "wasmparser",
+]
+
+[[package]]
+name = "nexo-binmagic"
+version = "0.1.0"
+dependencies = [
+ "object",
 ]
 
 [[package]]

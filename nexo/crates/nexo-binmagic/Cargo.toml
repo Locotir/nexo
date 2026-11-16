@@ -1,0 +1,11 @@
+[package]
+name = "nexo-binmagic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: tells from a file's first bytes whether it is a program nexo bin reads, without the disassembler behind it"
+
+[dependencies]
+object = { workspace = true }

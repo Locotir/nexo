@@ -1,5 +1,5 @@
 //! Once per session, when the person's own message names a compiled program (a word that is a file under the
-//! 4096-byte magic test of `nexo_bin::opens`) or asks to reverse or debug a binary, the start note of that request
+//! 4096-byte magic test of `nexo_binmagic::opens`) or asks to reverse or debug a binary, the start note of that request
 //! carries one line saying that `bin` reads a program without running it and `debug` runs it under a debugger, so
 //! the model reaches for them before `gdb`, `objdump` or `strings`. Nothing about it is in the system prompt or in a
 //! request that is not about a compiled program.

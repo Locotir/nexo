@@ -66,7 +66,7 @@ pub fn segments(command: &str, cwd: &Path) -> Option<Vec<Seg>> {
 
 /// Whether the word `w`, from the folder `dir`, names a file `nexo bin` opens (read as bytes, the first 4096 only).
 pub fn opens(dir: &Path, w: &str) -> bool {
-    !w.is_empty() && !w.starts_with('-') && nexo_bin::opens(&dir.join(w))
+    !w.is_empty() && !w.starts_with('-') && nexo_binmagic::opens(&dir.join(w))
 }
 
 /// Like [`opens`], and every other kind `nexo bin` reads: 32-bit programs, .NET assemblies, JVM classes and jars,
@@ -75,12 +75,12 @@ pub fn reads(dir: &Path, w: &str) -> bool {
     kind(dir, w).is_some()
 }
 
-/// What the file the word `w` names from `dir` is, when `nexo bin` reads it (see [`nexo_bin::kind_at`]).
-pub fn kind(dir: &Path, w: &str) -> Option<nexo_bin::Compiled> {
+/// What the file the word `w` names from `dir` is, when `nexo bin` reads it (see [`nexo_binmagic::kind_at`]).
+pub fn kind(dir: &Path, w: &str) -> Option<nexo_binmagic::Compiled> {
     if w.is_empty() || w.starts_with('-') {
         return None;
     }
-    nexo_bin::kind_at(&dir.join(w))
+    nexo_binmagic::kind_at(&dir.join(w))
 }
 
 /// The file a hint names, as a call writes it: the way the command did when it ran in the session's folder, the

@@ -29,10 +29,6 @@ fn u32_at(d: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?))
 }
 
-pub fn looks_like_zip(d: &[u8]) -> bool {
-    d.starts_with(b"PK\x03\x04") || d.starts_with(b"PK\x05\x06")
-}
-
 impl<'a> Zip<'a> {
     pub fn open(data: &'a [u8]) -> Result<Self> {
         let bad = |m: &str| Error::NotRead(format!("not a readable zip/jar: {m}"));

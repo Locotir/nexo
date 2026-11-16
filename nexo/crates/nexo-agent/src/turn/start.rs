@@ -574,7 +574,7 @@ pub(super) fn expand_attachments(
             continue;
         }
         // a compiled program is told by what it is and the call that reads it, read from its first bytes only
-        if let Some(kind) = nexo_bin::kind_at(&p) {
+        if let Some(kind) = nexo_binmagic::kind_at(&p) {
             let size = std::fs::metadata(&p).ok().map(|m| m.len());
             let about = nexo_tools::program::about(&kind, size, &shown.to_string(), offer.bin);
             out.push_str(&format!("\n\n@{shown}: not attached: {about}"));

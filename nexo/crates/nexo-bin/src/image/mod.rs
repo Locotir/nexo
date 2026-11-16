@@ -12,7 +12,7 @@ pub(crate) use load::blank;
 #[cfg(test)]
 pub(crate) use load_elf::reloc_pointer;
 pub(crate) use names::{demangle, raw_of};
-pub use probe::opens;
+pub use nexo_binmagic::opens;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;

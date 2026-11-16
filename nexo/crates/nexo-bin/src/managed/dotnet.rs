@@ -109,69 +109,14 @@ pub fn has_cli_header(head: &[u8]) -> bool {
     pe_open(head).is_ok_and(|p| p.clr.0 != 0)
 }
 
-/// `Some(true)` for a CLI header with COMIMAGE_FLAGS_ILONLY, `Some(false)` without it (mixed-mode C++/CLI
-/// or native code inside), `None` when there is no CLI header or it is not inside `head`.
-fn il_only(head: &[u8]) -> Option<bool> {
-    let pe = pe_open(head).ok()?;
-    if pe.clr.0 == 0 {
-        return None;
-    }
-    let cli = pe.off(pe.clr.0)?;
-    Some(rd32(head, cli.checked_add(16)?)? & 1 != 0)
-}
-
-/// True when the PE headers in `head` say this is an IL-only .NET assembly: what `managed` reads whole.
-pub fn is_dotnet(head: &[u8]) -> bool {
-    il_only(head) == Some(true)
-}
-
-/// True for a .NET assembly that also holds native code (C++/CLI): the native ops read it, and `managed`
-/// reads its metadata and IL.
-pub fn is_mixed_mode(head: &[u8]) -> bool {
-    il_only(head) == Some(false)
-}
-
 fn pe_open(d: &[u8]) -> Result<Pe<'_>, String> {
-    if d.get(..2) != Some(b"MZ") {
-        return Err("no MZ header".into());
-    }
-    let pe = rd32(d, 0x3c).ok_or("cut short")? as usize;
-    if d.get(pe..pe + 4) != Some(b"PE\0\0") {
-        return Err("no PE signature".into());
-    }
-    let nsec = rd16(d, pe + 6).ok_or("cut short")? as usize;
-    let optsz = rd16(d, pe + 20).ok_or("cut short")? as usize;
-    let opt = pe + 24;
-    let base = match rd16(d, opt) {
-        Some(0x10b) => 96,
-        Some(0x20b) => 112,
-        _ => return Err("unknown optional header".into()),
-    };
-    let ndirs = rd32(d, opt + base - 4).unwrap_or(0) as usize;
-    let clr = if ndirs > 14 {
-        (rd32(d, opt + base + 14 * 8).ok_or("cut short")?, rd32(d, opt + base + 14 * 8 + 4).ok_or("cut short")?)
-    } else {
-        (0, 0)
-    };
-    let mut sections = Vec::new();
-    for i in 0..nsec {
-        let s = opt + optsz + i * 40;
-        // Header-only prefixes (detection reads 4 KB) may not hold every section: take what is there.
-        let (Some(vs), Some(va), Some(rs), Some(ro)) =
-            (rd32(d, s + 8), rd32(d, s + 12), rd32(d, s + 16), rd32(d, s + 20))
-        else {
-            break;
-        };
-        sections.push((va, vs, ro, rs));
-    }
-    Ok(Pe { d, sections, clr })
+    let h = nexo_binmagic::pe_cli(d)?;
+    Ok(Pe { d, sections: h.sections, clr: h.clr })
 }
 
 impl Pe<'_> {
     fn off(&self, rva: u32) -> Option<usize> {
-        // only bytes the file really holds: past the raw size an RVA is zero fill, not the next section
-        let s = self.sections.iter().find(|(va, _, _, rs)| rva.checked_sub(*va).is_some_and(|x| x < *rs))?;
-        Some((rva - s.0).checked_add(s.2)? as usize)
+        nexo_binmagic::section_offset(&self.sections, rva)
     }
 }
 
@@ -330,6 +275,7 @@ pub struct Parsed {
 #[cfg(test)]
 pub(super) mod probe {
     use super::*;
+    use nexo_binmagic::{is_dotnet, is_mixed_mode};
 
     fn with_ctx<R>(typespecs: &[Vec<u8>], f: impl FnOnce(&Ctx<'_>) -> R) -> R {
         let mut blob = vec![0u8];

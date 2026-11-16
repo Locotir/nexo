@@ -8,7 +8,7 @@
 //! and a compaction summary's source like any output; `told` reads a resumed or rewound history.
 //!
 //! Nothing here runs or loads a file. The command is split by `hint_cmd` (redirections, heredocs, `cd x &&`,
-//! wrappers), and a name it finds is only read as bytes by `nexo_bin::kind_at` (the first 4 KiB, the section
+//! wrappers), and a name it finds is only read as bytes by `nexo_binmagic::kind_at` (the first 4 KiB, the section
 //! headers of an ELF file, 64 KiB of a PE file). `gdb` is read here only when the `debug` tool is not offered;
 //! with it, `dbg_hint` answers.
 
@@ -111,7 +111,7 @@ fn is_short(w: &str) -> bool {
 /// The file of `s` that `nexo bin` reads, as the command wrote it, and what it is: one of its first words (`if=`
 /// of `dd`), its `< file`, and for a script (`python -c`, `perl -e`, a heredoc) a quoted string of it. A script
 /// counts only when its code reads files and starts no program (see [`Code`]).
-fn file_of(prog: &str, s: &Seg) -> Option<(String, nexo_bin::Compiled)> {
+fn file_of(prog: &str, s: &Seg) -> Option<(String, nexo_binmagic::Compiled)> {
     let mut words: Vec<&str> = s.words[1..]
         .iter()
         .take(WORDS)
@@ -147,7 +147,7 @@ fn literals(code: &str) -> Vec<&str> {
 
 /// The line: the file, what it is, and `op` (an op of `nexo bin` with its file) as a `bin` call or a shell
 /// command.
-fn say(path: &str, kind: &nexo_bin::Compiled, size: Option<u64>, op: &str, offer: Offer) -> String {
+fn say(path: &str, kind: &nexo_binmagic::Compiled, size: Option<u64>, op: &str, offer: Offer) -> String {
     let then = match kind.op {
         "managed" => THEN_MANAGED,
         _ if kind.what.starts_with("WebAssembly") => THEN_WASM,

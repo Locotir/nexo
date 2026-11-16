@@ -8,6 +8,7 @@ members = [
     "crates/nexo-agent",
     "crates/nexo-tui",
     "crates/nexo-bin",
+    "crates/nexo-binmagic",
     "crates/nexo-dbg",
     "crates/nexo-browser-host",
     "crates/nexo-cli",
@@ -35,6 +36,7 @@ nexo-agent = { path = "crates/nexo-agent" }
 nexo-tui = { path = "crates/nexo-tui" }
 nexo-bench = { path = "crates/nexo-bench" }
 nexo-bin = { path = "crates/nexo-bin" }
+nexo-binmagic = { path = "crates/nexo-binmagic" }
 nexo-dbg = { path = "crates/nexo-dbg" }
 nexo-browser = { path = "crates/nexo-browser" }
 nexo-relay = { path = "crates/nexo-relay" }

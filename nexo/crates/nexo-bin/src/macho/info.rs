@@ -2,25 +2,6 @@
 
 use super::*;
 
-/// Whether the first bytes of a file are a Mach-O file `Image::open` reads: a thin x86-64 or arm64
-/// program or library, or a universal file with such a slice.
-pub(crate) fn opens_head(head: &[u8]) -> bool {
-    match be32(head, 0) {
-        Some(FAT_MAGIC | FAT_MAGIC_64) => {
-            let n = be32(head, 4).unwrap_or(0) as u64;
-            let entry = if be32(head, 0) == Some(FAT_MAGIC_64) { 32 } else { 20 };
-            (1..=MAX_SLICES as u64).contains(&n)
-                && !crate::is_managed(&head[..head.len().min(crate::MANAGED_HEAD)])
-                && (0..n).any(|i| matches!(be32(head, 8 + i * entry), Some(CPU_X86_64 | CPU_ARM64)))
-        }
-        _ => {
-            u32_at(head, 0) == Some(MH_MAGIC_64)
-                && matches!(u32_at(head, 4), Some(CPU_X86_64 | CPU_ARM64))
-                && matches!(u32_at(head, 12), Some(2 | 3 | 5 | 6 | 7 | 8 | 9 | 0xb))
-        }
-    }
-}
-
 /// ` --arch arm64` when the person picked a slice, for the next commands; empty otherwise.
 pub(crate) fn arch_flag(img: &Image) -> String {
     img.macho.as_ref().and_then(|m| m.arch_arg.as_deref()).map_or(String::new(), |a| format!(" --arch {a}"))

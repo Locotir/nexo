@@ -68,10 +68,10 @@ const MAX_TABLE: u64 = 1 << 20;
 /// What the file whose first bytes (or whole bytes) are `data` is; `None` for anything `nexo bin` does not read.
 /// Facts the bytes do not reach (the section headers of an ELF file cut short) are left unknown.
 pub fn kind_of(data: &[u8]) -> Option<Compiled> {
-    if data.starts_with(crate::wasm::MAGIC) {
+    if data.starts_with(crate::WASM_MAGIC) {
         return Some(Compiled::new("WebAssembly module", "overview", None));
     }
-    if crate::managed::is_class(data) {
+    if crate::is_class(data) {
         return Some(Compiled::new("JVM class", "managed", None));
     }
     if is_jar(data) {

@@ -2,6 +2,7 @@
 //! (`csc` or `mcs`) and skip with a message otherwise.
 
 use super::*;
+use nexo_binmagic::is_managed;
 use std::path::Path;
 use std::process::Command;
 

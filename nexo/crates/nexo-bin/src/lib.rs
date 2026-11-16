@@ -24,7 +24,6 @@ mod funcs;
 mod graph;
 mod hookinfo;
 mod image;
-mod kind;
 mod live;
 mod macho;
 mod mainfind;
@@ -91,18 +90,18 @@ pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use graph::{path_window, tree_window};
 pub use hookinfo::{arg_count, block_starts, import_sites, libc_proto, parse_proto, proto_at, ImportSite, Proto};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
-pub use kind::{kind_at, kind_of, size_words, Compiled};
 pub use live::{
     decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, slot_use, LiveIns,
     LiveMem, Place, SlotUse, MAX_INDIRECT_CALLS,
 };
 #[cfg(any(test, feature = "fixtures"))]
 pub use managed::testkit as managed_fixtures;
-pub use managed::{is_managed, is_mixed_mode, managed_window, ManagedQuery, HEAD as MANAGED_HEAD};
+pub use managed::{managed_window, ManagedQuery};
 pub use names::{
     add_call_target, attach as attach_names, brief as names_brief, call_targets, call_targets_more,
     file_path as names_path, MAX_ENTRIES as MAX_NAMES,
 };
+pub use nexo_binmagic::{is_managed, is_mixed_mode, kind_at, kind_of, size_words, Compiled, MANAGED_HEAD};
 pub use ops::{
     bytes, find_bytes, find_bytes_in, find_imm, find_imm_in, func, func_window, info, parse_pattern, strings,
     strings_window, StrSort,

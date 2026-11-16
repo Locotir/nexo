@@ -17,7 +17,7 @@ use crate::image::demangle;
 use crate::{Error, Result};
 
 /// The four bytes every module starts with.
-pub const MAGIC: &[u8; 4] = b"\0asm";
+pub const MAGIC: &[u8; 4] = nexo_binmagic::WASM_MAGIC;
 /// Shortest run of printable bytes `strings` reports.
 pub const MIN_STRING: usize = 4;
 

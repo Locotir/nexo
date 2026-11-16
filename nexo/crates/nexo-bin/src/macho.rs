@@ -22,8 +22,8 @@ mod info;
 use self::chains::*;
 pub(crate) use self::fat::*;
 pub(crate) use self::info::*;
+use nexo_binmagic::{CPU_ARM64, CPU_X86_64, FAT_MAGIC, FAT_MAGIC_64, MAX_SLICES, MH_MAGIC_64};
 
-const MAX_SLICES: usize = 64;
 const MAX_CMDS: u32 = 16_384;
 const MAX_SECTIONS: usize = 4096;
 const MAX_SYMBOLS: usize = 500_000;
@@ -35,15 +35,10 @@ const MAX_NAME_IN: usize = 4096;
 /// The longest stub any linker writes is 16 bytes (arm64e); more is a damaged header.
 const MAX_STUB: u64 = 64;
 
-const MH_MAGIC_64: u32 = 0xfeed_facf;
 const MH_CIGAM_64: u32 = 0xcffa_edfe;
 const MH_MAGIC: u32 = 0xfeed_face;
 const MH_CIGAM: u32 = 0xcefa_edfe;
-const FAT_MAGIC: u32 = 0xcafe_babe;
-const FAT_MAGIC_64: u32 = 0xcafe_babf;
 
-const CPU_X86_64: u32 = 0x0100_0007;
-const CPU_ARM64: u32 = 0x0100_000c;
 const CPU_SUBTYPE_MASK: u32 = 0x00ff_ffff;
 const CPU_SUBTYPE_ARM64E: u32 = 2;
 const CPU_SUBTYPE_X86_64_H: u32 = 8;

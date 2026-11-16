@@ -12,6 +12,7 @@ description = "nexo: reads ELF and PE x86-64 files as bytes and answers question
 fixtures = []
 
 [dependencies]
+nexo-binmagic = { workspace = true }
 object = { workspace = true }
 gimli = { workspace = true }
 iced-x86 = { workspace = true }
