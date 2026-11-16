@@ -299,6 +299,8 @@ mod read_only_words;
 pub use read_only_words::*;
 
 #[cfg(test)]
+mod read_only_tests;
+#[cfg(test)]
 mod tests;
 
 // every test here probes pids, so the module is Unix only
