@@ -152,9 +152,16 @@ impl Engine {
     pub(super) fn asks(&mut self, j: usize) -> FxHashSet<Sym> {
         while self.requests.len() <= j {
             let a = self.goal.turns[self.requests.len()].start;
-            let mut words = self.words_in(std::iter::once(a), &[UKind::User]);
             let text = self.unit_text_at(a, UKind::User);
-            words.extend(topics(&text, &mut self.int));
+            // of a message nexo marked, what the person asks now: a line typed before the person stopped the
+            // request above points at that request's steps, not at the ones to bring for this one
+            let now = crate::msg::asked_now(&text);
+            let mut words = if now.len() == text.len() {
+                self.words_in(std::iter::once(a), &[UKind::User])
+            } else {
+                crate::hindsight::words(now, &mut self.int).into_iter().collect()
+            };
+            words.extend(topics(now, &mut self.int));
             for &w in &words {
                 *self.requests_df.entry(w).or_default() += 1;
             }

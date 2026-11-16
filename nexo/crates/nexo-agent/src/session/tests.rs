@@ -31,6 +31,27 @@ fn the_prefix_is_saved_kept_by_a_rewrite_and_a_fork_and_an_old_file_has_none() {
     assert_eq!(Session::open_path(f.path()).unwrap().prefix(), Some(&p), "a fork goes on with it");
 }
 #[test]
+fn a_stop_is_kept_through_a_resume_and_a_rewrite_until_the_request_that_carries_its_line() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("y documenta cada función")).unwrap();
+    let line =
+        "[16:13:08 the person stopped the request above (Esc) while you waited for your reply; it got no answer]";
+    s.record_stop(line).unwrap();
+    assert_eq!(Session::open_path(s.path()).unwrap().stop(), Some(line), "a resume reads it back");
+    s.reset_with(&[Message::user("y documenta cada función")]).unwrap();
+    assert_eq!(Session::open_path(s.path()).unwrap().stop(), Some(line), "a rewrite keeps it");
+    // a message that does not carry it (a mail turn, a goal's next step) leaves it for the person's next request
+    s.append(&Message::user("[mail] a note")).unwrap();
+    assert_eq!(s.stop(), Some(line));
+    s.append(&Message::user(format!("{line}\n\nDetente, cambiamos de tema"))).unwrap();
+    assert_eq!(s.stop(), None);
+    assert_eq!(Session::open_path(s.path()).unwrap().stop(), None, "the request that carried it took it");
+    s.record_stop(line).unwrap();
+    s.rewind(1).unwrap();
+    assert_eq!(Session::open_path(s.path()).unwrap().stop(), None, "a rewind goes back to before the stop");
+}
+#[test]
 fn sessions_born_in_the_same_second_are_all_saved() {
     // 3000 ids drawn in a few seconds from 65536 per second: some draw the same one
     let d = tempfile::tempdir().unwrap();

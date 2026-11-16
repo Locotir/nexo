@@ -201,7 +201,7 @@ async fn on_submit(rt: &mut Runtime, text: String, attachments: Vec<Attachment>)
     let mut st = rt.state.lock().await;
     st.goal_round = 0;
     if rt.turn.is_some() {
-        st.inbox.push_back(InboxItem { text, attachments, directed: None });
+        st.inbox.push_back(InboxItem::sent(text, attachments, true));
         emit(&rt.events, AgentEvent::Queued { pending: st.inbox.len() });
         // the person is heard now: sub-agents the round waits for go to the background
         if st.config.agent.detach_on_message {
@@ -211,7 +211,7 @@ async fn on_submit(rt: &mut Runtime, text: String, attachments: Vec<Attachment>)
         person_spoke(&mut st);
         // requests kept after an Esc were written before this one: they go with it, first
         let kept = st.inbox.len();
-        st.inbox.push_back(InboxItem { text, attachments, directed: None });
+        st.inbox.push_back(InboxItem::sent(text, attachments, false));
         let (next, _) = queue::take_queued(&mut st);
         if kept > 0 {
             emit(&rt.events, AgentEvent::Queued { pending: st.inbox.len() });
@@ -234,7 +234,9 @@ async fn on_submit_directed(rt: &mut Runtime, target: ObservationTarget, text: S
     } else if rt.turn.is_none() {
         reply.resolve(DirectedResult::Rejected("no active turn"));
     } else {
-        st.inbox.push_back(InboxItem { text, attachments: Vec::new(), directed: Some((target, reply)) });
+        let mut item = InboxItem::sent(text, Vec::new(), true);
+        item.directed = Some((target, reply));
+        st.inbox.push_back(item);
         emit(&rt.events, AgentEvent::Queued { pending: st.inbox.len() });
         if st.config.agent.detach_on_message {
             rt.detach.fire(DetachWhy::Message);
@@ -346,6 +348,7 @@ async fn on_unqueue(rt: &mut Runtime, index: usize, text: String) {
 fn on_interrupt(rt: &mut Runtime, run_queue: bool) {
     if rt.turn.is_some() {
         rt.run_queue = run_queue;
+        rt.stopped.get_or_insert_with(SystemTime::now);
         rt.cancel.cancel();
         // the questions of the turn; those of sub-agents in the background stay open
         rt.chan_gate.deny_turn("interrupted", &rt.detach);
@@ -495,7 +498,7 @@ async fn on_mcp_prompt(rt: &mut Runtime, server: String, prompt: String, args: S
             let mut st = rt.state.lock().await;
             st.goal_round = 0;
             if rt.turn.is_some() {
-                st.inbox.push_back(InboxItem { text, attachments: Vec::new(), directed: None });
+                st.inbox.push_back(InboxItem::sent(text, Vec::new(), true));
                 emit(&rt.events, AgentEvent::Queued { pending: st.inbox.len() });
             } else {
                 person_spoke(&mut st);

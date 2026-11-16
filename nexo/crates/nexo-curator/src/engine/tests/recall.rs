@@ -192,3 +192,69 @@ fn a_request_on_a_topic_brings_back_the_step_that_says_it_most_not_the_largest_t
     assert!(last.contains("spring"), "{last}");
     assert!(!last.contains(&word(0)), "{last}");
 }
+
+/// A request to document the parser, answered from a read of it that a few lines name the documenting of, a short turn
+/// on another file after it, then `last` as the person's message.
+fn documenting_then(last: &str) -> Vec<Value> {
+    let mut source = report();
+    for k in 0..4 {
+        source += &format!("\n/// documenta cada función de {} en el analizador", word(900 + k));
+    }
+    let mut msgs = vec![json!({"role": "user", "content": "Documenta cada función de parser.rs."})];
+    msgs.extend(step(1, "cat parser.rs", &source));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+    msgs.push(json!({"role": "user", "content": "How many lines has notes.md?"}));
+    msgs.extend(step(2, "wc -l notes.md", "12 notes.md"));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+    msgs.push(json!({"role": "user", "content": last}));
+    msgs
+}
+
+/// What the curator made of `last` after the documenting task: whether the request changes the topic, whether it
+/// goes on from the documenting turn, and whether the view holds the documenting lines of the read.
+fn reading_of(last: &str) -> (bool, bool, bool) {
+    let mut e = Engine::new(params("nudge=0;eoq=0;close=2;margin=0;ahead=1;aim=1").unwrap());
+    e.sync(&documenting_then(last));
+    let view = sent(&e.view());
+    (e.goal.changed(), e.goal.goes_on(0), view.contains(&word(901)))
+}
+
+#[test]
+fn of_requests_joined_after_a_stop_the_newest_decides_the_topic_and_the_lines_looked_up() {
+    let older = "y documenta cada función";
+    let newest = "Detente, cambiamos de tema";
+    // read as one block, the older line ties the request to the documenting turn and brings its lines back
+    let block = reading_of(&format!("{older}\n\n{newest}"));
+    assert!(block.2, "{block:?}");
+    // with the times nexo writes, and the stop line before them, the curator reads what the newest part alone gives
+    let alone = reading_of(newest);
+    assert!(!alone.2, "{alone:?}");
+    let headed = format!(
+        "[16:13:05, typed while you worked on the request above, before the person stopped it]\n{older}\n\n[16:13:10]\n{newest}"
+    );
+    assert_eq!(reading_of(&headed), alone);
+    let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply after bash wc -l \
+                notes.md; it got no answer]";
+    assert_eq!(reading_of(&format!("{stop}\n\n{}\n{headed}", crate::msg::PERSON_MARK)), alone);
+}
+
+#[test]
+fn a_thread_the_person_stopped_says_so_on_its_card_and_an_answered_one_does_not() {
+    let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply after bash cat \
+                parser.rs; it got no answer]";
+    // stopped after the read came back, before any reply: the next request follows the read's results
+    let mut msgs = vec![json!({"role": "user", "content": "Documenta cada función de parser.rs."})];
+    msgs.extend(step(1, "cat parser.rs", &report()));
+    msgs.push(json!({"role": "user", "content": format!("{stop}\n\n{}\nHow many lines has notes.md?", crate::msg::PERSON_MARK)}));
+    msgs.extend(step(2, "wc -l notes.md", "12 notes.md"));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+    // a high link: the next request opens a thread of its own, and the stopped one keeps its card
+    let mut e = Engine::new(params("nudge=0;eoq=0;close=2;margin=0;ahead=1;link=0.99").unwrap());
+    e.sync(&msgs);
+    e.view();
+    let card = |k: usize| e.goal.card(&e.tr, &e.fz, k, &mut |_| String::new());
+    let (stopped, answered) = (e.goal.thread_at(0), e.goal.thread_at(msgs.len() - 1));
+    assert_ne!(stopped, answered);
+    assert!(card(stopped).ends_with(". Ended: stopped by the person before an answer (16:13)."), "{}", card(stopped));
+    assert!(!card(answered).contains("Ended:"), "{}", card(answered));
+}

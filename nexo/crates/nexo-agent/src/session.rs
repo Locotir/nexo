@@ -2,8 +2,9 @@
 //! so nothing is lost and a session can be continued.
 //!
 //! Lines: `{"type":"meta",...}` first; then `message` (with its index),
-//! `tool_output`, `usage`, `title`, and `reset` (the history was rewritten:
-//! what follows replaces what came before).
+//! `tool_output`, `usage`, `title`, `stop` (the person stopped the latest
+//! request), and `reset` (the history was rewritten: what follows replaces
+//! what came before).
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -146,6 +147,12 @@ enum Line {
     /// The prefix in force from here on; the last such line wins.
     Prefix(Prefix),
     Reset,
+    /// The person stopped the latest request (Esc): the line the next request carries, until a message that starts
+    /// with it is appended (`Session::stop`). Old readers skip it.
+    Stop {
+        ts: String,
+        line: String,
+    },
 }
 
 pub struct Session {
@@ -159,6 +166,8 @@ pub struct Session {
     goal: Option<String>,
     goal_state: GoalState,
     prefix: Option<Prefix>,
+    /// The person stopped the latest request and no request has carried the line that says so yet: that line.
+    stop: Option<String>,
     /// Whether this session holds the lock next to its file (taken at the first write).
     locked: bool,
     /// When the lock was last touched by this session.

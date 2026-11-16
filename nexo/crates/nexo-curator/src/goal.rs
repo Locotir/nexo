@@ -3,9 +3,9 @@
 use crate::sorted::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
-use crate::hindsight::{Sym, Tracer, UKind};
+use crate::hindsight::{Interner, Sym, Tracer, UKind};
 use crate::learn::{correct_share, is_request, Featurizer, Head};
-use crate::msg::py_str;
+use crate::msg::{py_str, stop_line_of};
 use crate::textops;
 
 const PRIOR_B: f64 = -2.0;
@@ -38,14 +38,17 @@ pub fn starts_turn(tr: &Tracer, fz: &Featurizer, mi: usize) -> bool {
     if tr.msgs[mi].get("role").and_then(Value::as_str) != Some("user") {
         return false;
     }
-    // the model gets two user messages in a row as one (the provider joins them): the second goes on
-    // the first one's request, as when a host adds a line after the tool results of a step
-    if tr.msgs[mi - 1].get("role").and_then(Value::as_str) == Some("user") {
+    let us = fz.by_msg(mi);
+    let asks = |i: usize| tr.units[i].kind == UKind::User && is_request(&tr.unit_text(i));
+    if us.iter().any(|&i| tr.units[i].kind == UKind::Result) || !us.iter().any(|&i| asks(i)) {
         return false;
     }
-    let us = fz.by_msg(mi);
-    !us.iter().any(|&i| tr.units[i].kind == UKind::Result)
-        && us.iter().any(|&i| tr.units[i].kind == UKind::User && is_request(&tr.unit_text(i)))
+    // the model gets two user messages in a row as one (the provider joins them): the second goes on
+    // the first one's request, as when a host adds a line after the tool results of a step. A message that starts
+    // with the line nexo writes when the person stopped the request above goes on nothing: that request ended
+    // there, with its last tool results or before any reply, and this is the next one
+    tr.msgs[mi - 1].get("role").and_then(Value::as_str) != Some("user")
+        || us.iter().any(|&i| asks(i) && stop_line_of(&tr.unit_text(i)).is_some())
 }
 
 /// `" ".join(text.split())`, cut to ``n`` characters.
@@ -102,13 +105,20 @@ struct Overlap {
 }
 
 impl Threads {
-    pub fn update(&mut self, tr: &Tracer, fz: &Featurizer, head: Option<&Head>, share: Option<f64>) {
+    pub fn update(
+        &mut self,
+        tr: &Tracer,
+        fz: &Featurizer,
+        int: &mut Interner,
+        head: Option<&Head>,
+        share: Option<f64>,
+    ) {
         while self.m < tr.msgs.len() {
             let mi = self.m;
             self.m += 1;
             let us = fz.by_msg(mi);
             if starts_turn(tr, fz, mi) {
-                self.open(tr, fz, mi, head, share);
+                self.open(tr, fz, int, mi, head, share);
             }
             let Some(t) = self.turns.last_mut() else { continue };
             for &i in us {
@@ -151,17 +161,36 @@ impl Threads {
         self.indexed = j + 1;
     }
 
-    fn open(&mut self, tr: &Tracer, fz: &Featurizer, mi: usize, head: Option<&Head>, share: Option<f64>) {
+    fn open(
+        &mut self,
+        tr: &Tracer,
+        fz: &Featurizer,
+        int: &mut Interner,
+        mi: usize,
+        head: Option<&Head>,
+        share: Option<f64>,
+    ) {
         let mut req = FxHashSet::default();
         let mut names = FxHashSet::default();
         let mut asked = Vec::new();
         for &i in fz.by_msg(mi) {
             if tr.units[i].kind == UKind::User {
                 let text = tr.unit_text(i);
-                if is_request(&text) {
+                if !is_request(&text) {
+                    continue;
+                }
+                if crate::msg::is_marked(&text) {
+                    // the request is what the person asks now: not the line of the stop before it, which names
+                    // the stopped request's last call, nor the older of requests joined into one (they go in the
+                    // turn's words with the rest of the message)
+                    let now = crate::msg::request_words(&text);
+                    req.extend(crate::learn::terms(now, int));
+                    names.extend(crate::hindsight::words(now, int));
+                    asked.push(now.to_string());
+                } else {
                     req.extend(fz.terms[i].iter().copied());
                     names.extend(tr.units[i].words.iter().copied());
-                    asked.push(text);
+                    asked.push(text.into_owned());
                 }
             }
         }
@@ -349,6 +378,16 @@ impl Threads {
         (self.turns[j].start, end)
     }
 
+    /// How turn `j` ended when the person stopped it: the request after it starts with the line nexo records
+    /// for a stop (`nexo_core::agent::stop_line`), which says whether the stopped request got an answer.
+    fn ended(&self, tr: &Tracer, j: usize) -> Option<String> {
+        let next = self.turns.get(j + 1)?.start;
+        let text = crate::msg::text_of(tr.msgs.get(next)?.get("content"));
+        let (line, at) = stop_line_of(&text)?;
+        let before = if line.contains("it got no answer") { " before an answer" } else { "" };
+        Some(format!("Ended: stopped by the person{before} ({})", &at[..5]))
+    }
+
     /// What the request that opened turn `j` asked, as a card names it.
     pub fn ask(&self, _tr: &Tracer, _fz: &Featurizer, j: usize) -> String {
         self.turns[j].ask.clone()
@@ -410,6 +449,9 @@ impl Threads {
         }
         if !answer.is_empty() {
             out += &format!(". Last answer: \"{}\"", line(&answer, CARD_ANSWER));
+        }
+        if let Some(how) = self.ended(tr, jn) {
+            out += &format!(". {how}");
         }
         out + "." + &why
     }

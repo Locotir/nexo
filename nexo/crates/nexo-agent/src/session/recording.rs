@@ -141,6 +141,10 @@ impl Session {
         let index = self.messages.len();
         self.messages.push(m.clone());
         self.meta.messages = self.messages.len();
+        // the request that carries the stop line takes it
+        if self.stop.as_deref().is_some_and(|l| m.text().starts_with(l)) {
+            self.stop = None;
+        }
         self.write(&Line::Message { index, ts: now(), message: m.clone() })?;
         if self.meta.title.is_empty() && m.role == Role::User && !m.is_tool_results() {
             let t = title_of_message(&m.text());
@@ -209,6 +213,19 @@ impl Session {
     pub fn record_prefix(&mut self, prefix: &Prefix) -> anyhow::Result<()> {
         self.prefix = Some(prefix.clone());
         self.write(&Line::Prefix(prefix.clone()))
+    }
+
+    /// The line that says the person stopped the latest request, while no request has carried it yet.
+    pub fn stop(&self) -> Option<&str> {
+        self.stop.as_deref()
+    }
+
+    /// The person stopped the latest request: `line` says when and while what ran. It stays, on disk too, until a
+    /// message that starts with it is appended (the next request carries it), so a resume or a compaction before
+    /// that does not lose it.
+    pub fn record_stop(&mut self, line: &str) -> anyhow::Result<()> {
+        self.stop = Some(line.to_string());
+        self.write(&Line::Stop { ts: now(), line: line.to_string() })
     }
 
     /// The same goal, standing elsewhere (paused, waiting, met, active again).

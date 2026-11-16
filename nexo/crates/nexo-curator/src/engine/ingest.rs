@@ -276,7 +276,7 @@ impl Engine {
         while self.born.len() < new.end {
             self.born.push(k);
         }
-        self.goal.mt().update(&self.tr, &self.fz, MODEL.link.as_ref(), MODEL.link_share);
+        self.goal.mt().update(&self.tr, &self.fz, &mut self.int, MODEL.link.as_ref(), MODEL.link_share);
         self.vis = None;
         if self.p.dedup > 0 {
             self.find_dups(new);

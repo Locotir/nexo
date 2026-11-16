@@ -130,6 +130,8 @@ pub enum AddedKind {
     StartNote,
     /// A note of the supervisor that rides on one request and is never saved.
     Supervisor,
+    /// The line that says the person stopped the request before this one (Esc), when and while what ran.
+    Stopped,
 }
 
 /// One piece of text nexo added to a message of the person, kept apart from their own words where the

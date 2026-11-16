@@ -722,13 +722,7 @@ impl App {
                         self.user_messages.push((index, nexo_core::agent::person_words(&text).to_string()));
                     }
                     let words = nexo_core::agent::person_words(&text);
-                    let at = match self.pending_stamps.iter().position(|t| t == words) {
-                        Some(i) => {
-                            self.pending_stamps.remove(i);
-                            Some(self.stamp_now())
-                        }
-                        None => None,
-                    };
+                    let at = self.take_stamps(words).then(|| self.stamp_now());
                     let mut pending = self.take_pending(words);
                     let pieces = crate::replay::split_user(&text);
                     if pieces.len() == 1 && matches!(&pieces[0], crate::replay::Piece::Text(t) if *t == text) {

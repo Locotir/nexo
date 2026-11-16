@@ -21,6 +21,7 @@ fn word(kind: AddedKind, n: usize) -> String {
         AddedKind::Memory => ("shared memory", "shared memories"),
         AddedKind::StartNote => ("start note", "start notes"),
         AddedKind::Supervisor => ("supervisor note", "supervisor notes"),
+        AddedKind::Stopped => ("stop note", "stop notes"),
     };
     if n == 1 {
         one.to_string()

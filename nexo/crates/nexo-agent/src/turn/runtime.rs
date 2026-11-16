@@ -33,6 +33,8 @@ pub(super) struct Runtime {
     pub(super) cancel: CancellationToken,
     /// The running turn was stopped to run the queued request now, not to wait for the person.
     pub(super) run_queue: bool,
+    /// When the person stopped the running turn (Esc or Enter on a queued request), until its end records it.
+    pub(super) stopped: Option<SystemTime>,
     /// What a check-in decided, back to this loop (the only place a turn starts).
     pub(super) resume_tx: tokio::sync::mpsc::UnboundedSender<Resume>,
     pub(super) resume_rx: tokio::sync::mpsc::UnboundedReceiver<Resume>,
@@ -131,6 +133,7 @@ impl Runtime {
             fast: false,
             live: None,
             turn_start: 0,
+            request_in: false,
             turns: 0,
             goal_log: resumed_log(goal.as_deref()),
             goal_cost0: cost,
@@ -232,6 +235,7 @@ impl Runtime {
             checking: None,
             cancel: CancellationToken::new(),
             run_queue: false,
+            stopped: None,
             resume_tx,
             resume_rx,
         })

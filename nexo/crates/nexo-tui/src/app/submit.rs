@@ -287,12 +287,31 @@ impl App {
     }
 
     /// The agent's echo of a request sent from here: the dim line it was shown as becomes the message
-    /// (its place in the transcript, if still there).
+    /// (its place in the transcript, if still there). Requests the agent joined into one (typed while it worked,
+    /// then one more) come back as one echo with a time before each: every sent text in it is taken, so none is
+    /// left said to be not taken yet, and the place is that of the first one shown dim.
     pub(super) fn take_pending(&mut self, words: &str) -> Option<usize> {
-        let at = self.unechoed.iter().position(|(t, _, _)| t == words)?;
-        self.unechoed.remove(at);
-        let i = self.blocks.iter().rposition(|b| matches!(b, Block::Pending { text } if text == words))?;
-        Some(i)
+        let mut place = None;
+        for w in sent_texts(words) {
+            let Some(at) = self.unechoed.iter().position(|(t, _, _)| t == w) else { continue };
+            self.unechoed.remove(at);
+            if place.is_none() {
+                place = self.blocks.iter().rposition(|b| matches!(b, Block::Pending { text } if text == w));
+            }
+        }
+        place
+    }
+
+    /// The echo of requests sent from here: their send times are taken; whether any was.
+    pub(super) fn take_stamps(&mut self, words: &str) -> bool {
+        let mut taken = false;
+        for w in sent_texts(words) {
+            if let Some(i) = self.pending_stamps.iter().position(|t| t == w) {
+                self.pending_stamps.remove(i);
+                taken = true;
+            }
+        }
+        taken
     }
 
     /// The person's message as the agent echoed it: in the place of its dim line when there is one.
@@ -640,4 +659,9 @@ impl App {
             _ => (None, name),
         }
     }
+}
+
+/// The texts sent from here that an echo's words hold: each part of requests joined into one, or the words.
+fn sent_texts(words: &str) -> Vec<&str> {
+    nexo_core::agent::joined_parts(words).unwrap_or_else(|| vec![words])
 }

@@ -57,6 +57,7 @@ impl Session {
             goal: None,
             goal_state: GoalState::Active,
             prefix: None,
+            stop: None,
             locked: true,
             touched: std::time::Instant::now(),
             open_tail: false,
@@ -95,6 +96,7 @@ impl Session {
             goal: None,
             goal_state: GoalState::Active,
             prefix: None,
+            stop: None,
             locked: false,
             touched: std::time::Instant::now(),
             open_tail: false,
@@ -130,10 +132,18 @@ impl Session {
         let mut goal = None;
         let mut goal_state = GoalState::Active;
         let mut prefix = None;
+        let mut stop = None;
         let mut skipped = 0;
         for l in lines {
             match serde_json::from_str::<Line>(&l) {
-                Ok(Line::Message { message, .. }) => messages.push(message),
+                Ok(Line::Message { message, .. }) => {
+                    // the request that carried the stop line took it
+                    if stop.as_deref().is_some_and(|l| message.text().starts_with(l)) {
+                        stop = None;
+                    }
+                    messages.push(message)
+                }
+                Ok(Line::Stop { line, .. }) => stop = Some(line),
                 Ok(Line::ToolOutput { call_id, output }) => {
                     outputs.insert(call_id, output);
                 }
@@ -151,7 +161,10 @@ impl Session {
                     goal_state = state;
                 }
                 Ok(Line::Prefix(p)) => prefix = Some(p),
-                Ok(Line::Reset) => messages.clear(),
+                Ok(Line::Reset) => {
+                    messages.clear();
+                    stop = None;
+                }
                 Ok(Line::Meta(_)) => {}
                 Err(_) => skipped += 1, // a cut line: whatever was being written when the process died
             }
@@ -172,6 +185,7 @@ impl Session {
             goal,
             goal_state,
             prefix,
+            stop,
             locked: false,
             touched: std::time::Instant::now(),
             // a process killed mid-write leaves a last line without its end

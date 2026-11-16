@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::hindsight::UKind;
 use crate::json::{est, est_str};
-use crate::msg::{blocks, get_str, person_words, text_block, text_of};
+use crate::msg::{blocks, get_str, person_words, request_words, text_block, text_of};
 use crate::standing::CALL_KEYS;
 
 use super::notes::note_text;
@@ -90,7 +90,8 @@ impl Engine {
             }
             let text = self.tr.unit_text(i);
             self.index.mt().add(i, &text);
-            let words = person_words(&text);
+            // of requests joined into one, the newest is what the person asks now: its keys are the ones looked up
+            let words = request_words(&text);
             if kind == UKind::User && !words.trim().is_empty() {
                 self.index.mt().want(i, words);
             }

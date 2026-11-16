@@ -65,7 +65,10 @@ pub fn split_user(text: &str) -> Vec<Piece> {
 fn front<'a>(text: &'a str, out: &mut Vec<Piece>) -> &'a str {
     let mut t = text.trim_start();
     loop {
-        if t.starts_with(JOBS_NOTE) {
+        if let Some(line) = nexo_core::agent::stop_line_of(t) {
+            out.push(Piece::Added(AddedPart::new(AddedKind::Stopped, "stop", line)));
+            t = t[line.len()..].trim_start();
+        } else if t.starts_with(JOBS_NOTE) {
             let Some(i) = t.find(JOBS_END) else { break };
             let end = t[i..].find('\n').map_or(t.len(), |n| i + n);
             out.push(Piece::JobNote(t[..end].to_string()));

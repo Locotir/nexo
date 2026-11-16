@@ -21,6 +21,79 @@ pub fn person_words(text: &str) -> &str {
     }
 }
 
+/// What follows the time in the line nexo puts first in a request after the person stopped the one before it
+/// (`nexo_core::agent::STOP_WORDS`).
+const STOP_WORDS: &str = "the person stopped the request above";
+
+/// The time and the rest of a line `[HH:MM:SS...]`.
+fn timed(line: &str) -> Option<(&str, &str)> {
+    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
+    let (t, rest) = inner.split_at_checked(8)?;
+    let b = t.as_bytes();
+    let hms = b[2] == b':' && b[5] == b':' && [0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit());
+    hms.then_some((t, rest))
+}
+
+/// The line that says the person stopped the request before, when `text` starts with one, and its time
+/// (`nexo_core::agent::stop_line_of`).
+pub fn stop_line_of(text: &str) -> Option<(&str, &str)> {
+    let first = text.split('\n').next()?;
+    let (at, rest) = timed(first)?;
+    rest.strip_prefix(' ')?.starts_with(STOP_WORDS).then_some((first, at))
+}
+
+/// Whether `line` heads one part of requests nexo joined into one (`nexo_core::agent::part_header`).
+fn is_part_header(line: &str) -> bool {
+    timed(line).is_some_and(|(_, rest)| rest.is_empty() || rest.starts_with(", typed while"))
+}
+
+/// The parts of the person's words when nexo joined requests typed one after another into one, oldest first, each
+/// without the line that says when it was typed; None for one request (`nexo_core::agent::joined_parts`).
+pub fn joined_parts(words: &str) -> Option<Vec<&str>> {
+    let mut lines = words.split_inclusive('\n');
+    let first = lines.next()?;
+    if !is_part_header(first.trim_end_matches(['\n', '\r'])) {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let (mut start, mut at) = (first.len(), first.len());
+    for line in lines {
+        if is_part_header(line.trim_end_matches(['\n', '\r'])) {
+            parts.push(words[start..at].trim_matches('\n'));
+            start = at + line.len();
+        }
+        at += line.len();
+    }
+    parts.push(words[start..].trim_matches('\n'));
+    Some(parts)
+}
+
+/// What the person asks now in the text of a message they sent: their words ([`person_words`]) without the line that
+/// says they stopped the request before, and of requests joined into one the newest. The older parts were typed
+/// before it, some while the model worked on a request the person then stopped: they are earlier requests of the
+/// same turn, not what the person wants now.
+pub fn request_words(text: &str) -> &str {
+    let words = person_words(text);
+    let words = stop_line_of(words).map_or(words, |(line, _)| words[line.len()..].trim_start());
+    joined_parts(words).and_then(|p| p.last().copied()).unwrap_or(words)
+}
+
+/// Whether nexo marked the text of a message: it starts with the line of a stop, or the person's words are requests
+/// joined into one. Its request is then [`request_words`], not the whole text.
+pub fn is_marked(text: &str) -> bool {
+    stop_line_of(text).is_some() || joined_parts(person_words(text)).is_some()
+}
+
+/// The request in the whole text of a message the person sent, as the curator reads it: [`request_words`] when nexo
+/// marked the message, else the text as it is.
+pub fn asked_now(text: &str) -> &str {
+    if is_marked(text) {
+        request_words(text)
+    } else {
+        text
+    }
+}
+
 pub fn text_block(s: &str) -> Value {
     let mut m = Map::new();
     m.insert("type".into(), Value::String("text".into()));

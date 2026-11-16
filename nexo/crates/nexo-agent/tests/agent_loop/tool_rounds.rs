@@ -363,12 +363,20 @@ async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
     assert_eq!(text_of(&evs), "second");
     assert_eq!(end_of(&evs), TurnEnd::Done);
     assert_eq!(client.requests()[1].messages.len(), 3, "the partial reply stays in the history");
+    // the kept request goes with the next message, first, and the request says when each was typed and that the
+    // person stopped the one above
     assert_eq!(
-        client.requests()[1].messages.last().unwrap().text(),
-        "two\n\nthree",
-        "the kept request goes with the next message, first"
+        untimed(&client.requests()[1].messages.last().unwrap().text()),
+        "[00:00:00 the person stopped the request above (Esc) while your reply above was being written; it was cut \
+         there]\n\n[the person's message]\n[00:00:00, typed while you worked on the request above, before the person \
+         stopped it]\ntwo\n\n[00:00:00]\nthree",
     );
     r.stop().await;
+}
+
+/// `text` with every digit as 0: the times these requests carry are the clock's.
+fn untimed(text: &str) -> String {
+    text.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect()
 }
 
 #[tokio::test]
@@ -395,7 +403,12 @@ async fn interrupt_run_stops_the_turn_and_runs_the_queued_request() {
     assert_eq!(text_of(&evs), "second");
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let reqs = client.requests();
-    assert_eq!(reqs[1].messages.last().unwrap().text(), "two", "the queued text is the request");
+    assert_eq!(
+        untimed(&reqs[1].messages.last().unwrap().text()),
+        "[00:00:00 the person stopped the request above to run the queued request at once while your reply above was \
+         being written; it was cut there]\n\n[the person's message]\ntwo",
+        "the queued text is the request, alone with no time, after the stop"
+    );
     // the agent is idle again and takes the next message as usual
     r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
     assert_eq!(text_of(&r.turn().await), "third");
@@ -428,7 +441,13 @@ async fn two_queued_requests_run_as_one_request_after_an_interrupt() {
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let reqs = client.requests();
     assert_eq!(reqs.len(), 2, "one request for both queued lines");
-    assert_eq!(reqs[1].messages.last().unwrap().text(), "stop everything\n\ndo nothing for now");
+    assert_eq!(
+        untimed(&reqs[1].messages.last().unwrap().text()),
+        "[00:00:00 the person stopped the request above to run the queued request at once while your reply above was \
+         being written; it was cut there]\n\n[the person's message]\n[00:00:00, typed while you worked on the request \
+         above, before the person stopped it]\nstop everything\n\n[00:00:00, typed while you worked on the request \
+         above, before the person stopped it]\ndo nothing for now"
+    );
     r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
     assert_eq!(text_of(&r.turn().await), "next");
     r.stop().await;

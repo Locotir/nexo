@@ -8,6 +8,8 @@ impl Session {
     /// were spent. When the file cannot be rewritten, memory is left as it was, matching the file.
     pub fn rewind(&mut self, keep: usize) -> anyhow::Result<()> {
         let keep = keep.min(self.messages.len());
+        // the stopped request may be among the messages that go; what was stopped is no fact of the kept ones
+        self.stop = None;
         let (messages, outputs) = (self.messages.clone(), self.outputs.clone());
         self.messages.truncate(keep);
         let ids: std::collections::BTreeSet<String> =
@@ -86,6 +88,9 @@ impl Session {
             }
             if let Some(p) = &self.prefix {
                 writeln!(f, "{}", serde_json::to_string(&Line::Prefix(p.clone()))?)?;
+            }
+            if let Some(line) = &self.stop {
+                writeln!(f, "{}", serde_json::to_string(&Line::Stop { ts: now(), line: line.clone() })?)?;
             }
             f.sync_all()?;
             Ok(())

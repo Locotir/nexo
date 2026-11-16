@@ -182,6 +182,43 @@ fn a_request_the_agent_takes_shows_working_in_the_first_frame_and_no_late_warnin
 }
 
 #[test]
+fn requests_joined_after_an_esc_come_back_as_one_echo_that_takes_both_and_shows_the_stop() {
+    use nexo_core::agent::{part_header, stop_line, AddedKind, PERSON_MARK};
+    let t0 = Instant::now();
+    let (mut a, mut rx) = app();
+    fx_at(&mut a, t0, 0);
+    a.busy = true;
+    a.input.set_text("y documenta cada función");
+    a.submit();
+    // Esc: the turn ends and the queued line waits for the next message, which is sent while idle
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
+    a.busy = false;
+    a.input.set_text("Detente, cambiamos de tema");
+    a.submit();
+    drain(&mut rx);
+    assert_eq!(pending(&a), 1);
+    let stop = stop_line("16:13:08", "(Esc)", "while you waited for your reply; it got no answer");
+    let words = format!(
+        "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+        part_header("16:13:05", true, true),
+        part_header("16:13:10", false, false)
+    );
+    let echo = format!("{stop}\n\n{PERSON_MARK}\n{words}");
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user(echo) });
+    assert_eq!((pending(&a), users(&a)), (0, 1), "the dim line became the joined message");
+    assert!(a.unechoed.is_empty() && a.pending_stamps.is_empty(), "both sent texts were taken");
+    let stopped = a.blocks.iter().any(|b| {
+        matches!(b, Block::Added { parts, .. }
+        if parts.iter().any(|p| p.kind == AddedKind::Stopped && p.text == stop))
+    });
+    assert!(stopped, "the stop line is told apart from the words");
+    let before = notice_count(&a);
+    fx_at(&mut a, t0, 9_000);
+    a.tick();
+    assert_eq!(notice_count(&a), before, "no \"not taken yet\" for a request the agent took");
+}
+
+#[test]
 fn a_request_a_hook_stops_before_its_turn_leaves_nothing_working() {
     let (mut a, _rx) = app();
     a.handle_agent(AgentEvent::Preparing { what: "preparing the request".into() });

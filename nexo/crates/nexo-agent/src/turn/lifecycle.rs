@@ -66,6 +66,7 @@ pub(super) async fn on_turn_end(rt: &mut Runtime, res: Result<TurnEnd, tokio::ta
     fire_end_hooks(&rt.state, &rt.events, reason).await;
     rt.cancel = CancellationToken::new();
     let run_queue = std::mem::take(&mut rt.run_queue);
+    stop::record(rt, reason, run_queue).await;
     // the goal takes the turn's end first (met, waiting, paused), then a queued message runs
     goal_settle(&rt.state, reason).await;
     start_next(rt, reason, run_queue).await;

@@ -31,7 +31,8 @@ impl Engine {
     pub(super) fn named_results(&self) -> FxHashSet<usize> {
         let mut out = FxHashSet::default();
         let Some(start) = self.goal.turns.last().map(|t| t.start) else { return out };
-        let asked: FxHashSet<String> = name_parts(&self.unit_text_at(start, UKind::User)).into_iter().collect();
+        let text = self.unit_text_at(start, UKind::User);
+        let asked: FxHashSet<String> = name_parts(crate::msg::asked_now(&text)).into_iter().collect();
         // each file by the parts of its name the other calls' files do not share; a file with none of its own
         // keeps them all
         let shared = |p: &&String| self.part_files.get(*p).copied().unwrap_or(0) > 1;
@@ -146,7 +147,8 @@ impl Engine {
     pub(super) fn named_keep(&mut self, turned: bool) -> bool {
         let Some(start) = self.goal.turns.last().map(|t| t.start) else { return false };
         let text = self.unit_text_at(start, UKind::User);
-        let asked: FxHashSet<String> = name_parts(&text).into_iter().collect();
+        // the files of what the person asks now, not of a line typed before they stopped the request above
+        let asked: FxHashSet<String> = name_parts(crate::msg::asked_now(&text)).into_iter().collect();
         let files = self.step_files();
         let last = self.tr.msgs.len() - 1;
         let need = self.asks(self.goal.turns.len() - 1);
@@ -220,7 +222,7 @@ impl Engine {
             }
         }
         // a request that names no file («try that once more») goes on with the reads of the one before
-        if names || !files_in(&text).is_empty() {
+        if names || !files_in(crate::msg::asked_now(&text)).is_empty() {
             self.named_now = now;
         }
         if back > 0 {

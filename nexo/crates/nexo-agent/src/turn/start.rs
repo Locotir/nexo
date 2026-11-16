@@ -220,6 +220,7 @@ async fn prepare_turn(
         }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
+        st.request_in = false;
         st.goal_idle.changed = false;
         st.noticed.clear();
         st.turns += 1;
@@ -276,6 +277,25 @@ async fn prepare_turn(
                 format!("{}\n\n{text}", blocks.join("\n\n"))
             }
         };
+        // the person stopped the request before this one: the line that says so comes first, so the model reads
+        // what happened before it reads anything this request brings; the goal's and the supervisor's marks are
+        // read back as they are, so the request after them carries it
+        let marked = typed.trim() == SUPERVISOR_RESUME_MARK
+            || typed.starts_with(GOAL_SET_MARK)
+            || typed.starts_with(GOAL_CONTINUE_MARK);
+        let stop = st.session.stop().filter(|_| person || !marked).map(str::to_string);
+        let text = match stop {
+            None => text,
+            Some(line) => {
+                added.insert(0, AddedPart::new(AddedKind::Stopped, "stop", line.clone()));
+                if person {
+                    first.insert(0, line);
+                    text
+                } else {
+                    format!("{line}\n\n{text}")
+                }
+            }
+        };
         // the typed words sit between what comes before them (shared memory, hooks, jobs) and what follows
         added.append(&mut after);
         // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
@@ -323,6 +343,7 @@ async fn prepare_turn(
                 return false;
             }
         }
+        st.request_in = true;
         if let Some((_, reply)) = item.as_mut().and_then(|i| i.directed.take()) {
             reply.resolve(nexo_core::agent::DirectedResult::Accepted);
         }
@@ -951,14 +972,11 @@ mod request_only_tests {
     async fn cancelled_directed_item_is_explicitly_rejected_at_incorporation() {
         use nexo_core::agent::{DirectedReply, DirectedResult, ObservationTarget};
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let item = InboxItem {
-            text: "queued".into(),
-            attachments: Vec::new(),
-            directed: Some((
-                ObservationTarget { instance_id: "instance".into(), session_id: "session".into(), generation: 0 },
-                DirectedReply::new(tx),
-            )),
-        };
+        let mut item = InboxItem::sent("queued".into(), Vec::new(), true);
+        item.directed = Some((
+            ObservationTarget { instance_id: "instance".into(), session_id: "session".into(), generation: 0 },
+            DirectedReply::new(tx),
+        ));
         let cancel = CancellationToken::new();
         assert!(may_incorporate(Some((&item, &cancel))));
         cancel.cancel();

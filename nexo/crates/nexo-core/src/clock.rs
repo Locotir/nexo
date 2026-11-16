@@ -25,3 +25,14 @@ pub fn today() -> String {
     };
     format!("{:04}-{:02}-{:02}", now.year(), u8::from(now.month()), now.day())
 }
+
+/// The time of `t` as `HH:MM:SS` on the local clock (UTC where the offset could not be read): what nexo writes when
+/// it tells the model when something happened, as the person's own clock shows it.
+pub fn local_hms(t: std::time::SystemTime) -> String {
+    let utc = time::OffsetDateTime::from(t);
+    let at = match local_offset() {
+        Some(o) => utc.to_offset(o),
+        None => utc,
+    };
+    format!("{:02}:{:02}:{:02}", at.hour(), at.minute(), at.second())
+}

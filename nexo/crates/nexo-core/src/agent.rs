@@ -85,6 +85,8 @@ mod chrome_info;
 pub use chrome_info::*;
 mod goal_marks;
 pub use goal_marks::*;
+mod stop_marks;
+pub use stop_marks::*;
 mod context_cells;
 pub use context_cells::*;
 mod events;

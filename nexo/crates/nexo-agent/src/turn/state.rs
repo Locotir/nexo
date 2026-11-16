@@ -40,6 +40,8 @@ pub(super) struct State {
     pub(super) live: Option<(String, Vec<String>)>,
     /// Where the request in progress starts in `history`.
     pub(super) turn_start: usize,
+    /// The request in progress is in `history`: a turn stopped before that has no request to say was stopped.
+    pub(super) request_in: bool,
     pub(super) turns: u32,
     /// The goal the agent keeps working towards, and the continuation round in progress.
     pub(super) goal: Option<String>,
@@ -158,6 +160,17 @@ pub(super) struct InboxItem {
     pub text: String,
     pub attachments: Vec<Attachment>,
     pub directed: Option<(nexo_core::agent::ObservationTarget, nexo_core::agent::DirectedReply)>,
+    /// When the person sent it, and whether a turn ran then (`during`) that the person went on to stop
+    /// (`stopped`): what the joined request says of each part (`queue::take_queued`).
+    pub at: SystemTime,
+    pub during: bool,
+    pub stopped: bool,
+}
+impl InboxItem {
+    /// A request the person sent now, while a turn ran (`during`) or not.
+    pub(super) fn sent(text: String, attachments: Vec<Attachment>, during: bool) -> InboxItem {
+        InboxItem { text, attachments, directed: None, at: SystemTime::now(), during, stopped: false }
+    }
 }
 impl Drop for InboxItem {
     fn drop(&mut self) {
