@@ -205,7 +205,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
     if app.diffview.is_some() {
         return app.diffview_key(k);
     }
-    if crate::palette_key::is_palette_key(&k, cfg!(target_os = "macos"), app.input.is_empty()) {
+    if crate::palette_key::is_palette_key(&k, cfg!(target_os = "macos")) {
         return app.palette_key();
     }
     // no model works yet: Enter or any text opens the setup instead of filling the draft

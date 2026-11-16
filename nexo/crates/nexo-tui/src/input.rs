@@ -306,7 +306,8 @@ impl Input {
         let len = self.editor.lines().get(before.0).map_or(0, |l| l.chars().count());
         // Option+Left and Option+Right move by word in macOS terminals (iTerm2 sends them as Alt+arrows); the editor
         // knows the word jump as Ctrl+arrows only, which macOS keeps for Mission Control
-        let key = if key.modifiers.contains(KeyModifiers::ALT)
+        let key = if cfg!(target_os = "macos")
+            && key.modifiers.contains(KeyModifiers::ALT)
             && !key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {

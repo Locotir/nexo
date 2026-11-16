@@ -8,11 +8,11 @@ use crate::app::App;
 use crate::palette::PaletteKind;
 
 /// Whether `k` is the key that opens the commands window. `option_layer`: on a Mac, Terminal.app and iTerm2 send the
-/// character Option+P makes (π) instead of an Alt chord, so on an empty draft that character opens the window too.
-pub fn is_palette_key(k: &KeyEvent, option_layer: bool, draft_empty: bool) -> bool {
+/// character Option+P makes (π) instead of an Alt chord, so there that character opens the window over any draft too (a pi can still be pasted).
+pub fn is_palette_key(k: &KeyEvent, option_layer: bool) -> bool {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k.modifiers.contains(KeyModifiers::ALT);
-    if option_layer && draft_empty && !ctrl && !alt && k.code == KeyCode::Char('π') {
+    if option_layer && !ctrl && !alt && k.code == KeyCode::Char('π') {
         return true;
     }
     matches!((k.code, ctrl, alt), (KeyCode::Char(' '), true, false) | (KeyCode::Char('p' | 'P'), false, true))
@@ -218,12 +218,22 @@ mod tests {
     }
 
     #[test]
-    fn the_character_option_p_makes_opens_the_window_on_a_mac_with_an_empty_draft_only() {
+    fn the_character_option_p_makes_opens_the_window_on_a_mac_over_any_draft() {
         let pi = KeyEvent::new(KeyCode::Char('π'), KeyModifiers::NONE);
-        assert!(is_palette_key(&pi, true, true));
-        assert!(!is_palette_key(&pi, true, false), "a typed pi inside a draft stays text");
-        assert!(!is_palette_key(&pi, false, true), "other systems keep it as text");
+        assert!(is_palette_key(&pi, true));
+        assert!(!is_palette_key(&pi, false), "other systems keep it as text");
         let alt_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT);
-        assert!(is_palette_key(&alt_p, false, false));
+        assert!(is_palette_key(&alt_p, false));
+    }
+
+    #[test]
+    fn the_mac_pi_key_opens_the_window_over_a_draft_and_gives_it_back() {
+        let (mut app, _rx) = app();
+        app.input.editor.insert_str("half a thought");
+        app.palette_key();
+        assert!(app.kept_draft.is_some() && app.palette.is_some());
+        app.palette_key();
+        assert!(app.kept_draft.is_none() && app.palette.is_none());
+        assert_eq!(app.input.editor.lines().join("\n"), "half a thought");
     }
 }

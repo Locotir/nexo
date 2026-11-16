@@ -122,7 +122,10 @@ mod tests {
         let png = d.path().join("Screenshot 2026-11-15 at 10.10.55\u{202f}AM.png");
         std::fs::write(&png, b"x").unwrap();
         // the terminal escapes the ASCII spaces and leaves U+202F raw
-        let typed = png.display().to_string().replace(' ', "\\ ");
-        assert_eq!(image_paths(&format!("fix {typed}"), d.path()), vec![png]);
+        // (Windows has no backslash escape, so the escaped form is a Unix-shell case only)
+        if !cfg!(windows) {
+            let typed = png.display().to_string().replace(' ', "\\ ");
+            assert_eq!(image_paths(&format!("fix {typed}"), d.path()), vec![png]);
+        }
     }
 }

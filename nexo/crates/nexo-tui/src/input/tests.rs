@@ -434,6 +434,12 @@ fn option_arrows_and_option_backspace_move_and_delete_by_word() {
     // Terminal.app and iTerm2 send these as Alt chords; they must reach the editor untouched
     let mut i = Input::new("");
     i.set_text("alpha beta gamma");
+    if !cfg!(target_os = "macos") {
+        // Linux and Windows keep Alt+arrows as they were: the editor has no rule for them
+        i.key(k(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(i.cursor_offset(), "alpha beta gamma".len());
+        return;
+    }
     i.key(k(KeyCode::Left, KeyModifiers::ALT));
     assert_eq!(i.cursor_offset(), "alpha beta ".len());
     i.key(k(KeyCode::Left, KeyModifiers::ALT));
