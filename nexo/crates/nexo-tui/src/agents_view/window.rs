@@ -187,25 +187,37 @@ impl AgentsView {
         let name_w = Self::name_col(&items);
         let shown = self.shown();
         let w = tree.width as usize;
+        // with the motion off the swarm stands still, read from the rows as they are
+        let still = (!fx).then(|| self.members());
         for (k, item) in items.iter().enumerate().skip(self.scroll).take(h) {
             let y = tree.y + (k - self.scroll) as u16;
             let at = Rect::new(tree.x, y, tree.width, 1);
             self.lines.push((k, at));
-            let line = self.tree_line(item, name_w, w, theme, now, fx, k == self.selected);
+            let (line, gap) = self.tree_line(item, name_w, w, theme, now, fx, k == self.selected);
             let Item::Row { row, group, prefix, .. } = item else {
                 f.render_widget(Paragraph::new(line), at);
+                // the lanes that are on go round their header
+                if matches!(item, Item::Head { group: Group::Lanes, .. }) {
+                    self.draw_swarm(f, swarm::LANES, at, gap, theme, now, still.as_deref());
+                }
                 continue;
             };
             // a new row slides in from the right
             let off = if fx { ((1.0 - self.entered(&row.key, now)) * SLIDE_CELLS).round() as u16 } else { 0 };
             let off = off.min(tree.width.saturating_sub(1));
-            f.render_widget(Paragraph::new(line), Rect { x: at.x + off, width: at.width - off, ..at });
+            let slid = Rect { x: at.x + off, width: at.width - off, ..at };
+            f.render_widget(Paragraph::new(line), slid);
             let lead = if prefix.is_empty() { 0 } else { width(prefix) as u16 + 1 };
             let glyph = (at.x + off + lead, y);
             if *group != Group::Needs {
                 if let Some(i) = shown.iter().position(|r| r.key == row.key) {
                     self.cards.push((i, Rect::new(glyph.0, y, (at.x + at.width).saturating_sub(glyph.0), 1)));
                 }
+            }
+            // its sub-agents go round it, on the cells its words left blank; only on its own line, not on its copy
+            // under NEEDS YOU, whose other width would pull the one orbit two ways
+            if *group != Group::Needs {
+                self.draw_swarm(f, &row.key, slid, gap, theme, now, still.as_deref());
             }
             if !fx {
                 continue;

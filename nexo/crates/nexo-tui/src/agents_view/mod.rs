@@ -14,6 +14,7 @@ mod observe;
 mod pane;
 mod pulse;
 mod row;
+mod swarm;
 mod tree;
 mod view;
 mod window;

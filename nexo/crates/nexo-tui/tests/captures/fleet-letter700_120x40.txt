@@ -6,7 +6,7 @@
 │ ↻ scheduler      Bash  git pull                1m │ cost    $1.25                                                    │
 │ ◐ nightly-fixer  Read  tests/long_running.rs   1m │ now     ▸ Bash  cargo publish --dry-run                          │
 │ ▾ THIS SESSION                                    │ acted   marked permission · 1m ago                               │
-│ ● project        Edit  src/parser.rs           1m │ in      /home/dev/api-migration                                  │
+│ ● project        Edit  src/parser.rs   •●      1m │ in      /home/dev/api-migration                                  │
 │ ├ ● explore      Grep  fn classify             1m │ ── events ────────────────────────────────────────────────────── │
 │ ╰ ○ tests        Bash  cargo test -p parser    1m │ no events seen yet                                               │
 │ ○ scribe                                       1m │                                                                  │

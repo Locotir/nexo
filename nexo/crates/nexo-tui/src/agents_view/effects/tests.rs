@@ -1,5 +1,7 @@
 use super::*;
-use nexo_agent::supervise::EvDetail;
+use crate::fx::panel as px;
+use nexo_agent::supervise::{EvDetail, LaneInfo};
+use std::collections::HashSet;
 
 fn ev(at: Secs, kind: EvKind, n: u32) -> Ev {
     Ev { at, kind, n, detail: EvDetail::None }
@@ -407,4 +409,177 @@ fn the_tree_draws_connectors_and_marks_orphans_and_cycles() {
     let (_, issues) = tree::relations(&rows);
     assert_eq!(issues[4], Issue::Orphan);
     assert_eq!(issues[5], Issue::Cycle);
+}
+
+// ------------------------------------------------------------------ the swarm
+
+/// A session with `kids` sub-agents in `state`, the session itself in `own`.
+fn family(own: State, kids: &[State]) -> Vec<AgentRow> {
+    let mut parent = agent("main", own);
+    parent.last_step = Some("workflow  review".into());
+    parent.model = Some("xai/grok-4.7".into());
+    let mut rows = vec![parent];
+    for (i, s) in kids.iter().enumerate() {
+        let mut c = agent(&format!("main.{i}"), *s);
+        c.name = ["explore", "tests", "reviewer", "docs"][i % 4].into();
+        c.parent = Some("main".into());
+        rows.push(c);
+    }
+    rows
+}
+
+fn lane(name: &str, state: &str) -> AgentRow {
+    let mut r = agent(&format!("lane:{name}"), State::Idle { min: 1 });
+    r.name = name.into();
+    r.lane = Some(LaneInfo { name: name.into(), state: state.into(), runner: true, ..Default::default() });
+    r
+}
+
+fn is_sat(s: &str) -> bool {
+    ["●", "•", "·", "∙", "✗", ".", "o", "O", "x"].contains(&s)
+}
+
+/// The first line of the screen that holds `word`.
+fn line_of(b: &Buffer, word: &str) -> u16 {
+    (0..b.area.height).find(|&y| row_text(b, y, 0, b.area.width).contains(word)).unwrap()
+}
+
+/// The satellites drawn on line `y`: the satellite glyphs on cells that are blank in `plain`.
+fn sats_on(b: &Buffer, plain: &Buffer, y: u16) -> Vec<String> {
+    (0..b.area.width)
+        .filter(|&x| plain[(x, y)].symbol() == " " && is_sat(b[(x, y)].symbol()))
+        .map(|x| b[(x, y)].symbol().to_string())
+        .collect()
+}
+
+/// The same rows with no parent, no lane running and the motion off: the screen with no satellite at all.
+fn bare(rows: &[AgentRow], w: u16, h: u16) -> Buffer {
+    let rows = rows
+        .iter()
+        .cloned()
+        .map(|mut r| {
+            if r.parent.is_some() {
+                r.state = State::Done;
+            }
+            if let Some(l) = r.lane.as_mut() {
+                l.runner = false;
+                l.state = "stopped".into();
+            }
+            r
+        })
+        .collect();
+    paint(&mut AgentsView::with_rows(rows, NOW, true), w, h, Instant::now(), false)
+}
+
+#[test]
+fn the_swarm_flies_only_on_blank_cells_and_the_text_never_moves() {
+    let t0 = Instant::now();
+    let mut rows = family(State::Working, &[State::Working, State::Working, State::WaitingPermission]);
+    rows[1].ribbon.push(ev(NOW - 1, EvKind::Run, 1));
+    let mut v = AgentsView::with_rows(rows.clone(), NOW, false);
+    let still = paint(&mut AgentsView::with_rows(rows.clone(), NOW, true), 80, 24, t0, false);
+    paint(&mut v, 80, 24, t0, true);
+    let y = line_of(&still, " main ");
+    let mut seen = HashSet::new();
+    for k in 0..90u64 {
+        let b = paint(&mut v, 80, 24, at(t0, 2000 + k * 97), true);
+        for (x, yy) in (0..80).flat_map(|x| (0..24).map(move |y| (x, y))) {
+            let (on, off) = (b[(x, yy)].symbol(), still[(x, yy)].symbol());
+            let blank_or_sat = |s: &str| s == " " || is_sat(s);
+            assert!(on == off || (yy == y && blank_or_sat(on) && blank_or_sat(off)), "({x},{yy}) {on:?} over {off:?}");
+        }
+        seen.insert(row_text(&b, y, 0, 80));
+    }
+    assert!(seen.len() > 20, "the satellites go round: {} different looks of the line", seen.len());
+    let line = row_text(&still, y, 0, 80);
+    assert_eq!(line.matches(['●', '•', '·']).count(), 1 + 3, "the row glyph and one still satellite a sub-agent");
+}
+
+#[test]
+fn a_long_step_gives_way_so_the_sub_agents_still_have_room_to_circle() {
+    let mut rows = family(State::Working, &[State::Working]);
+    rows[0].last_step = Some(format!("bash  cargo test -p nexo-tui -- --nocapture {}", "the_whole_suite ".repeat(8)));
+    let b = paint(&mut AgentsView::with_rows(rows.clone(), NOW, true), 200, 60, Instant::now(), false);
+    let plain = bare(&rows, 200, 60);
+    let y = line_of(&plain, " main  ");
+    assert!(row_text(&plain, y, 0, 200).contains('…'), "the step is cut short");
+    assert_eq!(sats_on(&b, &plain, y).len(), 1, "and its sub-agent goes round after it");
+}
+
+#[test]
+fn a_sub_agent_that_finishes_pulses_and_sinks_and_then_the_panel_rests() {
+    for (ok, total) in [(true, px::SAT_DONE_MS), (false, px::SAT_FAIL_MS)] {
+        let t0 = Instant::now();
+        let rows = family(State::Idle { min: 1 }, &[State::Working]);
+        let mut v = AgentsView::with_rows(rows.clone(), NOW, false);
+        paint(&mut v, 80, 24, t0, true);
+        let plain = bare(&rows, 80, 24);
+        let y = line_of(&plain, " main ");
+        // the row slides in from the right at first and its orbit follows it home
+        paint(&mut v, 80, 24, at(t0, 1000), true);
+        let b = paint(&mut v, 80, 24, at(t0, 2000), true);
+        assert_eq!(sats_on(&b, &plain, y).len(), 1, "one satellite while it works");
+        assert!(v.animating(at(t0, 2000)));
+        let mut done = rows.clone();
+        done[1].state = State::Done;
+        if !ok {
+            done[1].ribbon.push(ev(NOW, EvKind::Error, 1));
+        }
+        v.set_rows(done);
+        let t1 = at(t0, 3000);
+        paint(&mut v, 80, 24, t1, true);
+        let b = paint(&mut v, 80, 24, at(t1, 60), true);
+        let pulse = sats_on(&b, &plain, y);
+        assert!(
+            pulse.contains(&(if ok { "●" } else { "✗" }).to_string()) && pulse.contains(&"·".to_string()),
+            "{pulse:?}"
+        );
+        assert!(v.animating(at(t1, total - 20)), "its end still plays");
+        let b = paint(&mut v, 80, 24, at(t1, total + 20), true);
+        assert!(sats_on(&b, &plain, y).is_empty(), "gone after its end");
+        assert!(!v.animating(at(t1, total + 40)), "nothing moves once the last satellite has sunk");
+    }
+}
+
+#[test]
+fn the_lanes_that_are_on_circle_their_header_and_a_new_one_grows_from_a_point() {
+    let t0 = Instant::now();
+    let rows = vec![lane("WINDOWS", "idle")];
+    let mut v = AgentsView::with_rows(rows.clone(), NOW, false);
+    let plain = bare(&[lane("WINDOWS", "idle"), lane("IOS", "running")], 80, 24);
+    let y = line_of(&plain, " LANES ");
+    let b = paint(&mut v, 80, 24, t0, true);
+    assert_eq!(sats_on(&b, &plain, y), ["•"], "a lane between rounds rests, dim and still");
+    assert!(!v.animating(at(t0, 1000)), "a resting lane asks for no frame");
+    v.set_rows(vec![lane("WINDOWS", "idle"), lane("IOS", "running")]);
+    let t1 = at(t0, 2000);
+    paint(&mut v, 80, 24, t1, true);
+    let born = sats_on(&paint(&mut v, 80, 24, at(t1, 10), true), &plain, y);
+    assert!(born.contains(&"·".to_string()), "it is a point when born: {born:?}");
+    let mut seen = HashSet::new();
+    for k in 0..100u64 {
+        let grown = sats_on(&paint(&mut v, 80, 24, at(t1, 1000 + k * 100), true), &plain, y);
+        // two, or one where the moving one passes over the one at rest
+        assert!(matches!(grown.len(), 1 | 2), "{grown:?}");
+        seen.extend(grown);
+    }
+    assert!(seen.contains("●") && seen.contains("·"), "grown, it comes round to the front and goes behind: {seen:?}");
+}
+
+#[test]
+fn with_the_motion_off_the_swarm_stands_still_and_asks_for_no_frame() {
+    let t0 = Instant::now();
+    let rows = family(State::Working, &[State::Working, State::Idle { min: 2 }]);
+    let mut v = AgentsView::with_rows(rows.clone(), NOW, true);
+    let a = paint(&mut v, 80, 24, t0, false);
+    let b = paint(&mut v, 80, 24, at(t0, 1234), false);
+    assert_eq!(a, b);
+    let plain = bare(&rows, 80, 24);
+    assert_eq!(sats_on(&a, &plain, line_of(&plain, " main ")).len(), 2);
+    assert!(!v.animating(at(t0, 1300)));
+    // the ASCII fallback draws them in plain letters
+    v.set_ascii(true);
+    let c = paint(&mut v, 80, 24, t0, false);
+    let line = row_text(&c, line_of(&c, " main "), 1, 79);
+    assert!(line.is_ascii() && line.contains(" o "), "{line}");
 }

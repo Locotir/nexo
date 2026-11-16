@@ -7,7 +7,7 @@
 │ ◐ nightly-fixer  Read  tests/long_running.rs                            1m │ now     ▸ Bash  cargo publish --dry-run                                                                                 │
 │ ↻ scheduler      Bash  git pull                                         1m │ acted   marked permission · 1m ago                                                                                      │
 │ ▾ THIS SESSION                                                             │ in      /home/dev/api-migration                                                                                         │
-│ ● project        Edit  src/parser.rs                                    1m │ ── events ───────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ● project        Edit  src/parser.rs                                 •  1m │ ── events ───────────────────────────────────────────────────────────────────────────────────────────────────────────── │
 │ ╰ ● explore      Grep  fn classify                                      1m │ no events seen yet                                                                                                      │
 │ ▸ AGENTX · 4                                                               │                                                                                                                         │
 │ ▸ OTHERTOOL · 2                                                            │                                                                                                                         │

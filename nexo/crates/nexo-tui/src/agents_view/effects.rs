@@ -74,6 +74,8 @@ pub(super) struct Fleet {
     pub money: HashMap<String, Counter>,
     pub money_shown: HashMap<String, f64>,
     pub pulse: PulseFx,
+    /// The satellites round each line that has some, by the line's key (see `swarm`).
+    pub swarm: HashMap<String, super::swarm::Swarm>,
     /// The last draw had the motion off (animations disabled, or a mono theme): nothing asks for a frame.
     pub off: bool,
 }
@@ -92,6 +94,7 @@ impl Fleet {
         self.money.clear();
         self.money_shown.clear();
         self.pulse = PulseFx::default();
+        self.swarm.clear();
     }
 }
 
@@ -127,14 +130,14 @@ fn fresh(ribbon: &[Ev], old: Option<Option<(Secs, EvKind, u32)>>, clock: Secs) -
     }
 }
 
-fn ms_since(at: Option<Instant>, now: Instant) -> u64 {
+pub(super) fn ms_since(at: Option<Instant>, now: Instant) -> u64 {
     at.map_or(0, |t| now.saturating_duration_since(t).as_millis() as u64)
 }
 
 /// A glyph put on the buffer at `cell`, keeping the ground. It never lands on the right half of a wide glyph
 /// (the terminal would not show it, and clearing it later would cut the glyph in two), and over the left half
 /// it blanks the right one.
-fn put(f: &mut Frame, cell: (u16, u16), sym: &str, color: Color, bold: bool) {
+pub(super) fn put(f: &mut Frame, cell: (u16, u16), sym: &str, color: Color, bold: bool) {
     let buf = f.buffer_mut();
     if cell.0 > buf.area.x && buf.cell((cell.0 - 1, cell.1)).is_some_and(|c| width(c.symbol()) > 1) {
         return;
@@ -197,6 +200,7 @@ impl AgentsView {
             || l.bursts.iter().any(|b| burst_ms(b.kind).is_some_and(|ms| within(Some(b.born), now, ms)))
             || l.todo_moving
             || l.pulse.animating(now)
+            || l.swarm.values().any(|s| s.moving(now))
     }
 
     /// Learns what changed since the last draw: new rows (they slide in), new states (the glyph cross-fades),
@@ -334,6 +338,7 @@ impl AgentsView {
         self.live.money_shown.retain(|k, _| paid.contains(k));
         self.live.todo_moving = moving;
         self.pulse_note(now);
+        self.swarm_note(now);
         self.live.primed = true;
     }
 

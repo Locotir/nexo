@@ -42,11 +42,13 @@ pub const COMMIT_FRAME_MS: u64 = 80;
 pub const COMMIT_MS: u64 = 300;
 pub const PUSH_MS: u64 = 300;
 pub const ERROR_MS: u64 = 450;
+/// A satellite grows from a point in this long.
 pub const SAT_SPAWN_MS: u64 = 300;
+/// A satellite whose work ended well pulses, then sinks into the middle of its orbit, in this long.
 pub const SAT_DONE_MS: u64 = 500;
-pub const SAT_FADE_MS: u64 = 300;
-pub const SAT_FAIL_MS: u64 = 5000;
-/// A satellite breathes once in this long.
+/// One that failed holds its cross long enough to be read before it sinks.
+pub const SAT_FAIL_MS: u64 = 1500;
+/// A satellite waiting on the person breathes once in this long.
 pub const SAT_BREATH_MS: u64 = 1600;
 /// The border of a card waiting for a permission breathes in this long.
 pub const LOCK_BREATH_MS: u64 = 1600;
@@ -558,6 +560,178 @@ pub fn satellite_x(card: Rect, slot: u16) -> u16 {
     (card.x + card.width).saturating_sub(3 + 2 * slot)
 }
 
+// ------------------------------------------------------------------------------------------ the swarm
+
+/// The golden angle: satellites born one after another spread round the orbit and are never re-spaced, so
+/// nothing jumps when one of them leaves.
+pub const GOLDEN: f32 = 2.399_963;
+/// Half the widest orbit, in cells: wide enough to read as a circle, narrow enough to stay calm.
+pub const ORBIT_R: u16 = 5;
+/// The blank cells a line keeps after its step for the widest orbit and the clear cells round it.
+pub const ORBIT_ROOM: usize = 2 * ORBIT_R as usize + 3;
+/// The orbit eases to a new width (the text beside it grew or shrank) in this long.
+pub const ORBIT_EASE_MS: u64 = 400;
+/// At most this many satellites go round one line; more would read as noise, not as a count.
+pub const SAT_MAX: usize = 6;
+/// How far behind its head, in radians, each dot of a busy satellite's trail is.
+const TRAIL_STEP: f32 = 0.35;
+
+/// What a satellite does now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flight {
+    /// It works and goes round; `busy` while a tool runs, which leaves a trail.
+    Orbit { busy: bool },
+    /// It waits on the person: it holds still and breathes.
+    Wait,
+    /// It is on but quiet (an idle sub-agent, a lane between rounds): still and dim.
+    Rest,
+    /// Its work ended, well or not: a pulse, then it sinks into the middle of the orbit.
+    End { ok: bool },
+}
+
+/// One satellite at one instant: what it does, where it is on its orbit (radians), the milliseconds since it
+/// was born and, once it ended, since it ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sat {
+    pub flight: Flight,
+    pub angle: f32,
+    pub age_ms: u64,
+    pub end_ms: u64,
+}
+
+/// A mark a satellite leaves on its line: the column (not yet rounded to a cell), glyph, colour, boldness.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mark {
+    pub x: f32,
+    pub glyph: &'static str,
+    pub color: Color,
+    pub bold: bool,
+}
+
+/// How long one turn takes: a quiet satellite drifts round in 9 s, one spending ten thousand tokens a minute in
+/// 4.5 s, a busy one a fifth quicker, never under 4 s. Half-second steps, so a small change of rate does not
+/// re-time the orbit.
+pub fn orbit_period(rate: u32, busy: bool) -> u64 {
+    let k = ((rate as f32 + 1.0).log10() / 4.0).clamp(0.0, 1.0);
+    let ms = (9000.0 - 4500.0 * k) * if busy { 0.8 } else { 1.0 };
+    (((ms / 500.0).round() * 500.0) as u64).max(4000)
+}
+
+/// The angle `ms` after a satellite was at `from`, going round once in `period` ms (None: it holds still).
+pub fn orbit_angle(from: f32, ms: u64, period: Option<u64>) -> f32 {
+    match period {
+        Some(p) => {
+            let p = p.max(1);
+            (from + std::f32::consts::TAU * (ms % p) as f32 / p as f32).rem_euclid(std::f32::consts::TAU)
+        }
+        None => from,
+    }
+}
+
+/// Where a satellite at angle `a` is on the orbit from column `lo` to `hi`, seen edge on: the column (the
+/// cosine) and the depth (the sine: 1 in front, -1 behind), the orbit opened `grow` (0..1) of the way.
+pub fn orbit_at(lo: f32, hi: f32, a: f32, grow: f32) -> (f32, f32) {
+    let r = (hi - lo) / 2.0 * grow.clamp(0.0, 1.0);
+    ((lo + hi) / 2.0 + r * a.cos(), a.sin())
+}
+
+/// The orbit's columns `ms` after it began to ease from `from` to `to`.
+pub fn ease_orbit(from: (f32, f32), to: (f32, f32), ms: u64) -> (f32, f32) {
+    let t = ease_out(ms as f64 / ORBIT_EASE_MS as f64) as f32;
+    (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+}
+
+/// How long a satellite's end plays.
+pub fn end_ms(ok: bool) -> u64 {
+    if ok {
+        SAT_DONE_MS
+    } else {
+        SAT_FAIL_MS
+    }
+}
+
+/// The marks one satellite leaves on the orbit `orbit` (its first and last column), the head last. A satellite
+/// grows from a point when born; going round it is big in front and small behind, and a busy one trails two
+/// fading dots; one that waits breathes in the warning colour; one at rest is a dim dot; one that ended sends a
+/// pulse out both ways, then sinks into the middle and is gone. `ground` is the colour the trail and the pulse
+/// fade into; `still` (the reduced motion) draws the end state alone: full size, no trail, no breath.
+pub fn sat_marks(theme: &Theme, s: Sat, orbit: (f32, f32), ground: Color, ascii: bool, still: bool) -> Vec<Mark> {
+    let size = |k: usize| if ascii { [".", "o", "O"][k.min(2)] } else { ["·", "•", "●"][k.min(2)] };
+    let grow = if still { 1.0 } else { ease_out(s.age_ms as f64 / SAT_SPAWN_MS as f64) as f32 };
+    // a newborn is a point, then a dot, then whole
+    let born = if grow < 0.34 {
+        0
+    } else if grow < 0.67 {
+        1
+    } else {
+        2
+    };
+    let at = |a: f32, g: f32| orbit_at(orbit.0, orbit.1, a, g);
+    let (x, depth) = at(s.angle, grow);
+    let mark = |x: f32, glyph: &'static str, color: Color, bold: bool| Mark { x, glyph, color, bold };
+    match s.flight {
+        Flight::Orbit { busy } => {
+            let front = depth > 0.35;
+            let k = if front {
+                2
+            } else if depth < -0.35 {
+                0
+            } else {
+                1
+            };
+            let near = fade(theme, theme.accent2, theme.accent, grow);
+            let color = fade(theme, near, theme.dim2, (0.5 - 0.5 * depth) * 0.6);
+            let mut out = Vec::new();
+            if busy && !still {
+                // farthest first, so the nearer dot wins a shared cell
+                for t in (1..=2usize).rev() {
+                    let (tx, _) = at(s.angle - t as f32 * TRAIL_STEP, grow);
+                    out.push(mark(tx, trail_glyph(t, ascii), trail_color(theme, ground, t * 2), false));
+                }
+            }
+            out.push(mark(x, size(k.min(born)), color, front));
+            out
+        }
+        Flight::Wait => {
+            let b = if still { 0.0 } else { breath(s.age_ms, SAT_BREATH_MS) };
+            vec![mark(x, size(born), fade(theme, theme.warn, theme.dim2, 0.6 * b), false)]
+        }
+        Flight::Rest => vec![mark(x, size(born.min(1)), theme.dim2, false)],
+        Flight::End { ok } => {
+            let total = end_ms(ok);
+            if s.end_ms >= total {
+                return Vec::new();
+            }
+            let tone = if ok { theme.success } else { theme.error };
+            // the pulse takes the first part, longer for a failure so its cross can be read
+            let hold = if ok { 0.4 } else { 0.6 };
+            let t = s.end_ms as f32 / total as f32;
+            if t < hold {
+                let p = t / hold;
+                let ring = 1.0 + 2.0 * p;
+                let rc = fade(theme, tone, ground, p);
+                let head = if ok {
+                    size(2)
+                } else if ascii {
+                    "x"
+                } else {
+                    "✗"
+                };
+                vec![
+                    mark(x - ring, size(0), rc, false),
+                    mark(x + ring, size(0), rc, false),
+                    mark(x, head, fade(theme, theme.accent, tone, (p * 3.0).min(1.0)), true),
+                ]
+            } else {
+                let q = (t - hold) / (1.0 - hold);
+                let (cx, _) = at(s.angle, grow * (1.0 - ease_in_out(q as f64) as f32));
+                let k = 2 - ((q * 3.0) as usize).min(2);
+                vec![mark(cx, size(k), fade(theme, tone, theme.dim2, q), false)]
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------ the pulse row
 
 /// A figure of the pulse row: glyph, text, colour name by role.
@@ -894,6 +1068,142 @@ mod tests {
         assert!(satellite_x(card, 3) > card.x);
     }
 
+    fn sat(flight: Flight, angle: f32, age_ms: u64, end_ms: u64) -> Sat {
+        Sat { flight, angle, age_ms, end_ms }
+    }
+
+    fn glyphs(marks: &[Mark]) -> Vec<&'static str> {
+        marks.iter().map(|m| m.glyph).collect()
+    }
+
+    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
+
+    #[test]
+    fn an_orbit_seen_edge_on_stays_between_its_columns_and_is_in_front_half_the_turn() {
+        let mut front = 0;
+        for i in 0..64 {
+            let a = i as f32 / 64.0 * std::f32::consts::TAU;
+            let (x, d) = orbit_at(10.0, 20.0, a, 1.0);
+            assert!((10.0..=20.0).contains(&x), "{x} at {a}");
+            front += usize::from(d > 0.0);
+        }
+        assert_eq!(front, 31, "the top half of the turn, ends excluded");
+        assert_eq!(orbit_at(10.0, 20.0, 0.0, 0.0).0, 15.0, "a closed orbit is its middle");
+    }
+
+    #[test]
+    fn the_orbit_is_slower_when_quiet_quicker_when_busy_and_never_frantic() {
+        let mut last = u64::MAX;
+        for rate in [0, 10, 100, 1000, 10_000, 1_000_000] {
+            let p = orbit_period(rate, false);
+            assert!(p <= last && p >= 4000 && p.is_multiple_of(500), "{rate}: {p}");
+            assert!(orbit_period(rate, true) <= p);
+            last = p;
+        }
+        assert_eq!(orbit_period(0, false), 9000);
+        assert_eq!(orbit_period(1_000_000, true), 4000);
+    }
+
+    #[test]
+    fn the_angle_goes_round_once_a_period_and_holds_when_still() {
+        assert!((orbit_angle(1.0, 0, Some(6000)) - 1.0).abs() < 1e-5);
+        assert!((orbit_angle(1.0, 6000, Some(6000)) - 1.0).abs() < 1e-4);
+        assert!((orbit_angle(0.0, 1500, Some(6000)) - HALF_PI).abs() < 1e-4);
+        assert_eq!(orbit_angle(2.0, 99_999, None), 2.0);
+        // hours later it is still a small angle, not a float that lost its precision
+        assert!(orbit_angle(0.0, 36_000_000 + 1500, Some(6000)) < std::f32::consts::TAU);
+    }
+
+    #[test]
+    fn the_orbit_eases_to_its_new_width_without_overshoot() {
+        assert_eq!(ease_orbit((10.0, 20.0), (14.0, 20.0), 0), (10.0, 20.0));
+        assert_eq!(ease_orbit((10.0, 20.0), (14.0, 20.0), ORBIT_EASE_MS), (14.0, 20.0));
+        let mut last = 10.0;
+        for ms in (0..=ORBIT_EASE_MS).step_by(20) {
+            let (lo, _) = ease_orbit((10.0, 20.0), (14.0, 20.0), ms);
+            assert!(lo >= last && lo <= 14.0);
+            last = lo;
+        }
+    }
+
+    #[test]
+    fn a_satellite_grows_from_a_point_and_is_big_in_front_and_small_behind() {
+        let t = theme();
+        let o = (10.0, 20.0);
+        let born = |ms| {
+            glyphs(&sat_marks(&t, sat(Flight::Orbit { busy: false }, HALF_PI, ms, 0), o, t.modal_bg, false, false))
+        };
+        assert_eq!(born(0), ["·"]);
+        assert_eq!(born(60), ["•"]);
+        assert_eq!(born(SAT_SPAWN_MS), ["●"]);
+        let behind = sat_marks(&t, sat(Flight::Orbit { busy: false }, -HALF_PI, 5000, 0), o, t.modal_bg, false, false);
+        assert_eq!(glyphs(&behind), ["·"]);
+        let front = sat_marks(&t, sat(Flight::Orbit { busy: false }, HALF_PI, 5000, 0), o, t.modal_bg, false, false);
+        assert!(front[0].bold && !behind[0].bold);
+        assert_eq!(front[0].color, t.accent, "in front it has the accent itself");
+        assert_ne!(behind[0].color, t.accent, "behind it is dimmer");
+        // ASCII terminals get the same sizes in plain letters
+        let a = sat_marks(&t, sat(Flight::Orbit { busy: false }, HALF_PI, 5000, 0), o, t.modal_bg, true, false);
+        assert_eq!(glyphs(&a), ["O"]);
+    }
+
+    #[test]
+    fn a_busy_satellite_trails_two_fading_dots_behind_it_and_a_quiet_one_none() {
+        let t = theme();
+        let o = (10.0, 20.0);
+        let busy = sat_marks(&t, sat(Flight::Orbit { busy: true }, HALF_PI, 5000, 0), o, t.modal_bg, false, false);
+        assert_eq!(glyphs(&busy), ["·", "∙", "●"], "farthest first, the head last");
+        // going round, the front half moves left: the trail is to the right of the head
+        assert!(busy[0].x > busy[1].x && busy[1].x > busy[2].x);
+        assert_eq!(busy[1].color, trail_color(&t, t.modal_bg, 2));
+        let quiet = sat_marks(&t, sat(Flight::Orbit { busy: false }, HALF_PI, 5000, 0), o, t.modal_bg, false, false);
+        assert_eq!(quiet.len(), 1);
+        let still = sat_marks(&t, sat(Flight::Orbit { busy: true }, HALF_PI, 0, 0), o, t.modal_bg, false, true);
+        assert_eq!(glyphs(&still), ["●"], "the reduced motion draws the end state alone");
+    }
+
+    #[test]
+    fn a_waiting_satellite_breathes_in_the_warning_colour_and_a_resting_one_is_dim() {
+        let t = theme();
+        let o = (10.0, 20.0);
+        let wait = |ms, still| sat_marks(&t, sat(Flight::Wait, 0.0, ms, 0), o, t.modal_bg, false, still)[0].clone();
+        assert_eq!(wait(SAT_BREATH_MS * 3, false).color, t.warn);
+        assert_ne!(wait(SAT_BREATH_MS * 3 + SAT_BREATH_MS / 2, false).color, t.warn);
+        assert_eq!(wait(SAT_BREATH_MS * 3 + SAT_BREATH_MS / 2, true).color, t.warn, "still, it does not breathe");
+        let rest = sat_marks(&t, sat(Flight::Rest, 0.0, 9000, 0), o, t.modal_bg, false, false);
+        assert_eq!((rest[0].glyph, rest[0].color), ("•", t.dim2));
+    }
+
+    #[test]
+    fn an_ending_satellite_pulses_then_sinks_into_the_middle_and_is_gone() {
+        let t = theme();
+        let o = (10.0, 20.0);
+        let end = |ok, ms| sat_marks(&t, sat(Flight::End { ok }, 0.0, 9000, ms), o, t.modal_bg, false, false);
+        let pulse = end(true, 0);
+        assert_eq!(glyphs(&pulse), ["·", "·", "●"]);
+        assert!(pulse[2].bold && pulse[0].x < pulse[2].x && pulse[1].x > pulse[2].x);
+        let wider = end(true, SAT_DONE_MS / 4);
+        assert!(wider[1].x - wider[2].x > pulse[1].x - pulse[2].x, "the pulse runs out along the line");
+        assert_eq!(wider[2].color, t.success);
+        // it sinks from where it was (the right end at angle 0) towards the middle, shrinking
+        let mut last = 21.0;
+        let mut size = 3;
+        for ms in (SAT_DONE_MS * 2 / 5..SAT_DONE_MS).step_by(25) {
+            let m = end(true, ms);
+            assert_eq!(m.len(), 1);
+            let k = ["·", "•", "●"].iter().position(|g| *g == m[0].glyph).unwrap();
+            assert!(m[0].x <= last && m[0].x >= 15.0 && k <= size, "{ms}: {m:?}");
+            last = m[0].x;
+            size = k;
+        }
+        assert!(end(true, SAT_DONE_MS).is_empty());
+        // a failure shows its cross for most of a second and a half, in the error colour
+        let fail = end(false, SAT_FAIL_MS / 2);
+        assert_eq!((fail[2].glyph, fail[2].color), ("✗", t.error));
+        let a = sat_marks(&t, sat(Flight::End { ok: false }, 0.0, 9000, 100), o, t.modal_bg, true, false);
+        assert_eq!(a[2].glyph, "x");
+        assert!(end(false, SAT_FAIL_MS).is_empty());
+    }
     #[test]
     fn breath_and_hump_are_bounded_and_periodic() {
         assert!(breath(0, 1600) < 0.001);

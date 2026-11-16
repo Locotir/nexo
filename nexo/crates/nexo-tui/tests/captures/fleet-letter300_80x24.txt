@@ -6,7 +6,7 @@
 │ ↻ scheduler      Bash  git pull                                           1m │
 │ ◐ nightly-fixer  Read  tests/long_running.rs                              1m │
 │ ▾ THIS SESSION                                                               │
-│ ● project        Edit  src/parser.rs                                      1m │
+│ ● project        Edit  src/parser.rs                          •   ●       1m │
 │ ├ ● explore      Grep  fn classify                                        1m │
 │ ╰ ○ tests        Bash  cargo test -p parser                               1m │
 │ ○ scribe                                                                  1m │

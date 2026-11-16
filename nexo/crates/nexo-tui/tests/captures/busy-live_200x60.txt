@@ -5,7 +5,7 @@
 │ ◈ api-migration  Bash  cargo publish --dry-run                   1m  $1.25 │ ◈ permission 1m                                                                                                         │
 │ ↻ scheduler      Bash  git pull                                         1m │ cost    $1.25                                                                                                           │
 │ ▾ THIS SESSION                                                             │ now     ▸ Bash  cargo publish --dry-run                                                                                 │
-│ ● project        Edit  src/parser.rs                             1m  $0.42 │ acted   marked permission · 1m ago                                                                                      │
+│ ● project        Edit  src/parser.rs                 ●           1m  $0.42 │ acted   marked permission · 1m ago                                                                                      │
 │ ╰ ● explore      Grep  fn classify                                1m  ▁▅█▆ │ in      /home/dev/api-migration                                                                                         │
 │ ▸ OTHERTOOL · 3                                                            │ ── events ───────────────────────────────────────────────────────────────────────────────────────────────────────────── │
 │                                                                            │ 13:45 ⚿ permission wait                                                                                                 │

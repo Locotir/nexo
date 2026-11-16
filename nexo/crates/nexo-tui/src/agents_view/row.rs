@@ -15,6 +15,8 @@ use crate::panel_fx as px;
 const NAME_MAX: usize = 18;
 /// Cells of a spend bar on a row.
 const BAR_CELLS: usize = 7;
+/// The step of a session with sub-agents gives way to their orbit only down to this width.
+const STEP_KEEP: usize = 24;
 
 /// `▰▰▰▱▱▱▱`: `frac` of `cells`, at least one lit for any spend above nothing.
 pub(super) fn bar(frac: f64, cells: usize, ascii: bool) -> String {
@@ -216,7 +218,8 @@ impl AgentsView {
             .min(NAME_MAX)
     }
 
-    /// One tree line in `w` columns.
+    /// One tree line in `w` columns, and the stretch of it no word covers (first column, column after the last),
+    /// where the swarm may fly.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn tree_line(
         &self,
@@ -227,9 +230,10 @@ impl AgentsView {
         now: Instant,
         fx: bool,
         selected: bool,
-    ) -> Line<'static> {
+    ) -> (Line<'static>, (usize, usize)) {
         let a = self.ascii;
         let mut spans: Vec<Span<'static>> = Vec::new();
+        let gap: (usize, usize);
         match item {
             Item::Head { group, count, folded } => {
                 let arrow = match (folded, a) {
@@ -257,10 +261,11 @@ impl AgentsView {
                     _ => String::new(),
                 };
                 // a folded group reads as one phrase (`CLAUDE · 2`); a summary stands apart from the title
-                let gap = if extra.starts_with('·') { " " } else { "  " };
+                let sep = if extra.starts_with('·') { " " } else { "  " };
                 if !extra.is_empty() {
-                    spans.push(Span::styled(format!("{gap}{extra}"), theme.dim()));
+                    spans.push(Span::styled(format!("{sep}{extra}"), theme.dim()));
                 }
+                gap = (spans.iter().map(|s| width(&s.content)).sum(), w);
             }
             Item::Row { row, kind, prefix, kids, folded, group } => {
                 let (g, gc, bold) = self.glyph(row, theme, now, fx);
@@ -287,12 +292,22 @@ impl AgentsView {
                     fields.pop();
                 }
                 let room = w.saturating_sub(used + fw(&fields));
+                // a session with sub-agents keeps blank cells after its step for them to circle in (see `swarm`),
+                // for as long as they are in the tree and not only while they fly: the step never changes with them
+                let room = if *kids > 0 && *group != Group::Needs {
+                    room.saturating_sub(px::ORBIT_ROOM).max(STEP_KEEP.min(room))
+                } else {
+                    room
+                };
                 let step = step.filter(|_| room >= 8).map(|s| fit_step(&s, room - 2)).unwrap_or_default();
                 if !step.is_empty() {
                     spans.push(Span::styled(format!("  {step}"), theme.dim()));
                 }
                 let used = used + if step.is_empty() { 0 } else { width(&step) + 2 };
-                spans.push(Span::raw(" ".repeat(w.saturating_sub(used + fw(&fields)))));
+                let blank = w.saturating_sub(used + fw(&fields));
+                // the stretch no word covers runs on through the two spaces before the first field
+                gap = (used, used + blank + if fields.is_empty() { 0 } else { 2 });
+                spans.push(Span::raw(" ".repeat(blank)));
                 for (t, c) in fields {
                     spans.push(Span::raw("  "));
                     spans.push(Span::styled(t, theme.style(c)));
@@ -303,7 +318,7 @@ impl AgentsView {
         if selected {
             line = line.style(theme.selection());
         }
-        line
+        (line, gap)
     }
 
     /// `2 on · $7.97 of $9`: lanes with a live runner, and today's spend against the summed caps.
