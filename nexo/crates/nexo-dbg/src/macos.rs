@@ -93,6 +93,10 @@ pub struct Mac {
     copy: Option<(PathBuf, PathBuf)>,
     note: Option<String>,
     exe_base: Option<u64>,
+    /// The program's byte under every breakpoint the engine has put in, those taken out since included: a child the
+    /// program forks copies the patched code, and is caught only at its first exception, which may come after the
+    /// breakpoint left the parent.
+    under: BTreeMap<u64, u8>,
 }
 
 fn os_err(what: &str, e: io::Error) -> Error {
@@ -265,6 +269,7 @@ impl Mac {
             copy: None,
             note: None,
             exe_base: None,
+            under: BTreeMap::new(),
         }
     }
 
@@ -537,6 +542,65 @@ impl Mac {
         }
     }
 
+    /// Let a child the program forked go on without the debugger, as Linux lets one go: the program's bytes go back
+    /// under the breakpoints it copied, its exception ports become the ones the program had before nexo took them,
+    /// and the trap that brought it here is undone. Returns the reply: success resumes the child, failure lets the
+    /// kernel make of the exception the signal the child would get without a debugger.
+    fn release_child(&self, e: &Exc) -> Kr {
+        let child = e.task;
+        let byte_at = |addr: u64| {
+            let (mut b, mut got) = ([0u8; 1], 0u64);
+            // SAFETY: the kernel writes at most one byte into `b`.
+            let kr = unsafe { mach_vm_read_overwrite(child, addr, 1, b.as_mut_ptr() as u64, &mut got) };
+            (kr == KERN_SUCCESS && got == 1).then_some(b[0])
+        };
+        let mut pid: c_int = 0;
+        // SAFETY: one int out.
+        let known = unsafe { pid_for_task(child, &mut pid) } == KERN_SUCCESS;
+        for (&addr, &byte) in &self.under {
+            // only where the child still maps the program's own file: a child that ran exec has other code there
+            let same = known && {
+                let file = self.file_at(addr);
+                !file.is_empty() && file == self.named(&region_file(pid, addr))
+            };
+            if same && byte != 0xcc && byte_at(addr) == Some(0xcc) {
+                let _ = patch(child, addr, &[byte]);
+            }
+        }
+        // SAFETY: the child's task port came with the message; the call copies the send rights in `old`, which
+        // stay ours for the program's own detach.
+        unsafe {
+            task_set_exception_ports(child, EXC_MASK, MACH_PORT_NULL, EXCEPTION_DEFAULT, THREAD_STATE_NONE);
+            for &(mask, port, behavior, flavor) in &self.old {
+                task_set_exception_ports(child, mask, port, behavior, flavor);
+            }
+        }
+        // the copied thread may carry the watch registers: nothing watches the child, and a hit would kill it
+        let mut d = [0u64; 8];
+        let watched = self.debug_state(e.thread, &mut d) && d[7] != 0;
+        if watched {
+            self.set_debug_state(e.thread, &[0; 8]);
+        }
+        let Ok(mut s) = self.state(e.thread) else { return KERN_FAILURE };
+        match e.exc {
+            EXC_BREAKPOINT if e.code[0] == EXC_I386_BPT => {
+                // the int3 has run: go back to its address, where the program's instruction is again
+                let at = s[16].wrapping_sub(1);
+                if !self.under.contains_key(&at) || byte_at(at).is_none_or(|b| b == 0xcc) {
+                    return KERN_FAILURE;
+                }
+                s[16] = at;
+            }
+            // a hit of the watch registers, or the trap flag of a step over the fork the thread was copied in
+            EXC_BREAKPOINT if e.code[0] == EXC_I386_SGL && (watched || s[17] & TF != 0) => s[17] &= !TF,
+            _ => return KERN_FAILURE,
+        }
+        if self.set_state(e.thread, &s).is_err() {
+            return KERN_FAILURE;
+        }
+        KERN_SUCCESS
+    }
+
     fn reply(&self, p: Pend, ret: Kr) {
         let mut r = Reply {
             head: MsgHeader {
@@ -567,16 +631,20 @@ impl Mac {
     /// Take in one exception: the task is stopped, and what it means joins `events` (nothing for a signal the
     /// kernel made of a fault already shown).
     fn take(&mut self, e: Exc, events: &mut Vec<Event>) {
-        // SAFETY: the message gave us one more reference on each port; ports we keep hold one.
+        if e.task != self.task {
+            // a child the program forked keeps our exception port and the breakpoints of the code it copied
+            let ret = self.release_child(&e);
+            self.reply(e.pend, ret);
+            // SAFETY: both ports came with the message and are not ones we keep.
+            unsafe {
+                mach_port_deallocate(me(), e.task);
+                mach_port_deallocate(me(), e.thread);
+            }
+            return;
+        }
+        // SAFETY: the message gave us one more reference on the task port; the one we keep holds the name.
         unsafe {
             mach_port_deallocate(me(), e.task);
-        }
-        if e.task != self.task {
-            // a child the program forked keeps our exception port: let the kernel do as it would without us
-            self.reply(e.pend, KERN_FAILURE);
-            // SAFETY: the thread port came with the message and is not one we keep.
-            unsafe { mach_port_deallocate(me(), e.thread) };
-            return;
         }
         if self.th.contains_key(&e.thread) {
             // SAFETY: as above; the name stays valid through the reference we already hold.
@@ -846,27 +914,11 @@ impl Mac {
     /// The region at or after `addr`: start, end, protection, file offset and tag. Submaps (the shared cache) are
     /// looked into.
     fn region(&self, addr: u64, depth: &mut u32) -> Option<(u64, u64, c_int, u64, u32, bool)> {
-        let mut a = addr;
-        let mut size = 0u64;
-        let mut info = [0u32; 19];
-        let mut n = VM_REGION_SUBMAP_INFO_COUNT_64;
-        // SAFETY: `info` holds the 19 words `n` says.
-        let kr = unsafe { mach_vm_region_recurse(self.task, &mut a, &mut size, depth, info.as_mut_ptr(), &mut n) };
-        if kr != KERN_SUCCESS {
-            return None;
-        }
-        let offset = u64::from(info[3]) | u64::from(info[4]) << 32;
-        Some((a, a.wrapping_add(size), info[0] as c_int, offset, info[5], info[12] != 0))
+        region_in(self.task, addr, depth)
     }
 
     fn file_at(&self, addr: u64) -> String {
-        let mut buf = [0u8; 1024];
-        // SAFETY: the buffer holds the size given.
-        let n = unsafe { libc::proc_regionfilename(self.pid, addr, buf.as_mut_ptr().cast(), buf.len() as u32) };
-        if n <= 0 {
-            return String::new();
-        }
-        self.named(&String::from_utf8_lossy(&buf[..(n as usize).min(buf.len())]))
+        self.named(&region_file(self.pid, addr))
     }
 
     /// The copy's path as the program the user named.
@@ -952,11 +1004,67 @@ impl Mac {
         }
         out
     }
+}
 
-    fn write_mem(&self, addr: u64, bytes: &[u8]) -> Kr {
-        // SAFETY: the bytes live through the call; the kernel copies them.
-        unsafe { mach_vm_write(self.task, addr, bytes.as_ptr() as usize, bytes.len() as u32) }
+/// The file mapped at `addr` in process `pid`; empty for anonymous memory.
+fn region_file(pid: c_int, addr: u64) -> String {
+    let mut buf = [0u8; 1024];
+    // SAFETY: the buffer holds the size given.
+    let n = unsafe { libc::proc_regionfilename(pid, addr, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return String::new();
     }
+    String::from_utf8_lossy(&buf[..(n as usize).min(buf.len())]).into_owned()
+}
+
+/// The region of `task` at or after `addr`: start, end, protection, file offset and tag. Submaps (the shared cache)
+/// are looked into.
+fn region_in(task: Port, addr: u64, depth: &mut u32) -> Option<(u64, u64, c_int, u64, u32, bool)> {
+    let mut a = addr;
+    let mut size = 0u64;
+    let mut info = [0u32; 19];
+    let mut n = VM_REGION_SUBMAP_INFO_COUNT_64;
+    // SAFETY: `info` holds the 19 words `n` says.
+    let kr = unsafe { mach_vm_region_recurse(task, &mut a, &mut size, depth, info.as_mut_ptr(), &mut n) };
+    if kr != KERN_SUCCESS {
+        return None;
+    }
+    let offset = u64::from(info[3]) | u64::from(info[4]) << 32;
+    Some((a, a.wrapping_add(size), info[0] as c_int, offset, info[5], info[12] != 0))
+}
+
+fn write_mem(task: Port, addr: u64, bytes: &[u8]) -> Kr {
+    // SAFETY: the bytes live through the call; the kernel copies them.
+    unsafe { mach_vm_write(task, addr, bytes.as_ptr() as usize, bytes.len() as u32) }
+}
+
+/// Write into the memory of `task`, code included. Code is mapped read and execute: its pages open for writing as
+/// a private copy, then the protection goes back. PT_ATTACHEXC told the kernel that the program's code may change,
+/// and a child it forks inherits that.
+fn patch(task: Port, addr: u64, bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() || write_mem(task, addr, bytes) == KERN_SUCCESS {
+        return Ok(());
+    }
+    let mut depth = 64;
+    let prot = match region_in(task, addr, &mut depth) {
+        Some((start, _, prot, ..)) if start <= addr => prot,
+        _ => return fail(format!("write at {addr:#x}: no memory there")),
+    };
+    let page = addr & !0xfff;
+    let len = (addr + bytes.len() as u64 + 0xfff) & !0xfff;
+    let len = len - page;
+    // SAFETY: protection changes on pages of the task's own.
+    let kr = unsafe { mach_vm_protect(task, page, len, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) };
+    if kr != KERN_SUCCESS {
+        return fail(format!("write at {addr:#x}: {}", kr_text(kr)));
+    }
+    let kr = write_mem(task, addr, bytes);
+    // SAFETY: as above.
+    unsafe { mach_vm_protect(task, page, len, 0, prot) };
+    if kr != KERN_SUCCESS {
+        return fail(format!("write at {addr:#x}: {}", kr_text(kr)));
+    }
+    Ok(())
 }
 
 impl Target for Mac {
@@ -1002,31 +1110,7 @@ impl Target for Mac {
     }
 
     fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() || self.write_mem(addr, bytes) == KERN_SUCCESS {
-            return Ok(());
-        }
-        // Code is mapped read and execute: open its pages for writing as a private copy, then put the protection
-        // back. PT_ATTACHEXC told the kernel that this program's code may change.
-        let mut depth = 64;
-        let prot = match self.region(addr, &mut depth) {
-            Some((start, _, prot, ..)) if start <= addr => prot,
-            _ => return fail(format!("write at {addr:#x}: no memory there")),
-        };
-        let page = addr & !0xfff;
-        let len = (addr + bytes.len() as u64 + 0xfff) & !0xfff;
-        let len = len - page;
-        // SAFETY: protection changes on the program's own pages.
-        let kr = unsafe { mach_vm_protect(self.task, page, len, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) };
-        if kr != KERN_SUCCESS {
-            return fail(format!("write at {addr:#x}: {}", kr_text(kr)));
-        }
-        let kr = self.write_mem(addr, bytes);
-        // SAFETY: as above.
-        unsafe { mach_vm_protect(self.task, page, len, 0, prot) };
-        if kr != KERN_SUCCESS {
-            return fail(format!("write at {addr:#x}: {}", kr_text(kr)));
-        }
-        Ok(())
+        patch(self.task, addr, bytes)
     }
 
     fn maps(&mut self) -> Result<Vec<Map>> {
@@ -1117,6 +1201,11 @@ impl Target for Mac {
             at += len;
         }
         None
+    }
+
+    fn set_patches(&mut self, patches: &[(u64, u8)]) {
+        // kept after a breakpoint leaves: a child forked while it was in still has it (see `under`)
+        self.under.extend(patches.iter().copied());
     }
 
     fn set_watch(&mut self, slots: &[Option<HwSlot>; 4]) -> Result<()> {

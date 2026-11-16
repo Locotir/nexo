@@ -28,8 +28,8 @@ mod shellsyn;
 mod stdin;
 mod stub;
 mod syscalls;
-// Not on macOS: `cc -g` there leaves the DWARF in the object files (the program carries a debug map to them), so the
-// program it builds has no debug sections to damage, and nexo-bin does not read the debug map yet.
+// Not on macOS: `cc -g` there puts the DWARF in a dSYM beside the program (or leaves it in the object files its debug
+// map names), so the program bytes this test damages hold no debug sections.
 #[cfg(all(test, not(target_os = "macos")))]
 mod tests_harden;
 mod trace;

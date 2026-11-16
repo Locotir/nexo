@@ -122,6 +122,7 @@ extern "C" {
         behaviors: *mut c_int,
         flavors: *mut c_int,
     ) -> Kr;
+    pub fn pid_for_task(task: Port, pid: *mut c_int) -> Kr;
     pub fn mach_vm_read_overwrite(task: Port, addr: u64, size: u64, data: u64, out: *mut u64) -> Kr;
     pub fn mach_vm_write(task: Port, addr: u64, data: usize, count: u32) -> Kr;
     pub fn mach_vm_protect(task: Port, addr: u64, size: u64, set_max: c_int, prot: c_int) -> Kr;

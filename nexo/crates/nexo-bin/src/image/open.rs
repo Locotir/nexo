@@ -87,6 +87,10 @@ impl Image {
             img.attach_pdb(&data);
         }
         img.data = data;
+        // a macOS program keeps its DWARF in a dSYM beside it (cc -g makes one): lines and locals come from there
+        if img.macho.is_some() {
+            img.find_dsym();
+        }
         img.finish();
         Ok(img)
     }

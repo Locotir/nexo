@@ -296,6 +296,38 @@ pub(crate) fn thin(arm64: bool, stripped: bool) -> MachoFx {
     MachoFx { bytes: b, linkedit: (LINKEDIT, le.len()), indirect }
 }
 
+/// The bytes of `__debug_info` and `__debug_str_offs` in the dSYM `dsym` builds.
+pub(crate) const DSYM_INFO: &[u8] = b"INFO";
+pub(crate) const DSYM_OFFSETS: &[u8] = b"OFFS";
+
+/// A dSYM for `thin(false, _)`: no code, a `__DWARF` segment with two sections (one name cut at 16 bytes, as
+/// `dsymutil` writes `.debug_str_offsets`), and the program's UUID, or another build's when `other_build`.
+pub(crate) fn dsym(other_build: bool) -> Vec<u8> {
+    let at = BASE + 0x3000;
+    let debug = 0x0200_0000;
+    let mut c: Vec<u8> = Vec::new();
+    segment(
+        &mut c,
+        "__DWARF",
+        (at, 0x1000),
+        (0x1000, 8),
+        7,
+        &[
+            ("__debug_info", "__DWARF", at, 4, 0x1000, debug, 0, 0),
+            ("__debug_str_offs", "__DWARF", at + 4, 4, 0x1004, debug, 0, 0),
+        ],
+    );
+    cmd(&mut c, 0x1b, &[0x0403_0201, 0x0807_0605, 0x0c0b_0a09, if other_build { 0x2020_2020 } else { 0x100f_0e0d }]);
+    let mut b = Vec::new();
+    for w in [0xfeed_facf_u32, 0x0100_0007, 3, 0xa, 2, c.len() as u32, 0, 0] {
+        b.extend(w.to_le_bytes());
+    }
+    put(&mut b, 32, &c);
+    put(&mut b, 0x1000, DSYM_INFO);
+    put(&mut b, 0x1004, DSYM_OFFSETS);
+    b
+}
+
 /// A universal file with these slices, each at a 4 KiB boundary; the last one ends the file.
 pub(crate) fn fat(slices: &[(u32, &[u8])]) -> Vec<u8> {
     let mut b = Vec::new();

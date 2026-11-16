@@ -1,6 +1,6 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! The debugger on a C program built with `-g`: breakpoints by file:line and by function (after the prologue).
-//! Skipped when no C compiler is on this machine.
+//! Skipped when no C compiler is on this machine. On macOS `cc -g` puts the DWARF in a dSYM beside the program.
 
 use std::path::{Path, PathBuf};
 

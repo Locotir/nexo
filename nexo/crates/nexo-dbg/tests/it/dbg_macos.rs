@@ -164,9 +164,9 @@ fn a_crash_is_explained() {
     assert!(stop.contains("EXC_BAD_ACCESS"), "{stop}");
     assert!(stop.contains("null pointer"), "{stop}");
     assert!(stop.contains("backtrace:") && stop.contains("dbg_crash"), "{stop}");
-    // Linux also checks the source line of the fault here. On macOS the line table sits in the object files the
-    // executable's debug map names (or a .dSYM), which nexo-bin does not read yet, so that part
-    // is not checked on this system.
+    // Linux also checks the source line of the fault here. A Rust test program built on macOS keeps its line table
+    // in the object files its debug map names, and the VM builds tests without debug info, so the source lines are
+    // checked on C programs instead (source_level.rs, and the debug map test below).
     // Rust's own SIGSEGV handler (its stack-overflow check) puts back the default action and returns, so the load
     // runs again and faults a second time, as on Linux; the cont after that ends the program.
     let again = run(&mut s, "cont");
@@ -305,4 +305,111 @@ fn a_c_program_stops_in_main_steps_takes_a_memory_write_and_exits_with_it() {
     let end = run(&mut s, "cont");
     assert!(end.contains("exited with code 7"), "{end}");
     assert!(run(&mut s, "out").contains("code 7"));
+}
+
+/// `src` built with `cc` and these flags into `dir`, or `None` without a C compiler.
+fn cc(dir: &Path, name: &str, src: &str, flags: &[&str]) -> Option<PathBuf> {
+    let file = dir.join(format!("{name}.c"));
+    std::fs::write(&file, src).unwrap();
+    let exe = dir.join(name);
+    let built = std::process::Command::new("cc").args(flags).arg("-o").arg(&exe).arg(&file).status();
+    built.is_ok_and(|s| s.success()).then_some(exe)
+}
+
+#[test]
+fn a_child_the_program_forks_runs_through_a_breakpoint_it_copied() {
+    let dir = tempfile::tempdir().unwrap();
+    // The parent's wait is retried on EINTR: under the debugger the child's SIGCHLD reaches the program as an
+    // exception, and that interrupts the call once (seen on macOS 15), as a signal handler would.
+    let src = "#include <stdio.h>\n#include <errno.h>\n#include <unistd.h>\n#include <sys/wait.h>\n\
+               int twice(int x) { return 2 * x; }\n\
+               int main(void) {\n\
+               pid_t p = fork();\n\
+               if (p == 0) _exit(twice(21) == 42 ? 7 : 1);\n\
+               int st = 0, w, eintr = 0;\n\
+               while ((w = waitpid(p, &st, 0)) < 0 && errno == EINTR) eintr++;\n\
+               printf(\"wait %d errno %d eintr %d status %#x\\n\", w == p, w < 0 ? errno : 0, eintr, st);\n\
+               printf(\"child %d\\n\", WIFEXITED(st) ? WEXITSTATUS(st) : -WTERMSIG(st));\n\
+               fflush(stdout);\n\
+               return twice(2);\n\
+               }\n";
+    let Some(exe) = cc(dir.path(), "forks", src, &["-O0"]) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    let (mut s, _) = open(&Kind::Run { exe, args: vec![] }).expect("start");
+    run(&mut s, "break twice");
+    // the child runs `twice` first, while the parent waits for it: it must get the program's byte back and go on
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("breakpoint #1") && stop.contains("twice"), "{stop}");
+    let out = run(&mut s, "out --all");
+    assert!(out.contains("child 7"), "the child died at the breakpoint it copied: {out}");
+    run(&mut s, "delete all");
+    let end = run(&mut s, "cont");
+    assert!(end.contains("exited with code 4"), "{end}");
+}
+
+const SHAPES: &str = include_str!("../fixtures/shapes.c");
+
+fn line_of(mark: &str) -> usize {
+    SHAPES.lines().position(|l| l.contains(mark)).unwrap() + 1
+}
+
+/// shapes.c compiled to an object file and linked in a second step: the program carries a debug map to the object
+/// file, and no dSYM is made.
+fn linked_from_objects(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let src = dir.join("shapes.c");
+    std::fs::write(&src, SHAPES).unwrap();
+    let (obj, exe) = (dir.join("shapes.o"), dir.join("shapes"));
+    let step =
+        |args: &[&std::ffi::OsStr]| std::process::Command::new("cc").args(args).status().is_ok_and(|s| s.success());
+    let ok = step(&["-g".as_ref(), "-O0".as_ref(), "-c".as_ref(), src.as_os_str(), "-o".as_ref(), obj.as_os_str()])
+        && step(&[obj.as_os_str(), "-o".as_ref(), exe.as_os_str()]);
+    assert!(!ok || !dir.join("shapes.dSYM").exists(), "a link of object files makes no dSYM");
+    ok.then_some((exe, obj))
+}
+
+#[test]
+fn a_program_linked_from_object_files_gets_lines_locals_and_the_crash_line_from_its_debug_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some((exe, _)) = linked_from_objects(dir.path()) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    let (mut s, first) = open(&Kind::Run { exe, args: vec!["crash".into()] }).expect("start");
+    let first = first.text_all();
+    assert!(!first.contains("no debug info"), "{first}");
+    run(&mut s, "stdin \"3\"");
+    run(&mut s, "stdin --close");
+    let store = line_of("STORE");
+    let b = run(&mut s, &format!("break shapes.c:{store}"));
+    assert!(b.contains(&format!("shapes.c:{store}")), "{b}");
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("rows[p->y][p->x] = c;"), "{stop}");
+    assert!(stop.contains("locals: p = ") && stop.contains("c = 7") && stop.contains("idx = 11"), "{stop}");
+    let bt = run(&mut s, "bt");
+    assert!(bt.contains(&format!("shapes.c:{store}")), "{bt}");
+    assert!(bt.lines().any(|l| l.contains("main") && l.contains("shapes.c:")), "{bt}");
+    run(&mut s, "delete all");
+    let crash = run(&mut s, "cont");
+    assert!(crash.contains("SIGSEGV") && crash.contains(&format!("shapes.c:{}", line_of("CRASH"))), "{crash}");
+    assert!(crash.contains("*bad = got;") && crash.contains("bad = NULL") && crash.contains("got = 11"), "{crash}");
+}
+
+#[test]
+fn a_program_whose_object_files_are_gone_says_where_its_debug_info_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some((exe, obj)) = linked_from_objects(dir.path()) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    std::fs::remove_file(&obj).unwrap();
+    let (mut s, first) = open(&Kind::Run { exe, args: vec![] }).expect("start");
+    let first = first.text_all();
+    assert!(
+        first.contains("no debug info: the program's DWARF is in the object files its debug map names")
+            && first.contains("none of them is on disk here"),
+        "{first}"
+    );
+    run(&mut s, "kill");
 }

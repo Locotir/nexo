@@ -45,10 +45,19 @@ fn bad_arch(a: &str) -> Error {
 
 /// Read a thin Mach-O file or one slice of a universal one.
 pub(crate) fn load(data: &[u8], arch: Option<&str>) -> Result<Image> {
+    load_as(data, arch, false)
+}
+
+/// Read a dSYM's DWARF file (thin, or the `arch` slice of a universal one).
+pub(crate) fn load_dsym(data: &[u8], arch: Option<&str>) -> Result<Image> {
+    load_as(data, arch, true)
+}
+
+fn load_as(data: &[u8], arch: Option<&str>, dsym: bool) -> Result<Image> {
     match be32(data, 0) {
-        Some(FAT_MAGIC | FAT_MAGIC_64) => load_fat(data, arch),
+        Some(FAT_MAGIC | FAT_MAGIC_64) => load_fat(data, arch, dsym),
         _ => {
-            let img = load_thin(data, 0)?;
+            let img = load_thin(data, 0, dsym)?;
             if let Some(a) = arch {
                 check_arch(&img, a)?;
             }
@@ -69,7 +78,7 @@ pub(crate) fn check_arch(img: &Image, a: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_fat(data: &[u8], arch: Option<&str>) -> Result<Image> {
+fn load_fat(data: &[u8], arch: Option<&str>, dsym: bool) -> Result<Image> {
     let wide = be32(data, 0) == Some(FAT_MAGIC_64);
     let cut = || Error::NotRead("not a readable Mach-O universal file: its slice table is cut short".into());
     let n = be32(data, 4).ok_or_else(cut)? as usize;
@@ -121,7 +130,7 @@ fn load_fat(data: &[u8], arch: Option<&str>) -> Result<Image> {
         ))
     })?;
     let end = start.saturating_add(usize::try_from(s.size).unwrap_or(usize::MAX)).min(data.len());
-    let mut img = load_thin(&data[start..end], start as u64)
+    let mut img = load_thin(&data[start..end], start as u64, dsym)
         .map_err(|e| prefix(e, &format!("the {} slice at {:#x}: ", s.arch, s.off)))?;
     if let Some(m) = img.macho.as_mut() {
         m.slices = slices;

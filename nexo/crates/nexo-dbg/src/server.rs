@@ -145,7 +145,10 @@ pub fn out_from_json(v: &Value) -> Output {
     }
 }
 
-fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)> {
+/// The session, how the program died (a core file), and a fact about its debug info for the first answer.
+type Made = (Session, Option<crate::corefile::Death>, Option<String>);
+
+fn make_session(kind: &Kind) -> Result<Made> {
     if let Kind::Core { file, exe } = kind {
         if crate::minidump::is_minidump(file) {
             let mut dump = crate::minidump::Minidump::open(file)?;
@@ -156,7 +159,7 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
             dump.exe_first();
             let img = Image::open(&path)
                 .map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
-            return Ok((Session::new(Box::new(dump), img), death));
+            return Ok((Session::new(Box::new(dump), img), death, None));
         }
         let core = crate::corefile::Core::open(file)?;
         let death = core.death();
@@ -165,7 +168,7 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
         };
         let img =
             Image::open(&path).map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
-        return Ok((Session::new(Box::new(core), img), death));
+        return Ok((Session::new(Box::new(core), img), death, None));
     }
     if let Kind::Remote { addr, exe } = kind {
         let mut r = crate::remote::Remote::connect(addr)?;
@@ -185,7 +188,7 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
         let img =
             Image::open(&path).map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
         r.locate(img.entry, img.image_base);
-        return Ok((Session::new(Box::new(r), img), None));
+        return Ok((Session::new(Box::new(r), img), None, None));
     }
     let t = match kind {
         Kind::Run { exe, args } => {
@@ -206,25 +209,29 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
         Kind::Run { exe, .. } => exe.clone(),
         _ => PathBuf::from(mods.first().map(|m| m.path.clone()).unwrap_or_default()),
     };
-    let img = match Image::open_arch(&path, platform::NATIVE_SLICE) {
+    let mut img = match Image::open_arch(&path, platform::NATIVE_SLICE) {
         Ok(i) => i,
         Err(e) => {
             let _ = t.kill();
             return fail(format!("cannot read {} as a program: {e}", path.display()));
         }
     };
-    Ok((Session::new(t, img), None))
+    let debug = platform::gather_dwarf(&mut img);
+    Ok((Session::new(t, img), None, debug))
 }
 
 /// Start the program and take it to its first stop. The caller owns the result and must stay on this thread.
 pub fn open(kind: &Kind) -> Result<(Session, Output)> {
-    let (mut sess, death) = make_session(kind)?;
+    let (mut sess, death, debug) = make_session(kind)?;
     let mut first = match kind {
         Kind::Run { .. } => run_to_entry(&mut sess),
         Kind::Attach(pid) => attach_report(&mut sess, *pid),
         Kind::Core { file, .. } => core_report(&mut sess, file, death),
         Kind::Remote { addr, .. } => remote_report(&mut sess, addr),
     };
+    if let Some(text) = debug {
+        first.rows.insert(first.rows.len().min(1), Row { key: 0, text, json: None });
+    }
     // what earlier sessions kept for this binary comes with the first answer
     let known = nexo_bin::names_brief(sess.mods.main_image(), 8);
     if !known.is_empty() {

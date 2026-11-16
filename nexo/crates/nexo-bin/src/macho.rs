@@ -17,6 +17,7 @@ use crate::image::{blank, demangle, raw_of, Export, Format, Image, Import, Secti
 use crate::{Error, Result};
 
 mod chains;
+mod dsym;
 mod fat;
 mod info;
 pub mod sign;
@@ -87,6 +88,8 @@ const N_TYPE: u8 = 0x0e;
 const N_EXT: u8 = 0x01;
 const N_UNDF: u8 = 0x0;
 const N_SECT: u8 = 0xe;
+/// A stab that names one object file of the debug map (the DWARF of a program linked from `-g` objects).
+const N_OSO: u8 = 0x66;
 const INDIRECT_SYMBOL_LOCAL: u32 = 0x8000_0000;
 const INDIRECT_SYMBOL_ABS: u32 = 0x4000_0000;
 
@@ -118,6 +121,10 @@ pub(crate) struct Macho {
     /// Function starts from LC_FUNCTION_STARTS.
     pub(crate) starts: Vec<u64>,
     pub(crate) uuid: Option<String>,
+    /// The object files the debug map names (`N_OSO` stabs), as the linker saw them.
+    pub(crate) objects: Vec<String>,
+    /// The `__DWARF` sections of the dSYM read with the program (see `dsym`), by section name (`__debug_info`).
+    pub(crate) dwarf: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,7 +266,8 @@ fn platform(p: u32) -> String {
     }
 }
 
-fn load_thin(d: &[u8], base: u64) -> Result<Image> {
+/// `dsym`: a dSYM (debug info alone) is read too; otherwise it is refused with what to read instead.
+fn load_thin(d: &[u8], base: u64, dsym: bool) -> Result<Image> {
     let magic =
         u32_at(d, 0).ok_or_else(|| Error::NotRead("not a readable Mach-O file: it is cut in its magic".into()))?;
     match magic {
@@ -297,6 +305,7 @@ fn load_thin(d: &[u8], base: u64) -> Result<Image> {
         8 => "bundle",
         9 => "dynamic library stub",
         0xb => "kernel extension",
+        0xa if dsym => "dSYM debug info",
         1 => {
             return Err(Error::NotRead(
                 "Mach-O object file (.o) is not read yet: it has no final addresses (read the linked program)".into(),
@@ -507,6 +516,7 @@ fn load_thin(d: &[u8], base: u64) -> Result<Image> {
             });
         }
     }
+    m.objects = nl.iter().filter(|s| s.ntype == N_OSO && !s.raw.is_empty()).map(|s| s.raw.clone()).collect();
     let defined = |s: &Nlist| s.ntype & N_STAB == 0 && s.kind() == N_SECT && !s.raw.is_empty();
     // external names first: where a local label shares the address, the exported name is the one shown
     for ext in [true, false] {

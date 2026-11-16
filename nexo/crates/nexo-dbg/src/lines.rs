@@ -49,9 +49,8 @@ impl Lines {
     }
 
     fn read(img: &Image) -> Option<Lines> {
-        let get = |name: &str| -> &[u8] {
-            img.sections.iter().find(|s| s.name == name).map_or(&[][..], |s| img.section_bytes(s))
-        };
+        // a Mach-O file names its DWARF sections its own way, or keeps them in a dSYM: the image finds each
+        let get = |name: &str| -> &[u8] { img.debug_section(name) };
         if get(".debug_line").is_empty() || get(".debug_line").len() > MAX_BYTES || get(".debug_info").is_empty() {
             return None;
         }

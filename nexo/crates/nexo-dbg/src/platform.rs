@@ -318,6 +318,96 @@ pub fn attach(_: u32) -> Result<Box<dyn Target>> {
     crate::fail(ONLY)
 }
 
+/// The DWARF of a macOS program built with `-g` stays in the object files its debug map names, unless a dSYM
+/// beside the program holds it (`cc -g` makes one when it compiles and links in one step; a separate link or a cargo
+/// build leaves only the map). Gather it the way the system debugger does, with `dsymutil`, into a folder of our
+/// own that is read and removed at once. Returns a fact for the first answer when the program has a debug map and
+/// still no debug info could be read; `None` otherwise, and always off macOS (no other format has a debug map).
+pub fn gather_dwarf(img: &mut nexo_bin::Image) -> Option<String> {
+    let objects = img.debug_map_objects();
+    if objects.is_empty() || !img.debug_section(".debug_info").is_empty() {
+        return None;
+    }
+    let n = objects.len();
+    // the linker writes an object file as it saw it, and an archive member as `lib.a(member.o)`
+    let here = objects.iter().any(|o| std::path::Path::new(o.split('(').next().unwrap_or(o)).exists());
+    let lost = |why: String| {
+        Some(format!("no debug info: the program's DWARF is in the object files its debug map names ({n}), and {why}"))
+    };
+    if !here {
+        return lost("none of them is on disk here".into());
+    }
+    match dsymutil(img) {
+        Ok(()) if !img.debug_section(".debug_info").is_empty() => None,
+        Ok(()) => lost(format!("{DSYMUTIL} gathered no DWARF from them")),
+        Err(why) => lost(why),
+    }
+}
+
+const DSYMUTIL: &str = "/usr/bin/dsymutil";
+
+/// How long `dsymutil` may take: the session must be up within the 40 seconds its client waits.
+#[cfg(target_os = "macos")]
+const GATHER_WAIT: Duration = Duration::from_secs(20);
+
+#[cfg(not(target_os = "macos"))]
+fn dsymutil(_: &mut nexo_bin::Image) -> std::result::Result<(), String> {
+    Err(format!("{DSYMUTIL} runs on macOS only"))
+}
+
+/// Run `dsymutil` on the program into a fresh folder, take the dSYM it writes, and remove the folder.
+#[cfg(target_os = "macos")]
+fn dsymutil(img: &mut nexo_bin::Image) -> std::result::Result<(), String> {
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let name = img.path.file_name().ok_or("the program path has no file name")?.to_owned();
+    let dir = crate::server::state_dir().join(format!(
+        "dsym-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{} could not be made: {e}", dir.display()))?;
+    let out = dir.join(&name);
+    let mut bundle = out.clone().into_os_string();
+    bundle.push(".dSYM");
+    let said = dir.join("stderr");
+    let mut cmd = Command::new(DSYMUTIL);
+    cmd.arg("-o").arg(&bundle).arg(&img.path).stdin(Stdio::null()).stdout(Stdio::null());
+    // to a file, not a pipe: thousands of "unable to open object file" lines would fill a pipe nobody reads yet
+    cmd.stderr(std::fs::File::create(&said).map_or_else(|_| Stdio::null(), Stdio::from));
+    let ran = match cmd.spawn() {
+        Err(e) => Err(format!("{DSYMUTIL} did not start: {e}")),
+        Ok(mut child) => {
+            let deadline = std::time::Instant::now() + GATHER_WAIT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(st)) if st.success() => break Ok(()),
+                    Ok(Some(st)) => break Err(format!("{DSYMUTIL} failed ({st})")),
+                    Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!("{DSYMUTIL} did not finish in {} s", GATHER_WAIT.as_secs()));
+                    }
+                }
+            }
+        }
+    };
+    let first = std::fs::read_to_string(&said).ok().and_then(|t| {
+        t.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| l.chars().take(200).collect::<String>())
+    });
+    let took = ran.is_ok() && img.attach_dsym(&nexo_bin::Image::dsym_path(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+    match (ran, took, first) {
+        (Ok(()), true, _) => Ok(()),
+        (Ok(()), false, Some(l)) => Err(format!("{DSYMUTIL} wrote no dSYM this program's build matches: {l}")),
+        (Ok(()), false, None) => Err(format!("{DSYMUTIL} wrote no dSYM this program's build matches")),
+        (Err(why), _, Some(l)) => Err(format!("{why}: {l}")),
+        (Err(why), _, None) => Err(why),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
