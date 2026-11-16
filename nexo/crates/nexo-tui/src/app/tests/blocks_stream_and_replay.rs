@@ -255,3 +255,32 @@ fn thinking_counts_from_the_request_and_says_nothing_when_the_provider_sent_no_t
     let i = a.blocks.iter().rposition(|b| matches!(b, Block::Reasoning { .. })).unwrap();
     assert!(a.lines(i, 80).is_empty());
 }
+
+#[test]
+fn a_history_of_many_calls_closes_its_replies_without_going_over_every_block_at_each_call() {
+    let (mut a, _rx) = bare();
+    let calls = 400;
+    crate::app::submit::BLOCKS_SCANNED.with(|n| n.set(0));
+    for k in 0..calls {
+        let id = format!("c{k}");
+        a.handle_agent(AgentEvent::AssistantStart);
+        if k % 4 == 0 {
+            a.handle_agent(AgentEvent::ReasoningDelta { text: "hm".into() });
+        }
+        a.handle_agent(AgentEvent::TextDelta { text: format!("step {k}") });
+        a.handle_agent(AgentEvent::ToolCall {
+            id: id.clone(),
+            name: "read".into(),
+            args: serde_json::json!({"path":"a"}),
+            summary: "a".into(),
+        });
+        a.handle_agent(AgentEvent::ToolDone { id, output: ToolOutput::ok("x"), elapsed_ms: 1 });
+    }
+    let scanned = crate::app::submit::BLOCKS_SCANNED.with(|n| n.get());
+    // every reply and reasoning block is closed, as before
+    assert!(a.blocks.iter().all(|b| !b.is_live()), "a block is left streaming");
+    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Assistant { .. })).count(), calls);
+    // a block is gone over about once per reply that closes, never once per call for every block before it
+    let blocks = a.blocks.len();
+    assert!(scanned <= 4 * blocks + 4 * calls, "{scanned} blocks gone over for {blocks} blocks and {calls} calls");
+}

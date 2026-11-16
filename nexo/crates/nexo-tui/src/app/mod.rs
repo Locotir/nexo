@@ -87,6 +87,14 @@ pub struct App {
     pub offsets: Vec<usize>,
     pub total_lines: usize,
     seen_blocks: usize,
+    /// No reply block before this one is streaming: `close_streaming` looks for them from here on. It runs at
+    /// every call the agent makes, and a resumed history comes as its calls one by one, so going over every block
+    /// each time made the history take time that grew with the square of its length. Blocks are only added at the
+    /// end or put in before others, which keeps it a lower bound; taking the first one off moves it to the top.
+    live_reply_from: usize,
+    /// A reasoning block was added since `close_reasoning` last ran, which only then looks for the latest one: it
+    /// runs at every piece of a reply that streams in, and with no reasoning block it went over the whole transcript.
+    live_reasoning: bool,
     /// A fold the person made: the next layout must not count its rows as new.
     pub scroll: usize,
     pub follow: bool,
@@ -389,6 +397,8 @@ impl App {
             offsets: Vec::new(),
             total_lines: 0,
             seen_blocks: 0,
+            live_reply_from: 0,
+            live_reasoning: true,
             scroll: 0,
             follow: true,
             selected: None,

@@ -9,6 +9,10 @@ impl App {
         // a block that is final is indexed now; a streaming one when it closes
         match &b {
             Block::Assistant { text, streaming: false, .. } => self.words.feed(text, crate::complete::Src::Other),
+            Block::Assistant { streaming: true, .. } => {
+                self.live_reply_from = self.live_reply_from.min(self.blocks.len())
+            }
+            Block::Reasoning { streaming: true, .. } => self.live_reasoning = true,
             Block::Tool { args, .. } => self.words.feed_json(args, crate::complete::Src::Other),
             // a command the person ran with `!`: its words are theirs, its output like a tool's
             Block::Shell { command, output, .. } => {

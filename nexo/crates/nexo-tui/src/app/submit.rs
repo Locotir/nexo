@@ -5,6 +5,12 @@ use super::*;
 /// How long a sent request may go unechoed before the screen says so.
 const UNECHOED_AFTER: Duration = Duration::from_secs(3);
 
+#[cfg(test)]
+thread_local! {
+    /// The blocks `close_streaming` and `close_reasoning` went over on this thread, for the tests that bound the work.
+    pub(super) static BLOCKS_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl App {
     /// Esc Esc or `/rewind`: pick an earlier message to go back to.
     pub fn open_rewind_picker(&mut self) {
@@ -54,8 +60,15 @@ impl App {
     }
 
     pub(super) fn close_reasoning(&mut self) {
+        // the latest reasoning block was closed by the last call and none was added since: there is nothing to close
+        if !self.live_reasoning {
+            return;
+        }
+        self.live_reasoning = false;
         let now = self.now();
         for i in (0..self.blocks.len()).rev() {
+            #[cfg(test)]
+            BLOCKS_SCANNED.with(|n| n.set(n.get() + 1));
             if let Block::Reasoning { streaming, started, elapsed_ms, .. } = &mut self.blocks[i] {
                 if *streaming {
                     *streaming = false;
@@ -69,8 +82,13 @@ impl App {
 
     pub(super) fn close_streaming(&mut self) {
         self.close_reasoning();
+        // the reply blocks before `live_reply_from` were closed by an earlier call
+        let from = self.live_reply_from.min(self.blocks.len());
+        self.live_reply_from = self.blocks.len();
         let now = self.now();
-        for i in 0..self.blocks.len() {
+        for i in from..self.blocks.len() {
+            #[cfg(test)]
+            BLOCKS_SCANNED.with(|n| n.set(n.get() + 1));
             if let Block::Assistant { streaming, started, took_ms, text, .. } = &mut self.blocks[i] {
                 if *streaming {
                     *streaming = false;

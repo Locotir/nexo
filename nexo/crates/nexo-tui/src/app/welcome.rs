@@ -41,6 +41,7 @@ impl App {
     pub fn drop_banner(&mut self) {
         if self.has_welcome() {
             self.blocks.remove(0);
+            self.live_reply_from = 0;
             self.cache.remove(0);
             self.looks.remove(0);
             self.selected = self.selected.and_then(|i| i.checked_sub(1));
