@@ -53,7 +53,7 @@ pub fn split_words(s: &str) -> Vec<String> {
 pub fn help() -> Output {
     let l = [
         "run: nexo dbg run <exe> [args]   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
-        "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach | kill call",
+        "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach | kill call | follow parent|child|both (a forked child kept as a session of its own, breakpoints copied)",
         "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
         "trace: strace [names|file|net|process|memory] | strace show [filter] | strace off | catch syscall <names|groups> | catch syscall off; ltrace [names] | ltrace show [names] | ltrace off | hook <addr|name> [bt N] [stop] [set argN V] [ret V] | hook show [name] | hooks | hook del <id>|all; cover [funcs] | cover show [func] | cover save <A> | cover diff <A> <B>|now | cover off",
         "break: break <addr|*addr|name|file:line|name+off|import> (a function stops after its prologue) [if <expr>] [after N] [log <text with {expr}>] [once] | breaks | delete <id>|all | enable/disable <id>",

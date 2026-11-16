@@ -272,7 +272,59 @@ pub fn open(kind: &Kind) -> Result<(Session, Output)> {
     Ok((sess, first))
 }
 
-/// Run one session until it ends. Blocks. Returns the exit code.
+/// One session the server answers for: the program it started, or a child that program forked and the debugger
+/// kept (`follow both|child`). Each has its own id, token and state file; all share the server's one port and
+/// thread, because only the thread that traces a process may make system calls on it.
+struct Slot {
+    id: String,
+    token: String,
+    sess: Session,
+    pending: Option<Output>,
+    /// The session whose program forked this one.
+    parent: Option<String>,
+}
+
+fn write_slot(dir: &Path, port: u16, s: &Slot) {
+    let _ = write_state(
+        dir,
+        &s.id,
+        &json!({"port": port, "token": s.token, "server": std::process::id(), "pid": s.sess.t.pid(),
+                "exe": s.sess.mods.exe_path().display().to_string(), "parent": s.parent}),
+    );
+}
+
+/// Give the children the sessions kept since the last look a slot and a state file of their own.
+fn take_kids(dir: &Path, port: u16, slots: &mut Vec<Slot>) {
+    let mut i = 0;
+    while i < slots.len() {
+        for kid in std::mem::take(&mut slots[i].sess.kids) {
+            let s = Slot {
+                id: kid.id,
+                token: random_hex(),
+                sess: kid.sess,
+                pending: Some(kid.first),
+                parent: Some(slots[i].id.clone()),
+            };
+            write_slot(dir, port, &s);
+            slots.push(s);
+        }
+        i += 1;
+    }
+}
+
+fn close(dir: &Path, slots: &mut Vec<Slot>, i: usize) {
+    let mut s = slots.remove(i);
+    teardown(&mut s.sess);
+    let _ = std::fs::remove_file(session_file(dir, &s.id));
+}
+
+/// The session that forked session `id`, from its state file.
+pub fn parent_of(dir: &Path, id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(session_file(dir, id)).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["parent"].as_str().map(str::to_string)
+}
+
+/// Run one session, and the forked children it keeps, until they end. Blocks. Returns the exit code.
 pub fn serve(start: &Start) -> i32 {
     let fail_with = |msg: String| {
         let _ = write_state(&start.dir, &start.id, &json!({"error": msg}));
@@ -291,21 +343,20 @@ pub fn serve(start: &Start) -> i32 {
     };
     let _ = listener.set_nonblocking(true);
     let port = listener.local_addr().map_or(0, |a| a.port());
-    let token = random_hex();
-    let mut pending: Option<Output> = Some(first);
-    let _ = write_state(
-        &start.dir,
-        &start.id,
-        &json!({"port": port, "token": token, "server": std::process::id(), "pid": sess.t.pid(),
-                "exe": sess.mods.exe_path().display().to_string()}),
-    );
+    let dir = &start.dir;
+    let mut slots = vec![Slot { id: start.id.clone(), token: random_hex(), sess, pending: Some(first), parent: None }];
+    write_slot(dir, port, &slots[0]);
+    take_kids(dir, port, &mut slots);
     let mut last_call = Instant::now();
     let mut next_check = Instant::now();
     let code = loop {
         match listener.accept() {
             Ok((stream, _)) => {
                 last_call = Instant::now();
-                if handle(&mut sess, stream, &token, &mut pending) {
+                if let Some(i) = handle(dir, port, &mut slots, stream) {
+                    close(dir, &mut slots, i);
+                }
+                if slots.is_empty() {
                     break 0;
                 }
                 continue;
@@ -313,26 +364,36 @@ pub fn serve(start: &Start) -> i32 {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(_) => break 1,
         }
-        if sess.state == State::Running {
+        let mut running = false;
+        for s in slots.iter_mut().filter(|s| s.sess.state == State::Running) {
+            running = true;
             // a call that outlived its `--wait` and returns or faults here is ended by `news` as by `wait`
-            if let Some(o) = sess.news(Duration::from_millis(20)) {
-                pending = Some(o);
+            if let Some(o) = s.sess.news(Duration::from_millis(20)) {
+                s.pending = Some(o);
             }
+        }
+        if running {
+            take_kids(dir, port, &mut slots);
         } else {
             std::thread::sleep(Duration::from_millis(30));
         }
         if Instant::now() >= next_check {
             next_check = Instant::now() + Duration::from_secs(1);
-            if start.owner.is_some_and(|o| !alive(o))
-                || last_call.elapsed() > start.idle
-                || !session_file(&start.dir, &start.id).exists()
-            {
+            if start.owner.is_some_and(|o| !alive(o)) || last_call.elapsed() > start.idle {
+                break 0;
+            }
+            // a session whose state file was removed ends; the server ends with the last one
+            while let Some(i) = slots.iter().position(|s| !session_file(dir, &s.id).exists()) {
+                close(dir, &mut slots, i);
+            }
+            if slots.is_empty() {
                 break 0;
             }
         }
     };
-    teardown(&mut sess);
-    let _ = std::fs::remove_file(session_file(&start.dir, &start.id));
+    while !slots.is_empty() {
+        close(dir, &mut slots, 0);
+    }
     code
 }
 
@@ -437,20 +498,20 @@ fn end_target(s: &mut Session) {
     }
 }
 
-/// Answer one call. True: the session must end now.
-fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Option<Output>) -> bool {
+/// Answer one call for the session whose token it carries. `Some(index)`: that session must end now.
+fn handle(dir: &Path, port: u16, slots: &mut Vec<Slot>, stream: TcpStream) -> Option<usize> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
     let mut rd = BufReader::new(&stream);
     if rd.read_line(&mut line).is_err() {
-        return false;
+        return None;
     }
     let req: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-    let mut quit = false;
-    let reply = if req["token"].as_str() != Some(token) {
-        json!({"ok": false, "error": "bad token", "code": 1})
-    } else {
+    let mut quit = None;
+    let at = slots.iter().position(|s| req["token"].as_str() == Some(s.token.as_str()));
+    let reply = if let Some(i) = at {
+        let Slot { sess, pending, .. } = &mut slots[i];
         let words: Vec<String> = req["words"]
             .as_array()
             .map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect())
@@ -460,7 +521,7 @@ fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Opti
         let res: Result<Output> = match cmd {
             "__first" => Ok(pending.take().unwrap_or_else(|| rows("status", vec!["no news".into()], json!({})))),
             "__end" => {
-                quit = true;
+                quit = Some(i);
                 Ok(rows("end", vec!["session ended".into()], json!({})))
             }
             "wait" | "status" | "info" if pending.is_some() && sess.state != State::Running => {
@@ -483,7 +544,22 @@ fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Opti
             }
             Err(e) => json!({"ok": false, "error": e.to_string(), "code": e.exit_code(), "state": state_word(sess)}),
         }
+    } else {
+        json!({"ok": false, "error": "bad token", "code": 1})
     };
+    // before the answer goes out, so the call that follows it finds the sessions it names: the children kept, and
+    // no longer a parent let go at a fork (`follow child`), whose process runs on without the debugger
+    take_kids(dir, port, slots);
+    if let Some(i) = at.filter(|&i| {
+        let s = &slots[i];
+        quit.is_none()
+            && s.pending.is_none()
+            && s.sess.state == State::Exited
+            && s.sess.last_stop.as_ref().is_some_and(|x| x.event == "fork")
+    }) {
+        let _ = std::fs::remove_file(session_file(dir, &slots[i].id));
+        quit = Some(i);
+    }
     let mut w = &stream;
     let _ = w.write_all(format!("{reply}\n").as_bytes());
     let _ = w.flush();

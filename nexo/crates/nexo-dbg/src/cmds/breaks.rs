@@ -215,6 +215,41 @@ impl Session {
             }
             l.push(s);
         }
+        if !l.is_empty() {
+            l.extend(self.fork_lines());
+        }
+        l
+    }
+
+    /// The children the program forked, for an answer about breakpoints that were never hit: code that ran in a
+    /// child let go ran without them, and a kept child counts its own hits.
+    fn fork_lines(&self) -> Vec<String> {
+        const SHOWN: usize = 4;
+        let mut l = Vec::new();
+        let gone: Vec<&crate::engine::ForkNote> = self.forks.iter().filter(|f| f.session.is_none()).collect();
+        if !gone.is_empty() {
+            let mut each: Vec<String> = gone
+                .iter()
+                .take(SHOWN)
+                .map(|f| format!("pid {} ({} at {})", f.pid, if f.vfork { "vfork" } else { "fork" }, f.place))
+                .collect();
+            if gone.len() > SHOWN {
+                each.push(format!("{} more", gone.len() - SHOWN));
+            }
+            let n = gone.len();
+            l.push(format!(
+                "the program forked {n} {} that ran without the debugger: {}; under `follow both` (or `follow child`) a forked child is kept as a session of its own with these breakpoints",
+                if n == 1 { "child" } else { "children" },
+                each.join(", ")
+            ));
+        }
+        for f in self.forks.iter().filter(|f| f.session.is_some()).take(SHOWN) {
+            let id = f.session.as_deref().unwrap_or("");
+            l.push(format!(
+                "pid {} (forked at {}) is session {id}: its hits count there (`-s {id} breaks`)",
+                f.pid, f.place
+            ));
+        }
         l
     }
 

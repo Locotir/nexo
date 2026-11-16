@@ -260,6 +260,7 @@ impl Session {
             "cover" => self.cmd_cover(&words[1..]),
             "kill" => self.cmd_kill(&a),
             "detach" => self.cmd_detach(),
+            "follow" => self.cmd_follow(&a),
             "name" | "note" => self.cmd_keep(cmd == "name", &words[1..]),
             "do" => self.cmd_do(&words[1..]),
             "run" => self.cmd_run_live(),

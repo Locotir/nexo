@@ -81,6 +81,9 @@ pub enum SetKind {
     Cwd(String),
     /// `set disable-randomization on|off`: whether the program starts with address randomisation off.
     Randomization { off: bool },
+    /// `set follow-fork-mode parent|child`, `set detach-on-fork on|off`: the `follow` setting it stands for
+    /// (`detach` for `detach-on-fork on`: `both` becomes `parent`, the rest stays).
+    Follow(&'static str),
 }
 
 /// `NAME=VALUE` or `NAME VALUE` after `set environment`; a name alone is an empty value, as in gdb.
@@ -112,6 +115,17 @@ pub fn set_kind(words: &[String], is_reg: &dyn Fn(&str) -> bool) -> SetKind {
         Some("disable-randomization") => {
             let off = !matches!(words.get(2).map(String::as_str), Some("off" | "0" | "no" | "disable"));
             return SetKind::Randomization { off };
+        }
+        // gdb holds a forked child stopped with `detach-on-fork off`: here that child is a session of its own
+        Some("follow-fork-mode") => match words.get(2).map(String::as_str) {
+            Some("child") => return SetKind::Follow("child"),
+            Some("parent") => return SetKind::Follow("parent"),
+            _ => {}
+        },
+        Some("detach-on-fork") => {
+            let off = matches!(words.get(2).map(String::as_str), Some("off" | "0" | "no"));
+            // `on` is gdb's default: it undoes `off` and leaves `follow-fork-mode child` as it is
+            return SetKind::Follow(if off { "both" } else { "detach" });
         }
         _ => {}
     }
@@ -903,6 +917,9 @@ mod tests {
         assert_eq!(k("set environment A 1 2"), SetKind::Env("A".into(), "1 2".into()));
         assert_eq!(k("set env A = 1"), SetKind::Env("A".into(), "1".into()));
         assert_eq!(k("set cwd /tmp"), SetKind::Cwd("/tmp".into()));
+        assert_eq!(k("set follow-fork-mode child"), SetKind::Follow("child"));
+        assert_eq!(k("set detach-on-fork off"), SetKind::Follow("both"));
+        assert_eq!(k("set detach-on-fork on"), SetKind::Follow("detach"));
         assert_eq!(k("set disable-randomization off"), SetKind::Randomization { off: false });
         assert_eq!(k("set disable-randomization"), SetKind::Randomization { off: true });
         assert_eq!(k("set $a == 1"), SetKind::Memory);

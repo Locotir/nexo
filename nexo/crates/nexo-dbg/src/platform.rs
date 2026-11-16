@@ -93,6 +93,35 @@ pub enum Stop {
     Exec,
     /// A system call starts or ends (only while `Target::trace_syscalls` is on).
     Syscall(Sys),
+    /// The program forked this child, kept as its own target (`Target::forks`); the parent waits here only under
+    /// `Follow::Child`, so the debugger can let it go.
+    Fork(u32),
+}
+
+/// Which side of a fork the debugger keeps (`follow`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Follow {
+    /// The child is let go; the program goes on as it did.
+    #[default]
+    Parent,
+    /// The child is kept as its own target and the parent waits at the fork, to be let go.
+    Child,
+    /// The child is kept as its own target and the parent goes on.
+    Both,
+}
+
+/// A child the program forked, as the backend saw it.
+pub struct Forked {
+    pub pid: u32,
+    /// The thread that forked and its program counter just after the fork call.
+    pub tid: Tid,
+    pub at: u64,
+    /// A vfork child shares the parent's memory until it execs or exits; the parent waits for that.
+    pub vfork: bool,
+    /// The bytes under the breakpoints at that moment: the child's memory has `0xcc` at each address.
+    pub patches: Vec<(u64, u8)>,
+    /// The child, stopped where fork returned in it, when the backend keeps children (`Follow::Child` or `Both`).
+    pub target: Option<Box<dyn Target>>,
 }
 
 /// One side of a system call, as the kernel reported it.
@@ -249,6 +278,14 @@ pub trait Target {
     fn set_watch(&mut self, slots: &[Option<HwSlot>; 4]) -> Result<()>;
     /// The bytes under the breakpoints now in memory: a child the program forks is let go with them put back.
     fn set_patches(&mut self, _patches: &[(u64, u8)]) {}
+    /// Which side of a fork to keep. `false`: this backend lets every child go, whatever is asked.
+    fn set_follow(&mut self, _follow: Follow) -> bool {
+        false
+    }
+    /// The children forked since the last call, the let-go ones too.
+    fn forks(&mut self) -> Vec<Forked> {
+        Vec::new()
+    }
     fn resume(&mut self, how: Resume) -> Result<()>;
     /// Stop at every system call's start and end from the next resume on (`Stop::Syscall`).
     fn trace_syscalls(&mut self, _on: bool) -> Result<()> {

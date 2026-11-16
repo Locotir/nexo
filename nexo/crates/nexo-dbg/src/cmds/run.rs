@@ -122,6 +122,49 @@ impl Session {
         Ok(rows("detach", l, json!({})))
     }
 
+    /// `follow parent|child|both`: which side of a fork the debugger keeps. Alone: the setting and the forks seen.
+    pub(super) fn cmd_follow(&mut self, a: &Args) -> Result<Output> {
+        use crate::platform::Follow;
+        let want = match a.pos.first().map(String::as_str) {
+            None => None,
+            Some("parent") => Some(Follow::Parent),
+            Some("child") => Some(Follow::Child),
+            Some("both") => Some(Follow::Both),
+            Some(_) => return usage("follow parent|child|both"),
+        };
+        if let Some(f) = want {
+            if !self.t.set_follow(f) && f != Follow::Parent {
+                return fail(
+                    "this session cannot keep a forked child: a Linux program started or attached here can; on Windows and macOS every child is let go, and a core file or a remote stub has none",
+                );
+            }
+            self.follow = f;
+        }
+        let (word, text) = match self.follow {
+            Follow::Parent => (
+                "parent",
+                "follow parent: a forked child is let go with the breakpoints taken out (a vfork child shares the parent's memory, so it keeps them until its exec)",
+            ),
+            Follow::Child => (
+                "child",
+                "follow child: a forked child becomes a session of its own, stopped where it was made, with the breakpoints copied, and the parent is let go there (a vfork parent stays, as it shares the child's memory)",
+            ),
+            Follow::Both => (
+                "both",
+                "follow both: a forked child becomes a session of its own, stopped where it was made, with the breakpoints copied; the parent goes on",
+            ),
+        };
+        let mut l = vec![text.to_string()];
+        for f in &self.forks {
+            let kind = if f.vfork { "vfork" } else { "fork" };
+            l.push(match &f.session {
+                Some(id) => format!("pid {} ({kind} at {}): session {id}", f.pid, f.place),
+                None => format!("pid {} ({kind} at {}): let go", f.pid, f.place),
+            });
+        }
+        Ok(rows("follow", l, json!({"follow": word, "forks": self.forks.len()})))
+    }
+
     /// Several commands in one call: `do "break f; cont; args; bt"`, or a whole gdb script (one command per line,
     /// `commands ... end` blocks). It stops at the first command that fails, and when the program ends only the
     /// commands that read what is left (`out`, `log`, `history`, `status`, `info`, `echo`, `printf`) still run;

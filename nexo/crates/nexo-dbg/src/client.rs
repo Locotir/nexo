@@ -112,6 +112,7 @@ const CONTROL: &[&str] = &[
     "stop",
     "kill",
     "detach",
+    "follow",
     "end",
     "stdin",
     "catch",
@@ -208,7 +209,8 @@ fn set_effect(words: &[String]) -> SetEffect {
         | crate::gdbdialect::SetKind::Args(_)
         | crate::gdbdialect::SetKind::Env(..)
         | crate::gdbdialect::SetKind::Cwd(_)
-        | crate::gdbdialect::SetKind::Randomization { .. } => SetEffect::Keeps,
+        | crate::gdbdialect::SetKind::Randomization { .. }
+        | crate::gdbdialect::SetKind::Follow(_) => SetEffect::Keeps,
         crate::gdbdialect::SetKind::Register(..) | crate::gdbdialect::SetKind::Memory => SetEffect::Writes,
     }
 }
@@ -267,6 +269,7 @@ const READ_ALLOWED: &[&str] = &[
     "stop",
     "kill",
     "detach",
+    "follow",
     "catch",
     "strace",
     "ltrace",
@@ -554,10 +557,15 @@ fn pick_session(dir: &Path, want: &Option<String>) -> Result<String, Error> {
     let live = crate::sessions(dir);
     // a session whose program ended still answers (out, history), but it is never the one meant by default
     let running: Vec<&(String, String, u64)> = live.iter().filter(|s| crate::server::alive(s.2 as u32)).collect();
+    // a forked child kept by `follow` is reached with `-s`; the session that started the program stays the default
+    let pool: Vec<&(String, String, u64)> = if running.is_empty() { live.iter().collect() } else { running.clone() };
+    let started: Vec<&&(String, String, u64)> =
+        pool.iter().filter(|s| crate::server::parent_of(dir, &s.0).is_none()).collect();
     match (live.len(), running.len()) {
         (1, _) => Ok(live[0].0.clone()),
         (0, _) => Err(Error::Fail("no debug session: use `run <path>` or `attach <pid>`".into())),
         (_, 1) => Ok(running[0].0.clone()),
+        _ if started.len() == 1 => Ok(started[0].0.clone()),
         _ => Err(Error::Fail(format!(
             "more than one debug session is live ({}): add `-s <id>` to the command, or `end -s <id>` the others",
             live.iter().map(session_text).collect::<Vec<_>>().join(", ")

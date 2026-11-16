@@ -21,6 +21,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("stop", "stop a running program now"),
     ("kill", "end the program; `kill call` ends a call under way and puts its registers back"),
     ("detach", "let the program go on alone"),
+    ("follow", "which side of a fork is kept: follow parent|child|both (a kept child is a session of its own)"),
     ("break b tbreak", "stop at an address, name, file:line or import, with if/after/log"),
     ("breaks watches", "list breakpoints and watches"),
     ("delete del", "remove a breakpoint: delete <id>|all"),

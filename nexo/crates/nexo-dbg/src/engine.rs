@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::expr::{self, Env};
 use crate::modules::Mods;
-use crate::platform::{Event, Fault, HwSlot, Os, Resume, Stop, Target, Tid};
+use crate::platform::{Event, Fault, Follow, Forked, HwSlot, Os, Resume, Stop, Target, Tid};
 use crate::regs::Regs;
 use crate::{fail, Result};
 
@@ -26,6 +26,7 @@ pub const ACTION_HITS: u64 = 2000;
 /// Most bytes one `{mem:EXPR:N}` of a logpoint dumps.
 pub const LOG_BYTES: usize = 256;
 
+#[derive(Clone)]
 pub struct Bp {
     pub id: u32,
     pub addr: u64,
@@ -79,6 +80,10 @@ pub enum Why {
     Hook(u32, String),
     /// A call made by `call` or `print` came back to its return address.
     Returned,
+    /// The first stop of a forked child kept as a session of its own: what it is and where it came from.
+    Fork(String),
+    /// The program forked under `follow child`: the child is kept and this process was let go.
+    LetGo(String),
     Exited(i32),
     Killed(i32),
 }
@@ -157,6 +162,29 @@ pub struct Session {
     pub log_shown: u64,
     /// The call into the program under way (`call`, `print f(x)`), until it returns or ends.
     calling: Option<call::Pending>,
+    /// Which side of a fork is kept (`follow`).
+    pub follow: Follow,
+    /// The children the program forked, kept or let go.
+    pub forks: Vec<ForkNote>,
+    /// Children kept as sessions of their own, waiting for the server to give them a port.
+    pub kids: Vec<Kid>,
+}
+
+/// A child the program forked.
+pub struct ForkNote {
+    pub pid: u32,
+    /// Where fork returned in the parent: the address and its name.
+    pub place: String,
+    pub vfork: bool,
+    /// The child's session id, when it was kept.
+    pub session: Option<String>,
+}
+
+/// A forked child kept as a session: its id, the session and the answer that tells its first stop.
+pub struct Kid {
+    pub id: String,
+    pub sess: Session,
+    pub first: Output,
 }
 
 /// A stop in the words of the header line of an answer: its number, the event, the place and the address.
@@ -440,6 +468,9 @@ impl Session {
             log_total: 0,
             log_shown: 0,
             calling: None,
+            follow: Follow::Parent,
+            forks: Vec::new(),
+            kids: Vec::new(),
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -637,6 +668,7 @@ impl Session {
             let events =
                 if self.backlog.is_empty() { self.t.wait(timeout)? } else { std::mem::take(&mut self.backlog) };
             self.drain_output();
+            self.take_forks();
             if events.is_empty() {
                 return Ok(None);
             }
@@ -648,6 +680,11 @@ impl Session {
                     self.uninsert_all();
                 }
                 self.run = Run::default();
+                if matches!(stop.1, Why::LetGo(_)) {
+                    // `follow child`: the parent goes on alone, its own bytes back in place
+                    let _ = self.t.detach();
+                    self.ended("let go at a fork (`follow child`)".into());
+                }
                 return Ok(Some(stop));
             }
             // an event nobody asked about: go on
@@ -703,6 +740,7 @@ impl Session {
                         verdict = v;
                     }
                 }
+                Event::Stopped { stop: Stop::Exec, .. } => self.on_exec(),
                 _ => {}
             }
         }
@@ -738,6 +776,7 @@ impl Session {
                     }
                     Stop::Interrupt => verdict = Some((tid, Why::Interrupt)),
                     Stop::Exec => verdict = Some((tid, Why::Exec)),
+                    Stop::Fork(pid) => verdict = Some((tid, Why::LetGo(self.let_go_text(pid)))),
                     _ => {}
                 }
             }
@@ -944,6 +983,139 @@ impl Session {
         self.log.push_back(s);
         while self.log.len() > LOG_KEEP {
             self.log.pop_front();
+        }
+    }
+
+    /// Write down the children the program forked since the last look. Each one the backend kept becomes a session
+    /// of its own in `kids`, with the breakpoints copied.
+    fn take_forks(&mut self) {
+        for f in self.t.forks() {
+            let Forked { pid, at, vfork, patches, target, .. } = f;
+            // fork returns in libc, which the list read at the start may not hold yet
+            if self.mods.locate(at).is_none() {
+                self.mods.refresh(&mut *self.t);
+            }
+            let name = self.mods.label(at, false).unwrap_or_default();
+            let place = if name.is_empty() { format!("{at:#x}") } else { format!("{at:#x} {name}") };
+            let session = target.and_then(|t| self.adopt(t, pid, &place, vfork, &patches));
+            if let Some(id) = &session {
+                if self.follow == Follow::Both || vfork {
+                    self.log_line(format!(
+                        "pid {pid} ({} at {place}) is session {id}, stopped where it was made: `-s {id} cont` runs it",
+                        if vfork { "vfork" } else { "fork" }
+                    ));
+                }
+            }
+            self.forks.push(ForkNote { pid, place, vfork, session });
+        }
+    }
+
+    /// A forked child the backend kept: a session of its own, stopped where fork returned 0 in it, with the
+    /// breakpoints copied. `None` when its program cannot be read; the child then goes when `t` is dropped.
+    fn adopt(
+        &mut self,
+        t: Box<dyn Target>,
+        pid: u32,
+        place: &str,
+        vfork: bool,
+        patches: &[(u64, u8)],
+    ) -> Option<String> {
+        let img = match Image::open_arch(self.mods.exe_path(), crate::platform::NATIVE_SLICE) {
+            Ok(i) => i,
+            Err(e) => {
+                self.log_line(format!("pid {pid} forked at {place} was not kept: its program cannot be read ({e})"));
+                return None;
+            }
+        };
+        let mut kid = Session::new(t, img);
+        kid.follow = self.follow;
+        kid.t.set_follow(self.follow);
+        kid.bps = self.bps.iter().filter(|b| !b.once).cloned().map(|b| Bp { hits: 0, ..b }).collect();
+        kid.next_id = self.next_id;
+        kid.catch = self.catch.clone();
+        // the child's memory holds 0xcc where the parent's did at the fork; a stopped session holds the program's
+        // own bytes, and the child's next run puts its breakpoints back. A vfork child shares the parent's memory
+        // until it execs: writing the bytes back there would take the parent's breakpoints and hooks out too, so
+        // the child starts with them counted as its own (reads still show the program's bytes through the patches)
+        kid.inserted = patches.iter().copied().collect();
+        kid.t.set_patches(patches);
+        if !vfork {
+            kid.uninsert_all();
+        }
+        let parent = self.t.pid();
+        let kind = if vfork { "vfork" } else { "fork" };
+        let ids: Vec<String> = kid.bps.iter().filter(|b| !b.call).map(|b| format!("#{}", b.id)).collect();
+        let copied = if ids.is_empty() {
+            "no breakpoints to copy".to_string()
+        } else {
+            format!("breakpoints {} copied", ids.join(" "))
+        };
+        let mut text = format!(
+            "pid {pid}, made by {kind} in pid {parent} at {place}: stopped where {kind} returned 0 in it; {copied} (watches, hooks and traces stay with pid {parent})"
+        );
+        if vfork {
+            text.push_str(&format!(
+                "; it shares pid {parent}'s memory until it execs or exits, and pid {parent} waits until then"
+            ));
+        }
+        let first = kid.answer(pid as Tid, Why::Fork(text));
+        let id = crate::server::new_id();
+        self.kids.push(Kid { id: id.clone(), sess: kid, first });
+        Some(id)
+    }
+
+    /// The answer of a parent let go at a fork under `follow child`.
+    fn let_go_text(&self, pid: u32) -> String {
+        match self.forks.iter().rev().find(|f| f.pid == pid) {
+            Some(ForkNote { place, session: Some(id), .. }) => format!(
+                "the program forked pid {pid} at {place}: under `follow child` the child is session {id} and this process goes on without the debugger; `-s {id} cont` runs the child"
+            ),
+            _ => format!("the program forked pid {pid}: under `follow child` this process goes on without the debugger"),
+        }
+    }
+
+    /// The program replaced itself (exec). The bytes under our breakpoints went with the old program, and what was
+    /// set by address in it does not point into the new one, so it is switched off; names and lines come from the new
+    /// program from here on.
+    fn on_exec(&mut self) {
+        self.inserted.clear();
+        self.t.set_patches(&[]);
+        self.tr.pending.clear();
+        let mut off = Vec::new();
+        for b in self.bps.iter_mut().filter(|b| b.enabled) {
+            b.enabled = false;
+            off.push(format!("#{}", b.id));
+        }
+        let mut gone = Vec::new();
+        if self.tr.lib.take().is_some() {
+            gone.push("ltrace");
+        }
+        if !self.tr.hooks.is_empty() {
+            self.tr.hooks.clear();
+            gone.push("hooks");
+        }
+        if self.tr.cover.take().is_some() {
+            gone.push("cover");
+        }
+        if self.t.os() == Os::Linux {
+            if let Ok(path) = std::fs::read_link(format!("/proc/{}/exe", self.t.pid())) {
+                if let Ok(mut img) = Image::open_arch(&path, crate::platform::NATIVE_SLICE) {
+                    if let Some(d) = crate::knowledge::data_dir() {
+                        let _ = nexo_bin::attach_names(&mut img, &d);
+                    }
+                    self.mods = Mods::new(img);
+                }
+            }
+        }
+        self.mods.refresh(&mut *self.t);
+        if !off.is_empty() {
+            self.log_line(format!(
+                "breakpoints {} were addresses in the old program and are disabled now (`enable <id>` arms one at the same address)",
+                off.join(" ")
+            ));
+        }
+        if !gone.is_empty() {
+            self.log_line(format!("{} were set on the old program and are off now", gone.join(", ")));
         }
     }
 

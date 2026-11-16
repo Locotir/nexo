@@ -409,6 +409,14 @@ impl Session {
                 Ok(rows("set", vec![format!("{name} = {:#x}", v.v)], json!({"value": v.v})))
             }
             g::SetKind::Register(r, e) => self.exec(&["setreg".to_string(), r, e]),
+            g::SetKind::Follow(f) => {
+                let f = match (f, self.follow) {
+                    ("detach", crate::platform::Follow::Child) => "child",
+                    ("detach", _) => "parent",
+                    (f, _) => f,
+                };
+                self.exec(&["follow".to_string(), f.to_string()])
+            }
             g::SetKind::Args(_) => usage("the arguments go in `run <path> <args>`; a gdb script can use `set args` before `run`"),
             g::SetKind::Randomization { .. } => Ok(rows(
                 "set",

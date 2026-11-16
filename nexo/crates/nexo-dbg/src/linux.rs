@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use libc::{c_long, c_void};
 
-use crate::platform::{Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Sys, Target, Tid};
+use crate::platform::{
+    Access, Event, Fault, Follow, Forked, HwSlot, Launch, Map, Module, Os, Resume, Stop, Sys, Target, Tid,
+};
 use crate::regs::Regs;
 use crate::{fail, Error, Result};
 
@@ -41,11 +43,13 @@ const GET_SYSCALL_INFO: c_long = 0x420e;
 
 const O_TRACESYSGOOD: u64 = 0x1;
 const O_TRACEFORK: u64 = 0x2;
+const O_TRACEVFORK: u64 = 0x4;
 const O_TRACECLONE: u64 = 0x8;
 const O_TRACEEXEC: u64 = 0x10;
 const O_EXITKILL: u64 = 0x10_0000;
 
 const EVENT_FORK: i32 = 1;
+const EVENT_VFORK: i32 = 2;
 const EVENT_CLONE: i32 = 3;
 const EVENT_EXEC: i32 = 4;
 const EVENT_STOP: i32 = 128;
@@ -109,6 +113,10 @@ pub struct Linux {
     want_stop: bool,
     /// Stop at system calls (`PTRACE_SYSCALL` instead of `PTRACE_CONT`).
     sys: bool,
+    /// Which side of a fork is kept (`follow`).
+    follow: Follow,
+    /// The children forked since `Target::forks` last took them.
+    forks: Vec<Forked>,
 }
 
 /// The ptrace order that lets a thread go: one instruction, up to the next system call, or on.
@@ -266,7 +274,9 @@ impl Linux {
         if unsafe { libc::waitpid(pid, &mut st, libc::WUNTRACED) } != pid || !libc::WIFSTOPPED(st) {
             return Err(why(pid));
         }
-        if let Err(e) = pt(SEIZE, pid, 0, O_EXITKILL | O_TRACESYSGOOD | O_TRACECLONE | O_TRACEFORK | O_TRACEEXEC) {
+        if let Err(e) =
+            pt(SEIZE, pid, 0, O_EXITKILL | O_TRACESYSGOOD | O_TRACECLONE | O_TRACEFORK | O_TRACEVFORK | O_TRACEEXEC)
+        {
             let _ = why(pid);
             return Err(Error::Fail(format!(
                 "the system does not let nexo trace a program here ({e}); inside nexo's sandbox run the dbg command unsandboxed"
@@ -301,6 +311,8 @@ impl Linux {
             gone: false,
             want_stop: false,
             sys: false,
+            follow: Follow::Parent,
+            forks: Vec::new(),
         };
         me.open_mem();
         Ok(me)
@@ -328,6 +340,8 @@ impl Linux {
             gone: false,
             want_stop: false,
             sys: false,
+            follow: Follow::Parent,
+            forks: Vec::new(),
         };
         loop {
             let mut new = 0;
@@ -337,7 +351,9 @@ impl Linux {
                 if me.th.contains_key(&tid) {
                     continue;
                 }
-                if let Err(e) = pt(SEIZE, tid, 0, O_TRACESYSGOOD | O_TRACECLONE | O_TRACEFORK | O_TRACEEXEC) {
+                if let Err(e) =
+                    pt(SEIZE, tid, 0, O_TRACESYSGOOD | O_TRACECLONE | O_TRACEFORK | O_TRACEVFORK | O_TRACEEXEC)
+                {
                     if e.raw_os_error() == Some(libc::ESRCH) {
                         continue;
                     }
@@ -415,25 +431,101 @@ impl Linux {
         }
     }
 
-    /// A child the program forked: put the original bytes back over our breakpoints and let it go.
-    fn release_child(&self, child: i32) {
+    /// Wait for the first stop of a child the kernel attached to us at a fork. False: it is already gone.
+    fn first_stop(child: i32) -> bool {
         loop {
             match waitpid(child, 0) {
-                Ok(Some(st)) if libc::WIFSTOPPED(st) => break,
-                Ok(Some(_)) | Err(_) => return,
+                Ok(Some(st)) if libc::WIFSTOPPED(st) => return true,
+                Ok(Some(_)) | Err(_) => return false,
                 Ok(None) => {}
             }
         }
-        for &(addr, byte) in &self.patches {
-            let base = addr & !7;
-            let mut w = 0u64;
-            if pt(PEEKDATA, child, base, (&raw mut w) as u64).is_ok() {
-                let mut b = w.to_le_bytes();
-                b[(addr - base) as usize] = byte;
-                let _ = pt(POKEDATA, child, base, u64::from_le_bytes(b));
+    }
+
+    /// A child the program forked: put the original bytes back over our breakpoints and let it go. A vfork child
+    /// shares the parent's memory, so its bytes stay as they are: putting them back would take the parent's
+    /// breakpoints out, and the child's exec drops them anyway.
+    fn release_child(&self, child: i32, vfork: bool) {
+        if !Self::first_stop(child) {
+            return;
+        }
+        if !vfork {
+            for &(addr, byte) in &self.patches {
+                let base = addr & !7;
+                let mut w = 0u64;
+                if pt(PEEKDATA, child, base, (&raw mut w) as u64).is_ok() {
+                    let mut b = w.to_le_bytes();
+                    b[(addr - base) as usize] = byte;
+                    let _ = pt(POKEDATA, child, base, u64::from_le_bytes(b));
+                }
             }
         }
         let _ = pt(DETACH, child, 0, 0);
+    }
+
+    /// A child the program forked, kept as a target of its own: one thread, stopped where fork returned in it, with
+    /// the parent's breakpoint bytes in its memory. It is killed at the end when the parent was started here, as
+    /// `PTRACE_O_EXITKILL` passes to it.
+    fn keep_child(&self, child: i32) -> Option<Linux> {
+        if !Self::first_stop(child) {
+            return None;
+        }
+        let mut th = BTreeMap::new();
+        th.insert(child, Th::default());
+        let mut kid = Linux {
+            pid: child,
+            th,
+            mem: None,
+            launched: self.launched,
+            stdin: None,
+            // the child writes to the same pipe as the parent; its own copy of the read end keeps the pipe open (no
+            // SIGPIPE in the child) when the parent's session ends first
+            out: self.out.as_ref().and_then(|f| f.try_clone().ok()),
+            watch: [None; 4],
+            patches: self.patches.clone(),
+            gone: false,
+            want_stop: false,
+            sys: false,
+            follow: self.follow,
+            forks: Vec::new(),
+        };
+        kid.open_mem();
+        Some(kid)
+    }
+
+    /// The program forked: keep the child or let it go as `follow` says, and write the fork down.
+    fn on_fork(&mut self, tid: i32, vfork: bool, stopping: bool, events: &mut Vec<Event>) {
+        let mut child = 0u64;
+        if pt(GETEVENTMSG, tid, 0, (&raw mut child) as u64).is_err() || child == 0 {
+            if !stopping {
+                self.again(tid);
+            }
+            return;
+        }
+        let child = child as i32;
+        let at = self.regs(tid as Tid).map_or(0, |r| r.rip);
+        let target: Option<Box<dyn Target>> = match self.follow {
+            Follow::Parent => {
+                self.release_child(child, vfork);
+                None
+            }
+            Follow::Child | Follow::Both => self.keep_child(child).map(|k| Box::new(k) as Box<dyn Target>),
+        };
+        let kept = target.is_some();
+        self.forks.push(Forked {
+            pid: child as u32,
+            tid: tid as Tid,
+            at,
+            vfork,
+            patches: self.patches.clone(),
+            target,
+        });
+        // A vfork parent cannot run before its child execs or exits, so it is never the one that waits here.
+        if kept && self.follow == Follow::Child && !vfork {
+            events.push(Event::Stopped { tid: tid as Tid, stop: Stop::Fork(child as u32) });
+        } else if !stopping {
+            self.again(tid);
+        }
     }
 
     /// Take in one status of `tid`. `stopping` is true while every thread is being stopped: nothing
@@ -475,15 +567,8 @@ impl Linux {
                     self.again(tid);
                 }
             }
-            EVENT_FORK => {
-                let mut child = 0u64;
-                if pt(GETEVENTMSG, tid, 0, (&raw mut child) as u64).is_ok() && child > 0 {
-                    self.release_child(child as i32);
-                }
-                if !stopping {
-                    self.again(tid);
-                }
-            }
+            EVENT_FORK => self.on_fork(tid, false, stopping, events),
+            EVENT_VFORK => self.on_fork(tid, true, stopping, events),
             EVENT_EXEC => {
                 // The thread that called exec now carries the process id; the others are gone.
                 self.th.retain(|k, _| *k == self.pid);
@@ -725,6 +810,15 @@ impl Target for Linux {
 
     fn set_patches(&mut self, patches: &[(u64, u8)]) {
         self.patches = patches.to_vec();
+    }
+
+    fn set_follow(&mut self, follow: Follow) -> bool {
+        self.follow = follow;
+        true
+    }
+
+    fn forks(&mut self) -> Vec<Forked> {
+        std::mem::take(&mut self.forks)
     }
 
     fn trace_syscalls(&mut self, on: bool) -> Result<()> {

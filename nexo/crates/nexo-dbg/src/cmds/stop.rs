@@ -62,6 +62,7 @@ impl Session {
             Why::Syscall(t) => format!("system call {t}"),
             Why::Hook(_, t) => format!("hook {t}"),
             Why::Returned => "a call returned".to_string(),
+            Why::Fork(t) | Why::LetGo(t) => t.clone(),
             Why::Exited(c) => format!("the program exited with code {c}"),
             Why::Killed(s) => {
                 format!("the program was killed by {}", crate::engine::signal_name_on(self.t.os(), *s as u32))
@@ -82,6 +83,7 @@ impl Session {
             Why::Syscall(_) => "syscall",
             Why::Hook(..) => "hook",
             Why::Returned => "call",
+            Why::Fork(_) | Why::LetGo(_) => "fork",
             Why::Exited(_) => "exit",
             Why::Killed(_) => "killed",
         };
@@ -89,10 +91,12 @@ impl Session {
             Why::Step | Why::Next => "step".to_string(),
             other => format!("{other:?}").split(['(', ' ']).next().unwrap_or("").to_lowercase(),
         };
-        if matches!(why, Why::Exited(_) | Why::Killed(_)) {
+        if matches!(why, Why::Exited(_) | Why::Killed(_) | Why::LetGo(_)) {
             l.push(headline);
             l.extend(self.call_gone());
-            l.extend(self.unhit_lines());
+            if !matches!(why, Why::LetGo(_)) {
+                l.extend(self.unhit_lines());
+            }
             if let Some(o) = self.new_output_line() {
                 l.push(o);
             }
@@ -105,6 +109,10 @@ impl Session {
         // a stop always selects the frame it stopped in: `up` and `frame N` read its callers
         self.frame = 0;
         l.push(format!("{headline} (thread {tid}, frame #0)"));
+        if why == Why::Exec {
+            let mods: Vec<String> = self.mods.list.iter().map(|m| format!("{} at {:#x}", m.path, m.base)).collect();
+            l.push(format!("modules now: {}", mods.join(", ")));
+        }
         l.extend(self.call_note());
         if let Ok(r) = self.t.regs(tid) {
             let name = self.mods.label(r.rip, false).unwrap_or_default();

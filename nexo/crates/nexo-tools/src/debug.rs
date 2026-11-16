@@ -67,6 +67,7 @@ cover [funcs], cover show [func], cover save <A>, cover diff <A> <B>|now, cover 
 do \"c1; c2\"  several commands in one call
 gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info registers|breakpoints|frame|proc mappings, break *(f+0x10), `commands N ... end` (log, x, printf, continue at every hit, no round trip); a whole gdb script (newlines or `;`, `file p` or `run p args` last) is one call; `print a --as string|vector`
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
+follow parent|child|both  which side of a fork is kept; a kept child is a session of its own (`-s <id>`), breakpoints copied
 detach, kill, end, sessions, help";
 
 /// The short text every request carries: the questions the tool answers (run on chosen input, stop, registers and
