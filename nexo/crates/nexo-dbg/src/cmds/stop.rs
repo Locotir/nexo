@@ -141,15 +141,9 @@ impl Session {
                     len = n.len as u64;
                 }
             }
-            if let Why::Watch(ids) = &why {
-                for id in ids {
-                    let Some(i) = self.wps.iter().position(|w| w.id == *id) else { continue };
-                    let (addr, len) = (self.wps[i].hw.addr, self.wps[i].hw.len as usize);
-                    let now = self.read_vec(addr, len);
-                    let old = std::mem::replace(&mut self.wps[i].last, now.clone());
-                    self.wps[i].hits += 1;
-                    l.push(format!("watch #{id} {addr:#x}: {} -> {}", hex(&old), hex(&now)));
-                }
+            if let Why::Watch(_) = &why {
+                // written at the hit, when the bytes before and after and the instruction were known
+                l.append(&mut self.watch_lines);
             }
             if let Why::Signal(f) = &why {
                 l.extend(self.triage(f, &r, ins.as_ref()));
@@ -360,11 +354,4 @@ impl Session {
         }
         l
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    if b.is_empty() {
-        return "?".into();
-    }
-    b.iter().rev().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join("")
 }

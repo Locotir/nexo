@@ -643,7 +643,7 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "list" | "l" => "`dis [addr] [N]` shows the code; a stop shows file:line when the program has DWARF lines",
         "return" | "jump" => "`setreg rip <addr>` moves the program counter (asks); `finish` runs to the caller",
-        "rwatch" | "awatch" => "`watch <addr> [len] r|w|x` stops on a read, a write or a fetch",
+        "rwatch" | "awatch" => "`watch <addr|A..B> [len] r|w|x` stops on a read, a write or a fetch (`if`, `after` and `log` as on `break`)",
         "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program",
         "source" => "scripts go in the call itself, one command per line, or `a; b; c`",
         "shell" | "!" => "the debug tool does not run shell commands: use the shell tool",

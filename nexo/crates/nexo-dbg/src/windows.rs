@@ -18,7 +18,10 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, ReadFile, WriteFile};
 use windows_sys::Win32::System::Diagnostics::Debug::*;
-use windows_sys::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_IMAGE};
+use windows_sys::Win32::System::Memory::{
+    VirtualProtectEx, VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_IMAGE, PAGE_EXECUTE, PAGE_EXECUTE_READ,
+    PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE,
+};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::*;
 
@@ -671,6 +674,26 @@ impl Target for Windows {
         self.watch = *slots;
         for h in self.threads.values() {
             self.put_watch(*h, slots)?;
+        }
+        Ok(())
+    }
+
+    fn protect(&mut self, addr: u64, len: u64, prot: u8) -> Result<()> {
+        use crate::platform::{PROT_R, PROT_W, PROT_X};
+        let (r, w, x) = (prot & PROT_R != 0, prot & PROT_W != 0, prot & PROT_X != 0);
+        // Windows has no write-only page: a write bit carries the read bit with it, as on x86 itself
+        let want: PAGE_PROTECTION_FLAGS = match (r || w, w, x) {
+            (false, _, false) => PAGE_NOACCESS,
+            (false, _, true) => PAGE_EXECUTE,
+            (true, false, false) => PAGE_READONLY,
+            (true, true, false) => PAGE_READWRITE,
+            (true, false, true) => PAGE_EXECUTE_READ,
+            (true, true, true) => PAGE_EXECUTE_READWRITE,
+        };
+        let mut old: PAGE_PROTECTION_FLAGS = 0;
+        // SAFETY: the process handle is ours; `old` is a valid place for the old protection.
+        if unsafe { VirtualProtectEx(self.process, addr as *const c_void, len as usize, want, &mut old) } == 0 {
+            return Err(last_error("VirtualProtectEx"));
         }
         Ok(())
     }

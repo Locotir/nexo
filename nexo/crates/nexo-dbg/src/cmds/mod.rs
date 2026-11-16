@@ -240,7 +240,7 @@ impl Session {
             "thread" => self.cmd_thread(&a),
             "frame" => self.cmd_frame(&a),
             "up" | "down" => self.cmd_up(&a, cmd == "up"),
-            "watch" => self.cmd_watch(&a),
+            "watch" => self.cmd_watch(&words[1..]),
             "maps" => self.cmd_maps(&a),
             "modules" => self.cmd_modules(),
             "find" => self.cmd_find(&a),

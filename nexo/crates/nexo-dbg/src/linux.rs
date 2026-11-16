@@ -808,6 +808,65 @@ impl Target for Linux {
         Ok(())
     }
 
+    fn protect(&mut self, addr: u64, len: u64, prot: u8) -> Result<()> {
+        // ptrace cannot change another process's pages: the program itself runs one mprotect, from a `syscall`
+        // (`int 0x80` in a 32-bit program) put for one step where a stopped thread stands, then every byte and
+        // register goes back as it was.
+        let tid = self.stopped_tid()?;
+        let mut saved = [0u64; 27];
+        pt(GETREGS, tid, 0, saved.as_mut_ptr() as u64).map_err(|e| os_err("registers for mprotect", e))?;
+        let rip = saved[16];
+        let compat = saved[17] == 0x23;
+        let mut code = [0u8; 2];
+        if self.read(rip, &mut code) != 2 {
+            return fail(format!("mprotect: the code at {rip:#x} cannot be read"));
+        }
+        // the bits are the same as Linux's PROT_READ, PROT_WRITE, PROT_EXEC
+        let p = u64::from(prot & 7);
+        let mut u = saved;
+        // not inside a system call, so the kernel restarts none on the way out
+        u[15] = u64::MAX;
+        let insn = if compat {
+            (u[10], u[5], u[11], u[12]) = (125, addr, len, p);
+            [0xcd, 0x80]
+        } else {
+            (u[10], u[14], u[13], u[12]) = (libc::SYS_mprotect as u64, addr, len, p);
+            [0x0f, 0x05]
+        };
+        self.write(rip, &insn)?;
+        let ran = pt(SETREGS, tid, 0, u.as_ptr() as u64).and_then(|_| {
+            for _ in 0..8 {
+                pt(SINGLESTEP, tid, 0, 0)?;
+                let st = waitpid(tid, 0)?.unwrap_or(0);
+                if !libc::WIFSTOPPED(st) {
+                    return Err(io::Error::other("the thread ended during mprotect"));
+                }
+                let sig = libc::WSTOPSIG(st);
+                if sig == libc::SIGTRAP {
+                    let mut after = [0u64; 27];
+                    pt(GETREGS, tid, 0, after.as_mut_ptr() as u64)?;
+                    return Ok(after[10] as i64);
+                }
+                // a signal came first: it is handed over when the thread runs again, the step is tried again
+                if let Some(t) = self.th.get_mut(&tid).filter(|t| t.sig == 0) {
+                    t.sig = sig;
+                }
+            }
+            Err(io::Error::other("signals kept coming before the mprotect step"))
+        });
+        let back = self.write(rip, &code);
+        pt(SETREGS, tid, 0, saved.as_ptr() as u64).map_err(|e| os_err("registers after mprotect", e))?;
+        back?;
+        match ran {
+            Ok(r) if r < 0 => fail(format!(
+                "mprotect({addr:#x}, {len:#x}) in the program failed: {}",
+                io::Error::from_raw_os_error(-r as i32)
+            )),
+            Ok(_) => Ok(()),
+            Err(e) => Err(os_err("mprotect", e)),
+        }
+    }
+
     fn set_patches(&mut self, patches: &[(u64, u8)]) {
         self.patches = patches.to_vec();
     }

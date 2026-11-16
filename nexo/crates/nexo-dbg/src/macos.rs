@@ -1252,6 +1252,16 @@ impl Target for Mac {
         Ok(())
     }
 
+    fn protect(&mut self, addr: u64, len: u64, prot: u8) -> Result<()> {
+        // the bits are the same as VM_PROT_READ, VM_PROT_WRITE, VM_PROT_EXECUTE
+        // SAFETY: protection changes on pages of the task's own.
+        let kr = unsafe { mach_vm_protect(self.task, addr, len, 0, c_int::from(prot & 7)) };
+        if kr != KERN_SUCCESS {
+            return fail(format!("mach_vm_protect({addr:#x}, {len:#x}): {}", kr_text(kr)));
+        }
+        Ok(())
+    }
+
     fn resume(&mut self, how: Resume) -> Result<()> {
         if self.gone {
             return fail("the program has ended");

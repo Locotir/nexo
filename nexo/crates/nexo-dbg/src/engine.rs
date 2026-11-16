@@ -9,11 +9,14 @@ use serde_json::{json, Value};
 
 use crate::expr::{self, Env};
 use crate::modules::Mods;
-use crate::platform::{Event, Fault, Follow, Forked, HwSlot, Os, Resume, Stop, Target, Tid};
+use crate::platform::{Access, Event, Fault, Follow, Forked, HwSlot, Os, Resume, Stop, Target, Tid};
 use crate::regs::Regs;
 use crate::{fail, Result};
 
 mod call;
+pub mod watch;
+
+pub use watch::{Guard, WatchHow};
 
 /// Stops remembered for `history`.
 pub const HISTORY: usize = 64;
@@ -48,10 +51,20 @@ pub struct Bp {
 
 pub struct Wp {
     pub id: u32,
-    pub slot: usize,
-    pub hw: HwSlot,
+    pub addr: u64,
+    pub len: u64,
+    pub access: Access,
+    pub how: WatchHow,
+    /// The debug registers it takes (number and what each one watches), for a hardware watch.
+    pub slots: Vec<(usize, HwSlot)>,
+    /// Its bytes as they were at the last look.
     pub last: Vec<u8>,
     pub hits: u64,
+    /// As for a breakpoint: a condition (`$old`, `$new` and `$at` hold the change), hits let go by first, and a
+    /// line for the log instead of a stop (empty: the hit line itself).
+    pub cond: Option<String>,
+    pub after: u64,
+    pub log: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +181,12 @@ pub struct Session {
     pub forks: Vec<ForkNote>,
     /// Children kept as sessions of their own, waiting for the server to give them a port.
     pub kids: Vec<Kid>,
+    /// Pages page watches guard while the program runs.
+    pub guards: Vec<Guard>,
+    /// The lines of the watch hits the next stop reports.
+    pub watch_lines: Vec<String>,
+    /// The thread a step watch stepped and the instruction it ran.
+    step_from: Option<(Tid, u64)>,
 }
 
 /// A child the program forked.
@@ -480,6 +499,9 @@ impl Session {
             follow: Follow::Parent,
             forks: Vec::new(),
             kids: Vec::new(),
+            guards: Vec::new(),
+            watch_lines: Vec::new(),
+            step_from: None,
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -592,6 +614,7 @@ impl Session {
             let _ = self.t.write(a, &[b]);
         }
         self.t.set_patches(&[]);
+        self.drop_guards();
     }
 
     /// Threads that sit on an address where a breakpoint is (or will be) step past it alone first.
@@ -643,6 +666,7 @@ impl Session {
         self.need_stopped()?;
         self.frame = 0;
         self.run = run;
+        self.watch_lines.clear();
         let r = self.resume_now();
         if r.is_err() {
             // the program did not start: it is where it was, with none of our breakpoints in it
@@ -659,23 +683,31 @@ impl Session {
             self.state = State::Running;
             return Ok(());
         }
+        // guarded before a thread steps off a breakpoint, so a write by that one instruction is seen too
+        self.guard_pages()?;
         self.step_over_wanted()?;
         self.state = State::Running;
         if !self.backlog.is_empty() {
             return Ok(());
         }
         self.insert_wanted()?;
+        if let Some(tid) = self.step_watch_thread() {
+            let pc = self.t.regs(tid)?.rip;
+            self.step_from = Some((tid, pc));
+            return self.t.resume(Resume::Step(tid));
+        }
         self.t.resume(Resume::All)
     }
 
     /// Wait up to `timeout` for the program to stop for a reason worth reporting. `Ok(None)`: still running.
     pub fn poll(&mut self, timeout: Duration) -> Result<Option<(Tid, Why)>> {
+        let until = Instant::now() + timeout;
         loop {
             if self.state != State::Running {
                 return fail("the program is not running");
             }
-            let events =
-                if self.backlog.is_empty() { self.t.wait(timeout)? } else { std::mem::take(&mut self.backlog) };
+            let left = until.saturating_duration_since(Instant::now());
+            let events = if self.backlog.is_empty() { self.t.wait(left)? } else { std::mem::take(&mut self.backlog) };
             self.drain_output();
             self.take_forks();
             if events.is_empty() {
@@ -696,9 +728,9 @@ impl Session {
                 }
                 return Ok(Some(stop));
             }
-            // an event nobody asked about: go on
+            // an event nobody asked about: go on (a step watch makes one per instruction, so the time is kept)
             self.resume_now()?;
-            if timeout.is_zero() {
+            if Instant::now() >= until {
                 return Ok(None);
             }
         }
@@ -722,7 +754,15 @@ impl Session {
         let mut verdict: Option<(Tid, Why)> = None;
         // a thread that ran into one of our breakpoints is put back before the instruction
         let mut bp_hits: Vec<(Tid, u64)> = Vec::new();
+        // debug register hits, faults in guarded pages and the steps of a step watch
+        let mut watch_evs: Vec<(Tid, Stop)> = Vec::new();
         for ev in &events {
+            if let Event::Stopped { tid, stop } = *ev {
+                let stepped = self.step_from.is_some_and(|(t, _)| t == tid) && matches!(stop, Stop::Step);
+                if stepped || matches!(stop, Stop::Watch(_)) || matches!(stop, Stop::Fault(f) if self.guard_fault(&f)) {
+                    watch_evs.push((tid, stop));
+                }
+            }
             match *ev {
                 Event::Exited { code } => {
                     self.ended(format!("exited with code {code}"));
@@ -767,17 +807,23 @@ impl Session {
                 verdict = v;
             }
         }
+        let taken: Vec<(Tid, Stop)> = watch_evs.clone();
+        if !watch_evs.is_empty() {
+            let v = self.watch_events(watch_evs)?;
+            if verdict.is_none() {
+                verdict = v;
+            }
+        }
         for ev in &events {
             if verdict.is_some() {
                 break;
             }
             if let Event::Stopped { tid, stop } = *ev {
+                if matches!(stop, Stop::Fault(_)) && taken.contains(&(tid, stop)) {
+                    continue;
+                }
                 match stop {
-                    Stop::Step if self.run.step.is_some() => verdict = Some((tid, Why::Step)),
-                    Stop::Watch(bits) => {
-                        let ids: Vec<u32> = self.wps.iter().filter(|w| bits >> w.slot & 1 == 1).map(|w| w.id).collect();
-                        verdict = Some((tid, Why::Watch(ids)));
-                    }
+                    Stop::Step | Stop::Watch(_) if self.run.step.is_some() => verdict = Some((tid, Why::Step)),
                     Stop::Fault(f) => {
                         if self.catch.contains(&f.number) || (self.t.os() == Os::Windows && !f.first_chance) {
                             verdict = Some((tid, Why::Signal(f)));
@@ -1049,7 +1095,10 @@ impl Session {
         kid.inserted = patches.iter().copied().collect();
         kid.t.set_patches(patches);
         if !vfork {
+            // the child's copy of a guarded page is guarded too, and its watch stays with the parent
+            kid.guards = self.guards.iter().filter(|g| g.armed).copied().collect();
             kid.uninsert_all();
+            kid.guards.clear();
         }
         let parent = self.t.pid();
         let kind = if vfork { "vfork" } else { "fork" };
@@ -1105,6 +1154,14 @@ impl Session {
         }
         if self.tr.cover.take().is_some() {
             gone.push("cover");
+        }
+        // the guarded pages went with the old program
+        self.guards.clear();
+        self.step_from = None;
+        let n = self.wps.len();
+        self.wps.retain(|w| w.how == WatchHow::Hardware);
+        if self.wps.len() < n {
+            gone.push("page and step watches");
         }
         if self.t.os() == Os::Linux {
             if let Ok(path) = std::fs::read_link(format!("/proc/{}/exe", self.t.pid())) {

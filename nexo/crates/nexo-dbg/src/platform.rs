@@ -55,6 +55,13 @@ pub enum Touch {
     Exec,
 }
 
+/// Page access bits of [`Target::protect`]: read, write, execute.
+pub const PROT_R: u8 = 1;
+pub const PROT_W: u8 = 2;
+pub const PROT_X: u8 = 4;
+/// The page size the watches guard by: 4 KiB on x86, the only live debugging there is.
+pub const PAGE: u64 = 0x1000;
+
 /// One of the four hardware debug registers: `len` is 1, 2, 4 or 8 and `addr` is aligned to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HwSlot {
@@ -276,6 +283,11 @@ pub trait Target {
     fn entry(&mut self) -> Option<u64>;
     /// Put these four slots on every thread, the ones not yet born included.
     fn set_watch(&mut self, slots: &[Option<HwSlot>; 4]) -> Result<()>;
+    /// Set the access of the pages that hold `addr..addr+len` to `prot` (bits [`PROT_R`], [`PROT_W`], [`PROT_X`]). A
+    /// watch that does not fit the four hardware slots guards its pages this way and is told by the fault.
+    fn protect(&mut self, _addr: u64, _len: u64, _prot: u8) -> Result<()> {
+        crate::fail("this target cannot change the access of a page")
+    }
     /// The bytes under the breakpoints now in memory: a child the program forks is let go with them put back.
     fn set_patches(&mut self, _patches: &[(u64, u8)]) {}
     /// Which side of a fork to keep. `false`: this backend lets every child go, whatever is asked.

@@ -59,7 +59,8 @@ regs, setreg <reg> <v>  (asks)
 call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with these arguments and give its value; every register is put back after; a stop inside it says so, `kill call` ends it (asks)
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
 bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
-watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
+watch <addr|A..B> [len] [w|r|x] [hw|page|step] [if expr] [after N] [log [text]]  any length (debug registers, then guarded pages, then single steps; the answer says which and its cost); $old, $new, $at hold the change; a log watch writes a line per hit and does not stop
+catch <signal>, stdin <text>, out, history
 dump <A..B|A+LEN|fn> [path], dump module <name> [path]  memory to a file (a range raw at its address, a whole module rebuilt as ELF/PE); the answer names the `bin` call that reads it (asks)
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return

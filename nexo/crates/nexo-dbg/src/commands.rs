@@ -26,7 +26,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("breaks watches", "list breakpoints and watches"),
     ("delete del", "remove a breakpoint: delete <id>|all"),
     ("enable disable", "switch a breakpoint on or off"),
-    ("watch", "stop when an address is read or written (asks)"),
+    ("watch", "stop or log when a range of any length is written or read (asks)"),
     ("catch catches", "stop on a signal or a system call"),
     ("calls", "log (and save for decomp) the real targets of indirect calls: all, or the sites given"),
     ("strace", "log the system calls the program makes"),

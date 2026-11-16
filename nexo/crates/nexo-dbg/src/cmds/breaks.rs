@@ -291,18 +291,29 @@ impl Session {
             l.push(s);
         }
         for w in &self.wps {
-            l.push(format!(
-                "#{} watch {:#x} len {} {} hits {}",
+            let mut s = format!(
+                "#{} watch {:#x} len {} {} ({}) hits {}",
                 w.id,
-                w.hw.addr,
-                w.hw.len,
-                match w.hw.access {
+                w.addr,
+                w.len,
+                match w.access {
                     Access::Exec => "x",
                     Access::Write => "w",
                     Access::ReadWrite => "r/w",
                 },
+                w.how.word(),
                 w.hits
-            ));
+            );
+            if let Some(c) = &w.cond {
+                s.push_str(&format!(" if {c}"));
+            }
+            if w.after > 0 {
+                s.push_str(&format!(" after {}", w.after));
+            }
+            if let Some(t) = &w.log {
+                s.push_str(&format!(" log {t:?}"));
+            }
+            l.push(s);
         }
         if l.is_empty() {
             l.push("no breakpoints or watches".into());
