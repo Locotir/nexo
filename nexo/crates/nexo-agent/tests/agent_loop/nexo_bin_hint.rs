@@ -56,9 +56,12 @@ async fn the_first_time_a_compiled_program_is_read_by_hand_the_result_says_nexo_
     let exe = std::env::current_exe().unwrap().display().to_string().replace('\\', "/");
     let (first, second) = (format!("objdump -d '{exe}' | head"), format!("strings '{exe}'"));
     let (reqs, sid) = run_commands(&["ls", &first, &second, "ls"], d.path(), None).await;
-    // no `bin` tool in this session: the line names the same call through the shell
+    // no `bin` tool in this session: the line names the same call through the shell, after what the file is
+    let path = std::env::current_exe().unwrap();
+    let facts = nexo_bin::kind_at(&path).unwrap().facts(Some(std::fs::metadata(&path).unwrap().len()));
     let line = format!(
-        "[nexo: nexo bin reads this file in pages, with names and references: nexo bin overview {exe}, then fn|funcs|xref|decomp|strings]"
+        "[nexo: {exe}: {facts}; nexo bin overview {exe} reads it in pages, with names and references, then \
+         fn|funcs|xref|decomp|strings]"
     );
     let line = line.as_str();
     let last = result_texts(reqs.last().unwrap());
@@ -175,4 +178,28 @@ async fn the_gdb_paste_gets_the_debug_call_and_objdump_the_bin_call_once_each() 
     assert!(last[1].contains("debug {\"command\": \"run c-lcrypt -e t.bin -p 0 -P test123"), "{}", last[1]);
     assert!(last[1].contains("break *(main+0x170)") || last[1].contains("break *main+0x170"), "{}", last[1]);
     assert_eq!(last[2], "bash:objdump -t c-lcrypt", "the bin line was said once");
+}
+
+#[tokio::test]
+async fn an_attached_program_is_told_by_what_it_is_and_the_call_that_reads_it() {
+    let d = test_tmpdir().unwrap();
+    let bytes = nexo_bin::fixtures::elf64(false).bytes;
+    std::fs::write(d.path().join("prog"), &bytes).unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("one"))]);
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), kit_tools()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit {
+        text: "what does @prog print".into(),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("prog") }],
+    });
+    r.turn().await;
+    r.stop().await;
+    let sent = user_texts(&client.requests()[0]).join("\n");
+    let size = nexo_bin::size_words(bytes.len() as u64);
+    let told = format!(
+        "@prog: not attached: ELF64 x86-64 executable, {size}, with symbols; bin {{\"command\": \"overview prog\"}} reads it"
+    );
+    assert!(sent.contains(&told), "{sent}");
+    // the `@` of the mention names the file for the start note too
+    assert!(sent.contains("compiled programs, with nexo's own tools: bin {\"command\": \"overview prog\"}"), "{sent}");
 }

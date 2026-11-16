@@ -95,7 +95,7 @@ pub(super) fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>
             }
         }
         "nm" => format!("funcs {f}"),
-        "strings" => match grep_after(next) {
+        "strings" | "grep" => match grep_after(next) {
             Some(pat) => format!("strings {f} --grep {}", hint_cmd::quoted(&pat)),
             None => format!("strings {f}"),
         },
@@ -123,9 +123,10 @@ pub(super) fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>
                 None => format!("overview {f}"),
             }
         }
-        // a dump of bytes: the map first, then `bytes <file> <addr> <len>` for the part wanted
-        "xxd" | "hexdump" | "od" => format!("info {f}"),
-        // gdb with no debug tool offered
+        // a dump of bytes or a look at the headers: the map first, then `bytes <file> <addr> <len>` for the part
+        // wanted
+        "xxd" | "hexdump" | "hd" | "od" | "file" | "otool" | "cat" | "head" | "tail" | "dd" => format!("info {f}"),
+        // `ldd`, a script that parses the file, and gdb with no debug tool offered
         _ => format!("overview {f}"),
     }
 }
@@ -148,10 +149,19 @@ pub(super) fn bytes_of_section(file: &str, sec: &str) -> String {
 pub(super) fn grep_after(next: Option<&Seg>) -> Option<String> {
     let s = next?;
     let first = hint_cmd::program(s.words.first()?);
-    if !matches!(first.as_str(), "grep" | "egrep" | "rg") {
+    if !matches!(first.as_str(), "grep" | "egrep" | "rg" | "ugrep") {
         return None;
     }
-    let flags: String = s.words[1..].iter().filter(|w| w.starts_with('-')).flat_map(|w| w.chars().skip(1)).collect();
+    // the long options that only say how to read the file; any other is not looked into
+    let mut flags = String::new();
+    for w in s.words[1..].iter().filter(|w| w.starts_with('-')) {
+        match w.strip_prefix("--") {
+            Some("text" | "binary-files=text") => {}
+            Some("ignore-case") => flags.push('i'),
+            Some(_) => return None,
+            None => flags.extend(w.chars().skip(1)),
+        }
+    }
     // a flag that changes what matches (inverted, fixed text, whole words, counts) is not a plain pattern
     if flags
         .chars()

@@ -382,7 +382,7 @@ fn push_user_checked(
         added.push(AddedPart::new(AddedKind::File, f.shown, f.block));
         own.push((f.path, f.bytes, f.header));
     }
-    let (text, images, mut whole) = expand_attachments(text, attachments, &st.cwd, &mut added);
+    let (text, images, mut whole) = expand_attachments(text, attachments, &st.cwd, offer_of(st), &mut added);
     // a file the person attached too is known by their header: theirs is recorded last
     own.append(&mut whole);
     let whole = own;
@@ -537,6 +537,7 @@ pub(super) fn expand_attachments(
     text: String,
     attachments: &[Attachment],
     cwd: &Path,
+    offer: crate::hint_cmd::Offer,
     added: &mut Vec<AddedPart>,
 ) -> (String, Vec<Part>, Vec<Whole>) {
     use base64::Engine;
@@ -570,6 +571,13 @@ pub(super) fn expand_attachments(
                 }
                 Err(e) => out.push_str(&format!("\n\n@{shown}: not attached ({e})")),
             }
+            continue;
+        }
+        // a compiled program is told by what it is and the call that reads it, read from its first bytes only
+        if let Some(kind) = nexo_bin::kind_at(&p) {
+            let size = std::fs::metadata(&p).ok().map(|m| m.len());
+            let about = nexo_tools::program::about(&kind, size, &shown.to_string(), offer.bin);
+            out.push_str(&format!("\n\n@{shown}: not attached: {about}"));
             continue;
         }
         match std::fs::read(&p) {

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 mod scan;
 mod words;
 
+pub use nexo_tools::program::{callable, quoted, shell_quoted, slash, tool_call};
 use scan::Scan;
 pub use words::program;
 
@@ -68,9 +69,18 @@ pub fn opens(dir: &Path, w: &str) -> bool {
     !w.is_empty() && !w.starts_with('-') && nexo_bin::opens(&dir.join(w))
 }
 
-/// Like [`opens`], and a WebAssembly module too.
+/// Like [`opens`], and every other kind `nexo bin` reads: 32-bit programs, .NET assemblies, JVM classes and jars,
+/// WebAssembly modules.
 pub fn reads(dir: &Path, w: &str) -> bool {
-    opens(dir, w) || (!w.is_empty() && !w.starts_with('-') && nexo_bin::is_wasm(&dir.join(w)))
+    kind(dir, w).is_some()
+}
+
+/// What the file the word `w` names from `dir` is, when `nexo bin` reads it (see [`nexo_bin::kind_at`]).
+pub fn kind(dir: &Path, w: &str) -> Option<nexo_bin::Compiled> {
+    if w.is_empty() || w.starts_with('-') {
+        return None;
+    }
+    nexo_bin::kind_at(&dir.join(w))
 }
 
 /// The file a hint names, as a call writes it: the way the command did when it ran in the session's folder, the
@@ -81,42 +91,6 @@ pub fn shown(cwd: &Path, dir: &Path, w: &str) -> String {
     } else {
         slash(&dir.join(w).display().to_string())
     }
-}
-
-/// A path as a call writes it. On Windows the separator is `/`, which every Windows program and the shell there
-/// take, so a name never carries a backslash the call languages would read as an escape; elsewhere a backslash is
-/// a character of the name and stays (the callers then leave such a name out).
-pub fn slash(w: &str) -> String {
-    if cfg!(windows) {
-        w.replace('\\', "/")
-    } else {
-        w.to_string()
-    }
-}
-
-/// A word as the command language of the `debug` and `bin` tools reads it, and as a shell would: double quotes
-/// around one with anything but plain characters. Callers keep `"`, `\`, `$` and backticks out of what they quote.
-pub fn quoted(w: &str) -> String {
-    if !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "_-./:=+,@%^".contains(c)) {
-        w.to_string()
-    } else {
-        format!("\"{w}\"")
-    }
-}
-
-/// A word as a shell reads it: single quotes around one with anything but plain characters.
-pub fn shell_quoted(w: &str) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=+,@%^".contains(c);
-    if !w.is_empty() && w.chars().all(plain) {
-        w.to_string()
-    } else {
-        format!("'{}'", w.replace('\'', "'\\''"))
-    }
-}
-
-/// `tool {"command": "<command>"}`: the call of a tool as the hint lines write it.
-pub fn tool_call(tool: &str, command: &str) -> String {
-    format!("{tool} {{\"command\": \"{}\"}}", command.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Whether a failed shell result is of a command that ran: the shell tool gives those a line with the exit code,

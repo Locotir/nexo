@@ -1,4 +1,5 @@
 use super::*;
+use nexo_core::message::Message;
 use serde_json::json;
 
 const TOOL: Offer = Offer { bin: true, debug: true };
@@ -32,8 +33,27 @@ fn texts(parts: &[Part]) -> Vec<String> {
         .collect()
 }
 
+/// The line for `command`, run in `cwd`.
+fn line(command: &str, cwd: &Path, offer: Offer) -> Option<String> {
+    found(command, cwd, offer).map(|(_, l)| l)
+}
+
 fn wanted(command: &str, cwd: &Path) -> bool {
     line(command, cwd, TOOL).is_some()
+}
+
+/// The op of `nexo bin` the line for `command` names, as the shell form writes it.
+fn op_in(command: &str, cwd: &Path) -> String {
+    let l = line(command, cwd, SHELL).unwrap_or_else(|| panic!("no line for {command}"));
+    let call = l.split_once("; nexo bin ").unwrap_or_else(|| panic!("no call in {l}")).1;
+    call.split_once(MARK).unwrap().0.to_string()
+}
+
+/// A small ELF64 x86-64 executable with its symbols, written as `name` in `dir`.
+fn small_in(dir: &Path, name: &str) -> u64 {
+    let bytes = nexo_bin::fixtures::elf64(false).bytes;
+    std::fs::write(dir.join(name), &bytes).unwrap();
+    bytes.len() as u64
 }
 
 #[test]
@@ -41,17 +61,17 @@ fn a_command_that_never_ran_gets_no_line_and_does_not_spend_it() {
     let cwd = tempfile::tempdir().unwrap();
     let command = format!("objdump -d '{}'", slashed(this_binary()));
     for refusal in ["Permission denied: the person said no", "Blocked by a hook: no", "interrupted by the person"] {
-        let mut told = false;
+        let mut told = Told::default();
         let out =
             round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", refusal, true)], cwd.path(), TOOL);
         assert_eq!(texts(&out), [refusal.to_string()], "{refusal}");
-        assert!(!told, "{refusal}: the one line of the session is still there for a command that runs");
+        assert!(!told.said(), "{refusal}: the line is still there for a command that runs");
     }
     // a command that ran and failed (the reader is not installed) is where the line helps most
-    let mut told = false;
+    let mut told = Told::default();
     let failed = "sh: objdump: command not found\n\n[exit code 127]";
     let out = round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", failed, true)], cwd.path(), TOOL);
-    assert!(texts(&out)[0].contains(HEAD) && told, "{:?}", texts(&out));
+    assert!(texts(&out)[0].contains(MARK) && told.said(), "{:?}", texts(&out));
 }
 
 #[test]
@@ -95,18 +115,29 @@ fn a_webassembly_module_asks_for_the_line_too() {
 }
 
 #[test]
-fn the_line_names_the_exact_call_as_a_tool_call_or_in_the_shell() {
+fn the_line_tells_what_the_file_is_and_the_exact_call_as_a_tool_call_or_in_the_shell() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
+    let size = nexo_bin::size_words(small_in(dir.path(), "prog"));
     let l = line("objdump -d prog | head -50", dir.path(), TOOL).unwrap();
     assert_eq!(
         l,
-        "[nexo: the bin tool reads this file in pages, with names and references: bin {\"command\": \"overview prog\"}, then fn|funcs|xref|decomp|strings]"
+        format!(
+            "[nexo: prog: ELF64 x86-64 executable, {size}, with symbols; bin {{\"command\": \"overview prog\"}} reads it \
+             in pages, with names and references, then fn|funcs|xref|decomp|strings]"
+        )
     );
     let l = line("objdump -d prog | head -50", dir.path(), SHELL).unwrap();
     assert_eq!(
         l,
-        "[nexo: nexo bin reads this file in pages, with names and references: nexo bin overview prog, then fn|funcs|xref|decomp|strings]"
+        format!(
+            "[nexo: prog: ELF64 x86-64 executable, {size}, with symbols; nexo bin overview prog reads it in pages, with \
+             names and references, then fn|funcs|xref|decomp|strings]"
+        )
+    );
+    eprintln!(
+        "bytes of the line: {} as a tool call, {} in the shell",
+        line("nm prog", dir.path(), TOOL).unwrap().len(),
+        l.len()
     );
     // a name with a space is quoted for the language of the tool, and cannot break the JSON
     std::fs::copy(this_binary(), dir.path().join("my prog")).unwrap();
@@ -118,11 +149,7 @@ fn the_line_names_the_exact_call_as_a_tool_call_or_in_the_shell() {
 fn each_reader_asks_for_the_op_that_gives_the_same() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::copy(this_binary(), dir.path().join("p")).unwrap();
-    let op = |c: &str| {
-        let l = line(c, dir.path(), SHELL).unwrap_or_else(|| panic!("no line for {c}"));
-        let rest = l.strip_prefix(HEAD_SHELL).unwrap().trim_start().strip_prefix("nexo bin ").unwrap().to_string();
-        rest.trim_end_matches(&format!(", {THEN}]")).to_string()
-    };
+    let op = |c: &str| op_in(c, dir.path());
     assert_eq!(op("objdump -d p"), "overview p");
     assert_eq!(op("objdump -d -M intel p"), "overview p");
     assert_eq!(op("objdump -dS p"), "overview p");
@@ -222,9 +249,11 @@ fn not_for_text_missing_other_commands_or_nexo_bin_itself() {
         "objdump -d .".into(),
         format!("nexo bin fn '{exe}' main"),
         format!("nexo bin strings '{exe}'; strings '{exe}'"),
-        format!("cat '{exe}'"),
+        format!("cat '{exe}' > copy"),
+        format!("dd if='{exe}' of=copy"),
+        format!("grep main '{exe}'"),
+        format!("python3 -c 'print(1)' '{exe}x'"),
         format!("ls -l '{exe}'"),
-        format!("file '{exe}'"),
         format!("echo objdump '{exe}'"),
         format!("which objdump '{exe}'"),
         String::new(),
@@ -285,12 +314,12 @@ fn the_line_closes_the_first_result_that_earns_it_and_only_that_one() {
     let hit = format!("objdump -d '{}'", slashed(this_binary()));
     let calls = vec![call("a", "ls"), call("b", &hit), call("c", &hit)];
     let results = vec![result("a", "files"), result("b", "disassembly"), result("c", "again")];
-    let mut told = false;
+    let mut told = Told::default();
     let out = round(&mut told, &calls, results, dir.path(), TOOL);
-    assert!(told);
+    assert!(told.said());
     let said = texts(&out);
     assert_eq!((said[0].as_str(), said[2].as_str()), ("files", "again"));
-    assert!(said[1].starts_with("disassembly\n\n[nexo: the bin tool reads this file"), "{said:?}");
+    assert!(said[1].starts_with("disassembly\n\n[nexo: ") && said[1].contains(MARK), "{said:?}");
     // later rounds: nothing
     let again = round(&mut told, &calls, vec![result("b", "more")], dir.path(), TOOL);
     assert_eq!(texts(&again), ["more"]);
@@ -300,15 +329,15 @@ fn the_line_closes_the_first_result_that_earns_it_and_only_that_one() {
 fn a_failed_command_still_gets_the_line_and_a_background_one_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let hit = format!("objdump -d '{}'", slashed(this_binary()));
-    let mut told = false;
+    let mut told = Told::default();
     let bg = vec![("a".to_string(), "bash".to_string(), json!({"command": hit, "background": true}))];
     let out = round(&mut told, &bg, vec![result("a", "job started")], dir.path(), TOOL);
-    assert!(!told && texts(&out) == ["job started"]);
+    assert!(!told.said() && texts(&out) == ["job started"]);
     let calls = vec![call("b", &hit)];
     let err = Part::tool_result("b", "bash: objdump: command not found\n\n[exit code 127]", true);
     let out = round(&mut told, &calls, vec![err], dir.path(), TOOL);
-    assert!(told);
-    assert!(texts(&out)[0].contains(HEAD));
+    assert!(told.said());
+    assert!(texts(&out)[0].contains(MARK));
     assert!(matches!(out[0], Part::ToolResult { is_error: true, .. }));
 }
 
@@ -317,9 +346,9 @@ fn only_bash_calls_are_looked_at() {
     let dir = tempfile::tempdir().unwrap();
     let hit = format!("objdump -d '{}'", slashed(this_binary()));
     let calls = vec![("a".to_string(), "read".to_string(), json!({"command": hit}))];
-    let mut told = false;
+    let mut told = Told::default();
     let out = round(&mut told, &calls, vec![result("a", "x")], dir.path(), TOOL);
-    assert!(!told && texts(&out) == ["x"]);
+    assert!(!told.said() && texts(&out) == ["x"]);
 }
 
 #[test]
@@ -329,15 +358,17 @@ fn told_finds_either_line_and_the_old_one_in_a_kept_history_and_nothing_else() {
     for offer in [TOOL, SHELL] {
         let l = line(&hit, dir.path(), offer).unwrap();
         let with = Message::tool_results(vec![result("b", &format!("out\n\n{l}"))]);
-        assert!(told(&[Message::user("hi"), with]));
+        assert!(told(&[Message::user("hi"), with]).said());
     }
-    let old = Message::tool_results(vec![result("b", &format!("out\n\n{OLD_LINE}"))]);
-    assert!(told(&[old]), "a session saved with the old line has it");
+    for old in told::OLD {
+        let old = Message::tool_results(vec![result("b", &format!("out\n\n{old} nexo bin overview p]"))]);
+        assert!(told(&[old]).said(), "a session saved with an old line has it");
+    }
     let without = Message::tool_results(vec![result("b", "out")]);
     // the model quoting the line is not nexo having said it
-    let quoted = Message::assistant(HEAD);
-    assert!(!told(&[Message::user(HEAD), without, quoted]));
-    assert!(!told(&[]));
+    let l = line(&hit, dir.path(), TOOL).unwrap();
+    assert!(!told(&[Message::user(&l), without, Message::assistant(&l)]).said());
+    assert!(!told(&[]).said());
 }
 
 #[test]
@@ -351,12 +382,94 @@ fn the_line_follows_the_results_text_joined_by_newlines_and_a_told_session_chang
         content: vec![Part::text("one"), Part::text("two")],
         is_error: false,
     };
-    let mut told = false;
+    let mut told = Told::default();
     let out = round(&mut told, &calls, vec![two.clone()], dir.path(), TOOL);
     let Part::ToolResult { content, .. } = &out[0] else { panic!("not a result") };
     assert_eq!(content.len(), 1);
-    assert!(content[0].as_text().unwrap().starts_with("one\ntwo\n\n[nexo: the bin tool"), "{:?}", content[0].as_text());
-    assert!(told);
-    let mut spent = true;
+    assert!(content[0].as_text().unwrap().starts_with("one\ntwo\n\n[nexo: "), "{:?}", content[0].as_text());
+    assert!(told.said());
+    let mut spent = told.clone();
     assert_eq!(round(&mut spent, &calls, vec![two.clone()], dir.path(), TOOL), vec![two]);
+}
+
+#[test]
+fn the_readers_a_model_reaches_for_first_are_seen_too() {
+    let dir = tempfile::tempdir().unwrap();
+    small_in(dir.path(), "p");
+    let op = |c: &str| op_in(c, dir.path());
+    assert_eq!(op("file p"), "info p");
+    assert_eq!(op("ldd p"), "overview p");
+    assert_eq!(op("otool -L p"), "info p");
+    assert_eq!(op("llvm-objdump -d p"), "overview p");
+    assert_eq!(op("x86_64-linux-gnu-readelf -S p"), "info p");
+    assert_eq!(op("llvm-readobj --sections p"), "info p");
+    assert_eq!(op("cat p | head"), "info p");
+    assert_eq!(op("head -c 64 p | xxd"), "info p");
+    assert_eq!(op("tail -c 100 p"), "info p");
+    assert_eq!(op("dd if=p bs=1 count=64 2>/dev/null | od -c"), "info p");
+    assert_eq!(op("od -A x -t x1z -N 128 p"), "info p");
+    assert_eq!(op("hd p"), "info p");
+    assert_eq!(op("xxd < p | head"), "info p");
+    // a script that opens the file by a quoted name, on its command line or in a heredoc
+    assert_eq!(op("python3 -c \"print(open('p', 'rb').read(64))\""), "overview p");
+    assert_eq!(op("perl -e 'open(F, \"<\", \"p\"); print <F>'"), "overview p");
+    assert_eq!(op("python3 - <<'EOF'\nimport struct\ndata = open(\"p\", \"rb\").read()\nEOF"), "overview p");
+    assert_eq!(op("python3 parse.py p"), "overview p");
+    // grep reads a compiled file only when told to take it as text: the pattern goes to `strings --grep`
+    assert_eq!(op("grep -a helper p"), "strings p --grep helper");
+    assert_eq!(op("grep -ai Helper p"), "strings p --grep \"(?i)Helper\"");
+    assert_eq!(op("grep --text --ignore-case helper p"), "strings p --grep \"(?i)helper\"");
+    assert_eq!(op("grep -ac helper p"), "strings p");
+}
+
+#[test]
+fn managed_code_a_32_bit_program_and_a_webassembly_module_are_told_with_their_own_call() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("App.class"), [0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 52]).unwrap();
+    assert_eq!(
+        line("strings App.class", dir.path(), SHELL).unwrap(),
+        format!(
+            "[nexo: App.class: JVM class, 8 bytes; nexo bin managed App.class{MARK}, then a class or method by name]"
+        )
+    );
+    // an ELF32 x86 executable with no section headers, as `strip` leaves one
+    let mut e = vec![0u8; 52];
+    e[..4].copy_from_slice(b"\x7fELF");
+    (e[4], e[5], e[6], e[7]) = (1, 1, 1, 3);
+    e[16..18].copy_from_slice(&2u16.to_le_bytes());
+    e[18..20].copy_from_slice(&3u16.to_le_bytes());
+    std::fs::write(dir.path().join("old"), &e).unwrap();
+    assert_eq!(
+        line("objdump -d old", dir.path(), SHELL).unwrap(),
+        format!("[nexo: old: ELF32 x86 Linux executable, 52 bytes, stripped; nexo bin overview old{MARK}{THEN}]")
+    );
+    std::fs::write(dir.path().join("m.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    assert_eq!(op_in("objdump -s -j .data m.wasm", dir.path()), "overview m.wasm");
+    assert!(line("xxd m.wasm", dir.path(), SHELL).unwrap().ends_with(&format!("{THEN_WASM}]")));
+}
+
+#[test]
+fn another_file_is_told_again_only_after_a_long_stretch_and_a_resumed_session_counts_the_same() {
+    let dir = tempfile::tempdir().unwrap();
+    small_in(dir.path(), "p");
+    small_in(dir.path(), "q");
+    let mut told = Told::default();
+    let mut history = Vec::new();
+    // one round of `command`, kept in the history as the session saves it; whether it got a line
+    let mut run = |told: &mut Told, command: &str| {
+        let out = round(told, &[call("a", command)], vec![result("a", "out")], dir.path(), TOOL);
+        let said = texts(&out)[0].contains(MARK);
+        history.push(Message::tool_results(out));
+        said
+    };
+    assert!(run(&mut told, "strings p"));
+    assert!(!run(&mut told, "strings p"), "the same file is told once");
+    for n in 2..told::GAP {
+        assert!(!run(&mut told, "strings q"), "round {n}: too soon after the last line");
+    }
+    assert!(run(&mut told, "strings q"), "a new file after the stretch has facts of its own");
+    for _ in 0..told::GAP {
+        assert!(!run(&mut told, "strings p"), "a file already told is not told again");
+    }
+    assert_eq!(super::told(&history), told, "the history gives back the same count");
 }

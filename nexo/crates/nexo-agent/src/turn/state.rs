@@ -87,9 +87,10 @@ pub(super) struct State {
     pub(super) post: Arc<nexo_tools::postcheck::Guard>,
     /// Failures of the session kept by what they were on, to say when one comes back.
     pub(super) repeats: crate::repeat::Repeats,
-    /// Whether the line about `nexo bin` is in this session (see `bin_hint.rs`): kept through a compaction, worked
-    /// out again from the history when it is replaced, rewound or cleared.
-    pub(super) bin_told: bool,
+    /// The files the lines about `nexo bin` named in this session and the rounds since the last (see
+    /// `bin_hint/told.rs`): kept through a compaction, worked out again from the history when it is replaced,
+    /// rewound or cleared.
+    pub(super) bin_told: crate::bin_hint::Told,
     /// The same for the lines that name a `debug` call, one per kind (see `dbg_hint.rs`).
     pub(super) dbg_told: crate::dbg_hint::Told,
     /// The same for the line in a start note that names a compiled program's tools (see `ask_hint.rs`).

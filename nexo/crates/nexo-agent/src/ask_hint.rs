@@ -84,12 +84,19 @@ pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
         }
         None => ("<file>".to_string(), "<file>".to_string()),
     };
+    // .NET and JVM code is read by `managed`; only a native program the debugger takes is offered a run
+    let kind = file.as_deref().and_then(|f| hint_cmd::kind(cwd, f));
+    let op = kind.as_ref().map_or("overview", |k| k.op);
+    let runs = file.as_deref().is_none_or(|f| hint_cmd::opens(cwd, f));
     let bin = if offer.bin {
-        format!("{} reads one without running it", hint_cmd::tool_call("bin", &format!("overview {f}")))
+        format!("{} reads one without running it", hint_cmd::tool_call("bin", &format!("{op} {f}")))
     } else {
-        format!("nexo bin overview {shell_f} reads one without running it")
+        format!("nexo bin {op} {shell_f} reads one without running it")
     };
-    if !offer.debug {
+    if op == "managed" {
+        return Some(format!("{HEAD} {bin}, then a class or method by name, as javap or ildasm show it."));
+    }
+    if !offer.debug || !runs {
         return Some(format!(
             "{HEAD} {bin}, then funcs, fn, decomp, xref, strings; use that before objdump, strings or xxd."
         ));
@@ -100,7 +107,8 @@ pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
     ))
 }
 
-/// The words of `text` that can name a file, as the person wrote them: no option, `@` mention, `~`, URL or glob.
+/// The words of `text` that can name a file, as the person wrote them: no option, `~`, URL or glob. An `@` mention
+/// names the file after the `@`.
 fn name_words(text: &str) -> Vec<&str> {
     text.split_whitespace()
         .take(WORDS)
@@ -112,6 +120,7 @@ fn name_words(text: &str) -> Vec<&str> {
             })
             .trim_end_matches('.')
         })
+        .map(|w| w.strip_prefix('@').unwrap_or(w))
         .filter(|w| {
             !(w.is_empty()
                 || w.len() > 300
@@ -287,10 +296,25 @@ mod tests {
     }
 
     #[test]
+    fn an_at_mention_names_its_file_and_managed_code_gets_the_managed_call() {
+        let d = tempfile::tempdir().unwrap();
+        exe_in(d.path(), "p");
+        assert_eq!(named("what does @p do?", d.path()), Some("p".to_string()));
+        std::fs::write(d.path().join("App.class"), [0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 52]).unwrap();
+        assert_eq!(
+            line("what does @App.class print", d.path(), BOTH).unwrap(),
+            format!(
+                "{HEAD} bin {{\"command\": \"managed App.class\"}} reads one without running it, then a class or \
+                 method by name, as javap or ildasm show it."
+            )
+        );
+    }
+
+    #[test]
     fn a_hostile_word_is_only_text() {
         let d = tempfile::tempdir().unwrap();
         exe_in(d.path(), "p");
-        for t in ["look at $(touch touched)", "see `touch touched` now", "run -rf /", "~/p", "@p", "a*b", "'p\"'"] {
+        for t in ["look at $(touch touched)", "see `touch touched` now", "run -rf /", "~/p", "@@p", "a*b", "'p\"'"] {
             assert_eq!(named(t, d.path()), None, "{t:?}");
         }
         assert!(!d.path().join("touched").exists());

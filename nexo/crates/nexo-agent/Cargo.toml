@@ -39,3 +39,4 @@ libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 nexo-dbg = { workspace = true }
+nexo-bin = { workspace = true, features = ["fixtures"] }
