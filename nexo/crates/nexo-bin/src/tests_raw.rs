@@ -224,3 +224,53 @@ fn raw_bytes_name_the_arch_words_and_refuse_a_base_past_the_address_space() {
         .to_string();
     assert!(e.contains("--raw --base ADDR"), "{e}");
 }
+
+/// A caller at the first byte and its callee 0x10 bytes on, as bare x86-64: `call +0x10; ret`, int3 padding,
+/// `mov eax, 2; ret`. Read at base 0 the callee is at 0x10; read at base 0x10 the caller is.
+fn caller_and_callee() -> Vec<u8> {
+    let mut b = vec![0xe8, 0x0b, 0, 0, 0, 0xc3];
+    b.resize(0x10, 0xcc);
+    b.extend_from_slice(&[0xb8, 0x02, 0, 0, 0, 0xc3]);
+    b
+}
+
+#[test]
+fn the_same_bytes_read_at_another_base_or_arch_keep_no_names_or_decompiled_code_of_the_first_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dump.bin");
+    std::fs::write(&path, caller_and_callee()).unwrap();
+    let decomp = |img: &Image| whole(&decomp_window(img, data.path(), &["0x10".to_string()], false, None, 50).unwrap());
+
+    // first read at the default base 0: 0x10 is the callee, named and decompiled (which fills the cache)
+    let mut at0 = Image::open_raw(&path, 0, None).unwrap();
+    assert_eq!(attach_names(&mut at0, data.path()), None);
+    name_set(&at0, data.path(), "0x10", "two").unwrap();
+    assert_eq!(attach_names(&mut at0, data.path()), None);
+    assert_eq!(at0.user_name(0x10), Some("two"));
+    let d0 = decomp(&at0);
+    assert!(d0.contains("two") && !d0.contains("sub_20"), "{d0}");
+
+    // the same file at base 0x10: 0x10 is now the caller, and nothing saved for the other read applies to it
+    let mut at10 = Image::open_raw(&path, 0x10, None).unwrap();
+    assert_eq!(at0.sha256, at10.sha256);
+    assert_eq!(attach_names(&mut at10, data.path()), None);
+    assert_eq!(at10.user_name(0x10), None);
+    let d10 = decomp(&at10);
+    assert!(d10.contains("sub_20") && !d10.contains("two"), "{d10}");
+
+    // the first read still finds what it saved
+    let mut again = Image::open_raw(&path, 0, None).unwrap();
+    assert_eq!(attach_names(&mut again, data.path()), None);
+    assert_eq!(again.user_name(0x10), Some("two"));
+    assert_eq!(decomp(&again), d0);
+
+    // another arch, and a file format read as bare code, are other keys too
+    let as32 = Image::open_raw(&path, 0, Some("x86-32")).unwrap();
+    assert_ne!(as32.store_key(), at0.store_key());
+    let elf = crate::fixtures::elf64(false);
+    let fmt = Image::from_bytes(elf.bytes.clone(), "f".into()).unwrap();
+    let bare = Image::from_raw(elf.bytes, "f".into(), fmt.image_base, None).unwrap();
+    assert_eq!((fmt.store_key(), bare.sha256.as_str()), (fmt.sha256.clone(), fmt.sha256.as_str()));
+    assert_ne!(bare.store_key(), fmt.store_key());
+}

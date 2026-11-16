@@ -66,6 +66,18 @@ impl Image {
         Ok(img)
     }
 
+    /// What the saved names, notes, prototypes and decompiler answers of this image are filed under. A file
+    /// format says where its code loads, so the SHA-256 of the file is enough. The same bare bytes mean other
+    /// functions at another base or arch, and an ELF file read with `--raw` is not the ELF program, so for bare
+    /// code the base and arch join the hash; reading a dump at a corrected base then starts from nothing saved.
+    pub fn store_key(&self) -> String {
+        if self.format == Format::Raw {
+            format!("{}-raw-{}-at-{:x}", self.sha256, self.raw_arch(), self.image_base)
+        } else {
+            self.sha256.clone()
+        }
+    }
+
     /// The `--arch` word that reads this raw image again.
     pub(crate) fn raw_arch(&self) -> &'static str {
         match (self.arm64, self.bits) {

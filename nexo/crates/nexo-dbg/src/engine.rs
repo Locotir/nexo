@@ -894,7 +894,7 @@ impl Session {
                 self.said_saved = true;
                 self.log_line(format!(
                     "saved indirect-call targets for `nexo bin decomp` in {} (more are added as they are seen)",
-                    nexo_bin::names_path(&dir, &self.mods.main_image().sha256).display()
+                    nexo_bin::names_path(&dir, &self.mods.main_image().store_key()).display()
                 ));
             }
         }

@@ -385,7 +385,7 @@ impl Sigs for ImgSigs<'_> {
 
 /// Names file plus the decompiler sources: a new build never reads an old answer.
 fn names_digest(img: &Image, data_dir: &Path) -> String {
-    let p = crate::names::file_path(data_dir, &img.sha256);
+    let p = crate::names::file_path(data_dir, &img.store_key());
     let mut h = Sha256::new();
     h.update(std::fs::read(&p).unwrap_or_default());
     for src in [
@@ -404,7 +404,7 @@ fn names_digest(img: &Image, data_dir: &Path) -> String {
 }
 
 fn cache_path(img: &Image, data_dir: &Path, start: u64) -> std::path::PathBuf {
-    data_dir.join("bin").join(format!("{}.decomp", img.sha256)).join(format!("{start:x}.json"))
+    data_dir.join("bin").join(format!("{}.decomp", img.store_key())).join(format!("{start:x}.json"))
 }
 
 fn read_cache(path: &Path, digest: &str) -> Option<Vec<Line>> {
@@ -574,7 +574,7 @@ pub fn proto_set(img: &Image, data_dir: &Path, target: &str, text: Option<&str>)
                 p.name,
                 p.args.iter().map(|a| format!("{} {}", a.0, a.1)).collect::<Vec<_>>().join(", ")
             );
-            crate::names::edit(data_dir, &img.sha256, |n| {
+            crate::names::edit(data_dir, &img.store_key(), |n| {
                 n.protos.insert(start, t.trim().trim_end_matches(';').to_string());
                 Ok(())
             })?;
@@ -586,7 +586,7 @@ pub fn proto_set(img: &Image, data_dir: &Path, target: &str, text: Option<&str>)
             ))
         }
         None => {
-            let had = crate::names::edit(data_dir, &img.sha256, |n| Ok(n.protos.remove(&start).is_some()))?;
+            let had = crate::names::edit(data_dir, &img.store_key(), |n| Ok(n.protos.remove(&start).is_some()))?;
             Ok(line_out(
                 img,
                 "proto",
@@ -605,7 +605,7 @@ pub fn struct_set(img: &Image, data_dir: &Path, name: &str, fields: Option<&str>
     match fields {
         Some(t) => {
             let f = super::types::parse_struct(t).map_err(Error::Bad)?;
-            crate::names::edit(data_dir, &img.sha256, |n| {
+            crate::names::edit(data_dir, &img.store_key(), |n| {
                 n.structs.insert(name.to_string(), t.trim().to_string());
                 Ok(())
             })?;
@@ -617,7 +617,7 @@ pub fn struct_set(img: &Image, data_dir: &Path, name: &str, fields: Option<&str>
             ))
         }
         None => {
-            let had = crate::names::edit(data_dir, &img.sha256, |n| Ok(n.structs.remove(name).is_some()))?;
+            let had = crate::names::edit(data_dir, &img.store_key(), |n| Ok(n.structs.remove(name).is_some()))?;
             Ok(line_out(
                 img,
                 "struct",
@@ -650,7 +650,7 @@ pub fn var_set(img: &Image, data_dir: &Path, target: &str, key: &str, name: Opti
             {
                 return Err(Error::Bad(format!("{n:?} is not a C name (letters, digits, _)")));
             }
-            crate::names::edit(data_dir, &img.sha256, |u| {
+            crate::names::edit(data_dir, &img.store_key(), |u| {
                 u.vars.entry(start).or_default().insert(key.to_string(), n.to_string());
                 Ok(())
             })?;
@@ -662,7 +662,7 @@ pub fn var_set(img: &Image, data_dir: &Path, target: &str, key: &str, name: Opti
             ))
         }
         None => {
-            let had = crate::names::edit(data_dir, &img.sha256, |u| {
+            let had = crate::names::edit(data_dir, &img.store_key(), |u| {
                 let r = u.vars.get_mut(&start).is_some_and(|m| m.remove(key).is_some());
                 if u.vars.get(&start).is_some_and(|m| m.is_empty()) {
                     u.vars.remove(&start);

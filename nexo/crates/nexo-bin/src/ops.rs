@@ -193,7 +193,7 @@ fn gap_in_code(img: &Image, s: &crate::image::Section, a: u64) -> Error {
             .get(n)
             .filter(|f| f.start < sec_end)
             .map_or("the end of the section".to_string(), |f| img.func_name(f).to_string()),
-        command(img, "fn", &format!("{a:#x} --to {:#x}", next.min(a + 0x100))),
+        command(img, "fn", &format!("{a:#x} --to {:#x} --code", next.min(a + 0x100))),
         command(img, "bytes", &format!("{a:#x} {}", (next - a).min(0x100)))
     ))
 }
