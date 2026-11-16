@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{crc32, Image};
+use crate::{crc32, Format, Image};
 
 const SRC: &str = "struct item { int id; long score; };\n\
     __attribute__((noinline)) int score_item(struct item *it, int k) { return it->id * k + (int)it->score; }\n\
@@ -24,11 +24,21 @@ fn cc(dir: &Path, out: &str, args: &[&str], sources: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// The unstripped build, written as `prog.debug` in `dir`, and its CRC.
+/// The unstripped build, written as `prog.debug` in `dir`, and its CRC. `None`, with the reason printed, when there
+/// is no C compiler or it builds no ELF files: build ids and `.gnu_debuglink` are ELF's, and MinGW on Windows builds
+/// PE files and writes a program named without a dot as `prog.exe`.
 fn debug_build(dir: &Path) -> Option<u32> {
     std::fs::write(dir.join("a.c"), SRC).ok()?;
     let id = format!("-Wl,--build-id={BUILD_ID}");
-    cc(dir, "prog.debug", &["-g", &id], &["a.c"]).then_some(())?;
+    if !cc(dir, "prog.debug", &["-g", &id], &["a.c"]) {
+        eprintln!("skipped: no C compiler");
+        return None;
+    }
+    let img = Image::open(&dir.join("prog.debug")).ok()?;
+    if img.format != Format::Elf {
+        eprintln!("skipped: the system compiler builds {} files, not ELF", img.format_name());
+        return None;
+    }
     Some(crc32(&std::fs::read(dir.join("prog.debug")).ok()?))
 }
 
@@ -67,7 +77,7 @@ fn the_crc_of_a_debuglink_is_the_zlib_one() {
 #[test]
 fn a_stripped_program_takes_its_debug_file_by_build_id_and_says_which() {
     let d = scratch();
-    let Some(_) = debug_build(d.path()) else { return eprintln!("skipped: no C compiler") };
+    let Some(_) = debug_build(d.path()) else { return };
     assert!(stripped_build(d.path(), "prog", None));
     let plain = Image::open(&d.path().join("prog")).unwrap();
     assert!(plain.debug_info_line().is_some_and(|l| l.contains("none in the file") && l.contains("build id 00112233")));
@@ -94,7 +104,7 @@ fn a_stripped_program_takes_its_debug_file_by_build_id_and_says_which() {
 #[test]
 fn a_debug_file_with_another_build_id_is_not_taken() {
     let d = scratch();
-    let Some(_) = debug_build(d.path()) else { return eprintln!("skipped: no C compiler") };
+    let Some(_) = debug_build(d.path()) else { return };
     assert!(Command::new("cc")
         .current_dir(d.path())
         .args(["-g", "-Wl,--build-id=0xffff", "-o", "other.debug", "a.c"])
@@ -119,7 +129,7 @@ fn a_debug_file_with_another_build_id_is_not_taken() {
 #[test]
 fn a_debuglink_finds_the_file_beside_the_program_in_a_debug_folder_or_under_the_system_folder() {
     let d = scratch();
-    let Some(crc) = debug_build(d.path()) else { return eprintln!("skipped: no C compiler") };
+    let Some(crc) = debug_build(d.path()) else { return };
     assert!(stripped_build(d.path(), "prog", Some(("prog.debug", crc))));
     let own = d.path().join("prog");
     let probe = Image::open_with_debug_dirs(&own, &[]).unwrap();
@@ -152,7 +162,7 @@ fn a_debuglink_finds_the_file_beside_the_program_in_a_debug_folder_or_under_the_
 #[test]
 fn a_debug_file_whose_crc_differs_is_skipped_and_the_answer_says_so() {
     let d = scratch();
-    let Some(crc) = debug_build(d.path()) else { return eprintln!("skipped: no C compiler") };
+    let Some(crc) = debug_build(d.path()) else { return };
     assert!(stripped_build(d.path(), "prog", Some(("prog.debug", crc ^ 1))));
     let img = Image::open_with_debug_dirs(&d.path().join("prog"), &[]).unwrap();
     let l = img.debug_lookup().unwrap();
@@ -164,7 +174,7 @@ fn a_debug_file_whose_crc_differs_is_skipped_and_the_answer_says_so() {
 #[test]
 fn a_program_with_its_own_debug_info_looks_for_no_other_file() {
     let d = scratch();
-    let Some(_) = debug_build(d.path()) else { return eprintln!("skipped: no C compiler") };
+    let Some(_) = debug_build(d.path()) else { return };
     let img = Image::open_with_debug_dirs(&d.path().join("prog.debug"), &[]).unwrap();
     assert!(img.debug_lookup().is_none() && img.debug_info_line().is_none());
     assert!(has_protos(&img));
@@ -173,7 +183,7 @@ fn a_program_with_its_own_debug_info_looks_for_no_other_file() {
 #[test]
 fn info_names_the_debug_file_it_read() {
     let d = scratch();
-    let Some(crc) = debug_build(d.path()) else { return eprintln!("skipped: no C compiler") };
+    let Some(crc) = debug_build(d.path()) else { return };
     assert!(stripped_build(d.path(), "prog", Some(("prog.debug", crc))));
     let img = Image::open(&d.path().join("prog")).unwrap();
     let text = crate::ops::info(&img).text_all();

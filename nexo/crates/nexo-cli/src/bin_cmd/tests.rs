@@ -650,13 +650,17 @@ fn raw_reads_bare_code_at_its_base_and_the_next_commands_keep_the_flags() {
     let x = with(&["xref", &path, "--str", "hello from a dump"]);
     assert!(x.contains("sub_7f0000001000"), "{x}");
     let o = with(&["overview", &path]);
-    assert!(o.contains(&format!("{path} --raw --base 0x7f0000001000 --arch x86-64")), "{o}");
+    // the answer names the file as a shell word: a Windows temp path (backslashes, `~`) comes back quoted
+    let shown = nexo_bin::shell_word(&path);
+    assert!(o.contains(&format!("{shown} --raw --base 0x7f0000001000 --arch x86-64")), "{o}");
 
     // the string after the code: no function holds it, and the call the answer gives for it as code works
     let e = with_err(&["fn", &path, "0x7f0000001020"]);
     let call = e.split("as code: ").nth(1).and_then(|r| r.split("; as bytes").next()).expect(&e);
-    let words: Vec<&str> = call.split_whitespace().collect();
+    // read the way a POSIX shell would, so a quoted path comes back as the one word it is
+    let words = nexo_core::shell::split_words(call, false);
     assert_eq!(words[..2], ["nexo", "bin"], "{e}");
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     let code = ask(&words[2..]).unwrap_or_else(|e| panic!("{call}: {e}"));
     assert!(code.contains("0x7f0000001020"), "{code}");
 

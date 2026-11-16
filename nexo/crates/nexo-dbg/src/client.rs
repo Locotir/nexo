@@ -965,7 +965,9 @@ mod tests {
         let o = parse(&words("dump $rdi 64 out.bin")).unwrap();
         let here = std::env::current_dir().unwrap().join("out.bin");
         assert_eq!(o.words, ["dump", "$rdi", "64", &here.display().to_string()]);
-        assert_eq!(parse(&words("dump $rdi 64 /tmp/a.bin")).unwrap().words[3], "/tmp/a.bin");
+        // an absolute path stays as given; on Windows `/tmp/a.bin` has no drive, so it is relative there
+        let abs = if cfg!(windows) { "C:/tmp/a.bin" } else { "/tmp/a.bin" };
+        assert_eq!(parse(&words(&format!("dump $rdi 64 {abs}"))).unwrap().words[3], abs);
         let out = || {
             crate::engine::rows(
                 "dump",
