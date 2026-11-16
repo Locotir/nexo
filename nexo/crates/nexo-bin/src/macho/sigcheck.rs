@@ -15,6 +15,9 @@ pub enum Signature {
     /// An ad hoc signature whose page hashes all match, with how many pages it covers (summed over the slices of a
     /// universal file).
     AdHoc { pages: usize },
+    /// An ad hoc signature none of whose CodeDirectories uses SHA-256 with 4 KiB pages (for example SHA-1 only), so
+    /// its hashes were not checked.
+    AdHocUnchecked,
     /// A signature that is not ad hoc (a certificate); its hashes were not checked.
     Certificate,
     /// A signature that does not hold, and why.
@@ -27,6 +30,7 @@ impl Signature {
         match self {
             Signature::Unsigned => "no".into(),
             Signature::AdHoc { pages } => format!("yes (ad hoc, the {pages} page hashes match)"),
+            Signature::AdHocUnchecked => "yes (ad hoc, its hash type is not checked)".into(),
             Signature::Certificate => "yes (by a certificate, not checked)".into(),
             Signature::Broken(why) => format!("yes (does not hold: {why})"),
         }
@@ -90,22 +94,29 @@ fn thin(d: &[u8]) -> Signature {
         return broken("the signature is not a SuperBlob");
     }
     let count = at(8).unwrap_or(0).min(16);
-    let cd = (0..count).find(|i| at(12 + 8 * i) == Some(0)).and_then(|i| at(16 + 8 * i)).and_then(|o| blob.get(o..));
-    let Some(cd) = cd else { return broken("it has no CodeDirectory") };
-    let f = |o: usize| be32(cd, o as u64).map(|v| v as usize);
-    if f(0) != Some(0xfade_0c02) {
+    // slot 0 is the primary CodeDirectory; 0x1000.. are alternates (codesign writes a SHA-1 primary plus a SHA-256
+    // alternate for older deployment targets)
+    let cd_at = |slot: usize| {
+        (0..count).find(|i| at(12 + 8 * i) == Some(slot)).and_then(|i| at(16 + 8 * i)).and_then(|o| blob.get(o..))
+    };
+    let Some(cd) = cd_at(0) else { return broken("it has no CodeDirectory") };
+    let f = |cd: &[u8], o: usize| be32(cd, o as u64).map(|v| v as usize);
+    if f(cd, 0) != Some(0xfade_0c02) {
         return broken("its CodeDirectory is cut");
     }
-    if f(12).unwrap_or(0) & 0x2 == 0 {
+    if f(cd, 12).unwrap_or(0) & 0x2 == 0 {
         return Signature::Certificate;
     }
-    let (Some(hash_off), Some(n_code), Some(limit)) = (f(16), f(28), f(32)) else {
+    let checkable = |cd: &[u8]| {
+        f(cd, 0) == Some(0xfade_0c02)
+            && (cd.get(36).copied(), cd.get(37).copied(), cd.get(39).copied()) == (Some(32), Some(2), Some(12))
+    };
+    let Some(cd) = std::iter::once(0).chain(0x1000..0x1005).filter_map(cd_at).find(|cd| checkable(cd)) else {
+        return Signature::AdHocUnchecked;
+    };
+    let (Some(hash_off), Some(n_code), Some(limit)) = (f(cd, 16), f(cd, 28), f(cd, 32)) else {
         return broken("its CodeDirectory is cut");
     };
-    let (hash_len, hash_type, page_log) = (cd.get(36).copied(), cd.get(37).copied(), cd.get(39).copied());
-    if (hash_len, hash_type, page_log) != (Some(32), Some(2), Some(12)) {
-        return Signature::Certificate;
-    }
     let Some(code) = d.get(..limit) else { return broken("it covers bytes past the end of the file") };
     let want = limit.div_ceil(4096);
     if n_code != want {

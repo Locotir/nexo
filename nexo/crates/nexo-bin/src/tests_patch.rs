@@ -185,3 +185,70 @@ fn a_patched_unsigned_x86_mach_o_stays_unsigned_and_an_unsigned_arm64_one_gets_s
     assert!(matches!(read_signature(&arm), Signature::AdHoc { .. }), "{text}");
     assert!(text.contains("the old one was: no"), "{text}");
 }
+
+/// Replace the signature of a signed thin x86-64 fixture by a SuperBlob that has a primary CodeDirectory of the given
+/// hash type (ad hoc flag set) at slot 0 and, when given, the file's own SHA-256 CodeDirectory at slot 0x1000.
+fn with_primary_cd(signed: &[u8], primary_hash_type: u8, keep_sha256_alternate: bool) -> Vec<u8> {
+    let le = |d: &[u8], o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) as usize;
+    let be = |d: &[u8], o: usize| u32::from_be_bytes(d[o..o + 4].try_into().unwrap()) as usize;
+    let mut at = 32;
+    while le(signed, at) != 0x1d {
+        at += le(signed, at + 4);
+    }
+    let (off, len) = (le(signed, at + 8), le(signed, at + 12));
+    let blob = &signed[off..off + len];
+    let cd_off = (0..be(blob, 8)).find(|i| be(blob, 12 + 8 * i) == 0).map(|i| be(blob, 16 + 8 * i)).unwrap();
+    let cd = &blob[cd_off..cd_off + be(blob, cd_off + 4)];
+    // the load command changes size, so the pages that cover it are hashed again
+    let total = 12 + 8 * (1 + usize::from(keep_sha256_alternate)) + cd.len() * (1 + usize::from(keep_sha256_alternate));
+    let mut head = signed[..off].to_vec();
+    head[at + 12..at + 16].copy_from_slice(&(total as u32).to_le_bytes());
+    let mut cd = cd.to_vec();
+    let hash_off = be(&cd, 16);
+    for (i, page) in head.chunks(4096).enumerate() {
+        use sha2::Digest;
+        cd[hash_off + 32 * i..hash_off + 32 * (i + 1)].copy_from_slice(&sha2::Sha256::digest(page));
+    }
+    let cd = &cd[..];
+    let mut fake = cd.to_vec();
+    fake[37] = primary_hash_type;
+    fake[36] = 20;
+    let entries: Vec<(u32, &[u8])> =
+        if keep_sha256_alternate { vec![(0, &fake), (0x1000, cd)] } else { vec![(0, &fake)] };
+    let mut out = head;
+    let mut sb = Vec::new();
+    sb.extend_from_slice(&0xfade_0cc0u32.to_be_bytes());
+    sb.extend_from_slice(&0u32.to_be_bytes());
+    sb.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    let mut pos = 12 + 8 * entries.len();
+    for (slot, body) in &entries {
+        sb.extend_from_slice(&slot.to_be_bytes());
+        sb.extend_from_slice(&(pos as u32).to_be_bytes());
+        pos += body.len();
+    }
+    for (_, body) in &entries {
+        sb.extend_from_slice(body);
+    }
+    assert_eq!(sb.len(), total);
+    sb[4..8].copy_from_slice(&(total as u32).to_be_bytes());
+    out.extend_from_slice(&sb);
+    out
+}
+
+#[test]
+fn an_ad_hoc_file_with_a_sha1_primary_and_a_sha256_alternate_is_checked_through_the_alternate() {
+    use crate::{read_signature, Signature};
+    let signed = crate::adhoc_sign(&crate::tests_macho::thin(false, false).bytes, "prog", &[]).unwrap();
+    let both = with_primary_cd(&signed, 1, true);
+    assert!(matches!(read_signature(&both), Signature::AdHoc { pages } if pages >= 1), "{:?}", read_signature(&both));
+    // the alternate is the one that is checked: a changed byte of the code breaks it
+    let img = Image::from_bytes(both.clone(), "/fx/prog".into()).unwrap();
+    let mut stale = both.clone();
+    stale[img.addr_to_offset(crate::tests_macho::SPARE).unwrap() as usize] ^= 0xff;
+    assert!(matches!(read_signature(&stale), Signature::Broken(_)), "{:?}", read_signature(&stale));
+    // with no SHA-256 CodeDirectory at all it is still ad hoc, not a certificate
+    let sha1_only = with_primary_cd(&signed, 1, false);
+    let seen = read_signature(&sha1_only);
+    assert_eq!(seen, Signature::AdHocUnchecked);
+    assert!(seen.describe().contains("ad hoc") && !seen.describe().contains("certificate"), "{}", seen.describe());
+}
