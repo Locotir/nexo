@@ -134,13 +134,7 @@ impl Curator {
         // a text paged otherwise than in the last request (or no longer paged) is sent otherwise: the
         // provider's cache misses from there, past what the engine counted for its own changes
         let now: Vec<Option<u64>> = (0..view.len())
-            .map(|i| {
-                paged.contains(&i).then(|| {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    std::hash::Hash::hash(&view[i].to_string(), &mut h);
-                    std::hash::Hasher::finish(&h)
-                })
-            })
+            .map(|i| paged.contains(&i).then(|| crate::snapshot::text_hash(&view[i].to_string())))
             .collect();
         let differs = |p: usize| now.get(p).copied().flatten() != self.paged.get(p).copied().flatten();
         if let Some(p) = (0..now.len().max(self.paged.len())).find(|&p| differs(p)).filter(|&p| p < view.len()) {
@@ -216,6 +210,27 @@ impl Curator {
     pub fn threads(&mut self, messages: &[Value]) -> Vec<(usize, usize)> {
         self.eng.sync(messages);
         self.eng.turn_threads()
+    }
+
+    /// Takes this run's settings from the curator the host set them on (`tools`, `window`, `prices`,
+    /// `calls_left`), over what this one was saved with: a restored state carries the old run's, and a window,
+    /// prices or tools this run does not know are the defaults of a new curator, as in a full replay.
+    pub fn take_host_settings(&mut self, host: &Curator) {
+        self.window = host.window;
+        self.left = host.left;
+        match &host.tools {
+            Some(t) => self.tools(t),
+            None => {
+                self.tools = None;
+                self.eng.tools(&[]);
+            }
+        }
+        if self.price_ratio != host.price_ratio {
+            self.price_ratio = host.price_ratio;
+            if let Ok(p) = params(&self.spec) {
+                self.eng.set_ratio(host.price_ratio.unwrap_or(p.ratio));
+            }
+        }
     }
 
     /// The tokens the model takes in one call, less its reply (0: no limit). The view never passes it.

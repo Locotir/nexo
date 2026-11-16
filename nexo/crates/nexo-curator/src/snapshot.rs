@@ -8,13 +8,14 @@
 //! and a hash of the rest of the file. The history itself is not in it: the engine's copy of the history is taken
 //! from the history again, with the messages it shortened when they came as they became.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::sync::{LazyLock, Mutex};
 
 use bincode::Options;
 use indexmap::IndexMap;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHasher;
+
+use crate::sorted::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
@@ -23,49 +24,86 @@ use crate::curator::Curator;
 /// The engine this build runs (`build.rs`): a state another build saved is not read.
 pub const FORMAT: &str = env!("NEXO_CURATOR_FORMAT");
 
-const MAGIC: [u8; 8] = *b"NXCURST1";
+const MAGIC: [u8; 8] = *b"NXCURST2";
 /// The magic and seven numbers.
 const HEAD: usize = 8 + 7 * 8;
+
+/// The hash every saved number here comes from: `rustc-hash`'s, written with explicit little-endian bytes only,
+/// never through `Hash` impls or the standard library's `DefaultHasher`, which Rust does not promise to keep
+/// the same from one release to the next (a compiler update would silently refuse every saved state once). The
+/// version of `rustc-hash` is in `Cargo.lock`, which `FORMAT` covers, so a new algorithm is a new format.
+pub(crate) struct Fixed(FxHasher);
+
+impl Fixed {
+    pub(crate) fn new() -> Fixed {
+        Fixed(FxHasher::default())
+    }
+
+    pub(crate) fn tag(&mut self, t: u8) {
+        self.0.write(&[t]);
+    }
+
+    pub(crate) fn num(&mut self, n: u64) {
+        self.0.write(&n.to_le_bytes());
+    }
+
+    /// The bytes, after their length, so that where one run ends and the next starts is part of the hash.
+    pub(crate) fn bytes(&mut self, b: &[u8]) {
+        self.num(b.len() as u64);
+        self.0.write(b);
+    }
+
+    pub(crate) fn finish(&self) -> u64 {
+        self.0.finish()
+    }
+}
+
+/// A hash of one text, the same on every release and platform.
+pub(crate) fn text_hash(s: &str) -> u64 {
+    let mut h = Fixed::new();
+    h.bytes(s.as_bytes());
+    h.finish()
+}
 
 /// A hash of one message as the host gives it to the curator. The host keeps one per message as the history
 /// grows, so that saving a state never goes over the history again.
 pub fn message_hash(v: &Value) -> u64 {
-    let mut h = DefaultHasher::new();
+    let mut h = Fixed::new();
     feed(v, &mut h);
     h.finish()
 }
 
-fn feed(v: &Value, h: &mut DefaultHasher) {
+fn feed(v: &Value, h: &mut Fixed) {
     match v {
-        Value::Null => 0u8.hash(h),
+        Value::Null => h.tag(0),
         Value::Bool(b) => {
-            1u8.hash(h);
-            b.hash(h);
+            h.tag(1);
+            h.tag(u8::from(*b));
         }
         Value::Number(n) => {
-            2u8.hash(h);
+            h.tag(2);
             match (n.as_i64(), n.as_u64(), n.as_f64()) {
-                (Some(i), _, _) => i.hash(h),
-                (_, Some(u), _) => u.hash(h),
-                (_, _, f) => f.map(f64::to_bits).hash(h),
+                (Some(i), _, _) => h.num(i as u64),
+                (_, Some(u), _) => h.num(u),
+                (_, _, f) => h.num(f.map_or(u64::MAX, f64::to_bits)),
             }
         }
         Value::String(s) => {
-            3u8.hash(h);
-            s.hash(h);
+            h.tag(3);
+            h.bytes(s.as_bytes());
         }
         Value::Array(a) => {
-            4u8.hash(h);
-            a.len().hash(h);
+            h.tag(4);
+            h.num(a.len() as u64);
             for x in a {
                 feed(x, h);
             }
         }
         Value::Object(m) => {
-            5u8.hash(h);
-            m.len().hash(h);
+            h.tag(5);
+            h.num(m.len() as u64);
             for (k, x) in m {
-                k.hash(h);
+                h.bytes(k.as_bytes());
                 feed(x, h);
             }
         }
@@ -74,15 +112,18 @@ fn feed(v: &Value, h: &mut DefaultHasher) {
 
 /// A hash of the first messages of a history, from the hash of each (`message_hash`).
 pub fn history_hash(hashes: &[u64]) -> u64 {
-    let mut h = DefaultHasher::new();
-    hashes.len().hash(&mut h);
-    hashes.hash(&mut h);
+    let mut h = Fixed::new();
+    h.num(hashes.len() as u64);
+    for &x in hashes {
+        h.num(x);
+    }
     h.finish()
 }
 
-fn hash_of<T: Hash + ?Sized>(x: &T) -> u64 {
-    let mut h = DefaultHasher::new();
-    x.hash(&mut h);
+/// A hash of the bytes after the header, which tell a cut or damaged file.
+fn payload_hash(b: &[u8]) -> u64 {
+    let mut h = Fixed::new();
+    h.bytes(b);
     h.finish()
 }
 
@@ -154,12 +195,12 @@ impl Saved {
         let payload = options().serialize(&(&self.cur, &born)).expect("an engine always encodes");
         let h = Header {
             format: format_id(),
-            spec: hash_of(self.cur.spec.as_str()),
+            spec: text_hash(self.cur.spec.as_str()),
             covered: self.covered() as u64,
             views: self.views,
             history: self.history,
             len: payload.len() as u64,
-            check: hash_of(&payload[..]),
+            check: payload_hash(&payload),
         };
         let mut out = Vec::with_capacity(HEAD + payload.len());
         h.write(&mut out);
@@ -191,7 +232,7 @@ impl Curator {
     /// the state from the history.
     pub fn restore(spec: &str, bytes: &[u8], msgs: &[Value], hashes: &[u64]) -> Result<(Curator, Header), String> {
         let h = Header::read(bytes)?;
-        if h.spec != hash_of(spec) {
+        if h.spec != text_hash(spec) {
             return Err("saved with other curator settings".into());
         }
         let covered = usize::try_from(h.covered).map_err(|_| "covers more messages than there are")?;
@@ -202,7 +243,7 @@ impl Curator {
             return Err("the history differs from the one it covers".into());
         }
         let payload = &bytes[HEAD..];
-        if payload.len() as u64 != h.len || hash_of(payload) != h.check {
+        if payload.len() as u64 != h.len || payload_hash(payload) != h.check {
             return Err("the file is cut or damaged".into());
         }
         let (mut cur, born): (Curator, Vec<(usize, String)>) =
@@ -253,7 +294,7 @@ pub(crate) fn named_events<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<(&'sta
 /// `serde(with)` for the line index's postings (`Index`): each list holds units in the order they came, so it is
 /// written as the step from the one before, which mostly takes one byte where the unit takes three.
 pub(crate) mod posts {
-    use rustc_hash::FxHashMap;
+    use crate::sorted::FxHashMap;
     use serde::ser::SerializeSeq;
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -262,7 +303,10 @@ pub(crate) mod posts {
     pub fn serialize<S: Serializer>(m: &FxHashMap<u64, Vec<Post>>, s: S) -> Result<S::Ok, S::Error> {
         let mut seq = s.serialize_seq(Some(m.len()))?;
         let mut steps: Vec<Post> = Vec::new();
-        for (k, v) in m {
+        // in the order of the keys, so that the same lists are always the same bytes
+        let mut lists: Vec<(&u64, &Vec<Post>)> = m.iter().collect();
+        lists.sort_unstable_by_key(|l| *l.0);
+        for (k, v) in lists {
             steps.clear();
             let mut prev = 0u32;
             for &(unit, line) in v {
@@ -302,5 +346,23 @@ pub(crate) mod json_opt {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
         let t: Option<String> = Option::deserialize(d)?;
         t.map(|t| serde_json::from_str(&t).map_err(serde::de::Error::custom)).transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A state saved by one build is read by the next only when the hashes come out the same: they are fixed
+    /// numbers, not whatever the standard library's hasher of this Rust release gives. A change here is a new
+    /// format of the saved state (bump `MAGIC`).
+    #[test]
+    fn the_hashes_of_a_saved_state_are_fixed_numbers() {
+        // one key to an object: the order of keys is the map's, which is not what is checked here
+        let m = serde_json::json!([{"a": [1, -2, 1.5, true, null, "x"]}, {"b": {"c": "d"}}]);
+        assert_eq!(text_hash("abc"), 0x4c0b_a8f5_7b0d_4dae);
+        assert_eq!(payload_hash(b"abc"), 0x4c0b_a8f5_7b0d_4dae);
+        assert_eq!(history_hash(&[1, 2, 3]), 0x00af_237c_b0b9_08b2);
+        assert_eq!(message_hash(&m), 0x9e2a_46bd_f5d5_fa02);
     }
 }

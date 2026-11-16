@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use nexo_tui::complete::{Src, WordIndex, CAP, PUMP, SCAN_CAP};
+use nexo_tui::complete::{Src, WordIndex, CAP, SCAN_CAP, STEP};
 
 struct Lcg(u64);
 
@@ -187,8 +187,8 @@ fn pump_never_does_more_than_its_budget() {
     let mut calls = 0;
     loop {
         let before = w.stats.bytes_scanned;
-        let done = w.pump(PUMP);
-        assert!(done <= PUMP, "{done} > {PUMP}");
+        let done = w.pump(STEP);
+        assert!(done <= STEP, "{done} > {STEP}");
         assert_eq!(w.stats.bytes_scanned - before, done as u64);
         if done == 0 {
             break;
@@ -196,5 +196,28 @@ fn pump_never_does_more_than_its_budget() {
         calls += 1;
     }
     assert_eq!(w.stats.bytes_scanned, total);
-    assert!(calls >= (total as usize / PUMP), "{calls} frames");
+    assert!(calls >= (total as usize / STEP), "{calls} frames");
+}
+
+#[test]
+fn pump_for_stops_at_its_time_and_goes_on_the_next_call() {
+    let mut r = Lcg(11);
+    let vocab: Vec<String> = (0..2000).map(|_| pseudo(&mut r, 6)).collect();
+    let mut w = WordIndex::new(true);
+    let mut total = 0u64;
+    for _ in 0..8 {
+        let t = text(&mut r, 900 * 1024, &vocab);
+        total += t.len() as u64;
+        w.feed(&t, Src::Other);
+    }
+    let first = w.pump_for(std::time::Duration::ZERO);
+    assert!(first > 0 && first <= STEP, "a spent budget still does one step, not more: {first}");
+    assert!(w.pending() > 0);
+    let mut calls = 0;
+    while w.pump_for(std::time::Duration::from_millis(8)) > 0 {
+        calls += 1;
+        assert!(calls < 10_000);
+    }
+    assert_eq!(w.stats.bytes_scanned, total, "every byte is indexed once");
+    assert_eq!(w.pending(), 0);
 }

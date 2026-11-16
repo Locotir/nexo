@@ -152,6 +152,8 @@ pub struct App {
     /// The sessions that can be written to, as the mailbox last listed them (for `/msg`).
     pub peers: Vec<nexo_core::mail::PeerInfo>,
     mail_polled: Option<Instant>,
+    /// When the last key came in: the index of a resumed history fills in smaller bites right after one.
+    pub(crate) last_key: Option<Instant>,
     /// What this session does, told to the `/panel` supervisor.
     pub nexo_src: nexo_agent::supervise::NexoSource,
     /// The `/panel` poller, started the first time the panel opens.
@@ -436,6 +438,7 @@ impl App {
             mcp: Vec::new(),
             peers: Vec::new(),
             mail_polled: None,
+            last_key: None,
             nexo_src: nexo_agent::supervise::NexoSource::default(),
             panel: None,
             panel_filter: Default::default(),

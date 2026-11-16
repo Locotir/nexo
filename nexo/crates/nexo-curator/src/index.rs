@@ -5,7 +5,7 @@
 //! decides nothing. The lines come from any part of the history, whatever topic it was on. No text is stored: a
 //! pair points at the unit, and the caller reads the line from it.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 
 use crate::facts::{key, keys};
 

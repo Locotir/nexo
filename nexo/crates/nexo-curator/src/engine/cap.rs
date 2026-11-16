@@ -2,7 +2,7 @@
 
 use std::collections::BinaryHeap;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::hindsight::{Set, Sym, UKind};

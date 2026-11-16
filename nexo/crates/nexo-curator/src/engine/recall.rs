@@ -1,6 +1,6 @@
 //! What the view left out and comes back: the steps a request needs, the outputs the agent asks for again.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::hindsight::{Sym, UKind};

@@ -1,6 +1,6 @@
 //! Outputs and steps that go idle, and the rent that decides when they leave.
 
-use rustc_hash::FxHashSet;
+use crate::sorted::FxHashSet;
 use serde_json::Value;
 
 use crate::hindsight::{Sym, UKind};

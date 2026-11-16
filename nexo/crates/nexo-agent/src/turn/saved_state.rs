@@ -14,6 +14,12 @@ fn session_file(st: &State) -> Option<PathBuf> {
 
 /// Before the first view of a resumed session: the policy starts from the state saved with it, when there is one.
 pub(super) fn load(st: &mut State) {
+    if let Some(p) = session_file(st) {
+        saved::sweep(&p);
+    }
+    if let Some(p) = session_file(st) {
+        saved::sweep(&p);
+    }
     if let Some(bytes) = session_file(st).and_then(|p| saved::read(&p)) {
         st.policy.restore(bytes);
     }

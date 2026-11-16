@@ -4,7 +4,7 @@
 //! known. What the agent is working from (the sticky set) stays below the ceiling; no model and no directive
 //! decide it, only rules over the history.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 
 use crate::hindsight::UKind;
 use crate::ledger::ERROR_MARKS;

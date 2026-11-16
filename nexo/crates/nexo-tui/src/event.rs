@@ -89,6 +89,7 @@ pub fn handle(app: &mut App, ev: Event) {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
             app.cut_intro();
             app.stars_input();
+            app.last_key = Some(app.now());
             key(app, k);
             app.draft_check();
         }

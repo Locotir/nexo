@@ -12,8 +12,8 @@
 
 use std::sync::LazyLock;
 
+use crate::sorted::{FxHashMap, FxHashSet};
 use regex::Regex;
-use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Facts kept; past it the oldest go.
 const TABLE: usize = 200;

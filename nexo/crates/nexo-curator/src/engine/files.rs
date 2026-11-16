@@ -1,7 +1,7 @@
 //! The files and commands that calls name, and the agent's own writes of files.
 
+use crate::sorted::FxHashSet;
 use indexmap::IndexMap;
-use rustc_hash::FxHashSet;
 use serde_json::Value;
 
 use crate::hindsight::Set;

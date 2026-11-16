@@ -14,7 +14,7 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::hindsight::{set_of, words, Interner, Set, Sym, Tracer, UKind};

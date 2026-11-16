@@ -3,7 +3,7 @@
 //! made at, so a replay can name the rule behind each word the view lost, and what each rule saved.
 //! Measurement only: nothing here changes what the view holds.
 
-use rustc_hash::FxHashMap;
+use crate::sorted::FxHashMap;
 
 use super::Engine;
 use crate::hindsight::UKind;
@@ -22,7 +22,7 @@ pub struct Own {
     #[serde(deserialize_with = "crate::snapshot::named_events")]
     events: Vec<(&'static str, u64, i64)>,
     /// Messages the shortening at birth changed.
-    pub born: rustc_hash::FxHashSet<usize>,
+    pub born: crate::sorted::FxHashSet<usize>,
 }
 
 impl Engine {

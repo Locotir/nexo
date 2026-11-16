@@ -158,7 +158,9 @@ impl Engine {
                 (now - p.at, tokens[..n].iter().sum())
             })
             .collect();
-        by_age.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // equal ages (views replayed at one `now` share it) by what they hold, so that the order of the map
+        // the pockets are in never decides which steps are kept
+        by_age.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut steps: Vec<(f64, i64)> = Vec::new();
         for (age, hit) in by_age {
             if steps.last().is_none_or(|s| hit > s.1) {
@@ -168,8 +170,20 @@ impl Engine {
         self.probe = Some(Probe { steps, total: tokens.iter().sum() });
         let key = self.pocket_key();
         self.pockets.insert(key, Pocket { sent: fin, at: now, end: self.tr.msgs.len() });
+        self.evict_pocket(key);
+    }
+
+    /// Past `POCKETS_KEPT`, the oldest pocket goes, never `keep`, the one just kept. Pockets of one time (views
+    /// replayed at one `now` share it) go by their key, so that the order of the map, which is not the same
+    /// after a restore, never decides which one it is.
+    fn evict_pocket(&mut self, keep: usize) {
         if self.pockets.len() > POCKETS_KEPT {
-            let oldest = self.pockets.iter().min_by(|a, b| a.1.at.total_cmp(&b.1.at)).map(|(k, _)| *k);
+            let oldest = self
+                .pockets
+                .iter()
+                .filter(|(&k, _)| k != keep)
+                .min_by(|a, b| a.1.at.total_cmp(&b.1.at).then(a.0.cmp(b.0)))
+                .map(|(k, _)| *k);
             if let Some(k) = oldest {
                 self.pockets.remove(&k);
             }
@@ -222,5 +236,51 @@ impl Engine {
             self.life_hi = f64::INFINITY;
             self.bump("life_reset", 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pockets kept at one time (the views of a replay share one `now`) leave in the order of their keys, whatever
+    /// order the map holds them in, so a restored engine drops the one the engine that ran dropped.
+    #[test]
+    fn pockets_of_one_time_are_evicted_by_key_whatever_the_order_of_the_map() {
+        let params = crate::params("pockets=1").unwrap();
+        let pocket = |at: f64| Pocket { sent: Vec::new(), at, end: 0 };
+        let mut left = Vec::new();
+        for order in [
+            (0..=POCKETS_KEPT).collect::<Vec<_>>(),
+            (0..=POCKETS_KEPT).rev().collect(),
+            vec![5, 0, 16, 9].into_iter().chain((0..=POCKETS_KEPT).filter(|k| ![5, 0, 16, 9].contains(k))).collect(),
+        ] {
+            let mut e = Engine::new(params.clone());
+            for k in order {
+                e.pockets.insert(k, pocket(100.0));
+            }
+            e.pockets.insert(99, pocket(50.0));
+            e.evict_pocket(usize::MAX);
+            assert!(!e.pockets.contains_key(&99), "the oldest goes first");
+            e.evict_pocket(usize::MAX);
+            let mut keys: Vec<usize> = e.pockets.keys().copied().collect();
+            keys.sort_unstable();
+            left.push(keys);
+        }
+        assert_eq!(left[0], left[1]);
+        assert_eq!(left[0], left[2]);
+        assert!(!left[0].contains(&0), "of equal times the lowest key goes");
+    }
+
+    /// The pocket just kept is never the one that leaves, even when its time ties with the others'.
+    #[test]
+    fn the_pocket_just_kept_stays() {
+        let mut e = Engine::new(crate::params("pockets=1").unwrap());
+        for k in 0..=POCKETS_KEPT {
+            e.pockets.insert(k, Pocket { sent: Vec::new(), at: 7.0, end: 0 });
+        }
+        e.evict_pocket(0);
+        assert!(e.pockets.contains_key(&0));
+        assert!(!e.pockets.contains_key(&1));
     }
 }

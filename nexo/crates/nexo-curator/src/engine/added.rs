@@ -1,7 +1,7 @@
 //! What the curator put in a request beyond the plain conversation, and what it held back: a list of
 //! named items with their sizes. Read-only: it reads the state the decisions left and changes none.
 
-use rustc_hash::FxHashSet;
+use crate::sorted::FxHashSet;
 use serde_json::{json, Value};
 
 use crate::hindsight::UKind;

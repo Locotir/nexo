@@ -1,6 +1,6 @@
 //! The anchor the model reads first: rules, notes, pinned files, ledger and map.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 
 use crate::hindsight::{Sym, UKind};
 use crate::json::est_str;

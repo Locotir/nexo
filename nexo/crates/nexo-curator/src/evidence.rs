@@ -5,8 +5,9 @@
 use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
 
+use crate::sorted::{FxHashMap, FxHashSet};
 use regex::Regex;
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use rustc_hash::FxHasher;
 
 /// Words in a run that are common to every file and say nothing about which one it came from.
 const KEYWORDS: &[&str] = &[

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use rustc_hash::FxHashSet;
+use crate::sorted::FxHashSet;
 
 use crate::goal::head_slice;
 use crate::memory::{Cell, Memory, State, Zone};

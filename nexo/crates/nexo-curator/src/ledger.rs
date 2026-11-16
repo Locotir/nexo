@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::LazyLock;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 
 use crate::hindsight::{words, Interner, Set, Sym, Tracer, UKind};
 use crate::json::est_str;

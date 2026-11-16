@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::sorted::{FxHashMap, FxHashSet};
 use indexmap::IndexMap;
-use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::goal::action;

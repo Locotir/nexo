@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rustc_hash::FxHashSet;
+use crate::sorted::FxHashSet;
 
 use crate::goal::action;
 use crate::hindsight::{Sym, UKind};

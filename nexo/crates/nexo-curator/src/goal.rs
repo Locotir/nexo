@@ -1,6 +1,6 @@
 //! Turns and threads of a conversation, built message by message.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::hindsight::{Sym, Tracer, UKind};

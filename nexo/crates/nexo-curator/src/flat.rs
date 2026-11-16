@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 
 /// The files each step read, each by the parts of its name the other files read do not share (see
 /// `Engine::step_files`). A step is added once; a part that becomes shared (two files hold it) redoes

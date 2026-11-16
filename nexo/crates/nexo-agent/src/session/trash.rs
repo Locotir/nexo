@@ -48,6 +48,12 @@ pub fn restore_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
 /// Moves the context state saved with a session (`context::saved`) along with it. It is only ever a shortcut:
 /// one that cannot move is removed, and the session rebuilds it.
 fn move_saved_state(from: &Path, to: &Path) {
+    // a write cut by a crash leaves its file behind: both places lose theirs
+    crate::context::saved::sweep(from);
+    crate::context::saved::sweep(to);
+    // a write cut by a crash leaves its file behind: both places lose theirs
+    crate::context::saved::sweep(from);
+    crate::context::saved::sweep(to);
     let (a, b) = (crate::context::saved::path_for(from), crate::context::saved::path_for(to));
     if a.is_file() && std::fs::rename(&a, &b).is_err() {
         crate::context::saved::forget(from);

@@ -1,6 +1,6 @@
 //! How a message enters the engine: shortened at birth, its edits tracked, its rules taken, the history synced.
 
-use rustc_hash::FxHashMap;
+use crate::sorted::FxHashMap;
 use serde_json::{Map, Value};
 
 use crate::hindsight::UKind;

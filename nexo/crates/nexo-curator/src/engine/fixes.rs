@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::{Arc, LazyLock};
 
-use rustc_hash::FxHashMap;
+use crate::sorted::FxHashMap;
 use serde_json::Value;
 
 use crate::hindsight::UKind;

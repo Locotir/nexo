@@ -521,6 +521,38 @@ async fn a_session_resumed_from_its_saved_state_sends_the_open_view() {
     assert_eq!(resumed.tokens, open.tokens);
 }
 
+/// A run that does not know the window (another provider or model than the one that saved the state) starts from
+/// the defaults of a new curator with a restored state, as a full replay does, not from the old run's.
+#[tokio::test]
+async fn a_resumed_run_that_knows_no_window_starts_from_the_default_settings() {
+    let h = read_session(60);
+    let half = (h.len() / 2..h.len()).find(|&p| h[p].role == Role::Assistant).unwrap();
+    let sent = |v: &View| serde_json::to_string(&v.messages).unwrap();
+    let unlimited = BuiltIn::new("").unwrap().view(3000, &h).await.unwrap();
+    // the run that saved it had a window the view at the end does not fit
+    let mut open = BuiltIn::new("").unwrap();
+    open.window(unlimited.tokens / 2 + 3000);
+    open.calls_left(Some(2));
+    for p in 0..=half {
+        if h[p].role == Role::Assistant {
+            open.view(3000, &h[..p]).await.unwrap();
+        }
+    }
+    let bytes = open.save().expect("the curator saves its state")();
+    let resume = |said: bool| {
+        let mut c = BuiltIn::new("").unwrap();
+        c.restore(bytes.clone());
+        if said {
+            c.window(0);
+            c.calls_left(None);
+        }
+        c
+    };
+    let (silent, said) = (resume(false).view(3000, &h).await.unwrap(), resume(true).view(3000, &h).await.unwrap());
+    assert_eq!(sent(&silent), sent(&said), "a run that says there is no window sends what one that says nothing does");
+    assert_eq!(silent.tokens, unlimited.tokens, "the old run's window cuts a run that knows none");
+}
+
 /// A resume writes the state again only when it took replies again: a state saved after the last reply is as good
 /// to start from next time, and writing it over would only cost the write.
 #[tokio::test]
@@ -577,6 +609,44 @@ fn the_saved_state_sits_next_to_the_session_and_moves_with_it() {
     assert!(saved::read(&session).is_none());
     crate::session::restore_in(dir.path(), "20261116-080000-ab12").unwrap();
     assert_eq!(saved::read(&session).as_deref(), Some(&b"state"[..]));
+}
+
+/// A write cut between its file and the rename leaves a file nothing else removes: loading, trashing and
+/// forgetting the session remove the ones of its own that no live write can still need, and only those.
+#[test]
+fn the_files_of_cut_writes_are_removed_for_their_own_session_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = dir.path().join("20261116-080000-ab12.jsonl");
+    let other = dir.path().join("20261116-090000-cd34.jsonl");
+    std::fs::write(&session, "{}\n").unwrap();
+    // a pid no process has: far above the pid limit of every system
+    let dead = |s: &str, n: u32| dir.path().join(format!("{s}.jsonl.curator.2000000000.{n}.tmp"));
+    let mine = dir.path().join(format!("20261116-080000-ab12.jsonl.curator.{}.7.tmp", std::process::id()));
+    for f in [dead("20261116-080000-ab12", 1), dead("20261116-090000-cd34", 1), mine.clone()] {
+        std::fs::write(f, "half").unwrap();
+    }
+    std::fs::write(dir.path().join("20261116-080000-ab12.jsonl.curator.notes.tmp"), "x").unwrap();
+    // 2000000000 is no pid on Unix; elsewhere a process cannot be asked for, so age decides (see below)
+    let by_pid = cfg!(unix);
+    assert_eq!(saved::sweep(&session), usize::from(by_pid), "the dead process's file of this session goes");
+    assert_eq!(!dead("20261116-080000-ab12", 1).exists(), by_pid);
+    assert!(dead("20261116-090000-cd34", 1).exists(), "another session's file stays");
+    assert!(mine.exists(), "a write of this process may be running");
+    assert!(dir.path().join("20261116-080000-ab12.jsonl.curator.notes.tmp").exists(), "other names stay");
+    // a file older than the state that replaced it goes whoever wrote it
+    let old = dir.path().join(format!("20261116-080000-ab12.jsonl.curator.{}.3.tmp", std::process::id() + 1));
+    std::fs::write(&old, "half").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    saved::write(&session, Box::new(|| b"state".to_vec()));
+    saved::sweep(&session);
+    assert!(!old.exists());
+    assert!(!dead("20261116-080000-ab12", 1).exists());
+    assert_eq!(saved::read(&session).as_deref(), Some(&b"state"[..]));
+    // trashing sweeps too, and never another session's files
+    std::fs::write(&other, "{}\n").unwrap();
+    let to = crate::session::trash_in(dir.path(), "20261116-080000-ab12").unwrap();
+    assert!(dead("20261116-090000-cd34", 1).exists());
+    assert!(saved::read(&to).is_some());
 }
 
 /// Where a turn of `h` ends: the history up to there ends with a model reply and the person writes next, so a

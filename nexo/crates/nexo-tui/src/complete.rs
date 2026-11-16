@@ -38,9 +38,14 @@ pub const MAX_UNIT: usize = 120;
 pub const MAX_FEED: usize = 1 << 20;
 /// Texts up to this size are indexed on the spot.
 pub const INLINE: usize = 64 * 1024;
-/// Bytes `pump` indexes per call: about 15 ms of work at the speed of a long session, so a key typed
-/// while a resumed history is indexed waits a frame at most.
-pub const PUMP: usize = 96 * 1024;
+/// Bytes `pump_for` indexes between two looks at the clock: about 2 ms of work.
+pub const STEP: usize = 16 * 1024;
+/// Time one frame gives the index while keys are coming in, so a key waits for it a few milliseconds at most.
+pub const BUSY_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+/// Time one frame gives the index when no key came lately: nothing waits for the frame, so it goes faster.
+pub const IDLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(24);
+/// A key this recent makes the person count as typing.
+pub const TYPING: std::time::Duration = std::time::Duration::from_millis(100);
 /// A word the person wrote outlives others this many blocks when making room.
 const USER_GRACE: u32 = 4096;
 /// Units after a key/token/password word that are never indexed (same line).
@@ -215,6 +220,21 @@ impl WordIndex {
             break;
         }
         done
+    }
+
+    /// Indexes what is queued for up to `limit` of wall time, in steps of `STEP` bytes, so the slice a frame
+    /// does follows the speed of the machine and not a size guessed once; returns the bytes done. It overshoots
+    /// by one step at most, and always does one step so the index moves on a slow machine.
+    pub fn pump_for(&mut self, limit: std::time::Duration) -> usize {
+        let start = std::time::Instant::now();
+        let mut total = 0;
+        loop {
+            let done = self.pump(STEP);
+            total += done;
+            if done == 0 || start.elapsed() >= limit {
+                return total;
+            }
+        }
     }
 
     /// Everything queued, at once.

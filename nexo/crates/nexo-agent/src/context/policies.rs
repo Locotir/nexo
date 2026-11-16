@@ -90,17 +90,6 @@ pub struct BuiltIn {
     saved_at: usize,
     /// A state saved with the session, for the first view of a resumed one (`ContextPolicy::restore`).
     pending: Option<Vec<u8>>,
-    /// What the host last said before a view (tools, window, prices, calls left): a restored state was saved
-    /// with what it said then, and takes what it says now.
-    host: Host,
-}
-
-#[derive(Default)]
-struct Host {
-    tools: Option<Vec<String>>,
-    window: Option<u64>,
-    prices: Option<(f64, f64)>,
-    calls_left: Option<Option<u64>>,
 }
 
 impl BuiltIn {
@@ -119,7 +108,6 @@ impl BuiltIn {
             views: 0,
             saved_at: 0,
             pending: None,
-            host: Host::default(),
         })
     }
 
@@ -130,21 +118,10 @@ impl BuiltIn {
         let t = std::time::Instant::now();
         match nexo_curator::Curator::restore(self.cur.spec(), &bytes, &self.values, &self.hashes) {
             Ok((cur, head)) => {
-                self.cur = cur;
-                let h = std::mem::take(&mut self.host);
-                if let Some(names) = &h.tools {
-                    self.cur.tools(names);
-                }
-                if let Some(w) = h.window {
-                    self.cur.window(w);
-                }
-                if let Some((input, read)) = h.prices {
-                    self.cur.prices(input, read);
-                }
-                if let Some(left) = h.calls_left {
-                    self.cur.calls_left(left);
-                }
-                self.host = h;
+                // what the host said of this run went to the new curator before this view (tools, window, prices,
+                // calls left, or nothing of them); the saved one has the last run's, so it takes this one's
+                let fresh = std::mem::replace(&mut self.cur, cur);
+                self.cur.take_host_settings(&fresh);
                 self.views = head.views;
                 self.saved_at = self.cur.covered();
                 tracing::debug!(
@@ -213,19 +190,14 @@ impl ContextPolicy for BuiltIn {
 
     fn tools(&mut self, names: &[String]) {
         self.cur.tools(names);
-        if self.host.tools.as_deref() != Some(names) {
-            self.host.tools = Some(names.to_vec());
-        }
     }
 
     fn window(&mut self, tokens: u64) {
         self.cur.window(tokens);
-        self.host.window = Some(tokens);
     }
 
     fn prices(&mut self, input: f64, cache_read: f64) {
         self.cur.prices(input, cache_read);
-        self.host.prices = Some((input, cache_read));
     }
 
     fn usage(&mut self, read: u64, input: u64) {
@@ -234,7 +206,6 @@ impl ContextPolicy for BuiltIn {
 
     fn calls_left(&mut self, calls: Option<u64>) {
         self.cur.calls_left(calls);
-        self.host.calls_left = Some(calls);
     }
 
     fn fits_window(&self) -> bool {

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::sorted::{FxHashMap, FxHashSet};
 use serde_json::{Map, Value};
 
 use crate::goal::head_slice;

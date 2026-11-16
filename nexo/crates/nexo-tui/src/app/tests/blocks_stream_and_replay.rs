@@ -313,16 +313,16 @@ fn a_resumed_history_is_indexed_on_the_frames_after_it_is_shown_and_not_while_it
     // even with animations off the load asks for frames, which the pacer then gives at frame rate
     a.opts.animations = false;
     assert_eq!(a.load(), crate::frame::Load::Work);
-    // each frame indexes one slice at most, and the work ends
+    // each frame indexes a slice of time, at least one step, and the work ends
     let mut frames = 0;
     let mut seen = 0;
     while a.words.pending() > 0 {
         a.tick_frame(false);
         let now = a.words.stats.bytes_scanned;
-        assert!(now - seen <= (crate::complete::PUMP + 4096) as u64, "a frame indexed {} bytes", now - seen);
+        assert!(now > seen, "a frame moved the index on");
         seen = now;
         frames += 1;
-        assert!(frames <= total / crate::complete::PUMP + calls, "{frames} frames for {total} bytes");
+        assert!(frames <= total / crate::complete::STEP + calls, "{frames} frames for {total} bytes");
     }
     assert_eq!(a.words.stats.bytes_scanned, total as u64, "every word is indexed once");
     assert!(a.words.suggest("resumedword07").is_some(), "the completions work once the index is done");

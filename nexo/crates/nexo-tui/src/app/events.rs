@@ -292,7 +292,9 @@ impl App {
         self.sub_tick();
         let t = crate::trace::span("index");
         let waiting = self.words.pending();
-        self.words.pump(crate::complete::PUMP);
+        let typing = self.last_key.is_some_and(|t| self.now().saturating_duration_since(t) < crate::complete::TYPING);
+        let budget = if typing { crate::complete::BUSY_BUDGET } else { crate::complete::IDLE_BUDGET };
+        self.words.pump_for(budget);
         if waiting > 0 && self.words.pending() == 0 {
             crate::trace::totals("index done");
         }

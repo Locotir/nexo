@@ -1,6 +1,6 @@
 //! Reads that a later edit of their file has made out of date.
 
-use rustc_hash::FxHashSet;
+use crate::sorted::FxHashSet;
 
 use crate::hindsight::UKind;
 use crate::msg::get_str;

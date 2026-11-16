@@ -109,7 +109,7 @@ mod tests {
     const SPEC: &str = "pockets=1";
 
     /// One part of the engine written in the saved format and read back in place of the one that ran: the same
-    /// bytes come out again, and the rest of the session gets the same replies. A part the session left empty
+    /// bytes come out again (compared byte by byte), and the rest of the session gets the same replies. A part the session left empty
     /// would prove nothing, so each holds something at that point.
     macro_rules! part {
         ($test:ident, $($field:ident).+) => {
@@ -119,7 +119,8 @@ mod tests {
                     let b = enc(&e.$($field).+);
                     assert!(b.len() > 2, "{} is empty at this point of the session", stringify!($($field).+));
                     e.$($field).+ = dec(&b);
-                    assert_eq!(enc(&e.$($field).+).len(), b.len(), "{} reads back whole", stringify!($($field).+));
+                    // the bytes, not their number: a field that reads back reordered or changed is another state
+                    assert!(enc(&e.$($field).+) == b, "{} reads back as other bytes", stringify!($($field).+));
                 }));
             }
         };

@@ -53,4 +53,60 @@ pub fn write_in_background(session: PathBuf, job: SaveJob) -> Option<std::thread
 /// Removes the saved state of a session, when it cannot go where the session went.
 pub fn forget(session: &Path) {
     let _ = std::fs::remove_file(path_for(session));
+    sweep(session);
+}
+
+/// A write that a crash or a kill cut between the file and the rename leaves its file of up to tens of MB
+/// behind, and nothing else would ever remove it.
+const YOUNG: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Removes the files of cut writes that belong to this session (`<id>.jsonl.curator.<pid>.<n>.tmp`): those of
+/// a process that is gone, those older than the saved state that took their place, and, where a process cannot
+/// be asked for (Windows), those untouched for an hour. The files of this process (a write may be running) and
+/// every other name, including the files of other sessions, are left alone. Returns how many it removed.
+pub fn sweep(session: &Path) -> usize {
+    let (Some(dir), Some(name)) = (session.parent(), session.file_name().and_then(|n| n.to_str())) else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let prefix = format!("{name}.curator.");
+    let saved_at = std::fs::metadata(path_for(session)).and_then(|m| m.modified()).ok();
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let file = e.file_name();
+        let Some(rest) = file.to_str().and_then(|f| f.strip_prefix(&prefix)).and_then(|r| r.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let mut parts = rest.split('.');
+        let (Some(Ok(pid)), Some(Ok(_)), None) =
+            (parts.next().map(str::parse::<u32>), parts.next().map(str::parse::<u64>), parts.next())
+        else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        let written = e.metadata().and_then(|m| m.modified()).ok();
+        let older = matches!((written, saved_at), (Some(w), Some(s)) if w < s);
+        let long_ago = written.and_then(|w| w.elapsed().ok()).is_some_and(|a| a > YOUNG);
+        if (no_such_process(pid) || older || long_ago) && std::fs::remove_file(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Whether signal 0 finds no process under `pid` (a process of another user still exists: EPERM).
+#[cfg(unix)]
+fn no_such_process(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    // SAFETY: signal 0 sends nothing; it only reports whether the process exists.
+    let r = unsafe { libc::kill(pid, 0) };
+    r != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn no_such_process(_pid: u32) -> bool {
+    false
 }
