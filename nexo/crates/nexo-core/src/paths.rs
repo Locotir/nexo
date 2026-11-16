@@ -293,6 +293,24 @@ fn env_dir(var: &str) -> Option<PathBuf> {
     std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
+/// The path with links resolved as far as it exists, the rest as written.
+pub fn real_path(p: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut base = p.to_path_buf();
+    loop {
+        if let Ok(c) = base.canonicalize() {
+            return rest.iter().rev().fold(c, |acc, x: &std::ffi::OsString| acc.join(x));
+        }
+        match (base.file_name().map(|n| n.to_os_string()), base.parent().map(Path::to_path_buf)) {
+            (Some(n), Some(parent)) => {
+                rest.push(n);
+                base = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,24 +450,6 @@ mod tests {
             "/home/a/keychains/notes.md",
         ] {
             assert!(!holds_keys(Path::new(p)), "{p}");
-        }
-    }
-}
-
-/// The path with links resolved as far as it exists, the rest as written.
-pub fn real_path(p: &Path) -> PathBuf {
-    let mut rest = Vec::new();
-    let mut base = p.to_path_buf();
-    loop {
-        if let Ok(c) = base.canonicalize() {
-            return rest.iter().rev().fold(c, |acc, x: &std::ffi::OsString| acc.join(x));
-        }
-        match (base.file_name().map(|n| n.to_os_string()), base.parent().map(Path::to_path_buf)) {
-            (Some(n), Some(parent)) => {
-                rest.push(n);
-                base = parent;
-            }
-            _ => return p.to_path_buf(),
         }
     }
 }
