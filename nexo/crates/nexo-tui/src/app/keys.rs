@@ -367,7 +367,11 @@ impl App {
                 if let AgentCommand::SaveModel { name, model, .. } = &cmd {
                     self.flash(&format!("{name}/{model}: saving and switching…"));
                 }
-                self.send(cmd);
+                if let AgentCommand::SetModel { provider, model } = cmd {
+                    self.set_model(provider, model);
+                } else {
+                    self.send(cmd);
+                }
                 self.next_permission();
             }
             ModalOut::PickMany { kind, values } => {
@@ -382,7 +386,7 @@ impl App {
                 match kind {
                     PickKind::Model => {
                         let (provider, model) = self.model_target(value);
-                        self.send(AgentCommand::SetModel { provider, model });
+                        self.set_model(provider, model);
                     }
                     PickKind::Session => {
                         self.send(AgentCommand::Resume { id: value.clone() });

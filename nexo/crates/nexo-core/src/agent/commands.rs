@@ -258,8 +258,12 @@ pub enum AgentCommand {
         id: String,
     },
     /// Look for the usual local servers (Ollama, LM Studio, vLLM, llama.cpp) at their usual
-    /// ports; answered with `LocalServers`.
-    ScanLocal,
+    /// ports, and for each configured provider in `own` (`(name, base_url)`: no key wanted, address
+    /// on this machine) at its own address; answered with `LocalServers`.
+    ScanLocal {
+        #[serde(default)]
+        own: Vec<(String, String)>,
+    },
     /// Ask what answers at `cfg.base_url` (`/model` setup): the server kind, its protocol and
     /// its models; answered with `Probed`. `key` is one typed in the setup, not yet saved.
     Probe {

@@ -206,6 +206,14 @@ pub const LOCAL: &[(&str, &str)] = &[
     ("llamacpp", "http://localhost:8080"),
 ];
 
+/// Whether an address names this machine (`localhost`, `127.*`, `[::1]`, `0.0.0.0`); the setup and the
+/// local scan share the test, so nothing else is ever asked by the scan.
+pub fn on_this_machine(url: &str) -> bool {
+    let url = url.trim().to_ascii_lowercase();
+    let host = url.split("://").last().unwrap_or("");
+    ["localhost", "127.", "[::1]", "0.0.0.0"].iter().any(|h| host.starts_with(h))
+}
+
 /// What a person types as an address, as a URL: `localhost:11434` gets
 /// `http://`, `api.example.com` gets `https://`, a trailing `/` goes.
 pub fn normalize_url(input: &str) -> String {

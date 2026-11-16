@@ -16,7 +16,7 @@ impl App {
             Command::Help => self.modal = Some(Modal::Help { scroll: 0, query: String::new() }),
             Command::Model(Some(name)) => {
                 let (provider, model) = self.model_target(name);
-                self.send(AgentCommand::SetModel { provider, model });
+                self.set_model(provider, model);
             }
             Command::Model(None) => self.open_setup(),
             Command::Login => {
@@ -496,6 +496,18 @@ impl App {
         }
     }
 
+    /// Asks the agent for a model. Choosing the model already in use while the home is locked opens
+    /// the home: the person said that is the model, and the agent has no change to report for it.
+    pub fn set_model(&mut self, provider: Option<String>, model: String) {
+        let in_use = !self.provider.is_empty()
+            && model == self.model
+            && provider.as_deref().is_none_or(|p| p == self.provider);
+        if self.locked && in_use {
+            self.unlock();
+        }
+        self.send(AgentCommand::SetModel { provider, model });
+    }
+
     pub fn open_setup(&mut self) {
         let cur = format!("{}/{}", self.provider, self.model);
         let mut setup = Setup::new(self.opts.providers.clone(), self.opts.models.clone(), &cur);
@@ -504,7 +516,8 @@ impl App {
             setup.found_local(found);
         }
         self.modal = Some(Modal::Setup(Box::new(setup)));
-        self.send(AgentCommand::ScanLocal);
+        let own = crate::modal::setup::own_local_servers(&self.opts.providers);
+        self.send(AgentCommand::ScanLocal { own });
     }
 
     /// `/effort`: the levels the model takes, the default first.

@@ -590,7 +590,8 @@ impl App {
                 .is_some_and(|(n, c)| !crate::modal::setup::provider_ready(n, c, &[]));
         if app.locked {
             // a local server may answer: that unlocks it
-            app.send(AgentCommand::ScanLocal);
+            let own = crate::modal::setup::own_local_servers(&app.opts.providers);
+            app.send(AgentCommand::ScanLocal { own });
         }
         for w in crate::keymap::Keymap::from_config(&app.opts.keys.clone()).1 {
             app.flash(&w);

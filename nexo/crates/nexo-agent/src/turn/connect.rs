@@ -10,14 +10,14 @@ use super::runtime::Runtime;
 use super::*;
 
 /// The model setup opened: local model servers are looked for, and so are the models the vendors added.
-pub(super) fn on_scan_local(rt: &mut Runtime) {
+pub(super) fn on_scan_local(rt: &mut Runtime, own: Vec<(String, String)>) {
     // the setup opening is also the time to look for models the vendors added
     spawn_model_lists(&rt.state);
     let events = rt.events.clone();
     // trial keys a killed run left behind: the setup opening is the time to clear them
     tokio::task::spawn_blocking(setup::sweep_trial_keys);
     tokio::spawn(async move {
-        let found = nexo_providers::probe::scan_local().await;
+        let found = nexo_providers::probe::scan_local(&own).await;
         emit(&events, AgentEvent::LocalServers { found });
     });
 }

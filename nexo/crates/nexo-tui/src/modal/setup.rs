@@ -164,12 +164,27 @@ pub fn provider_ready(name: &str, c: &ProviderConfig, local: &[(String, String)]
         Some(v) => std::env::var(v).is_ok_and(|k| !k.trim().is_empty()),
         None => {
             // no key wanted: a server on this machine has to be found running first
-            let url = c.base_url.to_ascii_lowercase();
-            let host = url.split("://").last().unwrap_or("");
-            let on_this_machine = ["localhost", "127.", "[::1]", "0.0.0.0"].iter().any(|h| host.starts_with(h));
-            !url.is_empty() && !on_this_machine
+            !c.base_url.is_empty() && !nexo_core::provider::on_this_machine(&c.base_url)
         }
     }
+}
+
+/// The configured providers whose own server must be asked by the local scan: they want no key and
+/// their address is on this machine, so only a server found running makes them ready. `(name, base_url)`.
+pub fn own_local_servers(providers: &[(String, ProviderConfig)]) -> Vec<(String, String)> {
+    providers
+        .iter()
+        .filter(|(n, c)| {
+            c.login.is_none()
+                && c.api_key_cmd.is_none()
+                && c.api_key_file.is_none()
+                && c.api_key_env.is_none()
+                && nexo_core::auth::get(c.auth.as_deref().unwrap_or(n)).is_none()
+                && !c.base_url.is_empty()
+                && nexo_core::provider::on_this_machine(&c.base_url)
+        })
+        .map(|(n, c)| (n.clone(), c.base_url.clone()))
+        .collect()
 }
 
 /// Said when a pasted text the program could not place is let go.

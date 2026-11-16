@@ -51,7 +51,7 @@ fn commands_and_submissions_reach_the_agent() {
     a.input.set_text("/model");
     a.submit();
     assert!(matches!(a.modal, Some(Modal::Setup(_))));
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ScanLocal)), "the setup looks for local servers");
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ScanLocal { .. })), "the setup looks for local servers");
     a.handle_agent(AgentEvent::LocalServers { found: vec![("ollama".into(), "Ollama 0.12.6".into())] });
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = |a: &mut App, code: KeyCode| {

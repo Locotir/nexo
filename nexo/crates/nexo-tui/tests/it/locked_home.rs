@@ -289,3 +289,44 @@ fn the_setup_keys_and_the_ctrl_c_message_never_touch() {
         assert!(row[..at].ends_with("  "), "{w}: the keys touch the message: {row:?}");
     }
 }
+
+fn own_server_app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
+    std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
+    let (tx, rx) = mpsc::unbounded_channel();
+    let opts = TuiOptions {
+        cwd: PathBuf::from("/tmp/project"),
+        provider: "local".into(),
+        model: "m".into(),
+        providers: vec![("local".to_string(), ProviderConfig::new("openai-chat", "http://127.0.0.1:18731/v1", None))],
+        theme: "dark".into(),
+        animations: false,
+        ..TuiOptions::default()
+    };
+    let mut a = App::new(opts, tx);
+    a.root = false;
+    (a, rx)
+}
+
+#[test]
+fn a_configured_server_on_this_machine_is_named_in_the_scan_and_unlocks_the_home_when_found() {
+    let (mut a, mut rx) = own_server_app();
+    assert!(a.locked);
+    let Ok(AgentCommand::ScanLocal { own }) = rx.try_recv() else { panic!("a scan") };
+    assert_eq!(own, vec![("local".to_string(), "http://127.0.0.1:18731/v1".to_string())]);
+    a.handle_agent(AgentEvent::LocalServers { found: vec![("local".into(), "OpenAI-compatible server".into())] });
+    assert!(!a.locked);
+}
+
+#[test]
+fn choosing_the_model_already_in_use_opens_a_locked_home() {
+    let (mut a, mut rx) = own_server_app();
+    let _ = rx.try_recv();
+    assert!(a.locked);
+    a.set_model(None, "m".into());
+    assert!(!a.locked);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetModel { model, .. }) if model == "m"));
+    // another model leaves the home locked until the agent says it changed
+    let (mut b, _rx) = own_server_app();
+    b.set_model(None, "other".into());
+    assert!(b.locked);
+}

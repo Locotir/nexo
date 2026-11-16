@@ -85,19 +85,50 @@ fn bearer(cfg: &ProviderConfig, key: Option<&str>) -> HeaderMap {
     http::headers(cfg, &own)
 }
 
-/// Looks for the usual local servers at their usual ports, all at once:
-/// `(preset, what answered)` for each one that is running.
-pub async fn scan_local() -> Vec<(String, String)> {
-    let asks = LOCAL.iter().map(|(name, root)| async move {
+/// Looks for the usual local servers at their usual ports, and for the configured providers in `own`
+/// (`(name, base_url)`) at their own address, all at once: `(name, what answered)` for each one that is
+/// running. An address that is not on this machine is never asked.
+pub async fn scan_local(own: &[(String, String)]) -> Vec<(String, String)> {
+    let usual = LOCAL.iter().map(|(name, root)| async move {
         // each port ends within 2 s whatever it does, so the scan always ends
         let found = tokio::time::timeout(Duration::from_secs(2), local_kind(root, SCAN)).await.ok()??;
-        let mut what = found.label();
-        if let Some(v) = &found.version {
-            what.push_str(&format!(" {v}"));
-        }
-        Some((name.to_string(), what))
+        Some((name.to_string(), describe(&found)))
     });
-    futures::future::join_all(asks).await.into_iter().flatten().collect()
+    let own = own.iter().filter(|(name, _)| !LOCAL.iter().any(|(p, _)| p == name)).map(|(name, url)| async move {
+        if !nexo_core::provider::on_this_machine(url) {
+            return None;
+        }
+        let what = tokio::time::timeout(Duration::from_secs(2), own_server(url)).await.ok()??;
+        Some((name.clone(), what))
+    });
+    let (usual, own) = futures::join!(futures::future::join_all(usual), futures::future::join_all(own));
+    usual.into_iter().chain(own).flatten().collect()
+}
+
+fn describe(found: &Local) -> String {
+    let mut what = found.label();
+    if let Some(v) = &found.version {
+        what.push_str(&format!(" {v}"));
+    }
+    what
+}
+
+/// What answers at a configured provider's own address: a known server kind at its root, or any server
+/// that lists models where the provider's `base_url` says.
+async fn own_server(url: &str) -> Option<String> {
+    let base = normalize_url(url);
+    let root = root_of(&base);
+    if let Some(found) = local_kind(&root, SCAN).await {
+        return Some(describe(&found));
+    }
+    for route in [format!("{base}/models"), format!("{root}/v1/models")] {
+        if let Ok(a) = get(&route, HeaderMap::new(), SCAN).await {
+            if a.ok() {
+                return Some("OpenAI-compatible server".into());
+            }
+        }
+    }
+    None
 }
 
 /// A server that describes itself on its own routes.
@@ -871,5 +902,31 @@ mod tests {
         assert!(effort_levels("openai-chat", "x", "https://api.deepseek.com", "deepseek-reasoner", true).is_empty());
         assert_eq!(effort_levels("gemini", "gemini", "", "gemini-2.5-pro", true), ["low", "medium", "high"]);
         assert_eq!(effort_levels("anthropic", "anthropic", "", "claude-x", true)[0], "off");
+    }
+
+    #[tokio::test]
+    async fn a_configured_server_on_this_machine_is_found_under_its_own_name() {
+        let s = MockServer::start();
+        s.mock(|w, t| {
+            w.method(GET).path("/v1/models");
+            t.status(200).json_body(json!({"data": [{"id": "m"}]}));
+        });
+        let own = vec![("mine".to_string(), format!("{}/v1", s.base_url()))];
+        let found = scan_local(&own).await;
+        assert!(found.iter().any(|(n, w)| n == "mine" && w == "OpenAI-compatible server"), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn a_configured_address_that_is_not_this_machine_is_never_asked() {
+        let found = scan_local(&[("far".to_string(), "http://192.0.2.1/v1".to_string())]).await;
+        assert!(found.iter().all(|(n, _)| n != "far"), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn a_configured_server_that_does_not_answer_is_not_found() {
+        let s = MockServer::start();
+        let own = vec![("mine".to_string(), format!("{}/v1", s.base_url()))];
+        let found = scan_local(&own).await;
+        assert!(found.iter().all(|(n, _)| n != "mine"), "{found:?}");
     }
 }

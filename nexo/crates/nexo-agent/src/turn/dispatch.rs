@@ -142,7 +142,7 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
             let st = rt.state.lock().await;
             notice(&rt.events, Level::Info, tools_text(&st.tools));
         }
-        AgentCommand::ScanLocal => connect::on_scan_local(rt),
+        AgentCommand::ScanLocal { own } => connect::on_scan_local(rt, own),
         AgentCommand::Probe { name, cfg, key, seq } => connect::on_probe(rt, name, cfg, key, seq),
         AgentCommand::Login { name, flow } => connect::on_login(rt, name, flow),
         AgentCommand::CancelLogin => {
