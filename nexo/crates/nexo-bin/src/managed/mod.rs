@@ -112,7 +112,7 @@ pub fn is_managed(head: &[u8]) -> bool {
 
 /// A class file and a Mach-O universal binary share the CAFEBABE magic: the next four bytes are the
 /// class version (45 or more) or the architecture count (a handful).
-fn is_class(d: &[u8]) -> bool {
+pub(crate) fn is_class(d: &[u8]) -> bool {
     d.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE])
         && d.get(4..8).is_some_and(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]) >= 45)
 }

@@ -9,6 +9,7 @@ use ignore::WalkBuilder;
 use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
+use crate::program::{listed_kind, may_be_program, KINDS_UP_TO};
 use crate::util::{display_path, outside_note, resolve, str_arg};
 
 pub const MAX_RESULTS: usize = 500;
@@ -82,7 +83,7 @@ impl Tool for Glob {
         let joined = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + TIME_CAP;
             let mut cut = false;
-            let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
+            let mut found: Vec<(SystemTime, PathBuf, bool)> = Vec::new();
             for entry in walker(&root2).build().flatten() {
                 if found.len() >= MAX_CANDIDATES || Instant::now() > deadline {
                     cut = true;
@@ -99,29 +100,41 @@ impl Tool for Glob {
                     glob.is_match(rel)
                 };
                 if hit {
-                    let mtime = entry
-                        .metadata()
-                        .and_then(|m| m.modified().map_err(ignore::Error::from))
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    found.push((mtime, path.to_path_buf()));
+                    let meta = entry.metadata().ok();
+                    let mtime = meta.as_ref().and_then(|m| m.modified().ok()).unwrap_or(SystemTime::UNIX_EPOCH);
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    let program = meta.is_some_and(|m| may_be_program(&name, &m));
+                    found.push((mtime, path.to_path_buf(), program));
                 }
             }
             found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            (found.into_iter().map(|(_, p)| display_path(&cwd, &p)).collect::<Vec<_>>(), cut)
+            let total = found.len();
+            found.truncate(MAX_RESULTS);
+            let kinds = found.len() <= KINDS_UP_TO;
+            let found = found.into_iter().map(|(_, p, program)| {
+                let kind = (kinds && program).then(|| listed_kind(&p)).flatten();
+                (display_path(&cwd, &p), kind)
+            });
+            (found.collect::<Vec<_>>(), total, cut)
         })
         .await;
-        let Ok((found, cut)) = joined else {
+        let Ok((found, total, cut)) = joined else {
             return ToolOutput::error("glob: the search failed unexpectedly");
         };
-        let total = found.len();
-        let mut items = found;
-        items.truncate(MAX_RESULTS);
+        let lines: Vec<String> = found
+            .iter()
+            .map(|(p, kind)| match kind {
+                Some(kind) => format!("{p}  ({kind})"),
+                None => p.clone(),
+            })
+            .collect();
+        let items: Vec<String> = found.into_iter().map(|(p, _)| p).collect();
         let mut content = if total == 0 {
             format!("glob: no files match `{pattern}` in {shown_root}")
         } else if total > MAX_RESULTS {
-            format!("{}\n… {} more files ({total} match); narrow the pattern", items.join("\n"), total - MAX_RESULTS)
+            format!("{}\n… {} more files ({total} match); narrow the pattern", lines.join("\n"), total - MAX_RESULTS)
         } else {
-            items.join("\n")
+            lines.join("\n")
         };
         if cut {
             content
@@ -168,5 +181,19 @@ mod tests {
         assert!(Glob.run(json!({"pattern": "[", }), &c).await.is_error);
         assert!(Glob.run(json!({"pattern": "*", "path": "c.txt"}), &c).await.is_error);
         assert_eq!(Glob.summary(&json!({"pattern": "*.rs", "path": "src"})), "glob *.rs in src");
+    }
+
+    #[tokio::test]
+    async fn a_compiled_program_found_is_marked_with_what_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let prog = d.path().join("prog.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &prog).unwrap();
+        std::fs::write(d.path().join("readme.exe"), "text").unwrap();
+        let out = Glob.run(json!({"pattern": "*.exe"}), &c).await;
+        let what = nexo_bin::kind_at(&prog).unwrap().facts(None);
+        let mut lines: Vec<&str> = out.content.lines().collect();
+        lines.sort();
+        assert_eq!(lines, [format!("prog.exe  ({what})").as_str(), "readme.exe"]);
     }
 }

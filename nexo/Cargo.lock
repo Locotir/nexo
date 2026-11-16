@@ -2007,6 +2007,7 @@ dependencies = [
  "image",
  "landlock",
  "libc",
+ "nexo-bin",
  "nexo-browser",
  "nexo-core",
  "nexo-dbg",

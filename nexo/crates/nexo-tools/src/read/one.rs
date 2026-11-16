@@ -6,7 +6,21 @@ use super::show::{show_picture, show_raster};
 use super::symbol::read_symbol;
 use super::{DEFAULT_LIMIT, FILE_CAP, LINE_CHARS};
 use crate::picture;
+use crate::program::{about, bin_offered};
 use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, MAX_FILE_BYTES};
+
+/// A compiled program shows nothing as text: the answer is what it is and the call that reads it.
+fn not_text(
+    ctx: &ToolContext,
+    shown: &str,
+    path: &std::path::Path,
+    kind: &nexo_bin::Compiled,
+    size: u64,
+) -> ToolOutput {
+    let file = display_path(&ctx.cwd, path);
+    ToolOutput::error(format!("read: {shown} is not text: {}", about(kind, Some(size), &file, bin_offered(ctx))))
+}
+
 /// One file as numbered lines, a picture as an image. With `room`, at most that many characters of
 /// text are returned (the lines that do not fit are left to a later call with `offset`).
 pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Option<usize>) -> ToolOutput {
@@ -22,6 +36,9 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         if m.len() > MAX_FILE_BYTES {
             // all of it the model can be shown: enough to replace it on purpose
             ctx.seen.mark(&path);
+            if let Some(kind) = nexo_bin::kind_at(&path) {
+                return not_text(ctx, &shown, &path, &kind, m.len());
+            }
             return ToolOutput::error(format!(
                 "read: {shown} is {} MiB, too large to load; use `bash` with `head`, `tail`, `sed -n` or `grep` on it",
                 m.len() >> 20
@@ -55,6 +72,9 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         ));
     }
     if is_binary(&bytes) {
+        if let Some(kind) = nexo_bin::kind_of(&bytes) {
+            return not_text(ctx, &shown, &path, &kind, bytes.len() as u64);
+        }
         return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
     }
     if let Some(symbol) = args.get("symbol").and_then(Value::as_str) {

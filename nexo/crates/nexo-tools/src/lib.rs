@@ -26,6 +26,7 @@ pub use mcp::{http as mcp_http, hub as mcp_hub, oauth as mcp_oauth};
 pub mod note;
 pub mod picture;
 pub mod postcheck;
+pub mod program;
 pub mod project;
 pub mod read;
 pub mod recall;

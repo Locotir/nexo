@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
+use crate::program::{listed_kind, may_be_program, KINDS_UP_TO};
 use crate::util::{display_path, outside_note, resolve, str_arg};
 
 /// Entries listed at most.
@@ -67,15 +68,24 @@ impl Tool for Ls {
             let name = entry.file_name().to_string_lossy().into_owned();
             match entry.metadata().await {
                 Ok(m) if m.is_dir() => dirs.push(format!("{name}/")),
-                Ok(m) => files.push((name, m.len())),
-                Err(_) => files.push((name, 0)),
+                Ok(m) => {
+                    let program = may_be_program(&name, &m);
+                    files.push((name, m.len(), program))
+                }
+                Err(_) => files.push((name, 0, false)),
             }
         }
         dirs.sort();
         files.sort();
         let total = dirs.len() + files.len();
+        let kinds = files.len() <= KINDS_UP_TO;
         let mut items: Vec<String> = dirs;
-        items.extend(files.into_iter().map(|(n, s)| format!("{n}  ({})", human(s))));
+        items.extend(files.into_iter().map(|(n, s, program)| {
+            match (kinds && program).then(|| listed_kind(&path.join(&n))).flatten() {
+                Some(kind) => format!("{n}  ({}, {kind})", human(s)),
+                None => format!("{n}  ({})", human(s)),
+            }
+        }));
         let more = total.saturating_sub(MAX_ENTRIES);
         items.truncate(MAX_ENTRIES);
         let mut content = format!("{shown}: {}\n{}", nexo_core::count(total, "entry"), items.join("\n"));
@@ -123,5 +133,19 @@ mod tests {
         std::fs::create_dir(d.path().join("empty")).unwrap();
         assert!(Ls.run(json!({"path": "empty"}), &c).await.content.contains("empty directory"));
         assert_eq!(Ls.summary(&json!({"path": "src"})), "ls src");
+    }
+
+    #[tokio::test]
+    async fn a_compiled_program_is_marked_with_what_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let prog = d.path().join(if cfg!(windows) { "prog.exe" } else { "prog" });
+        std::fs::copy(std::env::current_exe().unwrap(), &prog).unwrap();
+        std::fs::write(d.path().join("notes.txt"), "text").unwrap();
+        let out = Ls.run(json!({}), &c).await;
+        let what = nexo_bin::kind_at(&prog).unwrap().facts(None);
+        let size = human(std::fs::metadata(&prog).unwrap().len());
+        let name = prog.file_name().unwrap().to_string_lossy();
+        assert_eq!(out.content, format!(".: 2 entries\nnotes.txt  (4 B)\n{name}  ({size}, {what})"));
     }
 }

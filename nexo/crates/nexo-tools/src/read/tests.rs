@@ -401,3 +401,35 @@ async fn a_giant_first_line_and_multibyte_text_at_the_cut_do_not_panic() {
     let out = Read.run(json!({"paths": ["m.txt", "g.txt"]}), &c).await;
     assert!(out.content.contains("=== g.txt"), "{}", out.content.len());
 }
+
+#[tokio::test]
+async fn a_compiled_program_is_answered_with_what_it_is_and_the_call_that_reads_it() {
+    let d = tempfile::tempdir().unwrap();
+    let prog = nexo_bin::fixtures::elf64(false).bytes;
+    std::fs::write(d.path().join("prog"), &prog).unwrap();
+    std::fs::write(d.path().join("data.bin"), [0u8, 1, 2, 3]).unwrap();
+    let mut c = ctx(d.path());
+    let out = Read.run(json!({"path": "prog"}), &c).await;
+    assert!(out.is_error, "nothing of the file is shown: {}", out.content);
+    let size = nexo_bin::size_words(prog.len() as u64);
+    assert_eq!(
+        out.content,
+        format!(
+            "read: prog is not text: ELF64 x86-64 executable, {size}, with symbols; nexo bin overview prog reads it"
+        )
+    );
+    c.tool_names = std::sync::Arc::new(vec!["bin".into(), "read".into()]);
+    let out = Read.run(json!({"path": "prog"}), &c).await;
+    assert!(out.content.ends_with("; bin {\"command\": \"overview prog\"} reads it"), "{}", out.content);
+    // one too large to load is told the same, from its first bytes and its section headers
+    let big = std::fs::OpenOptions::new().write(true).open(d.path().join("prog")).unwrap();
+    big.set_len(MAX_FILE_BYTES + 1).unwrap();
+    let out = Read.run(json!({"path": "prog"}), &c).await;
+    assert_eq!(
+        out.content,
+        "read: prog is not text: ELF64 x86-64 executable, 32.0 MiB, with symbols; bin {\"command\": \"overview prog\"} reads it"
+    );
+    // other binary data keeps the short answer
+    let out = Read.run(json!({"path": "data.bin"}), &c).await;
+    assert_eq!(out.content, "read: data.bin is a binary file (4 bytes)");
+}

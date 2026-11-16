@@ -9,6 +9,7 @@ description = "nexo: the built-in tools (read, write, edit, bash, glob, grep, ls
 
 [dependencies]
 nexo-core = { workspace = true }
+nexo-bin = { workspace = true }
 nexo-dbg = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -42,6 +43,7 @@ landlock = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+nexo-bin = { workspace = true, features = ["fixtures"] }
 httpmock = { workspace = true }
 
 [[test]]

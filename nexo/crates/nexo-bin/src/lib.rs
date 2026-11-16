@@ -24,6 +24,7 @@ mod funcs;
 mod graph;
 mod hookinfo;
 mod image;
+mod kind;
 mod live;
 mod macho;
 mod mainfind;
@@ -90,6 +91,7 @@ pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use graph::{path_window, tree_window};
 pub use hookinfo::{arg_count, block_starts, import_sites, libc_proto, parse_proto, proto_at, ImportSite, Proto};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use kind::{kind_at, kind_of, size_words, Compiled};
 pub use live::{
     decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, slot_use, LiveIns,
     LiveMem, Place, SlotUse, MAX_INDIRECT_CALLS,

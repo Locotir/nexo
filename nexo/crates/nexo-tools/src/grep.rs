@@ -13,6 +13,7 @@ use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 
 use crate::glob::walker;
+use crate::program::{bin_call, bin_offered, callable, quoted, slash};
 use crate::util::{bool_arg, cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg};
 
 /// Files larger than this are not searched (logs, bundles, data).
@@ -109,6 +110,18 @@ impl Tool for Grep {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(format!("grep: bad pattern `{pattern}`: {e}")),
         };
+        // the same pattern over raw bytes: a compiled program is not text, yet holds names and strings
+        let in_programs = regex::bytes::RegexBuilder::new(pattern)
+            .case_insensitive(bool_arg(&args, "case_insensitive"))
+            .multi_line(multiline)
+            .dot_matches_new_line(multiline)
+            .size_limit(2 << 20)
+            .build()
+            .ok();
+        let strings_grep = match bool_arg(&args, "case_insensitive") {
+            true => format!("(?i){pattern}"),
+            false => pattern.to_string(),
+        };
         // as in `glob`: a pattern with a directory part matches the path under `path`, else the name
         let glob_arg = str_arg(&args, "glob");
         let by_name = glob_arg.map(|g| !g.contains('/') && !g.contains("**")).unwrap_or(true);
@@ -127,6 +140,14 @@ impl Tool for Grep {
         if root.is_file() {
             if let Ok(m) = std::fs::metadata(&root) {
                 if m.len() > MAX_FILE_BYTES {
+                    if let Some(kind) = nexo_bin::kind_at(&root) {
+                        let file = display_path(&ctx.cwd, &root);
+                        let facts = kind.facts(Some(m.len()));
+                        return ToolOutput::error(match strings_call(&file, &strings_grep, bin_offered(ctx)) {
+                            Some(call) => format!("grep: {shown_root} is not text: {facts}; {call} lists the matches"),
+                            None => format!("grep: {shown_root} is not text: {facts}"),
+                        });
+                    }
                     return ToolOutput::error(format!(
                         "grep: {shown_root} is too large to search here ({} MiB); use `bash` with grep",
                         m.len() >> 20
@@ -138,7 +159,15 @@ impl Tool for Grep {
         let files_only = bool_arg(&args, "files_only");
         let max = int_arg(&args, "max_results").unwrap_or(DEFAULT_MAX_RESULTS).max(1) as usize;
         let max_per_file = int_arg(&args, "max_per_file").unwrap_or(DEFAULT_MAX_PER_FILE).max(1) as usize;
-        let search = Search { re, multiline, files_only, context, keep: max_per_file.min(max), cwd: ctx.cwd.clone() };
+        let search = Search {
+            re,
+            in_programs,
+            multiline,
+            files_only,
+            context,
+            keep: max_per_file.min(max),
+            cwd: ctx.cwd.clone(),
+        };
         let root2 = root.clone();
         let joined = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + TIME_CAP;
@@ -240,7 +269,9 @@ impl Tool for Grep {
         let Ok((m, cut, kept_out)) = joined else {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
-        let Merge { items, total, left, left_files, hit_files, too_big, unreadable, counting_stopped, .. } = m;
+        let Merge {
+            items, total, left, left_files, hit_files, too_big, unreadable, counting_stopped, programs, ..
+        } = m;
         let mut content = if total == 0 {
             let mut s = format!("grep: no match for `{pattern}` in {shown_root}");
             if !multiline && (pattern.contains('\n') || pattern.contains("\\n")) {
@@ -276,6 +307,10 @@ impl Tool for Grep {
         } else {
             items.join("\n")
         };
+        if let Some(line) = programs_line(&programs, &strings_grep, bin_offered(ctx)) {
+            content.push('\n');
+            content.push_str(&line);
+        }
         if too_big > 0 {
             content.push_str(&format!(
                 "\n[{} over {} MiB not searched; use `bash` with grep for those]",
@@ -303,6 +338,8 @@ impl Tool for Grep {
 /// What every search of one file shares.
 struct Search {
     re: Regex,
+    /// `re` over bytes, for the compiled programs met (None if the pattern does not build so).
+    in_programs: Option<regex::bytes::Regex>,
     multiline: bool,
     files_only: bool,
     context: usize,
@@ -314,6 +351,8 @@ struct Search {
 enum FileOut {
     /// Binary, or nothing to say.
     Skip,
+    /// A compiled program whose bytes hold a match.
+    Program(String, nexo_bin::Compiled),
     TooBig,
     Unreadable,
     Hits {
@@ -335,7 +374,13 @@ impl Search {
             return FileOut::Unreadable;
         };
         if is_binary(&bytes) {
-            return FileOut::Skip;
+            let held = |re: &regex::bytes::Regex| re.is_match(&bytes);
+            return match nexo_bin::kind_of(&bytes) {
+                Some(kind) if self.in_programs.as_ref().is_some_and(held) => {
+                    FileOut::Program(display_path(&self.cwd, f), kind)
+                }
+                _ => FileOut::Skip,
+            };
         }
         let text = String::from_utf8_lossy(&bytes);
         // the first and last line (0-based) of each match
@@ -427,12 +472,20 @@ struct Merge {
     unreadable: usize,
     /// Files searched and files in all, when the counting was stopped early.
     counting_stopped: Option<(usize, usize)>,
+    /// The compiled programs that hold a match: the first few, and how many in all.
+    programs: (Vec<(String, nexo_bin::Compiled)>, usize),
 }
 
 impl Merge {
     fn add(&mut self, out: FileOut, max: usize, max_per_file: usize, files_only: bool) {
         match out {
             FileOut::Skip => {}
+            FileOut::Program(shown, kind) => {
+                if self.programs.0.len() < PROGRAMS_NAMED {
+                    self.programs.0.push((shown, kind));
+                }
+                self.programs.1 += 1;
+            }
             FileOut::TooBig => self.too_big += 1,
             FileOut::Unreadable => self.unreadable += 1,
             FileOut::Hits { shown, total, chunks } => {
@@ -461,6 +514,42 @@ impl Merge {
             }
         }
     }
+}
+
+/// The compiled programs a search names in its line about them.
+const PROGRAMS_NAMED: usize = 3;
+
+/// The call that lists the strings of `file` that hold `pattern`; without the pattern when it cannot be written
+/// into a call, and None when the name cannot.
+fn strings_call(file: &str, pattern: &str, tool: bool) -> Option<String> {
+    let file = slash(file);
+    if !callable(&file) {
+        return None;
+    }
+    let file = quoted(&file);
+    Some(match callable(pattern) {
+        true => bin_call(&format!("strings {file} --grep {}", quoted(pattern)), tool),
+        false => bin_call(&format!("strings {file}"), tool),
+    })
+}
+
+/// One line on the compiled programs whose bytes hold a match: what the first is and the call that lists its
+/// matching strings.
+fn programs_line(programs: &(Vec<(String, nexo_bin::Compiled)>, usize), pattern: &str, tool: bool) -> Option<String> {
+    let (named, all) = programs;
+    let (first, kind) = named.first()?;
+    let call = strings_call(first, pattern, tool)?;
+    if *all == 1 {
+        return Some(format!("[{first} holds a match and is not text: {}; {call} lists it]", kind.facts(None)));
+    }
+    let names: Vec<&str> = named.iter().map(|(f, _)| f.as_str()).collect();
+    let more = all - names.len();
+    let rest = if more > 0 { format!(" and {more} more") } else { String::new() };
+    Some(format!(
+        "[{all} compiled programs hold a match and are not text: {}{rest}; {call} lists it in {first} ({})]",
+        names.join(", "),
+        kind.facts(None)
+    ))
 }
 
 /// What one walker thread found, handed in when the thread is done.
@@ -697,5 +786,31 @@ mod tests {
         // files_only counts every file
         let out = Grep.run(json!({"pattern": "hit", "files_only": true, "max_results": 1}), &c).await.content;
         assert!(out.starts_with("9000 matches in 300 files\n"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_compiled_program_that_holds_the_pattern_is_named_with_the_call_that_searches_it() {
+        let (d, mut c) = fixture();
+        std::fs::write(d.path().join("prog"), nexo_bin::fixtures::elf64(false).bytes).unwrap();
+        // a name of its symbol table
+        let pat = "helper";
+        let out = Grep.run(json!({"pattern": pat}), &c).await;
+        let what = nexo_bin::kind_at(&d.path().join("prog")).unwrap().facts(None);
+        assert_eq!(
+            out.content,
+            format!("grep: no match for `{pat}` in .\n[prog holds a match and is not text: {what}; nexo bin strings prog --grep {pat} lists it]")
+        );
+        c.tool_names = std::sync::Arc::new(vec!["bin".into()]);
+        let out = Grep.run(json!({"pattern": pat, "path": "prog"}), &c).await;
+        assert!(
+            out.content.ends_with(&format!("; bin {{\"command\": \"strings prog --grep {pat}\"}} lists it]")),
+            "{}",
+            out.content
+        );
+        // a pattern the program does not hold, and binary data that is no program, add nothing
+        let out = Grep.run(json!({"pattern": "zq_not_in_any_file_zq"}), &c).await;
+        assert_eq!(out.content, "grep: no match for `zq_not_in_any_file_zq` in .");
+        let out = Grep.run(json!({"pattern": "alpha"}), &c).await;
+        assert!(!out.content.contains("not text"), "{}", out.content);
     }
 }
