@@ -535,7 +535,11 @@ fn strings_call(file: &str, pattern: &str, tool: bool) -> Option<String> {
 
 /// One line on the compiled programs whose bytes hold a match: what the first is and the call that lists its
 /// matching strings.
-fn programs_line(programs: &(Vec<(String, nexo_binmagic::Compiled)>, usize), pattern: &str, tool: bool) -> Option<String> {
+fn programs_line(
+    programs: &(Vec<(String, nexo_binmagic::Compiled)>, usize),
+    pattern: &str,
+    tool: bool,
+) -> Option<String> {
     let (named, all) = programs;
     let (first, kind) = named.first()?;
     let call = strings_call(first, pattern, tool)?;
