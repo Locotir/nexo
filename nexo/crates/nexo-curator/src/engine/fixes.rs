@@ -1,6 +1,8 @@
 //! Test runs and their failures: which failed, and which a later run fixed.
 
-use std::sync::LazyLock;
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::sync::{Arc, LazyLock};
 
 use rustc_hash::FxHashMap;
 use serde_json::Value;
@@ -116,15 +118,86 @@ fn test_run(command: &str) -> String {
     out.join(" ")
 }
 
-pub(super) fn named_in(path: &str, failures: &[String]) -> bool {
-    let base = basename(path);
-    let stem = base.split('.').next().unwrap_or("");
-    if stem.is_empty() || TEST_NAME.is_match(stem) {
-        return false;
-    }
+/// The stem of the file at `path`, when it can name a test file of its own (`named_in`).
+fn stem_of(path: &str) -> Option<&str> {
+    let stem = basename(path).split('.').next().unwrap_or("");
+    (!stem.is_empty() && !TEST_NAME.is_match(stem)).then_some(stem)
+}
+
+/// The names a test file of `stem` takes (`calc` → `test_calc.py`, `calc_test.go`, `calc.spec.ts`).
+fn tested_by(stem: &str) -> Option<Re> {
     let pat = format!(r"(?:\btests?_|\b){}(?:_tests?|[._](?:test|spec))?\.\w+\b", textops::escape(stem));
-    let Ok(tested) = Re::try_new(&pat, 0) else { return false };
+    Re::try_new(&pat, 0).ok()
+}
+
+fn named_by(path: &str, failures: &[String], tested: &Re) -> bool {
     failures.iter().any(|f| f.contains(path) || tested.find_all(f).iter().any(|&(a, b)| TEST_NAME.is_match(&f[a..b])))
+}
+
+#[cfg(test)]
+pub(super) fn named_in(path: &str, failures: &[String]) -> bool {
+    let Some(tested) = stem_of(path).and_then(tested_by) else { return false };
+    named_by(path, failures, &tested)
+}
+
+/// What `fixes` read of the test runs' outputs, by unit, and the test file names of each file stem it looked
+/// for in failures. `fixes` goes over every request the map shows at each model call, so without this a long
+/// session matches the same outputs again at every call, and a resumed one at every reply it replays. The units
+/// of an engine only grow and a rewritten history starts a new engine, so what is kept of a unit holds while
+/// the engine lives; a copy of the engine (a landing tried) takes it along.
+#[derive(Clone, Default)]
+pub(super) struct RunMemo(RefCell<RunMemoIn>);
+
+#[derive(Clone, Default)]
+struct RunMemoIn {
+    /// By unit: the `is_error` it was read with, and its failure lines when the run failed (`None`: it passed).
+    runs: FxHashMap<usize, (bool, Option<Arc<str>>)>,
+    /// By file stem: what a test file of it is called (`None`: no pattern).
+    names: FxHashMap<String, Option<Arc<Re>>>,
+    /// The outputs matched so far: what the tests bound.
+    reads: usize,
+}
+
+impl RunMemo {
+    /// The failure lines of the test run whose output is unit `i`, or `None` when it passed.
+    fn failure<'a>(&self, i: usize, error: bool, text: impl FnOnce() -> Cow<'a, str>) -> Option<Arc<str>> {
+        if let Some((e, f)) = self.0.borrow().runs.get(&i) {
+            if *e == error {
+                return f.clone();
+            }
+        }
+        let text = text();
+        let failed = error || ERROR_MARKS.is_match(&text) || TEST_FAILED.is_match(&text);
+        let f = failed.then(|| {
+            let ls: Vec<&str> = textops::splitlines(&text).into_iter().filter(|x| FAILURE_LINE.is_match(x)).collect();
+            Arc::<str>::from(ls.join("\n"))
+        });
+        let mut m = self.0.borrow_mut();
+        m.reads += 1;
+        m.runs.insert(i, (error, f.clone()));
+        f
+    }
+
+    /// `named_in`, with the pattern of each stem made once.
+    fn named_in(&self, path: &str, failures: &[String]) -> bool {
+        let Some(stem) = stem_of(path) else { return false };
+        let known = self.0.borrow().names.get(stem).cloned();
+        let tested = match known {
+            Some(t) => t,
+            None => {
+                let t = tested_by(stem).map(Arc::new);
+                self.0.borrow_mut().names.insert(stem.to_string(), t.clone());
+                t
+            }
+        };
+        tested.is_some_and(|t| named_by(path, failures, &t))
+    }
+
+    /// The outputs of test runs matched so far.
+    #[cfg(test)]
+    pub(super) fn reads(&self) -> usize {
+        self.0.borrow().reads
+    }
 }
 
 impl Engine {
@@ -185,11 +258,8 @@ impl Engine {
                         }
                         let cmd = test_run(cmd);
                         let cmd = cmd.as_str();
-                        let text = self.tr.unit_text(i);
-                        if error || ERROR_MARKS.is_match(&text) || TEST_FAILED.is_match(&text) {
-                            let ls: Vec<&str> =
-                                textops::splitlines(&text).into_iter().filter(|x| FAILURE_LINE.is_match(x)).collect();
-                            let f = ls.join("\n");
+                        if let Some(f) = self.run_memo.failure(i, error, || self.tr.unit_text(i)) {
+                            let f = f.to_string();
                             // a test failing again no longer passes
                             let again = failed_tests(&f);
                             tests.retain(|t| !again.contains(&t.as_str()));
@@ -201,7 +271,8 @@ impl Engine {
                                 continue;
                             }
                             let done: Vec<String> = done.into_iter().map(|(_, f)| f).collect();
-                            let named: Vec<String> = pending.iter().filter(|p| named_in(p, &done)).cloned().collect();
+                            let named: Vec<String> =
+                                pending.iter().filter(|p| self.run_memo.named_in(p, &done)).cloned().collect();
                             let src = if named.is_empty() { &pending } else { &named };
                             for p in src {
                                 if !fixed.contains(p) {

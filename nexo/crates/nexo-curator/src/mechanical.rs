@@ -1,6 +1,7 @@
 //! Deterministic, model-free shrinking of tool output text (`squeeze`).
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::sync::LazyLock;
 
 use crate::textops::{self, Re, I};
@@ -96,17 +97,63 @@ fn hex_numbers(line: &str) -> Vec<f64> {
         .collect()
 }
 
+/// What `is_data` reads of each line of a text, read once per line: `best_run` weighs the run that starts at
+/// every line, so the rows of a table of n lines would otherwise have their numbers read about n²/2 times.
+struct Rows<'a> {
+    lines: &'a [String],
+    dump: Vec<OnceCell<bool>>,
+    decimal: Vec<OnceCell<Vec<f64>>>,
+    hex: Vec<OnceCell<Vec<f64>>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The lines whose numbers `Rows` read on this thread, for the tests that bound the work.
+    static NUMBER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl<'a> Rows<'a> {
+    fn new(lines: &'a [String]) -> Rows<'a> {
+        fn cells<T>(n: usize) -> Vec<OnceCell<T>> {
+            (0..n).map(|_| OnceCell::new()).collect()
+        }
+        let n = lines.len();
+        Rows { lines, dump: cells(n), decimal: cells(n), hex: cells(n) }
+    }
+
+    fn dump_row(&self, j: usize) -> bool {
+        *self.dump[j].get_or_init(|| dump_row(&self.lines[j]))
+    }
+
+    /// The numbers of line `j`: its words in hex when the run is a dump's (`dump_row`), else its decimals.
+    fn numbers(&self, j: usize, dump: bool) -> &[f64] {
+        let read = || {
+            #[cfg(test)]
+            NUMBER_READS.with(|n| n.set(n.get() + 1));
+            if dump {
+                hex_numbers(&self.lines[j])
+            } else {
+                numbers(&self.lines[j])
+            }
+        };
+        if dump {
+            self.hex[j].get_or_init(read)
+        } else {
+            self.decimal[j].get_or_init(read)
+        }
+    }
+}
+
 /// Whether the `r` repeats of the `period`-line block at `i` carry measurements: a number that is neither the
 /// same in every repeat nor a counter (the same step each time). Lines that differ only in a counter, a
 /// timestamp or an address are a log and fold; lines whose numbers wander are a table, and the numbers are
 /// what the model asked for. In a log a word in hex is an id and is masked; in the rows of a memory or hex
 /// dump (`dump_row`) the words in hex are the values asked for, and are the numbers weighed: rows that differ
 /// in them stay, rows of the same values (padding) fold.
-fn is_data(lines: &[String], i: usize, period: usize, r: usize) -> bool {
-    let dump = lines[i..i + period * r].iter().all(|l| dump_row(l));
-    let nums = |l: &str| if dump { hex_numbers(l) } else { numbers(l) };
+fn is_data(rows_of: &Rows, i: usize, period: usize, r: usize) -> bool {
+    let dump = (i..i + period * r).all(|j| rows_of.dump_row(j));
     for k in 0..period {
-        let rows: Vec<Vec<f64>> = (0..r).map(|q| nums(&lines[i + k + q * period])).collect();
+        let rows: Vec<&[f64]> = (0..r).map(|q| rows_of.numbers(i + k + q * period, dump)).collect();
         let width = rows[0].len();
         if rows.iter().any(|row| row.len() != width) {
             return true;
@@ -336,7 +383,8 @@ fn odd_lines(lines: &[String]) -> Vec<bool> {
 /// the same, character for character, fold (their count brings every one back); single lines of one form
 /// still do, as a table of what differs (`table`). A line that stands out never joins a fold here: a word
 /// that differs changes its template, a number that differs makes the run data (`is_data`).
-fn best_run(lines: &[String], tmpl: &[String], i: usize, lossy: bool) -> (usize, usize) {
+fn best_run(rows: &Rows, tmpl: &[String], i: usize, lossy: bool) -> (usize, usize) {
+    let lines = rows.lines;
     let mut best = (0, 0);
     let mut best_hidden = 0;
     let n = lines.len();
@@ -356,13 +404,13 @@ fn best_run(lines: &[String], tmpl: &[String], i: usize, lossy: bool) -> (usize,
             let identical = same_blocks(lines, i, 1, r);
             if identical && r >= IDENTICAL_RUN {
                 r - 1
-            } else if r >= SIMILAR_RUN && !is_data(lines, i, 1, r) {
+            } else if r >= SIMILAR_RUN && !is_data(rows, i, 1, r) {
                 r - SIMILAR_HEAD - SIMILAR_TAIL
             } else {
                 continue;
             }
         } else {
-            if r < BLOCK_REPEATS || is_data(lines, i, period, r) || (!lossy && !same_blocks(lines, i, period, r)) {
+            if r < BLOCK_REPEATS || is_data(rows, i, period, r) || (!lossy && !same_blocks(lines, i, period, r)) {
                 continue;
             }
             // blocks that only share their form show the last one too, as similar lines do
@@ -422,6 +470,7 @@ fn table(lines: &[String]) -> Option<(usize, Vec<String>)> {
 
 fn collapse(lines: Vec<String>, lossy: bool) -> Vec<String> {
     let tmpl: Vec<String> = lines.iter().map(|l| template(l)).collect();
+    let rows = Rows::new(&lines);
     let mut out = Vec::with_capacity(lines.len());
     let n = lines.len();
     let mut i = 0;
@@ -431,7 +480,7 @@ fn collapse(lines: Vec<String>, lossy: bool) -> Vec<String> {
             i += 1;
             continue;
         }
-        let (period, r) = best_run(&lines, &tmpl, i, lossy);
+        let (period, r) = best_run(&rows, &tmpl, i, lossy);
         if period == 0 {
             out.push(lines[i].clone());
             i += 1;
@@ -693,6 +742,20 @@ mod tests {
         assert!(s.contains("more identical lines"), "{s}");
         let paths: String = (0..40).map(|i| format!("src/dir/file{i}.rs\n")).collect();
         assert!(squeeze(&paths, true).starts_with("src/dir/{file0.rs, file1.rs"));
+    }
+
+    #[test]
+    fn a_long_table_has_the_numbers_of_each_line_read_once() {
+        // every line starts a run of the same form and each run is weighed as data: the numbers of a row are
+        // read once however many runs it is part of, and the table is still left whole
+        let rows: Vec<String> =
+            (0..600).map(|l| format!("luck={l} -> Loot: {} coins", (l * l * 37 + 11) % 1009)).collect();
+        NUMBER_READS.with(|n| n.set(0));
+        let out = collapse(rows.clone(), true);
+        assert_eq!(out, rows);
+        let reads = NUMBER_READS.with(|n| n.get());
+        // the table is weighed as data (some numbers are read) and no line is read twice
+        assert!((1..=rows.len()).contains(&reads), "{reads} reads of {} lines", rows.len());
     }
 
     #[test]

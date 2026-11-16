@@ -320,6 +320,8 @@ pub struct Engine {
     label_memo: added::LabelMemo,
     /// What the outputs before the view hold, kept between requests (`added`).
     below: added::Below,
+    /// What the test runs' outputs said, read once each (`fixes`).
+    run_memo: fixes::RunMemo,
 }
 
 impl Engine {
@@ -419,6 +421,7 @@ impl Engine {
             out_names: FxHashMap::default(),
             label_memo: added::LabelMemo::default(),
             below: added::Below::default(),
+            run_memo: fixes::RunMemo::default(),
             files_known: FxHashSet::default(),
             part_files: FxHashMap::default(),
             line_ids: Shared::default(),

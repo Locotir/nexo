@@ -173,3 +173,27 @@ fn test_commands_of_common_runners_are_test_runs() {
         assert!(!TEST_COMMAND.is_match(cmd), "{cmd}");
     }
 }
+
+#[test]
+fn test_outputs_are_matched_once_however_often_the_fixes_are_asked_for() {
+    // the map asks for the fixes of the same requests at every model call (and a resumed session at every
+    // reply it replays): each run's output is matched once, and the answer does not change
+    let mut runs = Vec::new();
+    for _ in 0..20 {
+        runs.push(("cargo test", FAILING_RUN));
+        runs.push(("cargo test", PASSING_RUN));
+    }
+    let mut msgs = vec![json!({"role": "user", "content": "Make the test suite pass."})];
+    for (k, (cmd, out)) in runs.iter().enumerate() {
+        msgs.extend(step(2 * k + 1, cmd, out));
+        msgs.extend(step(2 * k + 2, &format!("sed -i 's/a{k}/b{k}/' src/calc.rs"), ""));
+    }
+    let mut e = Engine::new(params("nudge=0").unwrap());
+    e.sync(&msgs);
+    let first = e.fixes(0, msgs.len(), Some(msgs.len()));
+    assert!(first.contains("the tests that failed and now pass: test_round"), "{first}");
+    for _ in 0..10 {
+        assert_eq!(e.fixes(0, msgs.len(), Some(msgs.len())), first);
+    }
+    assert_eq!(e.run_memo.reads(), runs.len());
+}
