@@ -2,8 +2,11 @@ use super::clap_facts::*;
 use super::shell::*;
 use super::*;
 
+/// The tool as a session with the `debug` tool beside it has it.
+const BIN: Bin = Bin::new(true);
+
 async fn call(cwd: &std::path::Path, command: &str) -> ToolOutput {
-    Bin.run(json!({"command": command}), &ToolContext::new(cwd.to_path_buf())).await
+    BIN.run(json!({"command": command}), &ToolContext::new(cwd.to_path_buf())).await
 }
 
 /// An ELF or PE `nexo bin` opens: this test program.
@@ -14,7 +17,7 @@ fn this_binary() -> std::path::PathBuf {
 #[test]
 fn it_is_a_read_tool_and_every_request_carries_only_the_short_text() {
     let mut set = nexo_core::tool::ToolSet::new();
-    set.add(std::sync::Arc::new(Bin));
+    set.add(std::sync::Arc::new(BIN));
     let spec = set.specs_for(false).pop().unwrap();
     let sent = serde_json::to_string(
         &json!({"name": spec.name, "description": spec.description, "parameters": spec.parameters}),
@@ -23,8 +26,8 @@ fn it_is_a_read_tool_and_every_request_carries_only_the_short_text() {
     eprintln!("bin tool as offered: {} chars: {sent}", sent.len());
     // 298 chars before the text named `debug` (+12); the questions it names since fit the same
     assert!(sent.len() <= 310, "{} chars: {sent}", sent.len());
-    assert!(Bin.rare() && Bin.kind() == ToolKind::Read);
-    assert!(Bin.spec().description.len() > spec.description.len(), "the full text lists the ops");
+    assert!(BIN.rare() && BIN.kind() == ToolKind::Read);
+    assert!(BIN.spec().description.len() > spec.description.len(), "the full text lists the ops");
     // the short text names the questions a model brings to a compiled file, the ops it reaches for first, the tools
     // it would use otherwise and the one that runs the file
     for w in [
@@ -33,6 +36,17 @@ fn it_is_a_read_tool_and_every_request_carries_only_the_short_text() {
     ] {
         assert!(spec.description.contains(w), "{w}");
     }
+}
+
+/// Where the session has no `debug` tool (Linux arm64, macOS by default, `tools.debug = false`) the short text
+/// names no tool that is not there, and still the ops and the readers it stands for.
+#[test]
+fn without_the_debug_tool_the_short_text_names_no_debug() {
+    let alone = Bin::new(false);
+    let short = alone.compact().unwrap().description;
+    assert!(!short.contains("debug"), "{short}");
+    assert_eq!(short, BIN.compact().unwrap().description.replace(" `debug` runs it.", ""));
+    assert_eq!(alone.spec().description, BIN.spec().description, "the full text names no other tool");
 }
 
 #[tokio::test]
@@ -52,7 +66,7 @@ async fn a_relative_file_is_read_from_the_session_folder_and_the_shell_form_work
 }
 
 fn kind(command: &str) -> ToolKind {
-    Bin.call_kind(&json!({ "command": command }))
+    BIN.call_kind(&json!({ "command": command }))
 }
 
 /// Every op reads or keeps names, notes and types in nexo's data folder (a read, as `debug`'s `name` and `note`
@@ -101,8 +115,8 @@ fn each_op_has_the_kind_of_what_it_does() {
     }
     // a `;` inside quotes is text, not a second op
     assert_eq!(kind("note prog 0x1 'x; patch prog --at 1 --nop 1 --out q'"), ToolKind::Read);
-    assert_eq!(Bin.call_kind(&json!({})), ToolKind::Read);
-    assert_eq!(Bin.kind(), ToolKind::Read);
+    assert_eq!(BIN.call_kind(&json!({})), ToolKind::Read);
+    assert_eq!(BIN.kind(), ToolKind::Read);
 }
 
 /// What the person is asked, from the kind the tool reports, under each mode of the real policy.
@@ -113,7 +127,7 @@ fn a_patch_is_asked_about_like_a_file_edit_and_the_naming_ops_are_not() {
     let cwd = std::path::Path::new("/work/proj");
     let decide = |mode, command: &str| {
         let args = json!({ "command": command });
-        Policy { mode, ..Default::default() }.decide("bin", Bin.call_kind(&args), &args, cwd)
+        Policy { mode, ..Default::default() }.decide("bin", BIN.call_kind(&args), &args, cwd)
     };
     let patch = "patch prog --at 0x1000 --nop 1 --out prog2";
     // the same answers as `edit` of a file, in the default mode and where only reads run
@@ -130,7 +144,7 @@ fn a_patch_is_asked_about_like_a_file_edit_and_the_naming_ops_are_not() {
     // an allow rule for the tool covers it
     let args = json!({ "command": patch });
     let ruled = Policy { allow: vec!["bin".into()], ..Default::default() };
-    assert_eq!(ruled.decide("bin", Bin.call_kind(&args), &args, cwd), Decision::Allow);
+    assert_eq!(ruled.decide("bin", BIN.call_kind(&args), &args, cwd), Decision::Allow);
     // what only reads or names things is never asked, in the default mode, and read-only mode allows it
     for c in ["info prog", "name prog 0x1000 mine", "note prog 0x1000 hi", "proto prog main 'int f(void)'", "sigs"] {
         for mode in [PermissionMode::Ask, PermissionMode::ReadOnly] {
@@ -147,10 +161,10 @@ async fn a_patch_writes_the_copy_in_the_session_folder_unless_a_rule_denies_the_
     std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
     let patch = "patch prog --at 0x1000 --nop 1 --out prog2";
     let ctx = rules(&["edit(**/prog2)"], dir.path());
-    let o = Bin.run(json!({ "command": patch }), &ctx).await;
+    let o = BIN.run(json!({ "command": patch }), &ctx).await;
     assert!(o.is_error && o.content.contains("denies writing"), "{}", o.content);
     assert!(!dir.path().join("prog2").exists());
-    let o = Bin.run(json!({ "command": patch }), &ToolContext::new(dir.path().to_path_buf())).await;
+    let o = BIN.run(json!({ "command": patch }), &ToolContext::new(dir.path().to_path_buf())).await;
     // 0x1000 is in this test program's headers or code: either the copy exists or the answer says why not
     if o.is_error {
         eprintln!("patch refused by nexo-bin: {}", o.content);
@@ -462,11 +476,11 @@ async fn the_rules_that_cover_read_cover_the_files_named_inside_the_command() {
         "diff open locked/prog".to_string(),
         "diff locked/prog open".to_string(),
     ] {
-        let o = Bin.run(json!({ "command": c }), &ctx).await;
+        let o = BIN.run(json!({ "command": c }), &ctx).await;
         assert!(o.is_error && o.content.contains("denies reading"), "{c}: {}", o.content);
     }
     // a file the rules do not name is read, with the same context
-    let o = Bin.run(json!({"command": "info open"}), &ctx).await;
+    let o = BIN.run(json!({"command": "info open"}), &ctx).await;
     assert!(!o.is_error, "{}", o.content);
     // no rules at all (no check): read as before
     let o = call(dir.path(), "info locked/prog").await;
@@ -484,7 +498,7 @@ async fn a_file_the_rules_ask_about_is_not_read_without_the_person() {
         log.lock().unwrap().push((tool.to_string(), kind, args["path"].as_str().unwrap().to_string()));
         Check::Ask
     }));
-    let o = Bin.run(json!({"command": "info prog"}), &ctx).await;
+    let o = BIN.run(json!({"command": "info prog"}), &ctx).await;
     assert!(o.is_error && o.content.contains("needs the person's OK"), "{}", o.content);
     let asked = seen.lock().unwrap().clone();
     assert_eq!(asked, [("read".to_string(), ToolKind::Read, dir.path().join("prog").to_string_lossy().to_string())]);
@@ -497,13 +511,13 @@ async fn help_a_missing_command_and_a_bad_line_answer_in_words() {
         let o = call(dir.path(), c).await;
         assert!(!o.is_error && !o.content.is_empty(), "{c}: {}", o.content);
     }
-    let o = Bin.run(json!({}), &ToolContext::new(dir.path().to_path_buf())).await;
+    let o = BIN.run(json!({}), &ToolContext::new(dir.path().to_path_buf())).await;
     assert!(o.is_error && o.content.contains("command"), "{}", o.content);
     let o = call(dir.path(), "info 'unclosed").await;
     assert!(o.is_error && o.content.contains("quote"), "{}", o.content);
     let o = call(dir.path(), "frobnicate x").await;
     assert!(o.is_error, "{}", o.content);
-    assert_eq!(Bin.summary(&json!({"command": "fn p main"})), "bin: fn p main");
+    assert_eq!(BIN.summary(&json!({"command": "fn p main"})), "bin: fn p main");
 }
 
 /// Both directions on a real program: the `bin` answer names the `debug` call, the call stops where the
@@ -517,7 +531,7 @@ async fn a_bin_answer_and_a_debug_stop_name_each_others_calls() {
         return eprintln!("skipped: no cc");
     };
     let ctx = ToolContext::new(dir.path().to_path_buf());
-    let answer = Bin.run(json!({"command": "fn prog helper"}), &ctx).await;
+    let answer = BIN.run(json!({"command": "fn prog helper"}), &ctx).await;
     assert!(!answer.is_error, "{}", answer.content);
     let last = answer.content.lines().last().unwrap();
     assert_eq!(answer.content.matches("to see it live").count(), 1, "{}", answer.content);
@@ -548,10 +562,14 @@ async fn a_bin_answer_and_a_debug_stop_name_each_others_calls() {
     let argv: Vec<String> =
         ["nexo", "bin"].iter().map(|s| s.to_string()).chain(crate::re_mcp::split_words(words).unwrap()).collect();
     assert!(matches!(crate::cli::Args::try_parse_from(&argv).unwrap().cmd, Some(crate::cli::Cmd::Bin(_))), "{words}");
-    let read = Bin.run(json!({"command": words}), &ctx).await;
+    let read = BIN.run(json!({"command": words}), &ctx).await;
     assert!(!read.is_error && read.content.contains("helper"), "{}", read.content);
     // stepping inside the same function does not repeat the line
     let again = dbg.run(json!({"command": "step"}), &ctx).await;
     assert!(!again.content.contains("to read this function"), "{}", again.content);
     dbg.run(json!({"command": "end"}), &ctx).await;
+    // a session without the `debug` tool gets the same answer with no line naming it
+    let alone = Bin::new(false).run(json!({"command": "fn prog helper"}), &ctx).await;
+    assert!(!alone.is_error && !alone.content.contains("to see it live"), "{}", alone.content);
+    assert_eq!(alone.content, answer.content.rsplit_once('\n').unwrap().0);
 }

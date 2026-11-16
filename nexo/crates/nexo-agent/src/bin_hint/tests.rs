@@ -538,6 +538,63 @@ fn a_program_looked_up_on_the_path_is_told_by_the_file_the_shell_runs() {
     }
 }
 
+/// A process this one did not start, killed by its number when the test ends however it ends.
+#[cfg(target_os = "linux")]
+struct Orphan(u32);
+
+#[cfg(target_os = "linux")]
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        // its exact number: never a name or a pattern, which could reach another process
+        unsafe { libc::kill(self.0 as libc::pid_t, libc::SIGKILL) };
+    }
+}
+
+/// A running process nexo did not start (here one whose shell ended, as a program run in another terminal is): where
+/// the kernel keeps nexo from attaching to it (Yama scope 1 or more, the default of most desktops), `dbg_hint` gives
+/// no `attach` call that would only be refused, and with `debug` offered this line names the program it runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_the_kernel_keeps_nexo_from_attaching_to_is_told_by_its_program_and_gets_no_attach_call() {
+    let Ok(out) = std::process::Command::new("sh").args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"]).output() else {
+        return;
+    };
+    let Ok(pid) = String::from_utf8_lossy(&out.stdout).trim().parse::<u32>() else { return };
+    let _orphan = Orphan(pid);
+    let n = pid.to_string();
+    // the shell that started it forks before `sleep` replaces it: wait for the program the process runs
+    let mut exe = None;
+    for _ in 0..200 {
+        exe = hint_cmd::exe_of(&n).filter(|p| p.file_name().is_some_and(|f| f.to_string_lossy().contains("sleep")));
+        if exe.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let Some(exe) = exe else { return eprintln!("skipped: no sleep program for {pid}") };
+    if !hint_cmd::opens(Path::new(""), &exe.display().to_string()) {
+        return eprintln!("skipped: {} is not a program `nexo bin` opens", exe.display());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let attach = crate::dbg_hint::line(&format!("pmap {pid}"), "out", dir.path(), &crate::dbg_hint::Told::default());
+    if hint_cmd::attachable(&n) {
+        // no Yama, scope 0 or a tracer with CAP_SYS_PTRACE: the kernel lets nexo attach, and the attach is the call
+        assert!(matches!(attach, Some((crate::dbg_hint::Kind::Attach, _))), "{attach:?}");
+        return eprintln!("the kernel here lets nexo attach to a process it did not start");
+    }
+    assert_eq!(attach, None);
+    let starts = format!("[nexo: {}: ", slashed(&exe));
+    for c in [
+        format!("pmap {pid}"),
+        format!("lsof -p {pid}"),
+        format!("gdb -p {pid} -batch -ex bt"),
+        format!("strace -p {pid}"),
+    ] {
+        let l = line(&c, dir.path(), TOOL).unwrap_or_else(|| panic!("no line for {c}"));
+        assert!(l.starts_with(&starts), "{c}: {l}");
+    }
+}
+
 /// A running process looked at by its number (`pmap`, `lsof -p`, `ps -p`, a tracer's `-p`) with no `debug` tool to
 /// attach with: its program is the file to read. `/proc/N/exe` is that file with any reader, and the call names
 /// the file, which stays when the process ends.
@@ -564,10 +621,16 @@ fn a_running_process_looked_at_by_its_number_is_told_by_the_program_it_runs() {
         let l = line(&c, dir.path(), bin_only).unwrap_or_else(|| panic!("no line for {c}"));
         assert!(l.starts_with(&starts), "{c}: {l}");
     }
-    // with the `debug` tool the number is for `debug attach` (see `dbg_hint`); the file of `/proc/N/exe` is still
-    // read by a reader
+    // with the `debug` tool the number is for `debug attach` (see `dbg_hint`) where the kernel lets nexo attach
+    // (Yama scope 2 lets no process without CAP_SYS_PTRACE attach even to itself); the file of `/proc/N/exe` is
+    // still read by a reader
     for c in [format!("pmap {pid}"), format!("lsof -p {pid}"), format!("gdb -p {pid}")] {
-        assert!(line(&c, dir.path(), TOOL).is_none(), "{c}");
+        let l = line(&c, dir.path(), TOOL);
+        if hint_cmd::attachable(&pid.to_string()) {
+            assert!(l.is_none(), "{c}");
+        } else {
+            assert!(l.is_some_and(|l| l.starts_with(&starts)), "{c}");
+        }
     }
     assert!(line(&format!("readelf -h /proc/{pid}/exe"), dir.path(), TOOL).unwrap().starts_with(&starts));
     // a process that is not there, and a listing of every process, name no file

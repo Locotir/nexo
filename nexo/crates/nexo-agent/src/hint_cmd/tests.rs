@@ -192,6 +192,45 @@ fn a_proc_exe_path_is_the_program_it_links_to_and_anything_else_is_not() {
     assert_eq!(exe_of("4294967295"), None);
 }
 
+/// The kernel's Yama rule for an attach: scope 0 (or no Yama) lets this user attach to any of its processes, 1 only
+/// to one under this process unless it holds CAP_SYS_PTRACE, 2 only with that capability, 3 to none.
+#[test]
+fn the_yama_scope_decides_which_processes_a_debugger_here_may_attach_to() {
+    use super::process::allowed;
+    for (scope, cap, under, want) in [
+        (0, false, false, true),
+        (1, false, true, true),
+        (1, false, false, false),
+        (1, true, false, true),
+        (2, false, true, false),
+        (2, true, false, true),
+        (3, true, true, false),
+        (9, true, true, false),
+    ] {
+        assert_eq!(allowed(scope, cap, || under), want, "scope {scope}, cap {cap}, under {under}");
+    }
+    // a word that is no process number is never one
+    assert!(!attachable("12x") && !attachable(""));
+}
+
+/// A child of this process descends from it; this process's own parent, init and a process that is not there do
+/// not.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_descends_from_this_one_only_by_its_parents() {
+    use super::process::descends;
+    let me = std::process::id();
+    assert!(descends(me, me));
+    assert!(!descends(std::os::unix::process::parent_id(), me));
+    assert!(!descends(1, me));
+    assert!(!descends(4294967295, me));
+    let Ok(mut child) = std::process::Command::new("sleep").arg("30").spawn() else { return };
+    let under = descends(child.id(), me);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(under);
+}
+
 #[test]
 fn a_bare_name_on_the_path_is_the_file_the_shell_runs_unless_it_is_a_tool_of_the_session() {
     for w in ["gdb", "objdump", "aarch64-linux-gnu-gcc", "python3.12", "cargo", "", "-v", "./prog", "a/b", "nexo"] {

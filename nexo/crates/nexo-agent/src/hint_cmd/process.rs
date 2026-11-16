@@ -1,5 +1,6 @@
 //! The live process a command looks at (`pmap 1234`, `lsof -p 1234`, `ps -fp 1234`, `gdb -p 1234`,
-//! `strace -p1234`, `cat /proc/1234/maps`), and the program that process runs.
+//! `strace -p1234`, `cat /proc/1234/maps`), the program that process runs, and whether a debugger here may
+//! attach to it.
 
 use std::path::PathBuf;
 
@@ -58,6 +59,67 @@ pub fn exe_of(pid: &str) -> Option<PathBuf> {
     std::fs::read_link(PathBuf::from("/proc").join(pid).join("exe"))
         .ok()
         .filter(|p| p.is_absolute() && !p.to_string_lossy().ends_with(" (deleted)"))
+}
+
+/// The most parents walked from a process up to this one: deeper than any real tree of a session.
+const PARENTS: usize = 256;
+
+/// Whether a debugger in this process may attach to the process `pid` under the kernel's Yama rule
+/// (`/proc/sys/kernel/yama/ptrace_scope`, 1 on Ubuntu and most desktops). Reading `/proc/N/exe` is not held to that
+/// rule, so a process whose program shows there may still refuse the attach: with scope 1 only a process that
+/// descends from this one (or this process holding CAP_SYS_PTRACE) may be attached, which leaves out a program the
+/// person started in another terminal and one a shell call left running after it ended; with scope 2 only that
+/// capability; with 3 none. No Yama (or scope 0) leaves the classic rule, the same one `/proc/N/exe` passed. A
+/// process that allows this one by PR_SET_PTRACER shows that nowhere, so it reads as refusing.
+pub fn attachable(pid: &str) -> bool {
+    let Ok(pid) = pid.parse::<u32>() else { return false };
+    let scope = std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+        .ok()
+        .and_then(|s| s.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+    allowed(scope, may_trace_any(), || descends(pid, std::process::id()))
+}
+
+/// Yama's rule for a scope, whether this process holds CAP_SYS_PTRACE, and whether the process descends from it.
+pub(super) fn allowed(scope: u8, cap: bool, descends: impl FnOnce() -> bool) -> bool {
+    match scope {
+        0 => true,
+        1 => cap || descends(),
+        2 => cap,
+        _ => false,
+    }
+}
+
+/// Whether the process `pid` is `ancestor` or one under it, by the parent numbers of `/proc/N/stat`. A process whose
+/// parent ended was moved to init or to a subreaper above, and no longer descends from it.
+pub(super) fn descends(pid: u32, ancestor: u32) -> bool {
+    let mut p = pid;
+    for _ in 0..PARENTS {
+        if p == ancestor {
+            return true;
+        }
+        match parent(p) {
+            Some(n) if p > 1 && n != p => p = n,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The parent number of `pid`: the field after the state in `/proc/N/stat`, read after the last `)` because the
+/// name before it may hold spaces and parentheses.
+fn parent(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat[stat.rfind(')')? + 1..].split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Whether this process holds CAP_SYS_PTRACE: bit 19 of `CapEff` in `/proc/self/status`.
+fn may_trace_any() -> bool {
+    let Ok(s) = std::fs::read_to_string("/proc/self/status") else { return false };
+    s.lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|h| u64::from_str_radix(h.trim(), 16).ok())
+        .is_some_and(|c| c & (1 << 19) != 0)
 }
 
 /// `/proc/N/exe` as the program it names, so that the call names a file that stays when the process ends.

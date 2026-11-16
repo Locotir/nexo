@@ -246,10 +246,12 @@ impl Run {
             parts.push(Part::text(format!("[nexo: {n}]")));
         }
         // a task about a compiled program starts with the line a message of the person's about one carries, for the
-        // tools this run is offered (see `ask_hint.rs`): the sub-agent sees no start note of the main agent's
+        // tools this run is offered (see `ask_hint.rs`): the sub-agent sees no start note of the main agent's. The
+        // `debug` of a read-only kind only looks at and steers a session another agent started (`tools_for`), so it
+        // runs nothing; without `bin` the line names `nexo bin` in the shell, which a run without `bash` cannot call
         let has = |t: &str| names.iter().any(|n| n == t);
-        let offer = crate::hint_cmd::Offer { bin: has("bin"), debug: has("debug") };
-        if let Some(l) = crate::ask_hint::line(prompt, &ctx.cwd, offer) {
+        let offer = crate::hint_cmd::Offer { bin: has("bin"), debug: has("debug") && !self.profile.read_only };
+        if let Some(l) = (offer.bin || has("bash")).then(|| crate::ask_hint::line(prompt, &ctx.cwd, offer)).flatten() {
             parts.push(Part::text(l));
         }
         let mut messages = vec![Message::new(Role::User, parts)];

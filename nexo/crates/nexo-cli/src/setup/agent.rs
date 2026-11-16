@@ -11,12 +11,13 @@ pub(super) fn session_builtins(cfg: &Config) -> ToolSet {
         tools.remove("web_fetch");
         tools.remove("web_search");
     }
-    // reads a compiled program as bytes, on every platform
-    if cfg.tools.bin {
-        tools.add(Arc::new(crate::bin_tool::Bin));
-    }
     // only where the debugger has a backend
-    if cfg.tools.debug && nexo_tools::debug::available() {
+    let debug = cfg.tools.debug && nexo_tools::debug::available();
+    // reads a compiled program as bytes, on every platform; its text names `debug` only where that tool is here
+    if cfg.tools.bin {
+        tools.add(Arc::new(crate::bin_tool::Bin::new(debug)));
+    }
+    if debug {
         tools.add(Arc::new(nexo_tools::debug::Debug::new()));
     }
     tools

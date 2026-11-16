@@ -76,11 +76,110 @@ const PROGRAM_WORDS: [&str; 12] = [
 const NAME_BEFORE: [&str; 6] = ["command", "program", "binary", "executable", "daemon", "utility"];
 const NAME_AFTER: [&str; 6] = ["comando", "programa", "binario", "ejecutable", "demonio", "utilidad"];
 /// English words that also name a program on most systems: before one of those nouns they are prose (`the test
-/// program`, `run the install command`), not the program asked about.
-const PROSE: [&str; 32] = [
-    "test", "time", "install", "find", "sort", "size", "which", "true", "false", "yes", "more", "less", "link",
-    "touch", "watch", "top", "free", "kill", "wait", "sleep", "join", "split", "cut", "paste", "head", "tail", "date",
-    "who", "users", "script", "line", "env",
+/// program`, `the last command failed`, `the init program`), not the program asked about. Set in quotes or backticks
+/// (`` the `last` command ``) the same word is the program's name.
+const PROSE: &[&str] = &[
+    "test",
+    "time",
+    "install",
+    "find",
+    "sort",
+    "size",
+    "which",
+    "true",
+    "false",
+    "yes",
+    "more",
+    "less",
+    "link",
+    "touch",
+    "watch",
+    "top",
+    "free",
+    "kill",
+    "wait",
+    "sleep",
+    "join",
+    "split",
+    "cut",
+    "paste",
+    "head",
+    "tail",
+    "date",
+    "who",
+    "users",
+    "script",
+    "line",
+    "env",
+    "last",
+    "init",
+    "sync",
+    "info",
+    "reset",
+    "clear",
+    "dir",
+    "login",
+    "id",
+    "view",
+    "edit",
+    "display",
+    "convert",
+    "import",
+    "compare",
+    "look",
+    "write",
+    "wall",
+    "column",
+    "factor",
+    "expand",
+    "fold",
+    "host",
+    "tree",
+    "screen",
+    "patch",
+    "diff",
+    "nice",
+    "groups",
+    "mount",
+    "rename",
+    "play",
+    "trace",
+    "strip",
+    "sum",
+    "man",
+    "locate",
+    "logger",
+    "timeout",
+    "agent",
+    "count",
+    "stat",
+    "stats",
+    "stream",
+    "proxy",
+    "engine",
+    "bridge",
+    "replace",
+    "shape",
+    "transform",
+    "identity",
+    "halt",
+    "reboot",
+    "talk",
+    "speak",
+    "unique",
+    "resize",
+    "route",
+    "net",
+    "named",
+    "light",
+    "open",
+    "see",
+    "print",
+    "code",
+    "review",
+    "benchmark",
+    "parallel",
+    "idle",
 ];
 
 /// The line for the person's message `text` (their own words, never what nexo added), or `None` when it is not
@@ -124,18 +223,24 @@ pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
 /// The words of `text` that can name a file, as the person wrote them: no option, `~`, URL or glob. An `@` mention
 /// names the file after the `@`.
 fn name_words(text: &str) -> Vec<&str> {
+    marked_words(text).into_iter().map(|(w, _)| w).collect()
+}
+
+/// [`name_words`], each with whether the person set it in quotes or backticks: a word written as a name.
+fn marked_words(text: &str) -> Vec<(&str, bool)> {
     text.split_whitespace()
         .take(WORDS)
         // a word with both kinds of quote is a shell trick, not a name
         .filter(|raw| !(raw.contains('"') && raw.contains('\'')))
         .map(|raw| {
-            raw.trim_matches(|c: char| {
-                matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?')
-            })
-            .trim_end_matches('.')
+            let w = raw
+                .trim_matches(|c: char| {
+                    matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?')
+                })
+                .trim_end_matches('.');
+            (w.strip_prefix('@').unwrap_or(w), raw.trim_start_matches(['(', '[']).starts_with(['"', '\'', '`']))
         })
-        .map(|w| w.strip_prefix('@').unwrap_or(w))
-        .filter(|w| {
+        .filter(|(w, _)| {
             !(w.is_empty()
                 || w.len() > 300
                 || w.starts_with(['@', '-', '~'])
@@ -168,13 +273,15 @@ fn named(text: &str, cwd: &Path) -> Option<String> {
 
 /// The installed program a bare word names by a noun beside it (`the jq command`, `what does jq do`, `el comando
 /// jq`), as the shell finds it on the PATH, when the kit reads it. A shell, compiler or reader the session uses
-/// (`the make command`) is a means, not the program asked about.
+/// (`the make command`) is a means, not the program asked about, and an English word before the noun is prose
+/// unless it is quoted.
 fn installed(text: &str) -> Option<String> {
-    let words = name_words(text);
+    let marked = marked_words(text);
+    let words: Vec<&str> = marked.iter().map(|(w, _)| *w).collect();
     let folded: Vec<String> = words.iter().map(|w| w.chars().map(fold).collect()).collect();
     let is = |i: usize, set: &[&str]| folded.get(i).is_some_and(|w| set.contains(&w.as_str()));
     words.iter().enumerate().find_map(|(i, w)| {
-        let before = is(i + 1, &NAME_BEFORE) && !is(i, &PROSE);
+        let before = is(i + 1, &NAME_BEFORE) && (marked[i].1 || !is(i, PROSE));
         let after = i > 0 && is(i - 1, &NAME_AFTER);
         let does = i > 0 && folded[i - 1] == "does" && folded.get(i + 1).is_some_and(|w| w == "do");
         if !(before || after || does) || is(i, &NAME_BEFORE) || is(i, &NAME_AFTER) {
@@ -397,7 +504,26 @@ mod tests {
             let l = line(t, d.path(), BOTH).unwrap_or_else(|| panic!("no line for {t:?}"));
             assert!(l.contains(&call), "{t}: {l}");
         }
+        // an English word that is also a program is prose before the noun, the program when it is quoted
+        for w in ["last", "init", "sync", "info", "reset", "clear", "id"] {
+            let Some(p) = nexo_core::shell::find_program(w) else { continue };
+            let p = hint_cmd::slash(&p.display().to_string());
+            if !hint_cmd::reads(d.path(), &p) {
+                continue;
+            }
+            let call = hint_cmd::tool_call("bin", &format!("overview {}", hint_cmd::quoted(&p)));
+            assert_eq!(line(&format!("the {w} command failed"), d.path(), BOTH), None, "{w}");
+            for t in [format!("the `{w}` command failed"), format!("why does the '{w}' binary print nothing")] {
+                let l = line(&t, d.path(), BOTH).unwrap_or_else(|| panic!("no line for {t:?}"));
+                assert!(l.contains(&call), "{t}: {l}");
+            }
+        }
         for t in [
+            "the last command failed",
+            "the init program hangs at start",
+            "run the sync command after the copy",
+            "the info command shows nothing",
+            "the id command is wrong",
             "the test program crashes",
             "run the install command again",
             "the program which prints the total",

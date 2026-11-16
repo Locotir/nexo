@@ -239,27 +239,57 @@ async fn the_line_comes_again_with_the_next_message_after_a_compaction_took_it_o
 }
 
 /// A sub-agent sees none of the main agent's start notes: a task about a compiled program starts with the line,
-/// for the tools that run has.
+/// naming only calls that run can make. A read-only kind (`explore`, the default) gets a `debug` that only steers a
+/// session another agent started, and no shell: its line names the `bin` call alone, and without `bin` there is no
+/// line. A kind that runs programs gets the `debug` run too.
 #[tokio::test]
-async fn a_sub_agent_whose_task_names_a_compiled_program_starts_with_the_line() {
+async fn a_sub_agent_whose_task_names_a_compiled_program_starts_with_the_line_its_tools_can_take() {
     let d = test_tmpdir().unwrap();
     std::fs::copy(std::env::current_exe().unwrap(), d.path().join("c-lcrypt")).unwrap();
-    let client = Scripted::new(vec![
-        Reply::Events(call("t1", "task", json!({"description": "read it", "prompt": "what does c-lcrypt print?"}))),
-        Reply::Events(text("it prints a key")),
-        Reply::Events(text("done")),
-    ]);
-    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
-    r.next().await;
-    r.send(AgentCommand::Submit { text: "find out what it prints".into(), attachments: vec![] });
-    r.turn().await;
-    r.stop().await;
-    let reqs = client.requests();
     let head = "compiled programs, with nexo's own tools:";
-    assert!(!user_texts(&reqs[0]).iter().any(|t| t.contains(head)), "the person's words name no program");
-    assert!(reqs[1].system.starts_with("You are a sub-agent"));
-    let first = user_texts(&reqs[1]).join("\n");
-    assert!(first.contains(head) && first.contains("overview c-lcrypt"), "{first}");
+    // `task` comes with `read` and `grep`: the usual tools, then `bin` and `debug`
+    let kit = || {
+        tools().with(Arc::new(Fake { name: "bin", kind: ToolKind::Read, slow: false })).with(Arc::new(Fake {
+            name: "debug",
+            kind: ToolKind::Exec,
+            slow: false,
+        }))
+    };
+    // the first message of the sub-agent a task of `kind` (none: the default) starts, in a session with `tools`
+    let first = |kind: Option<&'static str>, tools: ToolSet| {
+        let d = d.path().to_path_buf();
+        async move {
+            let mut args = json!({"description": "read it", "prompt": "what does c-lcrypt print?"});
+            if let Some(k) = kind {
+                args["agent"] = json!(k);
+            }
+            let client = Scripted::new(vec![
+                Reply::Events(call("t1", "task", args)),
+                Reply::Events(text("it prints a key")),
+                Reply::Events(text("done")),
+            ]);
+            let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, &d, tools).await;
+            r.next().await;
+            r.send(AgentCommand::Submit { text: "find out what it prints".into(), attachments: vec![] });
+            r.turn().await;
+            r.stop().await;
+            let reqs = client.requests();
+            assert!(!user_texts(&reqs[0]).iter().any(|t| t.contains(head)), "the person's words name no program");
+            assert!(reqs[1].system.starts_with("You are a sub-agent"), "{}", reqs[1].system);
+            user_texts(&reqs[1]).join("\n")
+        }
+    };
+    let explore = first(None, kit()).await;
+    assert!(explore.contains(head) && explore.contains("bin {\"command\": \"overview c-lcrypt\"}"), "{explore}");
+    assert!(!explore.contains("debug {"), "a read-only kind's debug runs nothing: {explore}");
+    // no `bin` and no shell to call `nexo bin` in
+    let bare = first(None, tools()).await;
+    assert!(!bare.contains(head), "{bare}");
+    let general = first(Some("general"), kit()).await;
+    assert!(general.contains("debug {\"command\": \"run c-lcrypt; cont\"}"), "{general}");
+    // a kind with a shell and no `bin` gets the shell form
+    let shell = first(Some("general"), tools()).await;
+    assert!(shell.contains("nexo bin overview c-lcrypt") && !shell.contains("debug {"), "{shell}");
 }
 
 /// With a window of 32k tokens or less neither `bin` nor `debug` is offered: the lines name the shell form that

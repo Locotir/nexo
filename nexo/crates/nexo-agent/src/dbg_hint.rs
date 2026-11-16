@@ -5,7 +5,8 @@
 //! - `strace` or `ltrace` on one: the `strace`/`ltrace` of the debugger, then `cont` and `show`;
 //! - a program of the project that died by a fault signal (exit 128+N, a segfault is 139): the run that stops at it;
 //! - a running process of this user looked at by its number (`gdb -p`, `strace -p`, `pmap`, `lsof -p`, `ps -p`,
-//!   `/proc/N/...`): the program it runs and the `attach` that stops it where it is.
+//!   `/proc/N/...`) that the kernel lets nexo attach to: the program it runs and the `attach` that stops it where
+//!   it is.
 //!
 //! Only when the `debug` tool is offered and the file is one `nexo bin` opens. Nothing is run or loaded: the command
 //! is split by `hint_cmd` (heredocs, redirections, `cd x &&`, wrappers) and a gdb script is only read as text. A
@@ -109,11 +110,12 @@ pub fn line(command: &str, result: &str, cwd: &Path, told: &Told) -> Option<(Kin
 }
 
 /// The line for a command that looks at a running process of this user by its number: the program the process
-/// runs, and the call that attaches to it.
+/// runs, and the call that attaches to it. Only for a process the kernel lets nexo attach to (`hint_cmd::attachable`):
+/// for another, the call would only end in a refusal, and `bin_hint` names its program instead.
 fn attach(words: &[String]) -> Option<String> {
     let pid = hint_cmd::pid_of(words)?;
     // nexo itself is not a program to stop
-    if pid == std::process::id().to_string() {
+    if pid == std::process::id().to_string() || !hint_cmd::attachable(&pid) {
         return None;
     }
     let exe = hint_cmd::slash(&hint_cmd::exe_of(&pid)?.display().to_string());

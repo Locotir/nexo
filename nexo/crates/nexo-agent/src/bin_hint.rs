@@ -10,8 +10,8 @@
 //!
 //! Nothing here runs or loads a file. The command is split by `hint_cmd` (redirections, heredocs, `cd x &&`,
 //! wrappers), and a name it finds is only read as bytes by `nexo_binmagic::kind_at` (the first 4 KiB, the section
-//! headers of an ELF file, 64 KiB of a PE file). `gdb` is read here only when the `debug` tool is not offered;
-//! with it, `dbg_hint` answers.
+//! headers of an ELF file, 64 KiB of a PE file). `gdb` is read here only when the `debug` tool is not offered, or
+//! when it is given a process that tool cannot attach to; otherwise `dbg_hint` answers.
 
 use std::path::Path;
 
@@ -96,18 +96,25 @@ fn reader(prog: &str, s: &Seg, offer: Offer) -> Option<&'static str> {
     let text = |w: &String| w == "--text" || w == "--binary-files=text" || (is_short(w) && w.contains('a'));
     match tool {
         "readobj" => Some("readelf"),
-        "gdb" if !offer.debug => Some("gdb"),
+        "gdb" if !attaches(s, offer) => Some("gdb"),
         // `command -v x` and `type x` find a program as `which` does
         "command" if s.words.get(1).is_some_and(|w| w == "-v" || w == "-V") => Some("which"),
         "type" => Some("which"),
-        // a tracer given a running process: with no `debug` tool to attach with, its program is the file to read
-        "lldb" | "strace" | "ltrace" if !offer.debug && hint_cmd::pid_of(&s.words).is_some() => Some("pmap"),
+        // a tracer given a running process that no `debug` tool attaches to: its program is the file to read
+        "lldb" | "strace" | "ltrace" if hint_cmd::pid_of(&s.words).is_some() && !attaches(s, offer) => Some("pmap"),
         "cat" | "head" | "tail" | "dd" if copies => None,
         "grep" | "egrep" | "fgrep" | "rg" | "ugrep" if s.words.iter().skip(1).any(text) => Some("grep"),
         "perl" => Some("python"),
         p if p == "py" || p.starts_with("python") || p.starts_with("pypy") => Some("python"),
         p => READERS.iter().find(|r| **r == p).copied(),
     }
+}
+
+/// Whether the `debug` tool takes the process the command `s` looks at by its number: it is offered and the kernel
+/// lets nexo attach to that process. A command that names no process (`gdb ./prog`) goes to `dbg_hint` whenever
+/// `debug` is offered.
+fn attaches(s: &Seg, offer: Offer) -> bool {
+    offer.debug && hint_cmd::pid_of(&s.words).is_none_or(|n| hint_cmd::attachable(&n))
 }
 
 /// A cluster of short options (`-ai`), not a long one or a number.
@@ -118,9 +125,9 @@ fn is_short(w: &str) -> bool {
 /// The file of `s` that `nexo bin` reads, as the command wrote it, and what it is: one of its first words (`if=`
 /// of `dd`), its `< file`, and for a script (`python -c`, `perl -e`, a heredoc) a quoted string of it. A script
 /// counts only when its code reads files and starts no program (see [`Code`]). The name `which` looks up is the
-/// file the shell runs for it; a process number, when there is no `debug` tool to attach with, the program that
-/// process runs; `/proc/N/exe` the file it links to, so that the call names a file that stays when the process
-/// ends.
+/// file the shell runs for it; a process number, when no `debug` tool attaches to it (none is offered, or the
+/// kernel refuses it), the program that process runs; `/proc/N/exe` the file it links to, so that the call names a
+/// file that stays when the process ends.
 fn file_of(prog: &str, s: &Seg, offer: Offer) -> Option<(String, nexo_binmagic::Compiled)> {
     let mut words: Vec<String> = s.words[1..]
         .iter()
@@ -131,7 +138,7 @@ fn file_of(prog: &str, s: &Seg, offer: Offer) -> Option<(String, nexo_binmagic::
     if prog == "which" {
         words = words.iter().filter_map(|w| hint_cmd::on_path(w)).collect();
     }
-    if matches!(prog, "pmap" | "lsof" | "ps" | "gdb") && !offer.debug {
+    if matches!(prog, "pmap" | "lsof" | "ps" | "gdb") && !attaches(s, offer) {
         let exe = hint_cmd::pid_of(&s.words).and_then(|n| hint_cmd::exe_of(&n));
         words.splice(0..0, exe.map(|p| p.display().to_string()));
     }

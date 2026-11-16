@@ -372,6 +372,10 @@ fn a_process_looked_at_by_its_number_names_its_program_and_the_attach_call() {
     let Ok(child) = std::process::Command::new("sleep").arg("30").spawn() else { return };
     let child = Sleeper(child);
     let pid = child.0.id();
+    // Yama scope 2 or 3 keeps nexo from attaching even to its own child (`bin_hint` tests the refusal)
+    if !hint_cmd::attachable(&pid.to_string()) {
+        return eprintln!("skipped: the kernel here lets no debugger attach to a child");
+    }
     let exe = slashed(hint_cmd::exe_of(&pid.to_string()).unwrap());
     let d = tempfile::tempdir().unwrap();
     let want = format!(

@@ -42,8 +42,25 @@ strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len>
 a; b  several ops in one call, each answer under its own `> op` line; an error stops the rest
 Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch --out and sigs --out write a file: the person is asked";
 
-/// The tool. It holds nothing: every call parses its own line.
-pub struct Bin;
+/// The tool. Every call parses its own line; it holds only whether the session has the `debug` tool beside it, the
+/// one its short text and its answers name for running the file. `debug` is not registered on Linux arm64, nor by
+/// default on macOS, nor with `tools.debug = false`, and there neither names it.
+pub struct Bin {
+    debug: bool,
+}
+
+impl Bin {
+    /// `debug`: the session registers the `debug` tool too.
+    pub const fn new(debug: bool) -> Bin {
+        Bin { debug }
+    }
+}
+
+/// The short text every request carries: the questions the tool answers, the ops a model reaches for first and the
+/// readers it would use otherwise, then the tool that runs the file when the session has it.
+const COMPACT: &str = "What an ELF, PE, Mach-O, wasm file imports, exports, calls, its asm, pseudo-C (objdump, strings): `overview ./p`, `funcs`, `fn ./p main`, `decomp`, `xref`. `debug` runs it. `--help`";
+/// The short text where the session has no `debug` tool.
+const COMPACT_ALONE: &str = "What an ELF, PE, Mach-O, wasm file imports, exports, calls, its asm, pseudo-C (objdump, strings): `overview ./p`, `funcs`, `fn ./p main`, `decomp`, `xref`. `--help`";
 
 #[async_trait]
 impl Tool for Bin {
@@ -68,10 +85,7 @@ impl Tool for Bin {
     }
 
     fn compact(&self) -> Option<Compact<'_>> {
-        Some(Compact {
-            description: "What an ELF, PE, Mach-O, wasm file imports, exports, calls, its asm, pseudo-C (objdump, strings): `overview ./p`, `funcs`, `fn ./p main`, `decomp`, `xref`. `debug` runs it. `--help`",
-            params: &[],
-        })
+        Some(Compact { description: if self.debug { COMPACT } else { COMPACT_ALONE }, params: &[] })
     }
 
     fn rare(&self) -> bool {
@@ -115,7 +129,7 @@ impl Tool for Bin {
         let scan = scan_shell(&parts);
         if !scan.found {
             let [_, _, ..] = parts.as_slice() else {
-                return one(parts.first().map_or(line, String::as_str), ctx).await;
+                return one(parts.first().map_or(line, String::as_str), ctx, self.debug).await;
             };
         }
         let mut out: Vec<String> = Vec::new();
@@ -127,7 +141,7 @@ impl Tool for Bin {
                 out.push(format!("not run: {why}"));
                 continue;
             }
-            let o = one(&seg.text, ctx).await;
+            let o = one(&seg.text, ctx, self.debug).await;
             ran += 1;
             failed |= o.is_error;
             if scan.segs.len() > 1 || !scan.found {
@@ -149,8 +163,8 @@ impl Tool for Bin {
 }
 
 /// One op: the file is relative to the session's folder, as in the shell, and the rules that cover `read` and
-/// `edit` cover the files named inside it.
-async fn one(unit: &str, ctx: &ToolContext) -> ToolOutput {
+/// `edit` cover the files named inside it. `debug`: the session has the `debug` tool the answer's last line may name.
+async fn one(unit: &str, ctx: &ToolContext, debug: bool) -> ToolOutput {
     let mut b = match parse(unit) {
         Ok(Parsed::Help(h)) => return ToolOutput::ok(h),
         Ok(Parsed::Op(b)) => b,
@@ -188,10 +202,11 @@ async fn one(unit: &str, ctx: &ToolContext) -> ToolOutput {
             }
         }
     }
-    // an answer about one place in a program `debug` can run ends with the call that stops there
+    // an answer about one place in a program `debug` can run ends with the call that stops there, when the session
+    // has that tool to take it
     let asked = tokio::task::spawn_blocking(move || {
         let text = crate::bin_cmd::execute(&b)?;
-        let bridge = b.op.as_ref().and_then(|op| crate::bin_cmd::bridge::line(op, &text));
+        let bridge = b.op.as_ref().filter(|_| debug).and_then(|op| crate::bin_cmd::bridge::line(op, &text));
         Ok::<_, nexo_bin::Error>(match bridge {
             Some(l) => format!("{text}\n{l}"),
             None => text,
