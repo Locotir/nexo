@@ -309,7 +309,10 @@ fn a_resumed_history_is_indexed_on_the_frames_after_it_is_shown_and_not_while_it
     assert_eq!(a.words.pending(), calls + 1);
     assert!(a.complete_suffix().is_none());
     // the clock keeps ticking fast while words wait, so the index does not crawl at the idle rate
-    assert_eq!(a.load(), crate::frame::Load::Motion);
+    assert_eq!(a.load(), crate::frame::Load::Work);
+    // even with animations off the load asks for frames, which the pacer then gives at frame rate
+    a.opts.animations = false;
+    assert_eq!(a.load(), crate::frame::Load::Work);
     // each frame indexes one slice at most, and the work ends
     let mut frames = 0;
     let mut seen = 0;
@@ -323,4 +326,30 @@ fn a_resumed_history_is_indexed_on_the_frames_after_it_is_shown_and_not_while_it
     }
     assert_eq!(a.words.stats.bytes_scanned, total as u64, "every word is indexed once");
     assert!(a.words.suggest("resumedword07").is_some(), "the completions work once the index is done");
+}
+
+fn queued_history(n: usize) -> (nexo_core::agent::EventRx, mpsc::UnboundedSender<AgentEvent>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    for i in 0..n {
+        tx.send(AgentEvent::History { index: i, message: Message::user(format!("m{i}")) }).unwrap();
+    }
+    (rx, tx)
+}
+
+#[test]
+fn a_pass_with_no_time_left_handles_one_event_and_leaves_the_rest_queued() {
+    let (mut a, _rx) = bare();
+    let (mut rx, _tx) = queued_history(50);
+    let first = rx.try_recv().unwrap();
+    assert_eq!(a.drain_events(first, &mut rx, std::time::Duration::ZERO), 1);
+    assert_eq!(rx.len(), 49, "the others wait for the next pass, after a draw and the keys");
+}
+
+#[test]
+fn a_pass_with_time_takes_everything_queued_behind_the_first() {
+    let (mut a, _rx) = bare();
+    let (mut rx, _tx) = queued_history(50);
+    let first = rx.try_recv().unwrap();
+    assert_eq!(a.drain_events(first, &mut rx, std::time::Duration::from_secs(30)), 50);
+    assert!(rx.is_empty());
 }

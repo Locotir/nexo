@@ -493,11 +493,9 @@ impl App {
         // the banner's intro moves from the first frame, before any tick has set `moving`
         // the crest on the work line crosses the rule in 2 s: a frame every 16 ms while it is on the rule,
         // the beat while it rests off it
-        if self.moving
-            || self.words.pending() > 0
-            || self.intro_running()
-            || (self.busy && self.fx_on() && self.crest_on_rule())
-        {
+        if self.words.pending() > 0 {
+            Load::Work
+        } else if self.moving || self.intro_running() || (self.busy && self.fx_on() && self.crest_on_rule()) {
             Load::Motion
         } else if self.busy
             || self.map_flash_live()
@@ -587,6 +585,26 @@ impl App {
     }
 
     // ------------------------------------------------------------ agent events
+
+    /// Handles `first` and the events queued behind it, for `budget` at most: a resumed history of
+    /// thousands of events is shown as it arrives and a key typed meanwhile waits one slice, not the
+    /// whole burst. What is left stays queued for the next pass. Returns how many it handled.
+    pub fn drain_events(
+        &mut self,
+        first: AgentEvent,
+        rx: &mut nexo_core::agent::EventRx,
+        budget: std::time::Duration,
+    ) -> usize {
+        let until = std::time::Instant::now() + budget;
+        self.handle_agent(first);
+        let mut n = 1;
+        while std::time::Instant::now() < until {
+            let Ok(e) = rx.try_recv() else { break };
+            self.handle_agent(e);
+            n += 1;
+        }
+        n
+    }
 
     pub fn handle_agent(&mut self, ev: AgentEvent) {
         crate::trace::agent_event(&ev);

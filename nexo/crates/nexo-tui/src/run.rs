@@ -13,6 +13,9 @@ fn end_paste(app: &mut App, pasting: &mut Option<(String, Instant)>) {
     }
 }
 
+/// How long one pass of the loop takes agent events before it draws and looks at the keys again.
+const DRAIN_BUDGET: Duration = Duration::from_millis(8);
+
 /// Reads the plan of every subscription login the providers use, now and then every ten minutes. A
 /// provider on a key, or a login that cannot be read, is skipped without a word: the status bar just
 /// shows nothing for it.
@@ -96,10 +99,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             },
             ev = handle.events.recv() => match ev {
                 Some(e) => {
-                    app.handle_agent(e);
-                    while let Ok(e) = handle.events.try_recv() {
-                        app.handle_agent(e);
-                    }
+                    app.drain_events(e, &mut handle.events, DRAIN_BUDGET);
                 }
                 None => break,
             },

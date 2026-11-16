@@ -28,6 +28,9 @@ pub enum Load {
     Beat,
     /// A glide, a fade or a pulse: a frame every ~16 ms.
     Motion,
+    /// Work queued for the ticks (a resumed history being indexed): a tick every ~16 ms, even with
+    /// `[ui] animations=false`, since nothing is drawn for it but the work must not crawl.
+    Work,
 }
 
 /// What the next pass of the loop must do about the clock.
@@ -70,6 +73,7 @@ impl Pacer {
             (Load::Idle, _) => SLOW,
             (Load::Beat, true) => BEAT,
             (Load::Motion, true) => FRAME,
+            (Load::Work, _) => FRAME,
             (Load::Beat | Load::Motion, false) => STILL,
         }
     }
@@ -179,6 +183,16 @@ mod tests {
             }
         }
         assert_eq!(ticks, 100 / 16);
+    }
+
+    #[test]
+    fn queued_work_ticks_every_frame_even_with_animations_off() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0, false);
+        assert_eq!(p.sleep(t0, Load::Work, false, None), Some(FRAME));
+        let ticks = (1..=100).filter(|i| p.tick(t0 + ms(*i), Load::Work).run).count();
+        assert_eq!(ticks, 100 / 16, "a slice of the index per frame, not per second");
+        assert!(!p.tick(t0 + ms(116), Load::Work).beat, "the spinner still does not step");
     }
 
     #[test]

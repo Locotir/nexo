@@ -202,6 +202,16 @@ pub fn draw_screen<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> any
         app.force_clear = false;
     }
     let _t = trace::span("draw");
+    if trace::on() {
+        // the first frames that show more blocks than the one before, to time the first that has the history
+        static SEEN: std::sync::Mutex<(usize, usize)> = std::sync::Mutex::new((0, 0));
+        if let Ok(mut seen) = SEEN.lock() {
+            if app.blocks.len() != seen.0 && seen.1 < 40 {
+                *seen = (app.blocks.len(), seen.1 + 1);
+                trace::note(&format!("frame blocks={}", app.blocks.len()));
+            }
+        }
+    }
     terminal.draw(|f| {
         ui::draw(f, app);
         if ascii::wanted() {
