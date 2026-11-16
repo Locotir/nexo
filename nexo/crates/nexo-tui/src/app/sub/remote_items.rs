@@ -1,5 +1,6 @@
 //! Turning a remote session's snapshot into transcript items, and making tool text safe to draw.
 
+#[cfg(any(unix, test))]
 use super::*;
 
 /// Never pass terminal control characters from a tool to the terminal renderer.

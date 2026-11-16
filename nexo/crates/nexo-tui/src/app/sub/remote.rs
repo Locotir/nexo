@@ -344,15 +344,3 @@ pub(super) fn merge_remote(
         Ok(kind == 2)
     }
 }
-
-/// Keep later edits intact; a draft that starts with the sent text already
-/// contains the whole rejected message, including when it has been extended.
-pub(super) fn recover_rejected(draft: &str, sent: &str) -> String {
-    if draft.starts_with(sent) {
-        draft.to_owned()
-    } else if draft.is_empty() {
-        sent.to_owned()
-    } else {
-        format!("{draft}\n\n{sent}")
-    }
-}

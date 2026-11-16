@@ -23,8 +23,6 @@ mod local;
 mod remote;
 mod remote_items;
 #[cfg(any(unix, test))]
-use remote::recover_rejected;
-#[cfg(any(unix, test))]
 use remote_items::remote_items;
 use remote_items::{safe_tool_args, safe_tool_text};
 
@@ -369,4 +367,16 @@ impl App {
 /// The job a run belongs to: run ids end in `#` and the job's number.
 pub fn job_of_run(id: &str) -> Option<u32> {
     id.rsplit_once('#')?.1.parse().ok()
+}
+
+/// Keep later edits intact; a draft that starts with the sent text already
+/// contains the whole rejected message, including when it has been extended.
+pub(super) fn recover_rejected(draft: &str, sent: &str) -> String {
+    if draft.starts_with(sent) {
+        draft.to_owned()
+    } else if draft.is_empty() {
+        sent.to_owned()
+    } else {
+        format!("{draft}\n\n{sent}")
+    }
 }
