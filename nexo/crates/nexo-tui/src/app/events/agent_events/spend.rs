@@ -35,6 +35,7 @@ impl App {
         label: String,
         detail: Option<String>,
     ) {
+        crate::trace::totals("context");
         // the view shrank while the history did not: the curator let something go
         if let Some(prev) = &self.context {
             let dropped = prev.view_tokens.saturating_sub(view_tokens);
@@ -46,6 +47,7 @@ impl App {
             }
         }
         self.context_wait = false;
+        self.words.defer(false);
         self.context = Some(ContextInfo {
             view_tokens,
             history_tokens,

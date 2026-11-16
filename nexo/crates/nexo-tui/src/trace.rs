@@ -37,6 +37,53 @@ pub fn note(line: &str) {
     }
 }
 
+/// Time spent in one kind of work, summed over the run: calls, microseconds.
+static TOTALS: Mutex<Vec<(&'static str, u64, u128)>> = Mutex::new(Vec::new());
+
+/// Spans this long or longer get a line of their own.
+const SLOW_MS: u128 = 20;
+
+/// Times a piece of work until it is dropped; None when the trace is off, so a span costs nothing then.
+pub struct Span {
+    what: &'static str,
+    since: Instant,
+}
+
+/// Starts timing `what` (a phase of the interface: history, layout, draw, index).
+pub fn span(what: &'static str) -> Option<Span> {
+    on().then(|| Span { what, since: Instant::now() })
+}
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        let us = self.since.elapsed().as_micros();
+        if let Ok(mut t) = TOTALS.lock() {
+            match t.iter_mut().find(|e| e.0 == self.what) {
+                Some(e) => {
+                    e.1 += 1;
+                    e.2 += us;
+                }
+                None => t.push((self.what, 1, us)),
+            }
+        }
+        if us / 1000 >= SLOW_MS {
+            note(&format!("slow {} {}ms", self.what, us / 1000));
+        }
+    }
+}
+
+/// One line per kind of work: how often it ran and how long it took in all.
+pub fn totals(when: &str) {
+    if !on() {
+        return;
+    }
+    let rows: Vec<String> = TOTALS
+        .lock()
+        .map(|t| t.iter().map(|(w, n, us)| format!("{w}={}ms/{n}", us / 1000)).collect())
+        .unwrap_or_default();
+    note(&format!("totals at {when}: {}", rows.join(" ")));
+}
+
 /// The name of a value of an enum: the first word of its debug text (no fields, so no content).
 pub fn name_of(v: &dyn std::fmt::Debug) -> String {
     let d = format!("{v:?}");

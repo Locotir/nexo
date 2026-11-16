@@ -201,6 +201,7 @@ pub fn draw_screen<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> any
         terminal.clear()?;
         app.force_clear = false;
     }
+    let _t = trace::span("draw");
     terminal.draw(|f| {
         ui::draw(f, app);
         if ascii::wanted() {

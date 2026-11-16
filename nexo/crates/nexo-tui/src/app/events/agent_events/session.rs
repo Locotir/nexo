@@ -24,7 +24,14 @@ impl App {
     pub(super) fn on_history(&mut self, index: usize, message: Message) {
         // the curator answers with a `Context` once the loaded history is counted
         self.context_wait = self.context.is_none();
-        self.history(index, message)
+        // a conversation being loaded: its words are indexed on the frames that follow, not in this burst
+        self.words.defer(self.context_wait);
+        let t = crate::trace::span("history");
+        self.history(index, message);
+        drop(t);
+        if index % 2000 == 1999 || index == 372 {
+            crate::trace::totals(&format!("history {}", index + 1));
+        }
     }
 
     pub(super) fn on_history_cleared(&mut self) {

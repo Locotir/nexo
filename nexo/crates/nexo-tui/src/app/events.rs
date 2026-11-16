@@ -290,7 +290,13 @@ impl App {
 
     pub fn tick_frame(&mut self, beat: bool) {
         self.sub_tick();
+        let t = crate::trace::span("index");
+        let waiting = self.words.pending();
         self.words.pump(crate::complete::PUMP);
+        if waiting > 0 && self.words.pending() == 0 {
+            crate::trace::totals("index done");
+        }
+        drop(t);
         if beat {
             self.spinner = self.spinner.wrapping_add(1);
         }
@@ -483,10 +489,15 @@ impl App {
     /// What the screen asks of the clock now.
     pub fn load(&self) -> crate::frame::Load {
         use crate::frame::Load;
+        // words waiting for the index come a slice per tick: a slow tick would leave the completions half built
         // the banner's intro moves from the first frame, before any tick has set `moving`
         // the crest on the work line crosses the rule in 2 s: a frame every 16 ms while it is on the rule,
         // the beat while it rests off it
-        if self.moving || self.intro_running() || (self.busy && self.fx_on() && self.crest_on_rule()) {
+        if self.moving
+            || self.words.pending() > 0
+            || self.intro_running()
+            || (self.busy && self.fx_on() && self.crest_on_rule())
+        {
             Load::Motion
         } else if self.busy
             || self.map_flash_live()
@@ -579,6 +590,7 @@ impl App {
 
     pub fn handle_agent(&mut self, ev: AgentEvent) {
         crate::trace::agent_event(&ev);
+        let _t = crate::trace::span("events");
         // the conversations of sub-agents draw nothing, and cause no redraw, unless one is open
         if ev.is_sub() {
             return self.handle_sub(ev);

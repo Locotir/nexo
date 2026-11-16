@@ -7,7 +7,9 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let text_w = area.width.saturating_sub(1).max(1) as usize;
     let height = area.height as usize;
+    let t = crate::trace::span("layout");
     app.layout(text_w);
+    drop(t);
     app.settle(height);
     app.reveal_step();
     let scroll = app.glide(height);

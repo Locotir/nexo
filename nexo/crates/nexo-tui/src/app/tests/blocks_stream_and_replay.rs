@@ -284,3 +284,43 @@ fn a_history_of_many_calls_closes_its_replies_without_going_over_every_block_at_
     let blocks = a.blocks.len();
     assert!(scanned <= 4 * blocks + 4 * calls, "{scanned} blocks gone over for {blocks} blocks and {calls} calls");
 }
+
+#[test]
+fn a_resumed_history_is_indexed_on_the_frames_after_it_is_shown_and_not_while_it_arrives() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("start") });
+    let calls = 120;
+    // the person's first message is queued too
+    let mut total = "start".len();
+    for k in 0..calls {
+        let id = format!("c{k}");
+        let out = (0..60).map(|i| format!("resumedword{k:03}x{i:03} ")).collect::<String>();
+        total += out.len();
+        a.handle_agent(AgentEvent::ToolCall {
+            id: id.clone(),
+            name: "read".into(),
+            args: serde_json::json!({"path":"a"}),
+            summary: "a".into(),
+        });
+        a.handle_agent(AgentEvent::ToolDone { id, output: ToolOutput::ok(&out), elapsed_ms: 0 });
+    }
+    // the history is on the screen's side at once; nothing of it went through the index yet
+    assert_eq!(a.words.stats.bytes_scanned, 0, "the burst indexed words");
+    assert_eq!(a.words.pending(), calls + 1);
+    assert!(a.complete_suffix().is_none());
+    // the clock keeps ticking fast while words wait, so the index does not crawl at the idle rate
+    assert_eq!(a.load(), crate::frame::Load::Motion);
+    // each frame indexes one slice at most, and the work ends
+    let mut frames = 0;
+    let mut seen = 0;
+    while a.words.pending() > 0 {
+        a.tick_frame(false);
+        let now = a.words.stats.bytes_scanned;
+        assert!(now - seen <= (crate::complete::PUMP + 4096) as u64, "a frame indexed {} bytes", now - seen);
+        seen = now;
+        frames += 1;
+        assert!(frames <= total / crate::complete::PUMP + calls, "{frames} frames for {total} bytes");
+    }
+    assert_eq!(a.words.stats.bytes_scanned, total as u64, "every word is indexed once");
+    assert!(a.words.suggest("resumedword07").is_some(), "the completions work once the index is done");
+}

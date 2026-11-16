@@ -4,8 +4,9 @@
 //!
 //! The index is fed block by block when a block is final, never per keystroke. A lookup is a
 //! range walk over a `BTreeMap` from the typed prefix, bounded by `SCAN_CAP`, so it costs
-//! microseconds however long the session is. Big blocks (a `/resume` of megabytes) are queued and
-//! indexed a slice per frame by `pump`.
+//! microseconds however long the session is. Big blocks, and every block of a recorded
+//! conversation being loaded (`defer`), are queued and indexed a slice per frame by `pump`, so a
+//! resume shows its history at once and completions fill in behind it.
 //!
 //! The tokenizer keeps whole units (a path, a URL, a hash, a `--flag`, `file:line`, an identifier
 //! with `_ . - ::`) and also their pieces. Secrets are filtered with a heuristic: the value after a
@@ -37,8 +38,9 @@ pub const MAX_UNIT: usize = 120;
 pub const MAX_FEED: usize = 1 << 20;
 /// Texts up to this size are indexed on the spot.
 pub const INLINE: usize = 64 * 1024;
-/// Bytes `pump` indexes per call.
-pub const PUMP: usize = 256 * 1024;
+/// Bytes `pump` indexes per call: about 15 ms of work at the speed of a long session, so a key typed
+/// while a resumed history is indexed waits a frame at most.
+pub const PUMP: usize = 96 * 1024;
 /// A word the person wrote outlives others this many blocks when making room.
 const USER_GRACE: u32 = 4096;
 /// Units after a key/token/password word that are never indexed (same line).
@@ -89,6 +91,9 @@ pub struct WordIndex {
     fresh: BTreeSet<Box<str>>,
     seq: u32,
     pending: VecDeque<(String, Src, u32)>,
+    /// A recorded conversation is arriving: every text is queued for `pump`, however small, so the
+    /// history is shown and the input answers while the index fills in behind.
+    bulk: bool,
     buf: String,
     pub stats: Stats,
 }
@@ -102,6 +107,7 @@ impl WordIndex {
             fresh: BTreeSet::new(),
             seq: 0,
             pending: VecDeque::new(),
+            bulk: false,
             buf: String::new(),
             stats: Stats::default(),
         }
@@ -118,6 +124,12 @@ impl WordIndex {
     /// Texts waiting for `pump`.
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Queues every text from now on (`true`) or indexes the small ones on the spot again. What is
+    /// queued stays queued, in order, until `pump` has done it.
+    pub fn defer(&mut self, on: bool) {
+        self.bulk = on;
     }
 
     pub fn clear(&mut self) {
@@ -139,7 +151,7 @@ impl WordIndex {
         }
         let text = &text[..end];
         self.seq = self.seq.saturating_add(1);
-        if text.len() <= INLINE && self.pending.is_empty() {
+        if text.len() <= INLINE && !self.bulk && self.pending.is_empty() {
             self.index(text, src, self.seq);
         } else {
             self.pending.push_back((text.to_string(), src, self.seq));
@@ -758,6 +770,22 @@ mod tests {
         assert_eq!(w.pending(), 0);
         assert_eq!(w.stats.bytes_scanned, s.len() as u64);
         assert_eq!(w.suggest("configu").as_deref(), Some("ración"));
+    }
+
+    #[test]
+    fn while_deferring_even_a_small_text_waits_for_the_pump_and_order_is_kept() {
+        let mut w = WordIndex::new(true);
+        w.defer(true);
+        w.feed("alphabetical ordering", Src::Other);
+        assert_eq!((w.pending(), w.stats.bytes_scanned), (1, 0));
+        assert_eq!(w.suggest("alphab"), None);
+        w.defer(false);
+        // a small text behind a queued one is queued too, so what came first is indexed first
+        w.feed("alphabeticals", Src::Other);
+        assert_eq!(w.pending(), 2);
+        w.flush();
+        assert_eq!(w.pending(), 0);
+        assert_eq!(w.suggest("alphab").as_deref(), Some("etical"));
     }
 
     #[test]

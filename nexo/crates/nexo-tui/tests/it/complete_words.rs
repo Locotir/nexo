@@ -213,7 +213,10 @@ fn replay_indexes() {
     let mut a = app_with("dark", true);
     a.handle_agent(AgentEvent::History { index: 0, message: Message::user("deploy the deployment pipeline") });
     a.handle_agent(AgentEvent::History { index: 1, message: Message::assistant("see the configuración file") });
+    // the history is shown first and its words are indexed on the frames after it
     type_str(&mut a, "deploym");
+    assert_eq!(a.complete_suffix(), None, "nothing is indexed until a frame runs");
+    a.tick_frame(false);
     assert_eq!(a.complete_suffix().as_deref(), Some("ent"));
     a.input.clear();
     type_str(&mut a, "configu");
