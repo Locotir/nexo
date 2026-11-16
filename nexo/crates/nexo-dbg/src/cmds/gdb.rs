@@ -26,6 +26,14 @@ fn is_reg(n: &str) -> bool {
     crate::Regs::default().get(n).is_some()
 }
 
+/// The action would run a function of the program (`print f(x)`, `p/x g("abc")`, `output f(1)`). A `commands`
+/// block runs inside the handling of a stop: a call started there would replace the run under way (the temporary
+/// breakpoint of a `finish` or `next`) and move threads while other hits of the same stop wait to be read.
+fn action_calls(words: &[String]) -> bool {
+    let name = g::base_name(words.first().map(String::as_str).unwrap_or(""));
+    matches!(name, "print" | "p" | "output" | "call") && expr::has_call(&words[1..].join(" "))
+}
+
 /// The words of a `break` with the place put together: `break *(f + 0x10) if x` has the place `*(f + 0x10)`,
 /// `break 'ns::f(int, char)'` has `ns::f(int, char)`. Unchanged words give `None`.
 fn merge_place(words: &[String]) -> Option<Vec<String>> {
@@ -127,6 +135,13 @@ impl Session {
             self.recording = None;
             return usage(format!(
                 "`{}` cannot run inside `commands`: only commands that look or keep a $variable (x, print, printf, echo, set $v = ..., bt, frame, up, down, regs, mem, dis, find, info) and `continue`; the block was dropped",
+                words.join(" ")
+            ));
+        }
+        if action_calls(words) {
+            self.recording = None;
+            return usage(format!(
+                "`{}` runs a function of the program, and a `commands` block runs while the debugger is still handling the stop, where no call can start; the block was dropped. At the stop itself, `call` runs it",
                 words.join(" ")
             ));
         }

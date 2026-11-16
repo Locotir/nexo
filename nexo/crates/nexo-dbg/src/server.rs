@@ -291,9 +291,9 @@ pub fn serve(start: &Start) -> i32 {
             Err(_) => break 1,
         }
         if sess.state == State::Running {
-            sess.drain_output();
-            if let Ok(Some((tid, why))) = sess.poll(Duration::from_millis(20)) {
-                pending = Some(sess.stopped(tid, why));
+            // a call that outlived its `--wait` and returns or faults here is ended by `news` as by `wait`
+            if let Some(o) = sess.news(Duration::from_millis(20)) {
+                pending = Some(o);
             }
         } else {
             std::thread::sleep(Duration::from_millis(30));

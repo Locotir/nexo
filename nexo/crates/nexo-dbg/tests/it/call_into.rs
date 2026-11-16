@@ -1,13 +1,17 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 //! Calls into the stopped program: `call add(2, 3)`, `print add(40, 2) + 1`, a text argument written on the stack,
-//! eight arguments (two on the stack), a call that faults, and a breakpoint inside the function called. After each
-//! one every register of the thread is what it was before, and the program runs on to its normal end. Skipped
-//! without the compiler.
+//! eight arguments (two on the stack), a call that faults, a breakpoint inside the function called, and a call that
+//! outlives its wait and ends while the server looks between requests. After each one every register of the thread
+//! is what it was before, and the program runs on to its normal end. A `commands` block holds no call. Skipped without
+//! the compiler.
 
-use nexo_dbg::{open, split_words, Kind, Session};
+use std::time::{Duration, Instant};
+
+use nexo_dbg::{open, split_words, Kind, Session, State};
 
 const SRC: &str = r#"
 #include <stdio.h>
+#include <unistd.h>
 __attribute__((noinline)) int add(int a, int b) {
     int sum = a + b;
     return sum;
@@ -32,6 +36,14 @@ __attribute__((noinline)) int deep(int n) {
 }
 __attribute__((noinline)) int minus(int a) {
     return -a;
+}
+__attribute__((noinline)) int nap(int ms) {
+    usleep(ms * 1000);
+    return ms + 1;
+}
+__attribute__((noinline)) int nap_crash(int ms) {
+    usleep(ms * 1000);
+    return *(volatile int *)0;
 }
 int counter;
 __attribute__((noinline)) void tick(void) {
@@ -188,5 +200,65 @@ fn a_call_asks_for_a_stopped_program_and_a_function_in_code() {
     assert!(not_code.contains("not in executable memory"), "{not_code}");
     let no_parens = s.exec(&split_words("call add")).err().map(|e| e.to_string()).unwrap_or_default();
     assert!(no_parens.contains("calls nothing"), "{no_parens}");
+    ends_normally(&mut s);
+}
+
+/// What the server's look between requests gives within `limit`: the stop it caught, as the next `wait` hands it out.
+fn news_within(s: &mut Session, limit: Duration) -> String {
+    let end = Instant::now() + limit;
+    while Instant::now() < end {
+        if let Some(o) = s.news(Duration::from_millis(20)) {
+            return o.text_all();
+        }
+    }
+    panic!("no stop within {limit:?}");
+}
+
+#[test]
+fn a_call_that_outlives_its_wait_is_ended_by_the_look_between_requests() {
+    let Some((_d, mut s)) = stopped_in_tick() else { return };
+    let before = regs(&mut s);
+    let out = run(&mut s, "call nap(300) --wait 0");
+    assert!(out.contains("`nap(300)` still runs"), "{out}");
+    assert_eq!(s.state, State::Running);
+    // the server polls the running program while nobody asks; the return it catches ends the call
+    let news = news_within(&mut s, Duration::from_secs(10));
+    assert!(news.contains("`nap(300)` returned 0x12d (301)"), "{news}");
+    assert!(news.contains("back as before the call"), "{news}");
+    assert_eq!(s.state, State::Stopped);
+    assert_eq!(regs(&mut s), before);
+    let again = run(&mut s, "call add(2, 2)");
+    assert!(again.contains("= 0x4 (4)"), "{again}");
+
+    // a fault caught the same way ends the call too, and the program never gets the signal
+    let out = run(&mut s, "call nap_crash(300) --wait 0");
+    assert!(out.contains("still runs"), "{out}");
+    let news = news_within(&mut s, Duration::from_secs(10));
+    assert!(news.contains("`nap_crash(300)` faulted") && news.contains("SIGSEGV"), "{news}");
+    assert!(news.contains("not handed to the program") && news.contains("back as before the call"), "{news}");
+    assert_eq!(regs(&mut s), before);
+    ends_normally(&mut s);
+}
+
+#[test]
+fn a_commands_block_cannot_hold_a_call_into_the_program() {
+    let Some((_d, mut s)) = stopped_in_tick() else { return };
+    run(&mut s, "break add");
+    for line in ["print add(1, 2)", "p/x add(1, 2)", "output hash(\"abc\")", "inspect add(1, 2)"] {
+        run(&mut s, "commands");
+        let refused = s.exec(&split_words(line)).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            refused.contains("runs a function of the program") && refused.contains("the block was dropped"),
+            "{line}: {refused}"
+        );
+        assert!(s.recording.is_none(), "{line}");
+    }
+    // a print that calls nothing is still a fine action
+    run(&mut s, "commands");
+    run(&mut s, "print $rdi");
+    let end = run(&mut s, "end");
+    assert!(end.contains("1 commands"), "{end}");
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("breakpoint #") && stop.contains("add"), "{stop}");
     ends_normally(&mut s);
 }

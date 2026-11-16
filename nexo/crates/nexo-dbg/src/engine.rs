@@ -995,19 +995,35 @@ impl Session {
         format!("\"{s}\"")
     }
 
+    /// The answer for a stop [`Session::poll`] caught. While a call into the program is under way the stop goes
+    /// through the call first: its return gives the value and puts the registers back, a fault in its thread ends it.
+    pub fn answer(&mut self, tid: Tid, why: Why) -> Output {
+        let Some(text) = self.call_under_way() else { return self.stopped(tid, why) };
+        match self.call_stop(tid, why) {
+            call::Called::Value(v) => self.call_value(&text, tid, v),
+            call::Called::Told(o) => o,
+        }
+    }
+
+    /// One look at the running program between requests (the server does this while nobody asks): the answer for a
+    /// stop that came within `timeout`. None while it still runs, when it is not running, or when it cannot be
+    /// waited on.
+    pub fn news(&mut self, timeout: Duration) -> Option<Output> {
+        if self.state != State::Running {
+            return None;
+        }
+        self.drain_output();
+        let (tid, why) = self.poll(timeout).ok()??;
+        Some(self.answer(tid, why))
+    }
+
     /// Block until the program stops or `wait` passes, then describe the stop (or say it still runs).
     pub fn settle(&mut self, wait: Duration) -> Result<Output> {
         let deadline = Instant::now() + wait;
         loop {
             let slice = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(200));
             if let Some((tid, why)) = self.poll(slice)? {
-                if let Some(text) = self.call_under_way() {
-                    return Ok(match self.call_stop(tid, why) {
-                        call::Called::Value(v) => self.call_value(&text, tid, v),
-                        call::Called::Told(o) => o,
-                    });
-                }
-                return Ok(self.stopped(tid, why));
+                return Ok(self.answer(tid, why));
             }
             if Instant::now() >= deadline {
                 let secs = wait.as_secs_f64();
