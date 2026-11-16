@@ -176,7 +176,7 @@ impl App {
 
     /// The poller behind `/panel`: the fleet watch of the status bar, completed with the other tool's sessions,
     /// the judge and the mail on first use.
-    pub(super) fn panel_handle(&mut self) -> std::sync::Arc<nexo_agent::supervise::Panel> {
+    pub(super) fn panel_handle(&mut self) -> std::sync::Arc<nexo_supervise::Panel> {
         self.panel_with(true)
     }
 
@@ -190,8 +190,8 @@ impl App {
 
     /// The panel's poller. `full` adds what only `/panel` needs: the other tool's logs and list, the mail ledgers
     /// and the judge (a model), once; without it the sources are the fleet's own files.
-    fn panel_with(&mut self, full: bool) -> std::sync::Arc<nexo_agent::supervise::Panel> {
-        use nexo_agent::supervise::{run::Setup, Policy};
+    fn panel_with(&mut self, full: bool) -> std::sync::Arc<nexo_supervise::Panel> {
+        use nexo_supervise::{run::Setup, Policy};
         let p = match &self.panel {
             Some(p) => p.clone(),
             None => {
@@ -201,13 +201,13 @@ impl App {
                 self.panel_notes = loaded.errors.iter().map(|e| e.to_string()).collect();
                 let policy = loaded.policy;
                 let setup = Setup::none();
-                let started = nexo_agent::supervise::Panel::start_with(
+                let started = nexo_supervise::Panel::start_with(
                     &setup,
                     policy.clone(),
                     self.nexo_src.clone(),
                     &crate::supervise_options(),
                 )
-                .unwrap_or_else(|_| nexo_agent::supervise::Panel::start(&setup, policy.clone(), self.nexo_src.clone()));
+                .unwrap_or_else(|_| nexo_supervise::Panel::start(&setup, policy.clone(), self.nexo_src.clone()));
                 for src in Setup::fleet_sources() {
                     started.add_source(src);
                 }
@@ -227,8 +227,8 @@ impl App {
             if let Some(m) = policy.model.clone() {
                 match tokio::runtime::Handle::try_current() {
                     Ok(rt) => {
-                        let client = nexo_agent::supervise::model::default_client();
-                        match nexo_agent::supervise::model::judge_for(&m, &self.opts.providers, client, rt) {
+                        let client = nexo_supervise::model::default_client();
+                        match nexo_supervise::model::judge_for(&m, &self.opts.providers, client, rt) {
                             Ok(j) => p.set_judge(j),
                             Err(e) => self.panel_notes.push(e),
                         }
@@ -238,9 +238,7 @@ impl App {
             }
             // the other sessions' mail (the ledgers and receipts on disk), only where this process has a mailbox
             if crate::mailbox().is_some() {
-                p.add_source(Box::new(nexo_agent::supervise::source_mail::MailSource::new(
-                    nexo_core::mailbox::mail_root(),
-                )));
+                p.add_source(Box::new(nexo_supervise::source_mail::MailSource::new(nexo_core::mailbox::mail_root())));
             }
             p.set_notes(self.panel_notes.clone());
         }

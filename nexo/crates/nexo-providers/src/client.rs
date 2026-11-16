@@ -390,3 +390,27 @@ mod gone {
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no request is sent for a caller that is gone");
     }
 }
+
+/// The client as the model caller the agent loop and the supervisor both speak to.
+#[async_trait::async_trait]
+impl nexo_core::model_client::ModelClient for Client {
+    async fn stream(
+        &self,
+        cfg: &nexo_core::config::ProviderConfig,
+        req: &nexo_core::provider::ModelRequest,
+        retries: u32,
+    ) -> Result<nexo_core::provider::EventStream, nexo_core::error::ProviderError> {
+        Client::stream(self, cfg, req, retries).await
+    }
+
+    fn backoff(&self, n: u32, e: &nexo_core::error::ProviderError) -> std::time::Duration {
+        Client::backoff(self, n, e)
+    }
+
+    async fn list_models(
+        &self,
+        cfg: &nexo_core::config::ProviderConfig,
+    ) -> Result<Vec<nexo_core::provider::ModelInfo>, nexo_core::error::ProviderError> {
+        Client::list_models(self, cfg).await
+    }
+}

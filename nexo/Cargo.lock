@@ -1778,6 +1778,7 @@ dependencies = [
  "nexo-curator",
  "nexo-dbg",
  "nexo-providers",
+ "nexo-supervise",
  "nexo-tools",
  "pulldown-cmark",
  "regex",
@@ -1890,6 +1891,7 @@ dependencies = [
  "nexo-core",
  "nexo-dbg",
  "nexo-providers",
+ "nexo-supervise",
  "nexo-tools",
  "nexo-tui",
  "reqwest",
@@ -2007,6 +2009,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexo-supervise"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "globset",
+ "libc",
+ "nexo-core",
+ "nexo-providers",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "nexo-tools"
 version = "0.1.0"
 dependencies = [
@@ -2058,6 +2077,7 @@ dependencies = [
  "nexo-agent",
  "nexo-core",
  "nexo-providers",
+ "nexo-supervise",
  "nucleo-matcher",
  "pulldown-cmark",
  "ratatui",

@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexo_agent::supervise::{AgentRow, Ev, EvDetail, EvKind, SourceKind, State};
+use nexo_supervise::{AgentRow, Ev, EvDetail, EvKind, SourceKind, State};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::modal::Modal;
 use nexo_tui::ui::rows_of;
@@ -290,8 +290,8 @@ fn the_pulse_row_adds_up_the_fleet_and_drops_figures_before_the_count_of_who_nee
 
 #[test]
 fn a_letter_flies_between_two_cards_inside_the_panel_and_never_over_text() {
-    use nexo_agent::supervise::MailRow;
     use nexo_core::mail::Stage;
+    use nexo_supervise::MailRow;
     let (w, h) = (120, 40);
     let rest = panel_of(&still(w, h, "dark"));
     let mail = |id: &str| MailRow {

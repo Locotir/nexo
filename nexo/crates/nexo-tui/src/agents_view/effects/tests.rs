@@ -1,6 +1,6 @@
 use super::*;
 use crate::fx::panel as px;
-use nexo_agent::supervise::{EvDetail, LaneInfo};
+use nexo_supervise::{EvDetail, LaneInfo};
 use std::collections::HashSet;
 
 fn ev(at: Secs, kind: EvKind, n: u32) -> Ev {
@@ -43,8 +43,8 @@ fn failing_stages_are_bad_and_the_others_are_not() {
 
 // ------------------------------------------------------------------ motion audit
 
-use nexo_agent::supervise::SourceKind;
 use nexo_core::mail::Stage as MailStage;
+use nexo_supervise::SourceKind;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
@@ -70,7 +70,7 @@ fn agent(key: &str, state: State) -> AgentRow {
         parent: None,
         last_action: None,
         paused: false,
-        ribbon: vec![Ev { at: NOW - 3, kind: EvKind::Edit, n: 1, detail: nexo_agent::supervise::EvDetail::None }],
+        ribbon: vec![Ev { at: NOW - 3, kind: EvKind::Edit, n: 1, detail: nexo_supervise::EvDetail::None }],
         spark: vec![1, 2, 3],
         todo: Some((1, 4)),
         tests: None,
@@ -284,8 +284,7 @@ fn no_effect_leaves_the_window_or_covers_the_footer_through_resizes() {
     for (i, r) in busy.iter_mut().enumerate() {
         let kinds =
             [EvKind::TestsPass, EvKind::TestsFail, EvKind::GitCommit, EvKind::GitPush, EvKind::Compact, EvKind::Error];
-        r.ribbon =
-            vec![Ev { at: NOW, kind: kinds[i % kinds.len()], n: 1, detail: nexo_agent::supervise::EvDetail::None }];
+        r.ribbon = vec![Ev { at: NOW, kind: kinds[i % kinds.len()], n: 1, detail: nexo_supervise::EvDetail::None }];
         r.subs = vec![(format!("s{i}.1"), State::Working), (format!("s{i}.2"), State::Done)];
     }
     v.set_rows(busy.clone());

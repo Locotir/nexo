@@ -81,13 +81,11 @@ pub struct Debug {
 
 impl Debug {
     pub fn new() -> Debug {
-        nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
         Debug { dir: nexo_dbg::state_dir(), steer_only: false }
     }
 
     /// A tool for sub-agents that may only look at and steer sessions someone else started.
     pub fn steer_only() -> Debug {
-        nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
         Debug { dir: nexo_dbg::state_dir(), steer_only: true }
     }
 

@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nexo_agent::supervise::model::{Judge, Judged};
-use nexo_agent::supervise::socket::{ask, HookKind, Request, HOOK_TIMEOUT};
-use nexo_agent::supervise::{audit::Audit, NexoSource, Options, Panel, Policy, Setup};
 use nexo_core::agent::{AgentEvent, TurnEnd};
+use nexo_supervise::model::{Judge, Judged};
+use nexo_supervise::socket::{ask, HookKind, Request, HOOK_TIMEOUT};
+use nexo_supervise::{audit::Audit, NexoSource, Options, Panel, Policy, Setup};
 use serde_json::{json, Value};
 
 struct Stand {

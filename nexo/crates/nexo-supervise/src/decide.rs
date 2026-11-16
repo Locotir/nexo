@@ -258,11 +258,7 @@ mod tests {
     fn questions_follow_the_per_agent_switch_and_long_loops_alert() {
         let now = 100_000;
         let mut p = Policy::default();
-        p.agents.push(crate::supervise::policy::AgentRule {
-            pattern: "QA*".into(),
-            answer_questions: Some(false),
-            paused: None,
-        });
+        p.agents.push(crate::policy::AgentRule { pattern: "QA*".into(), answer_questions: Some(false), paused: None });
         let mut t = track(now);
         t.name = Some("QA lane".into());
         let c = |t: &AgentTrack, p: &Policy, s: State, in_state: u64| {

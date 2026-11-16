@@ -1,6 +1,6 @@
 use super::*;
-use crate::supervise::EvKind;
-use crate::supervise::{ObsKind, Observation};
+use crate::EvKind;
+use crate::{ObsKind, Observation};
 use nexo_core::agent::AgentEvent;
 
 struct Fake(SourceKind, Vec<Observation>);

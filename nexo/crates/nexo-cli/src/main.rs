@@ -63,6 +63,8 @@ fn main() {
     nexo_core::version::set(env!("NEXO_VERSION"));
     // The local UTC offset can only be read while the process has one thread.
     nexo_agent::budget::init_local_offset();
+    // The debugger keeps names and notes in the data dir; set once here, so the tool constructors touch no global.
+    nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
     // A closed stdout (`nexo providers | head`) ends the process quietly instead of panicking.
     // SIGPIPE stays ignored: a hook, MCP server or tool that exits before reading its stdin must
     // not kill nexo, so only the print that hit the closed stdout ends it.

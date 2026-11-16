@@ -162,7 +162,7 @@ pub(super) async fn watch_round(state: &Shared) -> u32 {
     // an active goal's facts line says what a run of reads or a call made again brought (see `GoalIdle::facts`): no
     // note to guess it
     let goal_facts = st.goal.is_some() && st.goal_state.is_active();
-    for f in crate::supervise::watch::scan_rounds(&st.history[from..]) {
+    for f in nexo_supervise::watch::scan_rounds(&st.history[from..]) {
         if goal_facts && (f.key.starts_with("reads:") || f.key.starts_with("repeat:")) {
             continue;
         }
@@ -209,14 +209,14 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         let from = st.turn_start.min(st.history.len());
         let mut evidence: Vec<String> = extra.map(|e| e.chars().take(1000).collect()).into_iter().collect();
         evidence
-            .extend(crate::supervise::watch::scan_end(&st.history[from..], &reply.text()).into_iter().map(|f| f.text));
+            .extend(nexo_supervise::watch::scan_end(&st.history[from..], &reply.text()).into_iter().map(|f| f.text));
         evidence.retain(|e| !e.trim().is_empty());
         if evidence.is_empty() {
             return;
         }
         let mut req = last;
         req.messages.push(reply.clone());
-        req.messages.push(Message::user(crate::supervise::watch::check_in_ask(&evidence)));
+        req.messages.push(Message::user(nexo_supervise::watch::check_in_ask(&evidence)));
         lean(&mut req, cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]), CHECK_IN_TOKENS);
         // the limits count the calls in flight, and the check-in's reply is capped to what the budget can pay
         let input = (st.est_sent as f64 * st.tok_ratio.unwrap_or(1.0)).round() as u64;
@@ -257,7 +257,7 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         if c.error.is_some() {
             return;
         }
-        if let crate::supervise::watch::Answer::Continue(next) = crate::supervise::watch::parse_answer(&msg.text()) {
+        if let nexo_supervise::watch::Answer::Continue(next) = nexo_supervise::watch::parse_answer(&msg.text()) {
             let said = if next.is_empty() { String::new() } else { format!(": {next}") };
             let text =
                 format!("The automatic check-in asked whether the task is finished and the answer was CONTINUE{said}");

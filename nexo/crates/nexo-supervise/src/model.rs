@@ -18,7 +18,7 @@ use nexo_core::stream::{Collector, StreamEvent};
 
 use super::policy::ModelPolicy;
 use super::{input_hash, AgentTrack, Secs};
-use crate::client::ModelClient;
+use nexo_core::model_client::ModelClient;
 
 /// Longest text a ruling may carry.
 pub const MAX_TEXT: usize = 400;
@@ -411,7 +411,7 @@ pub fn ambiguous_loop(track: &AgentTrack) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::supervise::ResultMark;
+    use crate::ResultMark;
     use std::sync::Mutex;
 
     struct Fake {

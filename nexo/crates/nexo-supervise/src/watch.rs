@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use nexo_core::message::{Message, Part};
 use serde_json::Value;
 
-use crate::checkpoint::todo_of;
+use nexo_core::todo::todo_of;
 
 /// The same call this many times, with nothing changed between them.
 pub const REPEAT_CALLS: usize = 3;

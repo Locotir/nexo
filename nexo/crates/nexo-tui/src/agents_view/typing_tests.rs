@@ -1,7 +1,7 @@
 //! Typing a panel message into a session of another program: asked first, then sent to its inbox.
 
 use super::*;
-use nexo_agent::supervise::EvDetail;
+use nexo_supervise::EvDetail;
 use std::io::Read;
 use std::os::unix::net::UnixListener;
 
@@ -23,12 +23,7 @@ fn claude_row(cwd: &str) -> AgentRow {
         parent: None,
         last_action: None,
         paused: false,
-        ribbon: vec![nexo_agent::supervise::Ev {
-            at: 999,
-            kind: nexo_agent::supervise::EvKind::Read,
-            n: 1,
-            detail: EvDetail::None,
-        }],
+        ribbon: vec![nexo_supervise::Ev { at: 999, kind: nexo_supervise::EvKind::Read, n: 1, detail: EvDetail::None }],
         spark: vec![],
         todo: None,
         tests: None,

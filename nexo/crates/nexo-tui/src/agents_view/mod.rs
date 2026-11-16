@@ -30,8 +30,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::run::now_secs;
-use nexo_agent::supervise::{AgentRow, Panel, Secs, SourceKind, State};
+use nexo_supervise::run::now_secs;
+use nexo_supervise::{AgentRow, Panel, Secs, SourceKind, State};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};

@@ -22,7 +22,7 @@ impl App {
         ) {
             self.clear_progress_flash();
         }
-        self.nexo_src.observe(&ev, nexo_agent::supervise::run::now_secs());
+        self.nexo_src.observe(&ev, nexo_supervise::run::now_secs());
         // the heartbeat tells the other sessions the step, model, cost and goal (metadata only)
         if let Some(m) = crate::mailbox() {
             m.observe(&ev);

@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::{AgentRow, SourceKind, State};
+use nexo_supervise::{AgentRow, SourceKind, State};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::modal::{Modal, ModalOut};
 use nexo_tui::ui::rows_of;
@@ -118,8 +118,8 @@ fn type_in(a: &mut App, text: &str) {
     }
 }
 
-fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>) {
-    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_supervise::Panel>) {
+    use nexo_supervise::{NexoSource, Panel, Policy, Setup};
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("logs").join("proj");
     std::fs::create_dir_all(&logs).unwrap();

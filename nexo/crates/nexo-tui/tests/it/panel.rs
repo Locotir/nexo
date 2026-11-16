@@ -6,8 +6,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::{AgentRow, Ev, EvDetail, EvKind, LaneInfo, SourceKind, State};
 use nexo_core::agent::AgentCommand;
+use nexo_supervise::{AgentRow, Ev, EvDetail, EvKind, LaneInfo, SourceKind, State};
 use nexo_tui::agents_view::{AgentsView, Kind};
 use nexo_tui::modal::ModalOut;
 use nexo_tui::theme::Theme;

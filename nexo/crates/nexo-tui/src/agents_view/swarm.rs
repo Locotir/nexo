@@ -7,7 +7,7 @@
 use super::effects::{ms_since, put};
 use super::*;
 use crate::fx::panel::{self as px, Flight};
-use nexo_agent::supervise::EvKind;
+use nexo_supervise::EvKind;
 
 /// The swarm of the lanes goes by the LANES header's own id: the header is what they circle.
 pub(super) const LANES: &str = "h:LANES";

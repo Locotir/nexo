@@ -1,7 +1,7 @@
 //! What the pane says about a row besides its fields: how long ago an action was, the workflow it ran, and what
 //! it coordinates.
 
-use nexo_agent::supervise::{AgentRow, Secs};
+use nexo_supervise::{AgentRow, Secs};
 
 use super::{age, AgentsView};
 

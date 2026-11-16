@@ -4,7 +4,9 @@
 //! `api_key_cmd`) goes through here, so they all agree.
 
 mod lex;
+mod osascript;
 pub use lex::{ansi_escape, is_assignment, lex, Cmd, End, Heredoc, Lexed, Redirect, Subst};
+pub use osascript::osascript_scripts;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::{AgentRow, SourceKind, State};
+use nexo_supervise::{AgentRow, SourceKind, State};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::modal::{Modal, ModalOut};
 use nexo_tui::ui::rows_of;
@@ -120,7 +120,7 @@ fn observe(a: &mut App) {
 
 #[test]
 fn enter_observes_the_selected_session_and_escape_returns() {
-    use nexo_agent::supervise::{Ev, EvDetail, EvKind};
+    use nexo_supervise::{Ev, EvDetail, EvKind};
     let mut row = job("alpha", SourceKind::Nexo);
     row.last_step = Some("reading code".into());
     row.ribbon = vec![Ev::with(NOW, EvKind::Read, EvDetail::Text("src/main.rs".into()))];
@@ -143,7 +143,7 @@ fn enter_observes_the_selected_session_and_escape_returns() {
 
 #[test]
 fn observation_message_stays_with_its_target_when_selection_changes() {
-    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+    use nexo_supervise::{NexoSource, Panel, Policy, Setup};
     use std::{
         sync::Arc,
         time::{Duration, Instant},
@@ -188,7 +188,7 @@ fn observation_message_stays_with_its_target_when_selection_changes() {
     press(&mut a, KeyCode::Enter);
     assert!(
         panel
-            .rows(nexo_agent::supervise::run::now_secs())
+            .rows(nexo_supervise::run::now_secs())
             .iter()
             .all(|r| { r.last_action.as_ref().is_none_or(|action| action.0 != "your nudge is queued") }),
         "an empty message must not be queued"
@@ -200,7 +200,7 @@ fn observation_message_stays_with_its_target_when_selection_changes() {
     let other_index = view(&mut a).rows().iter().position(|r| r.key == other).unwrap();
     view(&mut a).selected = other_index;
     press(&mut a, KeyCode::Enter);
-    let rows = panel.rows(nexo_agent::supervise::run::now_secs());
+    let rows = panel.rows(nexo_supervise::run::now_secs());
     let action =
         |key: &str| rows.iter().find(|r| r.key == key).and_then(|r| r.last_action.as_ref()).map(|a| a.0.as_str());
     assert_eq!(action(&target), Some("your nudge is queued"));
@@ -221,7 +221,7 @@ fn observation_does_not_message_a_replacement_selection() {
 
 #[test]
 fn persisted_session_reaches_observation() {
-    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+    use nexo_supervise::{NexoSource, Panel, Policy, Setup};
     use std::time::{Duration, Instant};
     if std::env::var_os("NEXO_PANEL_HISTORY_CHILD").is_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -276,7 +276,7 @@ fn persisted_session_reaches_observation() {
 
 #[test]
 fn end_follows_new_observation_rows_until_manual_scroll() {
-    use nexo_agent::supervise::{Ev, EvDetail, EvKind};
+    use nexo_supervise::{Ev, EvDetail, EvKind};
     let make_row = |count: usize| {
         let mut row = job("alpha", SourceKind::External);
         row.ribbon =

@@ -197,7 +197,7 @@ mod tests {
                         content: vec![Part::text("line 1\nline 2\nline 3")],
                         is_error: false,
                     },
-                    Part::text(crate::supervise::watch::hidden_block(&["the same file was read 3 times".to_string()])),
+                    Part::text(nexo_supervise::watch::hidden_block(&["the same file was read 3 times".to_string()])),
                 ],
             ),
         ];

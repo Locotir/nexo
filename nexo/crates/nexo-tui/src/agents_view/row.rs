@@ -3,7 +3,7 @@
 //! towards it, and its spend against its cap; a session its step, model, quiet time, cost and context; a
 //! sub-agent or job its elapsed time and sparkline.
 
-use nexo_agent::supervise::{EvKind, LaneInfo};
+use nexo_supervise::{EvKind, LaneInfo};
 use ratatui::style::Color;
 
 use super::draw::fit_step;

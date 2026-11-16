@@ -685,7 +685,7 @@ pub(super) async fn prepare(
         }
     }
     // what rides on this request only is worked out first, so the view's budget leaves room for it
-    let hidden = (!st.hidden.is_empty()).then(|| crate::supervise::watch::hidden_block(&st.hidden));
+    let hidden = (!st.hidden.is_empty()).then(|| nexo_supervise::watch::hidden_block(&st.hidden));
     // an active goal: the counts of its run and, once its work brings nothing new, the facts of that (see `goal_note`)
     let goal_facts = goal_note(st);
     let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>());
@@ -968,7 +968,7 @@ mod request_only_tests {
 
     #[test]
     fn what_rides_on_the_request_only_is_counted_with_the_estimator_of_the_budget() {
-        let block = crate::supervise::watch::hidden_block(&["x".repeat(40_000)]);
+        let block = nexo_supervise::watch::hidden_block(&["x".repeat(40_000)]);
         let t = request_only_tokens(&[&block]);
         assert!(t >= 10_000, "{t}");
         assert_eq!(t, nexo_core::message::estimate_tokens(&[Message::user(block)]));

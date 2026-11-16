@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::{AgentRow, SourceKind, State};
+use nexo_supervise::{AgentRow, SourceKind, State};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::commands::{lookup, parse, Command, COMMANDS};
 use nexo_tui::modal::{Modal, ModalOut};
@@ -179,8 +179,8 @@ fn window(a: &mut App) -> String {
 }
 
 /// A live panel reading one session of another program from a temporary log folder.
-fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>) {
-    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_supervise::Panel>) {
+    use nexo_supervise::{NexoSource, Panel, Policy, Setup};
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("logs").join("proj");
     std::fs::create_dir_all(&logs).unwrap();
@@ -198,7 +198,7 @@ fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Pan
 }
 
 /// The live panel's view once its poller has seen the log; generous, a loaded machine's poller can be slow.
-fn live_view() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>, AgentsView) {
+fn live_view() -> (tempfile::TempDir, std::sync::Arc<nexo_supervise::Panel>, AgentsView) {
     let (d, panel) = live_panel();
     let t = std::time::Instant::now();
     let mut v = AgentsView::new(Some(panel.clone()), true);
@@ -299,10 +299,10 @@ fn n_writes_a_nudge_z_pauses_and_enter_observes_until_esc() {
     press(&mut a, "n now");
     assert!(text(&mut a).contains("message ›"), "the field shows");
     key(&mut a, KeyCode::Enter);
-    let row = panel.rows(nexo_agent::supervise::run::now_secs()).remove(0);
+    let row = panel.rows(nexo_supervise::run::now_secs()).remove(0);
     assert_eq!(row.last_action.as_ref().map(|a| a.0.as_str()), Some("your nudge is queued"));
     press(&mut a, "z");
-    assert!(panel.rows(nexo_agent::supervise::run::now_secs())[0].paused);
+    assert!(panel.rows(nexo_supervise::run::now_secs())[0].paused);
     assert!(text(&mut a).contains("supervision paused"), "{}", text(&mut a));
     press(&mut a, "Z");
     assert!(panel.paused_all());

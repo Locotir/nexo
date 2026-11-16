@@ -2,7 +2,7 @@
 //! its kind has to say (a lane's clock, spend and rounds; a session's goal, context, cost, todo, tests and
 //! mail; a job's title and the end of its output), then its events, newest first. It scrolls as one page.
 
-use nexo_agent::supervise::{EvDetail, EvKind};
+use nexo_supervise::{EvDetail, EvKind};
 
 use super::draw::fit_path;
 use super::row::{bar, clock_of, money, short_model, tilde};
@@ -148,7 +148,7 @@ impl AgentsView {
         &self,
         out: &mut Vec<Line<'static>>,
         row: &AgentRow,
-        l: &nexo_agent::supervise::LaneInfo,
+        l: &nexo_supervise::LaneInfo,
         w: usize,
         theme: &Theme,
         fx: bool,

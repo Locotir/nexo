@@ -3,7 +3,7 @@
 //! passing test run, the squash of a compaction). Everything here is a pure function of the milliseconds
 //! since the effect was born, so a test can ask for any instant; the view decides when an effect starts.
 
-use nexo_agent::supervise::{Ev, EvKind, Secs};
+use nexo_supervise::{Ev, EvKind, Secs};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -765,7 +765,7 @@ pub fn heartbeat(buckets: &[u32], cells: usize, theme: &Theme, lit: Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexo_agent::supervise::EvDetail;
+    use nexo_supervise::EvDetail;
 
     fn theme() -> Theme {
         Theme::by_name("dark").unwrap()

@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexo_agent::supervise::socket::{ask, HookKind, Request, HOOK_TIMEOUT};
-use nexo_agent::supervise::NexoSource;
-use nexo_agent::supervise::{audit::Audit, Options, Panel, Policy, Setup, State};
+use nexo_supervise::socket::{ask, HookKind, Request, HOOK_TIMEOUT};
+use nexo_supervise::NexoSource;
+use nexo_supervise::{audit::Audit, Options, Panel, Policy, Setup, State};
 use serde_json::{json, Value};
 
 struct Rig {
@@ -138,25 +138,21 @@ fn permission_asks_are_approved_by_policy_only() {
 fn a_notification_marks_the_session_waiting() {
     let r = rig(POLICY, &[]);
     hook(&r, HookKind::Notify, json!({"session_id":"sess-2","notification_type":"permission_prompt","cwd":"/work/x"}));
-    let row = r.panel.rows(nexo_agent::supervise::run::now_secs()).into_iter().find(|w| w.key == "sess-2").unwrap();
+    let row = r.panel.rows(nexo_supervise::run::now_secs()).into_iter().find(|w| w.key == "sess-2").unwrap();
     assert_eq!(row.state, State::WaitingPermission);
     hook(&r, HookKind::Notify, json!({"session_id":"sess-3","notification_type":"idle_prompt"}));
-    wait_for("question state", || {
-        r.panel.rows(nexo_agent::supervise::run::now_secs()).iter().any(|w| w.key == "sess-3")
-    });
+    wait_for("question state", || r.panel.rows(nexo_supervise::run::now_secs()).iter().any(|w| w.key == "sess-3"));
 }
 
 #[test]
 fn the_persons_nudge_and_pause_go_through_the_stop_hook() {
     let r = rig(POLICY, &[assistant_end("Finished the first part.")]);
-    wait_for("session known", || {
-        r.panel.rows(nexo_agent::supervise::run::now_secs()).iter().any(|w| w.key == "sess-1")
-    });
+    wait_for("session known", || r.panel.rows(nexo_supervise::run::now_secs()).iter().any(|w| w.key == "sess-1"));
     let p = json!({"session_id": "sess-1", "stop_hook_active": false});
     r.panel.pause(Some("sess-1"), true);
     r.panel.nudge("sess-1", "Look at the failing test first.").unwrap();
     assert_eq!(hook(&r, HookKind::Stop, p.clone()), json!({}), "paused: nothing goes out");
-    assert!(r.panel.rows(nexo_agent::supervise::run::now_secs()).iter().any(|w| w.key == "sess-1" && w.paused));
+    assert!(r.panel.rows(nexo_supervise::run::now_secs()).iter().any(|w| w.key == "sess-1" && w.paused));
     r.panel.pause(Some("sess-1"), false);
     let out = hook(&r, HookKind::Stop, p.clone());
     assert_eq!(out, json!({"decision":"block","reason":"Look at the failing test first."}));
@@ -177,9 +173,7 @@ fn a_second_panel_forwards_to_the_running_supervisor() {
     // the daemon refuses to start twice
     let strict = Options { must_listen: true, ..opts };
     assert!(Panel::start_with(&setup, Policy::default(), NexoSource::default(), &strict).is_err());
-    wait_for("session known", || {
-        r.panel.rows(nexo_agent::supervise::run::now_secs()).iter().any(|w| w.key == "sess-1")
-    });
+    wait_for("session known", || r.panel.rows(nexo_supervise::run::now_secs()).iter().any(|w| w.key == "sess-1"));
     assert!(other.nudge("unknown-session", "must not be delivered").is_err());
     other.nudge("sess-1", "From the other window.").unwrap();
     let out = hook(&r, HookKind::Stop, json!({"session_id": "sess-1"}));

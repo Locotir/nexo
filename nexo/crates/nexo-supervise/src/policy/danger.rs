@@ -63,7 +63,7 @@ pub fn catastrophic(cmd: &str) -> Option<&'static str> {
 fn shell_texts(args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for a in args {
-        crate::permission::osascript_scripts(a, &mut out);
+        nexo_core::shell::osascript_scripts(a, &mut out);
     }
     out
 }

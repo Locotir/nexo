@@ -881,7 +881,7 @@ async fn interactive(
         });
     }
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
-    nexo_tui::set_supervise_options(nexo_agent::supervise::Options::detect());
+    nexo_tui::set_supervise_options(nexo_supervise::Options::detect());
     if let Some(m) = mailbox {
         nexo_tui::set_mailbox(m);
     }

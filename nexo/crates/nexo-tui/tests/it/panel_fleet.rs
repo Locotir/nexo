@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexo_agent::supervise::{AgentRow, SourceKind, State};
+use nexo_supervise::{AgentRow, SourceKind, State};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::modal::Modal;
 use nexo_tui::ui::rows_of;
@@ -238,7 +238,7 @@ fn the_view_asks_for_frames_only_while_the_letter_flies() {
 
 #[test]
 fn the_footer_lists_the_keys_and_still_fits_at_80_columns() {
-    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+    use nexo_supervise::{NexoSource, Panel, Policy, Setup};
     let dir = tempfile::tempdir().unwrap();
     let setup = Setup {
         logs_root: Some(dir.path().join("logs")),
@@ -263,8 +263,8 @@ fn the_footer_lists_the_keys_and_still_fits_at_80_columns() {
 
 #[test]
 fn a_real_message_sends_a_letter_to_its_receiver_once_and_old_mail_does_not() {
-    use nexo_agent::supervise::MailRow;
     use nexo_core::mail::Stage;
+    use nexo_supervise::MailRow;
     let mail = |id: &str, to: &str| MailRow {
         id: id.into(),
         from: "x1".into(),

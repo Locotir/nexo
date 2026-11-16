@@ -1,7 +1,7 @@
 //! Process-wide values the binary sets once and the interface reads: the mailbox and the
 //! supervision options.
 
-static SUPERVISE: std::sync::OnceLock<nexo_agent::supervise::Options> = std::sync::OnceLock::new();
+static SUPERVISE: std::sync::OnceLock<nexo_supervise::Options> = std::sync::OnceLock::new();
 static MAILBOX: std::sync::OnceLock<std::sync::Arc<nexo_core::mailbox::Mailbox>> = std::sync::OnceLock::new();
 
 /// The mailbox of this process: the interface polls it, hands its deliveries to the agent and shows what
@@ -16,10 +16,10 @@ pub(crate) fn mailbox() -> Option<std::sync::Arc<nexo_core::mailbox::Mailbox>> {
 
 /// Where `/panel` keeps its audit log and listens for hooks. Unset (as in tests), it writes nothing and
 /// listens nowhere.
-pub fn set_supervise_options(o: nexo_agent::supervise::Options) {
+pub fn set_supervise_options(o: nexo_supervise::Options) {
     let _ = SUPERVISE.set(o);
 }
 
-pub(crate) fn supervise_options() -> nexo_agent::supervise::Options {
+pub(crate) fn supervise_options() -> nexo_supervise::Options {
     SUPERVISE.get().cloned().unwrap_or_default()
 }

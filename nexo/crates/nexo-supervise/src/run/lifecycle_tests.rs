@@ -1,5 +1,5 @@
 use super::*;
-use crate::supervise::{Observation, Reported};
+use crate::{Observation, Reported};
 
 struct Fake(SourceKind, Vec<Observation>);
 impl Source for Fake {

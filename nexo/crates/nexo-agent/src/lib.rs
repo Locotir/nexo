@@ -34,7 +34,6 @@ pub mod observe_remote;
 mod per_call_tests;
 pub mod permission;
 pub mod prompt;
-pub mod providers;
 mod reader;
 mod reads;
 pub mod recall;
@@ -48,7 +47,6 @@ pub mod setup;
 pub mod share;
 mod share_tool;
 pub mod subagent;
-pub mod supervise;
 mod turn;
 pub mod workflow;
 

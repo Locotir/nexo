@@ -1,35 +1,9 @@
 //! How the loop reaches a model, and which model that is right now.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use async_trait::async_trait;
 use nexo_core::config::ProviderConfig;
-use nexo_core::error::{ErrorKind, ProviderError};
-use nexo_core::provider::{EventStream, ModelInfo, ModelRequest};
-
-/// One call to a provider, with the client's own retries.
-#[async_trait]
-pub trait ModelClient: Send + Sync {
-    async fn stream(
-        &self,
-        cfg: &ProviderConfig,
-        req: &ModelRequest,
-        retries: u32,
-    ) -> Result<EventStream, ProviderError>;
-
-    /// The wait before the loop issues a request again itself, for the `n`th time (1-based), after `e` cut
-    /// its reply. A client with no waits of its own (a scripted one) asks for none.
-    fn backoff(&self, _n: u32, _e: &ProviderError) -> Duration {
-        Duration::ZERO
-    }
-
-    /// The vendor's model list, where there is one.
-    async fn list_models(&self, _cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError> {
-        Err(ProviderError::new(ErrorKind::Other, "no model list"))
-    }
-}
-
+pub use nexo_core::model_client::ModelClient;
 /// The provider and model in use, shared by the loop and whatever else makes
 /// model calls (the summariser), changed by `SetModel`.
 #[derive(Clone)]

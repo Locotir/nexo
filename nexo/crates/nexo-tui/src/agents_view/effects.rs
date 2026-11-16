@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use nexo_agent::supervise::{AgentRow, Ev, EvKind, MailRow, Secs, State};
 use nexo_core::mail::Stage;
+use nexo_supervise::{AgentRow, Ev, EvKind, MailRow, Secs, State};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;

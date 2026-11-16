@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+use nexo_supervise::{NexoSource, Panel, Policy, Setup};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::modal::Modal;
 use nexo_tui::ui::rows_of;
@@ -145,7 +145,7 @@ fn a_paste_lands_in_the_field_on_one_line_and_is_dropped_elsewhere() {
     nexo_tui::event::handle(&mut a, Event::Paste("first line\r\nsecond\tline\n".into()));
     assert!(field(&mut a, 120).contains("message › first line second line ▏"), "{}", field(&mut a, 120));
     press(&mut a, KeyCode::Enter, KeyModifiers::NONE);
-    let row = panel.rows(nexo_agent::supervise::run::now_secs()).remove(0);
+    let row = panel.rows(nexo_supervise::run::now_secs()).remove(0);
     assert_eq!(row.last_action.as_ref().map(|a| a.0.as_str()), Some("your nudge is queued"));
 }
 

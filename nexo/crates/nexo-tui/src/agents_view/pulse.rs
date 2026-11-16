@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use nexo_agent::supervise::{AgentRow, EvKind, State};
+use nexo_supervise::{AgentRow, EvKind, State};
 use ratatui::style::Color;
 use ratatui::text::Span;
 

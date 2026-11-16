@@ -1,6 +1,6 @@
 //! Read-only observation of the bounded event feed already exposed by the supervisor.
 use super::*;
-use nexo_agent::supervise::EvDetail;
+use nexo_supervise::EvDetail;
 
 impl AgentsView {
     /// Fall back to the existing bounded observation for sessions outside this process.

@@ -8,6 +8,4 @@ mod brief_golden;
 mod managed_policy;
 #[path = "../scratch/mod.rs"]
 mod scratch;
-mod supervise_hooks;
-mod supervise_model;
 mod temp_on_disk;

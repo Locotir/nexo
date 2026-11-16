@@ -107,7 +107,7 @@ impl TeamSource {
 }
 
 fn nexo_agent_today() -> String {
-    crate::budget::today()
+    nexo_core::clock::today()
 }
 
 impl Source for TeamSource {
@@ -331,7 +331,7 @@ mod tests {
         let r = &rows[0];
         assert_eq!(r.lane.as_ref().map(|l| l.name.as_str()), Some("IOS"));
         assert_eq!(r.goal.as_deref(), Some("ship 1.3.1"));
-        assert_eq!(r.state, crate::supervise::State::Working);
+        assert_eq!(r.state, crate::State::Working);
         assert_eq!(r.program, "nexo");
     }
 
@@ -356,7 +356,7 @@ mod tests {
         s.tick(now);
         let rows = s.rows(now);
         let r = rows.iter().find(|r| r.key == "lane:B").expect("the lane row");
-        assert_eq!(r.state, crate::supervise::State::Stalled, "{r:?}");
+        assert_eq!(r.state, crate::State::Stalled, "{r:?}");
         assert_eq!(r.lane.as_ref().map(|l| l.state.as_str()), Some("failed"));
     }
 }

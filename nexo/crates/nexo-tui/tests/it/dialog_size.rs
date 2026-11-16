@@ -5,10 +5,10 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nexo_agent::supervise::{AgentRow, SourceKind, State};
 use nexo_core::agent::AgentEvent;
 use nexo_core::permission::{PermissionRequest, Question, QuestionOption};
 use nexo_core::tool::{ToolDisplay, ToolKind};
+use nexo_supervise::{AgentRow, SourceKind, State};
 use nexo_tui::agents_view::AgentsView;
 use nexo_tui::modal::setup::Setup;
 use nexo_tui::modal::{Ask, Modal, PickItem, PickKind, Picker};

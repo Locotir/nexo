@@ -372,7 +372,7 @@ impl Supervisor {
         if paused || tool.is_empty() {
             return json!({});
         }
-        let line = crate::supervise::source::tool_step(&tool, &input);
+        let line = crate::source::tool_step(&tool, &input);
         match self.policy.allows(&tool, &input, std::path::Path::new(&cwd)) {
             Verdict::Approve => {
                 self.feed(key, now, ObsKind::PermissionResolved);

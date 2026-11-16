@@ -426,7 +426,7 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
 
 /// Steps without progress after which the goal's work stops and the goal pauses, with the facts for the person:
 /// three runs of reads as the supervisor's watch counts them.
-pub(super) const GOAL_IDLE_STEPS: u32 = 3 * crate::supervise::watch::READ_RUN as u32;
+pub(super) const GOAL_IDLE_STEPS: u32 = 3 * nexo_supervise::watch::READ_RUN as u32;
 /// Repeats (the same call with the same result) after which the facts ride on each request.
 const GOAL_REPEATS_SAID: u32 = 2;
 /// The most names the facts list among the repeats.

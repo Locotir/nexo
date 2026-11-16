@@ -653,8 +653,8 @@ fn right_and_l_on_a_run_row_open_the_jobs_detail_and_a_click_opens_the_conversat
     assert!(matches!(out, ModalOut::OpenSub(ref id) if id == RUN), "a click on the run row opens it");
 }
 
-fn panel_row(key: &str, source: nexo_agent::supervise::SourceKind) -> nexo_agent::supervise::AgentRow {
-    use nexo_agent::supervise::{AgentRow, State};
+fn panel_row(key: &str, source: nexo_supervise::SourceKind) -> nexo_supervise::AgentRow {
+    use nexo_supervise::{AgentRow, State};
     AgentRow {
         key: key.into(),
         name: "same title".into(),
@@ -688,7 +688,7 @@ fn panel_row(key: &str, source: nexo_agent::supervise::SourceKind) -> nexo_agent
 
 #[test]
 fn panel_enter_opens_local_run_and_returns_to_same_panel() {
-    use nexo_agent::supervise::SourceKind;
+    use nexo_supervise::SourceKind;
     let (mut a, mut rx) = with_run();
     a.session_id = Some("session".into());
     a.input.set_text("main draft");
@@ -719,7 +719,7 @@ fn panel_enter_opens_local_run_and_returns_to_same_panel() {
 
 #[test]
 fn panel_does_not_confuse_foreign_or_ambiguous_jobs_with_local_runs() {
-    use nexo_agent::supervise::SourceKind;
+    use nexo_supervise::SourceKind;
     for (key, source, duplicate) in [
         ("other.3", SourceKind::Nexo, false),
         ("session.3", SourceKind::External, false),
@@ -840,8 +840,8 @@ fn fast_responses_do_not_trigger_a_snapshot_per_delta() {
 #[test]
 fn remote_snapshots_refresh_isolate_local_events_and_restore_panel() {
     use super::super::sub::RemoteUpdate;
-    use nexo_agent::supervise::SourceKind;
     use nexo_core::agent::channels;
+    use nexo_supervise::SourceKind;
     let (mut a, mut commands) = with_run();
     a.input.set_text("main draft");
     let panel =

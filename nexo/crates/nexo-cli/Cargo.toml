@@ -22,6 +22,7 @@ nexo-browser-host = { workspace = true }
 nexo-providers = { workspace = true }
 nexo-tools = { workspace = true }
 nexo-agent = { workspace = true }
+nexo-supervise = { workspace = true }
 nexo-bin = { workspace = true }
 nexo-dbg = { workspace = true }
 nexo-tui = { workspace = true }

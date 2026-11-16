@@ -84,6 +84,7 @@ async fn drive(dir: &std::path::Path, steps: Vec<String>, ask: &str) -> Vec<Stri
     cfg.agent.attach_budget = 0;
     cfg.agent.check_at_start = false;
 
+    nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
     let (handle, ends) = channels();
     let setup = AgentSetup {
         config: cfg,

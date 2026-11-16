@@ -155,9 +155,9 @@ pub struct App {
     /// When the last key came in: the index of a resumed history fills in smaller bites right after one.
     pub(crate) last_key: Option<Instant>,
     /// What this session does, told to the `/panel` supervisor.
-    pub nexo_src: nexo_agent::supervise::NexoSource,
+    pub nexo_src: nexo_supervise::NexoSource,
     /// The `/panel` poller, started the first time the panel opens.
-    pub panel: Option<std::sync::Arc<nexo_agent::supervise::Panel>>,
+    pub panel: Option<std::sync::Arc<nexo_supervise::Panel>>,
     /// Which sessions `/panel` lists (all, nexo only, external only); kept while this session runs.
     pub panel_filter: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// The status bar's fleet chip (lanes on, sub-agents, other sessions, rows that need the person), when any.
@@ -168,7 +168,7 @@ pub struct App {
     /// was started with.
     pub(super) panel_full: bool,
     pub(super) panel_notes: Vec<String>,
-    pub(super) panel_policy: Option<nexo_agent::supervise::Policy>,
+    pub(super) panel_policy: Option<nexo_supervise::Policy>,
     pub spinner: usize,
     /// A conversation was loaded and the curator has not yet said what it keeps: the footer shows a spinner.
     pub context_wait: bool,
@@ -439,7 +439,7 @@ impl App {
             peers: Vec::new(),
             mail_polled: None,
             last_key: None,
-            nexo_src: nexo_agent::supervise::NexoSource::default(),
+            nexo_src: nexo_supervise::NexoSource::default(),
             panel: None,
             panel_filter: Default::default(),
             fleet: None,

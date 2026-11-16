@@ -3,7 +3,7 @@
 
 use std::io::Read;
 
-use nexo_agent::supervise::{
+use nexo_supervise::{
     install,
     run::Setup,
     socket::{self, HookKind, Request, HOOK_TIMEOUT},
@@ -56,7 +56,7 @@ pub async fn daemon() -> anyhow::Result<i32> {
         }
         Err(e) => return Err(e.into()),
     };
-    panel.add_source(Box::new(nexo_agent::supervise::source_mail::MailSource::new(nexo_core::mailbox::mail_root())));
+    panel.add_source(Box::new(nexo_supervise::source_mail::MailSource::new(nexo_core::mailbox::mail_root())));
     let mut notes: Vec<String> = loaded.errors.clone();
     if let Some(m) = &model {
         // the providers come from the config of the folder the daemon starts in
@@ -67,8 +67,8 @@ pub async fn daemon() -> anyhow::Result<i32> {
                 Vec::new()
             }
         };
-        let client = nexo_agent::supervise::model::default_client();
-        match nexo_agent::supervise::model::judge_for(m, &providers, client, tokio::runtime::Handle::current()) {
+        let client = nexo_supervise::model::default_client();
+        match nexo_supervise::model::judge_for(m, &providers, client, tokio::runtime::Handle::current()) {
             Ok(j) => panel.set_judge(j),
             Err(e) => notes.push(e),
         }

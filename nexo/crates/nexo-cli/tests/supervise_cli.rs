@@ -6,7 +6,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nexo_agent::supervise::{NexoSource, Options, Panel, Policy, Setup};
+use nexo_supervise::{NexoSource, Options, Panel, Policy, Setup};
 
 fn run_hook(kind: &str, sock: &std::path::Path, input: &str) -> (String, i32, Duration) {
     let t = Instant::now();

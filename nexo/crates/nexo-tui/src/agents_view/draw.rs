@@ -1,6 +1,6 @@
 //! The colours and text of a card: contrast-checked hues, the tone of a chip and a step cut to fit.
 
-use nexo_agent::supervise::State;
+use nexo_supervise::State;
 use ratatui::style::Color;
 
 use super::attention;

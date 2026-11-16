@@ -6,6 +6,7 @@ members = [
     "crates/nexo-tools",
     "crates/nexo-curator",
     "crates/nexo-agent",
+    "crates/nexo-supervise",
     "crates/nexo-tui",
     "crates/nexo-bin",
     "crates/nexo-binmagic",
@@ -33,6 +34,7 @@ nexo-providers = { path = "crates/nexo-providers" }
 nexo-tools = { path = "crates/nexo-tools" }
 nexo-curator = { path = "crates/nexo-curator" }
 nexo-agent = { path = "crates/nexo-agent" }
+nexo-supervise = { path = "crates/nexo-supervise" }
 nexo-tui = { path = "crates/nexo-tui" }
 nexo-bench = { path = "crates/nexo-bench" }
 nexo-bin = { path = "crates/nexo-bin" }

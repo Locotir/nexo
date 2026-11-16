@@ -48,9 +48,7 @@ use paths::editable;
 use rules::names_a_path;
 use suggest::is_flag;
 
-pub(crate) use bash::osascript_scripts;
 pub use paths::is_sensitive;
-pub(crate) use paths::real_path;
 pub use rules::{host_of, rule_matches, rule_matches_as, target_of};
 pub use suggest::{flag_words, persist_rule, suggested_rules, with_flags};
 
@@ -114,7 +112,7 @@ impl Policy {
     fn decide_one(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {
         // what would wipe the machine beyond doubt runs in no mode and by no rule
         if kind == ToolKind::Exec {
-            if let Some(why) = target_of(kind, args).as_deref().and_then(crate::supervise::policy::catastrophic) {
+            if let Some(why) = target_of(kind, args).as_deref().and_then(nexo_supervise::policy::catastrophic) {
                 return Decision::Deny(format!("never run: {why}"));
             }
         }
