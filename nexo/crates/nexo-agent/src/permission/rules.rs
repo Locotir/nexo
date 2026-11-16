@@ -91,8 +91,8 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
                 // each simple command also as the program would see it: quotes gone, wrappers
                 // (`sudo`, `env`, ...) skipped, `/bin/rm` as `rm`, and `bash -c '...'` read inside
                 let mut forms = Vec::new();
-                deny_forms(cmd, 0, &mut forms);
-                return one(cmd) || forms.iter().any(|p| one(p));
+                let unknown = deny_forms(cmd, 0, &mut forms);
+                return unknown || one(cmd) || forms.iter().any(|p| one(p));
             }
             let (parts, complex) = simple_commands(cmd, false);
             if pattern.contains([';', '&', '|', '\n', '`', '$']) {

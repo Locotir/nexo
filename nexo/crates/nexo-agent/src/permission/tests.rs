@@ -64,8 +64,9 @@ fn allow_rules_ask_for_what_the_parser_cannot_vouch_for() {
         "git -C sub -c core.fsmonitor=x status",
         "git fetch --upload-pack='touch /tmp/p' origin",
     ];
+    // a deny rule for another tool has nothing to say about these lines (a bash deny rule takes any of them, see below)
     for cmd in bypasses {
-        assert_eq!(decide_bash("bash(git *)", "bash(nothing)", cmd), Decision::Ask, "{cmd}");
+        assert_eq!(decide_bash("bash(git *)", "read(nothing)", cmd), Decision::Ask, "{cmd}");
     }
     for (rule, cmd) in [
         ("bash(find *)", "find . -exec rm {} ;"),
@@ -74,7 +75,7 @@ fn allow_rules_ask_for_what_the_parser_cannot_vouch_for() {
         ("bash(env *)", "env -S 'rm -rf x'"),
         ("bash(env *)", "env -iS'rm x'"),
     ] {
-        assert_eq!(decide_bash(rule, "bash(nothing)", cmd), Decision::Ask, "{rule} {cmd}");
+        assert_eq!(decide_bash(rule, "read(nothing)", cmd), Decision::Ask, "{rule} {cmd}");
     }
     // ordinary commands still match their rules
     for (rule, cmd) in [
@@ -480,4 +481,21 @@ fn deny_rules_read_locale_strings_and_ansi_strings_the_way_bash_does() {
     assert!(allow("echo hi"));
     assert!(!allow("echo $\"hi\""));
     assert!(!allow("echo 'open"));
+}
+
+#[test]
+fn deny_rules_hold_for_words_the_lexer_cannot_know() {
+    // Each line runs `rm` in bash (checked with `bash -c`), but a rewrite of the text, a translation catalog or
+    // an `@P` expansion hides it from a reading of the words, so a deny rule must not let any of them through.
+    for cmd in [
+        "echo \"\\$\" ; $\"rm\" -rf y",
+        "echo \\$\"x\" ; $\"rm\" -rf y",
+        "$\"ls\" x",
+        "x='$(rm -rf y)'; : ${x@P}",
+        "echo 'open ; rm x",
+        "bash -c '$\"ls\" x'",
+    ] {
+        assert!(matches!(decide_bash("bash", "bash(rm *)", cmd), Decision::Deny(_)), "{cmd}");
+    }
+    assert_eq!(decide_bash("bash", "bash(rm *)", "echo \"\\$\" ; ls y"), Decision::Allow);
 }

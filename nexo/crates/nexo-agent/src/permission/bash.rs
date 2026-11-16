@@ -81,12 +81,12 @@ pub(super) use nexo_core::shell::is_assignment;
 /// The simple commands of `cmd` for deny rules: each as written, and as the program it runs sees it
 /// (wrappers like `sudo`, `env` and `nice` skipped, `/bin/rm` as `rm`), and the scripts handed to a
 /// shell (`bash -c '..'`, `eval`, `env -S`) taken apart the same way.
-pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) {
-    // A locale string (`$"rm"`) is the word `rm` in bash and `$rm` in a plain `sh`, and which one runs is not
-    // for the rule to guess: the line is also read the bash way, so a deny or ask rule for `rm` still meets it.
-    if cmd.contains("$\"") && nexo_core::shell::lex(cmd, false).locale {
-        deny_forms(&cmd.replace("$\"", "\""), depth, out);
-    }
+pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) -> bool {
+    // A word the lexer cannot know (a locale string `$"rm"`, which bash may even translate through a catalog, a
+    // `${x@P}` expansion, a quote left open, a broken heredoc) can be any program. The line is reported as
+    // unknowable and a deny rule takes it as a match: it denies, it never lets the line through by default.
+    let lx = nexo_core::shell::lex(cmd, false);
+    let mut unknown = lx.locale || lx.braced_at || lx.open_quote || lx.bad_heredoc;
     let (parts, _) = simple_commands(cmd, true);
     for p in parts {
         let (ws, scripts) = unwrap_command(words(&p));
@@ -96,10 +96,13 @@ pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) {
         }
         if depth < 4 {
             for s in scripts {
-                deny_forms(&s, depth + 1, out);
+                unknown |= deny_forms(&s, depth + 1, out);
             }
+        } else {
+            unknown |= !scripts.is_empty();
         }
     }
+    unknown
 }
 
 /// The command under its wrappers, its program as a bare name, and the scripts it hands a shell.
