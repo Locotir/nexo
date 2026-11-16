@@ -173,6 +173,29 @@ fn only_a_redirect_to_dev_null_itself_is_dropped() {
 }
 
 #[test]
+fn a_locale_string_is_not_a_read_because_its_word_depends_on_the_shell() {
+    // bash drops the `$` of `$".."` (`--pre`, `-i`), a plain sh keeps it (`$--pre`)
+    all_ask(&[r#"rg x $"--pre" sh f"#, r#"sed -n 1p $"-i" f"#, r#"cat $"a""#]);
+    all_read(&[r#"grep '$"x"' f"#, r#"cat "$" a"#]);
+}
+
+#[test]
+fn a_control_escape_in_an_ansi_c_string_does_not_hide_the_command_after_it() {
+    all_ask(&[r"cat $'\c' ; touch pwned ; '\'"]);
+    all_read(&[r"grep $'\c\'x' f"]);
+}
+
+#[test]
+fn a_command_line_for_powershell_is_never_a_read() {
+    // PowerShell takes curly quotes for quotes: rg gets `--pre sh` as options, where sh sees one pattern
+    let curly = "rg 'x\u{2019} --pre sh \u{2018}y' f";
+    assert!(looks_only_in("sh", curly) && looks_only_in("bash", "cat a > /dev/null"));
+    for c in [curly, "cat a", "cat a > /dev/null", "git status"] {
+        assert!(!looks_only_in("powershell", c), "{c}");
+    }
+}
+
+#[test]
 fn a_debugger_write_asks_whatever_the_line_redirects_or_substitutes() {
     for c in ["nexo dbg attach 1234 >/dev/nullx", "nexo dbg attach 1234 > out.txt", "nexo dbg attach $(pidof prog)"] {
         assert!(dbg_changes(c), "{c}");

@@ -2,17 +2,26 @@
 /// reading programs, and nothing writes (no redirection to a file, no `sed -i`, no `find -delete`,
 /// no substitution that could run something else). Such a command may run beside reads.
 pub(super) fn only_looks(command: &str) -> bool {
-    command_words(command).is_some_and(|segs| !segs.is_empty() && segs.iter().all(|s| reads_only(s)))
+    looks_only_in(nexo_core::shell::shell().kind, command)
+}
+
+/// [`only_looks`] in the shell of `kind` ([`nexo_core::shell::Shell::kind`]). PowerShell reads a line its own
+/// way (curly quotes are quotes, a backtick escapes, `> /dev/null` names a file): the POSIX words say nothing
+/// of what it runs, so none of its commands is a read.
+pub(super) fn looks_only_in(kind: &str, command: &str) -> bool {
+    kind != "powershell"
+        && command_words(command).is_some_and(|segs| !segs.is_empty() && segs.iter().all(|s| reads_only(s)))
 }
 
 /// The words of each part of the pipeline or list of `command`, split the way a shell would for plain
 /// text, and nothing run or expanded. `None` for a command that redirects to a file, groups, or
-/// substitutes (`$(...)`, backticks), or leaves a quote open: its words say too little to judge.
+/// substitutes (`$(...)`, backticks), leaves a quote open, or holds a `$".."` (bash and a plain `sh` give it
+/// different words): its words say too little to judge.
 /// A `2>&1` or a write into `/dev/null` after the last word writes no file, so it is left out.
 pub fn command_words(command: &str) -> Option<Vec<Vec<String>>> {
     use nexo_core::shell::{lex, End};
     let lx = lex(command, true);
-    if lx.open_quote || !lx.substs.is_empty() || lx.braces || lx.bad_heredoc {
+    if lx.open_quote || !lx.substs.is_empty() || lx.braces || lx.bad_heredoc || lx.locale {
         return None;
     }
     let mut segs = Vec::new();

@@ -104,6 +104,9 @@ pub struct Lexed {
     pub substs: Vec<Subst>,
     /// A `$'..'` string.
     pub ansi: bool,
+    /// A `$".."` string: bash drops the `$` (and may put a translation in place of the text), a plain `sh`
+    /// keeps it, so the word it gives depends on the shell.
+    pub locale: bool,
     /// A `${..}` with an `@` operator inside (`${x@P}` runs what it expands) or left open.
     pub braced_at: bool,
     /// An unquoted `{` or `}`: a group, or a brace expansion.
@@ -212,6 +215,10 @@ impl Lx {
                 '"' => self.double_quoted(at),
                 '$' if self.peek() == Some('\'') => self.ansi_quoted(at),
                 '$' if self.peek() == Some('(') => self.subst(at, false, false, true),
+                '$' if self.peek() == Some('"') => {
+                    self.out.locale = true;
+                    self.dollar(at);
+                }
                 '$' => self.dollar(at),
                 '`' => self.subst(at, false, true, false),
                 '<' | '>' if self.peek() == Some('(') => self.subst(at, false, false, true),
@@ -315,24 +322,33 @@ impl Lx {
         self.wlast = self.i;
     }
 
-    /// `$'..'`: a string where a backslash decodes (`\n`, `\x41`, `é`).
+    /// `$'..'`: a string where a backslash decodes (`\n`, `\x41`, `é`). Its end is found first, the way bash
+    /// finds it (a backslash takes the next character, whatever it is), and only the text inside is decoded:
+    /// an escape that reads a character after it (`\c`) never takes the closing quote.
     fn ansi_quoted(&mut self, at: usize) {
         self.i += 1;
         self.begin(at);
         self.out.ansi = true;
-        loop {
+        let from = self.i;
+        let to = loop {
             match self.next() {
-                Some('\'') => break,
-                Some('\\') if self.i < self.src.len() => {
-                    let mut decoded = String::new();
-                    self.i = ansi_escape(&self.src, self.i, &mut decoded);
-                    self.word.push_str(&decoded);
-                }
-                Some(ch) => self.word.push(ch),
-                None => {
+                Some('\'') => break self.i - 1,
+                Some('\\') if self.next().is_some() => {}
+                Some('\\') | None => {
                     self.out.open_quote = true;
-                    break;
+                    break self.i;
                 }
+                Some(_) => {}
+            }
+        };
+        let inside = &self.src[from..to];
+        let mut k = 0;
+        while k < inside.len() {
+            if inside[k] == '\\' && k + 1 < inside.len() {
+                k = ansi_escape(inside, k + 1, &mut self.word);
+            } else {
+                self.word.push(inside[k]);
+                k += 1;
             }
         }
         self.wlast = self.i;
@@ -623,6 +639,23 @@ mod tests {
         let l = lex(r"$'\x72m' x $'it\'s'", false);
         assert!(l.ansi && !l.open_quote);
         assert_eq!(l.cmds[0].words, vec!["rm", "x", "it's"]);
+    }
+
+    #[test]
+    fn an_escape_in_an_ansi_c_string_never_reads_past_the_quote_that_closes_it() {
+        // bash ends `$'..'` first, a backslash taking the next character, and decodes after: `\c` takes no `'`
+        assert_eq!(
+            words(r"cat $'\c' ; touch pwned ; '\'"),
+            vec![vec!["cat", r"\c"], vec!["touch", "pwned"], vec![r"\"]]
+        );
+        assert_eq!(one(r"echo $'\c\'x' $'a\\'"), vec!["echo", "\u{1c}'x", r"a\"]);
+        assert!(lex(r"echo $'a\", false).open_quote);
+    }
+
+    #[test]
+    fn a_locale_string_is_flagged_because_bash_drops_its_dollar_and_a_plain_sh_keeps_it() {
+        assert!(lex(r#"rg x $"--pre" sh f"#, false).locale);
+        assert!(!lex(r#"echo "$" "a$" \$"x" '$"y'"#, false).locale);
     }
 
     #[test]
