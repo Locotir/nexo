@@ -156,12 +156,67 @@ impl App {
         }
     }
 
+    /// The height block `i` will have at `width` when it has been wrapped at another one: its old height
+    /// scaled by the ratio of the widths. Anything never wrapped, or changed since, is wrapped now.
+    fn height_est(&mut self, i: usize, width: usize) -> usize {
+        match &self.cache[i] {
+            Some((w, h, _, _)) if *w != width && *w > 0 => {
+                self.estimated = true;
+                (*h * *w).div_ceil(width).max(usize::from(*h > 0))
+            }
+            _ => self.height(i, width),
+        }
+    }
+
+    /// The blocks `lo..hi` to wrap for real after the width changed to `width`: those within three
+    /// screens of the view, found from the estimated heights of all. `anchor` is the block at the top of
+    /// the view, none when it follows the end.
+    fn near_view(&mut self, width: usize, anchor: Option<usize>) -> (usize, usize) {
+        let h = match self.transcript_area.height {
+            0 => 40,
+            h => h as usize,
+        };
+        let reach = 3 * h;
+        let mut starts = Vec::with_capacity(self.blocks.len() + 1);
+        let mut off = 0;
+        for i in 0..self.blocks.len() {
+            starts.push(off);
+            if i >= self.inline_flushed {
+                let n = if self.hidden(i) { 0 } else { self.height_est(i, width) };
+                off += n + self.gap_after(i, n);
+            }
+        }
+        let top = match anchor {
+            Some(bi) => starts[bi],
+            None => off.saturating_sub(h),
+        };
+        let lo = starts.partition_point(|o| *o < top.saturating_sub(reach)).saturating_sub(1);
+        let hi = starts.partition_point(|o| *o <= top + h + reach);
+        (lo, hi)
+    }
+
+    /// Like `shown`, but a block wrapped at another width keeps its estimated height.
+    fn shown_est(&mut self, i: usize, width: usize) -> usize {
+        if self.hidden(i) {
+            return 0;
+        }
+        let n = self.height_est(i, width);
+        self.opening(i, n)
+    }
+
     /// Drops the lines of blocks more than three screens from the view, so a long session keeps
     /// only what it can show soon; the heights stay, and a block comes back when scrolled to.
     pub fn evict_far(&mut self, top: usize, height: usize) {
         let reach = 3 * height.max(1);
         let lo = top.min(self.scroll).saturating_sub(reach);
         let hi = top.max(self.scroll) + height + reach;
+        // nothing was wrapped since the last sweep and the view has not moved: there is nothing new to drop
+        let key = (lo, hi, self.blocks.len());
+        if !self.wrapped && self.swept == Some(key) {
+            return;
+        }
+        self.wrapped = false;
+        self.swept = Some(key);
         let now = self.now();
         for i in 0..self.cache.len().min(self.offsets.len()) {
             let Some((_, h, lines @ Some(_), meta)) = self.cache[i].as_mut() else { continue };
@@ -267,6 +322,7 @@ impl App {
                     l.spans.insert(0, Span::raw(margin.clone()));
                 }
             }
+            self.wrapped = true;
             self.cache[i] = Some((width, lines.len(), Some(lines), meta));
         }
         self.cache[i].as_ref().and_then(|(_, _, l, _)| l.as_deref()).unwrap_or(&[])
@@ -278,7 +334,8 @@ impl App {
     pub fn layout(&mut self, width: usize) {
         // a new width re-wraps every line: keep the block and the line inside it at the top of the
         // view, so the text the person was reading stays under their eyes
-        let anchor = (width != self.last_width && !self.follow && !self.offsets.is_empty()).then(|| {
+        let stale = width != self.last_width || self.estimated;
+        let anchor = (stale && !self.follow && !self.offsets.is_empty()).then(|| {
             let bi = match self.offsets.binary_search(&self.scroll) {
                 Ok(i) => i,
                 Err(i) => i.saturating_sub(1),
@@ -290,6 +347,11 @@ impl App {
         if let Some(m) = self.selected.filter(|s| self.hidden(*s)).and_then(|s| self.group_of(s)) {
             self.selected = Some(m);
         }
+        // a first pass costs nothing: a block last wrapped at another width is given the height that
+        // width implies. Only the blocks near the view are then wrapped for real, so dragging the edge of
+        // the window does not render a long history at every width it passes through.
+        let (lo, hi) = if stale { self.near_view(width, anchor.map(|(bi, _)| bi)) } else { (0, self.blocks.len()) };
+        self.estimated = false;
         let mut off = 0;
         self.offsets.clear();
         for i in 0..self.blocks.len() {
@@ -297,7 +359,10 @@ impl App {
             if i < self.inline_flushed {
                 continue;
             }
-            let n = self.shown(i, width);
+            let n = match (lo..hi).contains(&i) {
+                true => self.shown(i, width),
+                false => self.shown_est(i, width),
+            };
             off += n + self.gap_after(i, n);
         }
         // following a reply as it streams, the end of the text only moves up: what a live block gives back
@@ -305,9 +370,10 @@ impl App {
         // the reply grows into it, so the lines above never slide down under the reader's eyes. The space is
         // kept only while the start of the turn is where it was: a fold above it is the person's own
         // doing and takes effect at once.
-        let live = self.blocks.iter().any(|b| b.is_live());
-        // the turn starts at the last message of the person: calls and thinking come and go after it
+        // the turn starts at the last message of the person: calls and thinking come and go after it,
+        // so nothing before it is running and only the tail needs a look
         let turn = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).unwrap_or(0);
+        let live = self.blocks[turn..].iter().any(|b| b.is_live());
         let held = (self.follow && self.busy)
             .then_some(self.held)
             .flatten()
@@ -431,6 +497,11 @@ impl App {
             return 0;
         }
         let n = self.height(i, width);
+        self.opening(i, n)
+    }
+
+    /// The height of block `i` of `n` lines while it opens or closes.
+    fn opening(&self, i: usize, n: usize) -> usize {
         match self.looks.get(i).and_then(|l| l.opened) {
             Some((at, from)) if from < n => {
                 let t = (self.now().saturating_duration_since(at).as_millis() as f32 / OPEN_MS as f32).min(1.0);

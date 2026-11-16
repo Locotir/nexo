@@ -173,10 +173,16 @@ fn head(s: &McpServerInfo, w: usize, theme: &Theme, sel: bool) -> Line<'static> 
     } else {
         String::new()
     };
-    let left = format!("{} {:<14} {:<6} ", if sel { "▸" } else { " " }, truncate(&s.name, 14), s.transport);
+    let name = truncate(&s.name, 14);
+    let left = format!(
+        "{} {name}{} {:<6} ",
+        if sel { "▸" } else { " " },
+        " ".repeat(14usize.saturating_sub(width(&name))),
+        s.transport
+    );
     let word = status_word(&s.status);
     let tail = format!("{word:<12} {counts}");
-    let pad = w.saturating_sub(left.chars().count() + tail.chars().count());
+    let pad = w.saturating_sub(width(&left) + width(&tail));
     let base = if sel { theme.selection().add_modifier(Modifier::BOLD) } else { Default::default() };
     let tone = match &s.status {
         McpStatus::Connected => theme.success,
@@ -239,5 +245,31 @@ impl McpView {
     /// What makes this dialog the same dialog from frame to frame.
     pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
         std::hash::Hash::hash(&(9u8, self.len()), h)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wide_server_name_keeps_the_columns_aligned() {
+        let server = |name: &str| McpServerInfo {
+            name: name.into(),
+            transport: "http".into(),
+            status: McpStatus::Connected,
+            tools: 2,
+            resources: vec![],
+            templates: vec![],
+            prompts: vec![],
+        };
+        let theme = Theme::dark();
+        // the status word starts at the same cell for a plain name and a wide one
+        let plain = head(&server("docs"), 70, &theme, false).spans[0].content.to_string();
+        let wide = head(&server("文档服务器文档"), 70, &theme, false).spans[0].content.to_string();
+        assert_eq!(width(&plain), width(&wide));
+        let cells: usize =
+            head(&server("文档服务器文档"), 70, &theme, false).spans.iter().map(|s| width(&s.content)).sum();
+        assert_eq!(cells, 70);
     }
 }

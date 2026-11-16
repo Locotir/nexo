@@ -215,6 +215,7 @@ mod commands_and_mcp_window;
 mod commands_sessions_and_models;
 mod custom_commands_history_and_cost;
 mod effort_fx;
+mod frame_cost;
 mod goal_window_and_additions;
 mod goals_todo_strip_and_flashes;
 mod keys_row_and_fades;

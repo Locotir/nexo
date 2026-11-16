@@ -97,7 +97,14 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     if area.width < MIN_W || area.height < MIN_H {
         app.fx.diff.note(false, &[], now0, on0);
         draw_too_small(f, app, area);
+        // what the last full frame laid out is not on screen: clicks must not reach it
         app.files_area = Rect::default();
+        app.editor_area = Rect::default();
+        app.pill = Rect::default();
+        app.transcript_bar = None;
+        app.status_hits.clear();
+        app.palette_rows.clear();
+        app.picker_rows.clear();
         app.dirty = false;
         return;
     }

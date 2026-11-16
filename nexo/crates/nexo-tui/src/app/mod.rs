@@ -200,6 +200,12 @@ pub struct App {
     pub keymap: crate::keymap::Keymap,
     files: Option<Vec<String>>,
     pub last_width: usize,
+    /// Some block still has the height estimated from another width, not the one wrapped for real.
+    pub(super) estimated: bool,
+    /// A block was wrapped since `evict_far` last ran.
+    wrapped: bool,
+    /// The window `evict_far` last swept: lines first, last and the block count.
+    swept: Option<(usize, usize, usize)>,
     /// The height the transcript had at the last layout while a reply streamed in follow mode, and how many
     /// blocks made it: what is live may shrink (a wrapped line, a closed thinking card), but the text above it
     /// must not move down, so the space it gave up stays as blank lines until new text takes it.
@@ -452,6 +458,9 @@ impl App {
             keymap: crate::keymap::Keymap::from_config(&opts.keys).0,
             files: None,
             last_width: 80,
+            estimated: false,
+            wrapped: false,
+            swept: None,
             held: None,
             inline_flushed: 0,
             picker_rows: Vec::new(),

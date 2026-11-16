@@ -10,7 +10,7 @@ use nexo_core::jobs::{duration, JobInfo, JobKind, JobStatus, JobTail};
 use ratatui::text::{Line, Span};
 
 use crate::modal::ModalOut;
-use crate::render::wrap::truncate;
+use crate::render::wrap::{truncate, width};
 use crate::theme::Theme;
 
 /// Lines of output each job shows in the list.
@@ -247,9 +247,9 @@ impl JobsView {
         let first = j.label.lines().next().unwrap_or("");
         let status = status_text(j, self.tail(j.id));
         let left = format!("{} {:>3}  ", if sel { "▸" } else { " " }, j.id);
-        let room = w.saturating_sub(left.chars().count() + status.chars().count() + 2);
+        let room = w.saturating_sub(width(&left) + width(&status) + 2);
         let label = truncate(&format!("{what}{first}"), room);
-        let pad = w.saturating_sub(left.chars().count() + label.chars().count() + status.chars().count());
+        let pad = w.saturating_sub(width(&left) + width(&label) + width(&status));
         let base =
             if sel { theme.selection().add_modifier(ratatui::style::Modifier::BOLD) } else { Default::default() };
         let tone = match &j.status {
@@ -329,5 +329,28 @@ impl JobsView {
     /// What makes this dialog the same dialog from frame to frame.
     pub(crate) fn size_hash(&self, h: &mut impl std::hash::Hasher) {
         std::hash::Hash::hash(&(7u8, self.is_empty()), h)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wide_label_pads_by_cells_so_the_status_stays_inside_the_row() {
+        let job = JobInfo {
+            id: 3,
+            kind: JobKind::Shell,
+            label: "echo 构建完成 构建完成 🎉🎉".into(),
+            status: JobStatus::Running,
+            elapsed_ms: 12_000,
+            lines: 0,
+        };
+        let theme = Theme::dark();
+        for w in [30, 40, 60] {
+            let line = JobsView::new(vec![job.clone()]).head(&job, w, &theme, false);
+            let cells: usize = line.spans.iter().map(|s| width(&s.content)).sum();
+            assert_eq!(cells, w, "width {w}");
+        }
     }
 }

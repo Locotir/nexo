@@ -538,3 +538,16 @@ fn memory_on_a_missing_file_says_the_editor_opens_a_new_one() {
     let said = a.blocks.iter().any(|b| format!("{b:?}").contains("yet: the editor opens a new one"));
     assert!(said, "a notice comes before the editor");
 }
+
+#[test]
+fn nothing_answers_a_click_while_the_too_small_screen_is_shown() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    let (mut a, _rx) = app();
+    frame(&mut a, 120, 12);
+    let model = a.status_hits.iter().find(|(_, x)| *x == StatusHit::Model).map(|(r, _)| *r).expect("on the bar");
+    let (row, col) = (a.status_row, model.x);
+    frame(&mut a, 20, 5);
+    assert!(a.status_hits.is_empty() && a.editor_area.width == 0 && a.transcript_bar.is_none());
+    pointer(&mut a, K::Down(MouseButton::Left), col, row);
+    assert!(a.modal.is_none(), "the old model piece opened a picker nobody can see");
+}

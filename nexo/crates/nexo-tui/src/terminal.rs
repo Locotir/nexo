@@ -1,6 +1,7 @@
 //! Taking the terminal and giving it back, whatever happens.
 
 use std::io::{stdout, Stdout, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::execute;
@@ -12,6 +13,10 @@ pub struct Term {
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
     mouse: bool,
 }
+
+/// Whether mouse capture is on right now, kept where the panic hook can read it: `/mouse` changes it
+/// while the program runs, so what was true at startup is not what the hook has to undo.
+static MOUSE: AtomicBool = AtomicBool::new(false);
 
 /// `NEXO_NO_ALT_SCREEN=1`: draw on the normal screen, so what the session showed stays in the
 /// terminal's scrollback after quitting (the inline way of the other terminal agents).
@@ -42,13 +47,20 @@ impl Term {
     pub fn enter(mouse: bool) -> anyhow::Result<Term> {
         enable_raw_mode()?;
         let mut out = stdout();
-        enter_screen(&mut out)?;
-        if mouse {
-            execute!(out, EnableMouseCapture)?;
+        // a failure after raw mode is on must not leave the shell in it
+        let entered = enter_screen(&mut out).and_then(|()| match mouse {
+            true => execute!(out, EnableMouseCapture),
+            false => Ok(()),
+        });
+        if let Err(e) = entered {
+            MOUSE.store(mouse, Ordering::Relaxed);
+            restore();
+            return Err(e.into());
         }
+        MOUSE.store(mouse, Ordering::Relaxed);
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            restore(mouse);
+            restore();
             hook(info);
         }));
         let backend = CrosstermBackend::new(out);
@@ -66,7 +78,7 @@ impl Term {
 impl Term {
     /// Leaves the alternate screen and raw mode so another program (an editor) can use the terminal.
     pub fn suspend(&mut self) {
-        restore(self.mouse);
+        restore();
         let _ = self.terminal.show_cursor();
     }
 
@@ -78,6 +90,7 @@ impl Term {
         if self.mouse {
             execute!(out, EnableMouseCapture)?;
         }
+        MOUSE.store(self.mouse, Ordering::Relaxed);
         self.terminal.clear()?;
         Ok(())
     }
@@ -94,19 +107,20 @@ impl Term {
             let _ = execute!(out, DisableMouseCapture);
         }
         self.mouse = on;
+        MOUSE.store(on, Ordering::Relaxed);
     }
 }
 
 impl Drop for Term {
     fn drop(&mut self) {
-        restore(self.mouse);
+        restore();
         let _ = self.terminal.show_cursor();
     }
 }
 
-pub fn restore(mouse: bool) {
+pub fn restore() {
     let mut out = stdout();
-    if mouse {
+    if MOUSE.load(Ordering::Relaxed) {
         let _ = execute!(out, DisableMouseCapture);
     }
     let _ = execute!(out, DisableBracketedPaste);
@@ -121,6 +135,16 @@ pub fn restore(mouse: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restore_undoes_the_mouse_state_of_now_not_the_one_at_startup() {
+        use std::sync::atomic::Ordering;
+        // started with the mouse off, `/mouse` turned it on: a panic must still release it
+        super::MOUSE.store(false, Ordering::Relaxed);
+        super::MOUSE.store(true, Ordering::Relaxed);
+        assert!(super::MOUSE.load(Ordering::Relaxed));
+        super::MOUSE.store(false, Ordering::Relaxed);
+    }
+
     #[test]
     fn nexo_no_alt_screen_keeps_the_session_in_the_scrollback() {
         std::env::remove_var("NEXO_NO_ALT_SCREEN");
