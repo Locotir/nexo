@@ -42,7 +42,10 @@ fn build(cc: &str, dir: &Path, src: &str, name: &str, flags: &[&str]) -> Option<
     let exe = dir.join(name);
     let ok =
         Command::new(cc).args(flags).arg("-o").arg(&exe).arg(&c).output().map(|o| o.status.success()).unwrap_or(false);
-    (ok && exe.is_file()).then_some(exe)
+    // Where `gcc` is clang for macOS it builds a Mach-O file, which holds no ELF sections to cut: that counts as
+    // "cannot build", so the test skips with its message.
+    let elf = std::fs::read(&exe).map(|b| b.starts_with(b"\x7fELF")).unwrap_or(false);
+    (ok && elf).then_some(exe)
 }
 
 /// What a debugger dumps from `lo` to `hi` of the running program: each loaded section's bytes at its address,
