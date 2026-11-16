@@ -24,6 +24,9 @@ pub struct Regs {
     pub orig_rax: u64,
     /// False where the system does not give the segment bases (Windows).
     pub has_bases: bool,
+    /// The registers with no value: set only for a caller's frame (bits by [`GP`] index, bit 16 for eflags), where
+    /// the call may have changed them and no unwind rule gave them back. [`Regs::get`] has no value for them.
+    pub lost: u32,
 }
 
 /// Where each [`GP`] register sits in Linux's `user_regs_struct` (and in a core file's `pr_reg`).
@@ -102,6 +105,9 @@ impl Regs {
     /// The value of a register by name: the 64-bit names, their 32, 16 and 8-bit low parts,
     /// `rip`/`pc`, `sp`, `fp`, `eflags`, the segment registers and their bases.
     pub fn get(&self, name: &str) -> Option<u64> {
+        if self.lost != 0 && self.is_lost(name) {
+            return None;
+        }
         let n = name.trim_start_matches('$').to_ascii_lowercase();
         if let Some(i) = GP.iter().position(|g| *g == n) {
             return Some(self.gp[i]);
@@ -120,6 +126,34 @@ impl Regs {
         }
         let (idx, bits) = low_part(&n)?;
         Some(self.gp[idx] & (u64::MAX >> (64 - bits)))
+    }
+
+    /// Whether `name` (any spelling [`Regs::get`] takes) is a register this frame has no value for.
+    pub fn is_lost(&self, name: &str) -> bool {
+        let n = name.trim_start_matches('$').to_ascii_lowercase();
+        let bit = match n.as_str() {
+            "eflags" | "rflags" | "flags" => 16,
+            "sp" => RSP,
+            "fp" => RBP,
+            _ => match GP.iter().position(|g| *g == n) {
+                Some(i) => i,
+                None => match low_part(&n) {
+                    Some((i, _)) => i,
+                    None => return false,
+                },
+            },
+        };
+        self.lost >> bit & 1 == 1
+    }
+
+    /// The names of the registers this frame has no value for, in the order they are shown.
+    pub fn lost_names(&self) -> Vec<&'static str> {
+        let mut v: Vec<&'static str> =
+            GP.iter().enumerate().filter(|(i, _)| self.lost >> i & 1 == 1).map(|(_, n)| *n).collect();
+        if self.lost >> 16 & 1 == 1 {
+            v.push("eflags");
+        }
+        v
     }
 
     /// Set a whole register: a 64-bit general one, `rip` or `eflags`. False for any other name.

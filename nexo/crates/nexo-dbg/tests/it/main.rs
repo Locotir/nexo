@@ -15,6 +15,7 @@ mod core_file;
 mod dbg_linux;
 mod dbg_macos;
 mod dbg_windows;
+mod frames;
 mod gdb_script;
 mod one_line_locals;
 mod prologue_locals;

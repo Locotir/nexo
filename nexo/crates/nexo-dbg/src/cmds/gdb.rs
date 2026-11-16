@@ -16,9 +16,10 @@ const VIEW_SHOWN: usize = 64;
 const VIEW_TEXT: usize = 400;
 
 /// Commands a `commands` block may hold: they look, or keep a convenience variable.
-const ACTION_OK: [&str; 24] = [
+const ACTION_OK: [&str; 27] = [
     "x", "print", "p", "output", "printf", "echo", "set", "regs", "mem", "args", "locals", "bt", "dis", "find",
-    "status", "info", "maps", "modules", "threads", "out", "log", "history", "silent", "continue",
+    "status", "info", "maps", "modules", "threads", "out", "log", "history", "silent", "continue", "frame", "up",
+    "down",
 ];
 
 fn is_reg(n: &str) -> bool {
@@ -125,7 +126,7 @@ impl Session {
         if !ok {
             self.recording = None;
             return usage(format!(
-                "`{}` cannot run inside `commands`: only commands that look or keep a $variable (x, print, printf, echo, set $v = ..., bt, regs, mem, dis, find, info) and `continue`; the block was dropped",
+                "`{}` cannot run inside `commands`: only commands that look or keep a $variable (x, print, printf, echo, set $v = ..., bt, frame, up, down, regs, mem, dis, find, info) and `continue`; the block was dropped",
                 words.join(" ")
             ));
         }
@@ -165,9 +166,11 @@ impl Session {
     /// when they end with `continue` (the program goes on), false when it must stop (no `continue`, or an error).
     pub(crate) fn run_actions(&mut self, tid: Tid, id: u32) -> bool {
         let Some(actions) = self.bps.iter().find(|b| b.id == id).map(|b| b.actions.clone()) else { return false };
-        let (state, cur) = (self.state, self.cur);
+        // the hit is read from its own frame #0; an `up` among the commands lasts until they end
+        let (state, cur, frame) = (self.state, self.cur, self.frame);
         self.state = State::Stopped;
         self.cur = tid;
+        self.frame = 0;
         let (mut go_on, mut budget, mut cut) = (false, ACTION_LINES, 0usize);
         for w in &actions {
             let name = g::base_name(&w[0]);
@@ -206,6 +209,7 @@ impl Session {
         }
         self.state = state;
         self.cur = cur;
+        self.frame = frame;
         go_on
     }
 
@@ -499,7 +503,7 @@ impl Session {
                 }
                 go(self, &["breaks"])
             }
-            "frame" | "f" => go(self, &["bt", "1"]),
+            "frame" | "f" => self.cmd_frame_info(),
             "sharedlibrary" | "shared" | "dll" | "sharedlib" => go(self, &["modules"]),
             "proc" if more.first().is_some_and(|w| w.starts_with("map")) => {
                 let mut w = vec!["maps".to_string()];

@@ -24,6 +24,44 @@ pub struct Frame {
     pub sp: u64,
     /// Where the caller's stack pointer will be after the return, when known.
     pub cfa: Option<u64>,
+    /// The general registers as they are in this frame, in the order of `Regs::gp`.
+    pub gp: [u64; 16],
+    /// The registers whose value in this frame is not known (bits by `Regs::gp` index, [`LOST_FLAGS`] for eflags):
+    /// in a caller's frame, those the call may have changed that no unwind rule gave back. Zero in the innermost.
+    pub lost: u32,
+    /// How this frame was found from the one it called (`.eh_frame`, `.pdata`, ...); empty for the innermost.
+    pub how: &'static str,
+}
+
+/// The bit of [`Frame::lost`] for eflags, which every call may change and nothing saves.
+pub const LOST_FLAGS: u32 = 1 << 16;
+
+/// Registers a call may change without saving them (by `Regs::gp` index): rax, rcx, rdx, rsi, rdi and r8 to r11 in
+/// the System V ABI (Linux, macOS); Windows x64 keeps rsi and rdi for the caller.
+const SYSV_VOLATILE: u32 = 1 | 1 << 2 | 1 << 3 | 1 << 4 | 1 << 5 | 0xf << 8;
+const WIN_VOLATILE: u32 = 1 | 1 << 2 | 1 << 3 | 0xf << 8;
+/// rbp and rsp: the two registers a frame pointer chain gives back.
+const FP_KNOWN: u32 = 1 << 6 | 1 << 7;
+/// How a frame found by the saved frame pointers is described.
+const FP_CHAIN: &str = "the frame pointer chain (no unwind table covers the callee)";
+
+/// One step out of a frame: the caller's pc and registers, the CFA, how the step was made, and which registers
+/// (bits by `Regs::gp` index) an unwind rule set.
+#[derive(Debug, Clone, Copy)]
+struct Out {
+    pc: u64,
+    gp: [u64; 16],
+    cfa: Option<u64>,
+    how: &'static str,
+    set: u32,
+    /// Registers a rule says have no value in the caller.
+    gone: u32,
+}
+
+impl Out {
+    fn new((pc, gp, cfa): (u64, [u64; 16], Option<u64>), how: &'static str, set: u32) -> Out {
+        Out { pc, gp, cfa, how, set: set | 1 << 7, gone: 0 }
+    }
 }
 
 pub struct Mods {
@@ -272,42 +310,47 @@ impl Mods {
 
     /// The call chain from these registers: at most `max` frames. `rd` reads 8 bytes of the program.
     pub fn backtrace(&mut self, regs: &Regs, rd: &mut dyn FnMut(u64) -> Option<u64>, max: usize) -> Vec<Frame> {
+        let volatile = if self.main.format == nexo_bin::Format::Pe { WIN_VOLATILE } else { SYSV_VOLATILE };
         let mut gp = regs.gp;
         let mut pc = regs.rip;
+        let mut lost = 0u32;
+        let mut how = "";
         let mut frames: Vec<Frame> = Vec::new();
         while frames.len() < max {
-            let mut f = Frame { pc, sp: gp[7], cfa: None };
             let first = frames.is_empty();
             let next = self.unwind_one(pc, &gp, first, rd);
-            if let Some((npc, ngp, cfa)) = &next {
-                f.cfa = *cfa;
-                let _ = (npc, ngp);
-            }
-            frames.push(f);
-            let Some((npc, ngp, _)) = next else { break };
-            if npc == 0 || ngp[7] <= gp[7] {
+            frames.push(Frame { pc, sp: gp[7], cfa: next.and_then(|o| o.cfa), gp, lost, how });
+            let Some(o) = next else { break };
+            if o.pc == 0 || o.gp[7] <= gp[7] {
                 break;
             }
-            pc = npc;
-            gp = ngp;
+            // A register no rule set keeps its value through the call only when the ABI makes the callee keep it;
+            // the chain of frame pointers has no rules, so only rbp and rsp are known past it.
+            lost = if o.how == FP_CHAIN {
+                (0xffff & !FP_KNOWN) | LOST_FLAGS
+            } else {
+                ((lost | volatile) & !o.set) | o.gone | LOST_FLAGS
+            };
+            (pc, gp, how) = (o.pc, o.gp, o.how);
         }
         frames
     }
 
-    #[allow(clippy::type_complexity)]
     fn unwind_one(
         &mut self,
         pc: u64,
         gp: &[u64; 16],
         first: bool,
         rd: &mut dyn FnMut(u64) -> Option<u64>,
-    ) -> Option<(u64, [u64; 16], Option<u64>)> {
+    ) -> Option<Out> {
         let look = if first { pc } else { pc.wrapping_sub(1) };
         if let Some(idx) = self.locate(look) {
             self.ensure(idx);
             if let Some(img) = self.image(idx).filter(|i| i.format == nexo_bin::Format::Pe) {
+                // The registers the codes restore are not told apart here, so a register unknown in the callee stays
+                // unknown; the callee-saved ones it never touched keep their value as the ABI says.
                 if let Some(s) = crate::pe_unwind::unwind(img, self.bias(idx), look, gp, rd) {
-                    return Some(s);
+                    return Some(Out::new(s, ".pdata", 0));
                 }
             }
             if let Some(r) = self.unwind_cfi(idx, look, gp, rd) {
@@ -317,11 +360,11 @@ impl Mods {
                 let ra = rd(gp[7])?;
                 let mut n = *gp;
                 n[7] += 8;
-                return Some((ra, n, Some(gp[7] + 8)));
+                return Some(Out::new((ra, n, Some(gp[7] + 8)), "the PLT stub's return address", 0));
             }
             if first {
                 if let Some(s) = self.macho_prologue(idx, look, gp, rd) {
-                    return Some(s);
+                    return Some(Out::new(s, "the return address at the function's entry", 1 << 6));
                 }
             }
         }
@@ -335,7 +378,7 @@ impl Mods {
         let mut n = *gp;
         n[6] = obp;
         n[7] = bp + 16;
-        Some((ra, n, Some(bp + 16)))
+        Some(Out::new((ra, n, Some(bp + 16)), FP_CHAIN, FP_KNOWN))
     }
 
     /// A Mach-O program stopped on the first instruction of a function, or on the second after `push rbp`: its frame
@@ -375,14 +418,13 @@ impl Mods {
     }
 
     /// `Some(None)`: the table says this is the outermost frame. `None`: no table covers the address.
-    #[allow(clippy::type_complexity)]
     fn unwind_cfi(
         &self,
         idx: usize,
         look: u64,
         gp: &[u64; 16],
         rd: &mut dyn FnMut(u64) -> Option<u64>,
-    ) -> Option<Option<(u64, [u64; 16], Option<u64>)>> {
+    ) -> Option<Option<Out>> {
         use gimli::{CfaRule, RegisterRule, UnwindSection};
         let img = self.image(idx)?;
         let sec = img.sections.iter().find(|s| s.name == ".eh_frame")?;
@@ -400,13 +442,19 @@ impl Mods {
         let base = *gp.get(*DW2GP.get(register.0 as usize)?)?;
         let cfa = base.wrapping_add_signed(*offset);
         let mut n = *gp;
+        let (mut set, mut gone) = (0u32, 0u32);
         for (dw, &slot) in DW2GP.iter().enumerate() {
             match row.register(gimli::Register(dw as u16)) {
                 Some(RegisterRule::Offset(o)) => n[slot] = rd(cfa.wrapping_add_signed(o))?,
                 Some(RegisterRule::ValOffset(o)) => n[slot] = cfa.wrapping_add_signed(o),
                 Some(RegisterRule::Register(r)) => n[slot] = *gp.get(*DW2GP.get(r.0 as usize)?)?,
-                _ => {}
+                Some(RegisterRule::Undefined) => {
+                    gone |= 1 << slot;
+                    continue;
+                }
+                _ => continue,
             }
+            set |= 1 << slot;
         }
         let ra = match row.register(gimli::Register(16)) {
             Some(RegisterRule::Offset(o)) => rd(cfa.wrapping_add_signed(o))?,
@@ -414,6 +462,6 @@ impl Mods {
             _ => return None,
         };
         n[7] = cfa;
-        Some(Some((ra, n, Some(cfa))))
+        Some(Some(Out { gone, ..Out::new((ra, n, Some(cfa)), ".eh_frame", set) }))
     }
 }

@@ -12,6 +12,7 @@ pub fn alias(name: &str) -> &str {
         "si" | "stepi" => "step",
         "ni" | "nexti" => "next",
         "fin" => "finish",
+        "f" => "frame",
         "u" | "advance" => "until",
         "i" => "info",
         "d" => "delete",
@@ -598,9 +599,6 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
         "call" => "no calls into the program: `hook <name> ret <v>` changes a result, `print` works out values",
         "return" | "jump" => "`setreg rip <addr>` moves the program counter (asks); `finish` runs to the caller",
         "rwatch" | "awatch" => "`watch <addr> [len] r|w|x` stops on a read, a write or a fetch",
-        "frame" | "f" | "up" | "down" => {
-            "`bt` lists the frames; `finish` runs to the caller; `print`/`x` read the current frame"
-        }
         "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program",
         "source" => "scripts go in the call itself, one command per line, or `a; b; c`",
         "shell" | "!" => "the debug tool does not run shell commands: use the shell tool",

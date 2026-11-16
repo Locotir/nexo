@@ -6,12 +6,17 @@ use super::*;
 impl Session {
     /// The registers, frame and memory reader a location needs, or `None` when the program has no variables.
     /// With `prologue`, a stop before the function's prologue ends is marked so its stack slots are not read.
+    /// In a caller's frame (`up`) they are that frame's, and its pc is the call (one byte before the return
+    /// address), which is where its scope and line are.
     fn with_vars<T>(&mut self, prologue: bool, f: impl FnOnce(&Vars, &mut Regs) -> T) -> Result<Option<T>> {
         self.need_stopped()?;
-        let r = self.t.regs(self.cur)?;
-        let early = if prologue { self.early(r.rip) } else { None };
+        let (r, cfa) = if self.frame > 0 { self.sel_frame()? } else { (self.t.regs(self.cur)?, None) };
+        let caller = self.frame > 0;
+        let early = if prologue && !caller { self.early(r.rip) } else { None };
         let Session { t, mods, .. } = self;
-        let cfa = {
+        let cfa = if caller {
+            cfa
+        } else {
             let mut rd8 = |a: u64| {
                 let mut b = [0u8; 8];
                 (t.read(a, &mut b) == 8).then(|| u64::from_le_bytes(b))
@@ -23,7 +28,8 @@ impl Session {
             let mut b = vec![0u8; n];
             (t.read(a, &mut b) == n).then_some(b)
         };
-        let mut regs = Regs { gp: r.gp, rip: r.rip, cfa, bias, rd: &mut rd, early, lines };
+        let rip = if caller { r.rip.wrapping_sub(1) } else { r.rip };
+        let mut regs = Regs { gp: r.gp, rip, cfa, bias, rd: &mut rd, early, lines, lost: r.lost };
         Ok(Some(f(vars, &mut regs)))
     }
 
@@ -69,7 +75,8 @@ impl Session {
         })?;
         match got {
             None => fail("the program has no variable info: build it with `-g` (cc -g, cargo's dev profile); `args` shows the argument registers"),
-            Some((None, ..)) => fail("the stop is outside the program's own functions (a library): `finish` or `bt` to get back to it"),
+            Some((None, ..)) if self.frame > 0 => fail(format!("frame #{} is outside the program's own functions (a library): `up` selects its caller, `bt` lists the chain", self.frame)),
+            Some((None, ..)) => fail("the stop is outside the program's own functions (a library): `up` selects the caller's frame, `finish` runs back to it, `bt` lists the chain"),
             Some((Some(f), l, _)) if l.is_empty() => Ok(rows("locals", vec![format!("{f} has no parameters or locals")], json!({}))),
             Some((Some(f), l, early)) => {
                 let head = match early {

@@ -33,17 +33,43 @@ impl Session {
     }
 
     pub(super) fn cmd_regs(&mut self, a: &Args) -> Result<Output> {
-        let r = self.tid_regs()?;
+        self.need_stopped()?;
+        let r = self.sel_regs()?;
         if let Some(n) = a.pos.first() {
+            if r.is_lost(n) {
+                return Ok(rows(
+                    "regs",
+                    vec![format!(
+                        "{n} is not saved in frame #{}: the call out of it may have changed it and no unwind rule gives it back",
+                        self.frame
+                    )],
+                    json!({"frame": self.frame}),
+                ));
+            }
             let Some(v) = r.get(n) else { return usage(format!("no register named {n:?}")) };
             return Ok(rows("regs", vec![format!("{n} = {v:#x} ({})", v as i64)], json!({})));
         }
         let mut l = Vec::new();
         let named = r.named();
         for chunk in named.chunks(4) {
-            l.push(chunk.iter().map(|(n, v)| format!("{n:<7}{v:#018x}")).collect::<Vec<_>>().join("  "));
+            let cell = |(n, v): &(&str, u64)| {
+                if r.is_lost(n) {
+                    format!("{n:<7}{:<18}", "<not saved>")
+                } else {
+                    format!("{n:<7}{v:#018x}")
+                }
+            };
+            l.push(chunk.iter().map(cell).collect::<Vec<_>>().join("  ").trim_end().to_string());
         }
-        l.push(format!("flags {}", r.flags_text()));
+        if r.is_lost("eflags") {
+            l.push(format!(
+                "<not saved>: {} (the call out of frame #{} may have changed them; no unwind rule gives them back)",
+                r.lost_names().join(" "),
+                self.frame
+            ));
+        } else {
+            l.push(format!("flags {}", r.flags_text()));
+        }
         let sp = r.rsp();
         let mut stack = Vec::new();
         for i in 0..4u64 {
@@ -62,6 +88,12 @@ impl Session {
         let (Some(n), Some(v)) = (a.pos.first(), a.pos.get(1..)) else {
             return usage("setreg <register> <value or expression>");
         };
+        if self.frame > 0 {
+            return fail(format!(
+                "frame #{} is selected: setreg changes the stopped thread's registers, which are frame #0's; `frame 0` selects it",
+                self.frame
+            ));
+        }
         let val = self.addr_of(&v.join(" "))?;
         let mut r = self.tid_regs()?;
         if !r.set(n, val) {

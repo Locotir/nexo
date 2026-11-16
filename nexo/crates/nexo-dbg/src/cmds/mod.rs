@@ -13,6 +13,7 @@ use crate::{fail, usage, Result};
 mod breaks;
 mod calls;
 mod catch;
+mod frame;
 mod gdb;
 mod help;
 mod io;
@@ -81,10 +82,10 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 30] = [
+pub const READ_ONLY: [&str; 33] = [
     "status", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
-    "name", "note", "ptype", "whatis",
+    "name", "note", "ptype", "whatis", "frame", "up", "down",
 ];
 
 impl Session {
@@ -162,7 +163,27 @@ impl Session {
         }
     }
 
+    /// One command. An answer read in a caller's frame (after `up` or `frame N`) starts with the line that names
+    /// that frame, so a value is never taken for the stopped function's own.
     pub fn exec(&mut self, words: &[String]) -> Result<Output> {
+        let in_frame = self.recording.is_none() && frame::reads_frame(words);
+        let mut out = self.exec_cmd(words)?;
+        if !in_frame {
+            return Ok(out);
+        }
+        let Some(head) = self.frame_head() else { return Ok(out) };
+        // a gdb spelling answered by the debugger's own command already has it
+        if out.rows.first().is_none_or(|r| r.text != head) {
+            let key = out.rows.first().map_or(0, |r| r.key);
+            out.rows.insert(0, nexo_bin::Row { key, text: head, json: None });
+        }
+        if let Some(m) = out.meta.as_object_mut() {
+            m.insert("frame".into(), json!(self.frame));
+        }
+        Ok(out)
+    }
+
+    fn exec_cmd(&mut self, words: &[String]) -> Result<Output> {
         let Some(cmd) = words.first() else { return usage("a command is needed: `help` lists them") };
         if self.recording.is_some() {
             return self.record_line(words);
@@ -208,6 +229,8 @@ impl Session {
             "dis" | "disasm" => self.cmd_dis(&a),
             "threads" => self.cmd_threads(),
             "thread" => self.cmd_thread(&a),
+            "frame" => self.cmd_frame(&a),
+            "up" | "down" => self.cmd_up(&a, cmd == "up"),
             "watch" => self.cmd_watch(&a),
             "maps" => self.cmd_maps(&a),
             "modules" => self.cmd_modules(),

@@ -78,7 +78,10 @@ pub(super) fn eval(expr: &[u8], enc: gimli::Encoding, fb: Option<&[u8]>, regs: &
     let reg = |r: &Regs, n: u16| -> Option<u64> {
         match n {
             16 => Some(r.rip),
-            n => r.gp.get(*crate::modules::DW2GP.get(n as usize)?).copied(),
+            n => {
+                let i = *crate::modules::DW2GP.get(n as usize)?;
+                (r.lost >> i & 1 == 0).then_some(r.gp[i])
+            }
         }
     };
     let mut e = gimli::Expression(EndianSlice::new(expr, LittleEndian)).evaluation(enc);

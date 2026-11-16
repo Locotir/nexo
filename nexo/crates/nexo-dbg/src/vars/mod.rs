@@ -144,6 +144,9 @@ pub struct Regs<'a> {
     pub early: Option<String>,
     /// The program's line table, to place the stop and the declarations in the source.
     pub lines: Option<&'a crate::lines::Lines>,
+    /// In a caller's frame, the registers it has no value for (bits by `Regs::gp` index): a variable kept in one
+    /// of them has no value there.
+    pub lost: u32,
 }
 
 enum Ctx {
@@ -218,6 +221,7 @@ mod tests {
                 rd: &mut rd,
                 early: None,
                 lines: None,
+                lost: 0,
             };
             let t0 = std::time::Instant::now();
             let _ = eval(&e, enc, Some(&[0x9c]), &mut regs);

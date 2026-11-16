@@ -20,6 +20,11 @@ pub trait Env {
     fn set_var(&mut self, _name: &str, _v: Val) -> bool {
         false
     }
+    /// Why a register has no value here (a caller's frame, where the call may have changed it); `None` when it has
+    /// one or is no register.
+    fn missing(&mut self, _name: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A C type as far as an address calculation needs it: the size of what is at the end of the pointers.
@@ -226,7 +231,7 @@ pub fn eval(src: &str, env: &mut dyn Env) -> Result<Val> {
     // `$v = expr` keeps a convenience variable
     if let (Some(Tok::Id(n)), Some(Tok::Op("="))) = (p.t.first().cloned(), p.t.get(1)) {
         if let Some(name) = n.strip_prefix('$').filter(|x| !x.is_empty()) {
-            if p.env.reg(name).is_some() {
+            if p.env.reg(name).is_some() || p.env.missing(name).is_some() {
                 return fail(format!("{n} is a register: `setreg {name} <value>` changes it"));
             }
             p.i = 2;
@@ -438,6 +443,9 @@ impl P<'_> {
                 self.i += 1;
                 if let Some(v) = self.env.reg(&n) {
                     return Ok(plain(v));
+                }
+                if let Some(why) = self.env.missing(&n) {
+                    return fail(why);
                 }
                 if let Some(name) = n.strip_prefix('$') {
                     return match self.env.var(name) {

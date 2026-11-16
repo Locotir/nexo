@@ -96,6 +96,11 @@ pub(super) fn translate(lines: &[String], dir: &Path) -> Plan {
                 say(&mut plan, in_commands, format!("{verb}{count}"));
             }
             "finish" | "fin" => say(&mut plan, in_commands, "finish".into()),
+            "frame" | "f" | "up" | "down" => {
+                let verb = if name == "f" { "frame" } else { name };
+                let n = rest.split_whitespace().next().and_then(number).map(|n| format!(" {n}")).unwrap_or_default();
+                say(&mut plan, in_commands, format!("{verb}{n}"));
+            }
             "until" | "u" | "advance" if !rest.is_empty() => {
                 say(&mut plan, in_commands, format!("until {}", expr(rest)))
             }
@@ -119,7 +124,7 @@ pub(super) fn translate(lines: &[String], dir: &Path) -> Plan {
                     "args" => "args".into(),
                     "sharedlibrary" | "shared" | "dll" => "modules".into(),
                     "threads" => "threads".into(),
-                    "frame" | "f" => "status".into(),
+                    "frame" | "f" => "info frame".into(),
                     "proc" if more.starts_with("mappings") => "maps".into(),
                     _ => continue,
                 };

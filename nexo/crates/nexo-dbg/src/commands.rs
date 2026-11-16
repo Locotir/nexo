@@ -42,6 +42,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("locals", "the local variables of the current function"),
     ("threads", "list the threads"),
     ("thread", "switch to a thread: thread <tid>"),
+    ("frame", "select a frame of the call stack for regs, locals, args, print, mem, dis: frame N; alone, describe it"),
+    ("up down", "select the caller's frame, or the one it called [N]"),
     ("maps", "the memory map [filter]"),
     ("modules", "the loaded modules"),
     ("find", "search memory for bytes or text"),

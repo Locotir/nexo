@@ -496,6 +496,7 @@ impl Target for Windows {
             gs_base: 0,
             orig_rax: 0,
             has_bases: false,
+            lost: 0,
         })
     }
 

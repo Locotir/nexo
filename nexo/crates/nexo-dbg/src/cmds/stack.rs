@@ -65,7 +65,8 @@ impl Session {
     }
 
     pub(super) fn cmd_args(&mut self, _a: &Args) -> Result<Output> {
-        let r = self.tid_regs()?;
+        self.need_stopped()?;
+        let r = self.sel_regs()?;
         let regs = match self.t.os() {
             Os::Linux | Os::MacOS => ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
             Os::Windows => ["rcx", "rdx", "r8", "r9", "", ""],
@@ -83,7 +84,10 @@ impl Session {
             if past && !variadic || count.is_some() && !past && !unread.contains(&i) {
                 continue;
             }
-            let v = r.get(n).unwrap_or(0);
+            let Some(v) = r.get(n) else {
+                l.push(format!("arg{} {n} = not saved in this frame", i + 1));
+                continue;
+            };
             let mut s = format!("arg{} {n} = {v:#x} ({})", i + 1, v as i64);
             if let Some(lab) = self.mods.label(v, true) {
                 s.push_str(&format!(" -> {lab}"));
@@ -105,23 +109,21 @@ impl Session {
             None => 50,
         };
         let f = self.frames(max)?;
-        Ok(rows("bt", self.frame_lines(&f), json!({"frames": f.len()})))
+        let mut l = self.frame_lines(&f);
+        if self.frame > 0 {
+            l.push(format!("frame #{} is selected (`frame 0` selects where the thread stopped)", self.frame));
+        }
+        Ok(rows("bt", l, json!({"frames": f.len(), "selected": self.frame})))
     }
 
     pub fn frame_lines(&mut self, f: &[crate::modules::Frame]) -> Vec<String> {
-        f.iter()
-            .enumerate()
-            .map(|(i, fr)| {
-                let look = if i == 0 { fr.pc } else { fr.pc.wrapping_sub(1) };
-                let name = self.mods.label(look, false).unwrap_or_default();
-                let at = self.mods.source(look).map(|s| format!("  ({s})")).unwrap_or_default();
-                format!("#{i:<2} {:#x} {name}{at}", fr.pc)
-            })
-            .collect()
+        f.iter().enumerate().map(|(i, fr)| self.frame_line(i, fr)).collect()
     }
 
     pub(super) fn cmd_dis(&mut self, a: &Args) -> Result<Output> {
-        let r = self.tid_regs()?;
+        self.need_stopped()?;
+        // in a caller's frame `=>` marks where it goes on after the call
+        let r = self.sel_regs()?;
         // `dis A..B` shows the instructions that start before B
         let (at, end) = match a.pos.first() {
             Some(t) => match self.span_of(t)? {
@@ -189,6 +191,7 @@ impl Session {
             return fail(format!("no thread {tid}: `threads` lists them"));
         }
         self.cur = tid;
+        self.frame = 0;
         Ok(rows("thread", vec![format!("current thread {tid}")], json!({})))
     }
 }

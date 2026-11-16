@@ -136,7 +136,7 @@ mod tests {
         let mut rd = |_: u64, _: usize| None;
         let gp: [u64; 16] = std::array::from_fn(|i| 0x10 * i as u64);
         let mut regs =
-            Regs { gp, rip: 0x100, cfa: None, bias: 0, rd: &mut rd, early: Some(String::new()), lines: None };
+            Regs { gp, rip: 0x100, cfa: None, bias: 0, rd: &mut rd, early: Some(String::new()), lines: None, lost: 0 };
         v.params_in_regs(0x100, win, &mut regs, 1)
             .into_iter()
             .map(|(v, got)| match got {

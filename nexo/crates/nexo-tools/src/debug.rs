@@ -56,7 +56,7 @@ breaks, delete <id>, enable|disable <id>
 cont|step|next|finish|until <addr>  [--wait N]  resume; a stop shows where, why, changed regs, next instructions
 regs, setreg <reg> <v>  (asks)
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
-bt [N], args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
+bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return

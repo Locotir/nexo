@@ -107,6 +107,11 @@ fn gdb_in_each_of_its_forms() {
         call("gdb -batch -ex 'x/5i $pc' -ex 'watch counter' -ex 'catch syscall write' ./paint"),
         "run ./paint; dis $rip 5; watch counter; catch syscall write; cont"
     );
+    // a caller's frame: `up`, `down` and `frame N` select it, `info frame` describes it
+    assert_eq!(
+        call("gdb -batch -ex 'break inner' -ex run -ex up -ex 'info locals' -ex 'f 2' -ex 'info frame' -ex 'down 2' ./paint"),
+        "run ./paint; break inner; cont; up; locals; frame 2; info frame; down 2"
+    );
     // lines the debugger has no word for are left out; nothing runs
     assert_eq!(
         call("gdb -batch -ex 'python print(1)' -ex 'shell touch touched' -ex 'call f()' -ex bt ./paint"),

@@ -99,7 +99,9 @@ impl Session {
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });
             return rows("exit", l, json!({"state": "exited"}));
         }
-        l.push(format!("{headline} (thread {tid})"));
+        // a stop always selects the frame it stopped in: `up` and `frame N` read its callers
+        self.frame = 0;
+        l.push(format!("{headline} (thread {tid}, frame #0)"));
         if let Ok(r) = self.t.regs(tid) {
             let name = self.mods.label(r.rip, false).unwrap_or_default();
             let at = self.mods.source(r.rip).map(|s| format!("  ({s})")).unwrap_or_default();

@@ -114,6 +114,9 @@ pub struct Session {
     pub mods: Mods,
     pub state: State,
     pub cur: Tid,
+    /// The frame `regs`, `locals`, `args`, `print`, `mem` and `dis` read: 0 is where the thread stopped, 1 its
+    /// caller and so on (`frame N`, `up`, `down`). Every resume and thread switch sets it back to 0.
+    pub frame: usize,
     pub bps: Vec<Bp>,
     pub wps: Vec<Wp>,
     pub next_id: u32,
@@ -368,6 +371,13 @@ impl Env for Ev<'_> {
         self.conv.insert(name.to_string(), v);
         true
     }
+
+    fn missing(&mut self, name: &str) -> Option<String> {
+        self.regs.is_lost(name).then(|| {
+            let n = name.trim_start_matches('$');
+            format!("{n} is not saved in this frame: the call out of it may have changed {n} and no unwind rule gives it back")
+        })
+    }
 }
 
 pub fn rows(op: &'static str, lines: Vec<String>, meta: Value) -> Output {
@@ -392,6 +402,7 @@ impl Session {
             mods: Mods::new(img),
             state: State::Stopped,
             cur: 0,
+            frame: 0,
             bps: Vec::new(),
             wps: Vec::new(),
             next_id: 1,
@@ -447,16 +458,17 @@ impl Session {
         v
     }
 
+    /// An expression in the selected frame (see `frame`).
     pub fn eval(&mut self, src: &str) -> Result<u64> {
-        let tid = self.cur;
-        let mut ev = self.ev(tid)?;
+        let regs = self.sel_regs()?;
+        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv };
         expr::value(src, &mut ev)
     }
 
-    /// An expression with its type. Without a stopped thread the registers read as zero, so names, numbers and
-    /// convenience variables still work (`set \$v = main`).
+    /// An expression with its type, in the selected frame. Without a stopped thread the registers read as zero, so
+    /// names, numbers and convenience variables still work (`set \$v = main`).
     pub fn eval_any(&mut self, src: &str) -> Result<expr::Val> {
-        let regs = if self.state == State::Stopped { self.t.regs(self.cur)? } else { Regs::default() };
+        let regs = if self.state == State::Stopped { self.sel_regs()? } else { Regs::default() };
         let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv };
         expr::eval(src, &mut ev)
     }
@@ -544,6 +556,7 @@ impl Session {
     /// Start running as `run` says. The program must be stopped.
     pub fn begin(&mut self, run: Run) -> Result<()> {
         self.need_stopped()?;
+        self.frame = 0;
         self.run = run;
         let r = self.resume_now();
         if r.is_err() {
@@ -586,6 +599,7 @@ impl Session {
                 if self.state == State::Running {
                     self.state = State::Stopped;
                     self.cur = stop.0;
+                    self.frame = 0;
                     self.uninsert_all();
                 }
                 self.run = Run::default();
