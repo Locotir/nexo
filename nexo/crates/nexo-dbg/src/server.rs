@@ -592,11 +592,44 @@ pub fn sessions(dir: &Path) -> Vec<(String, String, u64)> {
     v
 }
 
+/// The launch environment as one line of hex per `K=V`, for the pipe to the server (hex keeps newlines and
+/// any byte of a value intact).
+pub fn encode_env(env: &[(String, String)]) -> String {
+    let mut s = String::new();
+    for (k, v) in env {
+        for b in format!("{k}={v}").bytes() {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s.push('\n');
+    }
+    s
+}
+
+/// The inverse of [`encode_env`]; a line that is not hex or has no `=` is an error naming its number.
+pub fn decode_env(text: &str) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.is_empty()) {
+        let bad = || Error::Usage(format!("environment line {} from the starter is not NAME=VALUE in hex", n + 1));
+        if line.len() % 2 != 0 {
+            return Err(bad());
+        }
+        let bytes: Option<Vec<u8>> = (0..line.len())
+            .step_by(2)
+            .map(|i| line.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+            .collect();
+        let s = String::from_utf8(bytes.ok_or_else(bad)?).map_err(|_| bad())?;
+        let (k, v) = s.split_once('=').ok_or_else(bad)?;
+        out.push((k.to_string(), v.to_string()));
+    }
+    Ok(out)
+}
+
 /// Start a server for a new session by running `exe dbg __serve ...`; returns the id once the program is
 /// loaded (or the server's own reason for failing).
 pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
     let id = new_id();
     std::fs::create_dir_all(dir)?;
+    let mut env_text: Option<String> = None;
     let mut cmd = std::process::Command::new(nexo);
     cmd.arg("dbg").arg("__serve").arg("--id").arg(&id).arg("--dir").arg(dir);
     if let Some(o) = owner_of(dir) {
@@ -614,8 +647,10 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
             for a in args {
                 cmd.arg("--arg").arg(a);
             }
-            for (k, v) in &opts.env {
-                cmd.arg("--env").arg(format!("{k}={v}"));
+            if !opts.env.is_empty() {
+                // The values go down a pipe, never the command line: a command line is readable by every local user.
+                cmd.arg("--env-stdin").arg("on");
+                env_text = Some(encode_env(&opts.env));
             }
             for k in &opts.unset {
                 cmd.arg("--unset").arg(k);
@@ -646,7 +681,9 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
             }
         }
     }
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.stdin(if env_text.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -660,6 +697,12 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
         }
     }
     let mut child = cmd.spawn().map_err(|e| Error::Fail(format!("cannot start the debug server: {e}")))?;
+    if let (Some(text), Some(mut pipe)) = (env_text, child.stdin.take()) {
+        use std::io::Write;
+        // Closing the pipe (the drop) is what tells the server the list is complete.
+        pipe.write_all(text.as_bytes())
+            .map_err(|e| Error::Fail(format!("cannot hand the environment to the debug server: {e}")))?;
+    }
     let deadline = Instant::now() + Duration::from_secs(40);
     loop {
         if session_file(dir, &id).exists() {

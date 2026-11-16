@@ -410,7 +410,15 @@ impl Session {
             }
             g::SetKind::Register(r, e) => self.exec(&["setreg".to_string(), r, e]),
             g::SetKind::Args(_) => usage("the arguments go in `run <path> <args>`; a gdb script can use `set args` before `run`"),
-            g::SetKind::Env(..) | g::SetKind::Cwd(_) | g::SetKind::Randomization { .. } => usage(
+            g::SetKind::Randomization { .. } => Ok(rows(
+                "set",
+                vec![format!(
+                    "ignored: {} (address randomisation is chosen when the program starts: off by default, `run --aslr <path>` turns it on)",
+                    words.join(" ")
+                )],
+                json!({}),
+            )),
+            g::SetKind::Env(..) | g::SetKind::Cwd(_) => usage(
                 "environment, working folder and address randomisation are fixed when the program starts: `run [--env K=V] [--unset K] [--cwd DIR] [--aslr] <path>`; a gdb script can set them before `run`",
             ),
             g::SetKind::Memory => usage(

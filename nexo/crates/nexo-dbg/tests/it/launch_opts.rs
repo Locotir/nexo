@@ -185,6 +185,14 @@ fn in_a_live_session_the_gdb_settings_say_when_they_apply() {
         let e = call(state.path(), cmd).expect_err("not applied to a running program").to_string();
         assert!(e.contains("fixed when the program starts") && e.contains("run [--env K=V]"), "{cmd:?}: {e}");
     }
+    // randomisation is already off by default: a gdb preamble must not stop at it, and a script goes on
+    for v in ["on", "off"] {
+        let ok = call(state.path(), &["set", "disable-randomization", v]).expect("answered, not refused");
+        assert!(ok.contains("chosen when the program starts") && ok.contains("run --aslr"), "{v}: {ok}");
+    }
+    let script =
+        call(state.path(), &["do", "set disable-randomization on; regs"]).expect("the script goes past the setting");
+    assert!(script.contains("rip"), "{script}");
     let _ = call(state.path(), &["end"]);
 }
 

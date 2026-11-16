@@ -57,7 +57,10 @@ pub use platform::{
     Tid, Touch,
 };
 pub use regs::Regs;
-pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply, Start, IDLE};
+pub use server::{
+    decode_env, encode_env, open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply,
+    Start, IDLE,
+};
 pub use shellsyn::{
     assignment, debug_fact, debug_shell_items, is_shell_word, shell_pieces, variable_in, Piece, Redirect, SHELL_WORDS,
 };

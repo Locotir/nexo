@@ -205,3 +205,45 @@ fn a_core_file_that_is_not_one_is_refused_through_the_binary() {
     let o = nexo(&tmp, &["core"]);
     assert!(out(&o).contains("usage: core <file>"), "{}", out(&o));
 }
+
+/// Every `__serve` process whose command line holds `needle`, and how many `__serve` processes there are.
+#[cfg(target_os = "linux")]
+fn serve_cmdlines(needle: &str) -> (usize, usize) {
+    let (mut with, mut all) = (0, 0);
+    for e in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(raw) = std::fs::read(e.path().join("cmdline")) else { continue };
+        let text = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if text.contains("dbg __serve") {
+            all += 1;
+            with += usize::from(text.contains(needle));
+        }
+    }
+    (with, all)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_environment_value_reaches_the_program_but_never_the_servers_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().join(format!("nexo-tmp-{}-e", std::process::id()));
+    let secret = format!("nx-secret-{}-value", std::process::id());
+    let env = ["/usr/bin/printenv", "/bin/printenv"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+        .expect("a printenv program");
+    let first = nexo(&tmp, &["run", "--env", &format!("NX_SECRET={secret}"), env.to_str().unwrap(), "NX_SECRET"]);
+    let text = out(&first);
+    assert!(first.status.success(), "{text}");
+    assert!(
+        text.contains("NX_SECRET") && !text.contains(&secret),
+        "the start line names the variable, not its value: {text}"
+    );
+    let (with, all) = serve_cmdlines(&secret);
+    assert!(all >= 1, "the server is running");
+    assert_eq!(with, 0, "the value is on a server's command line");
+    out(&nexo(&tmp, &["cont", "--wait", "20"]));
+    let printed = out(&nexo(&tmp, &["out", "--all"]));
+    assert!(printed.contains(&secret), "{printed}");
+    let _ = nexo(&tmp, &["end"]);
+}
