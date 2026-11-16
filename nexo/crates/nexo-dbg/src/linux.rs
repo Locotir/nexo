@@ -1214,12 +1214,7 @@ impl Target for Linux {
     fn modules(&mut self) -> Result<Vec<Module>> {
         let exe =
             std::fs::read_link(format!("/proc/{}/exe", self.pid)).map(|p| p.display().to_string()).unwrap_or_default();
-        let mut out: Vec<Module> = Vec::new();
-        for m in self.maps()? {
-            if m.path.starts_with('/') && m.offset == 0 && !out.iter().any(|o| o.path == m.path) {
-                out.push(Module { path: m.path, base: m.start });
-            }
-        }
+        let mut out: Vec<Module> = crate::modules::loads(&self.maps()?);
         if let Some(i) = out.iter().position(|m| m.path == exe) {
             out[..=i].rotate_right(1);
         }

@@ -143,9 +143,19 @@ impl Session {
     pub(crate) fn on_load(&mut self, tid: Tid) -> Option<(Tid, Why)> {
         let before = self.libs.seen.clone()?;
         self.mods.refresh(&mut *self.t);
-        let now = self.loaded_now();
-        let gone: Vec<Seen> = before.iter().filter(|m| !now.contains(m)).cloned().collect();
-        let new: Vec<Seen> = now.iter().filter(|m| !before.contains(m)).cloned().collect();
+        let mut now = self.loaded_now();
+        // a load is its file at its start: the end a look finds may grow (the program maps the same file again above
+        // it and its headers in memory cannot be read) while the library stays where it was, with our bytes in it.
+        // A load never grows, so it keeps the smallest end seen, and an unload forgets only what was in it.
+        let same = |a: &Seen, b: &Seen| a.0 == b.0 && a.1 == b.1;
+        for m in now.iter_mut() {
+            if let Some(b) = before.iter().find(|b| same(b, m)) {
+                m.2 = m.2.min(b.2);
+            }
+        }
+        let has = |list: &[Seen], m: &Seen| list.iter().any(|x| same(x, m));
+        let gone: Vec<Seen> = before.iter().filter(|m| !has(&now, m)).cloned().collect();
+        let new: Vec<Seen> = now.iter().filter(|m| !has(&before, m)).cloned().collect();
         self.libs.seen = Some(now);
         if gone.is_empty() && new.is_empty() {
             return None;

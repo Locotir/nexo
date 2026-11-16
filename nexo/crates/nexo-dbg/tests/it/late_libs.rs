@@ -11,6 +11,9 @@ const PLUGIN: &str = r#"
 __attribute__((noinline)) int plugin_fn(const char *s) { return atoi(s) + 1; }
 "#;
 
+/// A second library, loaded only so the loader tells one more change.
+const OTHER: &str = "int other_fn(void) { return 7; }\n";
+
 /// Loads the library named in argv[1], calls `plugin_fn` in it, unloads it.
 const HOST: &str = r#"
 #include <dlfcn.h>
@@ -163,5 +166,111 @@ fn a_name_no_file_has_and_no_library_brings_never_resolves_and_the_end_says_so()
     let out = call(s, &["cont", "--wait", "20"]);
     assert!(out.contains("exited with code 0"), "{out}");
     assert!(out.contains("breakpoint #1 pending on no_such_fn was never set"), "{out}");
+    let _ = call(s, &["end"]);
+}
+
+/// A program that maps a loaded library's file again below and above it and its own file above itself (as a program
+/// reading its own files does), then loads one more library, calls into the first one and its own code, and
+/// unloads the first one while the copies stay.
+const HOST_COPIES: &str = r#"
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static void *copy_at(const char *path, uintptr_t at) {
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0) return NULL;
+    void *p = mmap((void *)at, st.st_size, PROT_READ, MAP_PRIVATE | (at ? MAP_FIXED_NOREPLACE : 0), fd, 0);
+    close(fd);
+    return p == MAP_FAILED ? NULL : p;
+}
+
+/* the first free MiB from `from` on, going up or down */
+static void *copy_near(const char *path, uintptr_t from, int step) {
+    for (int k = 1; k < 256; k++) {
+        void *p = copy_at(path, from + (uintptr_t)(step * k) * (1u << 20));
+        if (p) return p;
+    }
+    return NULL;
+}
+
+__attribute__((noinline)) int helper(int x) { return x + 1; }
+
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    void *h = dlopen(argv[1], RTLD_NOW);
+    if (!h) return 3;
+    int (*f)(const char *) = (int (*)(const char *))dlsym(h, "plugin_fn");
+    Dl_info di;
+    if (!f || !dladdr((void *)f, &di)) return 4;
+    uintptr_t base = (uintptr_t)di.dli_fbase, top = (uintptr_t)&getpid > base ? (uintptr_t)&getpid : base;
+    if (!copy_near(argv[1], top & ~(uintptr_t)0xfffff, 1) || !copy_near(argv[1], base, -1)
+        || !copy_at("/proc/self/exe", 0))
+        return 5;
+    if (!dlopen(argv[2], RTLD_NOW)) return 6;
+    int r = f("41") + helper(0);
+    dlclose(h);
+    printf("host %d\n", r);
+    fflush(stdout);
+    return r == 43 ? 0 : 1;
+}
+"#;
+
+#[test]
+fn a_library_or_program_whose_file_is_mapped_again_stays_loaded_and_keeps_its_breakpoints() {
+    let work = tempfile::tempdir().unwrap();
+    let Some((_, lib)) = build(work.path(), &[]) else { return };
+    let (exe, other) = (work.path().join("host_copies"), work.path().join("libother.so"));
+    let built =
+        [(&exe, HOST_COPIES, "host_copies.c", &["-ldl"][..]), (&other, OTHER, "other.c", &["-shared", "-fPIC"])]
+            .iter()
+            .all(|(out, src, name, more)| {
+                std::fs::write(work.path().join(name), src).unwrap();
+                std::process::Command::new("cc")
+                    .args(["-O0", "-g", "-o"])
+                    .arg(out)
+                    .arg(work.path().join(name))
+                    .args(*more)
+                    .status()
+                    .is_ok_and(|s| s.success())
+            });
+    if !built {
+        eprintln!("SKIPPED: cc cannot build the program that maps its files again, so nothing was checked");
+        return;
+    }
+    let state = tempfile::tempdir().unwrap();
+    let s = state.path();
+    call(s, &["run", exe.to_str().unwrap(), lib.to_str().unwrap(), other.to_str().unwrap()]);
+    let b = call(s, &["break", "plugin_fn"]);
+    assert!(b.contains("breakpoint #1 pending on plugin_fn"), "{b}");
+    let b = call(s, &["break", "helper"]);
+    assert!(b.contains("breakpoint #2 at 0x"), "{b}");
+    // the copies and the second library come before the call: the library is still the one loaded first
+    let out = call(s, &["cont", "--wait", "20"]);
+    assert!(out.contains("breakpoint #1") && out.contains("libplugin.so!plugin_fn"), "{out}");
+    let l = call(s, &["breaks"]);
+    assert!(l.lines().any(|x| x.contains("#1") && x.contains("libplugin.so!plugin_fn") && x.contains("hits 1")), "{l}");
+    // each file is one load where the loader put it: no two loads share an address
+    let m = call(s, &["modules"]);
+    let hex = |x: &str| u64::from_str_radix(x.trim_start_matches("0x"), 16).ok();
+    let mut spans: Vec<(u64, u64)> = m
+        .lines()
+        .filter_map(|x| x.split_whitespace().next()?.split_once('-').and_then(|(lo, hi)| Some((hex(lo)?, hex(hi)?))))
+        .collect();
+    spans.sort();
+    assert!(spans.len() > 2 && spans.windows(2).all(|w| w[0].1 <= w[1].0), "{m}");
+    let out = call(s, &["cont", "--wait", "20"]);
+    assert!(out.contains("breakpoint #2") && out.contains("helper"), "{out}");
+    // the unload of the library leaves the loader's own breakpoint and the program's bytes as they were
+    let out = call(s, &["cont", "--wait", "20"]);
+    assert!(out.contains("exited with code 0"), "{out}");
+    let l = call(s, &["breaks"]);
+    assert!(l.contains("hits 1") && !l.contains("disabled"), "{l}");
     let _ = call(s, &["end"]);
 }

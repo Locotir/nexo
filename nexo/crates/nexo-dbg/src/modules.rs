@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use nexo_bin::{Image, Place};
 
 use crate::platform::Target;
+use crate::rebuild::{self, Kind};
 use crate::regs::Regs;
 
 pub struct Module {
@@ -83,6 +84,56 @@ pub(crate) const DW2GP: [usize; 16] = [0, 3, 2, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 /// address column.
 pub(crate) const DW2GP32: [usize; 8] = [0, 2, 3, 1, 7, 6, 4, 5];
 
+/// How many bytes from `base` the image loaded there reaches, from its headers in memory (ELF program headers, PE
+/// `SizeOfImage`); `None` when they cannot be read there.
+fn span_at(t: &mut dyn Target, base: u64) -> Option<u64> {
+    let mut head = vec![0u8; 0x1000];
+    let n = t.read(base, &mut head);
+    head.truncate(n);
+    match rebuild::kind(&head) {
+        Kind::Elf => rebuild::elf_span(&head).map(|(_, n)| n),
+        Kind::Pe => rebuild::pe_span(&head),
+        Kind::Other => None,
+    }
+}
+
+/// The files a list of mappings (`/proc/PID/maps`, sorted by address) shows loaded, one per file, each at the start
+/// of its load. A file the program maps again by itself (to read it) is a piece at offset 0 that no code follows, so
+/// a load starts at the first piece at offset 0 from which the file's next pieces (each right after the last, at a
+/// later offset) reach code, or at the file's first piece at offset 0 when none does.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn loads(maps: &[crate::platform::Map]) -> Vec<crate::platform::Module> {
+    use crate::platform::Module as Loaded;
+    let reaches_code = |i: usize| {
+        let mut j = i;
+        loop {
+            if maps[j].exec {
+                return true;
+            }
+            match maps.get(j + 1) {
+                Some(n) if n.start == maps[j].end && n.path == maps[i].path && n.offset != 0 => j += 1,
+                _ => return false,
+            }
+        }
+    };
+    let mut out: Vec<(Loaded, bool)> = Vec::new();
+    for (i, m) in maps.iter().enumerate() {
+        if !m.path.starts_with('/') || m.offset != 0 {
+            continue;
+        }
+        let code = reaches_code(i);
+        match out.iter_mut().find(|(o, _)| o.path == m.path) {
+            None => out.push((Loaded { path: m.path.clone(), base: m.start }, code)),
+            Some((o, had)) if code && !*had => {
+                o.base = m.start;
+                *had = true;
+            }
+            Some(_) => {}
+        }
+    }
+    out.into_iter().map(|(m, _)| m).collect()
+}
+
 impl Mods {
     pub fn new(main: Image) -> Mods {
         Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new(), lines: HashMap::new(), vars: None }
@@ -133,6 +184,9 @@ impl Mods {
                     .map(|x| x.end)
                     .max()
                     .unwrap_or(m.base);
+                // the same file mapped again above its load (a program reading its own file) is not part of the load:
+                // the headers in memory say how far the load reaches
+                let end = span_at(t, m.base).map_or(end, |n| end.min(m.base.saturating_add(n)));
                 Module { path: m.path.clone(), base: m.base, end }
             })
             .collect();
@@ -550,5 +604,46 @@ fn cfi_expr(
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loads;
+    use crate::platform::Map;
+
+    fn piece(start: u64, end: u64, exec: bool, offset: u64, path: &str) -> Map {
+        Map { start, end, read: true, write: false, exec, offset, path: path.into() }
+    }
+
+    #[test]
+    fn a_library_starts_at_its_load_and_not_at_a_copy_of_its_file_mapped_below_or_above_it() {
+        let lib = "/x/libplugin.so";
+        let maps = [
+            // the program read the file into memory right below the load, and once more above it
+            piece(0x7000, 0x9000, false, 0, lib),
+            piece(0x9000, 0xa000, false, 0, lib),
+            piece(0xa000, 0xb000, true, 0x1000, lib),
+            piece(0xb000, 0xc000, false, 0x2000, lib),
+            piece(0xc000, 0xd000, false, 0, ""),
+            piece(0x20000, 0x22000, false, 0, lib),
+        ];
+        let l = loads(&maps);
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].base, 0x9000);
+    }
+
+    #[test]
+    fn a_program_whose_code_is_its_first_piece_and_a_file_with_no_code_start_at_their_first_piece() {
+        let maps = [
+            // an old layout: code at offset 0, its data far above, at offset 0 again
+            piece(0x400000, 0x401000, true, 0, "/x/old"),
+            piece(0x600000, 0x601000, false, 0, "/x/old"),
+            piece(0x7000_0000, 0x7000_1000, false, 0, "/x/data.bin"),
+            piece(0x7000_1000, 0x7000_2000, false, 0x1000, "/x/data.bin"),
+        ];
+        let l = loads(&maps);
+        let at: Vec<(&str, u64)> = l.iter().map(|m| (m.path.as_str(), m.base)).collect();
+        assert_eq!(at, [("/x/old", 0x400000), ("/x/data.bin", 0x7000_0000)]);
     }
 }
