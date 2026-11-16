@@ -367,3 +367,11 @@ mod elsewhere_tests {
         assert!(!Edit.run(json!({"path": "g.txt", "old_string": "1", "new_string": "uno"}), &c).await.is_error);
     }
 }
+
+#[test]
+fn an_old_string_that_overlaps_itself_is_not_taken_for_unique() {
+    let err = apply::replace("aaa", "aa", "b", false, "f").unwrap_err();
+    assert!(err.contains("occurs 2 times"), "{err}");
+    // replace_all still replaces the matches that do not overlap
+    assert_eq!(apply::replace("aaa", "aa", "b", true, "f").unwrap(), ("ba".to_string(), 1));
+}

@@ -157,6 +157,17 @@ fn a_zero_offset_and_limit_do_not_underflow_the_summary() {
     assert_eq!(s, "read a [0..0]");
 }
 
+#[tokio::test]
+async fn a_huge_limit_in_a_small_window_does_not_overflow() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ctx(d.path());
+    c.room = Some(nexo_core::ResultRoom { chars: 4_000, window: 8_000 });
+    let text: String = (1..=400).map(|i| format!("line {i} {}\n", "x".repeat(60))).collect();
+    std::fs::write(d.path().join("big.txt"), &text).unwrap();
+    let out = Read.run(json!({"path": "big.txt", "offset": 2, "limit": u64::MAX}), &c).await;
+    assert!(!out.is_error && out.content.contains("more"), "{}", out.content);
+}
+
 fn png_file(d: &std::path::Path, name: &str, w: u32, h: u32) {
     std::fs::write(d.join(name), crate::picture::tests::png(w, h)).unwrap();
 }

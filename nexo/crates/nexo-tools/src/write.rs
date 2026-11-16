@@ -76,15 +76,20 @@ impl Tool for Write {
         // a file too large to load: only its head is read, for the binary check, and the diff starts empty
         let huge = tokio::fs::metadata(&path).await.map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false);
         let read = if huge { read_head(&path).await } else { tokio::fs::read(&path).await };
+        let mut same = false;
         let old = match read {
             Ok(b) if is_binary(&b) => {
                 return ToolOutput::error(format!("write: {shown} is a binary file; not overwriting it"))
             }
             Ok(_) if huge => Some(String::new()),
-            Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+            Ok(b) => {
+                // compared as bytes: a lossy text would call a file with invalid bytes the same as its U+FFFD form
+                same = b == content.as_bytes();
+                Some(String::from_utf8_lossy(&b).into_owned())
+            }
             Err(_) => None,
         };
-        if !huge && old.as_deref() == Some(content) {
+        if same {
             return ToolOutput::error(format!("write: {shown} already has this content; nothing to write"));
         }
         if let Some(why) = ctx.seen.unseen(&path) {
@@ -168,6 +173,17 @@ mod tests {
         let e = Edit.run(json!({"path": "e.txt", "old_string": "one", "new_string": "two"}), &c).await;
         assert!(!e.is_error, "{}", e.content);
         assert!(!Write.run(json!({"path": "e.txt", "content": "three\n"}), &c).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn a_file_with_invalid_bytes_is_not_taken_for_the_same_content() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("b.txt");
+        std::fs::write(&f, [b'a', 0xFF, b'b']).unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "b.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "b.txt", "content": "a\u{FFFD}b"}), &c).await;
+        assert!(!out.content.contains("already has this content"), "{}", out.content);
     }
 
     #[tokio::test]

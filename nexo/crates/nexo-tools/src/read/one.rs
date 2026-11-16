@@ -140,7 +140,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
                 .lines()
                 .enumerate()
                 .skip(n)
-                .take(offset - 1 + limit - n)
+                .take((offset - 1).saturating_add(limit).saturating_sub(n))
                 .map(|(i, l)| format!("{:>6}│ {}\n", i + 1, cut_line(l, LINE_CHARS)).chars().count())
                 .sum();
             ctx.cut_fact(FILE_CAP, chars, chars + rest, &format!("read with offset {} to continue", n + 1))

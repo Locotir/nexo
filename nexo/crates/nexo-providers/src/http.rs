@@ -214,7 +214,9 @@ pub fn parse_retry_after(v: &str, now: time::OffsetDateTime) -> Option<Duration>
 }
 
 fn looks_like_html(t: &str) -> bool {
-    let h = t.trim_start().get(..200.min(t.trim_start().len())).unwrap_or("").to_ascii_lowercase();
+    let t = t.trim_start();
+    let end = (0..=200.min(t.len())).rev().find(|&i| t.is_char_boundary(i)).unwrap_or(0);
+    let h = t[..end].to_ascii_lowercase();
     h.starts_with("<!doctype html") || h.starts_with("<html") || h.contains("<html") || h.contains("<head>")
 }
 
@@ -253,6 +255,13 @@ mod tests {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             self.1.as_deref().map(|l| l as &(dyn std::error::Error + 'static))
         }
+    }
+
+    #[test]
+    fn an_html_page_is_seen_even_when_a_multibyte_char_spans_byte_200() {
+        let page = format!("<html><body>{}\u{e9}", "x".repeat(187));
+        assert!(!page.is_char_boundary(200));
+        assert!(looks_like_html(&page));
     }
 
     #[test]

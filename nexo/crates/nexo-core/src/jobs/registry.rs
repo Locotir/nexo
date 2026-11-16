@@ -128,9 +128,12 @@ impl JobHandle {
 
     /// The job ended by itself. A job killed or stopped stays so.
     pub fn finish(self, ok: bool, how: impl Into<String>) {
-        let killed = { !self.entry.status.lock().unwrap().running() };
-        if !killed {
-            *self.entry.status.lock().unwrap() = JobStatus::Done { ok, how: how.into() };
+        // the check and the write share one lock, so a kill cannot land between them
+        {
+            let mut status = self.entry.status.lock().unwrap();
+            if status.running() {
+                *status = JobStatus::Done { ok, how: how.into() };
+            }
         }
         self.end();
     }
@@ -149,8 +152,11 @@ impl JobHandle {
 impl Drop for JobHandle {
     /// A runner that stops without saying how (a panic, a dropped task) ends the job as killed.
     fn drop(&mut self) {
-        if self.entry.status.lock().unwrap().running() {
-            *self.entry.status.lock().unwrap() = JobStatus::Killed;
+        {
+            let mut status = self.entry.status.lock().unwrap();
+            if status.running() {
+                *status = JobStatus::Killed;
+            }
         }
         self.end();
     }

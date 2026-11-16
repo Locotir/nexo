@@ -70,14 +70,19 @@ pub(super) fn replace(text: &str, old: &str, new: &str, all: bool, shown: &str) 
     // the file's text is matched as it is; only the strings given adapt to its line ends
     let (old, new) = match_line_ends(text, old, new);
     let (old, new) = (old.as_str(), new.as_str());
-    match text.matches(old).count() {
-        0 => Err(not_found(text, old, shown)),
-        1 => Ok((text.replacen(old, new, 1), 1)),
-        n if all => Ok((text.replace(old, new), n)),
-        n => Err(format!(
-            "edit: `old_string` occurs {n} times in {shown}; include more surrounding lines to make it unique, or set replace_all"
-        )),
+    let Some(first) = text.find(old) else { return Err(not_found(text, old, shown)) };
+    if all {
+        return Ok((text.replace(old, new), text.matches(old).count()));
     }
+    // a second match may overlap the first (`aa` in `aaa`), which a count of separate matches misses
+    let step = text[first..].chars().next().map_or(1, char::len_utf8);
+    if text[first + step..].contains(old) {
+        let n = text.char_indices().filter(|(i, _)| text[*i..].starts_with(old)).count();
+        return Err(format!(
+            "edit: `old_string` occurs {n} times in {shown}; include more surrounding lines to make it unique, or set replace_all"
+        ));
+    }
+    Ok((text.replacen(old, new, 1), 1))
 }
 
 /// `old` and `new` as they fit `text`'s line ends: as given when `old` is found so, else with

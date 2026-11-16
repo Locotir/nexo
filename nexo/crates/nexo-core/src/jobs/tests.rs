@@ -173,3 +173,18 @@ fn a_report_in_the_ended_note_is_cut_to_the_room_of_a_small_window_and_says_how_
     assert_eq!(whole, jobs.note_ended(&ended(&jobs)));
     assert!(!whole.contains("-token window"));
 }
+
+#[tokio::test]
+async fn a_kill_racing_the_finish_never_leaves_a_label_that_contradicts_it() {
+    let jobs = Jobs::new();
+    for _ in 0..200 {
+        let h = jobs.start(JobKind::Shell, "race");
+        let id = h.id();
+        let j = jobs.clone();
+        let killer = std::thread::spawn(move || j.kill(id));
+        h.finish(true, "exit 0");
+        let killed = killer.join().unwrap();
+        let status = jobs.get(id).unwrap().status;
+        assert_eq!(killed, status == JobStatus::Killed, "{status:?}");
+    }
+}
