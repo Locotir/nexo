@@ -114,6 +114,8 @@ struct Vkid {
     at: u64,
     /// The breakpoint address the child is stepping past with the program's byte in place: 0xcc goes back after.
     over: Option<u64>,
+    /// The guard (see `Linux::guards`) opened for one instruction of the child: it closes again after the step.
+    open: Option<(u64, u64, u8, u8)>,
 }
 
 pub struct Linux {
@@ -125,6 +127,9 @@ pub struct Linux {
     out: Option<File>,
     watch: [Option<HwSlot>; 4],
     patches: Vec<(u64, u8)>,
+    /// The guarded pages of the page watches (start, length, own access, guard access): a child forked while they
+    /// are guarded gets its copy's own access back.
+    guards: Vec<(u64, u64, u8, u8)>,
     /// The program ended or was let go.
     gone: bool,
     want_stop: bool,
@@ -165,6 +170,144 @@ fn syscall_info(tid: i32) -> Option<Sys> {
             Some(Sys { entry: false, nr, args: [0; 6], ret: b[3] as i64, error: b[4] & 0xff != 0 })
         }
         _ => None,
+    }
+}
+
+/// Where stopped thread `tid` stands, for an instruction of ours to run there: `Ok(false)` on the way back to its
+/// code (a signal, a step, a breakpoint, a job-control stop, the end of a system call); `Ok(true)` inside a fork,
+/// clone or exec, which one step ends first; `Err` where one step would run the thread's own system call (it may
+/// block) or, with the call number taken out, skip it, or where it waits for a vfork child.
+fn inside_call(tid: i32) -> std::result::Result<bool, String> {
+    let mut info = [0u64; 16];
+    if let Err(e) = pt(GETSIGINFO, tid, 0, info.as_mut_ptr() as u64) {
+        return Err(format!("the stop of thread {tid} cannot be read ({e})"));
+    }
+    let (signo, code) = (info[0] as u32 as i32, (info[1] & 0xffff_ffff) as u32 as i32);
+    if signo != libc::SIGTRAP {
+        return Ok(false);
+    }
+    if code == libc::SIGTRAP | 0x80 {
+        return match syscall_info(tid) {
+            Some(s) if s.entry => Err(format!("thread {tid} stands at the start of system call {}, not run yet", s.nr)),
+            _ => Ok(false),
+        };
+    }
+    match code >> 8 {
+        EVENT_FORK | EVENT_CLONE | EVENT_EXEC => Ok(true),
+        EVENT_VFORK => Err(format!("thread {tid} waits in vfork for its child to exec or exit")),
+        _ => Ok(false),
+    }
+}
+
+/// Put `bytes` at `addr` through stopped thread `tid` and give back the bytes that were there, exactly as they
+/// were (a breakpoint's 0xcc included).
+fn swap_bytes(tid: i32, addr: u64, bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let mut old = Vec::with_capacity(bytes.len());
+    for (a, &b) in (addr..).zip(bytes) {
+        let base = a & !7;
+        let mut w = 0u64;
+        pt(PEEKDATA, tid, base, (&raw mut w) as u64)?;
+        let mut word = w.to_le_bytes();
+        old.push(word[(a - base) as usize]);
+        word[(a - base) as usize] = b;
+        pt(POKEDATA, tid, base, u64::from_le_bytes(word))?;
+    }
+    Ok(old)
+}
+
+/// One step of thread `tid`. True when it ended in the step's trap. An interrupt or job-control stop that came
+/// first is passed over; another signal goes to `sigs`, for the thread's next run.
+fn step_once(tid: i32, sigs: &mut Vec<i32>) -> io::Result<bool> {
+    pt(SINGLESTEP, tid, 0, 0)?;
+    let st = waitpid(tid, 0)?.unwrap_or(0);
+    if !libc::WIFSTOPPED(st) {
+        return Err(io::Error::other("the thread ended during mprotect"));
+    }
+    let sig = libc::WSTOPSIG(st);
+    if st >> 16 != 0 {
+        return Ok(false);
+    }
+    if sig == libc::SIGTRAP {
+        return Ok(true);
+    }
+    sigs.push(sig);
+    Ok(false)
+}
+
+/// Step thread `tid` with registers `u` until it has run the two-byte system call instruction at its pc: the
+/// result in rax. A trap that left the pc where it was (the step ended a system call the thread stood in) is
+/// stepped again.
+fn run_injected(tid: i32, u: &[u64; 27], sigs: &mut Vec<i32>) -> io::Result<i64> {
+    let (from, to) = (u[16], u[16] + 2);
+    for _ in 0..8 {
+        pt(SETREGS, tid, 0, u.as_ptr() as u64)?;
+        if !step_once(tid, sigs)? {
+            continue;
+        }
+        let mut after = [0u64; 27];
+        pt(GETREGS, tid, 0, after.as_mut_ptr() as u64)?;
+        if after[16] == to {
+            return Ok(after[10] as i64);
+        }
+        if after[16] != from {
+            return Err(io::Error::other(format!("the step ended at {:#x}, not after the call", after[16])));
+        }
+    }
+    Err(io::Error::other("signals kept coming before the mprotect step"))
+}
+
+/// Run `mprotect(addr, len, prot)` in the program from stopped thread `tid`: a `syscall` (`int 0x80` in a 32-bit
+/// program) put for one step where the thread stands, then every byte and register goes back as it was. `finish`:
+/// the thread stands inside a fork, clone or exec, and one step ends that call first, so the program sees it return
+/// as it would have. Signals that come meanwhile go to `sigs`.
+fn mprotect_in(tid: i32, addr: u64, len: u64, prot: u8, finish: bool, sigs: &mut Vec<i32>) -> Result<()> {
+    if finish {
+        let mut ended = false;
+        for _ in 0..8 {
+            if step_once(tid, sigs).map_err(|e| os_err("the end of the system call before mprotect", e))? {
+                ended = true;
+                break;
+            }
+        }
+        if !ended {
+            return fail(format!("thread {tid} did not leave its system call for mprotect"));
+        }
+    }
+    let mut saved = [0u64; 27];
+    pt(GETREGS, tid, 0, saved.as_mut_ptr() as u64).map_err(|e| os_err("registers for mprotect", e))?;
+    let rip = saved[16];
+    // the bits are the same as Linux's PROT_READ, PROT_WRITE, PROT_EXEC
+    let p = u64::from(prot & 7);
+    let mut u = saved;
+    // not inside a system call, so the kernel restarts none on the way out
+    u[15] = u64::MAX;
+    let insn = if saved[17] == 0x23 {
+        (u[10], u[5], u[11], u[12]) = (125, addr, len, p);
+        [0xcd, 0x80]
+    } else {
+        (u[10], u[14], u[13], u[12]) = (libc::SYS_mprotect as u64, addr, len, p);
+        [0x0f, 0x05]
+    };
+    let code = swap_bytes(tid, rip, &insn).map_err(|e| os_err(&format!("the code at {rip:#x} for mprotect"), e))?;
+    let ran = run_injected(tid, &u, sigs);
+    let back = swap_bytes(tid, rip, &code);
+    pt(SETREGS, tid, 0, saved.as_ptr() as u64).map_err(|e| os_err("registers after mprotect", e))?;
+    back.map_err(|e| os_err(&format!("the code at {rip:#x} after mprotect"), e))?;
+    match ran {
+        Ok(r) if r < 0 => fail(format!(
+            "mprotect({addr:#x}, {len:#x}) in the program failed: {}",
+            io::Error::from_raw_os_error(-r as i32)
+        )),
+        Ok(_) => Ok(()),
+        Err(e) => Err(os_err("mprotect", e)),
+    }
+}
+
+/// Send thread `tid` the signals it stopped on while it ran an instruction of ours, so it gets them when it runs on.
+fn send_again(tid: i32, sigs: Vec<i32>) {
+    for s in sigs {
+        // SAFETY: a thread of a process we trace.
+        unsafe { libc::syscall(libc::SYS_tkill, tid, s) };
     }
 }
 
@@ -327,6 +470,7 @@ impl Linux {
             out: Some(out),
             watch: [None; 4],
             patches: Vec::new(),
+            guards: Vec::new(),
             gone: false,
             want_stop: false,
             sys: false,
@@ -357,6 +501,7 @@ impl Linux {
             out: None,
             watch: [None; 4],
             patches: Vec::new(),
+            guards: Vec::new(),
             gone: false,
             want_stop: false,
             sys: false,
@@ -483,12 +628,57 @@ impl Linux {
         if !Self::first_stop(child) {
             return;
         }
+        let mut sigs = Vec::new();
         if !shared {
             for &(addr, byte) in &self.patches {
                 Self::poke_byte(child, addr, byte);
             }
+            // its copy of a guarded page would end it with SIGSEGV at its first write there
+            for &(start, len, own, _) in &self.guards {
+                let _ = mprotect_in(child, start, len, own, false, &mut sigs);
+            }
         }
-        let _ = pt(DETACH, child, 0, 0);
+        let first = if sigs.is_empty() { 0 } else { sigs.remove(0) };
+        send_again(child, sigs);
+        let _ = pt(DETACH, child, 0, first as u64);
+    }
+
+    /// Signals thread `tid` stopped on while it ran an instruction of ours: the first is handed over when it runs
+    /// again, as if it had stopped on it (when it holds none yet), the others are sent again.
+    fn keep_signals(&mut self, tid: i32, mut sigs: Vec<i32>) {
+        if let Some(t) = self.th.get_mut(&tid).filter(|t| t.sig == 0 && !sigs.is_empty()) {
+            t.sig = sigs.remove(0);
+        }
+        send_again(tid, sigs);
+    }
+
+    /// Vfork child `i` stopped on SIGSEGV or SIGBUS. In a page a watch guards (the memory is the parent's), the page
+    /// gets its own access back for the child's one instruction, which is no hit of the parent's watch; true then.
+    fn vkid_fault(&mut self, i: usize) -> bool {
+        let pid = self.vkids[i].pid;
+        let mut info = [0u64; 16];
+        if pt(GETSIGINFO, pid, 0, info.as_mut_ptr() as u64).is_err() {
+            return false;
+        }
+        let a = info[2];
+        let Some(&g) = self.guards.iter().find(|g| a >= g.0 && a - g.0 < g.1) else { return false };
+        // the two bytes of the mprotect call stand for one step where the child is, in code the parent's other
+        // threads (they run) could reach meanwhile; a vfork child runs code of its own before its exec
+        let mut sigs = Vec::new();
+        let opened = mprotect_in(pid, g.0, g.1, g.2, false, &mut sigs).is_ok();
+        send_again(pid, sigs);
+        if !opened {
+            return false;
+        }
+        // a breakpoint on that instruction would end the step: the program's byte goes in for it
+        let pc = self.regs(pid as Tid).map_or(0, |r| r.rip);
+        if let Some(byte) = self.patches.iter().find(|p| p.0 == pc).map(|p| p.1) {
+            if Self::poke_byte(pid, pc, byte) {
+                self.vkids[i].over = Some(pc);
+            }
+        }
+        self.vkids[i].open = Some(g);
+        pt(SINGLESTEP, pid, 0, 0).is_ok()
     }
 
     /// A child the program forked, kept as a target of its own: one thread, stopped where fork returned in it (with
@@ -508,6 +698,7 @@ impl Linux {
             out: self.out.as_ref().and_then(|f| f.try_clone().ok()),
             watch: [None; 4],
             patches,
+            guards: Vec::new(),
             gone: false,
             want_stop: false,
             sys: false,
@@ -532,7 +723,7 @@ impl Linux {
         let at = self.regs(tid as Tid).map_or(0, |r| r.rip);
         if vfork {
             if Self::first_stop(child) && pt(CONT, child, 0, 0).is_ok() {
-                self.vkids.push(Vkid { pid: child, parent: tid, at, over: None });
+                self.vkids.push(Vkid { pid: child, parent: tid, at, over: None, open: None });
                 if let Some(t) = self.th.get_mut(&tid) {
                     t.held = true;
                     t.go = !stopping;
@@ -597,10 +788,19 @@ impl Linux {
                 }
                 None => false,
             };
+            let opened = self.vkids[i].open.take();
             let Some(st) = st.filter(|&st| libc::WIFSTOPPED(st)) else {
+                // a child gone in the middle of its step leaves an opened guard open: no stopped thread can close
+                // it until the parent's program stops
                 self.vfork_done(i, false, events);
                 continue;
             };
+            // the guard opened for the child's step closes, unless the watch was dropped meanwhile
+            if let Some(g) = opened.filter(|g| self.guards.contains(g)) {
+                let mut sigs = Vec::new();
+                let _ = mprotect_in(pid, g.0, g.1, g.3, false, &mut sigs);
+                send_again(pid, sigs);
+            }
             let sig = libc::WSTOPSIG(st);
             match st >> 16 {
                 EVENT_EXEC => {
@@ -615,7 +815,12 @@ impl Linux {
                     }
                     let _ = pt(CONT, pid, 0, 0);
                 }
+                // the end of the step past a guarded page (the mprotect run since stands in for its trap)
+                0 if sig == libc::SIGTRAP && opened.is_some() => {
+                    let _ = pt(CONT, pid, 0, 0);
+                }
                 0 if sig == libc::SIGTRAP => self.vkid_trap(i, stepped),
+                0 if matches!(sig, libc::SIGSEGV | libc::SIGBUS) && self.vkid_fault(i) => {}
                 0 => {
                     let _ = pt(CONT, pid, 0, sig as u64);
                 }
@@ -730,7 +935,9 @@ impl Linux {
                     Ok(Some(st)) if libc::WIFSTOPPED(st) => {
                         let sig = libc::WSTOPSIG(st);
                         let hand = match st >> 16 {
-                            0 if sig == libc::SIGTRAP => self.our_trap(v.pid).is_none() && v.over.is_none(),
+                            0 if sig == libc::SIGTRAP => {
+                                self.our_trap(v.pid).is_none() && v.over.is_none() && v.open.is_none()
+                            }
                             0 => true,
                             EVENT_FORK | EVENT_VFORK | EVENT_CLONE => {
                                 let mut new = 0u64;
@@ -798,6 +1005,7 @@ impl Linux {
                 self.th.entry(self.pid).or_default().running = false;
                 self.watch = [None; 4];
                 self.patches.clear();
+                self.guards.clear();
                 self.open_mem();
                 events.push(Event::Stopped { tid: self.pid as Tid, stop: Stop::Exec });
             }
@@ -1036,67 +1244,43 @@ impl Target for Linux {
     }
 
     fn protect(&mut self, addr: u64, len: u64, prot: u8) -> Result<()> {
-        // ptrace cannot change another process's pages: the program itself runs one mprotect, from a `syscall`
-        // (`int 0x80` in a 32-bit program) put for one step where a stopped thread stands, then every byte and
-        // register goes back as it was.
-        let tid = self.stopped_tid()?;
-        if self.th.get(&tid).is_some_and(|t| t.held) {
-            return fail(
-                "mprotect: every stopped thread waits for a vfork child to exec or exit, and runs no instruction before that",
-            );
-        }
-        let mut saved = [0u64; 27];
-        pt(GETREGS, tid, 0, saved.as_mut_ptr() as u64).map_err(|e| os_err("registers for mprotect", e))?;
-        let rip = saved[16];
-        let compat = saved[17] == 0x23;
-        let mut code = [0u8; 2];
-        if self.read(rip, &mut code) != 2 {
-            return fail(format!("mprotect: the code at {rip:#x} cannot be read"));
-        }
-        // the bits are the same as Linux's PROT_READ, PROT_WRITE, PROT_EXEC
-        let p = u64::from(prot & 7);
-        let mut u = saved;
-        // not inside a system call, so the kernel restarts none on the way out
-        u[15] = u64::MAX;
-        let insn = if compat {
-            (u[10], u[5], u[11], u[12]) = (125, addr, len, p);
-            [0xcd, 0x80]
-        } else {
-            (u[10], u[14], u[13], u[12]) = (libc::SYS_mprotect as u64, addr, len, p);
-            [0x0f, 0x05]
-        };
-        self.write(rip, &insn)?;
-        let ran = pt(SETREGS, tid, 0, u.as_ptr() as u64).and_then(|_| {
-            for _ in 0..8 {
-                pt(SINGLESTEP, tid, 0, 0)?;
-                let st = waitpid(tid, 0)?.unwrap_or(0);
-                if !libc::WIFSTOPPED(st) {
-                    return Err(io::Error::other("the thread ended during mprotect"));
-                }
-                let sig = libc::WSTOPSIG(st);
-                if sig == libc::SIGTRAP {
-                    let mut after = [0u64; 27];
-                    pt(GETREGS, tid, 0, after.as_mut_ptr() as u64)?;
-                    return Ok(after[10] as i64);
-                }
-                // a signal came first: it is handed over when the thread runs again, the step is tried again
-                if let Some(t) = self.th.get_mut(&tid).filter(|t| t.sig == 0) {
-                    t.sig = sig;
-                }
+        // ptrace cannot change another process's pages: the program itself runs one mprotect from a stopped thread
+        // (`mprotect_in`), one on the way back to its code if there is one, else one a step takes out of a fork,
+        // clone or exec first
+        let mut finish = None;
+        let mut why = Vec::new();
+        let mut free = None;
+        for (&tid, t) in self.th.iter().filter(|(_, t)| !t.running && !self.gone) {
+            if t.held {
+                why.push(format!("thread {tid} waits in vfork for its child to exec or exit"));
+                continue;
             }
-            Err(io::Error::other("signals kept coming before the mprotect step"))
-        });
-        let back = self.write(rip, &code);
-        pt(SETREGS, tid, 0, saved.as_ptr() as u64).map_err(|e| os_err("registers after mprotect", e))?;
-        back?;
-        match ran {
-            Ok(r) if r < 0 => fail(format!(
-                "mprotect({addr:#x}, {len:#x}) in the program failed: {}",
-                io::Error::from_raw_os_error(-r as i32)
-            )),
-            Ok(_) => Ok(()),
-            Err(e) => Err(os_err("mprotect", e)),
+            match inside_call(tid) {
+                Ok(false) => {
+                    free = Some(tid);
+                    break;
+                }
+                Ok(true) => {
+                    finish.get_or_insert(tid);
+                }
+                Err(e) => why.push(e),
+            }
         }
+        let Some((tid, ends)) = free.map(|t| (t, false)).or(finish.map(|t| (t, true))) else {
+            return if why.is_empty() {
+                fail("the program is not stopped")
+            } else {
+                fail(format!("mprotect cannot run in the program now: {}", why.join("; ")))
+            };
+        };
+        let mut sigs = Vec::new();
+        let r = mprotect_in(tid, addr, len, prot, ends, &mut sigs);
+        self.keep_signals(tid, sigs);
+        r
+    }
+
+    fn set_guards(&mut self, guards: &[(u64, u64, u8, u8)]) {
+        self.guards = guards.to_vec();
     }
 
     fn set_patches(&mut self, patches: &[(u64, u8)]) {

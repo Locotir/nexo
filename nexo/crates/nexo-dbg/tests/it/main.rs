@@ -24,6 +24,7 @@ mod frames;
 mod gdb_script;
 mod launch_opts;
 mod one_line_locals;
+mod page_guards;
 mod prologue_locals;
 mod range_page;
 mod rsp;

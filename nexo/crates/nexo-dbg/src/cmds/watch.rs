@@ -154,7 +154,7 @@ impl Session {
                 lines.push(if how == WatchHow::Pages {
                     let (lo, hi) = (addr & !(PAGE - 1), (addr + len).div_ceil(PAGE) * PAGE);
                     format!(
-                        "{} page{} of 4 KiB at {lo:#x} lose {} access while the program runs; each access to them, other data there included, costs a fault, one step and two protection changes; a system call that writes into them (read, recv) fails with EFAULT meanwhile; a child forked meanwhile keeps the guard; `step` instead compares after each instruction",
+                        "{} page{} of 4 KiB at {lo:#x} lose {} access while the program runs; each access to them, other data there included, costs a fault, one step and two protection changes; a system call that writes into them (read, recv) fails with EFAULT meanwhile; a child forked meanwhile gets its copy's own access back, and the accesses of a vfork child (it shares the memory until its exec) go through without a hit; `step` instead compares after each instruction",
                         (hi - lo) / PAGE,
                         if hi - lo > PAGE { "s" } else { "" },
                         if acc == Access::ReadWrite { "all" } else { "write" }

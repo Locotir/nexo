@@ -292,6 +292,9 @@ pub trait Target {
     }
     /// The bytes under the breakpoints now in memory: a child the program forks is let go with them put back.
     fn set_patches(&mut self, _patches: &[(u64, u8)]) {}
+    /// The pages guarded now (start, length, own access, guard access): a child the program forks is let go with
+    /// its copies given their own access back.
+    fn set_guards(&mut self, _guards: &[(u64, u64, u8, u8)]) {}
     /// Which side of a fork to keep. `false`: this backend lets every child go, whatever is asked.
     fn set_follow(&mut self, _follow: Follow) -> bool {
         false

@@ -142,14 +142,26 @@ impl Session {
         if self.guards.is_empty() {
             self.guards = self.guard_plan()?;
         }
+        let mut done = Ok(());
         for i in 0..self.guards.len() {
             let g = self.guards[i];
             if !g.armed {
-                self.t.protect(g.start, g.len, g.guard)?;
+                done = self.t.protect(g.start, g.len, g.guard);
+                if done.is_err() {
+                    break;
+                }
                 self.guards[i].armed = true;
             }
         }
-        Ok(())
+        self.tell_guards();
+        done
+    }
+
+    /// The backend learns which pages are guarded now: a child the program forks gets its copies' access back.
+    fn tell_guards(&mut self) {
+        let armed: Vec<(u64, u64, u8, u8)> =
+            self.guards.iter().filter(|g| g.armed).map(|g| (g.start, g.len, g.orig, g.guard)).collect();
+        self.t.set_guards(&armed);
     }
 
     /// Give guarded pages their own access back: all of them, or the run that holds `only`.
@@ -163,6 +175,7 @@ impl Session {
                 self.guards[i].armed = false;
             }
         }
+        self.tell_guards();
     }
 
     /// A fault the guard of a page watch caused (and not the program's own).
