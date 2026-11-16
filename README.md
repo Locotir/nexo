@@ -8,7 +8,9 @@
 
 **No compaction. No summaries. The whole history stays on disk.**
 
-<a href="#proof"><img src="docs/img/hero.svg" width="880" alt="Measured on the same model, 2026-11-10. Against Claude Code, 5 tasks, 3 runs each: 40% fewer tokens (3.65M against 6.04M), every task completed (100% of runs against 93%), lower cost in every run (2.48 dollars against 3.97 in total). Against Codex CLI, one 10-turn session, one run: 41% fewer input tokens (3.86M against 6.53M), 0 compactions, 27 calls against 42; Codex CLI compacted twice and did not solve it"></a>
+<img src="docs/img/hero-tui.png" width="880" alt="A real nexo session, unedited, in a terminal window: deepseek/deepseek-flash runs the failing tests of a small invoice module, fixes two bugs in src/invoice.js (the diff is on screen) and replies with a table of each function, its bug and the fix. The status bar shows the context tokens and the session cost, 0.0020 dollars; the turn line shows 3 steps and a 93% cache hit">
+
+<sub>A real session, unedited: deepseek-flash runs the tests of a small invoice module, fixes the two bugs and answers with a table. 3 steps, 93% cache hit, $0.0020 for the whole session (<code>[ui] detail = "full"</code>).</sub>
 
 [**Install**](#install) · [**Proof**](#proof) · [**How it works**](#how-it-works) · [**Providers**](#providers) · [**Full guide**](nexo/README.md)
 
@@ -28,10 +30,6 @@ curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh  
 nexo is a terminal coding agent written in Rust, for any model provider. Its context curator keeps long sessions
 small without summaries: the whole history stays on disk, and the model is sent only what the next step needs.
 It runs as a full-screen TUI, headless for scripts and CI, or inside editors over the Agent Client Protocol (ACP).
-
-<p align="center"><img src="docs/img/demo.svg" width="880" alt="nexo fixing a failing test in the terminal"></p>
-
-<sub>Recorded from the real TUI playing a scripted session: the replies, tool results and figures on screen are sample data.</sub>
 
 | | An agent that compacts | nexo |
 | --- | --- | --- |
@@ -71,11 +69,17 @@ nexo doctor                      # checks files, provider, model and key with on
 nexo --provider ollama --model qwen3:8b       # no key: a local model
 ```
 
+<p align="center"><img src="docs/img/demo.svg" width="880" alt="nexo fixing a failing test in the terminal"></p>
+
+<sub>Recorded from the real TUI playing a scripted session: the replies, tool results and figures on screen are sample data.</sub>
+
 The status bar shows context use and cost, and you can click it. The screen stays quiet by default;
 `[ui] detail = "full"` brings back every figure and key hint. Each session reopens on its own provider and model.
 Pick a policy in `~/.nexo/config.toml`: `[context] policy = "curator"` (`auto | plain | compact | curator`).
 
 ## Proof
+
+<a href="#proof"><img src="docs/img/hero.svg" width="880" alt="Measured on the same model, 2026-11-10. Against Claude Code, 5 tasks, 3 runs each: 40% fewer tokens (3.65M against 6.04M), every task completed (100% of runs against 93%), lower cost in every run (2.48 dollars against 3.97 in total). Against Codex CLI, one 10-turn session, one run: 41% fewer input tokens (3.86M against 6.53M), 0 compactions, 27 calls against 42; Codex CLI compacted twice and did not solve it"></a>
 
 Same model, same tasks. Each chart has its date, and what it does not show is one click under it.
 
