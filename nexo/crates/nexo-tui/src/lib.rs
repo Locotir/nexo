@@ -67,6 +67,7 @@ pub use app_fx::Fx;
 pub use fx::app as app_fx;
 pub use fx::burst as fx_burst;
 pub use fx::chrome as fx_chrome;
+pub use fx::condense as fx_condense;
 pub use fx::diff as fx_diff;
 pub use fx::effort as fx_effort;
 pub use fx::galaxy as fx_galaxy;
@@ -187,6 +188,7 @@ pub fn draw_frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyh
         app.force_clear = false;
     }
     terminal.draw(|f| ui::draw(f, app))?;
+    app.cut_on_screen();
     Ok(())
 }
 
@@ -205,5 +207,6 @@ pub fn draw_screen<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> any
             ascii::fold(f.buffer_mut());
         }
     })?;
+    app.cut_on_screen();
     Ok(())
 }

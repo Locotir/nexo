@@ -81,6 +81,13 @@ pub(super) fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
     // along it while the model works (colour only, the comet's head heavy)
     let edge = (!(app.locked && app.input.is_empty())).then(|| rule_tag(app, area.width)).flatten().map(|t| t.0);
     app.paint_crest(f.buffer_mut(), area, edge);
+    // the curator let context go: a light carries it out of the map, down the panel's border and along the
+    // rule to the curator's label (or the rule's end when the bar has no room for it); colour only
+    if let Some(ms) = app.condense_ms().filter(|_| area.width > 0) {
+        let to = app.fx.cut_col.get().unwrap_or(area.right() - 1).clamp(area.x, area.right() - 1);
+        let path = crate::fx_condense::light_path(app.fx.cut_spot.get(), app.files_area.x, area.y, area.x, to);
+        crate::fx_condense::paint(f.buffer_mut(), &app.theme, &path, ms);
+    }
     // a rejected draft flashes the rule once (colour only)
     let k = if on { crate::motion::hump(app.fx.reject_at, now, crate::fx_chrome::REJECT_MS) } else { 0.0 };
     if k > 0.0 {

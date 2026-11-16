@@ -19,6 +19,14 @@ pub struct Fx {
     pub turn_done: Option<Instant>,
     /// The curator just cut the view: the tokens it let go and when (shown by the gauge, fading).
     pub cut: Option<(u64, Instant)>,
+    /// What each message of the context map was before that cut, so its cells condense to the new state;
+    /// where the newest of them was drawn this frame, and the column of the curator's label (see
+    /// `fx_condense`).
+    pub cut_from: Vec<nexo_core::CellState>,
+    pub cut_spot: std::cell::Cell<Option<(u16, u16)>>,
+    pub cut_col: std::cell::Cell<Option<u16>>,
+    /// A frame has shown that cut: its motion runs from that frame (see `App::cut_on_screen`).
+    pub cut_shown: bool,
     /// When the permission mode last changed, and the mode before: the rule over the draft wipes
     /// from the old colour to the new one.
     pub mode_at: Option<Instant>,
@@ -134,8 +142,8 @@ impl App {
         let glow = on && motion::within(self.fx.turn_done, now, motion::GLOW_MS);
         let mode = on && motion::within(self.fx.mode_at, now, motion::MODE_MS);
         let cmd = on && motion::within(self.fx.cmd_lit.as_ref().map(|c| c.1), now, motion::LIT_MS);
-        // the cut figure goes away by itself, animations or not
-        let cut = motion::within(self.fx.cut.map(|c| c.1), now, motion::CUT_MS + 100);
+        // the map condensing and the light asks for frames; the label fading after it only for the beat (see `load`)
+        let cut = self.condense_ms().is_some();
         let changed = self.note_bar_changes(now);
         self.note_goal_fx(now);
         self.note_effort(now);
@@ -216,6 +224,37 @@ impl App {
     /// Whether colour motion is on at all (off with `animations = false` and on a mono theme).
     pub fn fx_on(&self) -> bool {
         self.opts.animations && !self.theme.mono
+    }
+
+    /// How long ago the curator cut the view, while the map still condenses (see `fx_condense`). Never with
+    /// the animations off: the map and the label show their end state at once. A mono theme keeps it, the
+    /// glyph steps and the bold head of the light need no colour.
+    pub fn condense_ms(&self) -> Option<u64> {
+        let (_, at) = self.fx.cut.filter(|_| self.opts.animations)?;
+        if !self.fx.cut_shown {
+            return Some(0);
+        }
+        let ms = self.now().saturating_duration_since(at).as_millis() as u64;
+        (ms < crate::fx_condense::CONDENSE_MS).then_some(ms)
+    }
+
+    /// Called once a frame is on the screen. The motion of a cut runs from the first frame that shows it, not
+    /// from when it arrived: the frame that brings a long tool output with it can take long enough to lay out
+    /// that the map would be done condensing before anyone saw it, and that frame shows the cut at its start.
+    pub(crate) fn cut_on_screen(&mut self) {
+        if !self.fx.cut_shown {
+            self.fx.cut_shown = true;
+            let now = self.now();
+            if let Some(cut) = &mut self.fx.cut {
+                cut.1 = now;
+            }
+        }
+    }
+
+    /// The curator's label still shows the cut, fading to its own colour: on the beat, animations or not, so
+    /// it goes away by itself.
+    pub(crate) fn cut_fading(&self) -> bool {
+        motion::within(self.fx.cut.map(|c| c.1), self.now(), motion::CUT_MS + 100)
     }
 
     /// Keeps the cells of `r` while a dialog or the palette is up, to draw it leaving.

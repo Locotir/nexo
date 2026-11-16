@@ -180,6 +180,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         }
     }
     app.fx.goal_spot.set(None);
+    app.fx.cut_spot.set(None);
     if files_w > 0 {
         draw_panel(f, app, files);
         app.fx.diff.draw_open(f.buffer_mut(), files, &app.theme, now0);

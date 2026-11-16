@@ -23,7 +23,11 @@ pub(super) fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
                 v
             }
             None => {
-                let mut v = context_map(app, inner_w, area.height as usize);
+                let (mut v, spot) = context_map(app, inner_w, area.height as usize);
+                // the light of a cut leaves the map from the newest cell that condensed
+                if let Some((row, col)) = spot.filter(|s| s.0 < area.height as usize) {
+                    app.fx.cut_spot.set(Some((area.x + 2 + col as u16, area.y + row as u16)));
+                }
                 if !app.curated.is_empty() {
                     v.push(Line::from(Span::styled("F3 curator rows", theme.dim2())));
                 }
@@ -201,8 +205,9 @@ fn map_unit(tokens: &[u64], cap: usize) -> u64 {
 /// coloured by who wrote it and lit by how much of it the last call sent.
 /// With the curator, the grid is its memory in zones: the anchor, the topic in
 /// progress and the other topics, newest first, each under a line that says
-/// what of it the call takes.
-fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
+/// what of it the call takes. Also where the newest cell condensing after a cut is (line, column), for the
+/// light that leaves the map from it.
+fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     use nexo_core::CellState;
     let theme = &app.theme;
     let fmt_k = crate::render::blocks::fmt_k;
@@ -216,7 +221,7 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
     let (sent, mem) = sent_of(&mut app.map.iter());
     if app.map.is_empty() {
         out.push(Line::from(Span::styled("fills in with the next call", theme.dim())));
-        return out;
+        return (out, None);
     }
     let policy = app.context.as_ref().map(|c| c.policy.clone()).unwrap_or_default();
     let pct = sent * 100 / mem.max(1);
@@ -270,6 +275,15 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         .filter(|_| app.opts.animations)
         .map(|t| app.now().saturating_duration_since(t).as_millis() as u64)
         .filter(|&ms| ms < MAP_FLASH_MS);
+    // the curator just cut the view: the cells it let go condense, oldest first (see `fx_condense`)
+    let condensing = app.condense_ms().map(|ms| {
+        let from = &app.fx.cut_from;
+        let ix: Vec<usize> = (0..app.map.len().min(from.len()))
+            .filter(|&i| crate::fx_condense::condenses(from[i], app.map[i].state))
+            .collect();
+        (ms, ix)
+    });
+    let mut spot = None;
     for (z, ix) in &groups {
         if let Some(z) = *z {
             let zone = &app.map_zones[z];
@@ -295,13 +309,27 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         }
         let kinds = theme.kind_colours();
         let mut cells: Vec<Span<'static>> = Vec::new();
+        let mut newest = None;
         for &i in ix {
-            cells.extend(cell_spans(app, i, unit, flash, &kinds));
+            let cond = condensing.as_ref().and_then(|(ms, c)| {
+                let rank = c.binary_search(&i).ok()?;
+                let start = crate::fx_condense::start_ms(rank, c.len());
+                Some((ms.saturating_sub(start), app.fx.cut_from[i]))
+            });
+            cells.extend(cell_spans(app, i, unit, flash, &kinds, cond));
+            if cond.is_some() && condensing.as_ref().and_then(|c| c.1.last()) == Some(&i) {
+                newest = Some(cells.len() - 1);
+            }
         }
         // too long even at the largest unit: the newest part
         let cap = if z.is_some() { usize::MAX } else { rows * w };
         if cells.len() > cap {
-            cells.drain(..cells.len() - cap);
+            let gone = cells.len() - cap;
+            cells.drain(..gone);
+            newest = newest.and_then(|k: usize| k.checked_sub(gone));
+        }
+        if let Some(k) = newest {
+            spot = Some((out.len() + k / w, k % w));
         }
         while !cells.is_empty() {
             let rest = cells.split_off(cells.len().min(w));
@@ -329,7 +357,7 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         Span::styled(format!("█ sent ▒ cut {recalled}"), theme.dim()),
         Span::styled(left, theme.dim2()),
     ]));
-    out
+    (out, spot)
 }
 
 /// The place of a kind of message in [`Theme::kind_colours`], the colours of the map and of the context chart.
@@ -359,27 +387,45 @@ pub(crate) fn flash_style(theme: &Theme, style: Style, own: Color, ms: u64) -> S
     style.fg(crate::motion::fade(theme, theme.accent, own, t))
 }
 
-/// The cells of message `i` of the map at `unit` tokens a cell.
+/// The cells of message `i` of the map at `unit` tokens a cell. `cond`: the cell condenses after a cut, `ms`
+/// into its own steps, from the state it had before.
 fn cell_spans(
     app: &App,
     i: usize,
     unit: u64,
     flash: Option<u64>,
     kinds: &[Color; 4],
+    cond: Option<(u64, nexo_core::CellState)>,
 ) -> impl Iterator<Item = Span<'static>> {
     use nexo_core::CellState;
     let theme = &app.theme;
     let c = &app.map[i];
     let colour = kinds[kind_ix(c.kind)];
-    let (glyph, mut style) = match c.state {
-        CellState::Whole => ("█", theme.style(colour)),
-        CellState::Shrunk => ("▒", theme.style(colour)),
-        CellState::Recalled => ("░", theme.style(colour)),
-        CellState::Dropped => ("·", theme.dim2()),
+    let (mut glyph, mut style): (std::borrow::Cow<'static, str>, Style) = match c.state {
+        CellState::Whole => ("█".into(), theme.style(colour)),
+        CellState::Shrunk => ("▒".into(), theme.style(colour)),
+        CellState::Recalled => ("░".into(), theme.style(colour)),
+        CellState::Dropped => ("·".into(), theme.dim2()),
     };
-    // a cell that just changed lights up, then decays to its own colour
-    if let Some(ms) = flash.filter(|_| app.map_changed.get(i).copied().unwrap_or(false)) {
-        style = flash_style(theme, style, colour, ms);
+    match cond {
+        // condensing: a step down the ladder at a time, the colour lifted at first so the eye finds it, then
+        // easing into the new state's; the last step is the settled cell itself
+        Some((ms, from)) => {
+            let level = crate::fx_condense::condense_level(ms, from, c.state);
+            if level < 1.0 {
+                let to = if c.state == CellState::Dropped { theme.dim2().fg.unwrap_or(theme.border) } else { colour };
+                let lifted = crate::motion::fade(theme, colour, theme.fg, 0.45);
+                glyph =
+                    crate::fx_condense::condense_glyph(ms, from, c.state, crate::ascii::wanted()).to_string().into();
+                style = theme.style(crate::motion::fade(theme, lifted, to, level)).add_modifier(Modifier::BOLD);
+            }
+        }
+        // a cell that just changed lights up, then decays to its own colour
+        None => {
+            if let Some(ms) = flash.filter(|_| app.map_changed.get(i).copied().unwrap_or(false)) {
+                style = flash_style(theme, style, colour, ms);
+            }
+        }
     }
     let n = c.tokens.div_ceil(unit).max(1) as usize;
     std::iter::repeat_n(Span::styled(glyph, style), n)

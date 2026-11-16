@@ -334,6 +334,10 @@ impl App {
         if self.map_flash_live() {
             self.dirty = true;
         }
+        // the curator's label fades back to its own colour after a cut, on the beat too
+        if self.cut_fading() {
+            self.dirty = true;
+        }
         // the gauge eases towards the real share
         {
             let (num, den, _) = self.gauge_view();
@@ -486,6 +490,7 @@ impl App {
             Load::Motion
         } else if self.busy
             || self.map_flash_live()
+            || self.cut_fading()
             // a toast waits for its time on the beat; it asks for frames only while it moves
             || self.toasts.alive(self.now())
             || self.status.is_some()

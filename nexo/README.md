@@ -813,7 +813,12 @@ what each call sends (whole, cut, left out) and the cells that just changed
 flashing. With the curator it is the curator's whole memory in zones: the
 anchor, the topic in progress (`●`, sent), and the other topics newest first,
 each marked by what the call takes of it (`◐` parts brought back, `▭` only a
-card, `○` nothing), so you see, of all it holds, what it is taking. With `plain` everything is sent; with `compact` the older half is summarised when
+card, `○` nothing), so you see, of all it holds, what it is taking. When the
+curator lets messages go, their cells step down to what is left of them, oldest
+first, a light carries the cut along the border and the rule to its label in
+the title bar, and the figure there counts up to the tokens freed; the text
+never moves, and with `[ui] animations = false` the map and the label show the
+end state at once. With `plain` everything is sent; with `compact` the older half is summarised when
 the history passes `compact_at` tokens.
 
 ### Benchmark

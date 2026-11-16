@@ -36,6 +36,7 @@ pub(in crate::ui) fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<String>) {
     app.status_hits.clear();
+    app.fx.cut_col.set(None);
     if area.height == 0 {
         return;
     }
@@ -196,6 +197,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     }
     let mut used = brand_width(app);
     let mut hits = Vec::new();
+    let curator = app.condense_ms().and_then(|_| policy_text(app));
     'outer: for (gi, g) in groups.iter().enumerate() {
         let sep = " │ ";
         if used + width(sep) > avail {
@@ -260,6 +262,11 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
                     }
                     run = h.map(|h| (h, used, sw));
                 }
+            }
+            // the light of a cut lands over the curator's figure (over the label when it has none)
+            if curator.as_deref().is_some_and(|c| shown.trim_start() == c) {
+                let at = shown.rfind(" -").map_or(shown.len() - shown.trim_start().len(), |i| i + 1);
+                app.fx.cut_col.set(Some(area.x + (used + width(&shown[..at])) as u16));
             }
             used += sw;
             let m = h.map(lit).unwrap_or_else(Modifier::empty);

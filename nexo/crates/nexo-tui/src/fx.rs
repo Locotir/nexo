@@ -4,6 +4,7 @@
 pub mod app;
 pub mod burst;
 pub mod chrome;
+pub mod condense;
 pub mod diff;
 pub mod effort;
 pub mod galaxy;

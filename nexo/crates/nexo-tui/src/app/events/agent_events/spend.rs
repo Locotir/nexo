@@ -40,6 +40,9 @@ impl App {
             let dropped = prev.view_tokens.saturating_sub(view_tokens);
             if dropped >= crate::motion::CUT_LEAST && history_tokens >= prev.history_tokens {
                 self.fx.cut = Some((dropped, self.now()));
+                // the map of this call arrives right after: what it was until now is what its cells condense from
+                self.fx.cut_from = self.map.iter().map(|c| c.state).collect();
+                self.fx.cut_shown = false;
             }
         }
         self.context_wait = false;
