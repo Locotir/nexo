@@ -126,7 +126,7 @@ const VIET: &str = "e\u{323}\u{302}";
 
 #[test]
 fn one_arrow_key_crosses_one_visible_character() {
-    for what in [FLAG, E_ACUTE, VIET, "日", "👨\u{200d}"] {
+    for what in [FLAG, E_ACUTE, VIET, "日", "👨"] {
         let (mut a, _rx) = app();
         type_str(&mut a, &format!("a{what}b"));
         let n = what.chars().count();

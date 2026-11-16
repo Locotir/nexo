@@ -96,6 +96,15 @@ pub fn handle(app: &mut App, ev: Event) {
             }
             match &mut app.modal {
                 None => {
+                    // the search bar has the keys, so it has the paste too: one line, the words kept apart
+                    if let Some(bar) = app.search.as_mut().filter(|b| b.focused) {
+                        // terminals break lines of a paste with a bare CR
+                        let text = s.replace("\r\n", "\n").replace('\r', "\n");
+                        bar.query.push_str(&crate::render::wrap::one_line(&text));
+                        app.rematch();
+                        app.search_first();
+                        return;
+                    }
                     // typed fast, `/help` arrives as a paste: a command is still a command here
                     let command = app.input.full_text().starts_with('/') || s.trim_start().starts_with('/');
                     if app.locked && !command {

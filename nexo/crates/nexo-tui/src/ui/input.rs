@@ -22,9 +22,8 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     draw_draft(f, app, editor);
     f.render_widget(Box_::default().style(theme.base()), editor);
     if !app.input.is_empty() {
-        let (rows, _) = crate::input::wrapped_rows(&app.input, editor.width as usize);
-        let top = app.editor_top.min(rows.len());
-        paint_chips(f, app, editor, &rows[top..]);
+        let top = app.editor_top;
+        paint_chips(f, app, editor, top);
     }
     paint_complete(f, app, editor);
     // on the rule above the box, at the right: the reasoning level and, for a long or
@@ -210,10 +209,24 @@ fn paint_complete(f: &mut Frame, app: &App, editor: Rect) {
     );
 }
 
+/// The first visible row of the box: where it was, moved only as far as keeps the cursor row in
+/// sight, so a click or an arrow inside the window does not slide the text.
+fn scroll_top(was: usize, crow: usize, h: usize, rows: usize) -> usize {
+    let top = if crow < was {
+        crow
+    } else if crow >= was + h {
+        crow + 1 - h
+    } else {
+        was
+    };
+    top.min(rows.saturating_sub(h))
+}
+
 fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
     app.editor_area = editor;
     app.input.wrap_width = editor.width as usize;
     if app.input.is_untouched() {
+        app.editor_top = 0;
         // the placeholder (or a suggested message) takes the box; the caret sits on its first cell
         let cell = f.buffer_mut().cell_mut((editor.x, editor.y));
         if let Some(c) = cell {
@@ -223,7 +236,7 @@ fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
     }
     let (rows, (crow, ccol)) = crate::input::wrapped_rows(&app.input, editor.width as usize);
     let h = editor.height as usize;
-    let top = (crow + 1).saturating_sub(h);
+    let top = scroll_top(app.editor_top, crow, h, rows.len());
     app.editor_top = top;
     let sel = app.input.selection_cells();
     let origins = crate::input::row_origins(&app.input, editor.width as usize);
@@ -265,10 +278,14 @@ fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
 }
 
 /// A chip that was just added to the draft (a folded paste, a pasted attachment) is lit once, then rests.
-fn paint_chips(f: &mut Frame, app: &mut App, editor: Rect, rows: &[String]) {
+fn paint_chips(f: &mut Frame, app: &mut App, editor: Rect, top: usize) {
     if !app.fx_on() {
         return;
     }
+    let w_box = editor.width as usize;
+    let (rows, _) = crate::input::wrapped_rows(&app.input, w_box);
+    let origins = crate::input::row_origins(&app.input, w_box);
+    let lines: Vec<String> = app.input.text().split('\n').map(String::from).collect();
     let now = app.now();
     app.note_chips(now);
     let theme = &app.theme;
@@ -283,17 +300,64 @@ fn paint_chips(f: &mut Frame, app: &mut App, editor: Rect, rows: &[String]) {
             continue;
         }
         let colour = crate::motion::fade(theme, from, theme.accent, k);
-        let w = width(label);
-        for (i, row) in rows.iter().take(editor.height as usize).enumerate() {
-            for (b, _) in row.match_indices(label.as_str()) {
-                let x0 = width(&row[..b]);
-                for x in x0..(x0 + w).min(editor.width as usize) {
-                    if let Some(c) = f.buffer_mut().cell_mut((editor.x + x as u16, editor.y + i as u16)) {
-                        c.set_style(Style::default().fg(colour));
-                    }
+        for (r, x0, x1) in chip_spans(&lines, &origins, &rows, label) {
+            let Some(i) = r.checked_sub(top).filter(|i| *i < editor.height as usize) else { continue };
+            for x in x0..x1.min(w_box) {
+                if let Some(c) = f.buffer_mut().cell_mut((editor.x + x as u16, editor.y + i as u16)) {
+                    c.set_style(Style::default().fg(colour));
                 }
             }
         }
+    }
+}
+
+/// The cells `label` covers in the laid-out rows: `(row, first cell, end cell)`, one per row it
+/// touches, so a chip that wraps over two rows is lit on both. `origins` is the `(line, first
+/// character)` each row starts at (see `row_origins`).
+fn chip_spans(
+    lines: &[String],
+    origins: &[(usize, usize)],
+    rows: &[String],
+    label: &str,
+) -> Vec<(usize, usize, usize)> {
+    let n = label.chars().count();
+    let mut out = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        for (b, _) in line.match_indices(label) {
+            let s = line[..b].chars().count();
+            for (r, (&(l, start), row)) in origins.iter().zip(rows).enumerate() {
+                let (from, to) = (s.max(start), (s + n).min(start + row.chars().count()));
+                if l == li && from < to {
+                    let cells = |k: usize| width(&row.chars().take(k - start).collect::<String>());
+                    out.push((r, cells(from), cells(to)));
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_that_holds_the_cursor_row_does_not_scroll() {
+        // 20 rows in an 8-row box, the window on rows 12..20
+        assert_eq!(scroll_top(12, 18, 8, 20), 12, "Up inside the window leaves the text where it is");
+        assert_eq!(scroll_top(12, 12, 8, 20), 12, "the first visible row is inside too");
+        assert_eq!(scroll_top(12, 11, 8, 20), 11, "above the window it scrolls just enough");
+        assert_eq!(scroll_top(0, 8, 8, 20), 1, "below it, the cursor row lands on the last row");
+        assert_eq!(scroll_top(15, 3, 8, 6), 0, "a draft that shrank to fit goes back to the top");
+    }
+
+    #[test]
+    fn a_chip_split_over_two_rows_is_found_on_both() {
+        let label = "[Pasted text #1 +20 lines]";
+        let line = "x [Pasted text #1 +20 lines]".to_string();
+        let rows = vec!["x [Pasted text #1 ".to_string(), "+20 lines]".to_string()];
+        let spans = chip_spans(&[line], &[(0, 0), (0, 18)], &rows, label);
+        assert_eq!(spans, vec![(0, 2, 18), (1, 0, 10)]);
     }
 }
 

@@ -60,6 +60,7 @@ impl App {
         match self.user_messages.last().cloned() {
             Some((index, text)) => {
                 self.send(AgentCommand::Rewind { index });
+                self.keep_draft();
                 self.input.set_text(&text);
                 self.flash("undone: the request is back in the editor");
             }
@@ -389,6 +390,7 @@ impl App {
                                 .map(|(_, t)| t.clone())
                                 .unwrap_or_default();
                             self.send(AgentCommand::Rewind { index });
+                            self.keep_draft();
                             self.input.set_text(&text);
                             self.flash("rewound: edit the message and send it again");
                         }
@@ -430,6 +432,7 @@ impl App {
                         }
                     }
                     PickKind::History => {
+                        self.keep_draft();
                         self.input.set_text(&value);
                         self.refresh_palette();
                     }

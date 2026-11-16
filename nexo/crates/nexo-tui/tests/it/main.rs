@@ -18,6 +18,7 @@ mod gauge_contrast;
 mod goal_fx;
 mod hints;
 mod inline_mode;
+mod input_box;
 mod locked_home;
 mod modals_view;
 mod model_groups;

@@ -224,10 +224,17 @@ impl Input {
     pub fn key(&mut self, key: KeyEvent) -> Edit {
         self.after_paste = false;
         if self.vim == Some(VimMode::Normal) {
-            return self.vim_normal(key);
+            return self.vim_key(key);
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // a joiner, a presentation selector or a skin tone typed on its own is left out, as in a paste:
+        // the box draws the emoji without it, so keeping it would leave a mark the caret cannot reach
+        if let KeyCode::Char(c) = key.code {
+            if !ctrl && !alt && crate::render::wrap::unsafe_char(c) {
+                return Edit::Ignored;
+            }
+        }
         match key.code {
             KeyCode::Enter if !ctrl && !alt && !key.modifiers.contains(KeyModifiers::SHIFT) => return Edit::Submit,
             KeyCode::Enter | KeyCode::Char('j') if ctrl || alt || key.code == KeyCode::Enter => {

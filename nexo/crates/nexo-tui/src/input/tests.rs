@@ -383,3 +383,48 @@ fn a_new_chip_does_not_reuse_a_removed_number() {
     assert!(i.text().contains("[Pasted text #3 +12 lines]"), "{}", i.text());
     assert_eq!(i.pastes.len(), 2);
 }
+
+#[test]
+fn a_joiner_selector_or_skin_tone_typed_on_its_own_is_left_out() {
+    let mut i = Input::new("");
+    for c in ['\u{2764}', '\u{FE0F}', 'a', '\u{1F44D}', '\u{1F3FD}', '\u{200D}', 'b'] {
+        i.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert_eq!(i.text(), "\u{2764}a\u{1F44D}b", "the same text a paste of it leaves");
+    let mut pasted = Input::new("");
+    pasted.insert_paste("\u{2764}\u{FE0F}a\u{1F44D}\u{1F3FD}\u{200D}b");
+    assert_eq!(pasted.text(), i.text());
+}
+
+#[test]
+fn vim_x_takes_a_chip_or_a_letter_with_its_mark_whole() {
+    let mut i = chip_draft();
+    i.vim = Some(VimMode::Normal);
+    at(&mut i, 2);
+    i.key(k(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(i.text(), "abcd");
+    assert!(i.pastes.is_empty(), "its entry goes too");
+    let mut i = Input::new("");
+    i.set_text("e\u{301}x");
+    i.vim = Some(VimMode::Normal);
+    at(&mut i, 0);
+    i.key(k(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(i.text(), "x", "no lone combining mark is left");
+}
+
+#[test]
+fn vim_motions_never_stop_inside_a_chip_or_a_flag() {
+    let mut i = chip_draft();
+    i.vim = Some(VimMode::Normal);
+    at(&mut i, 2);
+    i.key(k(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert_eq!(i.editor.cursor(), (0, 2 + CHIP.len()), "l steps over the whole label");
+    i.key(k(KeyCode::Char('h'), KeyModifiers::NONE));
+    assert_eq!(i.editor.cursor(), (0, 2), "h steps back over it");
+    let mut f = Input::new("");
+    f.set_text("\u{1F1EB}\u{1F1F7}x");
+    f.vim = Some(VimMode::Normal);
+    at(&mut f, 0);
+    f.key(k(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert_eq!(f.editor.cursor(), (0, 2), "l steps over both letters of the flag");
+}

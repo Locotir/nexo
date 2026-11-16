@@ -119,3 +119,31 @@ impl Input {
         Edit::Changed
     }
 }
+
+impl Input {
+    /// A key in vim's normal mode, with what the insert path does around an edit: `x` and `X` take
+    /// a chip or a visible character whole, and the cursor never rests inside either.
+    pub(super) fn vim_key(&mut self, key: KeyEvent) -> Edit {
+        let plain = key.modifiers.is_empty() && self.pending.is_none();
+        let as_delete = match key.code {
+            KeyCode::Char('x') if plain => Some(KeyCode::Delete),
+            KeyCode::Char('X') if plain => Some(KeyCode::Backspace),
+            _ => None,
+        };
+        if let Some(code) = as_delete {
+            let del = KeyEvent::new(code, KeyModifiers::NONE);
+            if self.delete_chip(del) || self.delete_cluster(del) {
+                return Edit::Changed;
+            }
+        }
+        let before = self.editor.cursor();
+        let out = self.vim_normal(key);
+        // a motion toward the end steps over the whole chip or character, one toward the start back over it
+        let now = self.editor.cursor();
+        let to = self.snap(now, Some(now > before));
+        if to != now {
+            self.editor.move_cursor(CursorMove::Jump(to.0 as u16, to.1 as u16));
+        }
+        out
+    }
+}
