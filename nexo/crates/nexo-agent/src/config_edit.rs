@@ -85,6 +85,19 @@ pub fn set(file: &Path, path: &[&str], key: &str, v: Value) -> anyhow::Result<()
     })
 }
 
+/// Sets `key` to `raw`, a TOML value written exactly as given (`"text"`, `true`, `3`), so a string keeps
+/// the quoting the caller chose. Fails when `raw` is not a TOML value.
+pub fn set_raw(file: &Path, path: &[&str], key: &str, raw: &str) -> anyhow::Result<()> {
+    let v: Value = raw.parse()?;
+    set(file, path, key, v)
+}
+
+/// Sets `key` to the string `s`, always as a basic (double quoted) string.
+pub fn set_string(file: &Path, path: &[&str], key: &str, s: &str) -> anyhow::Result<()> {
+    let quoted = format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    set_raw(file, path, key, &quoted)
+}
+
 /// Appends `s` to the array `key` of the table at `path`, unless it is there.
 pub fn push(file: &Path, path: &[&str], key: &str, s: &str) -> anyhow::Result<()> {
     edit(file, |d| {
@@ -208,6 +221,16 @@ mod tests {
         let cfg = nexo_core::Config::parse(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(cfg.agent.max_tokens, 4096);
     }
+    #[test]
+    fn text_setters_write_basic_strings_and_raw_values() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        set_string(&f, &["ui"], "theme", "say \"hi\"").unwrap();
+        set_raw(&f, &["ui"], "mouse", "true").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "[ui]\ntheme = \"say \\\"hi\\\"\"\nmouse = true\n");
+        assert!(set_raw(&f, &["ui"], "bad", "not a value").is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_linked_file_is_written_through_and_keeps_its_mode() {
