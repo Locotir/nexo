@@ -422,7 +422,7 @@ async fn a_compiled_program_is_answered_with_what_it_is_and_the_call_that_reads_
     let mut c = ctx(d.path());
     let out = Read.run(json!({"path": "prog"}), &c).await;
     assert!(out.is_error, "nothing of the file is shown: {}", out.content);
-    let size = nexo_bin::size_words(prog.len() as u64);
+    let size = nexo_binmagic::size_words(prog.len() as u64);
     assert_eq!(
         out.content,
         format!(

@@ -14,7 +14,7 @@ fn not_text(
     ctx: &ToolContext,
     shown: &str,
     path: &std::path::Path,
-    kind: &nexo_bin::Compiled,
+    kind: &nexo_binmagic::Compiled,
     size: u64,
 ) -> ToolOutput {
     let file = display_path(&ctx.cwd, path);
@@ -36,7 +36,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         if m.len() > MAX_FILE_BYTES {
             // all of it the model can be shown: enough to replace it on purpose
             ctx.seen.mark(&path);
-            if let Some(kind) = nexo_bin::kind_at(&path) {
+            if let Some(kind) = nexo_binmagic::kind_at(&path) {
                 return not_text(ctx, &shown, &path, &kind, m.len());
             }
             return ToolOutput::error(format!(
@@ -72,7 +72,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         ));
     }
     if is_binary(&bytes) {
-        if let Some(kind) = nexo_bin::kind_of(&bytes) {
+        if let Some(kind) = nexo_binmagic::kind_of(&bytes) {
             return not_text(ctx, &shown, &path, &kind, bytes.len() as u64);
         }
         return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));

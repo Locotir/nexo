@@ -2017,6 +2017,7 @@ dependencies = [
  "landlock",
  "libc",
  "nexo-bin",
+ "nexo-binmagic",
  "nexo-browser",
  "nexo-core",
  "nexo-dbg",

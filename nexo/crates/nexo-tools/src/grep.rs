@@ -140,7 +140,7 @@ impl Tool for Grep {
         if root.is_file() {
             if let Ok(m) = std::fs::metadata(&root) {
                 if m.len() > MAX_FILE_BYTES {
-                    if let Some(kind) = nexo_bin::kind_at(&root) {
+                    if let Some(kind) = nexo_binmagic::kind_at(&root) {
                         let file = display_path(&ctx.cwd, &root);
                         let facts = kind.facts(Some(m.len()));
                         return ToolOutput::error(match strings_call(&file, &strings_grep, bin_offered(ctx)) {
@@ -352,7 +352,7 @@ enum FileOut {
     /// Binary, or nothing to say.
     Skip,
     /// A compiled program whose bytes hold a match.
-    Program(String, nexo_bin::Compiled),
+    Program(String, nexo_binmagic::Compiled),
     TooBig,
     Unreadable,
     Hits {
@@ -375,7 +375,7 @@ impl Search {
         };
         if is_binary(&bytes) {
             let held = |re: &regex::bytes::Regex| re.is_match(&bytes);
-            return match nexo_bin::kind_of(&bytes) {
+            return match nexo_binmagic::kind_of(&bytes) {
                 Some(kind) if self.in_programs.as_ref().is_some_and(held) => {
                     FileOut::Program(display_path(&self.cwd, f), kind)
                 }
@@ -473,7 +473,7 @@ struct Merge {
     /// Files searched and files in all, when the counting was stopped early.
     counting_stopped: Option<(usize, usize)>,
     /// The compiled programs that hold a match: the first few, and how many in all.
-    programs: (Vec<(String, nexo_bin::Compiled)>, usize),
+    programs: (Vec<(String, nexo_binmagic::Compiled)>, usize),
 }
 
 impl Merge {
@@ -535,7 +535,7 @@ fn strings_call(file: &str, pattern: &str, tool: bool) -> Option<String> {
 
 /// One line on the compiled programs whose bytes hold a match: what the first is and the call that lists its
 /// matching strings.
-fn programs_line(programs: &(Vec<(String, nexo_bin::Compiled)>, usize), pattern: &str, tool: bool) -> Option<String> {
+fn programs_line(programs: &(Vec<(String, nexo_binmagic::Compiled)>, usize), pattern: &str, tool: bool) -> Option<String> {
     let (named, all) = programs;
     let (first, kind) = named.first()?;
     let call = strings_call(first, pattern, tool)?;
@@ -795,7 +795,7 @@ mod tests {
         // a name of its symbol table
         let pat = "helper";
         let out = Grep.run(json!({"pattern": pat}), &c).await;
-        let what = nexo_bin::kind_at(&d.path().join("prog")).unwrap().facts(None);
+        let what = nexo_binmagic::kind_at(&d.path().join("prog")).unwrap().facts(None);
         assert_eq!(
             out.content,
             format!("grep: no match for `{pat}` in .\n[prog holds a match and is not text: {what}; nexo bin strings prog --grep {pat} lists it]")

@@ -143,7 +143,7 @@ mod tests {
         std::fs::copy(std::env::current_exe().unwrap(), &prog).unwrap();
         std::fs::write(d.path().join("notes.txt"), "text").unwrap();
         let out = Ls.run(json!({}), &c).await;
-        let what = nexo_bin::kind_at(&prog).unwrap().facts(None);
+        let what = nexo_binmagic::kind_at(&prog).unwrap().facts(None);
         let size = human(std::fs::metadata(&prog).unwrap().len());
         let name = prog.file_name().unwrap().to_string_lossy();
         assert_eq!(out.content, format!(".: 2 entries\nnotes.txt  (4 B)\n{name}  ({size}, {what})"));

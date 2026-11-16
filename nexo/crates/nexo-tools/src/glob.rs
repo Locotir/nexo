@@ -191,7 +191,7 @@ mod tests {
         std::fs::copy(std::env::current_exe().unwrap(), &prog).unwrap();
         std::fs::write(d.path().join("readme.exe"), "text").unwrap();
         let out = Glob.run(json!({"pattern": "*.exe"}), &c).await;
-        let what = nexo_bin::kind_at(&prog).unwrap().facts(None);
+        let what = nexo_binmagic::kind_at(&prog).unwrap().facts(None);
         let mut lines: Vec<&str> = out.content.lines().collect();
         lines.sort();
         assert_eq!(lines, [format!("prog.exe  ({what})").as_str(), "readme.exe"]);

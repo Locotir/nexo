@@ -1,8 +1,8 @@
 //! The facts the tools give when the model meets a compiled program (`read`, `grep`, `ls`, `glob`, and the hint
-//! lines of the agent): what the file is, from its own bytes (see [`nexo_bin::Compiled`]), and the call of
+//! lines of the agent): what the file is, from its own bytes (see [`nexo_binmagic::Compiled`]), and the call of
 //! `nexo bin` that reads it, written the way the session can make it.
 
-use nexo_bin::Compiled;
+use nexo_binmagic::Compiled;
 use nexo_core::ToolContext;
 
 /// A path as a call writes it. On Windows the separator is `/`, which every Windows program and the shell there
@@ -102,7 +102,7 @@ fn executable(_meta: &std::fs::Metadata) -> bool {
 
 /// What the listed file at `path` is, when it is a compiled program: `ELF64 x86-64 Linux executable, stripped`.
 pub fn listed_kind(path: &std::path::Path) -> Option<String> {
-    nexo_bin::kind_at(path).map(|k| k.facts(None))
+    nexo_binmagic::kind_at(path).map(|k| k.facts(None))
 }
 
 #[cfg(test)]
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn the_call_is_the_tools_when_offered_and_a_name_it_cannot_carry_gets_the_facts_alone() {
-        let k = nexo_bin::kind_of(&nexo_bin::fixtures::elf64(false).bytes).unwrap();
+        let k = nexo_binmagic::kind_of(&nexo_bin::fixtures::elf64(false).bytes).unwrap();
         assert_eq!(
             about(&k, Some(2048), "my prog", true),
             "ELF64 x86-64 executable, 2.0 KiB, with symbols; bin {\"command\": \"overview \\\"my prog\\\"\"} reads it"
@@ -121,5 +121,13 @@ mod tests {
             "ELF64 x86-64 executable, with symbols; nexo bin overview a.out reads it"
         );
         assert_eq!(about(&k, None, "a$b", false), "ELF64 x86-64 executable, with symbols");
+    }
+
+    #[test]
+    fn the_tools_compile_against_the_first_bytes_probes_and_not_the_whole_reader() {
+        // The reader changes often; a normal dependency on it would rebuild every crate above the tools.
+        let manifest = include_str!("../Cargo.toml");
+        let normal = manifest.split("[dev-dependencies]").next().unwrap();
+        assert!(!normal.contains("nexo-bin "), "nexo-tools must use nexo-binmagic for the program probes");
     }
 }
