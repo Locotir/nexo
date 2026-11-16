@@ -225,3 +225,29 @@ fn shift_tab_walks_the_modes_through_plan_and_slash_plan_sends_the_text() {
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(PermissionMode::Plan))));
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "add a cache"));
 }
+
+#[test]
+fn altgr_characters_typed_one_by_one_reach_the_draft() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    let (mut a, _rx) = app();
+    // the Windows console reports AltGr as Ctrl+Alt: `|` is AltGr+1 and `@` AltGr+2 on a Spanish keyboard
+    a.input.insert_paste("a ");
+    for c in ['|', '#', '[', ']', '{', '}', '\\', '~', '€'] {
+        crate::event::handle(&mut a, Event::Key(KeyEvent::new(KeyCode::Char(c), altgr)));
+    }
+    assert_eq!(a.input.text(), "a |#[]{}\\~€");
+    // a letter or a digit with Ctrl+Alt stays a shortcut, never text
+    let before = a.input.text();
+    crate::event::handle(&mut a, Event::Key(KeyEvent::new(KeyCode::Char('q'), altgr)));
+    crate::event::handle(&mut a, Event::Key(KeyEvent::new(KeyCode::Char('1'), altgr)));
+    assert_eq!(a.input.text(), before);
+    // `@` is text too, as when typed with no modifier
+    crate::event::handle(&mut a, Event::Key(KeyEvent::new(KeyCode::Char('@'), altgr)));
+    assert!(a.input.text().ends_with('@'), "{}", a.input.text());
+    // Shift stays: AltGr+Shift keys keep their character
+    assert_eq!(
+        crate::event::altgr_char(KeyEvent::new(KeyCode::Char('|'), altgr | KeyModifiers::SHIFT)).modifiers,
+        KeyModifiers::SHIFT
+    );
+}

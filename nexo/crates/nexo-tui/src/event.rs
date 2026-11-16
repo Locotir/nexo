@@ -153,8 +153,23 @@ pub fn handle(app: &mut App, ev: Event) {
     }
 }
 
+/// AltGr on Windows comes as Ctrl+Alt with the character it types (`@`, `|`, `#`, `[`, `€` on a Spanish or
+/// German layout). A key like that is that character, typed with no Ctrl and no Alt; a letter or a digit
+/// with Ctrl+Alt stays a shortcut.
+pub fn altgr_char(k: KeyEvent) -> KeyEvent {
+    let both = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    match k.code {
+        KeyCode::Char(c) if k.modifiers.contains(both) && !c.is_ascii_alphanumeric() && !c.is_control() => {
+            KeyEvent { modifiers: k.modifiers.difference(both), ..k }
+        }
+        _ => k,
+    }
+}
+
 pub fn key(app: &mut App, k: KeyEvent) {
     app.dirty = true;
+    // AltGr's characters are text, unless the person bound that very key (`ctrl+alt+/` in the keymap)
+    let k = if app.keymap.action(&k).is_none() { altgr_char(k) } else { k };
     // a permission or question dialog takes the keys first; the diff viewer waits under it
     if let Some(m) = &mut app.modal {
         // Ctrl+C is never swallowed by a dialog: a permission is denied, a question left
