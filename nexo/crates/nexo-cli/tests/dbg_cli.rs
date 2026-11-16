@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! `nexo dbg` run through the binary: a session lives between calls and nothing is left behind.
 
 use std::path::{Path, PathBuf};
@@ -21,12 +21,44 @@ fn out(o: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
 }
 
-fn sleep_bin() -> PathBuf {
+/// A program that sleeps for the seconds it is given. On Linux the system's own `sleep`; on macOS one built with `cc`
+/// into `dir`, because `run` there debugs a signed copy of a file the user owns, and `/bin/sleep` belongs to root.
+#[cfg(target_os = "linux")]
+fn sleep_bin(_dir: &Path) -> PathBuf {
     ["/usr/bin/sleep", "/bin/sleep"].iter().map(PathBuf::from).find(|p| p.is_file()).expect("a sleep program")
 }
 
+#[cfg(target_os = "macos")]
+fn sleep_bin(dir: &Path) -> PathBuf {
+    let exe = dir.join("sleeper");
+    if exe.is_file() {
+        return exe;
+    }
+    let src = dir.join("sleeper.c");
+    std::fs::write(
+        &src,
+        "#include <stdlib.h>\n#include <time.h>\nint main(int c, char **v) { double s = c > 1 ? atof(v[1]) : 1; \
+         struct timespec t = { (time_t)s, (long)((s - (time_t)s) * 1e9) }; nanosleep(&t, 0); return 0; }\n",
+    )
+    .unwrap();
+    let o = Command::new("cc").arg("-o").arg(&exe).arg(&src).output().expect("cc runs");
+    assert!(o.status.success(), "cc: {}", String::from_utf8_lossy(&o.stderr));
+    exe
+}
+
+/// Whether `pid` is a live process (a zombie is not).
+#[cfg(target_os = "linux")]
 fn alive(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z "))
+}
+
+/// Whether `pid` is a live process (a zombie is not); macOS has no `/proc`, `ps` gives the state.
+#[cfg(target_os = "macos")]
+fn alive(pid: u32) -> bool {
+    let o = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().expect("ps runs");
+    let state = String::from_utf8_lossy(&o.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 fn wait_gone(pid: u32) -> bool {
@@ -48,7 +80,7 @@ fn pid_of(text: &str) -> u32 {
 fn a_session_lives_between_calls_and_end_leaves_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path().join(format!("nexo-tmp-{}-t", std::process::id()));
-    let sleep = sleep_bin();
+    let sleep = sleep_bin(dir.path());
     let first = nexo(&tmp, &["run", sleep.to_str().unwrap(), "60"]);
     let text = out(&first);
     assert!(first.status.success(), "{text}");
@@ -74,6 +106,24 @@ fn a_session_lives_between_calls_and_end_leaves_nothing() {
     let ended = out(&nexo(&tmp, &["end"]));
     assert!(ended.contains("ended"), "{ended}");
     assert!(wait_gone(pid), "the program {pid} is still there after `end`");
+    if cfg!(target_os = "macos") {
+        // macOS: the session ran a signed copy beside the program, said so, and `end` took the copy away
+        assert!(text.contains("signed ad hoc with get-task-allow") && text.contains("your own files only"), "{text}");
+        let copies = || {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().contains(".nexo-dbg-"))
+                .count()
+        };
+        for _ in 0..50 {
+            if copies() == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        assert_eq!(copies(), 0, "a signed copy is left beside the program after `end`");
+    }
     let after = nexo(&tmp, &["regs"]);
     assert!(!after.status.success());
 }
@@ -82,7 +132,7 @@ fn a_session_lives_between_calls_and_end_leaves_nothing() {
 fn a_program_that_ends_is_reported_and_kill_works() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path().join(format!("nexo-tmp-{}-t", std::process::id()));
-    let sleep = sleep_bin();
+    let sleep = sleep_bin(dir.path());
     let first = out(&nexo(&tmp, &["run", sleep.to_str().unwrap(), "0.2"]));
     let pid = pid_of(&first);
     let cont = out(&nexo(&tmp, &["cont", "--wait", "10"]));
@@ -103,9 +153,9 @@ fn a_program_that_ends_is_reported_and_kill_works() {
 fn the_program_goes_when_its_owner_goes() {
     let dir = tempfile::tempdir().unwrap();
     // the owner is the process named in the scratch folder's name
-    let mut owner = Command::new(sleep_bin()).arg("60").spawn().unwrap();
+    let mut owner = Command::new(sleep_bin(dir.path())).arg("60").spawn().unwrap();
     let tmp = dir.path().join(format!("nexo-tmp-{}-t", owner.id()));
-    let first = out(&nexo(&tmp, &["run", sleep_bin().to_str().unwrap(), "60"]));
+    let first = out(&nexo(&tmp, &["run", sleep_bin(dir.path()).to_str().unwrap(), "60"]));
     let pid = pid_of(&first);
     assert!(alive(pid));
     owner.kill().unwrap();
@@ -131,7 +181,7 @@ fn a_file_that_is_not_a_program_fails_with_a_reason() {
 fn what_a_session_keeps_comes_back_with_the_next_one_of_the_same_binary() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path().join(format!("nexo-tmp-{}-k", std::process::id()));
-    let sleep = sleep_bin();
+    let sleep = sleep_bin(dir.path());
     let first = out(&nexo(&tmp, &["run", sleep.to_str().unwrap(), "60"]));
     assert!(!first.contains("known about this binary"), "{first}");
     let saved = out(&nexo(&tmp, &["note", "crash: findings go here"]));
@@ -147,9 +197,11 @@ fn a_core_file_that_is_not_one_is_refused_through_the_binary() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path().join(format!("nexo-tmp-{}-c", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let o = nexo(&tmp, &["core", sleep_bin().to_str().unwrap()]);
+    let o = nexo(&tmp, &["core", sleep_bin(dir.path()).to_str().unwrap()]);
     let t = out(&o);
-    assert!(!o.status.success() && t.contains("not a core file"), "{t}");
+    // the cores nexo reads are ELF (and Windows minidumps): a macOS program is not even ELF
+    let why = if cfg!(target_os = "macos") { "is not a 64-bit little-endian ELF file" } else { "not a core file" };
+    assert!(!o.status.success() && t.contains(why), "{t}");
     let o = nexo(&tmp, &["core"]);
     assert!(out(&o).contains("usage: core <file>"), "{}", out(&o));
 }

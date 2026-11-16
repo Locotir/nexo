@@ -49,7 +49,7 @@ fn build(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// Whether the debugger has the program's own types and names. On macOS `cc -g` leaves the DWARF in the object
-/// files (a debug map), which nexo does not read yet (MACOS-MAP re:M9): a hook on the program's own function has no
+/// files (a debug map), which nexo does not read yet: a hook on the program's own function has no
 /// prototype there and shows the raw argument registers in hex. Library functions keep their known prototypes.
 const DWARF: bool = cfg!(target_os = "linux");
 

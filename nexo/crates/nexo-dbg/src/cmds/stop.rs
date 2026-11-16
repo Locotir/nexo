@@ -241,7 +241,14 @@ impl Session {
                     );
                 }
                 let pc = self.tid_regs()?.rip;
-                (mine(self, pc)?, w.join(" "))
+                // macOS stops at the entry on dyld's call of main, outside the program: there the place is main
+                let on_dyld_call = self.t.os() == Os::MacOS
+                    && self.last_stop.as_ref().is_some_and(|s| s.event == "entry" && s.addr == pc);
+                let at = match self.t.entry() {
+                    Some(main) if on_dyld_call => main,
+                    _ => pc,
+                };
+                (mine(self, at)?, w.join(" "))
             }
         };
         let target = format!("{addr:#x}");

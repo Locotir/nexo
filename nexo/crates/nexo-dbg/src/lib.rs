@@ -29,7 +29,7 @@ mod stdin;
 mod stub;
 mod syscalls;
 // Not on macOS: `cc -g` there leaves the DWARF in the object files (the program carries a debug map to them), so the
-// program it builds has no debug sections to damage, and nexo-bin does not read the debug map yet (MACOS-MAP re:M9).
+// program it builds has no debug sections to damage, and nexo-bin does not read the debug map yet.
 #[cfg(all(test, not(target_os = "macos")))]
 mod tests_harden;
 mod trace;

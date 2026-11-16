@@ -165,7 +165,7 @@ fn a_crash_is_explained() {
     assert!(stop.contains("null pointer"), "{stop}");
     assert!(stop.contains("backtrace:") && stop.contains("dbg_crash"), "{stop}");
     // Linux also checks the source line of the fault here. On macOS the line table sits in the object files the
-    // executable's debug map names (or a .dSYM), which nexo-bin does not read yet (MACOS-MAP re:M9), so that part
+    // executable's debug map names (or a .dSYM), which nexo-bin does not read yet, so that part
     // is not checked on this system.
     // Rust's own SIGSEGV handler (its stack-overflow check) puts back the default action and returns, so the load
     // runs again and faults a second time, as on Linux; the cont after that ends the program.

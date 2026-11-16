@@ -86,9 +86,9 @@ fn the_call_chain_goes_through_the_c_library_up_to_its_start() {
     eprintln!("{bt}");
     assert!(bt.contains("add_one") && bt.contains("main"), "{bt}");
     if cfg!(target_os = "macos") {
-        // The line table of a macOS program sits in its object files or a .dSYM, which nexo-bin does not read yet
-        // (MACOS-MAP re:M9), and dyld, which called main, lives in the shared cache, whose symbols it does not read
-        // either (re:M11): the chain goes on past main, without names.
+        // The line table of a macOS program sits in its object files or a .dSYM, which nexo-bin does not read yet,
+        // and dyld, which called main, lives in the shared cache, whose symbols it does not read
+        // either: the chain goes on past main, without names.
         assert!(bt.lines().any(|l| l.trim_start().starts_with("#2")), "the chain goes on past main: {bt}");
         return;
     }

@@ -333,7 +333,7 @@ impl Mods {
     /// A Mach-O program stopped on the first instruction of a function, or on the second after `push rbp`: its frame
     /// is not made yet, so the return address sits on top of the stack (under the pushed rbp on the second). Past
     /// `mov rbp, rsp` the frame pointer chain is right, as clang keeps frame pointers on macOS. The compact unwind
-    /// table (`__unwind_info`), which functions without a frame pointer need, is not read (MACOS-MAP re:M10).
+    /// table (`__unwind_info`), which functions without a frame pointer need, is not read.
     #[allow(clippy::type_complexity)]
     fn macho_prologue(
         &self,
