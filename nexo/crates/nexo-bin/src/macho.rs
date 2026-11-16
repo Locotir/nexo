@@ -19,6 +19,7 @@ use crate::{Error, Result};
 mod chains;
 mod fat;
 mod info;
+pub mod sign;
 use self::chains::*;
 pub(crate) use self::fat::*;
 pub(crate) use self::info::*;
