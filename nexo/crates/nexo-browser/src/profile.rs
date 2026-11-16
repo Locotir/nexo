@@ -120,6 +120,7 @@ fn display_from(set: impl Fn(&str) -> bool) -> bool {
 
 /// macOS has no variable that says a screen exists. The one case known to have none is a login over ssh while
 /// somebody else (or nobody: `root` at the login window) owns the console, so only that case is refused.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn mac_session_has_screen(over_ssh: bool, console_user: Option<&str>, me: Option<&str>) -> bool {
     match (over_ssh, console_user, me) {
         (true, Some(console), Some(me)) => console == me,
