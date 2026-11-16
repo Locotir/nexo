@@ -213,3 +213,19 @@ fn every_listed_theme_looks_different_from_every_other_so_a_switch_is_seen() {
     let spread = r.max(g).max(b) - r.min(g).min(b);
     assert!(spread >= 12 || r.max(g).max(b) >= 0x30, "dark ground {r},{g},{b} looks like a black terminal");
 }
+
+#[test]
+fn terminal_app_is_not_taken_for_a_truecolor_terminal_on_a_mac() {
+    assert!(lacks_truecolor_by_name(true, Some("Apple_Terminal")));
+    assert!(!lacks_truecolor_by_name(true, Some("iTerm.app")));
+    assert!(!lacks_truecolor_by_name(false, Some("Apple_Terminal")));
+    assert!(!lacks_truecolor_by_name(true, None));
+    assert_eq!(depth_from("", "", "xterm-256color", false), Depth::Indexed256);
+}
+
+#[test]
+fn the_system_look_is_light_when_defaults_fails_and_dark_when_it_says_dark() {
+    assert!(!light_from_defaults(Some((true, "Dark\n"))));
+    assert!(light_from_defaults(Some((false, ""))));
+    assert!(!light_from_defaults(None), "a command that could not run changes nothing");
+}

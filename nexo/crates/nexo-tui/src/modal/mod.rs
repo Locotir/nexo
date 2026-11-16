@@ -513,6 +513,43 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// The help rows for this system: the same table, with the macOS terminals' own gestures in place of the ones that
+/// do not reach the app there (Ctrl+click is a right click, Shift+drag is not the bypass key of Terminal.app), and
+/// a group of notes only a Mac needs.
+pub fn help_rows(macos: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    let mut rows: Vec<(&'static str, Vec<(&'static str, &'static str)>)> =
+        HELP.iter().map(|(g, keys)| (*g, keys.to_vec())).collect();
+    if !macos {
+        return rows;
+    }
+    for (_, keys) in rows.iter_mut() {
+        for row in keys.iter_mut() {
+            match row.0 {
+                "Ctrl+Click" => *row = ("Option+Click", "open the link under the pointer in the browser"),
+                "Shift+Drag" => *row = (
+                    "Option+Drag / Fn+Drag",
+                    "Option+Drag (iTerm2, VS Code) · Fn+Drag (Terminal.app) · Shift+Drag (kitty, Ghostty, WezTerm): \
+                         select with the terminal · /settings mouse turns the mouse off",
+                ),
+                _ => {}
+            }
+        }
+    }
+    rows.push((
+        "On a Mac",
+        vec![
+            ("Cmd+V / Ctrl+V", "Cmd+V pastes text; Ctrl+V attaches an image from the clipboard"),
+            (
+                "Option+Enter",
+                "needs Option as Meta (Terminal.app: Settings > Profiles > Keyboard; iTerm2: Profiles > Keys > Left \
+                 Option = Esc+) · Ctrl+J always works",
+            ),
+            ("F1 F3 F4", "hold Fn for the function keys, or turn on standard function keys in System Settings"),
+        ],
+    ));
+    rows
+}
+
 impl Modal {
     pub fn permission(req: PermissionRequest) -> Modal {
         Modal::Permission(Permission {

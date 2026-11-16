@@ -50,7 +50,7 @@ fn words(text: &str) -> Vec<String> {
                     cur.push(n);
                 }
             }
-            (None, c) if c.is_whitespace() => {
+            (None, c) if c.is_ascii_whitespace() => {
                 if !cur.is_empty() {
                     out.push(std::mem::take(&mut cur));
                 }
@@ -114,5 +114,15 @@ mod tests {
             let url = format!("file://{}", shown.replace(' ', "%20"));
             assert_eq!(found(&url), vec![png.clone()]);
         }
+    }
+
+    #[test]
+    fn a_macos_screenshot_name_with_a_narrow_no_break_space_stays_one_path() {
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("Screenshot 2026-11-15 at 10.10.55\u{202f}AM.png");
+        std::fs::write(&png, b"x").unwrap();
+        // the terminal escapes the ASCII spaces and leaves U+202F raw
+        let typed = png.display().to_string().replace(' ', "\\ ");
+        assert_eq!(image_paths(&format!("fix {typed}"), d.path()), vec![png]);
     }
 }

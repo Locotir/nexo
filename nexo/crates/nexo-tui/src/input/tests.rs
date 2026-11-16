@@ -428,3 +428,33 @@ fn vim_motions_never_stop_inside_a_chip_or_a_flag() {
     f.key(k(KeyCode::Char('l'), KeyModifiers::NONE));
     assert_eq!(f.editor.cursor(), (0, 2), "l steps over both letters of the flag");
 }
+
+#[test]
+fn option_arrows_and_option_backspace_move_and_delete_by_word() {
+    // Terminal.app and iTerm2 send these as Alt chords; they must reach the editor untouched
+    let mut i = Input::new("");
+    i.set_text("alpha beta gamma");
+    i.key(k(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(i.cursor_offset(), "alpha beta ".len());
+    i.key(k(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(i.cursor_offset(), "alpha ".len());
+    i.key(k(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(i.cursor_offset(), "alpha beta ".len(), "a word forward lands on the start of the next");
+    i.key(k(KeyCode::Backspace, KeyModifiers::ALT));
+    assert_eq!(i.text(), "alpha gamma");
+}
+
+#[test]
+fn omega_redoes_on_a_mac_and_is_a_letter_elsewhere() {
+    let mut i = Input::new("");
+    i.set_text("hello");
+    i.key(k(KeyCode::Char('!'), KeyModifiers::NONE));
+    i.key(k(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    i.key(k(KeyCode::Char('Ω'), KeyModifiers::NONE));
+    // with a redo waiting it redoes on a Mac; nothing else changes the text but the letter itself
+    let expect = if cfg!(target_os = "macos") { "hello!" } else { "helloΩ" };
+    assert_eq!(i.text(), expect);
+    // with nothing to redo the character is typed
+    i.key(k(KeyCode::Char('Ω'), KeyModifiers::NONE));
+    assert!(i.text().ends_with('Ω'));
+}

@@ -120,7 +120,7 @@ impl Theme {
         }
         let t = if name.trim().eq_ignore_ascii_case("auto") {
             let v = std::env::var("COLORFGBG").ok();
-            if light_background(v.as_deref()) {
+            if light_background(v.as_deref()) || (v.is_none() && system_appearance_is_light()) {
                 Theme::light()
             } else {
                 Theme::nexo()
@@ -409,8 +409,50 @@ pub fn truecolor_terminal() -> bool {
     if colorterm.contains("truecolor") || colorterm.contains("24bit") {
         return true;
     }
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    if lacks_truecolor_by_name(cfg!(target_os = "macos"), term_program.as_deref()) {
+        return false;
+    }
     let term = std::env::var("TERM").unwrap_or_default();
     term.contains("256color") || (cfg!(windows) && term.is_empty())
+}
+
+/// Terminal.app sets `TERM=xterm-256color` and no `COLORTERM`, and it has no 24-bit colour: on a Mac that name alone
+/// says so, whatever the `TERM` shortcut would guess. `NEXO_COLORS` and `COLORTERM` are read before this.
+fn lacks_truecolor_by_name(macos: bool, term_program: Option<&str>) -> bool {
+    macos && term_program == Some("Apple_Terminal")
+}
+
+/// Whether the system look is light, from what `defaults read -g AppleInterfaceStyle` did: it prints `Dark` in dark
+/// mode and fails in light mode. `None`: it could not be run, which says nothing.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn light_from_defaults(ran: Option<(bool, &str)>) -> bool {
+    match ran {
+        Some((false, _)) => true,
+        Some((true, out)) => !out.trim().eq_ignore_ascii_case("dark"),
+        None => false,
+    }
+}
+
+/// The macOS look, asked once per run: terminals other than iTerm2 do not set `COLORFGBG`. Other systems: `false`.
+#[cfg(target_os = "macos")]
+fn system_appearance_is_light() -> bool {
+    static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LIGHT.get_or_init(|| {
+        let out = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok();
+        let text = out.as_ref().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        light_from_defaults(out.as_ref().zip(text.as_deref()).map(|(o, t)| (o.status.success(), t)))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_appearance_is_light() -> bool {
+    false
 }
 
 /// How many colours the terminal takes.

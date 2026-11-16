@@ -256,6 +256,11 @@ impl Input {
                 self.editor.redo();
                 return Edit::Changed;
             }
+            // Option+Z on a Mac types Ω (U+03A9) where Option is not Meta: it redoes when there is something to
+            // redo, and stays a typed letter otherwise
+            KeyCode::Char('Ω') if redo_char_is_redo(ctrl, alt) && self.editor.redo() => {
+                return Edit::Changed;
+            }
             KeyCode::Up if !ctrl && !alt => {
                 if self.wrap_width > 0 {
                     if self.move_visual(-1) {
@@ -299,6 +304,16 @@ impl Input {
         }
         let before = self.editor.cursor();
         let len = self.editor.lines().get(before.0).map_or(0, |l| l.chars().count());
+        // Option+Left and Option+Right move by word in macOS terminals (iTerm2 sends them as Alt+arrows); the editor
+        // knows the word jump as Ctrl+arrows only, which macOS keeps for Mission Control
+        let key = if key.modifiers.contains(KeyModifiers::ALT)
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            KeyEvent::new(key.code, (key.modifiers - KeyModifiers::ALT) | KeyModifiers::CONTROL)
+        } else {
+            key
+        };
         self.editor.input(key);
         let mut now = self.editor.cursor();
         // a word taken out up to a mark: the mark goes with it
@@ -364,6 +379,11 @@ impl Input {
     pub fn accept_complete(&mut self, suffix: &str) {
         self.editor.insert_str(suffix);
     }
+}
+
+/// Whether Ω typed bare is the Option+Z of a Mac (redo) and not a letter the person means.
+fn redo_char_is_redo(ctrl: bool, alt: bool) -> bool {
+    cfg!(target_os = "macos") && !ctrl && !alt
 }
 
 #[cfg(test)]

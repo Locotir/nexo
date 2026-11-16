@@ -92,6 +92,20 @@ pub fn notification(text: &str) -> String {
     format!("\x07\x1b]9;{clean}\x07\x1b]777;notify;nexo;{clean}\x07")
 }
 
+/// On a Mac, the program that shows the desktop notification for terminals that read neither OSC 9 nor OSC 777
+/// (Terminal.app and VS Code's terminal), or `None` where the sequences of [`notification`] do. The text is the last
+/// argument and never part of the script, so it cannot be taken for code.
+pub fn notify_command(term_program: Option<&str>, text: &str) -> Option<(&'static str, Vec<String>)> {
+    if !matches!(term_program, Some("Apple_Terminal" | "vscode")) {
+        return None;
+    }
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    let script = ["on run argv", "display notification (item 1 of argv) with title \"nexo\"", "end run"];
+    let mut args: Vec<String> = script.iter().flat_map(|l| ["-e".to_string(), l.to_string()]).collect();
+    args.push(clean);
+    Some(("osascript", args))
+}
+
 /// What to say once the editor closed: a file left as it was is not "saved".
 pub(crate) fn edit_notice(path: &str, before: Option<Vec<u8>>, after: Option<Vec<u8>>) -> String {
     if before == after {
@@ -154,5 +168,15 @@ mod tests {
             "\x07\x1b]9;nexo: done after 20s\x07\x1b]777;notify;nexo;nexo: done after 20s\x07"
         );
         assert!(!super::notification("a\x07b\x1bc").contains("a\x07"), "the text cannot close the sequence");
+    }
+
+    #[test]
+    fn terminal_app_gets_a_system_notification_and_iterm_keeps_the_sequences() {
+        let (prog, args) = super::notify_command(Some("Apple_Terminal"), "done \"x\"; quit\n").unwrap();
+        assert_eq!(prog, "osascript");
+        assert_eq!(args.last().unwrap(), "done \"x\"; quit", "the text is one argument, control characters dropped");
+        assert!(args[..args.len() - 1].iter().all(|a| !a.contains("quit")));
+        assert!(super::notify_command(Some("iTerm.app"), "x").is_none());
+        assert!(super::notify_command(None, "x").is_none());
     }
 }

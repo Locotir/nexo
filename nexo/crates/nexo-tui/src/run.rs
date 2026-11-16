@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use nexo_core::agent::AgentHandle;
 
-use crate::terminal_io::{edit_file, edit_notice, notification, Hangup, Keys};
+use crate::terminal_io::{edit_file, edit_notice, notification, notify_command, Hangup, Keys};
 use crate::{event, frame, hints, inline, terminal, App, TuiOptions};
 
 fn end_paste(app: &mut App, pasting: &mut Option<(String, Instant)>) {
@@ -119,7 +119,28 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             // the bell, and a desktop notification where the terminal takes OSC 9 / 777
             use std::io::Write;
             let mut out = std::io::stdout();
-            let _ = write!(out, "{}", notification(&text));
+            let term_program = std::env::var("TERM_PROGRAM").ok();
+            match term_program
+                .as_deref()
+                .filter(|_| cfg!(target_os = "macos"))
+                .and_then(|t| notify_command(Some(t), &text))
+            {
+                // Terminal.app and VS Code ignore both sequences: the bell, and the system notification
+                Some((program, args)) => {
+                    let _ = write!(out, "\x07");
+                    let _ = std::process::Command::new(program)
+                        .args(args)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        // reaped by a thread of its own, so no zombie is left behind
+                        .map(|mut c| std::thread::spawn(move || drop(c.wait())));
+                }
+                None => {
+                    let _ = write!(out, "{}", notification(&text));
+                }
+            }
             let _ = out.flush();
         }
         if app.draft_edit_request {

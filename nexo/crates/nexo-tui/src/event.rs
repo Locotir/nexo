@@ -7,6 +7,12 @@ use crate::app::{App, WHEEL_LINES};
 use crate::input::Edit;
 use crate::modal::contains;
 
+/// Whether a click with these modifiers opens the link under the pointer: Ctrl everywhere, and Option on a Mac,
+/// where Ctrl+click is a right click that Terminal.app and iTerm2 never pass on.
+fn opens_link(mods: KeyModifiers, macos: bool) -> bool {
+    mods.contains(KeyModifiers::CONTROL) || (macos && mods.contains(KeyModifiers::ALT))
+}
+
 /// A key that typing makes: a character (AltGr's included), Enter, Tab. Esc too, which
 /// starts the markers of a bracketed paste that comes as keys.
 fn typed(k: &KeyEvent) -> Option<char> {
@@ -199,7 +205,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
     if app.diffview.is_some() {
         return app.diffview_key(k);
     }
-    if crate::palette_key::is_palette_key(&k) {
+    if crate::palette_key::is_palette_key(&k, cfg!(target_os = "macos"), app.input.is_empty()) {
         return app.palette_key();
     }
     // no model works yet: Enter or any text opens the setup instead of filling the draft
@@ -551,8 +557,9 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                 app.editor_press(m.column, m.row);
                 return;
             }
-            // Ctrl+click on a link opens it; elsewhere Ctrl+click is a free selection as before
-            if m.modifiers.contains(KeyModifiers::CONTROL) && app.modal.is_none() && app.palette.is_none() {
+            // Ctrl+click (Option+click on a Mac, where Ctrl+click is a right click) on a link opens it; elsewhere the
+            // click is a free selection as before
+            if opens_link(m.modifiers, cfg!(target_os = "macos")) && app.modal.is_none() && app.palette.is_none() {
                 if let Some(url) = app.link_at(m.column, m.row) {
                     crate::links::open(&url);
                     return;
@@ -571,5 +578,18 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             app.pointer_moved(m.column, m.row);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod link_click_tests {
+    use super::*;
+
+    #[test]
+    fn option_click_opens_a_link_on_a_mac_only() {
+        assert!(opens_link(KeyModifiers::CONTROL, false) && opens_link(KeyModifiers::CONTROL, true));
+        assert!(opens_link(KeyModifiers::ALT, true));
+        assert!(!opens_link(KeyModifiers::ALT, false), "Alt+drag stays a free selection elsewhere");
+        assert!(!opens_link(KeyModifiers::NONE, true));
     }
 }

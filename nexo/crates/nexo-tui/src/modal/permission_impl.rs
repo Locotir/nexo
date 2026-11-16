@@ -120,7 +120,7 @@ impl Modal {
         let q = query.trim().to_lowercase();
         let hit = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
         let mut lines = Vec::new();
-        for (group, keys) in HELP.iter() {
+        for (group, keys) in help_rows(cfg!(target_os = "macos")).iter() {
             // a group's own name keeps all of it
             let all = hit(group);
             let keys: Vec<&(&str, &str)> = keys.iter().filter(|(k, d)| all || hit(k) || hit(d)).collect();

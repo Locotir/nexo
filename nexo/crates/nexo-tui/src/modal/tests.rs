@@ -182,3 +182,14 @@ fn picker_filters_and_picks() {
         ModalOut::Pick { kind: PickKind::Model, value: "deepseek/deepseek-chat".into() }
     );
 }
+
+#[test]
+fn the_help_on_a_mac_names_the_gestures_of_its_terminals_and_other_systems_keep_theirs() {
+    let text = |macos: bool| format!("{:?}", help_rows(macos));
+    let mac = text(true);
+    assert!(mac.contains("Fn+Drag") && mac.contains("Option+Click") && mac.contains("Ctrl+V attaches an image"));
+    assert!(mac.contains("Option as Meta") && !mac.contains("Ctrl+Click"));
+    let other = text(false);
+    assert!(other.contains("Ctrl+Click") && other.contains("Shift+Drag") && !other.contains("Fn+Drag"));
+    assert_eq!(help_rows(false).len(), HELP.len());
+}

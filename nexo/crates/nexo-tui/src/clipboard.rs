@@ -93,18 +93,35 @@ pub fn copy_with(text: &str, system: bool, tools: &[Tool]) -> Result<&'static st
     }
     // The terminal may honour it even where nothing else can (ssh, tmux).
     let osc = osc52(text);
-    if via.is_none() && osc.is_ok() {
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    if via.is_none() && osc.is_ok() && osc52_is_honoured(cfg!(target_os = "macos"), term_program.as_deref()) {
         via = Some("terminal (OSC 52)");
     }
     match via {
         Some(v) => Ok(v),
         None => {
             let why = if failures.is_empty() { "no clipboard reachable".to_string() } else { failures.join("; ") };
-            Err(format!(
-                "{why}. Install wl-clipboard or xclip, or use /settings mouse and select with the terminal (Shift+drag)"
-            ))
+            Err(format!("{why}. {}", failure_hint(cfg!(target_os = "macos"))))
         }
     }
+}
+
+/// What to try when no clipboard could be reached. macOS has neither wl-clipboard nor xclip, and its terminals
+/// bypass the mouse capture with Option or Fn, not Shift.
+fn failure_hint(macos: bool) -> &'static str {
+    if macos {
+        "pbcopy is unavailable here; enable OSC 52 in your terminal (iTerm2: Settings > General > Selection > \
+         Applications may access clipboard) or use /settings mouse and select with Option+drag (iTerm2) or \
+         Fn+drag (Terminal.app)"
+    } else {
+        "Install wl-clipboard or xclip, or use /settings mouse and select with the terminal (Shift+drag)"
+    }
+}
+
+/// Whether a written OSC 52 sequence reaches the clipboard: macOS's Terminal.app ignores it, so there it must not
+/// be reported as a copy.
+fn osc52_is_honoured(macos: bool, term_program: Option<&str>) -> bool {
+    !(macos && term_program == Some("Apple_Terminal"))
 }
 
 /// One instance for the whole run (see the module doc).
@@ -441,5 +458,21 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_macos_failure_hint_names_no_linux_tool() {
+        let mac = failure_hint(true);
+        assert!(!mac.contains("wl-clipboard") && !mac.contains("xclip"));
+        assert!(mac.contains("Fn+drag") && mac.contains("OSC 52"));
+        assert!(failure_hint(false).contains("wl-clipboard"));
+    }
+
+    #[test]
+    fn terminal_app_does_not_count_as_a_copy_through_osc_52() {
+        assert!(!osc52_is_honoured(true, Some("Apple_Terminal")));
+        assert!(osc52_is_honoured(true, Some("iTerm.app")));
+        assert!(osc52_is_honoured(true, None));
+        assert!(osc52_is_honoured(false, Some("Apple_Terminal")));
     }
 }

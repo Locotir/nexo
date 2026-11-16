@@ -7,10 +7,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::App;
 use crate::palette::PaletteKind;
 
-/// Whether `k` is the key that opens the commands window.
-pub fn is_palette_key(k: &KeyEvent) -> bool {
+/// Whether `k` is the key that opens the commands window. `option_layer`: on a Mac, Terminal.app and iTerm2 send the
+/// character Option+P makes (π) instead of an Alt chord, so on an empty draft that character opens the window too.
+pub fn is_palette_key(k: &KeyEvent, option_layer: bool, draft_empty: bool) -> bool {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k.modifiers.contains(KeyModifiers::ALT);
+    if option_layer && draft_empty && !ctrl && !alt && k.code == KeyCode::Char('π') {
+        return true;
+    }
     matches!((k.code, ctrl, alt), (KeyCode::Char(' '), true, false) | (KeyCode::Char('p' | 'P'), false, true))
 }
 
@@ -62,6 +66,7 @@ mod tests {
     use nexo_core::agent::AgentCommand;
     use tokio::sync::mpsc;
 
+    use super::is_palette_key;
     use crate::app::App;
     use crate::event::handle;
     use crate::palette::PaletteKind;
@@ -210,5 +215,15 @@ mod tests {
             sent.push_str(&format!("{c:?}"));
         }
         assert!(sent.contains("line 9"), "the folded paste is still sent whole: {sent}");
+    }
+
+    #[test]
+    fn the_character_option_p_makes_opens_the_window_on_a_mac_with_an_empty_draft_only() {
+        let pi = KeyEvent::new(KeyCode::Char('π'), KeyModifiers::NONE);
+        assert!(is_palette_key(&pi, true, true));
+        assert!(!is_palette_key(&pi, true, false), "a typed pi inside a draft stays text");
+        assert!(!is_palette_key(&pi, false, true), "other systems keep it as text");
+        let alt_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT);
+        assert!(is_palette_key(&alt_p, false, false));
     }
 }
