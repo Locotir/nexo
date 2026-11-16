@@ -94,7 +94,9 @@ pub async fn scan_local(own: &[(String, String)]) -> Vec<(String, String)> {
         let found = tokio::time::timeout(Duration::from_secs(2), local_kind(root, SCAN)).await.ok()??;
         Some((name.to_string(), describe(&found)))
     });
-    let own = own.iter().filter(|(name, _)| !LOCAL.iter().any(|(p, _)| p == name)).map(|(name, url)| async move {
+    // A preset name only counts as covered by the usual-port scan when its address is that usual one;
+    // Ollama moved to another port through OLLAMA_HOST is asked at its own address.
+    let own = own.iter().filter(|(name, url)| !at_usual_address(name, url)).map(|(name, url)| async move {
         if !nexo_core::provider::on_this_machine(url) {
             return None;
         }
@@ -103,6 +105,14 @@ pub async fn scan_local(own: &[(String, String)]) -> Vec<(String, String)> {
     });
     let (usual, own) = futures::join!(futures::future::join_all(usual), futures::future::join_all(own));
     usual.into_iter().chain(own).flatten().collect()
+}
+
+/// Whether a configured provider named like a preset sits at that preset's usual address, so the
+/// usual-port scan already asks it.
+fn at_usual_address(name: &str, url: &str) -> bool {
+    let same_host = |r: String| r.replace("//127.0.0.1", "//localhost");
+    let root = same_host(root_of(&normalize_url(url)));
+    LOCAL.iter().any(|(p, usual)| *p == name && same_host(root_of(usual)) == root)
 }
 
 fn describe(found: &Local) -> String {
@@ -918,8 +928,31 @@ mod tests {
 
     #[tokio::test]
     async fn a_configured_address_that_is_not_this_machine_is_never_asked() {
-        let found = scan_local(&[("far".to_string(), "http://192.0.2.1/v1".to_string())]).await;
+        // A server that would answer, reached through an address the guard rejects: the user-info part
+        // makes the host start with "far@", yet the connection goes to this machine's mock.
+        let s = MockServer::start();
+        let hits = s.mock(|w, t| {
+            w.method(GET);
+            t.status(200).json_body(json!({"data": [{"id": "m"}]}));
+        });
+        let url = format!("http://far.0.0.1:{}/v1", s.port());
+        assert!(!nexo_core::provider::on_this_machine(&url));
+        let found = scan_local(&[("far".to_string(), url)]).await;
         assert!(found.iter().all(|(n, _)| n != "far"), "{found:?}");
+        assert_eq!(hits.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_preset_named_provider_on_another_port_is_found_at_its_own_address() {
+        let s = MockServer::start();
+        s.mock(|w, t| {
+            w.method(GET).path("/v1/models");
+            t.status(200).json_body(json!({"data": [{"id": "m"}]}));
+        });
+        let found = scan_local(&[("ollama".to_string(), format!("{}/v1", s.base_url()))]).await;
+        assert!(found.iter().any(|(n, _)| n == "ollama"), "{found:?}");
+        assert!(at_usual_address("ollama", "http://127.0.0.1:11434/v1"));
+        assert!(!at_usual_address("ollama", "http://localhost:11500/v1"));
     }
 
     #[tokio::test]
