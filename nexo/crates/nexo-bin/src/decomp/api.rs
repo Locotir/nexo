@@ -117,7 +117,8 @@ impl Names for ImgNames<'_> {
         if let Some((n, off)) = self.img.symbol_covering(addr) {
             return Some(if off == 0 { n.to_string() } else { format!("{n}+{off:#x}") });
         }
-        if s.exec {
+        // bare code is one executable section: an address in it outside every function is its data
+        if s.exec && (self.img.format != Format::Raw || self.img.func_at(addr).is_some()) {
             return None;
         }
         Some(format!("g_{addr:x}"))

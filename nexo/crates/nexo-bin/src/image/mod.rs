@@ -7,12 +7,14 @@ mod names;
 mod open;
 mod probe;
 mod query;
+mod raw;
 
 pub(crate) use load::blank;
 #[cfg(test)]
 pub(crate) use load_elf::reloc_pointer;
 pub(crate) use names::{demangle, raw_of};
 pub use nexo_binmagic::opens;
+pub(crate) use raw::reopen_flags;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -39,6 +41,8 @@ pub enum Format {
     Elf,
     Pe,
     MachO,
+    /// Bare code with no headers (`--raw`): one section at the base the person gave.
+    Raw,
 }
 
 impl Format {
@@ -47,6 +51,7 @@ impl Format {
             Format::Elf => "ELF64",
             Format::Pe => "PE32+",
             Format::MachO => "Mach-O 64-bit",
+            Format::Raw => "raw code",
         }
     }
 }

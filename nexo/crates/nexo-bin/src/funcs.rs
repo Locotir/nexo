@@ -1,5 +1,6 @@
 //! Function starts: symbols, the entry, exports, call targets, then PE exception data or ELF
-//! `.eh_frame`. A function ends where the next one starts or its section ends.
+//! `.eh_frame` (in bare code, prologues after the end of other code). A function ends where the next one starts
+//! or its section ends (in bare code, where its own code ends, see `raw`).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -9,6 +10,9 @@ use crate::disasm::{target, walk_bits, walk_code};
 use crate::image::Section;
 use crate::refs::Collector;
 use crate::{Format, Image};
+
+mod raw;
+use raw::{a64_code_end, x86_code_end, X86Starts};
 
 #[derive(Debug, Clone)]
 pub struct Func {
@@ -48,12 +52,16 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
     if in_code(img.entry) {
         starts.insert(img.entry);
     }
+    // bare code has no symbols or unwind tables: a function that is never called directly (reached through a
+    // pointer, or the code after the one the entry is) shows itself only by its prologue right after other code ends
+    let raw = img.format == Format::Raw;
     for sec in img.code_sections() {
         if img.arm64 {
             crate::a64::scan::discover(img, sec, collector.as_deref_mut(), Some((&mut starts, &in_code)));
             continue;
         }
-        walk_code(img, sec, |ins, _| {
+        let mut prologues = X86Starts::new();
+        walk_code(img, sec, |ins, bytes| {
             if let Some(c) = collector.as_deref_mut() {
                 c.instruction(img, ins);
             }
@@ -64,11 +72,14 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
                     }
                 }
             }
+            if let Some(at) = if raw { prologues.step(img, ins, bytes) } else { None } {
+                starts.insert(at);
+            }
         });
     }
     match img.format {
         Format::Pe if !img.arm64 && img.bits == 64 => pdata(img, &mut starts),
-        Format::Pe => {}
+        Format::Pe | Format::Raw => {}
         Format::Elf => {
             for sec in img.sections.iter().filter(|s| s.alloc && s.name == ".eh_frame" && s.file_size > 0) {
                 eh_frame(img, sec, img.ptr_size(), &mut starts);
@@ -83,7 +94,12 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
     for (i, &start) in all.iter().enumerate() {
         let Some(sec) = img.section_at(start) else { continue };
         let sec_end = sec.addr + sec.backed_len();
-        let end = all.get(i + 1).copied().filter(|&n| n < sec_end).unwrap_or(sec_end);
+        let mut end = all.get(i + 1).copied().filter(|&n| n < sec_end).unwrap_or(sec_end);
+        // in bare code the bytes after a function's last instruction can be data (strings, tables, the rest of a
+        // dump): the function stops where its code stops, unless only padding lies between it and the next one
+        if raw {
+            end = if img.arm64 { a64_code_end(img, start, end) } else { x86_code_end(img, start, end) };
+        }
         let name = img
             .names
             .get(&start)

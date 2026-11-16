@@ -22,19 +22,7 @@ impl Image {
 
     /// Read the file; `arch` picks the slice of a universal (fat) Mach-O file (`x86-64`, `arm64`).
     pub fn open_arch(path: &Path, arch: Option<&str>) -> Result<Image> {
-        let meta = std::fs::metadata(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
-        if !meta.is_file() {
-            return Err(Error::NotRead(format!("{} is not a file", path.display())));
-        }
-        if meta.len() > MAX_FILE {
-            return Err(Error::NotRead(format!(
-                "{} is {} bytes; files over 1 GiB are not read",
-                path.display(),
-                meta.len()
-            )));
-        }
-        let data = std::fs::read(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
-        Image::from_bytes_arch(data, path.to_path_buf(), arch)
+        Image::from_bytes_arch(read_file(path)?, path.to_path_buf(), arch)
     }
 
     /// Parse bytes already in memory.
@@ -108,7 +96,7 @@ impl Image {
         self.pdb = Some(p);
     }
 
-    fn finish(&mut self) {
+    pub(super) fn finish(&mut self) {
         // function names win over exports, exports over data names
         let mut names: BTreeMap<u64, String> = BTreeMap::new();
         // the size of the symbol that gave each name, so `symbol_covering` is a lookup
@@ -153,4 +141,20 @@ impl Image {
         sorted.sort_by_key(|&i| (self.sections[i].addr, i));
         self.sorted = sorted;
     }
+}
+
+/// The whole file, when it is a regular file of at most [`MAX_FILE`] bytes.
+pub(super) fn read_file(path: &Path) -> Result<Vec<u8>> {
+    let meta = std::fs::metadata(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(Error::NotRead(format!("{} is not a file", path.display())));
+    }
+    if meta.len() > MAX_FILE {
+        return Err(Error::NotRead(format!(
+            "{} is {} bytes; files over 1 GiB are not read",
+            path.display(),
+            meta.len()
+        )));
+    }
+    std::fs::read(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))
 }

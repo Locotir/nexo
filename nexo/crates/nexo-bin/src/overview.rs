@@ -55,7 +55,7 @@ pub fn overview_window(img: &Image, from: Option<u64>, budget: usize) -> Result<
     let refs = img.refs();
     let funcs = img.funcs();
     let strings = img.strings();
-    let file = shell_word(&img.path.display().to_string()) + &crate::macho::arch_flag(img);
+    let file = shell_word(&img.path.display().to_string()) + &crate::image::reopen_flags(img);
     let mut secs: Vec<Sec> = Vec::new();
     let mut next: Vec<String> = Vec::new();
 

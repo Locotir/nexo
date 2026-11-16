@@ -18,7 +18,7 @@ const MAX_PATTERN: usize = 64;
 
 pub(crate) fn command(img: &Image, op: &str, rest: &str) -> String {
     // a slice picked from a universal Mach-O file stays picked in the next command
-    let path = shell_word(&img.path.display().to_string()) + &crate::macho::arch_flag(img);
+    let path = shell_word(&img.path.display().to_string()) + &crate::image::reopen_flags(img);
     if rest.is_empty() {
         format!("nexo bin {op} {path}")
     } else {
@@ -60,6 +60,13 @@ pub fn info(img: &Image) -> Output {
     };
     let mut l = Lines(Vec::new());
     l.text(format!("format      {} little-endian, {}", img.format_name(), img.arch_name()));
+    if img.format == crate::Format::Raw {
+        l.text(
+            "loaded      as given (--raw): no headers, so the base, the arch and the entry (the first byte) are the ones \
+             named; one section holds every byte; decomp reads calls with the System V registers"
+                .to_string(),
+        );
+    }
     l.text(format!("file        {size} bytes, sha256 {}", img.sha256));
     for w in &img.warnings {
         l.text(format!("warning     {w}"));
@@ -73,7 +80,9 @@ pub fn info(img: &Image) -> Output {
         img.symbols.len()
     ));
     let hard: Vec<String> = img.hardening.items.iter().map(|(k, v)| format!("{}: {v}", k.replace('_', " "))).collect();
-    l.text(format!("hardening   {}", hard.join(" | ")));
+    if !hard.is_empty() || img.format != crate::Format::Raw {
+        l.text(format!("hardening   {}", hard.join(" | ")));
+    }
     for t in crate::macho::info_lines(img) {
         l.text(t);
     }
@@ -158,10 +167,35 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
 /// The function that holds `a`, or why there is none.
 pub(crate) fn func_at_addr(img: &Image, a: u64) -> Result<&crate::funcs::Func> {
     img.func_at(a).ok_or_else(|| match img.section_at(a) {
-        Some(s) if s.exec => Error::Bad(format!("{a:#x} is in {} but before the first function found there", s.name)),
+        Some(s) if s.exec => gap_in_code(img, s, a),
         Some(s) => Error::Bad(format!("{a:#x} is in {}, which is data, not code (try: nexo bin bytes)", s.name)),
         None => Error::Bad(format!("{a:#x} is not inside any section")),
     })
+}
+
+/// What lies at a code address no function holds: before the first function, or (in bare code) after one ended,
+/// with the calls that read it as code or as bytes.
+fn gap_in_code(img: &Image, s: &crate::image::Section, a: u64) -> Error {
+    let funcs = img.funcs();
+    let n = funcs.partition_point(|f| f.start <= a);
+    let sec_end = s.addr + s.backed_len();
+    let Some(before) = funcs[..n].last().filter(|f| s.contains(f.start) && a < sec_end) else {
+        return Error::Bad(format!("{a:#x} is in {} but before the first function found there", s.name));
+    };
+    let next = funcs.get(n).map_or(sec_end, |f| f.start).min(sec_end);
+    Error::Bad(format!(
+        "{a:#x} is in {} after the end of {} ({:#x}), {} bytes before {}; as code: {}; as bytes: {}",
+        s.name,
+        img.func_name(before),
+        before.end,
+        next - a,
+        funcs
+            .get(n)
+            .filter(|f| f.start < sec_end)
+            .map_or("the end of the section".to_string(), |f| img.func_name(f).to_string()),
+        command(img, "fn", &format!("{a:#x} --to {:#x}", next.min(a + 0x100))),
+        command(img, "bytes", &format!("{a:#x} {}", (next - a).min(0x100)))
+    ))
 }
 
 /// The function a known place stands for: the one at `main` or the entry, or the stub that jumps through a slot.
@@ -601,14 +635,16 @@ pub fn find_imm_in(img: &Image, value: i128, within: Option<&str>) -> Result<Out
     } else {
         (value as u64).to_le_bytes().to_vec()
     };
+    // bare code is one section: the bytes outside its functions are its data
+    let raw = img.format == crate::Format::Raw;
     if !capped {
-        'data: for sec in img.sections.iter().filter(|s| s.alloc && !s.exec && s.file_size > 0) {
+        'data: for sec in img.sections.iter().filter(|s| s.alloc && (!s.exec || raw) && s.file_size > 0) {
             let (base, data) = clipped(sec.addr, img.section_bytes(sec), span);
             if data.len() < needle.len() {
                 continue;
             }
             for i in 0..=data.len() - needle.len() {
-                if data[i..i + needle.len()] == needle[..] {
+                if data[i..i + needle.len()] == needle[..] && !(raw && img.func_at(base + i as u64).is_some()) {
                     rows.push(hit_row(
                         img,
                         base + i as u64,

@@ -1,4 +1,4 @@
-//! ASCII and UTF-16LE strings in the data sections.
+//! ASCII and UTF-16LE strings in the data sections (in bare code, `--raw`, in all of its bytes).
 
 use crate::Image;
 
@@ -24,7 +24,9 @@ fn ascii_ok(b: u8) -> bool {
 
 pub(crate) fn scan(img: &Image) -> Vec<Str> {
     let mut out = Vec::new();
-    for sec in img.sections.iter().filter(|s| s.alloc && !s.exec && s.file_size > 0) {
+    // bare code is one executable section, its strings among the code
+    let raw = img.format == crate::Format::Raw;
+    for sec in img.sections.iter().filter(|s| s.alloc && (!s.exec || raw) && s.file_size > 0) {
         let data = img.section_bytes(sec);
         scan_ascii(data, sec.addr, &mut out);
         scan_wide(data, sec.addr, &mut out);

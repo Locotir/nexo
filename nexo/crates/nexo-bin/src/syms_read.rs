@@ -69,6 +69,8 @@ pub(crate) fn read(img: &Image, relocs: bool) -> Tables {
             }
             t.dynamic = true;
         }
+        // bare code has no tables
+        (Format::Raw, _) => {}
     }
     t
 }
@@ -196,7 +198,7 @@ pub(crate) fn reloc_type(img: &Image, ty: u32) -> String {
             pe::IMAGE_REL_BASED_HIGHLOW => Some("HIGHLOW"),
             _ => None,
         },
-        Format::MachO => None,
+        Format::MachO | Format::Raw => None,
         // the numbers overlap between machines, so each one has its own table
         Format::Elf if img.arm64 => match RelocationType(ty) {
             R_AARCH64_ABS64 => Some("R_AARCH64_ABS64"),
@@ -256,7 +258,7 @@ pub(crate) fn reloc_value(img: &Image, r: &Reloc) -> Option<u64> {
     };
     match img.format {
         Format::Pe => read(usize::from(r.size)).filter(|_| r.size == 4 || r.size == 8),
-        Format::MachO => None,
+        Format::MachO | Format::Raw => None,
         Format::Elf => {
             let ty = RelocationType(r.ty);
             let relative = if img.arm64 {

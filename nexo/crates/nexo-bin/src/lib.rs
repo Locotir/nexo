@@ -1,5 +1,5 @@
-//! `nexo-bin`: reads ELF, PE and Mach-O files as bytes and answers questions about them in
-//! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search, and
+//! `nexo-bin`: reads ELF, PE and Mach-O files (and bare code at a given address) as bytes and answers questions
+//! about them in bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search, and
 //! what changed between two builds of one program.
 //!
 //! The input file is only read; `patch` writes a new copy. It is never run, loaded or handed to another program (`nexo-dbg` is the
@@ -71,6 +71,8 @@ mod tests_map;
 mod tests_patch;
 #[cfg(test)]
 mod tests_place;
+#[cfg(test)]
+mod tests_raw;
 #[cfg(test)]
 mod tests_sigs;
 #[cfg(test)]

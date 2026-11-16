@@ -38,6 +38,7 @@ calls <file> <name>, tree <file> <name> [--up], path <file> <from> <to>  callers
 cfg <file> <name|addr>  control-flow graph of one function: blocks, edges, loops, dominators (x86-64)
 strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len> [--as u32|char[16]|ptr|str|item[4]|a named or DWARF struct], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
 --lines N|all, --from K, --grep RE, --json after any op; `<op> --help` for its flags
+--raw --base ADDR [--arch x86-64|x86-32|arm64] after any op: the file is bare code (a memory dump, shellcode, JIT output, an unpacked stub), one section loaded at ADDR, its first byte the entry
 a; b  several ops in one call, each answer under its own `> op` line; an error stops the rest
 Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch --out and sigs --out write a file: the person is asked";
 
@@ -54,7 +55,7 @@ impl Tool for Bin {
         ToolSpec {
             name: "bin".into(),
             description: format!(
-                "Read a compiled program (ELF, PE, Mach-O, wasm, JVM, .NET) as bytes, without running it. One op per call (or `a; b`), the file first; answers come in bounded pages.\n{OPS}"
+                "Read a compiled program (ELF, PE, Mach-O, wasm, JVM, .NET) or bare code as bytes, without running it. One op per call (or `a; b`), the file first; answers come in bounded pages.\n{OPS}"
             ),
             parameters: json!({
                 "type": "object",

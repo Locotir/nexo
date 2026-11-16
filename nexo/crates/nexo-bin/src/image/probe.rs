@@ -20,7 +20,11 @@ pub(super) fn not_a_binary(data: &[u8]) -> Error {
     if std::str::from_utf8(head).is_ok() || head.iter().all(|b| b.is_ascii()) {
         Error::NotRead("this is a text file, not an ELF, PE or Mach-O binary".into())
     } else {
-        Error::NotRead("not an ELF, PE or Mach-O binary (unknown file signature)".into())
+        Error::NotRead(
+            "not an ELF, PE or Mach-O binary (unknown file signature); bare code (a memory dump, shellcode) reads with \
+             --raw --base ADDR --arch x86-64|x86-32|arm64"
+                .into(),
+        )
     }
 }
 

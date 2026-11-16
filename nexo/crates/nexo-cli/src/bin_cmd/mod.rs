@@ -1,4 +1,4 @@
-//! `nexo bin`: read an ELF, PE or Mach-O file as bytes and answer in bounded pieces.
+//! `nexo bin`: read an ELF, PE or Mach-O file (or bare code, `--raw`) as bytes and answer in bounded pieces.
 //! The file is never run or loaded. See the `nexo-bin` crate.
 
 use std::path::Path;
@@ -177,23 +177,29 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     if let BinOp::Sigs { libs, all, out, .. } = op {
         return make_sigs(libs, *all, out.as_deref(), data_dir);
     }
-    if let Some(r) = crate::bin_managed::try_managed(op) {
-        return r;
-    }
-    if nexo_bin::is_wasm(op.file()) {
-        return wasm_in(op);
-    }
-    let mut img = Image::open_arch(op.file(), op.common().arch.as_deref())?;
+    let c = op.common();
+    // bare bytes have no signature to tell them from a jar or a wasm module: --raw decides before the sniffing
+    let mut img = if c.raw && !matches!(op, BinOp::Managed { .. }) {
+        Image::open_raw(op.file(), c.base.unwrap_or(0), c.arch.as_deref())?
+    } else {
+        if let Some(r) = crate::bin_managed::try_managed(op) {
+            return r;
+        }
+        if nexo_bin::is_wasm(op.file()) {
+            return wasm_in(op);
+        }
+        Image::open_arch(op.file(), c.arch.as_deref())?
+    };
     let mut warning = nexo_bin::attach_names(&mut img, data_dir);
     let mut other = None;
     if let BinOp::Diff { other: path, .. } = op {
-        let mut b = Image::open(path)?;
+        let mut b =
+            if c.raw { Image::open_raw(path, c.base.unwrap_or(0), c.arch.as_deref())? } else { Image::open(path)? };
         if let Some(w) = nexo_bin::attach_names(&mut b, data_dir).filter(|w| warning.as_ref() != Some(w)) {
             warning = Some(warning.map_or(w.clone(), |v| format!("{v}\n{w}")));
         }
         other = Some(b);
     }
-    let c = op.common();
     let (ask, op_grep) = op.page_ask();
     let (from, lines) = ask.window();
     let out: Output = match op {

@@ -621,3 +621,41 @@ fn cfg_gives_the_blocks_of_one_function_and_pages_like_every_op() {
     assert_eq!(j["op"], "cfg");
     assert_eq!(j["items"][0]["row"], "block");
 }
+
+/// Bare x86-64 code as a debugger dumps it: a function that passes a string to the one after it, int3 padding
+/// between them, the string after the code.
+fn bare_code() -> Vec<u8> {
+    let mut b = vec![0x55, 0x48, 0x89, 0xe5]; // push rbp; mov rbp, rsp
+    b.extend_from_slice(&[0x48, 0x8d, 0x3d, 0x15, 0, 0, 0]); // lea rdi, [rip+0x15]: the string at +0x20
+    b.extend_from_slice(&[0xe8, 0x04, 0, 0, 0]); // call +0x14
+    b.extend_from_slice(&[0x5d, 0xc3, 0xcc, 0xcc]); // pop rbp; ret; padding
+    b.extend_from_slice(&[0x55, 0x48, 0x89, 0xe5, 0x5d, 0xc3]); // the callee
+    b.resize(0x20, 0xcc);
+    b.extend_from_slice(b"hello from a dump\0");
+    b
+}
+
+#[test]
+fn raw_reads_bare_code_at_its_base_and_the_next_commands_keep_the_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("region.bin");
+    std::fs::write(&p, bare_code()).unwrap();
+    let path = p.display().to_string();
+    let raw = ["--raw", "--base", "0x7f0000001000"];
+    let with = |op: &[&str]| ask(&[op, &raw[..]].concat()).unwrap();
+
+    let f = with(&["funcs", &path]);
+    assert!(f.contains("sub_7f0000001000") && f.contains("sub_7f0000001014"), "{f}");
+    let x = with(&["xref", &path, "--str", "hello from a dump"]);
+    assert!(x.contains("sub_7f0000001000"), "{x}");
+    let o = with(&["overview", &path]);
+    assert!(o.contains(&format!("{path} --raw --base 0x7f0000001000 --arch x86-64")), "{o}");
+
+    // without --raw the bytes have no signature, and the answer says how to read them
+    let e = ask(&["info", &path]).unwrap_err().to_string();
+    assert!(e.contains("--raw --base ADDR"), "{e}");
+    // --base alone says nothing about the file
+    let e =
+        crate::cli::Args::try_parse_from(["nexo", "bin", "info", &path, "--base", "0x1000"]).unwrap_err().to_string();
+    assert!(e.contains("--raw"), "{e}");
+}
