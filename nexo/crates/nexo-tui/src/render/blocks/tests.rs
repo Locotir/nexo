@@ -267,12 +267,47 @@ fn the_caret_blinks_and_the_mark_lights_up() {
     assert_eq!(off.last().unwrap().spans.last().unwrap().style.fg, Some(theme.dim2), "and dark half the time");
     let done = Block::Assistant { text: "Hello".into(), streaming: false, at: None, started: None, took_ms: None };
     assert!(!texts(&done.render(40, &theme, opts()))[0].contains('▍'), "no caret once the reply is done");
-    // the first node is born as a dot, the last one is not there yet, the centre waits as a seed
-    assert_eq!(intro_cell(&theme, '●', theme.accent2, 0, 0, 0), ('·', theme.fg));
+    // the first node is born as a white-hot dot, the last one is not there yet, the centre waits as a seed
+    let born = crate::fx_ignite::BORN;
+    assert_eq!(intro_cell(&theme, '●', theme.accent2, 0, 0, born[0] - 1).0, ' ');
+    assert_eq!(intro_cell(&theme, '●', theme.accent2, 0, 0, born[0]), ('·', theme.fg));
     assert_eq!(intro_cell(&theme, '●', theme.accent2, 2, 0, 100).0, ' ', "the last node waits its turn");
     assert_eq!(intro_cell(&theme, '●', theme.accent, 1, 3, 100), ('·', theme.dim2));
     assert_eq!(intro_cell(&theme, '●', theme.accent2, 2, 0, INTRO_MS), ('●', theme.accent2));
     assert_eq!(intro_cell(&theme, '●', theme.accent, 1, 3, INTRO_MS), ('●', theme.accent), "the centre settles");
+}
+
+#[test]
+fn the_banner_mark_keeps_time_with_the_ignition_in_the_sky() {
+    use crate::fx_ignite::{reach, BORN, CENTRE_MS};
+    let theme = Theme::nexo();
+    // the outer nodes ignite when the large ones do, clockwise from the top left
+    for (i, (r, c)) in [(0, 0), (0, 6), (2, 6), (2, 0)].into_iter().enumerate() {
+        assert_eq!(cell_born(r, c), BORN[i]);
+        // and the ties of its own row light after it, the one nearer the centre later
+        let side = |d: usize| if c == 0 { d } else { 6 - d };
+        let (near, far) = (cell_born(r, side(1)), cell_born(r, side(2)));
+        assert!(BORN[i] < near && near < far, "stroke {i}: {near} {far}");
+        // the tie beside the centre is on two strokes: it lights no later than this one's light gets there
+        assert!(cell_born(1, side(2)) <= reach(i, 0.75).ceil() as u64, "stroke {i}");
+    }
+    // the ties beside the centre light with the first light that comes down either stroke they are on
+    assert_eq!(cell_born(1, 2), reach(0, 0.75).ceil() as u64);
+    assert_eq!(cell_born(1, 4), reach(1, 0.75).ceil() as u64);
+    assert_eq!(cell_born(1, 3), CENTRE_MS);
+    assert!((0..3).flat_map(|r| (0..7).map(move |c| (r, c))).all(|(r, c)| cell_born(r, c) <= CENTRE_MS));
+    // a tie is white-hot as the light passes and cools to its colour; the seed brightens as the lights gather
+    let (r, c) = (0, 2);
+    let lit = cell_born(r, c);
+    assert_eq!(intro_cell(&theme, '╮', theme.accent, r, c, lit), ('╮', theme.fg));
+    assert_eq!(intro_cell(&theme, '╮', theme.accent, r, c, lit + 400).1, theme.accent);
+    let seed = |ms: u64| intro_cell(&theme, '●', theme.accent, 1, 3, ms);
+    assert_ne!(seed(CENTRE_MS - 1).1, seed(100).1, "{:?}", seed(CENTRE_MS - 1));
+    assert_eq!(seed(CENTRE_MS), ('●', theme.fg), "the centre ignites white-hot");
+    // the light the centre sends back flashes over the nodes after they settled
+    let back = crate::fx_ignite::echo(1.0).ceil() as u64;
+    assert_eq!(intro_cell(&theme, '●', theme.accent2, 0, 0, back - 20).1, theme.accent2);
+    assert_ne!(intro_cell(&theme, '●', theme.accent2, 0, 0, back + 20).1, theme.accent2);
 }
 
 /// Every cell of `lines` with its style, so frames split into spans differently compare.
@@ -285,19 +320,13 @@ fn cells(lines: &[Line]) -> Vec<Vec<(String, Style)>> {
 
 #[test]
 fn the_banner_intro_never_jumps_and_ends_on_the_still_banner() {
+    // a long folder is typed faster, so it too is in by the end
+    let long = format!("~/{}work · main", "a_long_folder_name/".repeat(4));
+    let places = ["~/work · main"; 4].into_iter().chain([long.as_str()]);
     for theme in [Theme::nexo(), Theme::mono()] {
-        for w in [30, 44, 80, 120] {
-            let at = |ms| {
-                welcome(
-                    w,
-                    &theme,
-                    "deepseek/deepseek-flash",
-                    "~/work · main",
-                    "auto",
-                    ms,
-                    nexo_core::config::Detail::Full,
-                )
-            };
+        for (w, place) in [30, 44, 80, 120, 120].into_iter().zip(places.clone()) {
+            let at =
+                |ms| welcome(w, &theme, "deepseek/deepseek-flash", place, "auto", ms, nexo_core::config::Detail::Full);
             let still = at(None);
             let widths: Vec<usize> = still.iter().map(Line::width).collect();
             let mut ms = 0;

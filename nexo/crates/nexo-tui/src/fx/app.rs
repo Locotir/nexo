@@ -89,6 +89,8 @@ pub struct Fx {
     pub goal_spot: std::cell::Cell<Option<(u16, u16)>>,
     /// The letters of the reply that arrived lately, drawn dimmer while they settle (see `fx_stream`).
     pub ink: crate::fx_stream::Ink,
+    /// A key cut the opening short: the banner and the sky show their end state at once.
+    pub intro_cut: bool,
 }
 
 impl App {

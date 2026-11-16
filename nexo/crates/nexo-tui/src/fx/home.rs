@@ -235,19 +235,25 @@ pub fn draw(buf: &mut Buffer, app: &App, area: Rect) {
     let on = app.opts.home_stars && app.fx_on() && fits(area);
     let shown = if on { hf.level(now) } else { 0.0 };
     hf.shown.set(on && hf.since.is_some());
-    if shown <= 0.0 {
+    // as the session opens, its mark ignites in this sky (`fx_ignite`), while the field is still coming in
+    let ignition = app.intro_ms().filter(|_| on && app.home_empty());
+    if shown <= 0.0 && ignition.is_none() {
         return;
     }
     let ascii = crate::ascii::wanted();
-    let grid = comet_grid(hf.phase(now), shown, hf.pace(now), area.width, area.height, ascii);
     let free = clear_of_text(buf, area, &app.theme, MARGIN_X, MARGIN_Y, u16::MAX);
     let theme = &app.theme;
-    paint(buf, area, &grid, &free, ascii, |c| star_style(theme, c));
+    if shown > 0.0 {
+        let grid = comet_grid(hf.phase(now), shown, hf.pace(now), area.width, area.height, ascii);
+        paint(buf, area, &grid, &free, ascii, |c| star_style(theme, c));
+    }
+    let look = Look::on(theme, hf.clock.sky_time(now), hf.stars(now));
+    if let Some(ms) = ignition {
+        crate::fx_ignite::draw(buf, theme, area, &free, ms as f32, ascii, look);
+    }
     // the stars, as on the welcome screen (none in ASCII mode or without true colour), under the comets
-    if !ascii {
-        if let Some(look) = Look::on(theme, hf.clock.sky_time(now), hf.stars(now)) {
-            render_stars_in(area, None, None, Some(&free), look, buf);
-        }
+    if let Some(look) = look.filter(|_| !ascii && shown > 0.0) {
+        render_stars_in(area, None, None, Some(&free), look, buf);
     }
 }
 

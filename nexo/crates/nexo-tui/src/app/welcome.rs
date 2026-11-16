@@ -53,12 +53,33 @@ impl App {
         self.blocks.iter().all(|b| matches!(b, Block::Welcome { .. } | Block::Notice { .. } | Block::Problem { .. }))
     }
 
-    /// The banner is still coming in (its intro is drawn on the frame clock).
+    fn since_opened(&self) -> u64 {
+        self.now().saturating_duration_since(self.opened).as_millis() as u64
+    }
+
+    /// How far into the opening (the banner coming in, the mark igniting in the sky) the session is, in ms;
+    /// `None` once it is over, with the motion off, and once a key cut it short: the end state.
+    pub fn intro_ms(&self) -> Option<u64> {
+        let ms = self.since_opened();
+        (self.opts.animations && !self.fx.intro_cut && self.has_welcome() && ms < crate::render::blocks::INTRO_MS)
+            .then_some(ms)
+    }
+
+    /// The banner is still coming in (its intro is drawn on the frame clock, a little past its end so the last
+    /// frame drawn is the still banner).
     pub fn intro_running(&self) -> bool {
         self.opts.animations
+            && !self.fx.intro_cut
             && self.has_welcome()
-            && self.now().saturating_duration_since(self.opened).as_millis() as u64
-                <= crate::render::blocks::INTRO_MS + 100
+            && self.since_opened() <= crate::render::blocks::INTRO_MS + 100
+    }
+
+    /// A key while the session opens skips the opening to its end state (and the key does what it does).
+    pub fn cut_intro(&mut self) {
+        if self.intro_running() {
+            self.fx.intro_cut = true;
+            self.invalidate(0);
+        }
     }
 
     /// `.git/HEAD` of the nearest repository, re-read every five seconds.

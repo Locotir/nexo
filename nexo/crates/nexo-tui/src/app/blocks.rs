@@ -144,12 +144,11 @@ impl App {
     }
 
     pub fn render_opts(&self) -> RenderOpts {
-        let since = self.now().saturating_duration_since(self.opened).as_millis() as u64;
         RenderOpts {
             show_reasoning: self.show_reasoning,
             fold_after: self.fold_after,
             spinner: self.spinner,
-            intro_ms: (self.opts.animations && since < crate::render::blocks::INTRO_MS).then_some(since),
+            intro_ms: self.intro_ms(),
             interpreted: self.interpreted,
             timestamps: self.timestamps,
             fx: self.fx_on(),

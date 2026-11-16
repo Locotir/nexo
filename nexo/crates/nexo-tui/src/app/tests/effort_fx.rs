@@ -34,8 +34,10 @@ fn resting(t0: Instant) -> App {
     a
 }
 
+/// The status bar: the lowest row that starts with the name (on a narrow screen the banner's title starts one too).
 fn bar_y(b: &Buffer) -> u16 {
     (0..b.area.height)
+        .rev()
         .find(|y| (0..6).map(|x| b[(x, *y)].symbol().to_string()).collect::<String>().contains("nexo"))
         .expect("the status bar")
 }

@@ -9,6 +9,7 @@ pub mod effort;
 pub mod galaxy;
 pub mod goal;
 pub mod home;
+pub mod ignite;
 pub mod panel;
 pub mod starfield;
 pub mod stars;

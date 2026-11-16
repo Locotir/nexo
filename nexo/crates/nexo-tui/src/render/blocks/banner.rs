@@ -1,69 +1,83 @@
 //! The welcome box and the animated nexo mark that opens a session.
 
 use super::*;
+use crate::fx_ignite as ignite;
 
 /// The mark of nexo: four nodes tied to one centre, the link the name means.
 pub(super) const LOGO: [&str; 3] = ["●─╮ ╭─●", "  ╰●╯  ", "●─╯ ╰─●"];
 
-/// How long the banner takes to come in when nexo opens (every part has settled by then).
-pub const INTRO_MS: u64 = 1900;
-
-/// The four outer nodes of the mark and when each is born, clockwise from the top left.
-pub(super) const NODES: [(usize, usize, u64); 4] = [(0, 0, 0), (0, 6, 110), (2, 6, 220), (2, 0, 330)];
-/// A pulse leaves a node this long after it is born ...
-pub(super) const PULSE_AFTER: u64 = 180;
-/// ... and crosses one cell of its tie per step, towards the centre.
-pub(super) const PULSE_STEP: u64 = 75;
-/// The wave that leaves the centre once it lights moves one cell out per step.
-pub(super) const WAVE_STEP: u64 = 70;
+/// How long the banner takes to come in when nexo opens (every part has settled by then). The mark here
+/// keeps time with the large one the sky draws as the session opens (`fx_ignite`): its nodes ignite, its
+/// lights run and its centre ignites at the same moments.
+pub const INTRO_MS: u64 = ignite::END_MS;
 
 /// How many cells the mark's cell at row `r`, column `c` is from the centre.
 pub(super) fn from_centre(r: usize, c: usize) -> u64 {
     (c as i64 - 3).unsigned_abs() + (r as i64 - 1).unsigned_abs()
 }
 
-/// When the last pulse reaches the centre and it lights.
-pub(super) fn centre_lit() -> u64 {
-    NODES.iter().map(|n| n.2).max().unwrap_or(0) + PULSE_AFTER + 4 * PULSE_STEP
+/// The strokes the mark's cell at row `r`, column `c` is on, numbered as in `fx_ignite` (clockwise from the
+/// top left, like the nodes they leave): the ties beside the centre are on two.
+fn strokes(r: usize, c: usize) -> impl Iterator<Item = usize> {
+    let (top, bottom) = if c < 3 { (0, 3) } else { (1, 2) };
+    [(r != 2).then_some(top), (r != 0).then_some(bottom)].into_iter().flatten()
 }
 
-/// When the mark's cell at row `r`, column `c` first shows: a node when it is born, a tie
-/// when the first pulse of a node on its side reaches it, the centre when the last one does.
+/// When the mark's cell at row `r`, column `c` first shows: a node when it ignites, a tie when the first light
+/// running down a stroke it is on reaches it, the centre when the last light does.
 pub(super) fn cell_born(r: usize, c: usize) -> u64 {
-    if (r, c) == (1, 3) {
-        return centre_lit();
+    let d = from_centre(r, c);
+    if d == 0 {
+        return ignite::CENTRE_MS;
     }
-    if let Some(n) = NODES.iter().find(|n| (n.0, n.1) == (r, c)) {
-        return n.2;
-    }
-    NODES
-        .iter()
-        .filter(|n| (n.1 < 3) == (c < 3) && (r == 1 || r == n.0))
-        .map(|n| n.2 + PULSE_AFTER + 4u64.saturating_sub(from_centre(r, c)) * PULSE_STEP)
+    let along = (4 - d.min(4)) as f32 / 4.0;
+    strokes(r, c)
+        .map(|i| if d >= 4 { ignite::BORN[i] } else { ignite::reach(i, along).ceil() as u64 })
         .min()
         .unwrap_or(0)
 }
 
-/// The mark's cell at row `r`, column `c`, `ms` into the intro: its glyph and colour.
-/// The nodes are born one after another and grow from a dot; a pulse runs down each tie,
-/// drawing it with a bright head; the centre, a faint seed until then, lights when the last
-/// pulse arrives and sends a wave back out over the whole mark.
+/// White-hot (the text's colour) for `hot` ms after a cell lights, then cooling to its own `colour`, `age` ms
+/// after it lit.
+fn cooling(theme: &Theme, colour: Color, age: u64, hot: u64) -> Color {
+    const COOL_MS: u64 = 220;
+    match age.checked_sub(hot) {
+        None => theme.fg,
+        Some(a) if a < COOL_MS => mix(theme.fg, colour, a as f32 / COOL_MS as f32),
+        Some(_) => colour,
+    }
+}
+
+/// The mark's cell at row `r`, column `c`, `ms` into the intro: its glyph and colour. The nodes ignite one
+/// after another and grow from a dot; a light runs down each tie, drawing it white-hot; the centre, a faint
+/// seed that brightens as the lights arrive, ignites with the last one and sends the light back out over the
+/// whole mark.
 pub(super) fn intro_cell(theme: &Theme, glyph: char, colour: Color, r: usize, c: usize, ms: u64) -> (char, Color) {
+    let d = from_centre(r, c);
+    if d == 0 {
+        if ms < ignite::CENTRE_MS {
+            let gathered = (0..4).filter(|&i| ms as f32 >= ignite::reach(i, 1.0)).count();
+            let seed = if gathered >= 2 { '•' } else { '·' };
+            return (seed, mix(theme.dim2, colour, gathered as f32 / 6.0));
+        }
+        return (glyph, cooling(theme, colour, ms - ignite::CENTRE_MS, 130));
+    }
     let born = cell_born(r, c);
-    let centre = (r, c) == (1, 3);
     if ms < born {
-        return if centre { ('·', theme.dim2) } else { (' ', colour) };
+        return (' ', colour);
     }
     let age = ms - born;
     let glyph = match (glyph, age) {
-        ('●', 0..=59) => '·',
-        ('●', 60..=129) => '•',
+        ('●', 0..=39) => '·',
+        ('●', 40..=79) => '•',
         _ => glyph,
     };
-    let mut lit = if age < 90 { theme.fg } else { mix(theme.fg, colour, (age - 90) as f32 / 260.0) };
-    let wave = centre_lit() + WAVE_STEP * from_centre(r, c);
-    if !centre && (wave..wave + 240).contains(&ms) {
-        lit = mix(theme.fg, lit, (ms - wave) as f32 / 240.0);
+    let lit = cooling(theme, colour, age, 90);
+    // the light the centre sends back out passes over the cell, white-hot for a moment
+    let back = ignite::echo(d as f32 / 4.0);
+    let since = ms as f32 - back;
+    if (0.0..200.0).contains(&since) {
+        return (glyph, mix(theme.fg, lit, since / 200.0));
     }
     (glyph, lit)
 }
@@ -90,13 +104,25 @@ pub(super) fn typed(spans: Vec<Span<'static>>, theme: &Theme, ms: u64, start: u6
     out
 }
 
-/// When each line of the banner's text starts to be typed, and the ms between characters.
-pub(super) const TYPE_TITLE: (u64, u64) = (560, 45);
-pub(super) const TYPE_MODEL: (u64, u64) = (900, 7);
-pub(super) const TYPE_PLACE: (u64, u64) = (1000, 7);
-pub(super) const TYPE_HINT: (u64, u64) = (1250, 4);
+/// When each line of the banner's text starts to be typed, and the ms between characters: the title while the
+/// lights run down the mark, the rest as its centre ignites and after. A long line is typed faster, so every
+/// line is in and settled by `INTRO_MS`.
+pub(super) const TYPE_TITLE: (u64, u64) = (420, 24);
+pub(super) const TYPE_MODEL: (u64, u64) = (720, 5);
+pub(super) const TYPE_PLACE: (u64, u64) = (840, 4);
+pub(super) const TYPE_HINT: (u64, u64) = (1000, 3);
 /// How long the frame of the banner takes to fade in.
-pub(super) const BORDER_MS: u64 = 350;
+pub(super) const BORDER_MS: u64 = 300;
+
+/// The ms between the characters of a line of `chars` characters typed from `start` at `per`: `per`, or less
+/// when the line would not be in (with the 200 ms each character takes to settle) by `INTRO_MS`.
+pub(super) fn pace(chars: usize, (start, per): (u64, u64)) -> u64 {
+    per.min(INTRO_MS.saturating_sub(start + 200) / chars.max(1) as u64)
+}
+
+fn chars(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
+}
 
 /// The banner of an empty session: the mark beside the version, the model and the place, then one line of hints.
 pub(super) fn welcome(
@@ -116,7 +142,10 @@ pub(super) fn welcome(
         _ => theme.style(theme.border),
     };
     let type_in = |spans: Vec<Span<'static>>, (start, per): (u64, u64)| match intro_ms {
-        Some(ms) => typed(spans, theme, ms, start, per),
+        Some(ms) => {
+            let per = pace(chars(&spans), (start, per));
+            typed(spans, theme, ms, start, per)
+        }
         None => spans,
     };
     let row = |spans: Vec<Span<'static>>| -> Line<'static> {
@@ -164,9 +193,11 @@ pub(super) fn welcome(
             }
             v.push(Span::raw("   "));
         }
-        let pace = [TYPE_TITLE, TYPE_MODEL, TYPE_PLACE][i];
-        let typing = intro_ms.is_some_and(|ms| i == 0 && ms >= pace.0 && ms < pace.0 + pace.1 * 12 + 150);
-        v.extend(type_in(spans, pace));
+        let when = [TYPE_TITLE, TYPE_MODEL, TYPE_PLACE][i];
+        let n = chars(&spans);
+        let typed_by = when.0 + pace(n, when) * n.saturating_sub(1) as u64;
+        let typing = intro_ms.is_some_and(|ms| i == 0 && ms >= when.0 && ms < typed_by + 150);
+        v.extend(type_in(spans, when));
         if typing {
             // the title is typed with a caret
             v.push(Span::styled("▍", theme.style(theme.accent)));
