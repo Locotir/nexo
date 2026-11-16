@@ -300,9 +300,11 @@ impl App {
                     self.modal = Some(Modal::Picker(Picker::new(PickKind::Session, "Sessions", items, None)));
                 }
             }
+            // `/shared-memory` alone picks the sessions whose memory joins the next message; `read` and `write` are the
+            // coordination notes (so no session can be called that); anything else is `/mem`'s `list`, `off` or `<id> [focus]`
             Command::SharedMemory(arg) => {
-                let arg = arg.as_deref().unwrap_or("read");
-                let (op, rest) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(a, b)| (a, b.trim()));
+                let Some(arg) = arg else { return self.run_command(Command::Mem(None)) };
+                let (op, rest) = arg.split_once(char::is_whitespace).map_or((arg.as_str(), ""), |(a, b)| (a, b.trim()));
                 match op {
                     "read" if rest.is_empty() => self.send(AgentCommand::ReadSharedMemory { since: 0 }),
                     "read" => match rest.parse::<u64>() {
@@ -310,7 +312,8 @@ impl App {
                         Err(_) => self.notice(Level::Error, "shared memory epoch must be a non-negative integer"),
                     },
                     "write" if !rest.is_empty() => self.send(AgentCommand::WriteSharedMemory { text: rest.into() }),
-                    _ => self.notice(Level::Error, "usage: /shared-memory [read [epoch]|write <text>]"),
+                    "write" => self.notice(Level::Error, "usage: /shared-memory write <text>"),
+                    _ => self.run_command(Command::Mem(Some(arg.trim().to_string()))),
                 }
             }
             Command::Mem(None) => {
@@ -325,7 +328,8 @@ impl App {
                 if items.is_empty() {
                     self.notice(Level::Info, "no other session to share from");
                 } else {
-                    self.modal = Some(Modal::Picker(Picker::new(PickKind::Memory, "Share memory from", items, None)));
+                    let picker = Picker::new(PickKind::Memory, "Share memory from", items, None).multiple();
+                    self.modal = Some(Modal::Picker(picker));
                 }
             }
             Command::Mem(Some(arg)) if arg == "list" => self.open_shared(),

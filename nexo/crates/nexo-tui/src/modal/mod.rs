@@ -60,6 +60,10 @@ pub struct Picker {
     pub selected: usize,
     /// The value a first Delete marked; a second Delete on it removes it (sessions only).
     pub armed: Option<String>,
+    /// Space ticks rows and Enter takes all the ticked ones (the row under the cursor when none is ticked).
+    pub multi: bool,
+    /// The values ticked so far, in the order they were ticked; they stay ticked while the filter changes.
+    pub ticked: Vec<String>,
 }
 
 impl Picker {
@@ -72,6 +76,8 @@ impl Picker {
             ranked: Vec::new(),
             selected: 0,
             armed: None,
+            multi: false,
+            ticked: Vec::new(),
         };
         p.refilter();
         if let Some(c) = current {
@@ -82,10 +88,28 @@ impl Picker {
         p
     }
 
+    /// A picker whose rows are ticked with Space.
+    pub fn multiple(mut self) -> Picker {
+        self.multi = true;
+        self
+    }
+
+    /// Ticks the row under the cursor, or unticks it.
+    pub fn toggle(&mut self) {
+        let Some(v) = self.current().map(|it| it.value.clone()) else { return };
+        match self.ticked.iter().position(|t| *t == v) {
+            Some(at) => {
+                self.ticked.remove(at);
+            }
+            None => self.ticked.push(v),
+        }
+    }
+
     /// Takes `value` out of the list, keeping the selection on the row that took its place.
     pub fn remove(&mut self, value: &str) {
         let at = self.selected;
         self.items.retain(|i| i.value != value);
+        self.ticked.retain(|t| t != value);
         let labels: Vec<String> = self.items.iter().map(|i| format!("{} {}", i.label, i.hint)).collect();
         self.ranked = fuzzy::rank(&self.query, &labels);
         self.selected = at.min(self.ranked.len().saturating_sub(1));
@@ -359,6 +383,11 @@ pub enum ModalOut {
         kind: PickKind,
         value: String,
     },
+    /// Several rows ticked in a picker that takes many; the modal closes.
+    PickMany {
+        kind: PickKind,
+        values: Vec<String>,
+    },
     /// A command for the agent; the modal stays.
     Send(nexo_core::agent::AgentCommand),
     /// A command for the agent, and the modal closes.
@@ -581,6 +610,13 @@ impl Modal {
                     ModalOut::Nothing
                 }
                 KeyCode::Esc => ModalOut::Close,
+                KeyCode::Char(' ') if p.multi && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    p.toggle();
+                    ModalOut::Nothing
+                }
+                KeyCode::Enter | KeyCode::Tab if p.multi && !p.ticked.is_empty() => {
+                    ModalOut::PickMany { kind: p.kind, values: p.ticked.clone() }
+                }
                 KeyCode::Enter | KeyCode::Tab => match p.current() {
                     Some(it) => ModalOut::Pick { kind: p.kind, value: it.value.clone() },
                     None => ModalOut::Close,
@@ -738,6 +774,11 @@ impl Modal {
             Modal::Picker(p) => {
                 if let Some((_, i)) = rows.iter().find(|(r, _)| contains(*r, x, y)) {
                     p.selected = *i;
+                    // where many can be ticked, a click ticks the row and Enter takes the ticked ones
+                    if p.multi {
+                        p.toggle();
+                        return ModalOut::Nothing;
+                    }
                     return self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                 }
                 ModalOut::Nothing

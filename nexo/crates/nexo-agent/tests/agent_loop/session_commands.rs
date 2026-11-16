@@ -540,3 +540,67 @@ async fn unqueue_does_not_remove_a_directed_message_with_matching_text() {
     .await
     .expect("directed queue test timed out");
 }
+
+/// A finished session in `dir` whose agent wrote a note and a long answer about `topic`; returns its id.
+async fn session_about(dir: &std::path::Path, topic: &str, filler: usize) -> String {
+    // many short turns: what a share can pick from is spread over the history
+    let replies = (0..filler).map(|i| {
+        Reply::Events(text(&format!(
+            "Finding: {topic} is the cause {i}.\n{topic} detail {i}: how {topic} behaves under load."
+        )))
+    });
+    let client = Scripted::new(replies.collect());
+    let mut r = start(client, config(PermissionMode::Ask), None, dir).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    for i in 0..filler {
+        r.send(AgentCommand::Submit {
+            text: format!("tell me about {topic} number {i}, with every detail you hold about {topic}"),
+            attachments: vec![],
+        });
+        r.turn().await;
+    }
+    r.stop().await;
+    id
+}
+
+#[tokio::test]
+async fn several_sessions_share_their_memory_named_and_within_what_one_share_took() {
+    let d = test_tmpdir().unwrap();
+    let a = session_about(d.path(), "tokenizer", 300).await;
+    let c = session_about(d.path(), "scheduler", 300).await;
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let b = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    // this session, a repeat and a session that does not exist are left out; the two real ones are taken
+    r.send(AgentCommand::ShareMemories { ids: vec![a.clone(), b.clone(), c.clone(), a.clone(), "nope".into()] });
+    let ev = r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
+    let Some(AgentEvent::MemoryShared { pending }) = ev.last() else { panic!("{ev:?}") };
+    assert_eq!(pending.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), [a.as_str(), c.as_str()], "{ev:?}");
+    let total: usize = pending.iter().map(|p| p.2).sum();
+    // one share takes about 4000 tokens at most (turn::commands::SHARE_TOKENS): two together take no more, each about half
+    assert!(total <= 4000, "together {total} tokens: {pending:?}");
+    assert!(pending.iter().all(|p| p.2 <= 2100), "each holds about half of one share: {pending:?}");
+    r.send(AgentCommand::Submit { text: "fix it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::MemoryShared { pending } if pending.is_empty())));
+    let sent = client.requests()[0].messages.last().unwrap().text();
+    assert!(
+        sent.contains(&format!("<memory from=\"{a}\"")) && sent.contains(&format!("<memory from=\"{c}\"")),
+        "{sent}"
+    );
+    assert!(sent.contains("tokenizer is the cause") && sent.contains("scheduler is the cause"), "{sent}");
+    assert!(sent.ends_with("fix it"), "{sent}");
+    // a later pick replaces what waited, it does not pile up
+    r.send(AgentCommand::ShareMemories { ids: vec![a.clone(), c.clone()] });
+    r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
+    r.send(AgentCommand::ShareMemories { ids: vec![c.clone()] });
+    let ev = r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
+    assert!(matches!(ev.last(), Some(AgentEvent::MemoryShared { pending }) if pending.len() == 1 && pending[0].0 == c));
+    r.stop().await;
+}

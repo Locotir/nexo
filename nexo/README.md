@@ -311,10 +311,11 @@ prints the findings (read-only mode) and exits 1 on a high-severity finding, 3 w
 **Sessions.** In the `/resume` list, `Del` marks a session and a second `Del` moves it to the trash (a folder
 inside the sessions folder; nothing is erased): `/undelete` brings back the last one, `/undelete <id>` any of
 them, and `nexo sessions delete|restore <id>...` does the same from the shell. `/shared-memory` shares what another
-session knows with this one: pick it (or `/shared-memory <id> [focus]`) and its notes (`Finding:`, `Plan:`,
+session knows with this one: pick it (Space ticks several sessions, Enter takes the ticked ones, or the row under the
+cursor when none is ticked; or `/shared-memory <id> [focus]`) and its notes (`Finding:`, `Plan:`,
 `Decision:` lines), its constraints, files and failing commands, and the excerpts that bear on the focus (its
-goal or title by default), about 4k tokens at most, go with your next message, once. Nothing earlier is
-rewritten, so the cached prefix holds. `/shared-memory off` drops what waits.
+goal or title by default), about 4k tokens at most (shared among the sessions picked together), go with your next message, once. Nothing earlier is
+rewritten, so the cached prefix holds. `/shared-memory off` drops what waits. The coordination notes agents keep are `/shared-memory read [epoch]` and `/shared-memory write <text>`.
 A session reopens (`--resume`, `--continue`, `/resume`) on the provider and model it last used, if that provider is usable and still lists the model; else one line says so and the current model stays. An explicit `--model`, `--provider`, `NEXO_MODEL` or `NEXO_PROVIDER` wins, and neither your default nor your config file changes.
 
 Before a write or a command the permission dialog shows the diff or the

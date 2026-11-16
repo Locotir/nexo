@@ -103,7 +103,7 @@ fn mem_shares_another_sessions_memory_and_shows_it_waiting() {
     let (mut a, mut rx) = app();
     a.session_id = Some("here".into());
     a.opts.sessions = vec![("here".into(), "this one".into()), ("s1".into(), "the parser".into())];
-    a.input.set_text("/mem");
+    a.input.set_text("/shared-memory");
     a.submit();
     let Some(Modal::Picker(p)) = &a.modal else { panic!("a picker") };
     assert_eq!(p.items.len(), 1, "this session is not offered");
@@ -113,12 +113,12 @@ fn mem_shares_another_sessions_memory_and_shows_it_waiting() {
     assert!(crate::ui::hint_right_text(&a).contains("⊕ mem 1 · 2.1k"), "{}", crate::ui::hint_right_text(&a));
     let rows = frame(&mut a, 120, 20).join("\n");
     assert!(rows.contains("what «the parser» knows goes with your next message"), "{rows}");
-    a.input.set_text("/mem s1 the tokenizer tabs");
+    a.input.set_text("/shared-memory s1 the tokenizer tabs");
     a.submit();
     assert!(
         matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: Some(i), focus: Some(f) }) if i == "s1" && f == "the tokenizer tabs")
     );
-    a.input.set_text("/mem off");
+    a.input.set_text("/shared-memory off");
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: None, .. })));
     a.handle_agent(AgentEvent::MemoryShared { pending: vec![] });
@@ -299,7 +299,7 @@ fn the_arrows_walk_the_blocks_and_open_and_fold_them() {
 fn shared_memory_commands_use_the_coordination_store() {
     let (mut a, mut rx) = app();
     for (line, expected) in [
-        ("/shared-memory", AgentCommand::ReadSharedMemory { since: 0 }),
+        ("/shared-memory read", AgentCommand::ReadSharedMemory { since: 0 }),
         ("/shared-memory read 42", AgentCommand::ReadSharedMemory { since: 42 }),
         ("/shared-memory write hello world", AgentCommand::WriteSharedMemory { text: "hello world".into() }),
     ] {
@@ -307,9 +307,108 @@ fn shared_memory_commands_use_the_coordination_store() {
         a.submit();
         assert_eq!(rx.try_recv().unwrap(), expected);
     }
-    for line in ["/shared-memory read -1", "/shared-memory write", "/shared-memory nonsense"] {
+    for line in ["/shared-memory read -1", "/shared-memory write", "/shared-memory read soon"] {
         a.input.set_text(line);
         a.submit();
         assert!(rx.try_recv().is_err());
     }
+}
+
+#[test]
+fn shared_memory_with_a_session_name_takes_that_session_and_never_reads_the_notes() {
+    let (mut a, mut rx) = app();
+    // `read` and `write` are the coordination notes, whatever follows; any other word is a session
+    a.input.set_text("/shared-memory nonsense the parser");
+    a.submit();
+    assert!(
+        matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: Some(i), focus: Some(f) }) if i == "nonsense" && f == "the parser")
+    );
+    a.input.set_text("/shared-memory clear");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: None, .. })));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn shared_memory_opens_the_picker_with_the_other_sessions_and_the_old_names_still_do() {
+    for line in ["/shared-memory", "/memory share", "/mem", "/share", "/memory-shared"] {
+        let (mut a, _rx) = app();
+        a.session_id = Some("here".into());
+        a.opts.sessions = vec![("here".into(), "this one".into()), ("s1".into(), "the parser".into())];
+        a.input.set_text(line);
+        a.submit();
+        let Some(Modal::Picker(p)) = &a.modal else { panic!("{line}: a picker") };
+        assert!(p.kind == PickKind::Memory && p.multi, "{line}");
+        assert_eq!(p.items.len(), 1, "{line}: this session is not offered");
+    }
+    let (mut a, mut rx) = app();
+    a.input.set_text("/shared-memory");
+    a.submit();
+    assert!(a.modal.is_none() && rx.try_recv().is_err(), "no other session: a notice, nothing sent");
+}
+
+#[test]
+fn space_ticks_sessions_and_enter_shares_all_the_ticked_ones() {
+    let (mut a, mut rx) = app();
+    a.session_id = Some("here".into());
+    a.opts.sessions = vec![
+        ("here".into(), "this one".into()),
+        ("s1".into(), "the parser".into()),
+        ("s2".into(), "the lexer".into()),
+        ("s3".into(), "the docs".into()),
+    ];
+    a.input.set_text("/shared-memory");
+    a.submit();
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Char(' '));
+    let rows = frame(&mut a, 100, 24).join("\n");
+    assert!(rows.contains("[x] s1") && rows.contains("[ ] s2") && rows.contains("[x] s3"), "{rows}");
+    assert!(rows.contains("2 ticked"), "the count shows: {rows}");
+    assert!(rows.contains("Space tick"), "the keys row says how: {rows}");
+    // a tick can be taken back
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Enter);
+    assert!(a.modal.is_none());
+    let Ok(AgentCommand::ShareMemories { ids }) = rx.try_recv() else { panic!("a share of several") };
+    assert_eq!(ids, ["s1", "s3"], "in the order ticked");
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn enter_with_nothing_ticked_takes_the_row_under_the_cursor() {
+    let (mut a, mut rx) = app();
+    a.session_id = Some("here".into());
+    a.opts.sessions = vec![("s1".into(), "the parser".into()), ("s2".into(), "the lexer".into())];
+    a.input.set_text("/shared-memory");
+    a.submit();
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: Some(i), focus: None }) if i == "s2"));
+    // ticked and untucked again: nothing ticked, so the row alone
+    a.input.set_text("/shared-memory");
+    a.submit();
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: Some(i), .. }) if i == "s1"));
+}
+
+#[test]
+fn ticks_survive_a_filter_and_a_later_tick_adds_to_them() {
+    let (mut a, mut rx) = app();
+    a.opts.sessions = vec![("s1".into(), "the parser".into()), ("s2".into(), "the lexer".into())];
+    a.input.set_text("/shared-memory");
+    a.submit();
+    press(&mut a, KeyCode::Char(' '));
+    for c in "lex".chars() {
+        // typing narrows the list; only the space ticks
+        press(&mut a, KeyCode::Char(c));
+    }
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Enter);
+    let Ok(AgentCommand::ShareMemories { ids }) = rx.try_recv() else { panic!("a share of several") };
+    assert_eq!(ids, ["s1", "s2"]);
 }

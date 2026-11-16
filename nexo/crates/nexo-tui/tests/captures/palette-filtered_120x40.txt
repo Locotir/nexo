@@ -33,7 +33,7 @@
  /model                [name]                        switch model, or set one up
  /permissions  (mode)  [ask|accept-edits|plan|yolo…  set the permission mode
  /memory               [user|add <text>|share [id]]  edit the instructions the agent reads
- /shared-memory        [read [epoch]|write <text>]   coordination notes shared with agents
+ /shared-memory        [<id>|list|off|read|write]    other sessions' memory, shared notes
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                10:00

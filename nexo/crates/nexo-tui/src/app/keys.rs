@@ -370,6 +370,13 @@ impl App {
                 self.send(cmd);
                 self.next_permission();
             }
+            ModalOut::PickMany { kind, values } => {
+                self.modal = None;
+                if kind == PickKind::Memory {
+                    self.flash(&format!("reading {} sessions…", values.len()));
+                    self.send(AgentCommand::ShareMemories { ids: values });
+                }
+            }
             ModalOut::Pick { kind, value } => {
                 self.modal = None;
                 match kind {

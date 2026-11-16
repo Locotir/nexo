@@ -17,7 +17,7 @@
  /model                [name]              switch model, or set one up
  /permissions  (mode)  [ask|accept-edits…  set the permission mode
  /memory               [user|add <text>…   edit the instructions the agent rea…
- /shared-memory        [read [epoch]…      coordination notes shared with agen…
+ /shared-memory        [<id>|list|off…     other sessions' memory, shared notes
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close        10:00

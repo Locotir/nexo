@@ -101,9 +101,15 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 let it = &p.items[idx];
                 let armed = i == p.selected && p.armed.as_deref() == Some(it.value.as_str());
                 let hint = if armed { "Del again delete · Esc keep" } else { it.hint.as_str() };
+                // a picker that takes many shows which rows are ticked
+                let label_text = if p.multi {
+                    format!("{} {}", if p.ticked.contains(&it.value) { "[x]" } else { "[ ]" }, it.label)
+                } else {
+                    it.label.clone()
+                };
                 // a long label gives way, so the hint (a number, a time) is never the part that is cut
                 let label = truncate(
-                    &it.label,
+                    &label_text,
                     inner_w.saturating_sub(2 + if hint.is_empty() { 0 } else { width(hint) + 2 }).max(8),
                 );
                 let hint = truncate(hint, inner_w.saturating_sub(width(&label) + 4));
@@ -134,6 +140,8 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             }
             let title = if p.kind == PickKind::Session && !p.items.is_empty() {
                 format!(" {} · {} · Del delete ", p.title, p.items.len())
+            } else if p.multi && !p.ticked.is_empty() {
+                format!(" {} · {} ticked ", p.title, p.ticked.len())
             } else {
                 format!(" {} ", p.title)
             };

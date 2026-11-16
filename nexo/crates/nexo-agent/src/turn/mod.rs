@@ -681,6 +681,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::DeleteSession { id } => delete_session(&state, &id).await,
                     AgentCommand::ShareMemory { id, focus } => share_memory(&state, id, focus).await,
+                    AgentCommand::ShareMemories { ids } => share_memories(&state, ids).await,
                     AgentCommand::ReadSharedMemory { since } => read_shared_memory(&state, since).await,
                     AgentCommand::WriteSharedMemory { text } => append_shared_memory(&state, &text).await,
                     AgentCommand::ListTrash => {

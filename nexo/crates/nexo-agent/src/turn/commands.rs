@@ -172,22 +172,70 @@ pub(super) async fn share_memory(state: &Shared, id: Option<String>, focus: Opti
         notice(&st.events, Level::Warn, "that is this session: its memory is already here");
         return;
     }
-    let other = match crate::session::Session::open(&id) {
-        Ok(s) => s,
-        Err(e) => return notice(&st.events, Level::Error, format!("cannot read session {id}: {e}")),
-    };
+    match recall_session(&id, focus, SHARE_TOKENS) {
+        Ok(Some((title, block))) => {
+            st.shared.retain(|(i, _, _)| *i != id);
+            st.shared.push((id, title, block));
+            emit_pending(&st);
+        }
+        Ok(None) => notice(&st.events, Level::Info, format!("session {id} holds nothing to share")),
+        Err(e) => notice(&st.events, Level::Error, e),
+    }
+}
+
+/// Readies what each of several sessions knows to go with the next request, in place of what waited. One share's
+/// room ([`SHARE_TOKENS`]) is divided among them, so all of it together is no larger than one share was.
+pub(super) async fn share_memories(state: &Shared, ids: Vec<String>) {
+    let mut st = state.lock().await;
+    let here = st.session.id().to_string();
+    let mut ids: Vec<String> = ids.into_iter().fold(Vec::new(), |mut all, id| {
+        if id != here && !all.contains(&id) {
+            all.push(id);
+        }
+        all
+    });
+    if ids.len() > MAX_SHARED_SESSIONS {
+        notice(
+            &st.events,
+            Level::Warn,
+            format!("taking the first {MAX_SHARED_SESSIONS} sessions: the room does not stretch further"),
+        );
+        ids.truncate(MAX_SHARED_SESSIONS);
+    }
+    if ids.is_empty() {
+        notice(&st.events, Level::Warn, "no other session to take memory from");
+        return;
+    }
+    let each = SHARE_TOKENS / ids.len();
+    let mut taken = Vec::new();
+    for id in ids {
+        match recall_session(&id, None, each) {
+            Ok(Some((title, block))) => taken.push((id, title, block)),
+            Ok(None) => notice(&st.events, Level::Info, format!("session {id} holds nothing to share")),
+            Err(e) => notice(&st.events, Level::Error, e),
+        }
+    }
+    if taken.is_empty() {
+        return;
+    }
+    st.shared = taken;
+    emit_pending(&st);
+}
+
+/// The interface is told which sessions' memory waits and how large each block is.
+fn emit_pending(st: &State) {
+    let pending = st.shared.iter().map(|(i, t, b)| (i.clone(), t.clone(), crate::brief::tokens(b))).collect();
+    emit(&st.events, AgentEvent::MemoryShared { pending });
+}
+
+/// What session `id` knows, bearing on `focus` (else its goal or title), within about `budget` tokens: its
+/// title and the block that names it. Ok(None) when it holds nothing; Err is the words for the person.
+fn recall_session(id: &str, focus: Option<String>, budget: usize) -> Result<Option<(String, String)>, String> {
+    let other = crate::session::Session::open(id).map_err(|e| format!("cannot read session {id}: {e}"))?;
     let title = other.meta().title.clone();
     let focus = focus.or_else(|| other.goal().map(str::to_string)).unwrap_or_default();
     let cwd = other.meta().cwd.clone();
-    match crate::brief::recall(&id, &title, &focus, other.messages(), &cwd, SHARE_TOKENS) {
-        Some((block, _)) => {
-            st.shared.retain(|(i, _, _)| *i != id);
-            st.shared.push((id, title, block));
-            let pending = st.shared.iter().map(|(i, t, b)| (i.clone(), t.clone(), crate::brief::tokens(b))).collect();
-            emit(&st.events, AgentEvent::MemoryShared { pending });
-        }
-        None => notice(&st.events, Level::Info, format!("session {id} holds nothing to share")),
-    }
+    Ok(crate::brief::recall(id, &title, &focus, other.messages(), &cwd, budget).map(|(block, _)| (title, block)))
 }
 
 /// User-facing operations on the same locked coordination store used by the tools.
@@ -216,6 +264,9 @@ pub(super) async fn append_shared_memory(state: &Shared, text: &str) {
 
 /// How much of another session one share brings, at most (tokens).
 pub(super) const SHARE_TOKENS: usize = 4000;
+
+/// Most sessions one share takes: each keeps at least this many tokens' worth of room (`recall` gives up under 200).
+pub(super) const MAX_SHARED_SESSIONS: usize = 8;
 
 /// Moves a recorded session to the trash; the one in use stays (it is still being written).
 pub(super) async fn delete_session(state: &Shared, id: &str) {

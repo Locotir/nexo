@@ -159,6 +159,8 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         ("/resume undelete s1", Command::Undelete(Some("s1".into()))),
         ("/shared-memory", Command::SharedMemory(None)),
         ("/shared-memory read 1", Command::SharedMemory(Some("read 1".into()))),
+        ("/shared-memory s1 the tabs", Command::SharedMemory(Some("s1 the tabs".into()))),
+        ("/shared-memory list", Command::SharedMemory(Some("list".into()))),
         ("/share s1 the tabs", Command::Mem(Some("s1 the tabs".into()))),
         ("/memory-shared off", Command::Mem(Some("off".into()))),
         ("/memory share off", Command::Mem(Some("off".into()))),

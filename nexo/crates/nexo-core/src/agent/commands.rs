@@ -157,6 +157,11 @@ pub enum AgentCommand {
         id: Option<String>,
         focus: Option<String>,
     },
+    /// Take what each of several other sessions knows along with the next request, replacing what waited;
+    /// the budget of one share is divided among them. Answered with `MemoryShared`.
+    ShareMemories {
+        ids: Vec<String>,
+    },
     /// Read coordination entries newer than an epoch.
     ReadSharedMemory {
         since: u64,

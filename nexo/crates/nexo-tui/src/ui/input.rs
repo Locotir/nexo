@@ -74,7 +74,7 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             }
         } else if let Some((id, title, _)) = app.shared.last() {
             let name = if title.is_empty() { id } else { title };
-            shared = format!("⊕ what «{name}» knows goes with your next message · /memory share off drops it");
+            shared = format!("⊕ what «{name}» knows goes with your next message · /shared-memory off drops it");
             shared.as_str()
         } else if let Some((t, s)) = tip_for_box(app, width_room) {
             tip_shown = Some(t);
