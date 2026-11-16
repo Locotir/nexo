@@ -63,8 +63,6 @@ fn main() {
     nexo_core::version::set(env!("NEXO_VERSION"));
     // The local UTC offset can only be read while the process has one thread.
     nexo_agent::budget::init_local_offset();
-    // The debugger keeps names and notes in the data dir; set once here, so the tool constructors touch no global.
-    nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
     // A closed stdout (`nexo providers | head`) ends the process quietly instead of panicking.
     // SIGPIPE stays ignored: a hook, MCP server or tool that exits before reading its stdin must
     // not kill nexo, so only the print that hit the closed stdout ends it.
@@ -83,6 +81,9 @@ fn main() {
     }));
     // As root, settings and sessions live under root's home even when sudo kept the caller's.
     nexo_core::paths::adopt_root_home();
+    // The debugger keeps names and notes in the data dir; set once here, after the root home is adopted, so the
+    // directory is the one every other command reads and the tool constructors touch no global.
+    nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
     for old in nexo_core::paths::move_old_dirs() {
         eprintln!("nexo: moved {} into {}", old.display(), nexo_core::paths::home_dir().display());
     }
@@ -101,4 +102,18 @@ fn main() {
     // `exit` runs no destructors: the audit log writes what it has queued first
     nexo_agent::audit::close_all();
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_debugger_data_dir_is_set_after_root_home_is_adopted() {
+        // `main` cannot run in a test, so this pins the order in its source: adopt_root_home rewrites HOME and XDG_*,
+        // and a data dir read before it points at the caller's ~/.nexo while `nexo bin` and `nexo dbg` read root's.
+        let src = include_str!("main.rs");
+        let body = &src[src.find("\nfn main()").expect("fn main")..src.find("\n#[cfg(test)]").expect("test module")];
+        let adopt = body.find("nexo_core::paths::adopt_root_home();").expect("adopt_root_home call");
+        let set = body.find("nexo_dbg::set_data_dir(").expect("set_data_dir call");
+        assert!(adopt < set, "set_data_dir must come after adopt_root_home");
+    }
 }
