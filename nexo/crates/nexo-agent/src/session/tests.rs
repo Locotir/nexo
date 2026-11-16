@@ -1139,3 +1139,46 @@ fn listing_bench() {
     println!("{} sessions, {} MB: every line parsed {old_ms} ms, by prefix {new_ms} ms", new.len(), bytes / 1_000_000);
     assert_eq!(old.len(), new.len());
 }
+
+fn asked_with_a_note(words: &str) -> Message {
+    let mark = nexo_core::agent::PERSON_MARK;
+    Message::user(format!("{START_NOTE_HEAD}\nGit: 2 files changed\n\n{mark}\n{words}"))
+}
+
+#[test]
+fn a_new_session_is_titled_by_the_persons_words_never_by_the_start_note() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&asked_with_a_note("fix the parser")).unwrap();
+    assert_eq!(s.meta().title, "fix the parser");
+    assert_eq!(title_of_message(&format!("{START_NOTE_HEAD}\nGit: clean")), "", "a note alone is no title");
+    assert_eq!(title_of_message("plain words"), "plain words", "a message without a note is read whole");
+}
+
+#[test]
+fn a_request_with_no_words_of_the_persons_own_leaves_the_title_empty_until_there_are_some() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user(format!("{START_NOTE_HEAD}\nGit: clean\n\n{}\n", nexo_core::agent::PERSON_MARK))).unwrap();
+    assert_eq!(s.meta().title, "");
+    s.append(&Message::assistant("ok")).unwrap();
+    s.append(&asked_with_a_note("now add tests")).unwrap();
+    assert_eq!(s.meta().title, "now add tests");
+}
+
+#[test]
+fn a_session_saved_with_the_start_note_as_its_title_shows_the_first_message_without_a_rewrite() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    let id = s.id().to_string();
+    s.append(&asked_with_a_note("explain the cache")).unwrap();
+    s.set_title(START_NOTE_HEAD).unwrap();
+    let before = std::fs::read(s.path()).unwrap();
+    assert!(is_note_title(&s.meta().title));
+    assert_eq!(meta_in(d.path(), &id).unwrap().title, "explain the cache", "the list shows the words");
+    assert_eq!(Session::open_path(s.path()).unwrap().meta().title, "explain the cache");
+    assert_eq!(std::fs::read(s.path()).unwrap(), before, "the file is left as it was");
+    // a title the person chose is never replaced
+    s.set_title("my own name").unwrap();
+    assert_eq!(meta_in(d.path(), &id).unwrap().title, "my own name");
+}

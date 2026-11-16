@@ -143,7 +143,7 @@ impl Session {
         self.meta.messages = self.messages.len();
         self.write(&Line::Message { index, ts: now(), message: m.clone() })?;
         if self.meta.title.is_empty() && m.role == Role::User && !m.is_tool_results() {
-            let t = title_of(&m.text());
+            let t = title_of_message(&m.text());
             if !t.is_empty() {
                 self.set_title(&t)?;
             }

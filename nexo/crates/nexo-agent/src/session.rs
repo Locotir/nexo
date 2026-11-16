@@ -417,6 +417,9 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
     if let Some(t) = title {
         m.title = t;
     }
+    if is_note_title(&m.title) {
+        m.title = first_words_title(&first_user_messages(path));
+    }
     if let Ok(md) = std::fs::metadata(path) {
         if let Ok(t) = md.modified() {
             let t: time::OffsetDateTime = t.into();

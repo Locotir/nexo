@@ -208,3 +208,26 @@ fn a_pasted_image_is_kept_and_goes_with_the_request() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn every_listed_theme_changes_what_is_drawn_and_an_unknown_name_lists_the_known_ones() {
+    for name in crate::theme::NAMES.iter().filter(|n| **n != "dark") {
+        let (mut a, _rx) = app();
+        a.opts.animations = false;
+        assert_eq!(a.theme.name, "dark");
+        let before = buf_of(&mut a, 80, 24);
+        a.run_command(Command::Theme(Some((*name).to_string())));
+        assert_eq!(a.theme.name, *name);
+        let after = buf_of(&mut a, 80, 24);
+        assert!(before != after, "/theme {name} drew the same screen as dark");
+    }
+    let (mut a, _rx) = app();
+    a.run_command(Command::Theme(Some("neon".into())));
+    let said = a.blocks.iter().find_map(|b| if let Block::Notice { text, .. } = b { Some(text.clone()) } else { None });
+    let said = said.expect("a notice");
+    for name in crate::theme::NAMES {
+        assert!(said.contains(name), "{said}");
+    }
+    assert!(said.contains("neon"), "{said}");
+    assert_eq!(a.theme.name, "dark", "an unknown name changes nothing");
+}

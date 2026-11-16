@@ -25,6 +25,27 @@ pub fn tree(metas: &[SessionMeta]) -> Vec<(usize, SessionMeta)> {
     out
 }
 
+/// The first line of the note nexo puts at the head of a request (what changed in the project, what its check said).
+/// It is nexo's own text, never the person's, so no title is made from it.
+pub const START_NOTE_HEAD: &str = "[project at the start of this request]";
+
+/// The title a session takes from the first message the person sent: their own words, never the note and
+/// the files nexo put before them. Empty when the message holds no words of theirs yet.
+pub fn title_of_message(text: &str) -> String {
+    let words = title_of(nexo_core::agent::person_words(text));
+    if is_note_title(&words) {
+        String::new()
+    } else {
+        words
+    }
+}
+
+/// Whether a saved title was made from the start note: sessions saved before titles came from the person's
+/// words carry one, and show their first message instead.
+pub fn is_note_title(title: &str) -> bool {
+    title.trim_start().starts_with(START_NOTE_HEAD)
+}
+
 pub fn title_of(text: &str) -> String {
     let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
     let line = short_paths(line);
@@ -84,4 +105,36 @@ fn absolute(p: &str) -> bool {
     p.starts_with('/')
         || p.starts_with("~/")
         || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+}
+
+/// The title the first message with words of the person's own gives (empty when there is none yet).
+pub(super) fn first_words_title(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .filter(|m| m.role == Role::User && !m.is_tool_results())
+        .map(|m| title_of_message(&m.text()))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default()
+}
+
+/// The user messages of a session file up to the first one with words of the person's own: all the list
+/// needs to show a title for a session saved with the start note as its title.
+pub(super) fn first_user_messages(path: &Path) -> Vec<Message> {
+    let Ok(f) = File::open(path) else { return Vec::new() };
+    let mut out = Vec::new();
+    for l in BufReader::new(f).split(b'\n').map_while(Result::ok) {
+        if !l.starts_with(br#"{"type":"message""#) {
+            continue;
+        }
+        if let Ok(Line::Message { message, .. }) = serde_json::from_str::<Line>(&String::from_utf8_lossy(&l)) {
+            let done = message.role == Role::User
+                && !message.is_tool_results()
+                && !title_of_message(&message.text()).is_empty();
+            out.push(message);
+            if done {
+                break;
+            }
+        }
+    }
+    out
 }

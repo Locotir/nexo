@@ -193,3 +193,23 @@ fn colours_mix_for_fades() {
     assert_eq!(mix(a, b, 7.0), b, "clamped");
     assert_eq!(mix(Color::Indexed(1), Color::Indexed(2), 0.4), Color::Indexed(1), "mapped colours switch half way");
 }
+
+#[test]
+fn every_listed_theme_looks_different_from_every_other_so_a_switch_is_seen() {
+    let all: Vec<Theme> = NAMES.iter().map(|n| Theme::by_name(n).unwrap()).collect();
+    for (i, a) in all.iter().enumerate() {
+        for b in &all[i + 1..] {
+            assert!(
+                a.bg != b.bg || a.fg != b.fg || a.accent != b.accent || a.mono != b.mono,
+                "/theme {} would change nothing seen from {}",
+                b.name,
+                a.name
+            );
+        }
+    }
+    // nexo draws no ground (the terminal's own shows) and dark draws one: that ground must not pass for a
+    // black terminal, or the switch between the two shows nothing on a dark screen
+    let Color::Rgb(r, g, b) = Theme::dark().bg else { panic!("dark has an explicit ground") };
+    let spread = r.max(g).max(b) - r.min(g).min(b);
+    assert!(spread >= 12 || r.max(g).max(b) >= 0x30, "dark ground {r},{g},{b} looks like a black terminal");
+}

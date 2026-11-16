@@ -156,6 +156,9 @@ impl Session {
                 Err(_) => skipped += 1, // a cut line: whatever was being written when the process died
             }
         }
+        if is_note_title(&meta.title) {
+            meta.title = first_words_title(&messages);
+        }
         meta.messages = messages.len();
         let file = OpenOptions::new().append(true).open(path)?;
         Ok(Session {

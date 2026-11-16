@@ -315,7 +315,7 @@ pub(super) fn start_note(
     if lines.is_empty() {
         return String::new();
     }
-    format!("[project at the start of this request]\n{}", lines.join("\n"))
+    format!("{}\n{}", crate::session::START_NOTE_HEAD, lines.join("\n"))
 }
 
 /// The project's check, run once for the request when the policy lets commands run and the tree changed since

@@ -22,20 +22,20 @@ impl Theme {
         }
     }
 
-    /// The default: Monokai colours on a pure black ground. White carries the text, purple bold the
+    /// Monokai colours on a deep blue-slate ground (visibly not a black terminal). White carries the text, purple bold the
     /// headings and strong words, cyan the person, magenta the assistant, green code; orange only warns.
     /// Every colour that carries text reads at 4.5:1 or more on every ground (WCAG AA).
     pub fn dark() -> Theme {
         Theme {
             name: "dark",
             description:
-                "the default: Monokai hues from an alacritty setup on a quiet grey ground (#141414), AA contrast",
+                "Monokai hues on a deep blue-slate ground (#121a2b), AA contrast; nexo is the same hues over the terminal's own ground",
             mono: false,
-            bg: rgb(0x141414),
-            bg_alt: rgb(0x1c1c1c),
+            bg: rgb(0x121a2b),
+            bg_alt: rgb(0x151d2e),
             fg: rgb(0xc8c8c8),
             dim: rgb(0x949494),
-            dim2: rgb(0x848484),
+            dim2: rgb(0x8e8e8e),
             accent: rgb(0x66d9ef),
             accent2: rgb(0xae81ff),
             code_fg: rgb(0x66d9ef),
@@ -48,18 +48,18 @@ impl Theme {
             warn2: rgb(0xfd971f),
             info: rgb(0x66d9ef),
             border: rgb(0x414141),
-            code_bg: rgb(0x1c1c1c),
+            code_bg: rgb(0x151d2e),
             selection_bg: rgb(0x414868),
             highlight_bg: rgb(0xe6db74),
-            highlight_fg: rgb(0x141414),
+            highlight_fg: rgb(0x121a2b),
             diff_add: rgb(0xa6e22e),
             diff_del: rgb(0xf92690),
             diff_add_bg: rgb(0x1c2a10),
             diff_del_bg: rgb(0x34101e),
             hunk: rgb(0xae81ff),
-            bar_bg: rgb(0x141414),
+            bar_bg: rgb(0x121a2b),
             bar_fg: rgb(0xc8c8c8),
-            modal_bg: rgb(0x1c1c1c),
+            modal_bg: rgb(0x151d2e),
             syntax: Some("Monokai Extended"),
             degraded: false,
         }
