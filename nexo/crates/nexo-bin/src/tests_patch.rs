@@ -139,3 +139,49 @@ fn compiled_c_function_offset_patch_round_trip() {
     assert_eq!(Image::open(&out).unwrap().read_at(start + 1, 1).unwrap(), [0x90]);
     assert_eq!(fs::read(exe).unwrap(), original);
 }
+
+fn macho_patch(dir: &Path, name: &str, input: &[u8], bytes: &str) -> (Vec<u8>, String) {
+    let path = dir.join(name);
+    fs::write(&path, input).unwrap();
+    let img = Image::open(&path).unwrap();
+    let out = dir.join(format!("{name}.patched"));
+    let answer = patch(&img, &out, T::Address(crate::tests_macho::SPARE), D::Bytes(bytes)).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), input, "the input is not touched");
+    (fs::read(out).unwrap(), answer.text_all())
+}
+
+#[test]
+fn a_patched_signed_mach_o_carries_a_valid_ad_hoc_signature_that_the_reader_checks() {
+    use crate::{read_signature, Signature};
+    let dir = tempfile::tempdir().unwrap();
+    for (arm64, code) in [(false, "c3"), (true, "c0035fd6")] {
+        let signed = crate::adhoc_sign(&crate::tests_macho::thin(arm64, false).bytes, "prog", &[]).unwrap();
+        assert!(matches!(read_signature(&signed), Signature::AdHoc { .. }), "the fixture is signed");
+        // the same edit without a new signature breaks the hashes: this is what the kernel would reject
+        let img = Image::from_bytes(signed.clone(), "/fx/prog".into()).unwrap();
+        let off = img.addr_to_offset(crate::tests_macho::SPARE).unwrap() as usize;
+        let mut stale = signed.clone();
+        stale[off] ^= 0xff;
+        assert!(matches!(read_signature(&stale), Signature::Broken(_)), "{:?}", read_signature(&stale));
+
+        let (patched, text) = macho_patch(dir.path(), if arm64 { "arm" } else { "x86" }, &signed, code);
+        assert!(matches!(read_signature(&patched), Signature::AdHoc { pages } if pages >= 1), "{text}");
+        assert!(text.contains("signature: re-signed ad hoc"), "{text}");
+        let reread = Image::from_bytes(patched, "/fx/prog".into()).unwrap();
+        assert_eq!(reread.read_at(crate::tests_macho::SPARE, 1).unwrap()[0], if arm64 { 0xc0 } else { 0xc3 });
+        let (_, sig) = reread.hardening.items.iter().find(|(k, _)| *k == "code_signature").unwrap();
+        assert!(sig.contains("ad hoc") && sig.contains("page hashes match"), "{sig}");
+    }
+}
+
+#[test]
+fn a_patched_unsigned_x86_mach_o_stays_unsigned_and_an_unsigned_arm64_one_gets_signed() {
+    use crate::{read_signature, Signature};
+    let dir = tempfile::tempdir().unwrap();
+    let (x86, text) = macho_patch(dir.path(), "x86", &crate::tests_macho::thin(false, false).bytes, "c3");
+    assert_eq!(read_signature(&x86), Signature::Unsigned, "{text}");
+    assert!(!text.contains("signature:"), "{text}");
+    let (arm, text) = macho_patch(dir.path(), "arm", &crate::tests_macho::thin(true, false).bytes, "c0035fd6");
+    assert!(matches!(read_signature(&arm), Signature::AdHoc { .. }), "{text}");
+    assert!(text.contains("the old one was: no"), "{text}");
+}

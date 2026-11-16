@@ -86,6 +86,9 @@ pub fn info(img: &Image) -> Output {
     for t in crate::macho::info_lines(img) {
         l.text(t);
     }
+    if let Some(t) = img.debug_info_line() {
+        l.text(t);
+    }
     if let Some(p) = &img.pdb {
         l.text(match &p.note {
             None => format!(

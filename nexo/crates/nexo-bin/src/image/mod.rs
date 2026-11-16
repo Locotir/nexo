@@ -1,5 +1,6 @@
 //! Opening a file: headers, sections, symbols, imports, exports, hardening. Bytes only.
 
+mod debuglink;
 mod load;
 mod load_elf;
 mod load_pe;
@@ -9,6 +10,7 @@ mod probe;
 mod query;
 mod raw;
 
+pub use debuglink::{crc32, DebugLookup};
 pub(crate) use load::blank;
 #[cfg(test)]
 pub(crate) use load_elf::reloc_pointer;
@@ -167,6 +169,8 @@ pub struct Image {
     strings: OnceLock<Vec<Str>>,
     refs: OnceLock<Refs>,
     dwarf: OnceLock<crate::dwarf::Dwarf>,
+    /// What the search for a separate debug file (`.gnu_debuglink`, build id) found or tried.
+    pub(crate) debug_lookup: Option<Box<debuglink::DebugLookup>>,
     /// Library signatures added to the shipped ones (see `sigs`).
     pub(crate) sigs: crate::sigs::SigSet,
     /// Things wrong with the file that did not stop it from opening (cut short, a table that points out).

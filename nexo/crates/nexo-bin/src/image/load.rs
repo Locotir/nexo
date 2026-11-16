@@ -41,6 +41,7 @@ pub(crate) fn blank(format: Format) -> Image {
         sigs: Default::default(),
         warnings: Vec::new(),
         pdb: None,
+        debug_lookup: None,
         macho: None,
     }
 }

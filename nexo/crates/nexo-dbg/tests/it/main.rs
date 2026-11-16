@@ -21,6 +21,7 @@ mod one_line_locals;
 mod prologue_locals;
 mod range_page;
 mod rsp;
+mod separate_debug;
 mod source_level;
 mod stdin_bytes;
 mod unassigned_locals;

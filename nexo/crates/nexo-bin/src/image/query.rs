@@ -97,7 +97,11 @@ impl Image {
     /// Names and types the file carries as DWARF (empty when it has none).
     pub(crate) fn dwarf(&self) -> &crate::dwarf::Dwarf {
         self.dwarf.get_or_init(|| {
-            let mut d = crate::dwarf::read(&self.data);
+            let mut d = if self.debug_lookup.as_ref().is_some_and(|l| l.found.is_some()) {
+                crate::dwarf::read_with(&|n| self.debug_file_section(n))
+            } else {
+                crate::dwarf::read(&self.data)
+            };
             if self.format == Format::MachO && d.protos.is_empty() && d.structs.is_empty() {
                 if let Some(bytes) = self.dsym() {
                     d = crate::dwarf::read(&bytes);

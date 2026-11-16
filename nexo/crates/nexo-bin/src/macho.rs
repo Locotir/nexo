@@ -20,11 +20,13 @@ mod chains;
 mod dsym;
 mod fat;
 mod info;
+mod sigcheck;
 pub mod sign;
 use self::chains::*;
 pub(crate) use self::fat::*;
 pub(crate) use self::info::*;
 use nexo_binmagic::{CPU_ARM64, CPU_X86_64, FAT_MAGIC, FAT_MAGIC_64, MAX_SLICES, MH_MAGIC_64};
+pub use sigcheck::{read_signature, Signature};
 
 const MAX_CMDS: u32 = 16_384;
 const MAX_SECTIONS: usize = 4096;
@@ -652,7 +654,7 @@ fn load_thin(d: &[u8], base: u64, dsym: bool) -> Result<Image> {
             "nx_stack",
             if flags & MH_ALLOW_STACK_EXECUTION != 0 { "no (stack is executable)".into() } else { "yes".into() },
         ),
-        ("code_signature", if c.signed { "yes (present, not checked)".into() } else { "no".into() }),
+        ("code_signature", if c.signed { read_signature(d).describe() } else { "no".into() }),
         ("encrypted", yes_no(c.encrypted.is_some())),
     ];
     if img.arm64 && sub & CPU_SUBTYPE_MASK == CPU_SUBTYPE_ARM64E {

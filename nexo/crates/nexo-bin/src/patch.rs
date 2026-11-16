@@ -125,6 +125,11 @@ pub fn patch(img: &Image, out: &Path, target: PatchTarget<'_>, data: PatchData<'
             at,
         ));
     }
+    // a patched Mach-O no longer matches the page hashes of its signature, and the kernel kills a program on arm64
+    // whose pages do not match: sign the copy ad hoc again, as the linker did the first time
+    if let Some(note) = resign_macho(img, &mut copy, out) {
+        lines.push(note);
+    }
     let permissions =
         fs::metadata(&img.path).map_err(|e| Error::Io(format!("cannot read input permissions: {e}")))?.permissions();
     // create_new is atomic and refuses symlinks, hard links and destinations created since the check.
@@ -163,4 +168,27 @@ fn patch_disassembly(img: &Image, bytes: &[u8], at: u64) -> Vec<String> {
         }
     });
     lines
+}
+
+/// Sign the patched copy of a Mach-O program ad hoc, when the original was signed or runs on arm64 (where the kernel
+/// refuses an unsigned program). Returns the line the answer carries, or `None` for a file that is not Mach-O or
+/// needs no signature. The entitlements of the old signature are not carried over.
+fn resign_macho(img: &Image, copy: &mut Vec<u8>, out: &Path) -> Option<String> {
+    img.macho.as_ref()?;
+    let before = crate::read_signature(&img.data);
+    if !img.arm64 && before == crate::Signature::Unsigned {
+        return None;
+    }
+    let ident = out.file_name().map_or_else(|| "program".to_string(), |n| n.to_string_lossy().into_owned());
+    Some(match crate::adhoc_sign(copy, &ident, &[]) {
+        Ok(signed) => {
+            *copy = signed;
+            format!(
+                "signature: re-signed ad hoc as {ident} ({}; the old one was: {}; entitlements of the old signature are not carried over)",
+                crate::read_signature(copy).describe(),
+                before.describe()
+            )
+        }
+        Err(e) => format!("signature: the copy is not signed ({e}); its old signature no longer matches the bytes"),
+    })
 }

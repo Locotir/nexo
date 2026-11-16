@@ -56,6 +56,8 @@ mod tests;
 #[cfg(test)]
 mod tests_cfg;
 #[cfg(test)]
+mod tests_debuglink;
+#[cfg(test)]
 mod tests_diff;
 #[cfg(test)]
 mod tests_fmt;
@@ -95,12 +97,13 @@ pub use emu::{emulate, limits as emu_limits, EmuSpec};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use graph::{path_window, tree_window};
 pub use hookinfo::{arg_count, block_starts, import_sites, libc_proto, parse_proto, proto_at, ImportSite, Proto};
-pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use image::{crc32, opens, DebugLookup, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use live::{
     decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, slot_use, LiveIns,
     LiveMem, Place, SlotUse, MAX_INDIRECT_CALLS,
 };
 pub use macho::sign::{adhoc_sign, GET_TASK_ALLOW};
+pub use macho::{read_signature, Signature};
 #[cfg(any(test, feature = "fixtures"))]
 pub use managed::testkit as managed_fixtures;
 pub use managed::{managed_window, ManagedQuery};

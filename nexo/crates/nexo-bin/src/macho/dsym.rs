@@ -25,7 +25,10 @@ impl Image {
         if let Some(s) = self.sections.iter().find(|s| s.name == name) {
             return self.section_bytes(s);
         }
-        let (Some(m), Some(short)) = (self.macho.as_deref(), macho_name(name)) else { return &[] };
+        let (Some(m), Some(short)) = (self.macho.as_deref(), macho_name(name)) else {
+            // an ELF program stripped of its DWARF: the separate debug file found beside it or by build id
+            return self.debug_file_section(name);
+        };
         if let Some(s) = self.sections.iter().find(|s| s.name.strip_prefix("__DWARF,") == Some(short.as_str())) {
             return self.section_bytes(s);
         }

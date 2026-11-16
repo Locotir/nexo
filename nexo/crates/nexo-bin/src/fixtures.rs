@@ -367,3 +367,49 @@ fn pe64_with(hidden: bool, xref: bool) -> Fixture {
         ptrs: xref.then_some(BASE + data_rva + 40),
     }
 }
+
+/// A 64-bit little-endian ELF file with a `.gnu_debuglink` section added that names `name` and holds its CRC-32 `crc`:
+/// the section headers are written again at the end of the file with the new section and a longer section name
+/// table, as `objcopy --add-gnu-debuglink` does. `None` when the bytes are not such a file.
+pub fn add_gnu_debuglink(elf: &[u8], name: &str, crc: u32) -> Option<Vec<u8>> {
+    if elf.get(..5)? != b"\x7fELF\x02" || elf[5] != 1 {
+        return None;
+    }
+    let mut b = elf.to_vec();
+    let u16_at = |b: &[u8], o: usize| Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?) as usize);
+    let u64_at = |b: &[u8], o: usize| Some(u64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?) as usize);
+    let (shoff, entsize, num, strndx) = (u64_at(&b, 0x28)?, u16_at(&b, 0x3a)?, u16_at(&b, 0x3c)?, u16_at(&b, 0x3e)?);
+    if entsize < 0x40 || strndx >= num {
+        return None;
+    }
+    let mut table = b.get(shoff..shoff + entsize * num)?.to_vec();
+    let (str_off, str_len) = (u64_at(&table, strndx * entsize + 0x18)?, u64_at(&table, strndx * entsize + 0x20)?);
+    let mut names = b.get(str_off..str_off + str_len)?.to_vec();
+    let name_at = names.len();
+    names.extend(b".gnu_debuglink\0");
+    let put = |b: &mut Vec<u8>, data: &[u8], align: usize| {
+        b.resize(b.len().next_multiple_of(align), 0);
+        let at = b.len();
+        b.extend(data);
+        at
+    };
+    let names_at = put(&mut b, &names, 1);
+    let mut link = name.as_bytes().to_vec();
+    link.push(0);
+    link.resize(link.len().next_multiple_of(4), 0);
+    link.extend(crc.to_le_bytes());
+    let link_at = put(&mut b, &link, 4);
+    table[strndx * entsize + 0x18..strndx * entsize + 0x20].copy_from_slice(&(names_at as u64).to_le_bytes());
+    table[strndx * entsize + 0x20..strndx * entsize + 0x28].copy_from_slice(&(names.len() as u64).to_le_bytes());
+    let mut head = vec![0u8; entsize];
+    head[0..4].copy_from_slice(&(name_at as u32).to_le_bytes());
+    head[4..8].copy_from_slice(&1u32.to_le_bytes());
+    head[0x18..0x20].copy_from_slice(&(link_at as u64).to_le_bytes());
+    head[0x20..0x28].copy_from_slice(&(link.len() as u64).to_le_bytes());
+    head[0x30..0x38].copy_from_slice(&4u64.to_le_bytes());
+    table.extend(head);
+    let table_at = put(&mut b, &table, 8);
+    b[0x28..0x30].copy_from_slice(&(table_at as u64).to_le_bytes());
+    b[0x3c..0x3e].copy_from_slice(&((num + 1) as u16).to_le_bytes());
+    Some(b)
+}

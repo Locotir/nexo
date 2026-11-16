@@ -32,6 +32,16 @@ impl Image {
 
     /// Parse bytes already in memory; `arch` as in [`Image::open_arch`].
     pub fn from_bytes_arch(data: Vec<u8>, path: PathBuf, arch: Option<&str>) -> Result<Image> {
+        Image::from_bytes_in(data, path, arch, &super::debuglink::global_dirs())
+    }
+
+    /// Read the file with the system's debug folders given (the separate debug file of a stripped ELF program is
+    /// looked for in them, as in `/usr/lib/debug`).
+    pub fn open_with_debug_dirs(path: &Path, dirs: &[PathBuf]) -> Result<Image> {
+        Image::from_bytes_in(read_file(path)?, path.to_path_buf(), None, dirs)
+    }
+
+    fn from_bytes_in(data: Vec<u8>, path: PathBuf, arch: Option<&str>, debug_dirs: &[PathBuf]) -> Result<Image> {
         if crate::is_managed(&data[..data.len().min(crate::MANAGED_HEAD)]) {
             return Err(Error::NotRead(
                 "this is JVM bytecode, a jar or a .NET assembly: read it with `nexo bin managed FILE`".into(),
@@ -75,6 +85,9 @@ impl Image {
             img.attach_pdb(&data);
         }
         img.data = data;
+        if img.format == Format::Elf {
+            img.find_debug_file_in(debug_dirs);
+        }
         // a macOS program keeps its DWARF in a dSYM beside it (cc -g makes one): lines and locals come from there
         if img.macho.is_some() {
             img.find_dsym();

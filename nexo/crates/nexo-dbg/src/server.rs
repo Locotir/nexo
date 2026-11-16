@@ -216,7 +216,8 @@ fn make_session(kind: &Kind) -> Result<Made> {
             return fail(format!("cannot read {} as a program: {e}", path.display()));
         }
     };
-    let debug = platform::gather_dwarf(&mut img);
+    // a macOS debug map gathered by dsymutil, or the separate debug file an ELF program was stripped of
+    let debug = platform::gather_dwarf(&mut img).or_else(|| img.debug_info_line());
     Ok((Session::new(t, img), None, debug))
 }
 

@@ -17,7 +17,7 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
-    /// Patch generic bytes into a new copy; never modifies the input or overwrites an existing output.
+    /// Patch generic bytes into a new copy; never modifies the input or overwrites an existing output. A Mach-O copy that was signed (or is arm64) is signed ad hoc again, and the answer says so.
     #[command(group(clap::ArgGroup::new("location").required(true).args(["at", "function"])),
               group(clap::ArgGroup::new("replacement").required(true).args(["bytes", "asm", "nop"])))]
     Patch {

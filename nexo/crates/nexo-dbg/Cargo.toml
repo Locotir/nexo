@@ -19,4 +19,5 @@ libc = { workspace = true }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
+nexo-bin = { workspace = true, features = ["fixtures"] }
 tempfile = { workspace = true }

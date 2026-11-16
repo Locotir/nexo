@@ -36,10 +36,16 @@ pub fn read(data: &[u8]) -> Dwarf {
     if file.section_by_name(".debug_info").is_none() || !file.is_little_endian() {
         return Dwarf::default();
     }
-    let load = |id: gimli::SectionId| -> Result<R<'_>, gimli::Error> {
-        let bytes: &[u8] = file.section_by_name(id.name()).and_then(|s| s.data().ok()).unwrap_or(&[]);
-        Ok(EndianSlice::new(bytes, LittleEndian))
-    };
+    read_with(&|name| file.section_by_name(name).and_then(|s| s.data().ok()).unwrap_or(&[]))
+}
+
+/// Read the DWARF out of sections given by name (`.debug_info`): the file's own, or those of a separate debug file.
+pub fn read_with<'a>(get: &dyn Fn(&str) -> &'a [u8]) -> Dwarf {
+    if get(".debug_info").is_empty() {
+        return Dwarf::default();
+    }
+    let load =
+        |id: gimli::SectionId| -> Result<R<'a>, gimli::Error> { Ok(EndianSlice::new(get(id.name()), LittleEndian)) };
     let Ok(dwarf) = gimli::Dwarf::load(load) else { return Dwarf::default() };
     let mut out = Dwarf::default();
     let mut units = dwarf.units();
