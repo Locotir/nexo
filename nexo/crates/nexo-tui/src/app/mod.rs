@@ -73,6 +73,9 @@ pub(super) struct HeldEnd {
     pub anchor_off: usize,
 }
 
+/// The width, scroll line and block count a layout chose the blocks near the view for.
+type NearKey = (usize, usize, usize);
+
 pub struct App {
     pub opts: TuiOptions,
     pub theme: Theme,
@@ -204,7 +207,7 @@ pub struct App {
     pub(super) estimated: bool,
     /// The width, scroll line and block count of the layout that last chose the blocks to wrap for real,
     /// and the range it chose: while the estimate stands and none of them moved, a frame reuses the range.
-    near: Option<((usize, usize, usize), (usize, usize))>,
+    near: Option<(NearKey, (usize, usize))>,
     /// How many times a layout searched the whole history for the blocks near the view.
     #[cfg(test)]
     pub(super) near_runs: usize,
