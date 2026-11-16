@@ -596,11 +596,44 @@ async fn several_sessions_share_their_memory_named_and_within_what_one_share_too
     );
     assert!(sent.contains("tokenizer is the cause") && sent.contains("scheduler is the cause"), "{sent}");
     assert!(sent.ends_with("fix it"), "{sent}");
-    // a later pick replaces what waited, it does not pile up
+    // a later pick of one of them again reads it anew beside the other: still one entry each, within one share
     r.send(AgentCommand::ShareMemories { ids: vec![a.clone(), c.clone()] });
     r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
     r.send(AgentCommand::ShareMemories { ids: vec![c.clone()] });
     let ev = r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
-    assert!(matches!(ev.last(), Some(AgentEvent::MemoryShared { pending }) if pending.len() == 1 && pending[0].0 == c));
+    let Some(AgentEvent::MemoryShared { pending }) = ev.last() else { panic!("{ev:?}") };
+    assert_eq!(pending.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), [a.as_str(), c.as_str()], "{ev:?}");
+    assert!(pending.iter().map(|p| p.2).sum::<usize>() <= 4000, "{pending:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn shares_asked_for_one_after_another_never_take_more_than_one_share_in_all() {
+    let d = test_tmpdir().unwrap();
+    let a = session_about(d.path(), "tokenizer", 300).await;
+    let c = session_about(d.path(), "scheduler", 300).await;
+    let e3 = session_about(d.path(), "allocator", 300).await;
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    // two ticked rows take half of one share each; a third asked for alone takes only what is left
+    r.send(AgentCommand::ShareMemories { ids: vec![a.clone(), c.clone()] });
+    r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
+    r.send(AgentCommand::ShareMemory { id: Some(e3.clone()), focus: None });
+    let ev = r.until(|e| matches!(e, AgentEvent::MemoryShared { .. }) || matches!(e, AgentEvent::Notice { .. })).await;
+    let Some(last) = ev.last() else { panic!("{ev:?}") };
+    if let AgentEvent::MemoryShared { pending } = last {
+        let total: usize = pending.iter().map(|p| p.2).sum();
+        assert!(total <= 4000, "together {total} tokens: {pending:?}");
+        assert!(pending.iter().any(|p| p.0 == a) && pending.iter().any(|p| p.0 == c), "{pending:?}");
+    }
+    // one ticked row and a row taken unticked treat what waits alike: neither drops the other session's share
+    r.send(AgentCommand::ShareMemories { ids: vec![e3.clone()] });
+    let ev = r.until(|e| matches!(e, AgentEvent::MemoryShared { .. }) || matches!(e, AgentEvent::Notice { .. })).await;
+    if let Some(AgentEvent::MemoryShared { pending }) = ev.last() {
+        let total: usize = pending.iter().map(|p| p.2).sum();
+        assert!(total <= 4000, "together {total} tokens: {pending:?}");
+        assert!(pending.iter().any(|p| p.0 == a) && pending.iter().any(|p| p.0 == c), "{pending:?}");
+    }
     r.stop().await;
 }

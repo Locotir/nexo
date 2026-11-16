@@ -172,7 +172,13 @@ pub(super) async fn share_memory(state: &Shared, id: Option<String>, focus: Opti
         notice(&st.events, Level::Warn, "that is this session: its memory is already here");
         return;
     }
-    match recall_session(&id, focus, SHARE_TOKENS) {
+    // what already waits (other than this session, which is read again) uses part of the one share's room
+    let room = room_left(&st, std::slice::from_ref(&id));
+    if room < MIN_SHARE_TOKENS {
+        notice(&st.events, Level::Warn, ROOM_USED_UP);
+        return;
+    }
+    match recall_session(&id, focus, room) {
         Ok(Some((title, block))) => {
             st.shared.retain(|(i, _, _)| *i != id);
             st.shared.push((id, title, block));
@@ -183,8 +189,9 @@ pub(super) async fn share_memory(state: &Shared, id: Option<String>, focus: Opti
     }
 }
 
-/// Readies what each of several sessions knows to go with the next request, in place of what waited. One share's
-/// room ([`SHARE_TOKENS`]) is divided among them, so all of it together is no larger than one share was.
+/// Readies what each of several sessions knows to go with the next request, next to what already waits from other
+/// sessions (as `share_memory` does). One share's room ([`SHARE_TOKENS`]) is divided among them and what waits, so
+/// all of it together is no larger than one share was, however the shares were asked for.
 pub(super) async fn share_memories(state: &Shared, ids: Vec<String>) {
     let mut st = state.lock().await;
     let here = st.session.id().to_string();
@@ -194,19 +201,21 @@ pub(super) async fn share_memories(state: &Shared, ids: Vec<String>) {
         }
         all
     });
-    if ids.len() > MAX_SHARED_SESSIONS {
-        notice(
-            &st.events,
-            Level::Warn,
-            format!("taking the first {MAX_SHARED_SESSIONS} sessions: the room does not stretch further"),
-        );
-        ids.truncate(MAX_SHARED_SESSIONS);
-    }
     if ids.is_empty() {
         notice(&st.events, Level::Warn, "no other session to take memory from");
         return;
     }
-    let each = SHARE_TOKENS / ids.len();
+    let room = room_left(&st, &ids);
+    let most = MAX_SHARED_SESSIONS.min(room / MIN_SHARE_TOKENS);
+    if most == 0 {
+        notice(&st.events, Level::Warn, ROOM_USED_UP);
+        return;
+    }
+    if ids.len() > most {
+        notice(&st.events, Level::Warn, format!("taking the first {most} sessions: the room does not stretch further"));
+        ids.truncate(most);
+    }
+    let each = room / ids.len();
     let mut taken = Vec::new();
     for id in ids {
         match recall_session(&id, None, each) {
@@ -218,9 +227,19 @@ pub(super) async fn share_memories(state: &Shared, ids: Vec<String>) {
     if taken.is_empty() {
         return;
     }
-    st.shared = taken;
+    st.shared.retain(|(i, _, _)| !taken.iter().any(|(t, _, _)| t == i));
+    st.shared.extend(taken);
     emit_pending(&st);
 }
+
+/// What is left of one share's room once the blocks waiting for sessions other than `replacing` are counted.
+fn room_left(st: &State, replacing: &[String]) -> usize {
+    let used: usize =
+        st.shared.iter().filter(|(i, _, _)| !replacing.contains(i)).map(|(_, _, b)| crate::brief::tokens(b)).sum();
+    SHARE_TOKENS.saturating_sub(used)
+}
+
+const ROOM_USED_UP: &str = "the room for shared memory is used up: `/shared-memory off` clears what waits";
 
 /// The interface is told which sessions' memory waits and how large each block is.
 fn emit_pending(st: &State) {
@@ -267,6 +286,9 @@ pub(super) const SHARE_TOKENS: usize = 4000;
 
 /// Most sessions one share takes: each keeps at least this many tokens' worth of room (`recall` gives up under 200).
 pub(super) const MAX_SHARED_SESSIONS: usize = 8;
+
+/// The least room a share is worth reading with: `recall` gives up under this many tokens.
+const MIN_SHARE_TOKENS: usize = 200;
 
 /// Moves a recorded session to the trash; the one in use stays (it is still being written).
 pub(super) async fn delete_session(state: &Shared, id: &str) {
