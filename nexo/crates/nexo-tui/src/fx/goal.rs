@@ -36,6 +36,10 @@ pub const WIPE_MS: u64 = 300;
 pub const BORN_MS: u64 = 200;
 /// A task that starts takes the running colour in this long.
 pub const RUN_MS: u64 = 160;
+/// A goal round that advances notches the mark of the bar and rolls the figure of the panel in this long.
+pub const NOTCH_MS: u64 = 400;
+/// The mark is the filled `◉` for this long, then `◎` again.
+const NOTCH_FILL_MS: u64 = 120;
 /// The soft edge of the wipe and the tail of the sweep, in cells.
 const EDGE: f32 = 6.0;
 /// At most this many rows take part in the opening stagger (the rest come in with the last).
@@ -170,7 +174,7 @@ impl GoalFx {
     pub fn alive(&self, now: Instant) -> bool {
         within(self.open_at, now, OPEN_MS)
             || within(self.modal_at, now, OPEN_MS)
-            || within(self.round_at, now, motion::LIT_MS)
+            || within(self.round_at, now, NOTCH_MS)
             || within(self.met_at, now, MET_MS)
             || within(self.count_at, now, motion::LIT_MS)
             || self.bar.is_moving(now)
@@ -189,6 +193,39 @@ impl GoalFx {
     /// What the last tick saw of task `i`, if it is `text`.
     pub fn row(&self, i: usize, text: &str) -> Option<&RowFx> {
         self.rows.get(i).filter(|r| r.text == text)
+    }
+}
+
+/// The goal mark `ms` after a round began: the filled `◉` in the accent and bold for `NOTCH_FILL_MS`, then
+/// `◎` while the colour passes once to the text colour and back (`0..1`, the second figure). Both glyphs are
+/// one cell wide. At rest (`None`, or past `NOTCH_MS`) it is `◎` and no pass.
+pub fn notch(ms: Option<u64>) -> (char, f32) {
+    match ms {
+        Some(ms) if ms < NOTCH_FILL_MS => ('◉', 0.0),
+        Some(ms) if ms < NOTCH_MS => {
+            let p = (ms - NOTCH_FILL_MS) as f32 / (NOTCH_MS - NOTCH_FILL_MS) as f32;
+            ('◎', (p * std::f32::consts::PI).sin())
+        }
+        _ => ('◎', 0.0),
+    }
+}
+
+/// The round figure of the panel `ms` after the round became `round`: it rolls from the one before, the
+/// old figure until half way, with the width of the new one so the row never moves.
+pub fn round_shown(round: u32, ms: Option<u64>) -> String {
+    let settled = round.to_string();
+    let Some(ms) = ms.filter(|m| *m < NOTCH_MS) else { return settled };
+    let t = ease_out(ms as f64 / NOTCH_MS as f64);
+    let n = if t < 0.5 { round.saturating_sub(1) } else { round };
+    motion::fixed(&n.to_string(), &settled)
+}
+
+impl GoalFx {
+    /// Milliseconds since the round advanced, while the notch still runs.
+    pub fn notch_ms(&self, now: Instant) -> Option<u64> {
+        self.round_at
+            .filter(|_| within(self.round_at, now, NOTCH_MS))
+            .map(|t| now.saturating_duration_since(t).as_millis() as u64)
     }
 }
 
@@ -598,5 +635,30 @@ mod tests {
         let mut l = settled.clone();
         row(&t, &mut l, 0, &start, at(t0, RUN_MS));
         assert_eq!(l, settled);
+    }
+}
+
+#[cfg(test)]
+mod notch_tests {
+    use super::*;
+
+    #[test]
+    fn the_mark_fills_then_passes_a_colour_and_rests() {
+        assert_eq!(notch(Some(0)).0, '◉');
+        assert_eq!(notch(Some(60)).0, '◉');
+        assert_eq!(notch(Some(150)).0, '◎');
+        assert!(notch(Some(260)).1 > 0.9, "the pass peaks in the middle");
+        assert_eq!(notch(Some(450)), ('◎', 0.0));
+        assert_eq!(notch(None), ('◎', 0.0));
+        assert_eq!(unicode_width::UnicodeWidthChar::width('◉'), unicode_width::UnicodeWidthChar::width('◎'));
+    }
+
+    #[test]
+    fn the_round_figure_rolls_and_keeps_its_width() {
+        assert_eq!(round_shown(10, None), "10");
+        assert_eq!(round_shown(10, Some(0)), " 9");
+        assert_eq!(round_shown(10, Some(399)), "10");
+        assert_eq!(round_shown(10, Some(400)), "10");
+        assert_eq!(round_shown(4, Some(10)), "3");
     }
 }

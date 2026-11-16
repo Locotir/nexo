@@ -61,7 +61,11 @@ pub(super) fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         }
         let (round, max) = (goal.round, goal.max);
         let state = match &goal.state {
-            GoalState::Active if round > 0 => Some((format!("round {round}/{max}"), theme.dim())),
+            GoalState::Active if round > 0 => {
+                // the figure rolls to the new round; the row keeps its width
+                let ms = app.fx_on().then(|| gfx.notch_ms(now)).flatten();
+                Some((format!("round {}/{max}", crate::fx_goal::round_shown(round, ms)), theme.dim()))
+            }
             GoalState::Active => None,
             GoalState::Waiting => Some(("waiting for your answer".to_string(), theme.style(theme.warn))),
             GoalState::Paused(why) => Some((format!("paused: {why} · /goal resume"), theme.dim())),
@@ -264,7 +268,7 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
     let flash = app
         .map_at
         .filter(|_| app.opts.animations)
-        .map(|t| t.elapsed().as_millis() as u64)
+        .map(|t| app.now().saturating_duration_since(t).as_millis() as u64)
         .filter(|&ms| ms < MAP_FLASH_MS);
     for (z, ix) in &groups {
         if let Some(z) = *z {
@@ -292,7 +296,7 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         let kinds = theme.kind_colours();
         let mut cells: Vec<Span<'static>> = Vec::new();
         for &i in ix {
-            cells.extend(cell_spans(app, i, unit, flash.is_some(), &kinds));
+            cells.extend(cell_spans(app, i, unit, flash, &kinds));
         }
         // too long even at the largest unit: the newest part
         let cap = if z.is_some() { usize::MAX } else { rows * w };
@@ -339,8 +343,30 @@ pub(crate) fn kind_ix(kind: nexo_core::CellKind) -> usize {
     }
 }
 
+/// How long a changed cell of the map shows reversed before it fades back.
+const FLASH_HOLD_MS: u64 = 150;
+
+/// The style of a map cell that changed `ms` ago: reversed and bold at first, then its fill fades from the
+/// accent to its own colour until the flash is over. A mono theme has no colour to fade: it ends with the hold.
+pub(crate) fn flash_style(theme: &Theme, style: Style, own: Color, ms: u64) -> Style {
+    if ms < FLASH_HOLD_MS {
+        return style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    }
+    if theme.mono {
+        return style;
+    }
+    let t = (ms - FLASH_HOLD_MS) as f32 / (MAP_FLASH_MS - FLASH_HOLD_MS) as f32;
+    style.fg(crate::motion::fade(theme, theme.accent, own, t))
+}
+
 /// The cells of message `i` of the map at `unit` tokens a cell.
-fn cell_spans(app: &App, i: usize, unit: u64, flash: bool, kinds: &[Color; 4]) -> impl Iterator<Item = Span<'static>> {
+fn cell_spans(
+    app: &App,
+    i: usize,
+    unit: u64,
+    flash: Option<u64>,
+    kinds: &[Color; 4],
+) -> impl Iterator<Item = Span<'static>> {
     use nexo_core::CellState;
     let theme = &app.theme;
     let c = &app.map[i];
@@ -351,9 +377,9 @@ fn cell_spans(app: &App, i: usize, unit: u64, flash: bool, kinds: &[Color; 4]) -
         CellState::Recalled => ("░", theme.style(colour)),
         CellState::Dropped => ("·", theme.dim2()),
     };
-    // a cell that just changed lights up, then settles
-    if flash && app.map_changed.get(i).copied().unwrap_or(false) {
-        style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    // a cell that just changed lights up, then decays to its own colour
+    if let Some(ms) = flash.filter(|_| app.map_changed.get(i).copied().unwrap_or(false)) {
+        style = flash_style(theme, style, colour, ms);
     }
     let n = c.tokens.div_ceil(unit).max(1) as usize;
     std::iter::repeat_n(Span::styled(glyph, style), n)

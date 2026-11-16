@@ -19,6 +19,10 @@ pub const MAX: usize = 3;
 pub const SLIDE_MS: u64 = 150;
 pub const LIFE_MS: u64 = 3000;
 pub const FADE_MS: u64 = 400;
+/// The tick of a toast's mark: a dot, then a dim tick, then one colour pass over the next `PASS_MS`.
+const DOT_MS: u64 = 90;
+const TICK_MS: u64 = 180;
+const PASS_MS: u64 = 300;
 /// Below this width only the newest toast shows.
 pub const NARROW: u16 = 50;
 
@@ -93,6 +97,19 @@ impl Toasts {
             || self.items.iter().any(|t| (now.saturating_duration_since(t.at).as_millis() as u64) < LIFE_MS)
     }
 
+    /// Whether something about the stack changes by itself fast enough to need frames: a toast sliding in
+    /// or drawing its mark, one repeated (it pulses), one fading out, or a place being closed up. A toast
+    /// that only stays on screen is `alive`, not moving: it needs no frame until it fades.
+    pub fn moving(&self, now: Instant) -> bool {
+        let age = |at: Instant| now.saturating_duration_since(at).as_millis() as u64;
+        self.gone.iter().any(|(_, at)| age(*at) < SLIDE_MS)
+            || self.items.iter().any(|t| {
+                age(t.born) < TICK_MS + PASS_MS
+                    || age(t.at) < PASS_MS
+                    || (age(t.at) + FADE_MS >= LIFE_MS && age(t.at) < LIFE_MS)
+            })
+    }
+
     pub fn texts(&self) -> Vec<&str> {
         self.items.iter().map(|t| t.text.as_str()).collect()
     }
@@ -141,6 +158,21 @@ pub fn opacity(ms: u64, animate: bool) -> f32 {
     (LIFE_MS.saturating_sub(ms) as f32 / FADE_MS as f32).clamp(0.0, 1.0)
 }
 
+/// The mark of a toast `ms` after it appeared: the glyph, whether it is dim, and how far the colour pass has
+/// gone (0..1..0, towards the text colour). A success draws as a tick: a dot, a dim `✓`, then the pass; an
+/// error is the `✗` at once with one pass; anything else keeps its dot.
+pub fn mark_frame(ms: u64, kind: Kind) -> (char, bool, f32) {
+    let pass = |from: u64| ((ms.saturating_sub(from)) as f32 / PASS_MS as f32).clamp(0.0, 1.0);
+    let hump = |p: f32| if ms < TICK_MS || p >= 1.0 { 0.0 } else { (p * std::f32::consts::PI).sin() };
+    match kind {
+        Kind::Info => ('·', false, 0.0),
+        Kind::Success if ms < DOT_MS => ('·', false, 0.0),
+        Kind::Success if ms < TICK_MS => ('✓', true, 0.0),
+        Kind::Success => ('✓', false, hump(pass(TICK_MS))),
+        Kind::Error => ('✗', false, hump(pass(TICK_MS))),
+    }
+}
+
 /// Draws the stack in the top right corner of `area` (the transcript: never the input box).
 pub fn draw(f: &mut Frame, toasts: &Toasts, theme: &Theme, area: Rect, now: Instant, animate: bool) {
     if toasts.items.is_empty() || area.width < 12 || area.height == 0 {
@@ -155,16 +187,27 @@ pub fn draw(f: &mut Frame, toasts: &Toasts, theme: &Theme, area: Rect, now: Inst
         if ms >= LIFE_MS {
             continue;
         }
-        let (icon, colour) = match t.kind {
-            // one cell each, and three shapes: the kind reads without colour too
-            Kind::Info => ("·", theme.info),
-            Kind::Success => ("✓", theme.success),
-            Kind::Error => ("✗", theme.error),
+        let colour = match t.kind {
+            Kind::Info => theme.info,
+            Kind::Success => theme.success,
+            Kind::Error => theme.error,
         };
+        // one cell each, and three shapes: the kind reads without colour too; a new one draws its mark in
+        let age = now.saturating_duration_since(t.born).as_millis() as u64;
+        let (icon, dim, pass) = if animate { mark_frame(age, t.kind) } else { mark_frame(u64::MAX, t.kind) };
         let room = area.width.saturating_sub(2) as usize;
         let text = crate::render::markdown::strip_md(&Toasts::label(t));
         let body = truncate(&text, room.saturating_sub(5).max(1));
         let label = format!(" {icon} {body} ");
+        // the pass moves the mark to the text colour and back; with 16 colours it would only flash, so it is left out
+        let steps = matches!(colour, ratatui::style::Color::Rgb(..) | ratatui::style::Color::Indexed(_));
+        let mark_colour = if dim {
+            theme.dim
+        } else if steps {
+            fade(theme, colour, theme.fg, pass)
+        } else {
+            colour
+        };
         let w = (UnicodeWidthStr::width(label.as_str()) as u16).min(area.width);
         let born = now.saturating_duration_since(t.born).as_millis() as u64;
         let off = ((1.0 - slide(born, animate)) * w as f64).round() as u16;
@@ -183,14 +226,19 @@ pub fn draw(f: &mut Frame, toasts: &Toasts, theme: &Theme, area: Rect, now: Inst
             Modifier::empty()
         });
         let right = area.x + area.width;
+        let mark_style = Style::default().fg(fade(theme, bg, mark_colour, k)).bg(bg).add_modifier(if theme.mono {
+            Modifier::REVERSED | Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
         let mut cx = x;
-        for ch in label.chars() {
+        for (n, ch) in label.chars().enumerate() {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1) as u16;
             if cx + cw > right {
                 break;
             }
             if let Some(cell) = buf.cell_mut((cx, y)) {
-                cell.set_char(ch).set_style(style);
+                cell.set_char(ch).set_style(if n == 1 { mark_style } else { style });
             }
             cx += cw;
         }
@@ -204,6 +252,30 @@ mod tests {
 
     fn at(t0: Instant, ms: u64) -> Instant {
         t0 + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_success_mark_draws_a_dot_a_dim_tick_then_one_pass_and_an_error_is_a_cross_at_once() {
+        assert_eq!(mark_frame(0, Kind::Success), ('·', false, 0.0));
+        assert_eq!(mark_frame(100, Kind::Success), ('✓', true, 0.0));
+        let (c, dim, mid) = mark_frame(TICK_MS + PASS_MS / 2, Kind::Success);
+        assert_eq!((c, dim), ('✓', false));
+        assert!(mid > 0.99, "the pass peaks half way: {mid}");
+        assert_eq!(mark_frame(TICK_MS + PASS_MS, Kind::Success), ('✓', false, 0.0));
+        assert_eq!(mark_frame(u64::MAX, Kind::Success), ('✓', false, 0.0), "no motion: the plain tick");
+        assert_eq!(mark_frame(0, Kind::Error).0, '✗');
+        assert_eq!(mark_frame(0, Kind::Info).0, '·');
+    }
+
+    #[test]
+    fn a_toast_moves_while_it_slides_in_draws_its_mark_and_fades_out_but_not_in_between() {
+        let t0 = Instant::now();
+        let mut s = Toasts::default();
+        s.push(Kind::Success, "done", t0);
+        assert!(s.moving(at(t0, 10)));
+        assert!(!s.moving(at(t0, 1500)));
+        assert!(s.alive(at(t0, 1500)));
+        assert!(s.moving(at(t0, LIFE_MS - 100)));
     }
 
     #[test]

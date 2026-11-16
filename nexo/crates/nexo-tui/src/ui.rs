@@ -37,6 +37,7 @@ mod transcript;
 use command_palette::*;
 pub use hints::*;
 use info_panels::*;
+pub(crate) use input::taken_live;
 pub use input::*;
 pub use lock_screen::*;
 pub use modal::*;
@@ -121,10 +122,10 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         1
     };
     // the requests waiting behind the turn, a dim row each, right above the draft
-    let queue_h = if app.queued_msgs.is_empty() || area.height <= SHORT_H {
+    let queue_h = if (app.queued_msgs.is_empty() && taken_live(app) == 0) || area.height <= SHORT_H {
         0
     } else {
-        app.queued_msgs.len().min(MAX_QUEUE_ROWS) as u16
+        (app.queued_msgs.len() + taken_live(app)).min(MAX_QUEUE_ROWS) as u16
     };
     // the strip stays out where the list is on screen already: its own window, or the side panel
     let listed = matches!(app.modal, Some(Modal::Todo(_))) || (app.show_files && area.width >= FILES_PANEL_MIN_W);
@@ -206,7 +207,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     }
     // toasts: one row each, top right of the transcript, under every dialog and off the scrollbar column
     let toast_area = Rect { width: transcript.width.saturating_sub(1), ..transcript };
-    crate::toast::draw(f, &app.toasts, &app.theme, toast_area, app.now(), app.opts.animations);
+    crate::toast::draw(f, &app.toasts, &app.theme, toast_area, app.now(), app.fx_on());
     if app.palette.is_some() {
         draw_palette(f, app, transcript);
     }

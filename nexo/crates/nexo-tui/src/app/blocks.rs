@@ -77,6 +77,15 @@ impl App {
         at + 1
     }
 
+    /// Whether the tool card at `i` (a call, or a group of calls) ended with no failure: the colour of its band.
+    fn card_ok(&self, i: usize) -> bool {
+        let failed = |b: &Block| matches!(b, Block::Tool { status: ToolStatus::Failed | ToolStatus::Denied, .. });
+        match &self.blocks[i] {
+            Block::Group { len, .. } => !self.blocks[i + 1..].iter().take(*len).any(failed),
+            b => !failed(b),
+        }
+    }
+
     /// The group block that block `i` belongs to.
     pub(super) fn group_of(&self, i: usize) -> Option<usize> {
         let back = self.looks.get(i)?.group_back?;
@@ -293,12 +302,21 @@ impl App {
             if self.opts.animations && matches!(self.blocks[i], Block::Tool { .. } | Block::Group { .. }) {
                 let now = self.now();
                 let card = if self.blocks[i].is_live() {
+                    // a card with no recorded birth (an old one) has long since lit
+                    let born = self
+                        .looks
+                        .get(i)
+                        .and_then(|l| l.born)
+                        .map_or(u64::MAX, |t| now.saturating_duration_since(t).as_millis() as u64);
                     Some(crate::motion::Card::Running {
                         now_ms: now.saturating_duration_since(self.opened).as_millis() as u64,
+                        since_ms: born,
                     })
                 } else {
+                    let ok = self.card_ok(i);
                     self.looks.get(i).and_then(|l| l.done_at).map(|t| crate::motion::Card::Done {
                         since_ms: now.saturating_duration_since(t).as_millis() as u64,
+                        ok,
                     })
                 };
                 if let Some(card) = card {

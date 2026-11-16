@@ -16,6 +16,10 @@ pub const WELCOME_MS: u64 = 350;
 const LINE_MS: f32 = 150.0;
 /// The context gauge eases to a new fill, and fades to a new colour band, in this long.
 pub const GAUGE_MS: u64 = 300;
+/// The leading cell of the gauge lights once when the fill reaches a new eighth, and goes back in this long.
+pub const STEP_MS: u64 = 300;
+/// The band-crossing edge runs over the gauge in this long.
+pub const CROSS_MS: u64 = 450;
 /// The scrollbar thumb fades back to its resting colour this long after the last scroll.
 pub const BAR_MS: u64 = 600;
 /// A new chip in the draft is lit once for this long.
@@ -28,6 +32,10 @@ pub fn welcome_level(i: usize, n: usize, since: Instant, now: Instant) -> f32 {
     let e = now.saturating_duration_since(since).as_millis() as f32;
     let stagger = (WELCOME_MS as f32 - LINE_MS) / n.saturating_sub(1).max(1) as f32;
     ease_out(((e - i as f32 * stagger) / LINE_MS).clamp(0.0, 1.0) as f64) as f32
+}
+
+fn ms_since(t: Instant, now: Instant) -> u64 {
+    now.saturating_duration_since(t).as_millis() as u64
 }
 
 /// 1 right after `at`, easing to 0 over `ms`; 0 when there is no start or it is over.
@@ -47,6 +55,10 @@ pub struct GaugeFx {
     band_to: Option<Color>,
     band_from: Color,
     band_at: Option<Instant>,
+    /// The fill reached a new eighth (going up) at this time, and the band was crossed upward at `cross_at`.
+    step_at: Option<Instant>,
+    cross_at: Option<Instant>,
+    eighth: Option<usize>,
 }
 
 impl Default for GaugeFx {
@@ -57,6 +69,9 @@ impl Default for GaugeFx {
             band_to: None,
             band_from: Color::Reset,
             band_at: None,
+            step_at: None,
+            cross_at: None,
+            eighth: None,
         }
     }
 }
@@ -67,6 +82,16 @@ impl GaugeFx {
     pub fn note(&mut self, theme: &Theme, parts: Option<[u64; 3]>, frac: f64, colour: Color, now: Instant, on: bool) {
         let first = self.band_to.is_none();
         let still = first || !on;
+        // a new half cell going up lights the leading cell; going down is left to the condense motion
+        let eighth = (frac.clamp(0.0, 1.0) * (crate::ui::GAUGE_CELLS * 2) as f64).round() as usize;
+        let up = self.eighth.is_some_and(|old| eighth > old);
+        self.eighth = Some(eighth);
+        if still {
+            self.step_at = None;
+            self.cross_at = None;
+        } else if up {
+            self.step_at = Some(now);
+        }
         if let Some(p) = parts {
             for (t, v) in self.parts.iter_mut().zip(p) {
                 if still {
@@ -86,6 +111,9 @@ impl GaugeFx {
         } else if let Some(old) = self.band_to.filter(|o| *o != colour) {
             self.band_from = self.colour_at(theme, now, old);
             self.band_at = Some(now);
+            if up {
+                self.cross_at = Some(now);
+            }
         }
         self.band_to = Some(colour);
     }
@@ -122,8 +150,20 @@ impl GaugeFx {
         }
     }
 
+    /// Milliseconds since the fill reached a new eighth, while the leading cell is still lit.
+    pub fn step_ms(&self, now: Instant) -> Option<u64> {
+        self.step_at.filter(|_| crate::motion::within(self.step_at, now, STEP_MS)).map(|t| ms_since(t, now))
+    }
+
+    /// Milliseconds since the level crossed into a higher band, while the edge is still running.
+    pub fn cross_ms(&self, now: Instant) -> Option<u64> {
+        self.cross_at.filter(|_| crate::motion::within(self.cross_at, now, CROSS_MS)).map(|t| ms_since(t, now))
+    }
+
     pub fn moving(&self, now: Instant) -> bool {
-        self.frac.is_moving(now)
+        crate::motion::within(self.step_at, now, STEP_MS)
+            || crate::motion::within(self.cross_at, now, CROSS_MS)
+            || self.frac.is_moving(now)
             || self.parts.iter().any(|t| t.is_moving(now))
             || crate::motion::within(self.band_at, now, GAUGE_MS)
     }
@@ -181,7 +221,10 @@ mod tests {
         let end = at(t0, GAUGE_MS);
         assert_eq!(g.parts_at(end, [60, 40, 0]), [60, 40, 0]);
         assert_eq!(g.colour_at(&th, end, th.warn), th.warn);
-        assert!(!g.moving(end));
+        // the lit leading cell and the crossing edge outlast the easing; going up started both
+        let late = at(t0, GAUGE_MS - 1);
+        assert!(g.moving(late) && g.step_ms(late).is_some() && g.cross_ms(late).is_some());
+        assert!(!g.moving(at(t0, CROSS_MS)));
         assert!((g.frac_at(end, 0.6) - 0.6).abs() < 1e-9);
     }
 

@@ -211,6 +211,7 @@ fn docs_server() -> nexo_core::agent::McpServerInfo {
 
 mod blocks_stream_and_replay;
 mod bursts;
+mod clean_motion;
 mod commands_and_mcp_window;
 mod commands_sessions_and_models;
 mod custom_commands_history_and_cost;

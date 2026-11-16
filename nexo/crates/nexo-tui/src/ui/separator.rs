@@ -243,10 +243,10 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let pos = (frame as f32 * 0.42) % (n + 10.0) - 3.0;
     for (i, c) in word.chars().enumerate() {
         let near = (1.0 - ((i as f32 - pos).abs() / 3.0)).max(0.0);
-        let colour = mix(theme.accent, theme.fg, near);
+        let colour = crate::motion::fade(theme, theme.accent, theme.fg, near);
         spans.push(Span::styled(c.to_string(), Style::default().fg(colour).add_modifier(Modifier::BOLD)));
     }
-    let secs = app.turn_started.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+    let secs = app.turn_started.map(|t| app.now().saturating_duration_since(t).as_millis() as u64).unwrap_or(0);
     // segments in order of worth: a narrow line drops whole ones from the end of this list
     // (the token count first, then the hint) instead of cutting a word or leaving a lone `·`
     let time = crate::render::blocks::fmt_secs(secs / 1000);
@@ -305,6 +305,12 @@ fn wave_centre(n: usize, secs: f32) -> Option<f32> {
     })
 }
 
+/// Whether the crest is on the rule `secs` seconds into the turn (the pass), not resting off it: the
+/// only time the work line needs a frame faster than the beat.
+pub(crate) fn crest_passing(secs: f32) -> bool {
+    secs.rem_euclid(WAVE_PASS_S + WAVE_REST_S) < WAVE_PASS_S
+}
+
 /// How lit the cell `d` cells from the middle of the crest is, 0..1: a raised cosine, nothing at the front
 /// and at the tail, the whole of it in the middle.
 fn wave_bell(d: f32) -> f32 {
@@ -325,7 +331,7 @@ pub fn wave(theme: &Theme, n: usize, secs: f32) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::new();
     for i in 0..n {
         let glow = centre.map_or(0.0, |c| wave_bell(i as f32 + 0.5 - c) * peak);
-        let style = theme.style(mix(theme.border, theme.accent, glow));
+        let style = theme.style(crate::motion::fade(theme, theme.border, theme.accent, glow));
         match out.last_mut() {
             Some(last) if last.style == style => last.content.to_mut().push('─'),
             _ => out.push(Span::styled("─".to_string(), style)),

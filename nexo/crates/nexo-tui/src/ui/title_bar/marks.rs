@@ -20,7 +20,7 @@ pub(super) fn mode_name(app: &App) -> String {
 
 /// The goal's piece of the bar: `◎ goal`, `◎ goal: your turn`, `◎ goal paused`, `✓ goal`.
 pub(super) fn is_goal_seg(s: &Seg) -> bool {
-    s.text.starts_with("◎ goal") || s.text.starts_with("✓ goal")
+    s.text.starts_with("◎ goal") || s.text.starts_with("◉ goal") || s.text.starts_with("✓ goal")
 }
 
 /// The mark of the to-do count in the bar (the terminal's ASCII fallback folds it like the goal's check).

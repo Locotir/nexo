@@ -47,7 +47,16 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     };
     // the goal and, when it does not run, why: waiting for an answer, paused, met
     let goal = app.goal.as_ref().map(|g| match &g.state {
-        GoalState::Active => Seg { text: "◎ goal".to_string(), style: base.fg(theme.accent2) },
+        GoalState::Active => {
+            // a round that just advanced notches the mark: a filled ◉ in the accent, then one colour pass
+            let ms = app.fx_on().then(|| app.fx.goal.notch_ms(app.now())).flatten();
+            let (mark, pass) = crate::fx_goal::notch(ms);
+            let mut style = base.fg(crate::motion::fade(theme, theme.accent2, theme.fg, pass));
+            if mark == '◉' {
+                style = base.fg(theme.accent).add_modifier(Modifier::BOLD);
+            }
+            Seg { text: format!("{mark} goal"), style }
+        }
         GoalState::Waiting => Seg { text: "◎ goal: your turn".to_string(), style: base.fg(theme.warn) },
         GoalState::Paused(_) => Seg { text: "◎ goal paused".to_string(), style: base.fg(theme.dim) },
         GoalState::Done => Seg { text: "✓ goal".to_string(), style: base.fg(theme.success) },
@@ -77,6 +86,10 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         } else {
             gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 3).is_multiple_of(2))
         };
+        // the leading cell lights at a new step; an edge runs over the cells at a higher band
+        if app.fx_on() {
+            cells = meniscus(theme, cells, app.fx.gauge.step_ms(now), app.fx.gauge.cross_ms(now));
+        }
         cells.push(Seg {
             text: if guessed { format!(" ~{pct}%") } else { format!(" {pct}%") },
             style: base.fg(colour).add_modifier(Modifier::BOLD),

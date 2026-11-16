@@ -79,12 +79,18 @@ impl App {
         self.sync_goal_view();
     }
 
-    pub(super) fn on_jobs(&mut self, jobs: Vec<nexo_core::jobs::JobInfo>) {
+    pub(crate) fn on_jobs(&mut self, jobs: Vec<nexo_core::jobs::JobInfo>) {
         for j in &jobs {
             let was_running = self.jobs.iter().any(|o| o.id == j.id && o.status.running());
             if was_running && !j.status.running() {
                 let first: String = j.label.lines().next().unwrap_or("").chars().take(40).collect();
-                self.flash(&format!("job {} {}: {first}", j.id, j.status.plain()));
+                // a toast with a mark says how it ended; a job the person stopped is no failure
+                let (kind, word) = match &j.status {
+                    nexo_core::jobs::JobStatus::Done { ok: true, .. } => (crate::toast::Kind::Success, "done"),
+                    nexo_core::jobs::JobStatus::Killed => (crate::toast::Kind::Info, "stopped"),
+                    _ => (crate::toast::Kind::Error, "failed"),
+                };
+                self.toast(kind, &format!("job {} {word} · {first}", j.id));
             }
         }
         if let Some(Modal::Jobs(v)) = &mut self.modal {

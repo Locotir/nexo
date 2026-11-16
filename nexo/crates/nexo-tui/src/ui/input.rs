@@ -137,15 +137,79 @@ pub(super) fn draw_todo_strip(f: &mut Frame, app: &mut App, area: Rect) {
     app.todo_area = area;
 }
 
+/// How long a row taken out of the queue stays drawn: a beat of `›`, then it sweeps out.
+pub const TAKEN_MS: u64 = 350;
+const TAKEN_LIGHT_MS: u64 = 150;
+/// The soft edge of the sweep, in cells.
+const TAKEN_EDGE: f32 = 6.0;
+
+/// The taken rows still on screen.
+pub(crate) fn taken_live(app: &App) -> usize {
+    if !app.fx_on() {
+        return 0;
+    }
+    let now = app.now();
+    app.fx.queue_gone.iter().filter(|(_, at)| crate::motion::within(Some(*at), now, TAKEN_MS)).count()
+}
+
+/// A queued row `ms` after the agent took it, as a pure function of the time: the mark turns from the
+/// clock into `›` in the accent while the text lights towards the full colour, then the row is swept out
+/// from the left to the background. Nothing moves; only colour changes.
+pub(crate) fn taken_row(theme: &Theme, text: &str, ms: u64, width: usize) -> Line<'static> {
+    use crate::motion::fade;
+    let lit = (ms as f32 / TAKEN_LIGHT_MS as f32).clamp(0.0, 1.0);
+    let sweep = (ms.saturating_sub(TAKEN_LIGHT_MS) as f32 / (TAKEN_MS - TAKEN_LIGHT_MS) as f32).clamp(0.0, 1.0);
+    let body = truncate(&format!(" ◷ {text}"), width);
+    let cells: Vec<char> = body.chars().collect();
+    // the front of the sweep, from before the first cell to past the last plus its soft edge
+    let front = sweep * (cells.len() as f32 + TAKEN_EDGE);
+    let spans = cells
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let gone = ((front - i as f32) / TAKEN_EDGE).clamp(0.0, 1.0);
+            let (c, base, bold) = if i == 1 {
+                ('›', fade(theme, theme.dim, theme.accent, 1.0), true)
+            } else {
+                (c, fade(theme, theme.dim, theme.fg, lit), false)
+            };
+            let mut st = Style::default().fg(fade(theme, base, theme.bg, gone));
+            if bold || theme.mono {
+                st = st.add_modifier(Modifier::BOLD);
+            }
+            // without gradients (16 colours) the sweep is a cut: a cell is either there or not
+            Span::styled(if gone >= 1.0 { " ".to_string() } else { c.to_string() }, st)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
 pub(super) fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
     }
     let rows = area.height as usize;
-    let first = app.queued_msgs.len().saturating_sub(rows);
+    let (now, on) = (app.now(), app.fx_on());
+    app.fx.queue_gone.retain(|(_, at)| crate::motion::within(Some(*at), now, TAKEN_MS));
+    // the taken rows take the places at the top, where the oldest message waited
+    let gone: Vec<(String, u64)> = app
+        .fx
+        .queue_gone
+        .iter()
+        .filter(|_| on)
+        .map(|(t, at)| (t.clone(), now.saturating_duration_since(*at).as_millis() as u64))
+        .collect();
+    let skip_gone = (gone.len() + app.queued_msgs.len()).saturating_sub(rows);
+    let mut y = 0usize;
+    for (text, ms) in gone.iter().skip(skip_gone) {
+        let r = Rect { y: area.y + y as u16, height: 1, ..area };
+        let line = text.lines().next().unwrap_or("");
+        f.render_widget(Paragraph::new(taken_row(&app.theme, line, *ms, r.width as usize)), r);
+        y += 1;
+    }
+    let first = app.queued_msgs.len().saturating_sub(rows.saturating_sub(y));
     let mut hits = Vec::new();
     // a request that just joined the queue fades in
-    let (now, on) = (app.now(), app.fx_on());
     let queued = &app.queued_msgs;
     app.fx.queue_seen.retain(|(t, _)| queued.contains(t));
     for text in queued {
@@ -153,8 +217,9 @@ pub(super) fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
             app.fx.queue_seen.push((text.clone(), now));
         }
     }
-    for (k, text) in app.queued_msgs.iter().enumerate().skip(first).take(rows) {
-        let r = Rect { y: area.y + (k - first) as u16, height: 1, ..area };
+    for (k, text) in app.queued_msgs.iter().enumerate().skip(first).take(rows.saturating_sub(y)) {
+        let r = Rect { y: area.y + y as u16, height: 1, ..area };
+        y += 1;
         let line = text.lines().next().unwrap_or("");
         let line = truncate(&format!(" ◷ {line}"), r.width as usize);
         let mut row = Line::from(Span::styled(line, app.theme.dim()));

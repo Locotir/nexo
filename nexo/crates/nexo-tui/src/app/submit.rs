@@ -325,7 +325,12 @@ impl App {
     pub(super) fn trim_queue(&mut self) {
         let extra = self.queued_msgs.len().saturating_sub(self.queued);
         if extra > 0 {
-            self.queued_msgs.drain(..extra);
+            let now = self.now();
+            let taken: Vec<String> = self.queued_msgs.drain(..extra).collect();
+            // the row stays a moment longer, saying it was taken (drawn only with the motion on)
+            if self.fx_on() {
+                self.fx.queue_gone.extend(taken.into_iter().map(|t| (t, now)));
+            }
         }
     }
 

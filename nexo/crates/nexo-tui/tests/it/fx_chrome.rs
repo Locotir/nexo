@@ -147,7 +147,8 @@ fn the_gauge_eases_to_a_new_fill_and_fades_to_a_new_band() {
     a.last_call_cached = 100;
     let start = draw_at(&mut a, t0, 1000, 120);
     let mid = draw_at(&mut a, t0, 1120, 120);
-    let done = draw_at(&mut a, t0, 1000 + 400, 120);
+    // the settled gauge: past the easing and the lit step and crossing edge too
+    let done = draw_at(&mut a, t0, 1000 + 500, 120);
     assert_eq!(symbols(&mid), symbols(&done), "the gauge only changes colour while it eases");
     assert_ne!(mid, done, "in between it is not the settled gauge");
     assert_ne!(start, done);

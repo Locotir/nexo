@@ -330,11 +330,9 @@ impl App {
             any = true;
         }
         // cells of the context map that changed blink a moment
-        if self.opts.animations
-            && self.show_live
-            && self.map_at.is_some_and(|t| t.elapsed().as_millis() <= MAP_FLASH_MS as u128 + 100)
-        {
-            any = true;
+        // (it decays on the beat: a frame per tick, not 60 a second)
+        if self.map_flash_live() {
+            self.dirty = true;
         }
         // the gauge eases towards the real share
         {
@@ -482,10 +480,14 @@ impl App {
     pub fn load(&self) -> crate::frame::Load {
         use crate::frame::Load;
         // the banner's intro moves from the first frame, before any tick has set `moving`
-        // the crest on the work line crosses the rule in 2 s: a frame every 16 ms while the agent works
-        if self.moving || self.intro_running() || (self.busy && self.fx_on()) {
+        // the crest on the work line crosses the rule in 2 s: a frame every 16 ms while it is on the rule,
+        // the beat while it rests off it
+        if self.moving || self.intro_running() || (self.busy && self.fx_on() && self.crest_on_rule()) {
             Load::Motion
         } else if self.busy
+            || self.map_flash_live()
+            // a toast waits for its time on the beat; it asks for frames only while it moves
+            || self.toasts.alive(self.now())
             || self.status.is_some()
             // the welcome figure turns on the beat, and the stars of an empty session drift on it
             || self.stars_alive(self.now())
@@ -502,6 +504,17 @@ impl App {
         } else {
             Load::Idle
         }
+    }
+
+    /// The crest of the work line is crossing the rule now (not resting between two passes).
+    fn crest_on_rule(&self) -> bool {
+        let secs = self.turn_started.map_or(0.0, |t| self.now().saturating_duration_since(t).as_secs_f32());
+        crate::ui::crest_passing(secs)
+    }
+
+    /// A cell of the context map that just changed is still lit: it decays on the beat.
+    pub(super) fn map_flash_live(&self) -> bool {
+        self.opts.animations && self.show_live && crate::motion::within(self.map_at, self.now(), MAP_FLASH_MS + 100)
     }
 
     /// Whether a block of the current turn still moves by itself (PF3: only the

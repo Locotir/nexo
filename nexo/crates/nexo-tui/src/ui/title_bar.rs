@@ -8,8 +8,8 @@ mod segments;
 
 pub(super) use draw::draw_title;
 use draw::segs_width;
-use gauge::gauge_segs;
 pub use gauge::{gauge_cells, line_gauge, GAUGE_CELLS};
+use gauge::{gauge_segs, meniscus};
 use marks::{is_effort_seg, is_gauge_pct, is_goal_seg, is_todo_seg, mode_name, FAST_MARK, TODO_MARK};
 use notes::{note_hits, note_spans, quiet_notes, NOTE_GAP};
 pub use segments::{status_pieces, title_segments};

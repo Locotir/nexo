@@ -50,6 +50,8 @@ pub struct Fx {
     pub turn_start: Option<Instant>,
     /// Queued messages and when each was first drawn: a new row fades in.
     pub queue_seen: Vec<(String, Instant)>,
+    /// Messages the agent just took out of the queue and when: the row is drawn `TAKEN_MS` more.
+    pub queue_gone: Vec<(String, Instant)>,
     /// A dialog or the palette on screen last frame (its cells) and since when it closed: the
     /// closing draws the reverse of the pop.
     pub ghost: Option<(ratatui::layout::Rect, Vec<ratatui::buffer::Cell>)>,
@@ -160,8 +162,12 @@ impl App {
                 || self.home_moving(now)
                 || self.burst_moving(now)
                 || fx.ink.alive(now)
-                || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
-        t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)
+                || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS))
+                || fx.queue_gone.iter().any(|(_, t)| motion::within(Some(*t), now, crate::ui::TAKEN_MS)));
+        // a toast that only stays on screen asks for the beat (see `load`), not for frames; with the motion off
+        // it is still looked after on every tick, so it leaves when its time is up
+        let toasts = if self.fx_on() { self.toasts.moving(now) } else { self.toasts.alive(now) };
+        t_moving || c_moving || glow || mode || cmd || cut || changed || still || toasts
     }
 
     /// Notices a new model, reasoning level or permission mode (the first look is not a change); true while

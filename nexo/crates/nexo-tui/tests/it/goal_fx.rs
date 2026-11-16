@@ -126,9 +126,23 @@ fn assert_style_only(frames: &[Shot], mid: usize) {
 
 fn assert_style_only_of(what: &str, frames: &[Shot], mid: usize) {
     let last = frames.last().unwrap();
-    // the bar eases through its eighths: only those glyphs may differ, inside the cells it already has
+    // the bar eases through its eighths and the goal mark fills (◉ for ◎): only those glyphs may differ, inside the cells it already has
     let mask = |rows: &Vec<String>| -> Vec<String> {
-        rows.iter().map(|r| r.chars().map(|c| if "█▉▊▋▌▍▎▏░".contains(c) { '#' } else { c }).collect()).collect()
+        rows.iter()
+            .map(|r| {
+                r.chars()
+                    .map(|c| {
+                        if "█▉▊▋▌▍▎▏░".contains(c) {
+                            '#'
+                        } else if c == '◉' {
+                            '◎'
+                        } else {
+                            c
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
     };
     assert_eq!(mask(&frames[mid].0), mask(&last.0), "no text moves");
     assert_ne!(frames[mid].1, last.1, "{what}: the colours are in between");

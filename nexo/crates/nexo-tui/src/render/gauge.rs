@@ -4,7 +4,7 @@
 
 use ratatui::style::Style;
 
-use crate::theme::{mix, Theme};
+use crate::theme::Theme;
 use crate::ui::Seg;
 
 /// Tokens of the last call by where they stand.
@@ -38,7 +38,7 @@ pub fn cells_of(s: Split, den: u64, cells: usize) -> (usize, usize, usize) {
 /// in `colour` (the level colour), out `─` dim, the rest the track.
 pub fn stacked(theme: &Theme, s: Split, den: u64, cells: usize, colour: ratatui::style::Color) -> Vec<Seg> {
     let (c, f, o) = cells_of(s, den, cells);
-    let track = mix(theme.bar_bg, theme.border, 0.7);
+    let track = crate::motion::fade(theme, theme.bar_bg, theme.border, 0.7);
     let rest = cells - c - f - o;
     let parts = [("━", c, theme.info), ("━", f, colour), ("─", o, theme.dim), ("━", rest, track)];
     parts

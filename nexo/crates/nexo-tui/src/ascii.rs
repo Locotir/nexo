@@ -7,14 +7,15 @@ use ratatui::buffer::Buffer;
 use unicode_width::UnicodeWidthStr;
 
 /// Whether the ASCII fallback is wanted: `NEXO_ASCII=1` forces it, `NEXO_ASCII=0` forbids it,
-/// otherwise it is on for the Linux console and for a locale that is not UTF-8.
-pub fn wanted_from(forced: &str, term: &str, locale: &str) -> bool {
+/// otherwise it is on for the Linux console, for a locale that is not UTF-8 and for a legacy Windows console
+/// (`legacy_windows`: conhost, whose default font has no braille, so the effects would show as boxes).
+pub fn wanted_from(forced: &str, term: &str, locale: &str, legacy_windows: bool) -> bool {
     match forced.trim() {
         "1" | "true" | "yes" | "on" => return true,
         "0" | "false" | "no" | "off" => return false,
         _ => {}
     }
-    if term == "linux" {
+    if term == "linux" || legacy_windows {
         return true;
     }
     let l = locale.to_ascii_lowercase();
@@ -27,7 +28,9 @@ pub fn wanted() -> bool {
     *ON.get_or_init(|| {
         let get = |k: &str| std::env::var(k).unwrap_or_default();
         let locale = ["LC_ALL", "LC_CTYPE", "LANG"].iter().map(|k| get(k)).find(|v| !v.is_empty()).unwrap_or_default();
-        wanted_from(&get("NEXO_ASCII"), &get("TERM"), &locale)
+        // Windows Terminal sets WT_SESSION; the legacy console sets neither it nor TERM
+        let legacy = cfg!(windows) && get("WT_SESSION").is_empty() && get("TERM").is_empty();
+        wanted_from(&get("NEXO_ASCII"), &get("TERM"), &locale, legacy)
     })
 }
 
@@ -45,6 +48,8 @@ pub fn fold_char(c: char) -> Option<char> {
         '·' | '•' | '∙' => '.',
         '…' => '.',
         '◎' | '○' | '◌' => 'o',
+        '◉' => 'O',
+        '╸' => '-',
         '●' | '◆' | '◇' | '⏱' | '★' => '*',
         '⎇' => '@',
         'Σ' => 'S',
@@ -88,18 +93,28 @@ mod tests {
 
     #[test]
     fn the_fallback_follows_the_environment() {
-        assert!(wanted_from("1", "xterm-256color", "en_US.UTF-8"));
-        assert!(!wanted_from("0", "linux", "C"));
-        assert!(wanted_from("", "linux", "en_US.UTF-8"));
-        assert!(wanted_from("", "xterm", "C"));
-        assert!(wanted_from("", "xterm", "POSIX"));
-        assert!(!wanted_from("", "xterm-256color", "es_ES.utf8"));
-        assert!(!wanted_from("", "xterm-256color", ""));
+        assert!(wanted_from("1", "xterm-256color", "en_US.UTF-8", false));
+        assert!(!wanted_from("0", "linux", "C", false));
+        assert!(wanted_from("", "linux", "en_US.UTF-8", false));
+        assert!(wanted_from("", "xterm", "C", false));
+        assert!(wanted_from("", "xterm", "POSIX", false));
+        assert!(!wanted_from("", "xterm-256color", "es_ES.utf8", false));
+        assert!(!wanted_from("", "xterm-256color", "", false));
+    }
+
+    #[test]
+    fn a_legacy_windows_console_gets_ascii_unless_the_person_says_otherwise() {
+        // conhost: no WT_SESSION, no TERM, no locale
+        assert!(wanted_from("", "", "", true));
+        // Windows Terminal sets WT_SESSION, so it is not legacy and keeps its braille
+        assert!(!wanted_from("", "", "", false));
+        assert!(!wanted_from("0", "", "", true));
+        assert!(wanted_from("1", "", "", false));
     }
 
     #[test]
     fn every_symbol_of_the_table_becomes_one_plain_ascii_character() {
-        for c in "█▏▎▍▌▋▊▉│─═┌┐└┘├┤╭╮╰╯·…◎⎇Σ◆⏱●○▸▾✓✗⠋⠙⠹".chars()
+        for c in "█▏▎▍▌▋▊▉│─═┌┐└┘├┤╭╮╰╯·…◎◉╸⎇Σ◆⏱●○▸▾✓✗⠋⠙⠹".chars()
         {
             let a = fold_char(c).unwrap_or_else(|| panic!("{c} has no stand-in"));
             assert!(a.is_ascii() && !a.is_control(), "{c} -> {a:?}");

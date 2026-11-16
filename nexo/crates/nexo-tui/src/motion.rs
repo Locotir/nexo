@@ -8,7 +8,7 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::anim::{ease_out, Tween};
+use crate::anim::Tween;
 use crate::theme::{mix, Theme};
 
 /// A figure rolls to its new value in this long.
@@ -235,19 +235,54 @@ pub fn lit_style(theme: &Theme, base: Style, level: f32) -> Style {
 /// What a tool card is doing, for its rail and mark.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Card {
-    /// Running: the rail breathes.
-    Running { now_ms: u64 },
-    /// Finished `since_ms` ago: the mark pops, the rail eases to its final colour.
-    Done { since_ms: u64 },
+    /// Running: the rail lights from top to bottom when the call starts (`since_ms` after it was born), then breathes.
+    Running { now_ms: u64, since_ms: u64 },
+    /// Finished `since_ms` ago (`ok`: with no failure): the mark pops, a band climbs the rail and it settles.
+    Done { since_ms: u64, ok: bool },
 }
 
 const RAIL: &str = "│ ";
+/// The rail of a new call lights from its top to its bottom in this long, each row easing back after `IGNITE_FALL_MS`.
+pub const IGNITE_MS: u64 = 180;
+const IGNITE_FALL_MS: f32 = 120.0;
+/// Rows of the bright band that climbs a finished card's rail, and of the trail it leaves.
+const BAND_ROWS: f32 = 2.0;
+const BAND_TRAIL: f32 = 2.0;
+
+/// How lit the rail row `row` of `rows` is `ms` after its call started, 0..1, and whether the ignition has
+/// reached it yet: row `i` lights once `ease_out(ms / IGNITE_MS) >= i / rows`, and eases back `IGNITE_FALL_MS` later.
+pub fn ignite(ms: u64, row: usize, rows: usize) -> Option<f32> {
+    let lit_at = IGNITE_MS as f32 * (1.0 - (1.0 - row as f32 / rows.max(1) as f32).cbrt());
+    let ms = ms as f32;
+    if ms < lit_at {
+        return None;
+    }
+    Some((1.0 - (ms - lit_at) / IGNITE_FALL_MS).clamp(0.0, 1.0))
+}
+
+/// What the climbing band does to rail row `row` of `rows` `ms` after the card ended: `Some(0.0)` while the
+/// band is on the row, `Some(k)` (0..1) in its trail, where `k` is how far the row went back to its colour,
+/// and `None` before the band got there. The band takes `RAIL_MS` whatever the height of the card.
+pub fn band(ms: u64, row: usize, rows: usize) -> Option<f32> {
+    let t = (ms as f32 / RAIL_MS as f32).clamp(0.0, 1.0);
+    let rows = rows as f32;
+    // the top edge of the band: just below the last row at the start, past the trail above the first at the end
+    let head = rows - (rows + BAND_ROWS + BAND_TRAIL) * t;
+    let r = row as f32;
+    if r < head {
+        None
+    } else if r < head + BAND_ROWS {
+        Some(0.0)
+    } else {
+        Some(((r - head - BAND_ROWS) / BAND_TRAIL).clamp(0.0, 1.0))
+    }
+}
 
 /// Applies the card's motion to its rendered lines: the rail is the `│ ` spans, the mark the first span of the head.
 pub fn card_fx(lines: &mut [Line<'static>], card: Card, theme: &Theme) {
     if theme.mono {
         // no colour motion; the pop still reads as weight
-        if let Card::Done { since_ms } = card {
+        if let Card::Done { since_ms, .. } = card {
             if since_ms < POP_MS {
                 if let Some(s) = lines.first_mut().and_then(|l| l.spans.first_mut()) {
                     s.style = s.style.add_modifier(Modifier::BOLD);
@@ -256,25 +291,50 @@ pub fn card_fx(lines: &mut [Line<'static>], card: Card, theme: &Theme) {
         }
         return;
     }
+    let rows = lines.iter().flat_map(|l| l.spans.iter()).filter(|s| s.content == RAIL).count();
     match card {
-        Card::Running { now_ms } => {
-            for (row, line) in lines.iter_mut().enumerate() {
+        Card::Running { now_ms, since_ms } => {
+            let mut row = 0;
+            for (line_ix, line) in lines.iter_mut().enumerate() {
                 for s in line.spans.iter_mut().filter(|s| s.content == RAIL) {
-                    let phase = now_ms as f32 / SHIMMER_MS - row as f32 / 7.0;
+                    let phase = now_ms as f32 / SHIMMER_MS - line_ix as f32 / 7.0;
                     let wave = 0.5 + 0.5 * (phase * std::f32::consts::TAU).sin();
                     let base = s.style.fg.unwrap_or(theme.accent);
-                    s.style = s.style.fg(fade(theme, base, theme.border, wave * 0.65));
+                    let mut colour = fade(theme, base, theme.border, wave * 0.65);
+                    if since_ms < IGNITE_MS + IGNITE_FALL_MS as u64 {
+                        // a row the light has not reached yet is dark; it turns accent and eases back to its colour
+                        colour = match ignite(since_ms, row, rows) {
+                            None => theme.border,
+                            Some(k) => fade(theme, colour, theme.accent, k),
+                        };
+                    }
+                    s.style = s.style.fg(colour);
+                    row += 1;
                 }
             }
         }
-        Card::Done { since_ms } => {
+        Card::Done { since_ms, ok } => {
             if since_ms < RAIL_MS {
-                let t = ease_out(since_ms as f64 / RAIL_MS as f64) as f32;
+                let lit = if ok { theme.success } else { theme.error };
+                // on 16 colours there is no gradient: the band is bold instead
+                let plain = !matches!(lit, Color::Rgb(..) | Color::Indexed(_));
+                let mut row = 0;
                 for line in lines.iter_mut() {
                     for s in line.spans.iter_mut().filter(|s| s.content == RAIL) {
                         if let Some(end) = s.style.fg {
-                            s.style = s.style.fg(fade(theme, theme.accent, end, t));
+                            s.style = match band(since_ms, row, rows) {
+                                None => s.style.fg(theme.accent),
+                                Some(k) => {
+                                    let st = s.style.fg(fade(theme, lit, end, k));
+                                    if k == 0.0 && plain {
+                                        st.add_modifier(Modifier::BOLD)
+                                    } else {
+                                        st
+                                    }
+                                }
+                            };
                         }
+                        row += 1;
                     }
                 }
             }
@@ -400,15 +460,15 @@ mod tests {
         let th = Theme::dark();
         let mut a = rail_card(&th);
         let mut b = rail_card(&th);
-        card_fx(&mut a, Card::Running { now_ms: 0 }, &th);
-        card_fx(&mut b, Card::Running { now_ms: 400 }, &th);
+        card_fx(&mut a, Card::Running { now_ms: 0, since_ms: 1000 }, &th);
+        card_fx(&mut b, Card::Running { now_ms: 400, since_ms: 1000 }, &th);
         assert_ne!(a[1].spans[0].style.fg, b[1].spans[0].style.fg);
         let mut start = card(&th);
-        card_fx(&mut start, Card::Done { since_ms: 0 }, &th);
+        card_fx(&mut start, Card::Done { since_ms: 0, ok: true }, &th);
         assert_eq!(start[1].spans[0].style.fg, Some(th.accent), "starts on the running colour");
         assert!(start[0].spans[0].style.add_modifier.contains(Modifier::BOLD), "the mark pops");
         let mut end = card(&th);
-        card_fx(&mut end, Card::Done { since_ms: RAIL_MS.max(POP_MS) }, &th);
+        card_fx(&mut end, Card::Done { since_ms: RAIL_MS.max(POP_MS), ok: true }, &th);
         assert_eq!(end, card(&th), "settled: untouched");
     }
 
@@ -416,9 +476,104 @@ mod tests {
     fn mono_has_no_colour_motion() {
         let th = Theme::mono();
         let mut c = card(&th);
-        card_fx(&mut c, Card::Running { now_ms: 400 }, &th);
+        card_fx(&mut c, Card::Running { now_ms: 400, since_ms: 10 }, &th);
         assert_eq!(c, card(&th));
-        card_fx(&mut c, Card::Done { since_ms: 10 }, &th);
+        card_fx(&mut c, Card::Done { since_ms: 10, ok: true }, &th);
         assert_eq!(c[1], card(&th)[1]);
+    }
+
+    /// A card with `n` rail rows under its head.
+    fn tall(th: &Theme, n: usize) -> Vec<Line<'static>> {
+        let mut v = vec![Line::from(vec![Span::styled("✓ ", th.style(th.success)), Span::raw("bash")])];
+        for _ in 0..n {
+            v.push(Line::from(vec![Span::styled(RAIL, th.style(th.border)), Span::raw("out")]));
+        }
+        v
+    }
+
+    fn rail_fgs(lines: &[Line<'static>]) -> Vec<Option<Color>> {
+        lines.iter().filter(|l| l.spans[0].content == RAIL).map(|l| l.spans[0].style.fg).collect()
+    }
+
+    #[test]
+    fn a_new_call_lights_its_rail_from_top_to_bottom_and_settles_back() {
+        let th = Theme::dark();
+        let run = |since_ms| {
+            let mut c = tall(&th, 4);
+            for l in c.iter_mut().skip(1) {
+                l.spans[0].style = th.style(th.accent);
+            }
+            card_fx(&mut c, Card::Running { now_ms: 0, since_ms }, &th);
+            rail_fgs(&c)
+        };
+        let start = run(0);
+        assert_eq!(start[0], Some(th.accent), "only the first row is lit at once");
+        assert!(start[1..].iter().all(|c| *c == Some(th.border)), "{start:?}");
+        // at the end of the ignition every row has lit, and the first one is back to its breathing colour
+        let end = run(IGNITE_MS);
+        assert!(end.iter().all(|c| *c != Some(th.border)), "every row has lit: {end:?}");
+        assert_ne!(end[0], Some(th.accent), "the first row eased back");
+        // after the fall only the breath is left, the same as a card that has long been running
+        let mut old = tall(&th, 4);
+        for l in old.iter_mut().skip(1) {
+            l.spans[0].style = th.style(th.accent);
+        }
+        card_fx(&mut old, Card::Running { now_ms: 0, since_ms: 10_000 }, &th);
+        assert_eq!(run(IGNITE_MS + IGNITE_FALL_MS as u64), rail_fgs(&old));
+    }
+
+    #[test]
+    fn the_ignition_and_the_band_move_only_the_rail_colour() {
+        let th = Theme::dark();
+        let text = |c: &[Line<'static>]| -> Vec<Vec<(String, Style)>> {
+            c.iter().map(|l| l.spans.iter().skip(1).map(|s| (s.content.to_string(), s.style)).collect()).collect()
+        };
+        let plain = tall(&th, 3);
+        for ms in [0, 60, 175, 300] {
+            let mut a = tall(&th, 3);
+            card_fx(&mut a, Card::Running { now_ms: 0, since_ms: ms }, &th);
+            assert_eq!(text(&a)[1..], text(&plain)[1..], "running at {ms}");
+            let mut b = tall(&th, 3);
+            card_fx(&mut b, Card::Done { since_ms: ms, ok: true }, &th);
+            assert_eq!(text(&b)[1..], text(&plain)[1..], "done at {ms}");
+        }
+    }
+
+    #[test]
+    fn the_band_climbs_the_rail_in_one_rail_time_whatever_the_height() {
+        let th = Theme::dark();
+        let at = |ms, ok| {
+            let mut c = tall(&th, 3);
+            card_fx(&mut c, Card::Done { since_ms: ms, ok }, &th);
+            rail_fgs(&c)
+        };
+        // halfway the band is on the middle row, in the colour of the result
+        let mid = at(RAIL_MS / 2, true);
+        assert_eq!(mid[1], Some(th.success));
+        assert_eq!(at(RAIL_MS / 2, false)[1], Some(th.error));
+        // below it the rail is going back to its colour, above it it still waits on the running colour
+        assert_ne!(mid[2], Some(th.success));
+        assert_eq!(mid[0], Some(th.success), "the band is two rows high");
+        assert_eq!(at(0, true)[0], Some(th.accent));
+        // the last frame before the end is already the rail's own colour, so nothing snaps when the band is over
+        assert!((0..3).all(|r| band(RAIL_MS - 1, r, 3).is_some_and(|k| k > 0.97)));
+        // a tall card takes as long: its top row is reached only at the end, never later
+        for n in [1usize, 3, 40] {
+            let top = |ms| band(ms, 0, n);
+            assert!(top(RAIL_MS - 1).is_some_and(|k| k > 0.9), "n={n}");
+            assert!(top(0).is_none() || n == 1, "n={n}");
+        }
+    }
+
+    #[test]
+    fn a_band_on_sixteen_colours_is_bold_and_has_no_gradient() {
+        let mut th = Theme::dark();
+        th.success = Color::Green;
+        th.error = Color::Red;
+        let mut c = tall(&th, 3);
+        card_fx(&mut c, Card::Done { since_ms: RAIL_MS / 2, ok: true }, &th);
+        let s = c[2].spans[0].style;
+        assert_eq!(s.fg, Some(Color::Green));
+        assert!(s.add_modifier.contains(Modifier::BOLD));
     }
 }
