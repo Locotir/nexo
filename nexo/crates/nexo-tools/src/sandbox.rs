@@ -79,10 +79,39 @@ fn detect() -> Backend {
 
 #[cfg(target_os = "macos")]
 fn detect() -> Backend {
-    match Path::new("/usr/bin/sandbox-exec").is_file() {
-        true => Backend::SandboxExec(PathBuf::from("/usr/bin/sandbox-exec")),
-        false => Backend::Unavailable("/usr/bin/sandbox-exec is missing".into()),
+    let se = Path::new("/usr/bin/sandbox-exec");
+    if !se.is_file() {
+        return Backend::Unavailable("/usr/bin/sandbox-exec is missing".into());
     }
+    // A process that already runs in a sandbox (nexo started from another tool's sandbox) cannot
+    // apply a second one: every command would fail with exit 71. Found once, by trying.
+    match probe(se, &["-p", "(version 1)(allow default)", "/usr/bin/true"]) {
+        Ok(()) => Backend::SandboxExec(se.to_path_buf()),
+        Err(why) => Backend::Unavailable(why),
+    }
+}
+
+/// Runs `program args` with no input and its output dropped; on failure, why, from the first line
+/// it wrote to stderr (`sandbox-exec: sandbox_apply: Operation not permitted`) or its exit status.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn probe(program: &Path, args: &[&str]) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let name = program.display();
+    let out = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("{name} cannot start: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    let line = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let said = if line.is_empty() { out.status.to_string() } else { line.chars().take(200).collect() };
+    Err(format!("{name} cannot apply a sandbox here ({said}); nexo may already run inside one"))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -446,6 +475,33 @@ mod tests {
         let mut net = ws();
         net.network = true;
         assert!(!macos_profile(&net, &[]).contains("(deny network*)"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_fails_says_what_the_program_said() {
+        assert_eq!(probe(Path::new("true"), &[]), Ok(()));
+        let script = "echo 'sandbox-exec: sandbox_apply: Operation not permitted' >&2; exit 71";
+        let why = probe(Path::new("sh"), &["-c", script]).unwrap_err();
+        assert!(why.contains("sandbox_apply: Operation not permitted") && why.starts_with("sh "), "{why}");
+        let why = probe(Path::new("sh"), &["-c", "exit 3"]).unwrap_err();
+        assert!(why.contains("exit status: 3"), "{why}");
+        assert!(probe(Path::new("/nonexistent/nexo-probe"), &[]).unwrap_err().contains("cannot start"));
+    }
+
+    /// The backend on a Mac is real: a profile applies, and a sandbox inside a sandbox is caught by
+    /// the probe instead of failing every command.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_exec_applies_here_and_a_nested_one_is_caught() {
+        let se = Path::new("/usr/bin/sandbox-exec");
+        let open = "(version 1)(allow default)";
+        assert_eq!(probe(se, &["-p", open, "/usr/bin/true"]), Ok(()));
+        assert!(matches!(backend(), Backend::SandboxExec(_)), "{:?}", backend());
+        let nested = probe(se, &["-p", open, "/usr/bin/sandbox-exec", "-p", open, "/usr/bin/true"]);
+        assert!(nested.is_err(), "a sandbox applied inside another one");
+        let profile = macos_profile(&ws(), &[std::env::temp_dir().canonicalize().unwrap()]);
+        assert_eq!(probe(se, &["-p", &profile, "/usr/bin/true"]), Ok(()), "the profile parses");
     }
 
     #[test]

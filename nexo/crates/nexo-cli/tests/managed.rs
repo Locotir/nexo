@@ -148,7 +148,7 @@ fn a_malformed_managed_file_stops_startup() {
 }
 
 /// A folder in the home is outside every writable root of the sandbox (the temp directory is not).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn add_dir_reaches_the_sandbox_write_dirs() {
     let d = tempfile::tempdir().unwrap();

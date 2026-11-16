@@ -8,6 +8,6 @@ mod guarded;
 mod mcp_http;
 mod mcp_robust;
 mod sandbox;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../../../nexo-agent/tests/scratch/mod.rs"]
 mod scratch;

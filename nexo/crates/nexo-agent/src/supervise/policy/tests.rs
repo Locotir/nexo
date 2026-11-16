@@ -271,3 +271,37 @@ fn the_macos_ways_to_wipe_a_machine_are_catastrophic() {
         assert!(catastrophic(cmd).is_none(), "{cmd}");
     }
 }
+
+/// One folder can have two names (on macOS `/tmp` is a link to `/private/tmp`, and the session folder comes back
+/// by its real name): a file in it named through the link is inside, and a link that itself sits outside stays
+/// outside.
+#[cfg(unix)]
+#[test]
+fn the_session_folder_named_through_a_link_is_still_the_session_folder() {
+    let d = tempfile::tempdir().unwrap();
+    let base = d.path().canonicalize().unwrap();
+    let proj = base.join("proj");
+    std::fs::create_dir(&proj).unwrap();
+    let alias = base.join("alias");
+    std::os::unix::fs::symlink(&proj, &alias).unwrap();
+    let p = Policy::default();
+    let write = |cwd: &Path, file: &Path| p.allows_in("Write", &json!({ "file_path": file }), cwd, None);
+    assert!(!matches!(write(&proj, &alias.join("a.txt")), Verdict::Deny(_)));
+    assert!(!matches!(write(&alias, &proj.join("new/a.txt")), Verdict::Deny(_)));
+    assert!(matches!(write(&proj, &base.join("other/a.txt")), Verdict::Deny(_)));
+    let rm = |cmd: String| p.allows_in("Bash", &json!({ "command": cmd }), &proj, None);
+    assert!(!matches!(rm(format!("rm -rf {}/build", alias.display())), Verdict::Deny(_)));
+    assert!(matches!(rm(format!("rm -rf {}", alias.display())), Verdict::Deny(_)));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_session_folder_in_tmp_holds_the_files_named_by_tmp() {
+    let d = tempfile::Builder::new().prefix("nexo-policy-").tempdir_in("/tmp").unwrap();
+    let cwd = d.path().canonicalize().unwrap();
+    assert!(cwd.starts_with("/private/tmp"), "{}", cwd.display());
+    let p = Policy::default();
+    let write = |file: String| p.allows_in("Write", &json!({ "file_path": file }), &cwd, None);
+    assert!(!matches!(write(format!("{}/a.txt", d.path().display())), Verdict::Deny(_)));
+    assert!(matches!(write("/tmp/nexo-policy-elsewhere/a.txt".into()), Verdict::Deny(_)));
+}

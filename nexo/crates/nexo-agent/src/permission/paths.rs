@@ -73,7 +73,7 @@ pub(super) fn lexical(p: &str, cwd: &Path) -> PathBuf {
 }
 
 /// The path with links resolved as far as it exists, the rest as written.
-pub(super) fn real_path(p: &Path) -> PathBuf {
+pub(crate) fn real_path(p: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut base = p.to_path_buf();
     loop {
@@ -90,9 +90,9 @@ pub(super) fn real_path(p: &Path) -> PathBuf {
     }
 }
 
-/// A file that holds keys or credentials: anything under `.ssh`, `.gnupg`, `.aws`, `.kube` or
-/// `.docker`, `.env` files, private keys and certificates, `.netrc` and its kind, and nexo's
-/// own credential store. Checked as written and with links resolved.
+/// A file that holds keys or credentials (`nexo_core::paths::holds_keys`: `.ssh`, `.aws`, `.env`
+/// files, private keys, the macOS keychains and their kind, and nexo's own credential store).
+/// Checked as written and with links resolved.
 pub fn is_sensitive(p: &str, cwd: &Path) -> bool {
     let lex = lexical(p, cwd);
     let real = real_path(&lex);

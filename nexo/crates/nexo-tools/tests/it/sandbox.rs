@@ -1,6 +1,6 @@
-//! The OS sandbox of the bash tool, on Linux with Landlock. Skipped (with a message) where the
-//! kernel has none.
-#![cfg(target_os = "linux")]
+//! The OS sandbox of the bash tool: on Linux with Landlock, on macOS with `sandbox-exec`. Skipped
+//! (with a message) where that backend does not work (`sandbox_bwrap.rs` tests the Linux fallback).
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use nexo_core::sandbox::{SandboxMode, SandboxSettings};
 use nexo_core::{Tool, ToolContext, ToolOutput};
@@ -16,12 +16,17 @@ fn wipe_scratch_at_exit() {
     ONCE.call_once(|| scratch::at_exit(|| nexo_tools::bash::wipe_tmp("")));
 }
 
-fn landlock() -> bool {
-    if *sandbox::backend() == Backend::Landlock {
-        return true;
+/// Whether this system's own backend works here: Landlock on Linux, `sandbox-exec` on macOS.
+fn backend_available() -> bool {
+    let own = match sandbox::backend() {
+        Backend::Landlock => cfg!(target_os = "linux"),
+        Backend::SandboxExec(_) => cfg!(target_os = "macos"),
+        _ => false,
+    };
+    if !own {
+        eprintln!("skipped: the sandbox backend of this system is not available here ({:?})", sandbox::backend());
     }
-    eprintln!("skipped: Landlock is not available here ({})", sandbox::backend().name());
-    false
+    own
 }
 
 async fn run(dir: &std::path::Path, s: SandboxSettings, args: serde_json::Value) -> ToolOutput {
@@ -43,7 +48,7 @@ fn in_home() -> tempfile::TempDir {
 
 #[tokio::test]
 async fn writing_inside_the_project_works() {
-    if !landlock() {
+    if !backend_available() {
         return;
     }
     let p = tempfile::tempdir().unwrap();
@@ -54,7 +59,7 @@ async fn writing_inside_the_project_works() {
 
 #[tokio::test]
 async fn writing_in_home_outside_the_project_fails_and_the_note_appears() {
-    if !landlock() {
+    if !backend_available() {
         return;
     }
     let p = tempfile::tempdir().unwrap();
@@ -74,7 +79,7 @@ async fn writing_in_home_outside_the_project_fails_and_the_note_appears() {
 
 #[tokio::test]
 async fn read_only_mode_cannot_write_the_project_and_extra_dirs_open_up() {
-    if !landlock() {
+    if !backend_available() {
         return;
     }
     // the temp directory is writable in every mode, so the project lives in the home here
@@ -95,7 +100,7 @@ async fn read_only_mode_cannot_write_the_project_and_extra_dirs_open_up() {
 
 #[tokio::test]
 async fn reading_the_whole_disk_works() {
-    if !landlock() {
+    if !backend_available() {
         return;
     }
     let p = tempfile::tempdir().unwrap();
@@ -105,7 +110,7 @@ async fn reading_the_whole_disk_works() {
 
 #[tokio::test]
 async fn network_off_blocks_a_connect_to_a_local_listener() {
-    if !landlock() {
+    if !backend_available() {
         return;
     }
     if std::process::Command::new("bash").arg("-c").arg("true").status().is_err() {
@@ -126,7 +131,7 @@ async fn network_off_blocks_a_connect_to_a_local_listener() {
 
 #[tokio::test]
 async fn the_sandbox_lets_bash_run_without_asking_and_says_so() {
-    if !landlock() {
+    if !backend_available() {
         return;
     }
     let s = ws(false);
@@ -134,5 +139,5 @@ async fn the_sandbox_lets_bash_run_without_asking_and_says_so() {
     assert!(!Bash.sandbox_holds(&json!({"command": "ls", "unsandboxed": true}), &s));
     assert!(!Bash.sandbox_holds(&json!({"command": "ls"}), &SandboxSettings::default()));
     let line = sandbox::describe(&s);
-    assert!(line.contains("workspace-write") && line.contains("landlock"), "{line}");
+    assert!(line.contains("workspace-write") && line.contains(sandbox::backend().name()), "{line}");
 }

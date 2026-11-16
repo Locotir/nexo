@@ -196,20 +196,28 @@ pub fn canonical(p: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// A file that holds keys or credentials, by where it is and what it is called: anything under
-/// `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker` or `.password-store`, `.env` files, private keys
-/// and certificates, `.netrc` and its kind, and nexo's own credential store and keys. The path as
-/// given (callers that care about links check the resolved one too).
+/// `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker` or `.password-store`, the macOS keychains
+/// (`Library/Keychains`, `*.keychain`, `*.keychain-db`), the GitHub and Google Cloud command line
+/// logins (`.config/gh`, `.config/gcloud`), `.env` files, private keys and certificates, `.netrc`
+/// and its kind, and nexo's own credential store and keys. Names compare without case, as macOS
+/// and Windows open them. The path as given (callers that care about links check the resolved one
+/// too).
 pub fn holds_keys(p: &Path) -> bool {
     const DIRS: &[&str] = &[".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store"];
+    // folders that hold keys only below this parent: a `gh` folder elsewhere is someone's project
+    const PAIRS: &[[&str; 2]] = &[["library", "keychains"], [".config", "gh"], [".config", "gcloud"]];
     const FILES: &[&str] =
         &[".netrc", ".git-credentials", ".pgpass", ".npmrc", ".pypirc", "credentials", "credentials.json"];
     const KEYS: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
-    const EXTS: &[&str] = &["pem", "key", "p12", "pfx", "jks", "keystore"];
+    const EXTS: &[&str] = &["pem", "key", "p12", "pfx", "jks", "keystore", "keychain", "keychain-db"];
     if p.starts_with(crate::auth::file()) || p.starts_with(data_dir().join("keys")) {
         return true;
     }
     let lower = |s: &std::ffi::OsStr| s.to_string_lossy().to_ascii_lowercase();
-    if p.components().any(|c| DIRS.contains(&lower(c.as_os_str()).as_str())) {
+    let parts: Vec<String> = p.components().map(|c| lower(c.as_os_str())).collect();
+    if parts.iter().any(|c| DIRS.contains(&c.as_str()))
+        || parts.windows(2).any(|w| PAIRS.iter().any(|[a, b]| w[0] == *a && w[1] == *b))
+    {
         return true;
     }
     let Some(name) = p.file_name().map(lower) else { return false };
@@ -401,5 +409,29 @@ mod tests {
         assert_eq!(project_dir_in(&d.path().join("cfg"), Some(&home), &own), None);
         // with nothing declared own, the home's folder is just a folder with a name
         assert_eq!(project_dir_in(&work, None, &[]), Some(home.join(".nexo")));
+    }
+
+    #[test]
+    fn keychains_and_command_line_logins_hold_keys_on_every_system() {
+        for p in [
+            "/Users/a/Library/Keychains/login.keychain-db",
+            "/Users/a/library/keychains/x",
+            "/Users/a/backup/old.keychain",
+            "/srv/copy/Login.Keychain-DB",
+            "/home/a/.config/gh/hosts.yml",
+            "/Users/a/.config/gcloud/application_default_credentials.json",
+            "/home/a/.ssh/config",
+        ] {
+            assert!(holds_keys(Path::new(p)), "{p}");
+        }
+        for p in [
+            "/Users/a/Library/Fonts/x.ttf",
+            "/Users/a/Library/Caches/pip/x",
+            "/Users/a/code/gh/main.go",
+            "/home/a/.config/ghostty/config",
+            "/home/a/keychains/notes.md",
+        ] {
+            assert!(!holds_keys(Path::new(p)), "{p}");
+        }
     }
 }

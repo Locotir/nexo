@@ -91,5 +91,18 @@ pub(super) fn outside(text: &str, cwd: &Path, home: Option<&Path>) -> bool {
     if text.contains('$') || text.contains('`') {
         return true;
     }
-    !Path::new(&resolve(text, cwd, home)).starts_with(cwd)
+    let path = PathBuf::from(resolve(text, cwd, home));
+    if path.starts_with(cwd) {
+        return false;
+    }
+    // One folder can have two names: on macOS `/tmp` and `/var` are links into `/private`, so the
+    // session folder comes back as `/private/tmp/p` while a file in it is written `/tmp/p/a`.
+    // Compared again with the folders' links resolved, as far as they exist. The last name stays as
+    // written: a link there is the thing named (`rm -rf ~/link` removes the link, wherever it points).
+    let real = crate::permission::real_path;
+    let named = match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => real(dir).join(name),
+        _ => real(&path),
+    };
+    !named.starts_with(real(cwd))
 }

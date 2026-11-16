@@ -1,6 +1,7 @@
 //! The notice for a sandboxed command that changed a path which runs outside the sandbox later.
-//! Runs with whichever backend the machine has (`NEXO_SANDBOX_BACKEND=landlock|bwrap` forces one).
-#![cfg(target_os = "linux")]
+//! Runs with whichever backend the machine has (`NEXO_SANDBOX_BACKEND=landlock|bwrap` forces one on
+//! Linux; `sandbox-exec` on macOS).
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use nexo_core::sandbox::{SandboxMode, SandboxSettings};
 use nexo_core::{Tool, ToolContext, ToolOutput};
