@@ -126,8 +126,12 @@ impl Session {
             return Ok(self.mods.resolve(t)?.addr());
         }
         if self.state == State::Stopped {
-            if let Ok(v) = self.eval(t) {
-                return Ok(v);
+            match self.eval_frame(t) {
+                Ok(v) => return Ok(v),
+                // a register the selected frame has no value for: the files have no name for it, and only this
+                // error says which register and why
+                Err((e, true)) => return Err(e),
+                Err(_) => {}
             }
         }
         Ok(self.mods.resolve(t)?.addr())

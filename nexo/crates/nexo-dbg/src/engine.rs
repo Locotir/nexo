@@ -347,6 +347,9 @@ pub struct Ev<'a> {
     pub mods: &'a mut Mods,
     pub regs: Regs,
     pub conv: &'a mut HashMap<String, expr::Val>,
+    /// Set when the expression named a register these registers have no value for (a caller's frame, see
+    /// [`Regs::lost`]): its error then says which, and no name in the files can stand in for that register.
+    pub lost: bool,
 }
 
 impl Env for Ev<'_> {
@@ -373,10 +376,12 @@ impl Env for Ev<'_> {
     }
 
     fn missing(&mut self, name: &str) -> Option<String> {
-        self.regs.is_lost(name).then(|| {
+        let why = self.regs.is_lost(name).then(|| {
             let n = name.trim_start_matches('$');
             format!("{n} is not saved in this frame: the call out of it may have changed {n} and no unwind rule gives it back")
-        })
+        });
+        self.lost |= why.is_some();
+        why
     }
 }
 
@@ -436,7 +441,7 @@ impl Session {
 
     pub fn ev(&mut self, tid: Tid) -> Result<Ev<'_>> {
         let regs = self.t.regs(tid)?;
-        Ok(Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv })
+        Ok(Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv, lost: false })
     }
 
     pub fn need_stopped(&self) -> Result<()> {
@@ -460,16 +465,21 @@ impl Session {
 
     /// An expression in the selected frame (see `frame`).
     pub fn eval(&mut self, src: &str) -> Result<u64> {
-        let regs = self.sel_regs()?;
-        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv };
-        expr::value(src, &mut ev)
+        self.eval_frame(src).map_err(|(e, _)| e)
+    }
+
+    /// [`Session::eval`], with `true` beside an error whose reason is a register the selected frame has no value for.
+    pub(crate) fn eval_frame(&mut self, src: &str) -> std::result::Result<u64, (crate::Error, bool)> {
+        let regs = self.sel_regs().map_err(|e| (e, false))?;
+        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv, lost: false };
+        expr::value(src, &mut ev).map_err(|e| (e, ev.lost))
     }
 
     /// An expression with its type, in the selected frame. Without a stopped thread the registers read as zero, so
     /// names, numbers and convenience variables still work (`set \$v = main`).
     pub fn eval_any(&mut self, src: &str) -> Result<expr::Val> {
         let regs = if self.state == State::Stopped { self.sel_regs()? } else { Regs::default() };
-        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv };
+        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv, lost: false };
         expr::eval(src, &mut ev)
     }
 

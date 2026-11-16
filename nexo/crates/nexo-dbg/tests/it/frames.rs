@@ -164,3 +164,42 @@ fn the_gdb_spellings_select_and_describe_frames() {
     let info = run(&mut s, "info frame");
     assert!(info.contains("the registers are thread ") && !info.contains("not saved"), "{info}");
 }
+
+#[test]
+fn an_address_worked_out_from_a_register_the_caller_lost_says_which_register() {
+    let Some((_d, exe)) = build("cc") else { return };
+    let (mut s, _) = stopped_in_inner(exe);
+    run(&mut s, "up");
+    for cmd in [
+        "mem $rdi 8",
+        "mem rdi 8",
+        "mem $rsp..$rax",
+        "x/s $rdi",
+        "dis $rax",
+        "break *$rax",
+        "until $rax",
+        "watch $rax",
+        "info symbol $rax",
+    ] {
+        let why = refused(&mut s, cmd);
+        assert!(why.contains(" is not saved in this frame:"), "{cmd}: {why}");
+        assert!(!why.contains("needs a running program") && !why.contains("is not a register"), "{cmd}: {why}");
+    }
+    // the registers the frame has still name addresses, and frame #1 stays selected
+    let mem = run(&mut s, "mem $rbp 8");
+    assert!(mem.starts_with("in frame #1  0x") && mem.contains("middle+"), "{mem}");
+    assert!(run(&mut s, "info frame").starts_with("frame #1  0x"));
+}
+
+#[test]
+fn a_condition_set_in_a_callers_frame_is_checked_with_the_stopped_threads_registers() {
+    let Some((_d, exe)) = build("cc") else { return };
+    let (mut s, _) = stopped_in_inner(exe);
+    run(&mut s, "up");
+    // a hit works `$rdi` out in its own frame #0, where every register has a value
+    let b = run(&mut s, "break middle if $rdi == 8");
+    assert!(b.contains("breakpoint #2 at 0x") && b.contains("middle"), "{b}");
+    let bad = refused(&mut s, "break outer if $nosuch == 1");
+    assert!(bad.contains("the condition \"$nosuch == 1\" does not work"), "{bad}");
+    assert!(run(&mut s, "info frame").starts_with("frame #1  0x"));
+}

@@ -86,15 +86,21 @@ impl Session {
                         ));
                     }
                 }
+                // `addr_of` fails with this same lookup's error, or with the expression's own when a register the
+                // selected frame has no value for is the reason (`break *$rax` after `up`)
                 Err(e) => match self.addr_of(spec) {
                     Ok(x) if self.maps_exec(x) => x,
-                    _ => return Err(e),
+                    Err(why) => return Err(why),
+                    Ok(_) => return Err(e),
                 },
             },
         };
         if let Some(c) = &cond {
             if self.state == State::Stopped {
-                if let Err(e) = self.eval(c) {
+                // a hit works the condition out with the hitting thread's own registers (frame #0), so it is
+                // checked with the stopped thread's, whatever frame `up` or `frame N` selected
+                let tid = self.cur;
+                if let Err(e) = self.ev(tid).and_then(|mut ev| crate::expr::value(c, &mut ev)) {
                     if !matches!(&e, crate::Error::Fail(m) if m.contains("memory")) {
                         return fail(format!("the condition {c:?} does not work: {e}"));
                     }
