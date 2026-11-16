@@ -149,11 +149,11 @@ fn a_hand_built_elf32_reads_as_x86_32_with_its_functions_calls_and_string_refere
     assert!(e.contains("x86-32 is not supported"), "{e}");
     let sl = slice_window(&img, "main", Some("eax"), None, None, None, 100).unwrap_err().to_string();
     assert!(sl.contains("x86-32 is not supported"), "{sl}");
-    // the debugger hooks stay empty: the debugger runs 64-bit programs only
-    assert!(
-        import_sites(&img).is_empty() && block_starts(&img, u64::from(main_at), u64::from(main_at + 18)).is_empty()
-    );
-    assert!(!opens_bytes_path(&img), "32-bit files are not offered to the 64-bit debugger");
+    // the debugger reads 32-bit code as 32-bit code; this file has no stubs
+    assert!(import_sites(&img).is_empty());
+    let blocks = block_starts(&img, u64::from(main_at), u64::from(main_at + 18));
+    assert_eq!(blocks.first(), Some(&u64::from(main_at)), "{blocks:x?}");
+    assert!(!opens_bytes_path(&img), "32-bit files are not offered to the debugger hints");
 }
 
 #[test]

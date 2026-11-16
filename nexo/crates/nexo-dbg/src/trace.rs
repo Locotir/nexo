@@ -159,6 +159,11 @@ impl Session {
 
     /// What is true about system call tracing on this program's system, when it has none.
     fn no_syscalls(&self, what: &str) -> Result<()> {
+        if self.bits() == 32 {
+            return fail(format!(
+                "{what} reads system calls by their x86-64 numbers; this program is 32-bit, and its system calls have the i386 numbers, which this debugger has no table of"
+            ));
+        }
         match no_syscalls(self.t.os(), what) {
             Some(why) => fail(why),
             None => Ok(()),

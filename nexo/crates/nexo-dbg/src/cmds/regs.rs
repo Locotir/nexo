@@ -51,12 +51,14 @@ impl Session {
         }
         let mut l = Vec::new();
         let named = r.named();
+        // a 32-bit thread's registers in 10 characters, as its code sees them
+        let (slot, width) = if r.x32 { (4u64, 10) } else { (8, 18) };
         for chunk in named.chunks(4) {
             let cell = |(n, v): &(&str, u64)| {
                 if r.is_lost(n) {
-                    format!("{n:<7}{:<18}", "<not saved>")
+                    format!("{n:<7}{:<width$}", "<not saved>")
                 } else {
-                    format!("{n:<7}{v:#018x}")
+                    format!("{n:<7}{v:#0width$x}")
                 }
             };
             l.push(chunk.iter().map(cell).collect::<Vec<_>>().join("  ").trim_end().to_string());
@@ -74,12 +76,12 @@ impl Session {
         let mut stack = Vec::new();
         for i in 0..4u64 {
             let mut b = [0u8; 8];
-            if self.t.read(sp + i * 8, &mut b) == 8 {
+            if self.t.read(sp + i * slot, &mut b[..slot as usize]) == slot as usize {
                 stack.push(format!("{:#x}", u64::from_le_bytes(b)));
             }
         }
         if !stack.is_empty() {
-            l.push(format!("[rsp] {}", stack.join(" ")));
+            l.push(format!("[{}] {}", if r.x32 { "esp" } else { "rsp" }, stack.join(" ")));
         }
         Ok(rows("regs", l, json!({"thread": self.cur})))
     }
@@ -97,7 +99,8 @@ impl Session {
         let val = self.addr_of(&v.join(" "))?;
         let mut r = self.tid_regs()?;
         if !r.set(n, val) {
-            return usage(format!("{n:?} cannot be set: use a 64-bit register, rip or eflags"));
+            let what = if r.x32 { "eax .. edi, esp, ebp, eip or eflags" } else { "a 64-bit register, rip or eflags" };
+            return usage(format!("{n:?} cannot be set: use {what}"));
         }
         self.t.set_regs(self.cur, &r)?;
         Ok(rows("setreg", vec![format!("{n} = {val:#x}")], json!({})))

@@ -133,6 +133,9 @@ impl Session {
                 p.text, p.tid
             ));
         }
+        if self.bits() == 32 {
+            return fail(format!("`{text}` was not run: this debugger calls functions in 64-bit programs only, and this program is 32-bit"));
+        }
         let maps = self.t.maps()?;
         let exec = |a: u64| maps.iter().any(|m| m.exec && m.start <= a && a < m.end);
         if !exec(target) {

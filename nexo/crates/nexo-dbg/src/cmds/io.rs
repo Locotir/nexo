@@ -24,17 +24,14 @@ impl Session {
         let mut l = Vec::new();
         for r in self.history.iter().skip(skip) {
             let name = self.mods.label(r.regs.rip, false).unwrap_or_default();
-            l.push(format!(
-                "stop {} thread {} {} at {:#x} {name} | rax {:#x} rdi {:#x} rsi {:#x} rsp {:#x}",
-                r.n,
-                r.tid,
-                r.why,
-                r.regs.rip,
-                r.regs.gp[0],
-                r.regs.gp[5],
-                r.regs.gp[4],
-                r.regs.rsp()
-            ));
+            let g = &r.regs.gp;
+            // a 32-bit thread: its arguments are on the stack, not in rdi and rsi
+            let regs = if r.regs.x32 {
+                format!("eax {:#x} ecx {:#x} edx {:#x} esp {:#x}", g[0], g[2], g[3], r.regs.rsp())
+            } else {
+                format!("rax {:#x} rdi {:#x} rsi {:#x} rsp {:#x}", g[0], g[5], g[4], r.regs.rsp())
+            };
+            l.push(format!("stop {} thread {} {} at {:#x} {name} | {regs}", r.n, r.tid, r.why, r.regs.rip));
         }
         if l.is_empty() {
             l.push("no stops yet".into());

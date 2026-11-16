@@ -24,7 +24,7 @@ impl Vars {
         }
         match self.strip(v.0) {
             Some(Ty::Base { size, .. } | Ty::Record { size, .. } | Ty::Enum { size, .. }) => *size,
-            Some(Ty::Ptr { .. }) => 8,
+            Some(Ty::Ptr { .. }) => self.ptr,
             Some(Ty::Array { elem, dims }) => {
                 let n: u64 = dims.iter().skip(v.1).fold(1u64, |a, d| a.saturating_mul(d.unwrap_or(0)));
                 n.saturating_mul(self.size_in(View(*elem, 0), depth + 1))

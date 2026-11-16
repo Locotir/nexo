@@ -28,3 +28,4 @@ mod separate_debug;
 mod source_level;
 mod stdin_bytes;
 mod unassigned_locals;
+mod x86_32;

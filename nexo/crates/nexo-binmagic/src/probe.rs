@@ -10,7 +10,8 @@ const HEAD: u64 = 4096;
 
 /// Whether `Image::open` would take the file at `path`: an ELF64, PE32+ or Mach-O 64-bit file (not a
 /// relocatable object), or an ELF64 arm64 one. 32-bit x86 files open too but are left out here: the
-/// hints this answer feeds lead to the debugger, which runs 64-bit programs only. Only the headers in the first 4096 bytes are read, as bytes: the file is not
+/// hints this answer feeds lead to the debugger, which runs a 32-bit Linux program without `call` or system-call
+/// tracing, and does not run a 32-bit Windows one. Only the headers in the first 4096 bytes are read, as bytes: the file is not
 /// run, not loaded and not read whole, so a large file costs the same as a small one. A path that
 /// leaves through a symlink is read the same way. `false` for anything else, including a missing file.
 /// The kind of file is asked before it is opened: opening a named pipe that nobody writes to never returns.

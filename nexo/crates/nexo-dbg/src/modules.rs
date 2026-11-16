@@ -40,6 +40,8 @@ pub const LOST_FLAGS: u32 = 1 << 16;
 /// the System V ABI (Linux, macOS); Windows x64 keeps rsi and rdi for the caller.
 const SYSV_VOLATILE: u32 = 1 | 1 << 2 | 1 << 3 | 1 << 4 | 1 << 5 | 0xf << 8;
 const WIN_VOLATILE: u32 = 1 | 1 << 2 | 1 << 3 | 0xf << 8;
+/// eax, ecx and edx: what a call may change in a 32-bit program (cdecl, stdcall, fastcall alike).
+const I386_VOLATILE: u32 = 1 | 1 << 2 | 1 << 3;
 /// rbp and rsp: the two registers a frame pointer chain gives back.
 const FP_KNOWN: u32 = 1 << 6 | 1 << 7;
 /// How a frame found by the saved frame pointers is described.
@@ -76,6 +78,10 @@ pub struct Mods {
 
 /// DWARF register number to the index in `Regs::gp`.
 pub(crate) const DW2GP: [usize; 16] = [0, 3, 2, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// The same for 32-bit x86, whose DWARF numbers are eax, ecx, edx, ebx, esp, ebp, esi, edi; 8 is eip, the return
+/// address column.
+pub(crate) const DW2GP32: [usize; 8] = [0, 2, 3, 1, 7, 6, 4, 5];
 
 impl Mods {
     pub fn new(main: Image) -> Mods {
@@ -308,9 +314,19 @@ impl Mods {
         }
     }
 
-    /// The call chain from these registers: at most `max` frames. `rd` reads 8 bytes of the program.
+    /// The call chain from these registers: at most `max` frames. `rd` reads 8 bytes of the program; a 32-bit
+    /// program's frames use the low 4 of them.
     pub fn backtrace(&mut self, regs: &Regs, rd: &mut dyn FnMut(u64) -> Option<u64>, max: usize) -> Vec<Frame> {
-        let volatile = if self.main.format == nexo_bin::Format::Pe { WIN_VOLATILE } else { SYSV_VOLATILE };
+        let x32 = self.x32();
+        let volatile = if x32 {
+            I386_VOLATILE
+        } else if self.main.format == nexo_bin::Format::Pe {
+            WIN_VOLATILE
+        } else {
+            SYSV_VOLATILE
+        };
+        let mut word = |a: u64| rd(a).map(|v| if x32 { v & 0xffff_ffff } else { v });
+        let rd: &mut dyn FnMut(u64) -> Option<u64> = &mut word;
         let mut gp = regs.gp;
         let mut pc = regs.rip;
         let mut lost = 0u32;
@@ -336,6 +352,11 @@ impl Mods {
         frames
     }
 
+    /// The program is 32-bit x86 code: 4-byte stack slots, eax .. edi.
+    fn x32(&self) -> bool {
+        self.main.bits == 32
+    }
+
     fn unwind_one(
         &mut self,
         pc: u64,
@@ -344,6 +365,7 @@ impl Mods {
         rd: &mut dyn FnMut(u64) -> Option<u64>,
     ) -> Option<Out> {
         let look = if first { pc } else { pc.wrapping_sub(1) };
+        let slot = if self.x32() { 4 } else { 8 };
         if let Some(idx) = self.locate(look) {
             self.ensure(idx);
             if let Some(img) = self.image(idx).filter(|i| i.format == nexo_bin::Format::Pe) {
@@ -359,8 +381,8 @@ impl Mods {
             if first && self.in_plt(idx, look) {
                 let ra = rd(gp[7])?;
                 let mut n = *gp;
-                n[7] += 8;
-                return Some(Out::new((ra, n, Some(gp[7] + 8)), "the PLT stub's return address", 0));
+                n[7] += slot;
+                return Some(Out::new((ra, n, Some(gp[7] + slot)), "the PLT stub's return address", 0));
             }
             if first {
                 if let Some(s) = self.macho_prologue(idx, look, gp, rd) {
@@ -370,15 +392,16 @@ impl Mods {
         }
         // the frame pointer chain
         let bp = gp[6];
-        if bp == 0 || bp < gp[7] || bp & 7 != 0 {
+        if bp == 0 || bp < gp[7] || bp & (slot - 1) != 0 {
             return None;
         }
-        let ra = rd(bp.checked_add(8)?)?;
+        // the saved frame pointer, then the return address, one slot each
+        let ra = rd(bp.checked_add(slot)?)?;
         let obp = rd(bp)?;
         let mut n = *gp;
         n[6] = obp;
-        n[7] = bp + 16;
-        Some(Out::new((ra, n, Some(bp + 16)), FP_CHAIN, FP_KNOWN))
+        n[7] = bp + 2 * slot;
+        Some(Out::new((ra, n, Some(bp + 2 * slot)), FP_CHAIN, FP_KNOWN))
     }
 
     /// A Mach-O program stopped on the first instruction of a function, or on the second after `push rbp`: its frame
@@ -428,7 +451,10 @@ impl Mods {
         use gimli::{CfaRule, RegisterRule, UnwindSection};
         let img = self.image(idx)?;
         let sec = img.sections.iter().find(|s| s.name == ".eh_frame")?;
-        let eh = gimli::EhFrame::new(img.section_bytes(sec), gimli::LittleEndian);
+        let mut eh = gimli::EhFrame::new(img.section_bytes(sec), gimli::LittleEndian);
+        // a 32-bit file's table holds 4-byte addresses
+        let size: u8 = if img.bits == 32 { 4 } else { 8 };
+        eh.set_address_size(size);
         let mut bases = gimli::BaseAddresses::default().set_eh_frame(sec.addr);
         for (name, set) in [(".text", 0), (".got", 1)] {
             if let Some(s) = img.sections.iter().find(|s| s.name == name) {
@@ -438,16 +464,28 @@ impl Mods {
         let fa = look.wrapping_sub(self.bias(idx));
         let mut ctx = gimli::UnwindContext::new();
         let row = eh.unwind_info_for_address(&bases, &mut ctx, fa, gimli::EhFrame::cie_from_offset).ok()?;
-        let CfaRule::RegisterAndOffset { register, offset } = row.cfa() else { return None };
-        let base = *gp.get(*DW2GP.get(register.0 as usize)?)?;
-        let cfa = base.wrapping_add_signed(*offset);
+        let (map, ra_col, mask): (&[usize], u16, u64) =
+            if self.x32() { (&DW2GP32, 8, 0xffff_ffff) } else { (&DW2GP, 16, u64::MAX) };
+        let reg = |r: u16| map.get(r as usize).and_then(|&i| gp.get(i).copied());
+        let cfa = match row.cfa() {
+            CfaRule::RegisterAndOffset { register, offset } => reg(register.0)?.wrapping_add_signed(*offset) & mask,
+            // a function that realigns its stack (a 32-bit `main`) reads the CFA back from where it saved it
+            CfaRule::Expression(x) => cfi_expr(x.get(&eh).ok()?, size, None, &reg, rd)? & mask,
+        };
         let mut n = *gp;
         let (mut set, mut gone) = (0u32, 0u32);
-        for (dw, &slot) in DW2GP.iter().enumerate() {
+        for (dw, &slot) in map.iter().enumerate() {
             match row.register(gimli::Register(dw as u16)) {
-                Some(RegisterRule::Offset(o)) => n[slot] = rd(cfa.wrapping_add_signed(o))?,
-                Some(RegisterRule::ValOffset(o)) => n[slot] = cfa.wrapping_add_signed(o),
-                Some(RegisterRule::Register(r)) => n[slot] = *gp.get(*DW2GP.get(r.0 as usize)?)?,
+                Some(RegisterRule::Offset(o)) => n[slot] = rd(cfa.wrapping_add_signed(o) & mask)?,
+                Some(RegisterRule::ValOffset(o)) => n[slot] = cfa.wrapping_add_signed(o) & mask,
+                Some(RegisterRule::Register(r)) => n[slot] = *gp.get(*map.get(r.0 as usize)?)?,
+                Some(RegisterRule::Expression(x)) => {
+                    let at = cfi_expr(x.get(&eh).ok()?, size, Some(cfa), &reg, rd)? & mask;
+                    n[slot] = rd(at)?
+                }
+                Some(RegisterRule::ValExpression(x)) => {
+                    n[slot] = cfi_expr(x.get(&eh).ok()?, size, Some(cfa), &reg, rd)? & mask
+                }
                 Some(RegisterRule::Undefined) => {
                     gone |= 1 << slot;
                     continue;
@@ -456,12 +494,54 @@ impl Mods {
             }
             set |= 1 << slot;
         }
-        let ra = match row.register(gimli::Register(16)) {
-            Some(RegisterRule::Offset(o)) => rd(cfa.wrapping_add_signed(o))?,
+        let ra = match row.register(gimli::Register(ra_col)) {
+            Some(RegisterRule::Offset(o)) => rd(cfa.wrapping_add_signed(o) & mask)?,
+            Some(RegisterRule::Expression(x)) => {
+                let at = cfi_expr(x.get(&eh).ok()?, size, Some(cfa), &reg, rd)? & mask;
+                rd(at)?
+            }
             Some(RegisterRule::Undefined) | None => return Some(None),
             _ => return None,
         };
         n[7] = cfa;
         Some(Some(Out { gone, ..Out::new((ra, n, Some(cfa)), ".eh_frame", set) }))
+    }
+}
+
+/// A DWARF expression of an unwind rule, run against a frame's registers (`reg`, by DWARF number) and memory: the
+/// CFA itself, or, with the CFA pushed first, where a register was saved. `size`: the program's address size.
+fn cfi_expr(
+    x: gimli::Expression<gimli::EndianSlice<'_, gimli::LittleEndian>>,
+    size: u8,
+    cfa: Option<u64>,
+    reg: &dyn Fn(u16) -> Option<u64>,
+    rd: &mut dyn FnMut(u64) -> Option<u64>,
+) -> Option<u64> {
+    use gimli::{EvaluationResult, Location, Value};
+    let mut e = x.evaluation(gimli::Encoding { address_size: size, format: gimli::Format::Dwarf32, version: 4 });
+    if let Some(c) = cfa {
+        e.set_initial_value(c);
+    }
+    let mut res = e.evaluate().ok()?;
+    loop {
+        res = match res {
+            EvaluationResult::Complete => break,
+            EvaluationResult::RequiresMemory { address, size, .. } => {
+                let v = rd(address)?;
+                let v = if size >= 8 { v } else { v & ((1u64 << (u32::from(size) * 8)) - 1) };
+                e.resume_with_memory(Value::Generic(v)).ok()?
+            }
+            EvaluationResult::RequiresRegister { register, .. } => {
+                e.resume_with_register(Value::Generic(reg(register.0)?)).ok()?
+            }
+            _ => return None,
+        };
+    }
+    match e.result().as_slice() {
+        [p] => match p.location {
+            Location::Address { address } => Some(address),
+            _ => None,
+        },
+        _ => None,
     }
 }

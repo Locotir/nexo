@@ -120,7 +120,7 @@ impl Session {
                 addr: r.rip,
             });
             let bytes = self.read_vec(r.rip, 16);
-            let ins: Option<LiveIns> = decode_live(&bytes, r.rip, &|n| r.get(n));
+            let ins: Option<LiveIns> = decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n));
             if let Some(i) = &ins {
                 l.push(format!("=> {}", i.text));
                 // the next two as well: what the program is about to do, without a `dis` call
@@ -128,7 +128,7 @@ impl Session {
                 for _ in 0..2 {
                     at += len;
                     let b = self.read_vec(at, 16);
-                    let Some(n) = decode_live(&b, at, &|_| None) else { break };
+                    let Some(n) = decode_live_in(self.bits(), &b, at, &|_| None) else { break };
                     l.push(format!("   {:#x} {}", at, n.text));
                     len = n.len as u64;
                 }

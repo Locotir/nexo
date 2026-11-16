@@ -115,6 +115,8 @@ pub struct Vars {
     types: HashMap<u64, Ty>,
     /// The source files the declarations name, as the line table names them.
     files: Vec<String>,
+    /// The size of a pointer: 8, or 4 in a 32-bit program.
+    ptr: u64,
 }
 
 /// A type as used in a value: the type, and how many array dimensions were already indexed.
@@ -172,7 +174,7 @@ mod tests {
     }
 
     fn lone(types: Vec<(u64, Ty)>) -> Vars {
-        Vars { funcs: Vec::new(), globals: Vec::new(), types: types.into_iter().collect(), files: Vec::new() }
+        Vars { funcs: Vec::new(), globals: Vec::new(), types: types.into_iter().collect(), files: Vec::new(), ptr: 8 }
     }
 
     #[test]

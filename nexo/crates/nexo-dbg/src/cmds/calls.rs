@@ -104,6 +104,6 @@ impl Session {
         if let (Some(b), Some(o)) = (bytes.first_mut(), self.inserted_byte(addr)) {
             *b = o;
         }
-        nexo_bin::indirect_call_target(&bytes, addr, &|_| Some(0), &|_| Some(0)).is_some()
+        nexo_bin::indirect_call_target_in(self.bits(), &bytes, addr, &|_| Some(0), &|_| Some(0)).is_some()
     }
 }

@@ -88,11 +88,13 @@ fn is_text(ty: &str) -> bool {
     t == "constchar*" || t == "charconst*"
 }
 
-/// Integer types by how many bytes they have and whether they carry a sign.
-fn int_kind(ty: &str) -> (u32, bool) {
+/// Integer types by how many bytes they have and whether they carry a sign; `x32`: in a 32-bit program, where
+/// `long`, `size_t` and `intptr_t` have 4.
+fn int_kind(ty: &str, x32: bool) -> (u32, bool) {
     let t = ty.trim();
     let unsigned = t.contains("unsigned") || t.starts_with("size_t") || t.starts_with("uint") || t == "bool";
-    let bytes = if t.contains("long") || t.contains("size_t") || t.contains("64") || t == "intptr_t" {
+    let wide = t.contains("long long") || t.contains("64");
+    let bytes = if wide || !x32 && (t.contains("long") || t.contains("size_t") || t == "intptr_t") {
         8
     } else if t.contains("short") || t.contains("16") {
         2
@@ -102,6 +104,30 @@ fn int_kind(ty: &str) -> (u32, bool) {
         4
     };
     (bytes, unsigned)
+}
+
+/// An 8-byte integer, which a 32-bit program returns in edx:eax.
+fn wide32(ty: Option<&str>) -> bool {
+    ty.is_some_and(|t| !is_ptr(t) && !is_float(t) && int_kind(t, true).0 == 8)
+}
+
+/// The bytes a 32-bit program's caller pushes for an argument of type `ty`: a whole number of 4-byte slots.
+fn pushed_size(ty: &str) -> u64 {
+    let t = ty.trim();
+    let n = if is_ptr(t) {
+        4
+    } else if is_float(t) {
+        if t.contains("long") {
+            12
+        } else if t.contains("double") {
+            8
+        } else {
+            4
+        }
+    } else {
+        u64::from(int_kind(t, true).0)
+    };
+    n.max(4)
 }
 
 impl Session {
@@ -119,7 +145,7 @@ impl Session {
         if is_ptr(ty) {
             return if v == 0 { "NULL".into() } else { format!("{v:#x}") };
         }
-        let (bytes, unsigned) = int_kind(ty);
+        let (bytes, unsigned) = int_kind(ty, self.bits() == 32);
         let mask = if bytes == 8 { u64::MAX } else { (1u64 << (bytes * 8)) - 1 };
         let x = v & mask;
         if unsigned {
@@ -130,8 +156,19 @@ impl Session {
         }
     }
 
-    /// `name(arg, ...)` from the registers at the entry. `named`: `x=12` instead of `12`.
-    fn call_args(&mut self, name: &str, proto: Option<&Proto>, r: &Regs, named: bool) -> (String, Option<String>) {
+    /// `name(arg, ...)` from the registers at the entry. `named`: `x=12` instead of `12`. `call_len`: where the
+    /// thread is, as a hook's site says (`None`: at the function's entry).
+    fn call_args(
+        &mut self,
+        name: &str,
+        proto: Option<&Proto>,
+        r: &Regs,
+        named: bool,
+        call_len: Option<u8>,
+    ) -> (String, Option<String>) {
+        if r.x32 {
+            return self.pushed_args(name, proto, r, named, call_len);
+        }
         let regs = arg_regs(self.t.os());
         let reg = |i: usize| regs.get(i).and_then(|n| r.get(n));
         if let Some(p) = proto {
@@ -162,6 +199,72 @@ impl Session {
         }
         let v: Vec<String> = (0..3).map(|i| format!("{}={:#x}", regs[i], reg(i).unwrap_or(0))).collect();
         (format!("{name}({}; no prototype)", v.join(", ")), None)
+    }
+
+    /// Where a 32-bit program's first argument is (cdecl: the caller pushed them, the first one lowest): past the
+    /// return address at the function's entry, on top of the stack on the call instruction.
+    fn first_pushed(r: &Regs, call_len: Option<u8>) -> u64 {
+        r.rsp() + if call_len.is_none() { 4 } else { 0 }
+    }
+
+    /// `n` bytes (at most 8) of the program's memory at `at`, as a little-endian number.
+    fn word_at(&mut self, at: u64, n: usize) -> Option<u64> {
+        let mut b = [0u8; 8];
+        let n = n.min(8);
+        (self.t.read(at, &mut b[..n]) == n).then(|| u64::from_le_bytes(b))
+    }
+
+    /// `call_args` for a 32-bit thread: each argument read from the stack slot its caller pushed.
+    fn pushed_args(
+        &mut self,
+        name: &str,
+        proto: Option<&Proto>,
+        r: &Regs,
+        named: bool,
+        call_len: Option<u8>,
+    ) -> (String, Option<String>) {
+        let first = Self::first_pushed(r, call_len);
+        if let Some(p) = proto {
+            let (mut parts, mut at) = (Vec::new(), first);
+            for (ty, an) in &p.args {
+                let size = pushed_size(ty);
+                let shown = if is_float(ty) {
+                    "(floating point, not read)".to_string()
+                } else {
+                    match self.word_at(at, size as usize) {
+                        Some(v) => self.typed(ty, v),
+                        None => format!("(its stack slot {at:#x} cannot be read)"),
+                    }
+                };
+                at += size;
+                parts.push(if named && !an.is_empty() { format!("{an}={shown}") } else { shown });
+            }
+            if p.variadic {
+                parts.push("...".into());
+            }
+            return (format!("{name}({})", parts.join(", ")), Some(p.ret.clone()));
+        }
+        let word = |s: &mut Self, i: u64| s.word_at(first + 4 * i, 4).map_or("?".into(), |x| format!("{x:#x}"));
+        if let Some((n, _)) = nexo_bin::arg_count(name) {
+            let v: Vec<String> = (0..n as u64).map(|i| word(self, i)).collect();
+            return (format!("{name}({})", v.join(", ")), None);
+        }
+        let off = first - r.rsp();
+        let v: Vec<String> = (0..3u64).map(|i| format!("[esp+{}]={}", off + 4 * i, word(self, i))).collect();
+        (format!("{name}({}; no prototype)", v.join(", ")), None)
+    }
+
+    /// What a function returned: eax, or edx:eax for an 8-byte value, in a 32-bit thread.
+    fn returned(&self, ty: Option<&str>, r: &Regs) -> u64 {
+        if !r.x32 {
+            return r.gp[0];
+        }
+        let low = r.gp[0] & 0xffff_ffff;
+        if wide32(ty) {
+            low | (r.gp[3] & 0xffff_ffff) << 32
+        } else {
+            low
+        }
     }
 
     fn ret_text(&mut self, ty: Option<&str>, rax: u64) -> String {
@@ -199,11 +302,20 @@ impl Session {
                 self.tr.pending.iter().rposition(|p| p.tid == tid && p.ret_addr == addr && p.sp_after == sp)
             {
                 let p = self.tr.pending.remove(i);
-                let mut ret = self.ret_text(p.ret_ty.as_deref(), r.gp[0]);
+                let got = self.returned(p.ret_ty.as_deref(), &r);
+                let mut ret = self.ret_text(p.ret_ty.as_deref(), got);
                 if let Some(h) = p.hook.and_then(|id| self.tr.hooks.iter_mut().find(|h| h.id == id)) {
                     h.returns += 1;
                     if let Some(v) = h.ret {
-                        r.gp[0] = v;
+                        if r.x32 {
+                            // eax, and edx for the high half of an 8-byte value
+                            r.gp[0] = v & 0xffff_ffff;
+                            if wide32(p.ret_ty.as_deref()) {
+                                r.gp[3] = v >> 32;
+                            }
+                        } else {
+                            r.gp[0] = v;
+                        }
                         self.t.set_regs(tid, &r)?;
                         let now = self.ret_text(p.ret_ty.as_deref(), v);
                         ret = format!("{ret}, changed to {now}");
@@ -220,7 +332,7 @@ impl Session {
         if let Some(s) = site {
             let r = self.t.regs(tid)?;
             let proto = nexo_bin::libc_proto(&s.name);
-            let (text, ret_ty) = self.call_args(&s.name, proto.as_ref(), &r, false);
+            let (text, ret_ty) = self.call_args(&s.name, proto.as_ref(), &r, false, s.call_len);
             self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret_ty)?;
         }
         let ids: Vec<u32> = self.tr.hooks.iter().filter(|h| h.addr == addr).map(|h| h.id).collect();
@@ -229,9 +341,21 @@ impl Session {
             let h = self.tr.hooks[i].clone();
             self.tr.hooks[i].hits += 1;
             let mut r = self.t.regs(tid)?;
-            let (mut text, ret_ty) = self.call_args(&h.name, h.proto.as_ref(), &r, true);
+            let (mut text, ret_ty) = self.call_args(&h.name, h.proto.as_ref(), &r, true, h.call_len);
             text = format!("#{id} {text}");
-            if !h.set.is_empty() {
+            if !h.set.is_empty() && r.x32 {
+                // the caller pushed them: each one a 4-byte slot of the stack
+                let first = Self::first_pushed(&r, h.call_len);
+                let mut done = Vec::new();
+                for &(n, v) in &h.set {
+                    let at = first + 4 * n as u64;
+                    match self.t.write(at, &(v as u32).to_le_bytes()) {
+                        Ok(()) => done.push(format!("arg{n}={v:#x}")),
+                        Err(_) => done.push(format!("arg{n} not set: its stack slot {at:#x} cannot be written")),
+                    }
+                }
+                text.push_str(&format!(" [changed {}]", done.join(" ")));
+            } else if !h.set.is_empty() {
                 let regs = arg_regs(self.t.os());
                 let mut done = Vec::new();
                 for &(n, v) in &h.set {
@@ -288,12 +412,13 @@ impl Session {
     ) -> Result<()> {
         let (ret_addr, sp_after) = match call_len {
             None => {
-                let mut b = [0u8; 8];
-                if self.t.read(r.rsp(), &mut b) != 8 {
+                // a 32-bit program's return address has 4 bytes
+                let n = if r.x32 { 4 } else { 8 };
+                let Some(back) = self.word_at(r.rsp(), n) else {
                     self.tr.push(kind, name, format!("{text} = ? (return address unreadable)"));
                     return Ok(());
-                }
-                (u64::from_le_bytes(b), r.rsp() + 8)
+                };
+                (back, r.rsp() + n as u64)
             }
             Some(len) => (r.rip + len as u64, r.rsp()),
         };

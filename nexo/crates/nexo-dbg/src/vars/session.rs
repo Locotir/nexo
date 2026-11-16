@@ -165,12 +165,14 @@ impl Session {
                         .params_in_regs(pc, win, regs, 1)
                         .into_iter()
                         .map(|(v, got)| match got {
+                            Ok((r, val)) if r == super::entry::ON_STACK => format!("{} = {}", v.name, short(val)),
                             Ok((r, val)) => format!("{} ({r}) = {}", v.name, short(val)),
                             Err(why) => format!("{} = not shown ({why})", v.name),
                         })
                         .collect();
                     if !ps.is_empty() {
-                        s.push_str(&format!("; parameters in registers: {}", ps.join(", ")));
+                        let place = if vars.pushed_params(pc) { "on the stack" } else { "in registers" };
+                        s.push_str(&format!("; parameters {place}: {}", ps.join(", ")));
                     }
                     // what is not in a stack slot (a static, a register) is real already
                     let rest: Vec<String> = vs

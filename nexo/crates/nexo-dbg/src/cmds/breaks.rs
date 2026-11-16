@@ -154,7 +154,9 @@ impl Session {
         let mut pos = 0usize;
         while start + (pos as u64) <= addr && pos < bytes.len() {
             let ip = start + pos as u64;
-            let Some(i) = nexo_bin::decode_live(&bytes[pos..], ip, &|x| regs.as_ref().and_then(|r| r.get(x))) else {
+            let Some(i) =
+                nexo_bin::decode_live_in(self.bits(), &bytes[pos..], ip, &|x| regs.as_ref().and_then(|r| r.get(x)))
+            else {
                 break;
             };
             if i.invalid {

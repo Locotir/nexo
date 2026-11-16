@@ -24,8 +24,7 @@ pub struct ImportSite {
 /// Every stub an import goes through, and every `call [slot]` of an import in the program's code
 /// (programs built without stubs, and every PE file). Sorted by address.
 pub fn import_sites(img: &Image) -> Vec<ImportSite> {
-    // the debugger runs 64-bit programs only
-    if img.arm64 || img.bits == 32 {
+    if img.arm64 {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -35,7 +34,8 @@ pub fn import_sites(img: &Image) -> Vec<ImportSite> {
         }
     }
     let stubs: BTreeSet<u64> = out.iter().map(|s| s.addr).collect();
-    for s in img.code_sections().filter(|s| !s.name.starts_with(".plt")) {
+    // 32-bit code reaches a slot through a register (`call [ebx+0x10]`), not by its address: stubs only there
+    for s in img.code_sections().filter(|s| !s.name.starts_with(".plt") && img.bits != 32) {
         let bytes = img.section_bytes(s);
         let mut d = Decoder::with_ip(64, bytes, s.addr, DecoderOptions::NONE);
         while d.can_decode() {
@@ -64,12 +64,11 @@ pub fn import_sites(img: &Image) -> Vec<ImportSite> {
 /// not come back. Read from `start` to `end` in one pass; only addresses where an instruction of that
 /// pass begins are given, so a breakpoint on one never lands inside an instruction of that reading.
 pub fn block_starts(img: &Image, start: u64, end: u64) -> Vec<u64> {
-    // the debugger runs 64-bit programs only
-    if img.arm64 || img.bits == 32 {
+    if img.arm64 {
         return Vec::new();
     }
     let Some(bytes) = img.read_at(start, end.saturating_sub(start) as usize) else { return Vec::new() };
-    let mut d = Decoder::with_ip(64, bytes, start, DecoderOptions::NONE);
+    let mut d = Decoder::with_ip(if img.bits == 32 { 32 } else { 64 }, bytes, start, DecoderOptions::NONE);
     let mut starts = BTreeSet::new();
     let mut lead = BTreeSet::from([start]);
     let mut after_branch = false;
@@ -86,7 +85,7 @@ pub fn block_starts(img: &Image, start: u64, end: u64) -> Vec<u64> {
         after_branch = false;
         match ins.flow_control() {
             FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch => {
-                if ins.op0_kind() == OpKind::NearBranch64 {
+                if matches!(ins.op0_kind(), OpKind::NearBranch64 | OpKind::NearBranch32) {
                     lead.insert(ins.near_branch_target());
                 }
                 after_branch = true;

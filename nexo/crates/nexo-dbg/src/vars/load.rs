@@ -20,7 +20,7 @@ impl Vars {
             Ok(EndianSlice::new(get(id.name()), LittleEndian))
         };
         let dwarf = gimli::Dwarf::load(load).ok()?;
-        let mut out = Vars { funcs: Vec::new(), globals: Vec::new(), types: HashMap::new(), files: Vec::new() };
+        let mut out = Vars { funcs: Vec::new(), globals: Vec::new(), types: HashMap::new(), files: Vec::new(), ptr: 8 };
         let mut units = dwarf.units();
         while let Ok(Some(header)) = units.next() {
             let Ok(unit) = dwarf.unit(header) else { continue };
@@ -31,6 +31,7 @@ impl Vars {
 
     fn read_unit<'a>(&mut self, dwarf: &gimli::Dwarf<Slice<'a>>, unit: &gimli::Unit<Slice<'a>>) {
         let enc = unit.encoding();
+        self.ptr = u64::from(enc.address_size);
         let name = |e: &gimli::DebuggingInformationEntry<Slice<'a>>| -> String {
             e.attr_value(gimli::DW_AT_name)
                 .and_then(|v| dwarf.attr_string(unit, v).ok())

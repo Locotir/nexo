@@ -302,16 +302,38 @@ pub const fn runs_here() -> bool {
 }
 
 /// What kind of program `exe` is when this host cannot run it: a Windows program on Linux, a Linux or macOS one on
-/// Windows. `None` when it can run here (or the file is not one of those formats: the launch says what is wrong).
+/// Windows; or when the debugger cannot run it here: a 32-bit program on Windows. `None` when it can run here (or
+/// the file is not one of those formats: the launch says what is wrong).
 pub fn foreign_program(exe: &std::path::Path) -> Option<String> {
     use std::io::Read;
-    let mut head = Vec::with_capacity(512);
-    std::fs::File::open(exe).and_then(|f| f.take(512).read_to_end(&mut head)).ok()?;
+    // the PE header is found past the DOS stub, at most a few KiB in
+    let mut head = Vec::with_capacity(4096);
+    std::fs::File::open(exe).and_then(|f| f.take(4096).read_to_end(&mut head)).ok()?;
+    if let Some(why) = wow64_on(&head, HOST) {
+        return Some(format!("{} is {why}", exe.display()));
+    }
     let (kind, host) = foreign_on(&head, HOST, HOST_CPU)?;
     Some(format!(
         "{} is {kind}; this host runs {host} programs only, so `run` cannot start it here (`bin` reads it without running it)",
         exe.display()
     ))
+}
+
+/// The machine a PE file starting with `head` is built for (0x14c: 32-bit x86, 0x8664: x86-64).
+fn pe_machine(head: &[u8]) -> Option<u16> {
+    let at = |o: usize, n: usize| head.get(o..o + n);
+    at(0, 2).filter(|m| *m == b"MZ")?;
+    let pe = u32::from_le_bytes(at(0x3c, 4)?.try_into().ok()?) as usize;
+    at(pe, 4).filter(|s| *s == b"PE\0\0")?;
+    Some(u16::from_le_bytes(at(pe + 4, 2)?.try_into().ok()?))
+}
+
+/// Why the debugger does not start a 32-bit program (PE32) on Windows, whose WOW64 threads it does not read.
+fn wow64_on(head: &[u8], host: &str) -> Option<&'static str> {
+    (host == "Windows" && pe_machine(head) == Some(0x14c)).then_some(
+        "a 32-bit Windows program (PE32), which Windows runs under WOW64; this debugger reads and sets the registers \
+         of 64-bit Windows threads only, so `run` does not start it (`bin` reads it without running it)",
+    )
 }
 
 /// The kind of program a file starting with `head` is, and what a `host` with the Mach-O CPU type `cpu` runs, when
@@ -501,6 +523,26 @@ mod tests {
         let p = dir.path().join("prog");
         std::fs::write(&p, bytes).unwrap();
         (dir, p)
+    }
+
+    #[test]
+    fn a_32_bit_windows_program_is_not_started_on_windows() {
+        let pe = |machine: u16| {
+            let mut b = vec![0u8; 0x100];
+            b[..2].copy_from_slice(b"MZ");
+            b[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+            b[0x80..0x84].copy_from_slice(b"PE\0\0");
+            b[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
+            b
+        };
+        assert_eq!(pe_machine(&pe(0x14c)), Some(0x14c));
+        let why = wow64_on(&pe(0x14c), "Windows").unwrap();
+        assert!(why.contains("32-bit") && why.contains("WOW64"), "{why}");
+        assert_eq!(wow64_on(&pe(0x8664), "Windows"), None);
+        assert_eq!(wow64_on(&pe(0x14c), "Linux"), None);
+        // a header cut short, or one past what was read: nothing is claimed
+        assert_eq!(pe_machine(&pe(0x14c)[..0x84]), None);
+        assert_eq!(pe_machine(b"MZ"), None);
     }
 
     #[test]

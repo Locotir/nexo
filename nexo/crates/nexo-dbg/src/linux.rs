@@ -141,6 +141,16 @@ fn syscall_info(tid: i32) -> Option<Sys> {
     }
 }
 
+/// AT_ENTRY in an auxiliary vector of (key, value) pairs of `word`-byte words (8, or 4 in a 32-bit process).
+fn auxv_entry(b: &[u8], word: usize) -> Option<u64> {
+    let at = |s: &[u8]| {
+        let mut w = [0u8; 8];
+        w[..word].copy_from_slice(s);
+        u64::from_le_bytes(w)
+    };
+    b.chunks_exact(2 * word).find_map(|c| (at(&c[..word]) == AT_ENTRY).then(|| at(&c[word..])))
+}
+
 fn os_err(what: &str, e: io::Error) -> Error {
     Error::Fail(format!("{what}: {e}"))
 }
@@ -698,10 +708,11 @@ impl Target for Linux {
 
     fn entry(&mut self) -> Option<u64> {
         let b = std::fs::read(format!("/proc/{}/auxv", self.pid)).ok()?;
-        b.as_chunks::<16>().0.iter().find_map(|c| {
-            let key = u64::from_le_bytes(c[..8].try_into().ok()?);
-            (key == AT_ENTRY).then(|| u64::from_le_bytes(c[8..].try_into().unwrap_or_default()))
-        })
+        // a 32-bit program's vector is of 4-byte words; its file's class says which one it is
+        let mut head = [0u8; 5];
+        let elf32 = File::open(format!("/proc/{}/exe", self.pid)).and_then(|mut f| f.read_exact(&mut head)).is_ok()
+            && head == *b"\x7fELF\x01";
+        auxv_entry(&b, if elf32 { 4 } else { 8 })
     }
 
     fn set_watch(&mut self, slots: &[Option<HwSlot>; 4]) -> Result<()> {

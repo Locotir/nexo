@@ -100,8 +100,11 @@ impl Session {
 
     pub(super) fn cmd_args(&mut self, _a: &Args) -> Result<Output> {
         self.need_stopped()?;
-        let r = self.sel_regs()?;
+        // a 32-bit program's caller pushed the arguments: they start at the frame's CFA, 4 bytes each
+        let x32 = self.bits() == 32;
+        let (r, cfa) = if x32 { self.sel_frame()? } else { (self.sel_regs()?, None) };
         let regs = match self.t.os() {
+            _ if x32 => ["", "", "", "", "", ""],
             Os::Linux | Os::MacOS => ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
             Os::Windows => ["rcx", "rdx", "r8", "r9", "", ""],
         };
@@ -113,6 +116,24 @@ impl Session {
             Some(i) => (i.lines, Some(i.count), i.variadic, i.unread),
             None => (Vec::new(), None, false, Vec::new()),
         };
+        // without variable info: the first words the caller pushed, read as 4-byte values
+        if x32 && count.is_none() {
+            match cfa {
+                Some(c) => {
+                    for i in 0..6u64 {
+                        let at = c + 4 * i;
+                        let Some(v) = self.read_ptr(at) else { break };
+                        let mut s = format!("arg{} [{at:#x}] = {v:#x} ({})", i + 1, v as u32 as i32);
+                        if let Some(lab) = self.mods.label(v, true) {
+                            s.push_str(&format!(" -> {lab}"));
+                        }
+                        l.push(s);
+                    }
+                    l.push("(the stack words past the return address: how many are arguments is not known without variable info)".into());
+                }
+                None => l.push("no unwind rule gives this frame's CFA, where the pushed arguments start".into()),
+            }
+        }
         for (i, n) in regs.iter().enumerate().filter(|(_, n)| !n.is_empty()) {
             let past = count.is_some_and(|c| i >= c);
             if past && !variadic || count.is_some() && !past && !unread.contains(&i) {
@@ -194,7 +215,7 @@ impl Session {
             if end.is_some_and(|hi| ip >= hi) {
                 break;
             }
-            let Some(i) = decode_live(&bytes[pos.min(bytes.len())..], ip, &|x| r.get(x)) else { break };
+            let Some(i) = decode_live_in(self.bits(), &bytes[pos.min(bytes.len())..], ip, &|x| r.get(x)) else { break };
             let mark = if ip == r.rip { "=>" } else { "  " };
             let name = if pos == 0 {
                 self.mods.label(ip, false).map(|n| format!("  <{n}>")).unwrap_or_default()

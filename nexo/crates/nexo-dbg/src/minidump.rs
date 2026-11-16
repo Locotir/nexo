@@ -106,6 +106,7 @@ fn regs_of(c: &[u8]) -> Option<Regs> {
         orig_rax: 0,
         has_bases: false,
         lost: 0,
+        x32: false,
     })
 }
 

@@ -75,14 +75,15 @@ pub(super) fn clone_at(a: &At) -> At {
 
 /// Runs a DWARF location expression against the stopped program.
 pub(super) fn eval(expr: &[u8], enc: gimli::Encoding, fb: Option<&[u8]>, regs: &mut Regs) -> Option<At> {
+    // 32-bit x86 numbers its registers otherwise, with eip as 8
+    let (map, ip): (&[usize], u16) =
+        if enc.address_size == 4 { (&crate::modules::DW2GP32, 8) } else { (&crate::modules::DW2GP, 16) };
     let reg = |r: &Regs, n: u16| -> Option<u64> {
-        match n {
-            16 => Some(r.rip),
-            n => {
-                let i = *crate::modules::DW2GP.get(n as usize)?;
-                (r.lost >> i & 1 == 0).then_some(r.gp[i])
-            }
+        if n == ip {
+            return Some(r.rip);
         }
+        let i = *map.get(n as usize)?;
+        (r.lost >> i & 1 == 0).then_some(r.gp[i])
     };
     let mut e = gimli::Expression(EndianSlice::new(expr, LittleEndian)).evaluation(enc);
     let mut res = e.evaluate().ok()?;

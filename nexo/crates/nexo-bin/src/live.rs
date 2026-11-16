@@ -36,13 +36,19 @@ pub struct LiveIns {
     pub mem: Vec<LiveMem>,
 }
 
-/// Decode the instruction at the start of `bytes`. `reg` gives the value of a register by its
-/// lower-case 64-bit name (`rax`, `fs_base`, `gs_base`); it may answer `None` for every one.
+/// Decode the x86-64 instruction at the start of `bytes` ([`decode_live_in`] with 64).
 pub fn decode_live(bytes: &[u8], ip: u64, reg: &dyn Fn(&str) -> Option<u64>) -> Option<LiveIns> {
+    decode_live_in(64, bytes, ip, reg)
+}
+
+/// Decode the instruction at the start of `bytes` as code of `bits` (64 or 32). `reg` gives the value of a
+/// register by its lower-case 64-bit name (`rax`, `fs_base`, `gs_base`; 32-bit code that uses `eax` asks for
+/// `rax`); it may answer `None` for every one.
+pub fn decode_live_in(bits: u32, bytes: &[u8], ip: u64, reg: &dyn Fn(&str) -> Option<u64>) -> Option<LiveIns> {
     if bytes.is_empty() {
         return None;
     }
-    let ins = Decoder::with_ip(64, bytes, ip, DecoderOptions::NONE).decode();
+    let ins = Decoder::with_ip(bits, bytes, ip, DecoderOptions::NONE).decode();
     if ins.is_invalid() {
         return Some(LiveIns {
             len: 1,
@@ -133,15 +139,27 @@ pub fn indirect_calls(img: &Image) -> (Vec<u64>, usize) {
     (out, more)
 }
 
-/// Where the indirect call at the start of `bytes` (at `ip` in the running program) goes right now: the
-/// register's value, or the 8 bytes `read` gives at the slot. `None` for anything that is not an indirect call.
+/// [`indirect_call_target_in`] for x86-64 code.
 pub fn indirect_call_target(
     bytes: &[u8],
     ip: u64,
     reg: &dyn Fn(&str) -> Option<u64>,
     read: &dyn Fn(u64) -> Option<u64>,
 ) -> Option<u64> {
-    let ins = Decoder::with_ip(64, bytes, ip, DecoderOptions::NONE).decode();
+    indirect_call_target_in(64, bytes, ip, reg, read)
+}
+
+/// Where the indirect call at the start of `bytes` (at `ip` in the running program, code of `bits`) goes right
+/// now: the register's value, or the pointer `read` gives at the slot (`read` reads 8 bytes for 64-bit code, 4
+/// for 32-bit code). `None` for anything that is not an indirect call.
+pub fn indirect_call_target_in(
+    bits: u32,
+    bytes: &[u8],
+    ip: u64,
+    reg: &dyn Fn(&str) -> Option<u64>,
+    read: &dyn Fn(u64) -> Option<u64>,
+) -> Option<u64> {
+    let ins = Decoder::with_ip(bits, bytes, ip, DecoderOptions::NONE).decode();
     if ins.is_invalid() || ins.flow_control() != FlowControl::IndirectCall {
         return None;
     }

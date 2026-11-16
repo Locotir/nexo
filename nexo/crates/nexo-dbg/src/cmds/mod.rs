@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nexo_bin::{decode_live, parse_addr, parse_pattern, LiveIns, Output, Place};
+use nexo_bin::{decode_live_in, parse_addr, parse_pattern, LiveIns, Output, Place};
 use serde_json::json;
 
 use crate::engine::{rows, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind, Why, Wp, HISTORY};

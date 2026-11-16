@@ -470,6 +470,27 @@ impl Session {
         v
     }
 
+    /// The program's code width from its file's class: 32 for a 32-bit x86 program (ELF32, PE32), else 64.
+    pub(crate) fn bits(&self) -> u32 {
+        if self.mods.main_image().bits == 32 {
+            32
+        } else {
+            64
+        }
+    }
+
+    /// The size of a pointer and of a stack slot in the program: 4 or 8 bytes.
+    pub(crate) fn ptr_size(&self) -> usize {
+        self.bits() as usize / 8
+    }
+
+    /// A pointer read from the program's memory: 4 bytes in a 32-bit program, 8 otherwise.
+    pub(crate) fn read_ptr(&mut self, addr: u64) -> Option<u64> {
+        let n = self.ptr_size();
+        let mut b = [0u8; 8];
+        (self.t.read(addr, &mut b[..n]) == n).then(|| u64::from_le_bytes(b))
+    }
+
     /// An expression in the selected frame (see `frame`).
     pub fn eval(&mut self, src: &str) -> Result<u64> {
         self.eval_frame(src).map_err(|(e, _)| e)
@@ -870,11 +891,12 @@ impl Session {
             *b = *o;
         }
         let regs = self.t.regs(tid).ok();
+        let (bits, n) = (self.bits(), self.ptr_size());
         let to = regs.and_then(|r| {
             let t = std::cell::RefCell::new(&mut self.t);
-            nexo_bin::indirect_call_target(&bytes, addr, &|n| r.get(n), &|a| {
+            nexo_bin::indirect_call_target_in(bits, &bytes, addr, &|n| r.get(n), &|a| {
                 let mut b = [0u8; 8];
-                (t.borrow_mut().read(a, &mut b) == 8).then(|| u64::from_le_bytes(b))
+                (t.borrow_mut().read(a, &mut b[..n]) == n).then(|| u64::from_le_bytes(b))
             })
         });
         match to {

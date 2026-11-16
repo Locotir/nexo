@@ -89,6 +89,10 @@ impl Vars {
     fn by_address(&self, v: &Var, f: &Func, regs: &mut Regs, pass: &str, decl: &str) -> Option<String> {
         use nexo_bin::SlotUse;
         let doubt = || Some(format!("may not be assigned yet{pass}: its line, {decl}, is the stop line"));
+        // the code is read as x86-64 code only
+        if f.enc.address_size == 4 {
+            return doubt();
+        }
         let Loc::Expr(e) = &v.loc else { return doubt() };
         let (Some(&(lo, hi)), Some(At::Mem(slot))) = (f.ranges.first(), eval(e, f.enc, f.frame_base.as_deref(), regs))
         else {

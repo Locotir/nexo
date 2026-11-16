@@ -1,4 +1,5 @@
-//! The x86-64 registers of one thread.
+//! The x86-64 registers of one thread. A thread running 32-bit code has the same set and uses the low 32 bits of
+//! eight of them: it shows and sets them by their 32-bit names (`eax` .. `edi`, `eip`).
 
 /// The general registers in the order they are shown.
 pub const GP: [&str; 16] =
@@ -9,6 +10,13 @@ const FLAGS: [(u32, &str); 9] =
 
 pub const RBP: usize = 6;
 pub const RSP: usize = 7;
+
+/// The registers of a 32-bit thread with their [`GP`] index, in the order they are shown.
+const GP32: [(&str, usize); 8] =
+    [("eax", 0), ("ebx", 1), ("ecx", 2), ("edx", 3), ("esi", 4), ("edi", 5), ("ebp", 6), ("esp", 7)];
+
+/// The code segment selector Linux gives a thread running 32-bit code (64-bit code runs with 0x33).
+pub const LINUX_CS32: u64 = 0x23;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Regs {
@@ -27,6 +35,8 @@ pub struct Regs {
     /// The registers with no value: set only for a caller's frame (bits by [`GP`] index, bit 16 for eflags), where
     /// the call may have changed them and no unwind rule gave them back. [`Regs::get`] has no value for them.
     pub lost: u32,
+    /// The thread runs 32-bit code: its registers are shown by their 32-bit names, eight of them.
+    pub x32: bool,
 }
 
 /// Where each [`GP`] register sits in Linux's `user_regs_struct` (and in a core file's `pr_reg`).
@@ -60,9 +70,10 @@ impl Regs {
         m
     }
 
-    /// From Linux's `user_regs_struct`: 27 words.
+    /// From Linux's `user_regs_struct`: 27 words. A thread running 32-bit code gives the same struct with its
+    /// values zero-extended; its code segment says which one it is.
     pub fn from_user(u: &[u64; 27]) -> Regs {
-        let mut r = Regs { has_bases: true, ..Regs::default() };
+        let mut r = Regs { has_bases: true, x32: u[17] == LINUX_CS32, ..Regs::default() };
         for (i, &at) in USER_GP.iter().enumerate() {
             r.gp[i] = u[at];
         }
@@ -109,11 +120,12 @@ impl Regs {
             return None;
         }
         let n = name.trim_start_matches('$').to_ascii_lowercase();
-        if let Some(i) = GP.iter().position(|g| *g == n) {
+        if let Some(i) = GP.iter().position(|g| *g == n).filter(|&i| !self.x32 || i < 8) {
             return Some(self.gp[i]);
         }
         match n.as_str() {
             "rip" | "pc" => return Some(self.rip),
+            "eip" if self.x32 => return Some(self.rip),
             "sp" => return Some(self.gp[RSP]),
             "fp" => return Some(self.gp[RBP]),
             "eflags" | "rflags" | "flags" => return Some(self.eflags),
@@ -124,7 +136,7 @@ impl Regs {
         if let Some(i) = SEG.iter().position(|s| *s == n) {
             return Some(self.seg[i]);
         }
-        let (idx, bits) = low_part(&n)?;
+        let (idx, bits) = low_part(&n).filter(|&(i, _)| !self.x32 || i < 8)?;
         Some(self.gp[idx] & (u64::MAX >> (64 - bits)))
     }
 
@@ -148,17 +160,31 @@ impl Regs {
 
     /// The names of the registers this frame has no value for, in the order they are shown.
     pub fn lost_names(&self) -> Vec<&'static str> {
-        let mut v: Vec<&'static str> =
-            GP.iter().enumerate().filter(|(i, _)| self.lost >> i & 1 == 1).map(|(_, n)| *n).collect();
+        let mut v: Vec<&'static str> = if self.x32 {
+            GP32.iter().filter(|(_, i)| self.lost >> i & 1 == 1).map(|(n, _)| *n).collect()
+        } else {
+            GP.iter().enumerate().filter(|(i, _)| self.lost >> i & 1 == 1).map(|(_, n)| *n).collect()
+        };
         if self.lost >> 16 & 1 == 1 {
             v.push("eflags");
         }
         v
     }
 
-    /// Set a whole register: a 64-bit general one, `rip` or `eflags`. False for any other name.
+    /// Set a whole register: a 64-bit general one, `rip` or `eflags`; in a 32-bit thread also `eax` .. `edi` and
+    /// `eip`, which take the low 32 bits of `v`. False for any other name.
     pub fn set(&mut self, name: &str, v: u64) -> bool {
         let n = name.trim_start_matches('$').to_ascii_lowercase();
+        if self.x32 {
+            if let Some(&(_, i)) = GP32.iter().find(|(g, _)| *g == n) {
+                self.gp[i] = v & 0xffff_ffff;
+                return true;
+            }
+            if n == "eip" {
+                self.rip = v & 0xffff_ffff;
+                return true;
+            }
+        }
         if let Some(i) = GP.iter().position(|g| *g == n) {
             self.gp[i] = v;
             return true;
@@ -171,10 +197,17 @@ impl Regs {
         true
     }
 
-    /// Every register with its name, in the order they are shown.
+    /// Every register with its name, in the order they are shown; a 32-bit thread's by their 32-bit names.
     pub fn named(&self) -> Vec<(&'static str, u64)> {
-        let mut v: Vec<(&'static str, u64)> = GP.iter().copied().zip(self.gp).collect();
-        v.push(("rip", self.rip));
+        let mut v: Vec<(&'static str, u64)> = if self.x32 {
+            let mut v: Vec<(&'static str, u64)> = GP32.iter().map(|&(n, i)| (n, self.gp[i] & 0xffff_ffff)).collect();
+            v.push(("eip", self.rip & 0xffff_ffff));
+            v
+        } else {
+            let mut v: Vec<(&'static str, u64)> = GP.iter().copied().zip(self.gp).collect();
+            v.push(("rip", self.rip));
+            v
+        };
         v.push(("eflags", self.eflags));
         v.extend(SEG.iter().copied().zip(self.seg));
         if self.has_bases {
@@ -184,12 +217,13 @@ impl Regs {
         v
     }
 
-    /// The registers whose value differs from `before`: name, old, new. `rip` is left out (a stop says where it is).
+    /// The registers whose value differs from `before`: name, old, new. `rip` (`eip`) is left out (a stop says where
+    /// it is).
     pub fn changed(&self, before: &Regs) -> Vec<(&'static str, u64, u64)> {
         self.named()
             .into_iter()
             .zip(before.named())
-            .filter(|((n, new), (_, old))| new != old && *n != "rip")
+            .filter(|((n, new), (_, old))| new != old && *n != "rip" && *n != "eip")
             .map(|((n, new), (_, old))| (n, old, new))
             .collect()
     }
@@ -248,6 +282,30 @@ mod tests {
         assert_eq!(r.get("xmm0"), None);
         assert!(r.set("rdi", 7) && r.get("edi") == Some(7));
         assert!(!r.set("eax", 1));
+    }
+
+    #[test]
+    fn a_32_bit_thread_shows_and_sets_its_32_bit_registers() {
+        let mut u = [0u64; 27];
+        u[17] = LINUX_CS32;
+        u[10] = 7; // rax
+        u[19] = 0xffd0_1000; // rsp
+        u[16] = 0x5655_6000; // rip
+        let mut r = Regs::from_user(&u);
+        assert!(r.x32 && !Regs::from_user(&[0; 27]).x32);
+        let names: Vec<&str> = r.named().iter().map(|(n, _)| *n).collect();
+        assert_eq!(&names[..10], ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip", "eflags"]);
+        assert!(!names.contains(&"r8") && !names.contains(&"rip"));
+        assert_eq!((r.get("eip"), r.get("esp"), r.get("eax")), (Some(0x5655_6000), Some(0xffd0_1000), Some(7)));
+        assert_eq!((r.get("r8"), r.get("r8d")), (None, None));
+        assert!(r.set("ecx", 0x1_2345_6789) && r.get("ecx") == Some(0x2345_6789));
+        assert!(r.set("eip", 0x5655_6010) && r.rip == 0x5655_6010);
+        let before = r;
+        r.gp[0] = 9;
+        r.rip += 1;
+        assert_eq!(r.changed(&before), vec![("eax", 7, 9)]);
+        r.lost = 1 << 2;
+        assert_eq!(r.lost_names(), ["ecx"]);
     }
 
     #[test]

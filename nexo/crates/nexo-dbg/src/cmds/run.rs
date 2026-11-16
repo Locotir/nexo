@@ -27,7 +27,7 @@ impl Session {
     fn next_run(&mut self) -> Result<Run> {
         let r = self.t.regs(self.cur)?;
         let bytes = self.read_vec(r.rip, 16);
-        let ins = decode_live(&bytes, r.rip, &|n| r.get(n));
+        let ins = decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n));
         match ins {
             Some(i) if i.call => Ok(Run {
                 step: None,

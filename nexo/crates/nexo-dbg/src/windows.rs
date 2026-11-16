@@ -115,6 +115,10 @@ fn last_error(what: &str) -> crate::Error {
 
 impl Windows {
     pub fn launch(l: &Launch) -> Result<Windows> {
+        // a 32-bit program would run under WOW64, whose threads this debugger does not read: refused before it starts
+        if let Some(why) = crate::platform::foreign_program(&l.exe) {
+            return fail(why);
+        }
         // standard input and output as pipes
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -239,6 +243,16 @@ impl Windows {
         };
         if process.is_null() {
             return Err(last_error(&format!("opening process {pid} (is it yours?)")));
+        }
+        let mut wow64 = 0;
+        // SAFETY: a process handle opened above with query rights, and a local to write into.
+        if unsafe { IsWow64Process(process, &mut wow64) } != 0 && wow64 != 0 {
+            // SAFETY: the handle opened above, closed once.
+            unsafe { CloseHandle(process) };
+            return fail(format!(
+                "process {pid} is a 32-bit program running under WOW64; this debugger reads and sets the registers of \
+                 64-bit Windows threads only, so it does not attach"
+            ));
         }
         // SAFETY: attaches as a debugger; the program is let go, not killed, at the end.
         unsafe {
@@ -502,6 +516,8 @@ impl Target for Windows {
             orig_rax: 0,
             has_bases: false,
             lost: 0,
+            // a WOW64 thread is not attached to
+            x32: false,
         })
     }
 

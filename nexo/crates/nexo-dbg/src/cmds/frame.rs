@@ -162,7 +162,8 @@ impl Session {
         let Some(fr) = f.get(n).copied() else { return fail("no frame is known here: `bt` shows the chain") };
         let mut l = vec![format!("frame {}", self.frame_line(n, &fr))];
         let cfa = fr.cfa.map_or("not known".to_string(), |c| format!("{c:#x}"));
-        l.push(format!("rip {:#x}, rsp {:#x}, cfa {cfa} (the caller's rsp after the return)", fr.pc, fr.sp));
+        let (ip, sp) = if self.bits() == 32 { ("eip", "esp") } else { ("rip", "rsp") };
+        l.push(format!("{ip} {:#x}, {sp} {:#x}, cfa {cfa} (the caller's {sp} after the return)", fr.pc, fr.sp));
         l.push(match n {
             0 => format!("the registers are thread {}'s, where it stopped", self.cur),
             _ => format!("found from frame #{} by {}", n - 1, fr.how),
