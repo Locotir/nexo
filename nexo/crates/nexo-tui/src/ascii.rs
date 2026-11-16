@@ -136,7 +136,8 @@ mod tests {
     fn only_a_console_that_names_no_modern_terminal_is_legacy() {
         let with = |name: &'static str| move |k: &str| if k == name { "x".to_string() } else { String::new() };
         assert!(legacy_console(&|_: &str| String::new()));
-        for k in ["WT_SESSION", "TERM", "TERM_PROGRAM", "WEZTERM_EXECUTABLE", "ALACRITTY_LOG", "ConEmuPID", "COLORTERM"] {
+        for k in ["WT_SESSION", "TERM", "TERM_PROGRAM", "WEZTERM_EXECUTABLE", "ALACRITTY_LOG", "ConEmuPID", "COLORTERM"]
+        {
             assert!(!legacy_console(&with(k)), "{k} should mark a modern terminal");
         }
     }
