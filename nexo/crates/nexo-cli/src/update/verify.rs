@@ -8,11 +8,6 @@ pub(super) fn expected_sum<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// An install from before nexo had its own folder (cargo's `bin`), or a build in a checkout's
 /// `target`: the installer puts nexo in its own place instead of writing over these.
 pub(super) fn needs_installer(exe: &Path) -> bool {

@@ -12,6 +12,7 @@ mod verify;
 
 use build::*;
 use fetch::*;
+use nexo_core::hash::sha256_hex;
 use release::*;
 pub use release::{check, newer_release, off};
 use ui::*;

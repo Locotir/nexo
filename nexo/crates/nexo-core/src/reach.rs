@@ -9,6 +9,8 @@
 //! `{"type":"user","message":{"role":"user","content":…}}` is queued as a prompt and runs when the session
 //! is free.
 
+#[cfg(unix)]
+use crate::hash::sha256_hex;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -318,12 +320,6 @@ impl Reach {
         std::thread::sleep(Duration::from_millis(150));
         run(&["send-keys", "-t", pane, "Enter"])
     }
-}
-
-#[cfg(unix)]
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(unix)]

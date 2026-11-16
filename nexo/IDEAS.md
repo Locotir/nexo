@@ -1,8 +1,27 @@
 # Ideas: fewer tokens, fewer steps, less spent on the cache
 
-Ranked by what each should save for the work it takes. None of them is in `README.md` or `FEATURES.md` yet, except `paths` of idea 3, which `read` already takes (up to 20 files per call).
+Ranked by what each should save for the work it takes. `FEATURES.md` lists what has tests; the status table below says which of these ideas the code already does.
 Effort: S (a day or less), M (a few days), L (a week or more). "Measure" says how to tell it worked; most
 can be measured offline on recorded sessions (of several harnesses, nexo among them) before any live run.
+
+Status as of 2026-11-16, checked against the code. "Shipped" means the behaviour in the idea exists and has a test; "partial" says what exists and what is missing; "open" means nothing in the code does it. Ideas 1 to 14 below keep their original wording, so a "partial" row is the place to read what is left.
+
+| # | Status | What the code does today |
+|---|---|---|
+| 1 | partial | `postcheck.rs` runs the project's tests or compiler after a change and reports the count and the failing test names (`report`, tests at `postcheck.rs:430-436`). Plain `bash` with `cargo test` or `npm test` returns the whole output; there is no per-tool filter in `bash`. |
+| 2 | partial | `edit` and `write` answer with a unified diff of the change with 3 lines of context, or the whole file when it is short (`edit/show.rs`), and the `check` proof command can run after the change (`postcheck.rs`). Not verified in this pass: that language-server diagnostics are appended to the answer. |
+| 3 | partial | `read` takes `paths` (up to 20 files) and `symbol` (exact span, ambiguity reported; test `rust_symbol_lookup_returns_exact_span_and_reports_ambiguity` in `read/tests.rs`). `read` of a large file without a range does not answer with an outline first. |
+| 4 | partial | `ask_hint.rs` names the tools of a compiled program a message mentions, once per session. Putting an outline or named lines of an existing file in the message is not done. |
+| 5 | open | No `explore_model` setting exists. Sub-agent profiles (`subagent/profile.rs`) take a `model` of their own, which is the nearest thing. |
+| 6 | partial | `turn/prefix.rs` keeps the parts of the prompt that could change by themselves stable so the cached prefix stays byte-identical. A test that compares two consecutive requests and a counter of cache misses were not found. |
+| 7 | shipped | `turn/cache_ttl.rs` chooses the 1-hour cache write when the session's own past pauses exceed the 5-minute lifetime and the write costs less than a re-write (`Pricing::long_cache_pays`; `anthropic/request.rs:59`). A one-token keep-warm request does not exist. |
+| 8 | partial | `postcheck.rs` answers "same output as the check above" for an unchanged check. `repeat.rs` adds one line when the same failure comes back (`st.repeats.round`, `turn/round.rs`). Output of other `bash`, `grep` or `glob` calls that repeats an earlier one is sent whole. |
+| 9 | partial | The briefing has a token budget with the ledger limited to 40% of it (`brief.rs`). Sizing it by what the parent read or by the length of the task prompt is not done. |
+| 10 | open | Compaction (`turn/compaction.rs`) still asks the model for a summary. No ledger-only compaction was found. |
+| 11 | shipped | `grep` keeps `max_per_file` (default 20) and `max_results` (default 200) and ends with "N more matches in M files; narrow the pattern or the path" (`grep.rs:20-51`, test near line 720). `glob` grouping by folder was not found. |
+| 12 | open | No report contract with cited `path:line` was found in the sub-agent profiles, and no `subagent_report` setting. |
+| 13 | partial | Only the asks after a reply cut at `agent.reasoning_budget` use the lowest effort a model lists (`calm_level`, `turn/round.rs:736`). Lowering effort for read-only steps is not done. |
+| 14 | partial | The briefing ledger exists (`brief/ledger.rs`) and is rebuilt from the history for each briefing. It is not kept in the session file and there is no `/ledger` command. |
 
 | # | Idea | Why it saves | Effort | Measure |
 |---|---|---|---|---|
@@ -29,7 +48,9 @@ for the last 3000 tokens of the conversation and 53-63% for the whole conversati
 there would have been answered whole by what its parent held (2%). Ideas 1-4 and 8 act on every session,
 not only those that delegate, and are where the recorded sessions spend their tokens.
 
-## Pending: `/panel` as a phone-style board (not started)
+## Idea: `/panel` as a phone-style board
+
+Status: open as a design. `/panel` already exists as the agents view (`crates/nexo-tui/src/agents_view/`), with satellites for sub-agents (see `FEATURES.md`); the card layout below is not built.
 
 Make `/panel` read like a mobile agent dashboard: one card per live session with its state at a glance
 (working, waiting for you, done, blocked), the latest conclusion in one line, a progress mark, and the
