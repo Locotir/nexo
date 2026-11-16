@@ -4,7 +4,7 @@ A terminal coding harness for any model provider: a full-screen interface
 (mouse, folding transcript, search, palette) and a headless mode, with tools
 (read, edit, write, shell, search), permissions, sessions, MCP servers, and
 a built-in context curator as its default context policy.
-Written in Rust (ratatui), for Linux, macOS and Windows (built and tested on every push by CI).
+Written in Rust (ratatui), for Linux, macOS and Windows (built and tested on every push by CI on Linux and Windows; the macOS CI job is new and not yet gating).
 
 ![nexo fixing a failing test in the terminal](../docs/img/demo.svg)
 

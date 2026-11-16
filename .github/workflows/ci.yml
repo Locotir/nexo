@@ -7,7 +7,7 @@ on:
 
 jobs:
   nexo:
-    # nexo is built and tested on Linux, macOS (Apple silicon) and Windows on every push
+    # nexo is built and tested on Linux and Windows on every push; macOS runs here too but is not claimed as tested until it is green
     strategy:
       fail-fast: false
       matrix:
@@ -33,9 +33,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
       - run: cargo build --workspace
       - run: cargo test --workspace --no-fail-fast
+      # a failed test step must not hide clippy or the Intel check, so these two run after it either way
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: success() || failure()
       - name: the Intel Mac build still compiles (the release builds it natively)
-        if: matrix.os == 'macos-latest'
+        if: (success() || failure()) && matrix.os == 'macos-latest'
         run: rustup target add x86_64-apple-darwin && cargo check --workspace --target x86_64-apple-darwin
 
   msrv:
