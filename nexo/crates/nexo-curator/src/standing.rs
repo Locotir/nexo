@@ -241,9 +241,9 @@ impl Standing {
                 for s in stems(&text) {
                     *self.df.entry(s).or_insert(0) += 1;
                 }
-                // the trigger is what the person asks now: of requests joined into one the newest; the facts come
-                // from all of them
-                self.user = ends(crate::msg::request_words(&text), TRIGGER_CHARS);
+                // the trigger is what the person asks now: of requests joined into one, those still asked; the facts
+                // come from all of them
+                self.user = ends(&crate::msg::request_words(&text), TRIGGER_CHARS);
                 for line in text.lines().filter(|l| !l.trim_start().starts_with("```")) {
                     for s in sentences(line) {
                         if taken < PER_MESSAGE && self.take(mi, s) {

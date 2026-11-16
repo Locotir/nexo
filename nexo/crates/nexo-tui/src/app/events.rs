@@ -718,8 +718,10 @@ impl App {
                         && text.trim() != nexo_core::agent::GOAL_CONTINUE_MARK
                         && text.trim() != nexo_core::agent::SUPERVISOR_RESUME_MARK
                     {
-                        // /undo puts back, and the pickers list, what the person wrote, not what nexo put with it
-                        self.user_messages.push((index, nexo_core::agent::person_words(&text).to_string()));
+                        // /undo puts back, and the pickers list, what the person wrote, not what nexo put with it:
+                        // nor the times it wrote before each part of requests it joined into one
+                        let typed = nexo_core::agent::as_typed(nexo_core::agent::person_words(&text)).into_owned();
+                        self.user_messages.push((index, typed));
                     }
                     let words = nexo_core::agent::person_words(&text);
                     let at = self.take_stamps(words).then(|| self.stamp_now());

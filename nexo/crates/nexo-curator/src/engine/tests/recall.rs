@@ -239,6 +239,21 @@ fn of_requests_joined_after_a_stop_the_newest_decides_the_topic_and_the_lines_lo
 }
 
 #[test]
+fn requests_joined_with_no_stop_between_them_are_all_read_as_asked_now() {
+    let older = "y documenta cada función";
+    let newest = "Detente, cambiamos de tema";
+    // queued while the model worked and never stopped: the person still wants the older one done, so it ties the
+    // request to the documenting turn and brings its lines back as the whole block does
+    let headed = format!(
+        "[16:13:05, typed while you worked on the request above]\n{older}\n\n[16:13:07, typed while you worked on the \
+         request above]\n{newest}"
+    );
+    let read = reading_of(&headed);
+    assert!(read.2, "{read:?}");
+    assert_eq!(read, reading_of(&format!("{older}\n\n{newest}")));
+}
+
+#[test]
 fn a_thread_the_person_stopped_says_so_on_its_card_and_an_answered_one_does_not() {
     let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply after bash cat \
                 parser.rs; it got no answer]";

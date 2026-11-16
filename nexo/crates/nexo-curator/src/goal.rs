@@ -181,12 +181,12 @@ impl Threads {
                 }
                 if crate::msg::is_marked(&text) {
                     // the request is what the person asks now: not the line of the stop before it, which names
-                    // the stopped request's last call, nor the older of requests joined into one (they go in the
-                    // turn's words with the rest of the message)
+                    // the stopped request's last call, nor a part of requests joined into one that was asked of the
+                    // stopped request (it goes in the turn's words with the rest of the message)
                     let now = crate::msg::request_words(&text);
-                    req.extend(crate::learn::terms(now, int));
-                    names.extend(crate::hindsight::words(now, int));
-                    asked.push(now.to_string());
+                    req.extend(crate::learn::terms(&now, int));
+                    names.extend(crate::hindsight::words(&now, int));
+                    asked.push(now.into_owned());
                 } else {
                     req.extend(fz.terms[i].iter().copied());
                     names.extend(tr.units[i].words.iter().copied());

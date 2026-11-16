@@ -42,40 +42,59 @@ pub fn stop_line_of(text: &str) -> Option<(&str, &str)> {
     rest.strip_prefix(' ')?.starts_with(STOP_WORDS).then_some((first, at))
 }
 
+/// What a part's header adds when the person stopped the request it was typed during
+/// (`nexo_core::agent::BEFORE_STOP`).
+const BEFORE_STOP: &str = "before the person stopped it";
+
 /// Whether `line` heads one part of requests nexo joined into one (`nexo_core::agent::part_header`).
 fn is_part_header(line: &str) -> bool {
     timed(line).is_some_and(|(_, rest)| rest.is_empty() || rest.starts_with(", typed while"))
 }
 
 /// The parts of the person's words when nexo joined requests typed one after another into one, oldest first, each
-/// without the line that says when it was typed; None for one request (`nexo_core::agent::joined_parts`).
-pub fn joined_parts(words: &str) -> Option<Vec<&str>> {
+/// with the line that says when it was typed; None for one request.
+fn headed_parts(words: &str) -> Option<Vec<(&str, &str)>> {
     let mut lines = words.split_inclusive('\n');
     let first = lines.next()?;
-    if !is_part_header(first.trim_end_matches(['\n', '\r'])) {
+    let mut header = first.trim_end_matches(['\n', '\r']);
+    if !is_part_header(header) {
         return None;
     }
     let mut parts = Vec::new();
     let (mut start, mut at) = (first.len(), first.len());
     for line in lines {
-        if is_part_header(line.trim_end_matches(['\n', '\r'])) {
-            parts.push(words[start..at].trim_matches('\n'));
-            start = at + line.len();
+        let bare = line.trim_end_matches(['\n', '\r']);
+        if is_part_header(bare) {
+            parts.push((header, words[start..at].trim_matches('\n')));
+            (header, start) = (bare, at + line.len());
         }
         at += line.len();
     }
-    parts.push(words[start..].trim_matches('\n'));
+    parts.push((header, words[start..].trim_matches('\n')));
     Some(parts)
 }
 
+/// The parts of the person's words when nexo joined requests typed one after another into one, oldest first, each
+/// without the line that says when it was typed; None for one request (`nexo_core::agent::joined_parts`).
+pub fn joined_parts(words: &str) -> Option<Vec<&str>> {
+    headed_parts(words).map(|parts| parts.into_iter().map(|(_, part)| part).collect())
+}
+
 /// What the person asks now in the text of a message they sent: their words ([`person_words`]) without the line that
-/// says they stopped the request before, and of requests joined into one the newest. The older parts were typed
-/// before it, some while the model worked on a request the person then stopped: they are earlier requests of the
-/// same turn, not what the person wants now.
-pub fn request_words(text: &str) -> &str {
+/// says they stopped the request before, and of requests joined into one those still asked. A part typed while the
+/// model worked on a request the person then stopped, followed by one typed after the stop, was asked of the stopped
+/// request: the part after the stop is what they want now. Parts queued while the model worked, with no stop between
+/// them and now (or a stop made to run them at once), are each asked now, all of them.
+pub fn request_words(text: &str) -> Cow<'_, str> {
     let words = person_words(text);
     let words = stop_line_of(words).map_or(words, |(line, _)| words[line.len()..].trim_start());
-    joined_parts(words).and_then(|p| p.last().copied()).unwrap_or(words)
+    let Some(parts) = headed_parts(words) else { return Cow::Borrowed(words) };
+    let after: Vec<&str> = parts.iter().filter(|(h, _)| !h.contains(BEFORE_STOP)).map(|&(_, p)| p).collect();
+    let asked = if after.is_empty() { parts.iter().map(|&(_, p)| p).collect() } else { after };
+    match asked.as_slice() {
+        [one] => Cow::Borrowed(one),
+        _ => Cow::Owned(asked.join("\n\n")),
+    }
 }
 
 /// Whether nexo marked the text of a message: it starts with the line of a stop, or the person's words are requests
@@ -86,11 +105,11 @@ pub fn is_marked(text: &str) -> bool {
 
 /// The request in the whole text of a message the person sent, as the curator reads it: [`request_words`] when nexo
 /// marked the message, else the text as it is.
-pub fn asked_now(text: &str) -> &str {
+pub fn asked_now(text: &str) -> Cow<'_, str> {
     if is_marked(text) {
         request_words(text)
     } else {
-        text
+        Cow::Borrowed(text)
     }
 }
 
@@ -222,5 +241,44 @@ pub fn key_of(v: Option<&Value>) -> String {
     match v {
         None => "null".into(),
         Some(v) => v.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DURING: &str = "[16:13:05, typed while you worked on the request above]";
+    const DURING_LATER: &str = "[16:13:07, typed while you worked on the request above]";
+    const STOPPED_HEADER: &str =
+        "[16:13:05, typed while you worked on the request above, before the person stopped it]";
+
+    #[test]
+    fn requests_queued_while_the_model_worked_are_all_asked_now_without_their_headers() {
+        let text = format!("{DURING}\nfix parse in lexer.rs\n\n{DURING_LATER}\nand update the README");
+        assert_eq!(request_words(&text), "fix parse in lexer.rs\n\nand update the README");
+        assert_eq!(asked_now(&text), "fix parse in lexer.rs\n\nand update the README");
+    }
+
+    #[test]
+    fn a_part_typed_before_a_stop_gives_way_to_the_one_typed_after_it() {
+        let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply; it got no \
+                    answer]";
+        let words = format!("{STOPPED_HEADER}\ny documenta cada función\n\n[16:13:10]\nDetente, cambiamos de tema");
+        assert_eq!(request_words(&format!("{stop}\n\n{PERSON_MARK}\n{words}")), "Detente, cambiamos de tema");
+        assert_eq!(request_words(&words), "Detente, cambiamos de tema");
+    }
+
+    #[test]
+    fn parts_stopped_to_run_them_at_once_are_all_asked_now() {
+        let later = STOPPED_HEADER.replace("16:13:05", "16:13:07");
+        let text = format!("{STOPPED_HEADER}\nfix parse in lexer.rs\n\n{later}\nand update the README");
+        assert_eq!(request_words(&text), "fix parse in lexer.rs\n\nand update the README");
+    }
+
+    #[test]
+    fn one_request_is_read_as_it_is() {
+        assert_eq!(request_words("[12:00:00 is when it broke]\nfix it"), "[12:00:00 is when it broke]\nfix it");
+        assert!(matches!(request_words("fix it"), Cow::Borrowed("fix it")));
     }
 }

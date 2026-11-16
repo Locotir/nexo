@@ -219,6 +219,29 @@ fn requests_joined_after_an_esc_come_back_as_one_echo_that_takes_both_and_shows_
 }
 
 #[test]
+fn undo_and_rewind_put_joined_requests_back_as_typed_without_the_times_nexo_wrote() {
+    use nexo_core::agent::{part_header, stop_line, PERSON_MARK};
+    let (mut a, mut rx) = app();
+    let stop = stop_line("16:13:08", "(Esc)", "while you waited for your reply; it got no answer");
+    let words = format!(
+        "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+        part_header("16:13:05", true, true),
+        part_header("16:13:10", false, false)
+    );
+    a.handle_agent(AgentEvent::History {
+        index: 0,
+        message: Message::user(format!("{stop}\n\n{PERSON_MARK}\n{words}")),
+    });
+    a.open_rewind_picker();
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("no rewind picker") };
+    assert_eq!(p.items[0].label, "y documenta cada función", "the label is the first thing the person typed");
+    a.modal = None;
+    a.undo();
+    drain(&mut rx);
+    assert_eq!(a.input.text(), "y documenta cada función\n\nDetente, cambiamos de tema");
+}
+
+#[test]
 fn a_request_a_hook_stops_before_its_turn_leaves_nothing_working() {
     let (mut a, _rx) = app();
     a.handle_agent(AgentEvent::Preparing { what: "preparing the request".into() });

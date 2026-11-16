@@ -52,6 +52,42 @@ fn a_stop_is_kept_through_a_resume_and_a_rewrite_until_the_request_that_carries_
     assert_eq!(Session::open_path(s.path()).unwrap().stop(), None, "a rewind goes back to before the stop");
 }
 #[test]
+fn undoing_the_request_that_carried_a_stop_makes_the_stop_of_the_one_before_it_pending_again() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    let line =
+        "[16:13:08 the person stopped the request above (Esc) while you waited for your reply; it got no answer]";
+    s.append(&Message::user("y documenta cada función")).unwrap();
+    s.record_stop(line).unwrap();
+    s.append(&Message::user(format!("{line}\n\n{}\nDetente, cambiamos de tema", nexo_core::agent::PERSON_MARK)))
+        .unwrap();
+    s.append(&Message::assistant("Vale.")).unwrap();
+    assert_eq!(s.stop(), None);
+    assert_eq!(s.fork(1).unwrap().stop(), Some(line), "a fork before that request goes on with it");
+    s.rewind(1).unwrap();
+    assert_eq!(s.stop(), Some(line), "the stopped request is the last one again");
+    assert_eq!(Session::open_path(s.path()).unwrap().stop(), Some(line), "on disk too");
+    assert_eq!(s.fork(1).unwrap().stop(), Some(line), "a fork of the whole goes on with the stop in force");
+    s.rewind(0).unwrap();
+    assert_eq!(s.stop(), None, "a rewind to before the stopped request takes its stop with it");
+}
+#[test]
+fn a_failed_rewind_keeps_the_stop_the_file_still_holds() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    for t in ["one", "two"] {
+        s.append(&Message::user(t)).unwrap();
+    }
+    let line =
+        "[16:13:08 the person stopped the request above (Esc) while you waited for your reply; it got no answer]";
+    s.record_stop(line).unwrap();
+    let tmp = s.path().with_extension(format!("jsonl.{}.tmp", std::process::id()));
+    std::fs::create_dir(&tmp).unwrap();
+    assert!(s.rewind(1).is_err());
+    assert_eq!(s.stop(), Some(line), "memory still matches the file");
+    assert_eq!(Session::open_path(s.path()).unwrap().stop(), Some(line));
+}
+#[test]
 fn sessions_born_in_the_same_second_are_all_saved() {
     // 3000 ids drawn in a few seconds from 65536 per second: some draw the same one
     let d = tempfile::tempdir().unwrap();

@@ -159,9 +159,9 @@ impl Engine {
             let mut words = if now.len() == text.len() {
                 self.words_in(std::iter::once(a), &[UKind::User])
             } else {
-                crate::hindsight::words(now, &mut self.int).into_iter().collect()
+                crate::hindsight::words(&now, &mut self.int).into_iter().collect()
             };
-            words.extend(topics(now, &mut self.int));
+            words.extend(topics(&now, &mut self.int));
             for &w in &words {
                 *self.requests_df.entry(w).or_default() += 1;
             }

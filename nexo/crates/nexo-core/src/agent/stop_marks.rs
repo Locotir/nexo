@@ -74,6 +74,16 @@ pub fn joined_parts(words: &str) -> Option<Vec<&str>> {
     Some(parts)
 }
 
+/// The person's words as they typed them: of messages joined into one, the parts one after another without the
+/// headers nexo wrote before each; one message as it is. What /undo and a rewind put back in the editor, so a request
+/// sent again carries no time of the first sending as if the person had typed it.
+pub fn as_typed(words: &str) -> std::borrow::Cow<'_, str> {
+    match joined_parts(words) {
+        Some(parts) => parts.join("\n\n").into(),
+        None => words.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +110,16 @@ mod tests {
         assert_eq!(joined_parts(&words), Some(vec!["y documenta cada función", "Detente, cambiamos de tema"]));
         assert_eq!(joined_parts("Detente, cambiamos de tema"), None);
         assert_eq!(joined_parts("[12:00:00 is when it broke]\nfix it"), None);
+    }
+
+    #[test]
+    fn joined_words_read_back_as_typed_have_no_headers_and_one_message_is_unchanged() {
+        let words = format!(
+            "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+            part_header("16:13:05", true, true),
+            part_header("16:13:10", false, false)
+        );
+        assert_eq!(as_typed(&words), "y documenta cada función\n\nDetente, cambiamos de tema");
+        assert_eq!(as_typed("[12:00:00 is when it broke]\nfix it"), "[12:00:00 is when it broke]\nfix it");
     }
 }

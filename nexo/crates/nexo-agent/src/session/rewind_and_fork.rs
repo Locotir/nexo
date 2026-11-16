@@ -8,9 +8,8 @@ impl Session {
     /// were spent. When the file cannot be rewritten, memory is left as it was, matching the file.
     pub fn rewind(&mut self, keep: usize) -> anyhow::Result<()> {
         let keep = keep.min(self.messages.len());
-        // the stopped request may be among the messages that go; what was stopped is no fact of the kept ones
-        self.stop = None;
-        let (messages, outputs) = (self.messages.clone(), self.outputs.clone());
+        let (messages, outputs, stop) = (self.messages.clone(), self.outputs.clone(), self.stop.clone());
+        self.stop = self.stop_at(keep);
         self.messages.truncate(keep);
         let ids: std::collections::BTreeSet<String> =
             self.messages.iter().flat_map(|m| m.tool_calls().map(|(id, _, _)| id.to_string())).collect();
@@ -19,10 +18,20 @@ impl Session {
         self.track(&done);
         // a file replaced but not opened again holds the kept messages: memory stays as they are
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
-            (self.messages, self.outputs) = (messages, outputs);
+            (self.messages, self.outputs, self.stop) = (messages, outputs, stop);
             self.meta.messages = self.messages.len();
         }
         done
+    }
+
+    /// The stop still to be said after the first `keep` messages. Cut after all of them, the one in force. Cut
+    /// before a request, the line that request carried: the person had stopped the one before it, and with the cut
+    /// it is again the last; a stop recorded after it is of a request that goes.
+    fn stop_at(&self, keep: usize) -> Option<String> {
+        match self.messages.get(keep) {
+            None => self.stop.clone(),
+            Some(m) => nexo_core::agent::stop_line_of(&m.text()).map(str::to_string),
+        }
     }
 
     /// Writes the whole file again from memory: to a temporary file next to it, renamed over it.
@@ -153,6 +162,9 @@ impl Session {
         }
         if let Some(p) = &self.prefix {
             f.record_prefix(p)?; // the fork goes on with the same prefix, so the same cache
+        }
+        if let Some(line) = self.stop_at(keep) {
+            f.record_stop(&line)?; // its next request says the person stopped the one before it
         }
         Ok(f)
     }

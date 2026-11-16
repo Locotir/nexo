@@ -90,10 +90,10 @@ impl Engine {
             }
             let text = self.tr.unit_text(i);
             self.index.mt().add(i, &text);
-            // of requests joined into one, the newest is what the person asks now: its keys are the ones looked up
+            // what the person asks now (of requests joined into one, those still asked): its keys are the ones looked up
             let words = request_words(&text);
             if kind == UKind::User && !words.trim().is_empty() {
-                self.index.mt().want(i, words);
+                self.index.mt().want(i, &words);
             }
         }
     }
