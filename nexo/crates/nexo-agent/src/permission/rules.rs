@@ -19,9 +19,19 @@ pub(super) fn split_rule(rule: &str) -> (&str, Option<&str>) {
 }
 
 pub(super) fn glob(pattern: &str) -> Option<GlobMatcher> {
+    build_glob(pattern, false)
+}
+
+/// A glob over file names: on macOS the volume folds case, so `.GIT` is `.git` and the rule must see it. Command
+/// patterns never fold: `git branch -d *` must not cover `-D`.
+pub(super) fn path_glob(pattern: &str) -> Option<GlobMatcher> {
+    build_glob(pattern, cfg!(target_os = "macos"))
+}
+
+fn build_glob(pattern: &str, fold: bool) -> Option<GlobMatcher> {
     GlobBuilder::new(pattern)
         .literal_separator(false)
-        .case_insensitive(cfg!(target_os = "macos"))
+        .case_insensitive(fold)
         .build()
         .ok()
         .map(|g: Glob| g.compile_matcher())
@@ -109,12 +119,12 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
         }
         (ToolKind::Read | ToolKind::Write | ToolKind::Search, Some(p)) => {
             // a rule written with `\` on Windows reads as one with `/`
-            let g = if pattern.contains('\\') { glob(&pattern.replace('\\', "/")).unwrap_or(g) } else { g };
             let pattern = pattern.replace('\\', "/");
+            let g = path_glob(&pattern).unwrap_or(g);
             let (written, real) = (path_forms(&p, cwd), real_forms(&p, cwd));
             let hit = |forms: &[String]| forms.iter().any(|f| g.is_match(f));
             // the resolved path also meets the rule with its own folder resolved
-            let g_real = resolved_pattern(&pattern).and_then(|r| glob(&r));
+            let g_real = resolved_pattern(&pattern).and_then(|r| path_glob(&r));
             let hit_real = hit(&real) || g_real.is_some_and(|gr| real.iter().any(|f| gr.is_match(f)));
             // a link does not carry an allow rule to where it points; a deny rule sees both
             if deny {

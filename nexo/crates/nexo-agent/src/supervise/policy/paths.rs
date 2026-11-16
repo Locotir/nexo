@@ -9,10 +9,12 @@ pub(super) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
+/// `separators` marks a file name pattern: on macOS the volume folds its case. A command or tool pattern never folds, so
+/// `git branch -d *` approved by the person does not cover `-D`.
 pub(super) fn glob(pattern: &str, separators: bool) -> Option<globset::GlobMatcher> {
     GlobBuilder::new(pattern)
         .literal_separator(separators)
-        .case_insensitive(cfg!(target_os = "macos"))
+        .case_insensitive(separators && cfg!(target_os = "macos"))
         .build()
         .ok()
         .map(|g| g.compile_matcher())

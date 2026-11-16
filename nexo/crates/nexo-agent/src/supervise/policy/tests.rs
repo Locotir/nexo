@@ -305,3 +305,30 @@ fn a_session_folder_in_tmp_holds_the_files_named_by_tmp() {
     assert!(!matches!(write(format!("{}/a.txt", d.path().display())), Verdict::Deny(_)));
     assert!(matches!(write("/tmp/nexo-policy-elsewhere/a.txt".into()), Verdict::Deny(_)));
 }
+
+#[test]
+fn macos_wrappers_and_osascript_do_not_hide_a_destroyer() {
+    for cmd in [
+        "caffeinate rm -rf /Users",
+        "caffeinate -t 5 rm -rf /Users",
+        "arch -arm64 diskutil eraseDisk APFS X disk2",
+        "xcrun newfs_apfs /dev/disk3",
+        "xcrun --sdk macosx diskutil eraseDisk APFS X disk2",
+        "osascript -e 'Do Shell Script \"diskutil eraseDisk APFS X disk2\"'",
+        "osascript -e 'do shell script (\"rm -rf /Users\")'",
+    ] {
+        assert!(catastrophic(cmd).is_some(), "{cmd}");
+    }
+    let p = sample();
+    assert!(matches!(bash(&p, "caffeinate rm -rf /Users"), Verdict::Deny(_)));
+    assert!(matches!(bash(&p, "osascript -e 'do shell script \"rm -rf /Users\"'"), Verdict::Deny(_)));
+    assert!(catastrophic("caffeinate -i make").is_none());
+    assert!(catastrophic("osascript -e 'display dialog \"hi\"'").is_none());
+}
+
+#[test]
+fn approved_command_patterns_keep_the_case_of_their_flags() {
+    let p = Policy::parse("[approve]\nbash=[\"git branch -d *\"]").unwrap();
+    assert_eq!(bash(&p, "git branch -d old"), Verdict::Approve);
+    assert_eq!(bash(&p, "git branch -D old"), Verdict::Pass);
+}

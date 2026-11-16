@@ -83,8 +83,15 @@ pub(super) fn program(words: &[String]) -> (&str, &[String]) {
     while let Some(w) = words.get(i) {
         let assign =
             w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_'));
+        let name = w.rsplit('/').next().unwrap_or(w);
         if assign || matches!(w.as_str(), "sudo" | "env" | "nohup" | "time" | "exec" | "command" | "nice") {
             i += 1;
+        } else if let Some(takes) = mac_wrapper(name) {
+            // `caffeinate -i rm`, `arch -arm64 rm`, `xcrun --sdk macosx rm`: the options, then the program they run
+            i += 1;
+            while let Some(o) = words.get(i).filter(|o| o.starts_with('-')) {
+                i += if takes.contains(&o.as_str()) { 2 } else { 1 };
+            }
         } else {
             break;
         }
@@ -92,5 +99,16 @@ pub(super) fn program(words: &[String]) -> (&str, &[String]) {
     match words.get(i) {
         Some(w) => (w.rsplit('/').next().unwrap_or(w), &words[i + 1..]),
         None => ("", &[]),
+    }
+}
+
+/// The macOS programs that run the command after their options, and the options that take a value.
+fn mac_wrapper(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "caffeinate" => Some(&["-t", "-w"]),
+        "arch" => Some(&["-arch", "-e", "-d"]),
+        "xcrun" => Some(&["--sdk", "-sdk", "--toolchain", "-toolchain"]),
+        "sandbox-exec" => Some(&["-f", "-p", "-n", "-D"]),
+        _ => None,
     }
 }

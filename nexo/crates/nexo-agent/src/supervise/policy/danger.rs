@@ -47,10 +47,25 @@ pub fn catastrophic(cmd: &str) -> Option<&'static str> {
                     return Some(why);
                 }
             }
+            // `osascript -e 'do shell script "diskutil eraseDisk ..."'` hands its text to a shell
+            "osascript" => {
+                if let Some(why) = shell_texts(args).iter().find_map(|t| catastrophic(t)) {
+                    return Some(why);
+                }
+            }
             _ => {}
         }
     }
     None
+}
+
+/// The shell texts of every AppleScript `do shell script "..."` among an `osascript` call's arguments.
+fn shell_texts(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in args {
+        crate::permission::osascript_scripts(a, &mut out);
+    }
+    out
 }
 
 /// Whether `diskutil`'s arguments erase or repartition a disk or APFS container.
@@ -114,6 +129,11 @@ pub(super) fn dangerous(cmd: &str, cwd: &Path, home: Option<&Path>) -> Option<&'
                             return Some(why);
                         }
                     }
+                }
+            }
+            "osascript" => {
+                if let Some(why) = shell_texts(args).iter().find_map(|t| dangerous(t, cwd, home)) {
+                    return Some(why);
                 }
             }
             "tee" if operands.iter().any(|a| outside(a, cwd, home)) => {

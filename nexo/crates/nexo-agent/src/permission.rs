@@ -48,6 +48,7 @@ use paths::editable;
 use rules::names_a_path;
 use suggest::is_flag;
 
+pub(crate) use bash::osascript_scripts;
 pub use paths::is_sensitive;
 pub(crate) use paths::real_path;
 pub use rules::{host_of, rule_matches, rule_matches_as, target_of};

@@ -515,3 +515,56 @@ fn guarded_names_fold_case_only_where_the_disk_does() {
     assert!(paths::guarded_in(Path::new(".git/config"), false));
     assert!(!paths::guarded_in(Path::new("src/main.rs"), true));
 }
+
+#[test]
+fn allow_rules_for_commands_keep_the_case_of_their_flags() {
+    // the volume folds file names on macOS, never flags: `-D` force-deletes where `-d` refuses
+    for (rule, ok, other) in [
+        ("bash(git branch -d *)", "git branch -d old", "git branch -D old"),
+        ("bash(git checkout -b *)", "git checkout -b new", "git checkout -B new"),
+    ] {
+        assert_eq!(decide_bash(rule, "read(nothing)", ok), Decision::Allow, "{ok}");
+        assert_eq!(decide_bash(rule, "read(nothing)", other), Decision::Ask, "{other}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn path_rules_fold_case_on_macos() {
+    let p = Policy { mode: PermissionMode::Ask, allow: vec![], deny: vec!["write(.git/**)".into()] };
+    let d = p.decide("write", ToolKind::Write, &json!({ "path": ".GIT/config" }), &cwd());
+    assert!(matches!(d, Decision::Deny(_)));
+}
+
+#[test]
+fn osascript_shell_calls_are_read_whatever_their_case_and_spacing() {
+    let dodges = [
+        "osascript -e 'Do Shell Script \"rm -rf ~\"'",
+        "osascript -e 'DO   SHELL\tSCRIPT \"rm -rf ~\"'",
+        "osascript -e 'do shell script (\"rm -rf ~\")'",
+        "osascript -e 'do shell script \"rm -rf ~\" with administrator privileges'",
+        "osascript -e 'do shell script \"ls\" & (do shell script \"rm -rf ~\")'",
+        "osascript -e 'tell application \"Finder\"' -e 'do shell script \"rm x\"' -e 'end tell'",
+    ];
+    for cmd in dodges {
+        assert!(matches!(decide_bash("bash", "bash(rm *)", cmd), Decision::Deny(_)), "{cmd}");
+    }
+}
+
+#[test]
+fn an_osascript_shell_call_that_cannot_be_read_in_full_is_denied() {
+    let unreadable = [
+        "osascript -e 'do shell script \"rm \" & \"-rf ~\"'",
+        "osascript -e 'set c to \"ls\"' -e 'do shell script c'",
+        "osascript -e 'do shell script \"ls\" & \"x\"'",
+        "osascript -l JavaScript -e 'Application.currentApplication().doShellScript(\"ls\")'",
+        "osascript -e 'do shell script \"unterminated'",
+    ];
+    for cmd in unreadable {
+        assert!(matches!(decide_bash("bash", "bash(rm *)", cmd), Decision::Deny(_)), "{cmd}");
+    }
+    // a call that is read and holds nothing denied, and a script with no shell call, pass the rule
+    for cmd in ["osascript -e 'do shell script \"ls\"'", "osascript -e 'display dialog \"hi\"'"] {
+        assert_eq!(decide_bash("bash", "bash(rm *)", cmd), Decision::Allow, "{cmd}");
+    }
+}

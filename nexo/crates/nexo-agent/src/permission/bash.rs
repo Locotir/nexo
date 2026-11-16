@@ -89,7 +89,8 @@ pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) -> bool
     let mut unknown = lx.locale || lx.braced_at || lx.open_quote || lx.bad_heredoc;
     let (parts, _) = simple_commands(cmd, true);
     for p in parts {
-        let (ws, scripts) = unwrap_command(words(&p));
+        let (ws, scripts, hidden) = unwrap_command(words(&p));
+        unknown |= hidden;
         out.push(p);
         if !ws.is_empty() {
             out.push(ws.join(" "));
@@ -105,9 +106,11 @@ pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) -> bool
     unknown
 }
 
-/// The command under its wrappers, its program as a bare name, and the scripts it hands a shell.
-pub(super) fn unwrap_command(ws: Vec<String>) -> (Vec<String>, Vec<String>) {
+/// The command under its wrappers, its program as a bare name, the scripts it hands a shell, and whether it
+/// runs a shell script this cannot read in full (an `osascript` call that builds its command at run time).
+pub(super) fn unwrap_command(ws: Vec<String>) -> (Vec<String>, Vec<String>, bool) {
     let mut scripts = Vec::new();
+    let mut hidden = false;
     let mut i = 0;
     loop {
         while ws.get(i).is_some_and(|w| is_assignment(w)) {
@@ -172,10 +175,14 @@ pub(super) fn unwrap_command(ws: Vec<String>) -> (Vec<String>, Vec<String>) {
         }
         Some("eval") => scripts.push(ws[1..].join(" ")),
         // `osascript -e 'do shell script "rm x"'` hands the quoted text to a shell
-        Some("osascript") => scripts.extend(ws[1..].iter().filter_map(|w| osascript_shell(w))),
+        Some("osascript") => {
+            for w in &ws[1..] {
+                hidden |= osascript_scripts(w, &mut scripts);
+            }
+        }
         _ => {}
     }
-    (ws, scripts)
+    (ws, scripts, hidden)
 }
 
 /// A simple command whose options make its program run other code or delete what it finds, so an
@@ -218,20 +225,64 @@ pub(super) fn runs_code(part: &str) -> bool {
     }
 }
 
-/// The shell text inside an AppleScript `do shell script "..."` (its quotes and backslashes undone).
-fn osascript_shell(script: &str) -> Option<String> {
-    let at = script.find("do shell script")? + "do shell script".len();
-    let mut chars = script[at..].trim_start().chars();
-    if chars.next()? != '"' {
-        return None;
+/// Pushes the shell text of every AppleScript `do shell script "..."` in `script` (its quotes and backslashes
+/// undone) onto `out`. Returns true when a shell call is there that this cannot read in full: a command built
+/// by `&` or a variable, a call in JavaScript (`doShellScript`), an open string. AppleScript ignores case and
+/// the spacing between the three words, so those are folded before looking, and every call the plain text
+/// holds is counted against the ones read, so a spelling this does not parse counts as unreadable.
+pub(crate) fn osascript_scripts(script: &str, out: &mut Vec<String>) -> bool {
+    let packed: String = script.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+    let calls = packed.matches("doshellscript").count();
+    if calls == 0 {
+        return false;
     }
-    let mut out = String::new();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => out.push(chars.next()?),
-            c => out.push(c),
+    let spaced = script.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = spaced.to_ascii_lowercase();
+    let (mut read, mut unreadable) = (0, false);
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("do shell script") {
+        let start = from + at;
+        let end = start + "do shell script".len();
+        from = end;
+        let word_edge = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !word_edge(lower[..start].chars().next_back()) || !word_edge(lower[end..].chars().next()) {
+            continue;
         }
+        read += 1;
+        let mut rest = spaced[end..].trim_start();
+        while let Some(r) = rest.strip_prefix('(') {
+            rest = r.trim_start();
+        }
+        let Some(body) = rest.strip_prefix('"') else {
+            unreadable = true;
+            continue;
+        };
+        let (mut text, mut chars, mut closed) = (String::new(), body.char_indices(), None);
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '"' => {
+                    closed = Some(i + 1);
+                    break;
+                }
+                '\\' => match chars.next() {
+                    Some((_, 'n')) => text.push('\n'),
+                    Some((_, 'r')) => text.push('\r'),
+                    Some((_, 't')) => text.push('\t'),
+                    Some((_, c)) => text.push(c),
+                    None => break,
+                },
+                c => text.push(c),
+            }
+        }
+        let Some(closed) = closed else {
+            unreadable = true;
+            continue;
+        };
+        // only the closing parenthesis and AppleScript's own `with administrator privileges` may follow: a `&`
+        // or `+` goes on building the command
+        let tail = body[closed..].trim_start_matches([')', ' ']).to_ascii_lowercase();
+        unreadable |= !(tail.is_empty() || tail.starts_with("with ") || tail.starts_with("without "));
+        out.push(text);
     }
-    Some(out)
+    unreadable || read != calls
 }
