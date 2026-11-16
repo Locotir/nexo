@@ -3,8 +3,9 @@
 //! chromiumoxide kills the main browser process when its handle is dropped, but not when nexo itself dies
 //! without running destructors (a crash, a `taskkill`, closing the console), and it never touches the helper
 //! processes. On Windows the browser is therefore put in a job object that kills everything in it when its
-//! handle closes, which the OS does when nexo exits however it exits. On Linux and macOS the helpers exit with
-//! the main process, so nothing more is done there.
+//! handle closes, which the OS does when nexo exits however it exits. On Linux and macOS nothing more is done
+//! there: the helpers exit with the main browser process, but after a `kill -9` of nexo the browser itself keeps
+//! running, and a kept profile stays locked until it is closed (the next launch then says which browser holds it).
 //!
 //! The browser binaries are GUI-subsystem programs (`chrome.exe`, `msedge.exe`, `brave.exe`), so launching
 //! them never opens a console window; nothing in this crate starts a console program.

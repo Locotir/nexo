@@ -7,7 +7,9 @@
 
 use anyhow::{anyhow, Result};
 use clap::Args;
-use nexo_tools::browser::chrome_setup::{open_extensions, setup, Places, HOST_NAME};
+use nexo_tools::browser::chrome_setup::{
+    copy_folder_on_mac, open_extensions, setup, Places, HOST_NAME, MAC_FOLDER_HINT,
+};
 
 #[derive(Args, Debug)]
 pub struct ChromeSetupArgs {
@@ -32,6 +34,13 @@ fn execute(a: &ChromeSetupArgs) -> Result<()> {
     println!("Set up {} for {HOST_NAME}, host {}", done.browsers.join(", "), done.host.display());
     println!("In the browser, on chrome://extensions: 1) turn on Developer mode (top right)");
     println!("2) click Load unpacked and pick {}", done.extension_dir.display());
+    if cfg!(target_os = "macos") {
+        let copied = copy_folder_on_mac(&done.extension_dir);
+        println!("   {MAC_FOLDER_HINT}{}", if copied { " The path is on your clipboard." } else { "" });
+    }
+    for note in &done.notes {
+        println!("Note: {note}");
+    }
     println!(
         "3) click the nexo button in the toolbar. Nothing is controlled until a nexo session asks and you click Allow"
     );

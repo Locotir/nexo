@@ -23,12 +23,15 @@ pub const EXTENSION_FILES: [(&str, &str); 4] = [
     ("consent.js", include_str!("../../assets/chrome-extension/consent.js")),
 ];
 
-/// A browser that reads native-messaging manifests.
+/// A browser that reads native-messaging manifests. An empty folder name means the browser has no build for that
+/// system (Arc is macOS only, the Canary channels have no Linux build) or nexo does not set it up there.
 #[allow(dead_code)] // each system reads the fields of its own
 pub struct Browser {
     pub name: &'static str,
     /// Programs looked up along `PATH` to see if it is installed, and to open it.
     bins: &'static [&'static str],
+    /// Its application bundle's name under `/Applications` (macOS).
+    app: &'static str,
     /// Its folder under `~/.config` (Linux).
     linux: &'static str,
     /// Its folder under `~/Library/Application Support` (macOS).
@@ -37,10 +40,27 @@ pub struct Browser {
     win: &'static str,
 }
 
-pub const BROWSERS: [Browser; 4] = [
+impl Browser {
+    /// Whether this browser exists on the system nexo runs on.
+    fn exists_here(&self) -> bool {
+        let folder = if cfg!(windows) {
+            self.win
+        } else if cfg!(target_os = "macos") {
+            self.mac
+        } else {
+            self.linux
+        };
+        !folder.is_empty()
+    }
+}
+
+/// In order of preference: the four stable browsers first, then Arc and the pre-release channels. The Windows
+/// registry keys of the pre-release channels are not verified, so they are left out there.
+pub const BROWSERS: [Browser; 11] = [
     Browser {
         name: "Google Chrome",
         bins: &["google-chrome-stable", "google-chrome"],
+        app: "Google Chrome",
         linux: "google-chrome",
         mac: "Google/Chrome",
         win: r"Software\Google\Chrome",
@@ -48,6 +68,7 @@ pub const BROWSERS: [Browser; 4] = [
     Browser {
         name: "Chromium",
         bins: &["chromium", "chromium-browser"],
+        app: "Chromium",
         linux: "chromium",
         mac: "Chromium",
         win: r"Software\Chromium",
@@ -55,6 +76,7 @@ pub const BROWSERS: [Browser; 4] = [
     Browser {
         name: "Microsoft Edge",
         bins: &["microsoft-edge-stable", "microsoft-edge"],
+        app: "Microsoft Edge",
         linux: "microsoft-edge",
         mac: "Microsoft Edge",
         win: r"Software\Microsoft\Edge",
@@ -62,9 +84,59 @@ pub const BROWSERS: [Browser; 4] = [
     Browser {
         name: "Brave",
         bins: &["brave-browser", "brave"],
+        app: "Brave Browser",
         linux: "BraveSoftware/Brave-Browser",
         mac: "BraveSoftware/Brave-Browser",
         win: r"Software\BraveSoftware\Brave-Browser",
+    },
+    Browser { name: "Arc", bins: &[], app: "Arc", linux: "", mac: "Arc/User Data", win: "" },
+    Browser {
+        name: "Google Chrome Beta",
+        bins: &["google-chrome-beta"],
+        app: "Google Chrome Beta",
+        linux: "google-chrome-beta",
+        mac: "Google/Chrome Beta",
+        win: "",
+    },
+    Browser {
+        name: "Google Chrome Dev",
+        bins: &["google-chrome-unstable"],
+        app: "Google Chrome Dev",
+        linux: "google-chrome-unstable",
+        mac: "Google/Chrome Dev",
+        win: "",
+    },
+    Browser {
+        name: "Google Chrome Canary",
+        bins: &[],
+        app: "Google Chrome Canary",
+        linux: "",
+        mac: "Google/Chrome Canary",
+        win: "",
+    },
+    Browser {
+        name: "Microsoft Edge Beta",
+        bins: &["microsoft-edge-beta"],
+        app: "Microsoft Edge Beta",
+        linux: "microsoft-edge-beta",
+        mac: "Microsoft Edge Beta",
+        win: "",
+    },
+    Browser {
+        name: "Microsoft Edge Dev",
+        bins: &["microsoft-edge-dev"],
+        app: "Microsoft Edge Dev",
+        linux: "microsoft-edge-dev",
+        mac: "Microsoft Edge Dev",
+        win: "",
+    },
+    Browser {
+        name: "Microsoft Edge Canary",
+        bins: &[],
+        app: "Microsoft Edge Canary",
+        linux: "",
+        mac: "Microsoft Edge Canary",
+        win: "",
     },
 ];
 
@@ -115,8 +187,11 @@ pub struct Setup {
     pub browsers: Vec<&'static str>,
     pub host: PathBuf,
     pub extension_dir: PathBuf,
-    /// The first of those browsers that was found on `PATH`: it can be opened on `chrome://extensions`.
+    /// The first of those browsers that was found on `PATH` (on macOS its `.app` folder): it can be opened on
+    /// `chrome://extensions`.
     pub opener: Option<PathBuf>,
+    /// What the person should know that setup could not fix by itself.
+    pub notes: Vec<String>,
 }
 
 /// The text of the native-messaging manifest for a host at `host`: the nexo program itself, which runs as the host
@@ -139,8 +214,26 @@ fn manifest_dir(b: &Browser, base: &Path) -> PathBuf {
     base.join(sub).join("NativeMessagingHosts")
 }
 
-/// A program of `b` found along `PATH`.
+/// The application bundle of `b` in the first of `roots` that has it (macOS: `/Applications`, `~/Applications`).
+fn find_app(b: &Browser, roots: &[PathBuf]) -> Option<PathBuf> {
+    if b.app.is_empty() {
+        return None;
+    }
+    roots.iter().map(|r| r.join(format!("{}.app", b.app))).find(|p| p.is_dir())
+}
+
+/// Where macOS keeps applications for this account.
+fn app_roots() -> Vec<PathBuf> {
+    std::iter::once(PathBuf::from("/Applications")).chain(dirs::home_dir().map(|h| h.join("Applications"))).collect()
+}
+
+/// A program of `b` found along `PATH`, or on macOS its application bundle (the browsers there are not on `PATH`).
 fn find_bin(b: &Browser) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        if let Some(app) = find_app(b, &app_roots()) {
+            return Some(app);
+        }
+    }
     let path = std::env::var_os("PATH")?;
     let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
     b.bins.iter().find_map(|name| {
@@ -151,7 +244,7 @@ fn find_bin(b: &Browser) -> Option<PathBuf> {
 
 /// The browsers to set up: those `present` says are on this machine, else Chrome alone.
 pub fn choose(present: impl Fn(&Browser) -> bool) -> Vec<&'static Browser> {
-    let found: Vec<&Browser> = BROWSERS.iter().filter(|b| present(b)).collect();
+    let found: Vec<&Browser> = BROWSERS.iter().filter(|b| b.exists_here() && present(b)).collect();
     if found.is_empty() {
         vec![&BROWSERS[0]]
     } else {
@@ -286,14 +379,71 @@ pub fn setup(p: &Places) -> Result<Setup, String> {
         host: p.host.clone(),
         extension_dir: p.extension_dir.clone(),
         opener: browsers.iter().find_map(|b| find_bin(b)),
+        notes: quarantine_note(&p.host).into_iter().collect(),
     })
+}
+
+/// The command that opens `bin` on the extensions page: an application bundle (macOS) goes through `open -a`,
+/// since the program inside it is not meant to be started by hand.
+fn opener_command(bin: &Path) -> Command {
+    if bin.extension().is_some_and(|e| e == "app") {
+        let mut c = Command::new("open");
+        c.arg("-a").arg(bin).arg("chrome://extensions");
+        c
+    } else {
+        let mut c = Command::new(bin);
+        c.arg("chrome://extensions");
+        c
+    }
+}
+
+/// macOS: a program downloaded with a browser carries the quarantine mark, and the browser may then refuse to
+/// start it as the native host. The note names the exact command that lifts it; nexo does not run it silently.
+fn quarantine_note(host: &Path) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let marked = Command::new("xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(host)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    marked.then(|| quarantine_text(host))
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn quarantine_text(host: &Path) -> String {
+    format!(
+        "macOS marked {} as downloaded, so the browser may refuse to start it. If the extension says the host \
+         exited, run: xattr -d com.apple.quarantine \"{}\"",
+        host.display(),
+        host.display()
+    )
+}
+
+/// How to reach the extension's folder in a macOS file dialog, which hides folders that start with a dot.
+pub const MAC_FOLDER_HINT: &str =
+    "In the file dialog press Cmd+Shift+G and paste the folder's path (the dialog hides folders that start with a dot).";
+
+/// macOS: puts `dir` on the clipboard, best effort. Returns whether it worked; false on every other system.
+pub fn copy_folder_on_mac(dir: &Path) -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    use std::io::Write;
+    let spawned = Command::new("pbcopy").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let Ok(mut child) = spawned else { return false };
+    let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(dir.to_string_lossy().as_bytes()).is_ok());
+    wrote && child.wait().is_ok_and(|s| s.success())
 }
 
 /// Opens the browser on `chrome://extensions`. `Ok(false)`: no browser program was found to open.
 pub fn open_extensions(s: &Setup) -> Result<bool, String> {
     let Some(bin) = &s.opener else { return Ok(false) };
-    Command::new(bin)
-        .arg("chrome://extensions")
+    opener_command(bin)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -434,14 +584,15 @@ mod tests {
     #[test]
     fn each_browser_gets_its_own_folder() {
         let base = Path::new("/cfg");
-        let all: Vec<PathBuf> = BROWSERS.iter().map(|b| manifest_dir(b, base)).collect();
+        let here: Vec<&Browser> = BROWSERS.iter().filter(|b| b.exists_here()).collect();
+        let all: Vec<PathBuf> = here.iter().map(|b| manifest_dir(b, base)).collect();
         for d in &all {
             assert!(d.starts_with("/cfg") && d.ends_with("NativeMessagingHosts"), "{}", d.display());
         }
         let mut sorted = all.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), BROWSERS.len(), "no two browsers share a folder");
+        assert_eq!(sorted.len(), here.len(), "no two browsers share a folder");
         #[cfg(target_os = "linux")]
         assert_eq!(all[3], Path::new("/cfg/BraveSoftware/Brave-Browser/NativeMessagingHosts"));
     }
@@ -499,5 +650,74 @@ mod tests {
         // an extension from another version
         std::fs::write(p.extension_dir.join("background.js"), "old").unwrap();
         assert_eq!(inspect(&p).files, ChromeFiles::Stale);
+    }
+
+    #[test]
+    fn a_browser_that_only_exists_in_the_applications_folder_is_found_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("Applications");
+        std::fs::create_dir_all(apps.join("Microsoft Edge.app")).unwrap();
+        let roots = vec![tmp.path().join("none"), apps.clone()];
+        let edge = BROWSERS.iter().find(|b| b.name == "Microsoft Edge").unwrap();
+        let chrome = &BROWSERS[0];
+        assert_eq!(find_app(edge, &roots), Some(apps.join("Microsoft Edge.app")));
+        assert_eq!(find_app(chrome, &roots), None);
+        // Edge is chosen and Chrome is not, though no profile folder exists yet
+        let chosen = choose(|b| find_app(b, &roots).is_some());
+        assert_eq!(chosen.iter().map(|b| b.name).collect::<Vec<_>>(), ["Microsoft Edge"]);
+    }
+
+    #[test]
+    fn an_application_bundle_is_opened_with_open_and_a_program_directly() {
+        let c = opener_command(Path::new("/Applications/Google Chrome.app"));
+        assert_eq!(c.get_program(), "open");
+        let args: Vec<_> = c.get_args().collect();
+        assert_eq!(args, ["-a", "/Applications/Google Chrome.app", "chrome://extensions"]);
+        let c = opener_command(Path::new("/usr/bin/chromium"));
+        assert_eq!(c.get_program(), "/usr/bin/chromium");
+        assert_eq!(c.get_args().collect::<Vec<_>>(), ["chrome://extensions"]);
+    }
+
+    #[test]
+    fn browsers_that_only_some_systems_have_are_skipped_elsewhere() {
+        let by = |n: &str| BROWSERS.iter().find(|b| b.name == n).unwrap();
+        assert_eq!(by("Arc").exists_here(), cfg!(target_os = "macos"));
+        assert_eq!(by("Google Chrome Canary").exists_here(), cfg!(target_os = "macos"));
+        assert!(by("Google Chrome").exists_here() && by("Brave").exists_here());
+        // the four stable browsers stay first, so Chrome is still the fallback
+        assert_eq!(
+            BROWSERS.iter().take(4).map(|b| b.name).collect::<Vec<_>>(),
+            ["Google Chrome", "Chromium", "Microsoft Edge", "Brave"]
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn manifest_folders_of_the_macos_browsers_are_the_ones_each_reads() {
+        let base = Path::new("/Users/a/Library/Application Support");
+        let mac = |n: &str| {
+            let b = BROWSERS.iter().find(|b| b.name == n).unwrap();
+            let sub = b.mac;
+            base.join(sub).join("NativeMessagingHosts")
+        };
+        assert!(mac("Google Chrome").ends_with("Google/Chrome/NativeMessagingHosts"));
+        assert!(mac("Arc").ends_with("Arc/User Data/NativeMessagingHosts"));
+        assert!(mac("Google Chrome Canary").ends_with("Google/Chrome Canary/NativeMessagingHosts"));
+        assert!(mac("Google Chrome Beta").ends_with("Google/Chrome Beta/NativeMessagingHosts"));
+        assert!(mac("Microsoft Edge Dev").ends_with("Microsoft Edge Dev/NativeMessagingHosts"));
+        #[cfg(target_os = "macos")]
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let p = Places { config_dir: dirs::config_dir(), ..places(tmp.path()) };
+            let f = manifest_file(&BROWSERS[0], &p).unwrap();
+            assert!(f.ends_with("Library/Application Support/Google/Chrome/NativeMessagingHosts/dev.nexo.browser.json"));
+        }
+    }
+
+    #[test]
+    fn the_quarantine_note_gives_the_exact_command() {
+        let t = quarantine_text(Path::new("/Users/a/bin/nexo"));
+        assert!(t.ends_with(r#"xattr -d com.apple.quarantine "/Users/a/bin/nexo""#), "{t}");
+        assert!(quarantine_note(Path::new("/nonexistent/nexo")).is_none());
     }
 }

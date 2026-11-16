@@ -236,6 +236,16 @@ const PRODUCTS: &[Product] = &[
         mac: &["Brave Browser Nightly.app/Contents/MacOS/Brave Browser Nightly"],
         flatpak: None,
     },
+    // Last on purpose: Arc has no headless mode, so any other browser is a better one to launch.
+    Product {
+        name: "Arc",
+        bins: &[],
+        linux: &[],
+        windows: &[],
+        app_path_exe: None,
+        mac: &["Arc.app/Contents/MacOS/Arc"],
+        flatpak: None,
+    },
 ];
 
 /// `root` with `rel` appended one component at a time, whatever separator `rel` uses.
@@ -323,15 +333,42 @@ pub fn override_problem() -> Option<String> {
 
 fn problem_in(value: Option<OsString>) -> Option<String> {
     let v = value?;
-    if v.is_empty() || PathBuf::from(&v).is_file() {
+    if v.is_empty() || override_program(Path::new(&v)).is_some() {
         return None;
     }
     Some(format!("{OVERRIDE_VAR}={} is not a file", v.to_string_lossy()))
 }
 
-/// The browser named by `NEXO_BROWSER`, if it points at a file.
+/// The program inside the application bundle `dir` (`X.app`): `Contents/MacOS/X` when it is a file, else the
+/// first file in that folder. The natural value of `NEXO_BROWSER` on macOS is the bundle itself.
+fn bundle_program(dir: &Path) -> Option<PathBuf> {
+    if dir.extension().is_none_or(|e| e != "app") || !dir.is_dir() {
+        return None;
+    }
+    let macos = dir.join("Contents").join("MacOS");
+    let named = macos.join(dir.file_stem()?);
+    if named.is_file() {
+        return Some(named);
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&macos).ok()?.filter_map(|e| Some(e.ok()?.path())).collect();
+    files.sort();
+    files.into_iter().find(|p| p.is_file())
+}
+
+/// What `NEXO_BROWSER` names as a program: the file itself, or on macOS the program inside an `.app` folder.
+fn override_program(value: &Path) -> Option<PathBuf> {
+    if value.is_file() {
+        return Some(value.to_path_buf());
+    }
+    if Os::current() == Os::Mac {
+        return bundle_program(value);
+    }
+    None
+}
+
+/// The browser named by `NEXO_BROWSER`, if it points at a file (or, on macOS, an application bundle).
 fn from_override(value: Option<OsString>) -> Option<PathBuf> {
-    value.map(PathBuf::from).filter(|p| p.is_file())
+    override_program(Path::new(&value?))
 }
 
 /// Every browser installed, best first: `NEXO_BROWSER` if it names a file, then the stable channels, then the
@@ -512,6 +549,42 @@ mod tests {
         assert!(got.starts_with("NEXO_BROWSER=") && got.ends_with("missing is not a file"), "{got}");
         // A directory is not a browser either.
         assert!(problem_in(Some(dir.path().as_os_str().to_owned())).is_some());
+    }
+
+    #[test]
+    fn an_application_bundle_names_the_program_inside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("Thing.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("helper"), "").unwrap();
+        std::fs::write(macos.join("Thing"), "").unwrap();
+        // the file named like the bundle wins over the others
+        assert_eq!(bundle_program(&dir.path().join("Thing.app")), Some(macos.join("Thing")));
+        // otherwise the first file
+        std::fs::remove_file(macos.join("Thing")).unwrap();
+        assert_eq!(bundle_program(&dir.path().join("Thing.app")), Some(macos.join("helper")));
+        // a folder that is not a bundle, or a missing one, is nothing
+        assert_eq!(bundle_program(dir.path()), None);
+        assert_eq!(bundle_program(&dir.path().join("Missing.app")), None);
+        // only macOS reads an override this way
+        let value = Some(dir.path().join("Thing.app").into_os_string());
+        assert_eq!(from_override(value.clone()).is_some(), cfg!(target_os = "macos"));
+        assert_eq!(problem_in(value).is_none(), cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn arc_is_known_on_macos_only_and_tried_last() {
+        let mut env = Env::empty(Os::Mac);
+        env.home = Some(PathBuf::from("/Users/ana"));
+        let got = listed(&env);
+        assert_eq!(got.last().unwrap().0, "/Users/ana/Applications/Arc.app/Contents/MacOS/Arc");
+        assert!(got.iter().any(|(p, n)| p == "/Applications/Arc.app/Contents/MacOS/Arc" && *n == "Arc"));
+        for os in [Os::Linux, Os::Windows] {
+            let mut env = Env::empty(os);
+            env.path_dirs = vec![PathBuf::from("/usr/bin")];
+            env.program_files = vec![PathBuf::from("/pf")];
+            assert!(!listed(&env).iter().any(|(_, n)| *n == "Arc"), "{os:?}");
+        }
     }
 
     #[test]

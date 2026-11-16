@@ -38,6 +38,14 @@ pub(super) async fn set_up(state: &Shared, events: &EventTx) {
             Ok(Err(e)) => return notice(&events, Level::Error, format!("/chrome: set up failed: {e}")),
             Err(e) => return notice(&events, Level::Error, format!("/chrome: set up failed: {e}")),
         };
+        for note in &done.notes {
+            notice(&events, Level::Warn, format!("/chrome: {note}"));
+        }
+        if cfg!(target_os = "macos") {
+            let copied = chrome_setup::copy_folder_on_mac(&done.extension_dir);
+            let tail = if copied { " The path is on your clipboard." } else { "" };
+            notice(&events, Level::Info, format!("/chrome: {}{tail}", chrome_setup::MAC_FOLDER_HINT));
+        }
         match chrome_setup::open_extensions(&done) {
             Ok(true) => {}
             Ok(false) => {

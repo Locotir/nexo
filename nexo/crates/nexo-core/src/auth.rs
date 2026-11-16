@@ -178,7 +178,7 @@ impl Lock {
     fn take_within(store: &Path, wait: std::time::Duration) -> std::io::Result<Lock> {
         let path = store.with_extension("json.lock");
         if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d)?;
+            create_private_dir(d)?;
         }
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create(true).truncate(false);
@@ -242,10 +242,22 @@ pub fn read_from(path: &Path) -> BTreeMap<String, Credential> {
     raw.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|c| (k, c))).collect()
 }
 
+/// Makes `dir` and its missing parents. On Unix the ones made are `0700`, so the names of keys and sessions inside
+/// are not listed for other users; a folder that already exists keeps the rights it has.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
+}
+
 /// Writes the whole store, through a file only you can read, renamed into place.
 pub fn write_to<T: Serialize>(path: &Path, map: &BTreeMap<String, T>) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
+        create_private_dir(d)?;
     }
     // one temporary name per process: two writing at once never share it
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
@@ -279,6 +291,22 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_made_for_the_store_is_private_and_an_existing_one_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("nexo");
+        write_to(&fresh.join("auth.json"), &BTreeMap::<String, Credential>::new()).unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+        let old = dir.path().join("old");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_to(&old.join("auth.json"), &BTreeMap::<String, Credential>::new()).unwrap();
+        assert_eq!(mode(&old), 0o755, "a folder nexo did not make keeps its rights");
+    }
 
     #[test]
     fn entries_round_trip_and_unknown_kinds_are_skipped() {

@@ -107,11 +107,39 @@ pub(crate) fn claim(dir: &Path) -> Result<()> {
 
 /// Whether a screen exists to show a window on. Always true off Linux, where a window needs no variable.
 pub fn has_display() -> bool {
+    #[cfg(target_os = "macos")]
+    if !mac_has_screen() {
+        return false;
+    }
     display_from(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
 }
 
 fn display_from(set: impl Fn(&str) -> bool) -> bool {
     !cfg!(target_os = "linux") || set("DISPLAY") || set("WAYLAND_DISPLAY")
+}
+
+/// macOS has no variable that says a screen exists. The one case known to have none is a login over ssh while
+/// somebody else (or nobody: `root` at the login window) owns the console, so only that case is refused.
+fn mac_session_has_screen(over_ssh: bool, console_user: Option<&str>, me: Option<&str>) -> bool {
+    match (over_ssh, console_user, me) {
+        (true, Some(console), Some(me)) => console == me,
+        _ => true,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_has_screen() -> bool {
+    if std::env::var_os("SSH_CONNECTION").is_none_or(|v| v.is_empty()) {
+        return true;
+    }
+    let console = std::process::Command::new("stat")
+        .args(["-f", "%Su", "/dev/console"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string());
+    let me = std::env::var("USER").ok();
+    mac_session_has_screen(true, console.as_deref().filter(|s| !s.is_empty()), me.as_deref())
 }
 
 /// Refuses a visible window where there is no screen: Chrome would die with an obscure message.
@@ -139,7 +167,7 @@ fn unix_lock_state(dir: &Path, host: &str, probe: impl Fn(u32) -> Process) -> Lo
         // not what Chrome writes: no live Chrome made it
         return Lock::Stale;
     };
-    if lock_host != host {
+    if !same_host(lock_host, host, cfg!(target_os = "macos")) {
         // the folder may be shared with another machine, whose process cannot be looked at from here
         return Lock::Held(None);
     }
@@ -147,6 +175,17 @@ fn unix_lock_state(dir: &Path, host: &str, probe: impl Fn(u32) -> Process) -> Lo
         Process::Browser => Lock::Held(Some(pid)),
         Process::Gone | Process::Other => Lock::Stale,
     }
+}
+
+/// Whether the host in a lock is this machine. On macOS the name the system call gives changes with the network
+/// (`Mac.local`, `mac`, a name from DHCP), so only the first label counts and case does not.
+#[cfg(unix)]
+fn same_host(lock_host: &str, host: &str, loose: bool) -> bool {
+    if lock_host == host {
+        return true;
+    }
+    let first = |h: &str| h.split('.').next().unwrap_or(h).to_ascii_lowercase();
+    loose && !first(host).is_empty() && first(lock_host) == first(host)
 }
 
 #[cfg(unix)]
@@ -206,7 +245,9 @@ fn probe(pid: u32) -> Process {
 
 #[cfg(unix)]
 fn classify(name: &str) -> Process {
-    if BROWSER_NAMES.iter().any(|b| name.contains(b)) {
+    // macOS `ps` prints the whole path: Arc is not in the list, because "arc" would match unrelated names
+    let program = name.trim().rsplit_once('/').map(|(_, last)| last);
+    if BROWSER_NAMES.iter().any(|b| name.contains(b)) || program == Some("arc") {
         Process::Browser
     } else {
         Process::Other
@@ -396,6 +437,36 @@ mod tests {
         // the test binary is no browser, so a lock naming it reads as a reused id
         assert_eq!(probe(std::process::id()), Process::Other);
         assert_eq!(probe(u32::MAX - 1), Process::Gone);
+    }
+
+    #[test]
+    fn arc_is_a_browser_by_its_program_and_unrelated_names_are_not() {
+        assert_eq!(classify("/applications/arc.app/contents/macos/arc\n"), Process::Browser);
+        for other in ["/usr/bin/search", "arc", "/usr/bin/arch", "/users/a/archive"] {
+            assert_eq!(classify(other), Process::Other, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_macos_host_name_that_changed_spelling_is_still_this_machine() {
+        let d = tempfile::tempdir().unwrap();
+        link(d.path(), "Mac-123");
+        // as macOS compares: first label, any case
+        assert!(same_host("Mac", "Mac.local", true) && same_host("mac", "MAC.lan", true));
+        assert!(!same_host("Mac", "Other.local", true) && !same_host("Mac", "Mac.local", false));
+        let stale = |host: &str| unix_lock_state(d.path(), host, |_| Process::Gone);
+        assert_eq!(stale("Mac"), Lock::Stale);
+        assert_eq!(stale("Mac.local"), if cfg!(target_os = "macos") { Lock::Stale } else { Lock::Held(None) });
+    }
+
+    #[test]
+    fn a_visible_launch_is_refused_over_ssh_only_when_the_console_belongs_to_someone_else() {
+        assert!(mac_session_has_screen(false, Some("root"), Some("ana")));
+        assert!(mac_session_has_screen(true, Some("ana"), Some("ana")));
+        assert!(!mac_session_has_screen(true, Some("root"), Some("ana")));
+        // not knowing is not a reason to refuse
+        assert!(mac_session_has_screen(true, None, Some("ana")));
+        assert!(mac_session_has_screen(true, Some("root"), None));
     }
 
     #[test]

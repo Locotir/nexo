@@ -19,8 +19,8 @@ pub(crate) use process::ProcessGuard;
 pub(crate) use profile::TempProfile;
 
 /// How long to wait for the browser to open its debugging port. A cold start on Windows (antivirus scanning a
-/// fresh profile) can take far longer than on Linux.
-pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 45 } else { 20 });
+/// fresh profile) or on macOS (Gatekeeper checking a browser that never ran) can take far longer than on Linux.
+pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(if cfg!(any(windows, target_os = "macos")) { 45 } else { 20 });
 
 /// How long `close` waits for the browser process to exit before killing it.
 pub const CLOSE_GRACE: Duration = Duration::from_secs(5);

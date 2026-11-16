@@ -36,6 +36,13 @@ impl Dirs {
             .filter(|p| p.is_absolute() && p.is_dir())
             .map(|p| p.join("nexo-browser"))
             .unwrap_or_else(|| data.join("browser").join("run"));
+        // a macOS socket path is limited to 104 bytes and a long account or data folder name can go over it
+        #[cfg(target_os = "macos")]
+        let run = {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            let uid = unsafe { libc::geteuid() };
+            fit_run(run, PathBuf::from(format!("/tmp/nexo-browser-{uid}")))
+        };
         Dirs { data, run }
     }
 
@@ -46,6 +53,21 @@ impl Dirs {
 
     pub fn run(&self) -> &Path {
         &self.run
+    }
+}
+
+/// The longest a socket's folder path may be so that `browser-<12 hex>.sock` still fits under the limit of a
+/// Unix socket path (see `MAX_PATH` in the Unix half of this file).
+const RUN_DIR_MAX: usize = 100 - "/browser-0123456789ab.sock".len();
+
+/// `run`, or `short` when `run` is too long for a socket to live in it. The short folder is made private by
+/// `ensure_private_dir`, which refuses one that belongs to somebody else.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn fit_run(run: PathBuf, short: PathBuf) -> PathBuf {
+    if run.as_os_str().len() > RUN_DIR_MAX {
+        short
+    } else {
+        run
     }
 }
 
@@ -443,6 +465,19 @@ mod tests {
 
     fn mode(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_run_folder_too_long_for_a_socket_is_replaced_by_a_short_one() {
+        let short = PathBuf::from("/tmp/nexo-browser-501");
+        let long = PathBuf::from(format!("/Users/{}/.nexo/browser/run", "a".repeat(100)));
+        assert_eq!(fit_run(long, short.clone()), short);
+        let ok = PathBuf::from("/Users/ana/.nexo/browser/run");
+        assert_eq!(fit_run(ok.clone(), short.clone()), ok);
+        let socket = short.join("browser-0123456789ab.sock");
+        assert!(socket.as_os_str().len() <= 100);
+        let edge = PathBuf::from("x".repeat(RUN_DIR_MAX));
+        assert_eq!(fit_run(edge.clone(), short), edge, "a folder that just fits stays");
     }
 
     #[tokio::test]
