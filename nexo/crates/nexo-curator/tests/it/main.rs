@@ -17,6 +17,7 @@ mod sim_family;
 mod sim_fit;
 mod sim_search;
 mod sim_unsent;
+mod snapshot;
 mod standing;
 mod stress;
 mod structured_facts;

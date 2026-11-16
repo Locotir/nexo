@@ -66,6 +66,7 @@ mod prefix;
 mod queue;
 mod room;
 mod round;
+mod saved_state;
 mod settings;
 mod start;
 mod window_fit;
@@ -385,13 +386,18 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             emit(&st.events, budget_event(&st, budget::spent_today()));
         }
     }
+    // the write of the context policy's state a resume's replay or a turn's end started (`saved_state`)
+    let mut saving: Option<std::thread::JoinHandle<()>> = None;
     if replay {
         let mut st = state.lock().await;
         close_open_calls(&mut st);
         if !st.history.is_empty() {
+            saved_state::load(&mut st);
             view_now(&mut st, 0).await;
             // a view shown, not sent: the next request finds no cache of it
             st.last_sent.clear();
+            // what the replay rebuilt is kept even when this nexo is closed before its first turn ends
+            saved_state::save_in_background(&mut st, &mut saving);
         }
     }
     if replay {
@@ -1085,6 +1091,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         m.set_idle(true);
                     }
                     emit(&events, AgentEvent::Idle { running_jobs: jobs.running() });
+                    saved_state::save_in_background(&mut *state.lock().await, &mut saving);
                 }
                 if turn.is_none() && reason == TurnEnd::Done {
                     check_in(&state, None, &resume_tx).await;
@@ -1100,6 +1107,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         let _ = t.await;
     }
     fire(&state, "session_end", Some("exit"), serde_json::json!({"reason": "exit"})).await;
+    saved_state::save_now(&mut *state.lock().await, &mut saving);
     state.lock().await.policy.shutdown().await;
     // the scratch folder (`$NEXO_TMP`) lives as long as the session
     nexo_tools::bash::wipe_tmp(state.lock().await.session.id());

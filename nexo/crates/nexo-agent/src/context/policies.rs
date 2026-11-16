@@ -82,6 +82,25 @@ pub struct BuiltIn {
     /// The settings asked for that it runs without, and whether the transcript was told.
     caveat: Option<String>,
     told: bool,
+    /// A hash of each message of `values` (`nexo_curator::snapshot::message_hash`), so that saving the state
+    /// never goes over the history again.
+    hashes: Vec<u64>,
+    /// The views asked of the curator, and the messages its state covered when it was last saved.
+    views: u64,
+    saved_at: usize,
+    /// A state saved with the session, for the first view of a resumed one (`ContextPolicy::restore`).
+    pending: Option<Vec<u8>>,
+    /// What the host last said before a view (tools, window, prices, calls left): a restored state was saved
+    /// with what it said then, and takes what it says now.
+    host: Host,
+}
+
+#[derive(Default)]
+struct Host {
+    tools: Option<Vec<String>>,
+    window: Option<u64>,
+    prices: Option<(f64, f64)>,
+    calls_left: Option<Option<u64>>,
 }
 
 impl BuiltIn {
@@ -96,7 +115,51 @@ impl BuiltIn {
             seen_version: None,
             caveat: None,
             told: false,
+            hashes: Vec::new(),
+            views: 0,
+            saved_at: 0,
+            pending: None,
+            host: Host::default(),
         })
+    }
+
+    /// The curator saved with the session, in place of the fresh one, when it still fits `self.values`; the
+    /// messages it covers (0 when there is none or it does not fit, and the whole history is replayed).
+    fn take_saved(&mut self) -> usize {
+        let Some(bytes) = self.pending.take() else { return 0 };
+        let t = std::time::Instant::now();
+        match nexo_curator::Curator::restore(self.cur.spec(), &bytes, &self.values, &self.hashes) {
+            Ok((cur, head)) => {
+                self.cur = cur;
+                let h = std::mem::take(&mut self.host);
+                if let Some(names) = &h.tools {
+                    self.cur.tools(names);
+                }
+                if let Some(w) = h.window {
+                    self.cur.window(w);
+                }
+                if let Some((input, read)) = h.prices {
+                    self.cur.prices(input, read);
+                }
+                if let Some(left) = h.calls_left {
+                    self.cur.calls_left(left);
+                }
+                self.host = h;
+                self.views = head.views;
+                self.saved_at = self.cur.covered();
+                tracing::debug!(
+                    "context: the saved curator covers {} of {} messages, read in {} ms",
+                    head.covered,
+                    self.values.len(),
+                    t.elapsed().as_millis()
+                );
+                self.cur.covered()
+            }
+            Err(e) => {
+                tracing::info!("context: the saved curator is not used ({e}); the history is replayed");
+                0
+            }
+        }
     }
 
     /// The curator with what of `spec` it can run: a `key=value` it cannot run alone is left out, the
@@ -150,14 +213,19 @@ impl ContextPolicy for BuiltIn {
 
     fn tools(&mut self, names: &[String]) {
         self.cur.tools(names);
+        if self.host.tools.as_deref() != Some(names) {
+            self.host.tools = Some(names.to_vec());
+        }
     }
 
     fn window(&mut self, tokens: u64) {
         self.cur.window(tokens);
+        self.host.window = Some(tokens);
     }
 
     fn prices(&mut self, input: f64, cache_read: f64) {
         self.cur.prices(input, cache_read);
+        self.host.prices = Some((input, cache_read));
     }
 
     fn usage(&mut self, read: u64, input: u64) {
@@ -166,6 +234,7 @@ impl ContextPolicy for BuiltIn {
 
     fn calls_left(&mut self, calls: Option<u64>) {
         self.cur.calls_left(calls);
+        self.host.calls_left = Some(calls);
     }
 
     fn fits_window(&self) -> bool {
@@ -192,30 +261,48 @@ impl ContextPolicy for BuiltIn {
         // a curator new to this history (a resumed session, the policy turned on mid-way) or sent
         // back to an earlier point of it (a rewind)
         let replay = self.seen.is_empty() || (same == history.len() && same < self.seen.len());
+        let fresh = self.seen.is_empty();
         self.seen_version = None;
         self.seen.truncate(same);
         self.values.truncate(same);
+        self.hashes.truncate(same);
         for m in &history[same..] {
-            self.values.push(serde_json::to_value(m)?);
+            let v = serde_json::to_value(m)?;
+            self.hashes.push(nexo_curator::snapshot::message_hash(&v));
+            self.values.push(v);
             self.seen.push(m.clone());
         }
         self.seen_version = hint;
+        // the replies taken again before this view (`ContextPolicy::save` writes the state only after some)
+        let mut replayed = 0;
         if replay {
+            // a resumed session starts from the curator saved with it, when it still fits the history, and
+            // takes only the replies after the messages it covers
+            let from = if fresh { self.take_saved() } else { 0 };
+            self.pending = None;
             // takes the decisions it would have taken while the session ran: one view per model
             // reply, at the history that reply answered. The view it sends next is then the one the
             // open session sent, cuts and marks alike, and the provider's cache still holds. Past
             // REPLAY replies, the older ones are taken in one step.
-            let points: Vec<usize> = (1..history.len()).filter(|&p| history[p].role == Role::Assistant).collect();
+            let points: Vec<usize> =
+                (from.max(1)..history.len()).filter(|&p| p > from && history[p].role == Role::Assistant).collect();
+            replayed = points.len().min(REPLAY);
             for &p in &points[points.len().saturating_sub(REPLAY)..] {
+                self.views += 1;
                 if let Err(e) = self.cur.view(system_tokens, &self.values[..p], now) {
                     anyhow::bail!("the built-in curator failed: {e}");
                 }
             }
         }
+        self.views += 1;
         let r = match self.cur.view(system_tokens, &self.values, now) {
             Ok(r) => r,
             Err(e) => anyhow::bail!("the built-in curator failed: {e}"),
         };
+        if fresh && self.saved_at > 0 && replayed == 0 {
+            // the saved state took no reply again: the one saved is as good to start from, so it is not written over
+            self.saved_at = self.cur.covered();
+        }
         let messages = r.view.into_iter().map(serde_json::from_value).collect::<Result<Vec<Message>, _>>()?;
         // what the curator moved: the messages the conversation appended are always "in", every call,
         // and would hide the rest
@@ -252,6 +339,23 @@ impl ContextPolicy for BuiltIn {
         self.hint = None;
         self.moved = (0, 0);
         self.values.clear();
+        self.hashes.clear();
+        self.saved_at = 0;
+        self.pending = None;
+    }
+
+    fn save(&mut self) -> Option<super::SaveJob> {
+        let covered = self.cur.covered();
+        if covered == 0 || covered == self.saved_at || covered > self.hashes.len() {
+            return None;
+        }
+        self.saved_at = covered;
+        let saved = self.cur.save(self.views, nexo_curator::snapshot::history_hash(&self.hashes[..covered]));
+        Some(Box::new(move || saved.encode()))
+    }
+
+    fn restore(&mut self, saved: Vec<u8>) {
+        self.pending = Some(saved);
     }
 
     /// The engine notices the rewritten history by itself and starts over on it,

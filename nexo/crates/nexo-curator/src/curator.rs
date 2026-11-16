@@ -30,7 +30,8 @@ pub struct Reply {
     pub curated: Vec<Added>,
 }
 
-/// The curator of one conversation.
+/// The curator of one conversation. A copy shares the engine's large parts until one of the two changes them.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Curator {
     pub(crate) spec: String,
     pub(crate) eng: Engine,

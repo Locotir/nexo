@@ -17,7 +17,7 @@ const RUN_SOURCES: usize = 32;
 
 /// Lines of a tool output that an earlier output holds too (`Params.dedup`): `stub`, a line that points to
 /// them there, goes in their place while that output is whole in the view.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct Dup {
     /// The tool result and its lines `a..b`.
     pub(super) unit: usize,

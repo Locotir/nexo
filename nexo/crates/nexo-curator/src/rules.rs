@@ -571,7 +571,7 @@ pub fn rules_in(text: &str) -> Vec<String> {
 }
 
 /// One rule: the person's words (or the agent's restatement), the turn and message it came in.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rule {
     pub turn: usize,
     /// The message it is in; `None` once the history it came in was rewritten.
@@ -582,7 +582,7 @@ pub struct Rule {
 }
 
 /// The rules of a session, in the order they were given.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Rules {
     pub list: Vec<Rule>,
     /// The person's turns so far.

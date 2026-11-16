@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 /// Whether the view takes a message: left out, sent with parts cut, or sent whole.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum State {
     #[default]
     Out,
@@ -29,7 +29,7 @@ impl State {
 
 /// One message of the history: its zone (an index into [`Memory::zones`]), its tokens as it arrived (at least
 /// 1) and whether the view takes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cell {
     pub zone: usize,
     pub tokens: i64,
@@ -38,7 +38,7 @@ pub struct Cell {
 
 /// The anchor or one topic: the request that opened it, whether the view carries its messages, and whether a
 /// card describes it instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Zone {
     pub label: Arc<str>,
     pub active: bool,

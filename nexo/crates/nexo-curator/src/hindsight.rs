@@ -15,7 +15,7 @@ use crate::textops;
 pub type Sym = u32;
 
 /// Strings seen by one engine, each stored once.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Interner {
     // (both behind `Arc`: a copy of the engine shares them, and one is copied only when a new string comes
     // while the other copy still lives)
@@ -207,7 +207,7 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
     set_of(out)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum UKind {
     User,
     Result,
@@ -216,7 +216,7 @@ pub enum UKind {
     Call,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub msg: usize,
     pub block: usize,
@@ -263,8 +263,10 @@ fn folded(v: &Value) -> i64 {
 const RESULTS_BACK: usize = 64 * 8;
 
 /// The trace grown one message at a time.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Tracer {
+    /// Not saved with the state: taken again from the history it covers (`Engine::take_history`).
+    #[serde(skip)]
     pub msgs: Vec<Value>,
     pub units: Vec<Unit>,
     pub steps: Vec<usize>,
@@ -280,7 +282,8 @@ pub struct Tracer {
     /// the same files again and again, and each call that names one is looked for in the reads of it: without
     /// this, the same reads are squashed again at every such call, and a resumed session does it all at once.
     /// A unit's text never changes (a rewritten history starts a new tracer), and only the units `quoted_in`
-    /// still reaches are kept.
+    /// still reaches are kept. Not saved with the state: it is filled in again as calls are looked for.
+    #[serde(skip)]
     held: FxHashMap<usize, Arc<[String]>>,
     /// The results squashed for `held`: what the tests bound.
     squashed: usize,

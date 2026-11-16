@@ -172,7 +172,7 @@ pub fn split_paragraphs(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Chunk {
     pub start: i64,
     pub end: i64,
@@ -219,7 +219,7 @@ fn unit_chunks(tr: &Tracer, i: usize, int: &mut Interner) -> Vec<Chunk> {
 }
 
 /// A call's or result's tool category and path, and whether the result is an error.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Info {
     pub kind: Kind,
     pub path: Option<String>,
@@ -259,7 +259,7 @@ fn program_of(command: &str) -> Option<String> {
     None
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Ctx {
     pub t: usize,
     /// Steps (replies) so far.
@@ -284,7 +284,7 @@ type CoWrite = (usize, std::sync::Arc<Vec<Sym>>);
 
 /// The results on one thing in the order they came: the message of each, and how many of the first `k` went
 /// well (`good[k]`, one more entry than there are results), so a stretch of them is counted without a walk.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Outcomes {
     at: Vec<usize>,
     good: Vec<usize>,
@@ -301,7 +301,7 @@ impl Outcomes {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Featurizer {
     pub info: FxHashMap<usize, Info>,
     calls: FxHashMap<String, Info>,
@@ -327,6 +327,8 @@ pub struct Featurizer {
     df: FxHashMap<Sym, u32>,
     df_pos: usize,
     pub ctx: Option<Ctx>,
+    /// Filled in again by the first reader after a restore, as after a new step.
+    #[serde(skip)]
     act: Memo<Option<Act>>,
 }
 

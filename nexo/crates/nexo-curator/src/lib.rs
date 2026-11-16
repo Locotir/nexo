@@ -27,6 +27,7 @@ mod params;
 mod rules;
 #[cfg(test)]
 mod rules_battery;
+pub mod snapshot;
 mod standing;
 mod textops;
 mod tools;

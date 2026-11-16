@@ -184,7 +184,7 @@ fn ends(s: &str, n: usize) -> String {
     format!("{head}\n{tail}")
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Fact {
     /// The line in the session's words.
     line: String,
@@ -197,7 +197,7 @@ struct Fact {
 }
 
 /// The table of standing facts, and what the trigger reads.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Standing {
     facts: Vec<Fact>,
     /// Text turns of the person so far, and in how many of them each stem appears.

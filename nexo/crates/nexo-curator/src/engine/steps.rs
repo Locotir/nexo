@@ -24,7 +24,7 @@ const CLOSED_SHOWN: usize = 8;
 const SAID_CHARS: usize = 160;
 
 /// A step of an answered request (`Params.close`): a call and its output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct Step {
     /// The request message, and the messages of the step.
     pub(super) a: usize,

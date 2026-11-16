@@ -9,6 +9,9 @@ use nexo_core::message::Message;
 #[cfg(test)]
 mod tests;
 
+/// A job that encodes a policy's state (`ContextPolicy::save`): the bytes of the file next to the session.
+pub type SaveJob = Box<dyn FnOnce() -> Vec<u8> + Send>;
+
 /// What to send.
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
@@ -102,11 +105,21 @@ pub trait ContextPolicy: Send {
         None
     }
     async fn shutdown(&mut self) {}
+    /// The policy's state, saved next to the session so that a resume starts from it instead of rebuilding it
+    /// from the whole history (`restore`): a job that encodes it, to run off the agent's lock, or `None` when
+    /// the policy keeps no such state or nothing was added to it since the last time.
+    fn save(&mut self) -> Option<SaveJob> {
+        None
+    }
+    /// What `save` wrote for this session, before the first view of a resumed one: that view starts from it
+    /// when it still fits the history, and rebuilds the state as before when it does not.
+    fn restore(&mut self, _saved: Vec<u8>) {}
 }
 
 mod describe;
 mod directives;
 mod policies;
+pub mod saved;
 
 pub use describe::{describe, describe_since, saving};
 pub use directives::{CURATOR_DIRECTIVES, CURATOR_DIRECTIVES_SAID};

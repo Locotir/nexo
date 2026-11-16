@@ -24,8 +24,9 @@ const NEED_KEYS: usize = 24;
 /// Characters at each end of the request that are read.
 const NEED_CHARS: usize = 400;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
+    #[serde(with = "crate::snapshot::posts")]
     posts: FxHashMap<u64, Vec<Post>>,
     lines: usize,
     /// The keys of the person's latest request.

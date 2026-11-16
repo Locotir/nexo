@@ -14,7 +14,7 @@ pub(super) const WROTE_TOKENS: i64 = 1500;
 
 /// A file the agent wrote whole: the message and call that wrote it, its text (capped at
 /// [`WROTE_TOKENS`]) and the message of a later edit that made the text stale.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct Wrote {
     pub(super) mi: usize,
     pub(super) call: String,

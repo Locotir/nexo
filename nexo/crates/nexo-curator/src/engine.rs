@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHashSet};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::goal::Threads;
@@ -41,6 +42,7 @@ mod notes;
 mod own;
 mod params;
 mod recall;
+mod snapshot;
 mod stale;
 mod steps;
 mod tail;
@@ -69,7 +71,8 @@ type RunsAt = FxHashMap<[u32; 3], Vec<(usize, usize)>>;
 
 /// A part of the engine that the copy a landing is tried on shares with it (`Engine::decide`): read in place, and
 /// copied only when one of the two changes it while the other still lives.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct Shared<T>(Arc<T>);
 
 impl<T> std::ops::Deref for Shared<T> {
@@ -86,7 +89,9 @@ impl<T: Clone> Shared<T> {
     }
 }
 
-#[derive(Clone)]
+/// Every field is saved with a session (`snapshot.rs`) but the ones marked: a file, caches that fill again as
+/// they are read, and the engine's copy of the history, which is taken from the history again.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Engine {
     p: Params,
     /// Tokens the view may take in the model's window, after the system prompt, the tools and the reply
@@ -108,6 +113,7 @@ pub struct Engine {
     dropped: FxHashMap<usize, FxHashSet<usize>>,
     /// For measurement: where the features of what the view holds, and what each unit came to be used
     /// by, are written (`Engine::dump_to`).
+    #[serde(skip)]
     dump: Option<Dump>,
     own: own::Own,
     /// The outputs of the request still open that no later agent message drew on, and since when
@@ -170,6 +176,7 @@ pub struct Engine {
     born: Vec<usize>,
     held: FxHashMap<(usize, usize), f64>,
     held_at: usize,
+    #[serde(deserialize_with = "crate::snapshot::names_map")]
     pub stats: IndexMap<&'static str, i64>,
     names: Option<Names>,
     pool: Vec<(usize, String, Set, f64)>,
@@ -236,6 +243,8 @@ pub struct Engine {
     unsplit_turn: usize,
     /// The first `now` the host gave and the steps there were then: how long a step takes.
     t0: Option<(f64, usize)>,
+    /// The last message taken in, as it came (`take_history` sets it again).
+    #[serde(skip)]
     last_raw: Value,
     /// Whether the host offers a `note` tool: the request for notes names it, or asks for the lines in the reply.
     note_tool: bool,
@@ -317,10 +326,13 @@ pub struct Engine {
     /// The name of each tool result as the list of what was left out gives it (`added`).
     out_names: FxHashMap<usize, Arc<str>>,
     /// The labels of texts already named (`added`): the same findings and requests come back at every request.
+    /// Not saved with the state (`crate::snapshot`): it only spares naming a text again, and holds the texts.
+    #[serde(skip)]
     label_memo: added::LabelMemo,
     /// What the outputs before the view hold, kept between requests (`added`).
     below: added::Below,
     /// What the test runs' outputs said, read once each (`fixes`).
+    #[serde(skip)]
     run_memo: fixes::RunMemo,
 }
 

@@ -137,14 +137,14 @@ pub fn runs(text: &str, general: &FxHashSet<&'static str>) -> Vec<u64> {
 }
 
 /// Who held a run: the unit that holds it last, and the first message of the person or the agent that held it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Hold {
     pub latest: u32,
     pub authored: u32,
 }
 
 /// The runs of every unit so far.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Runs {
     held: FxHashMap<u64, Hold>,
 }

@@ -123,6 +123,7 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
             skipped_note(&st.events, id, s.skipped_lines());
             install_session(&mut st, s);
             if !st.history.is_empty() {
+                super::saved_state::load(&mut st);
                 view_now(&mut st, 0).await;
                 // a view shown, not sent: the next request finds no cache of it
                 st.last_sent.clear();

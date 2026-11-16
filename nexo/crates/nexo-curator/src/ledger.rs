@@ -162,7 +162,7 @@ pub fn noise(ln: &str) -> bool {
 }
 
 /// What is known about every distinctive name up to a message.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Names {
     /// blocks, typed, asked, results, first, last, crowd, errors
     pub stats: FxHashMap<Sym, [i64; 8]>,

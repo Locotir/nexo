@@ -32,7 +32,7 @@ const LONG_LOSS: f64 = 0.05;
 const BATCH: i64 = 8_000;
 
 /// The sticky set as of the last request, by unit.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Sticky {
     /// Results that never leave by the window: the latest `file now` of each path, the last `check:`, and
     /// what the latest step returned.

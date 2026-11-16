@@ -20,6 +20,8 @@ pub fn trash_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&bin)?;
     let to = bin.join(format!("{id}.jsonl"));
     std::fs::rename(&from, &to)?;
+    // the context state saved with it (`context::saved`) goes with it, or it is dropped
+    move_saved_state(&from, &to);
     Ok(to)
 }
 
@@ -39,7 +41,17 @@ pub fn restore_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
         anyhow::bail!("a session {id} is already there");
     }
     std::fs::rename(&from, &to)?;
+    move_saved_state(&from, &to);
     Ok(to)
+}
+
+/// Moves the context state saved with a session (`context::saved`) along with it. It is only ever a shortcut:
+/// one that cannot move is removed, and the session rebuilds it.
+fn move_saved_state(from: &Path, to: &Path) {
+    let (a, b) = (crate::context::saved::path_for(from), crate::context::saved::path_for(to));
+    if a.is_file() && std::fs::rename(&a, &b).is_err() {
+        crate::context::saved::forget(from);
+    }
 }
 
 /// The sessions in the trash, newest first.

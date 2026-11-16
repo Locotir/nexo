@@ -1,7 +1,7 @@
 //! The settings of an engine.
 
 /// The settings of an engine (see the spec in `lib.rs`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Params {
     pub threshold: f64,
     pub protect: i64,

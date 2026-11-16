@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::textops::{Caps, Re, I, M, S};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     Read,
     Write,

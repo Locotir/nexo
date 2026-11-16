@@ -20,12 +20,13 @@ use super::Engine;
 /// The arguments of an edit that hold the text it replaced, in the shapes editor tools name them.
 const REPLACED_ARGS: &[&str] = &["old_string", "old_str", "old_text"];
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Built {
     key: Vec<(usize, usize)>,
     map_ver: u64,
     /// Where each of the message's runs pointed (`dups_on`).
     on: Vec<Option<(usize, usize)>>,
+    #[serde(with = "crate::snapshot::json_opt")]
     msg: Option<Value>,
     size: i64,
     /// A hash of the message as built (`pockets`).

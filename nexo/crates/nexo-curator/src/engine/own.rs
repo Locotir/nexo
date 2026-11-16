@@ -8,15 +8,18 @@ use rustc_hash::FxHashMap;
 use super::Engine;
 use crate::hindsight::UKind;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Own {
     /// Requests decided so far.
     pub clock: u64,
     /// (unit, chunk) -> (request, rule) of the first rule that took it out.
+    #[serde(deserialize_with = "crate::snapshot::named_map")]
     chunks: FxHashMap<(usize, usize), (u64, &'static str)>,
     /// message -> (request, rule) for a whole message taken out (closed steps, loops, the window).
+    #[serde(deserialize_with = "crate::snapshot::named_map")]
     msgs: FxHashMap<usize, (u64, &'static str)>,
     /// (rule, request, tokens): +tokens when something left, -tokens when it came back.
+    #[serde(deserialize_with = "crate::snapshot::named_events")]
     events: Vec<(&'static str, u64, i64)>,
     /// Messages the shortening at birth changed.
     pub born: rustc_hash::FxHashSet<usize>,

@@ -459,3 +459,122 @@ async fn a_stubbed_result_has_no_picture_and_the_newest_turn_keeps_its_own() {
     assert_eq!(images_in(v.messages.last().unwrap()), 1, "the newest picture was cut");
     assert_eq!(old(&v.messages), 0);
 }
+
+/// A session of reads, some failing, with a new request now and then.
+fn read_session(steps: usize) -> Vec<Message> {
+    use nexo_core::message::Part;
+    let mut h = vec![Message::user("Go through every module, then fix the one that panics.")];
+    for i in 0..steps {
+        let path = format!("m{}.rs", i % 23);
+        h.push(Message::new(
+            Role::Assistant,
+            vec![
+                Part::text(format!("Step {i}.")),
+                Part::tool_call(format!("c{i}"), "read", serde_json::json!({"path": path})),
+            ],
+        ));
+        let body: String =
+            (0..120 + 7 * (i % 5)).map(|l| format!("{l:>4}  fn f_{i}_{l}(x: u64) -> u64 {{ x + {l} }}\n")).collect();
+        h.push(Message::new(Role::User, vec![Part::tool_result(format!("c{i}"), body, i % 11 == 7)]));
+        if i % 17 == 16 {
+            h.push(Message::assistant(format!("Module batch {i} done.")));
+            h.push(Message::user(format!("Now batch {}.", i + 1)));
+        }
+    }
+    h
+}
+
+/// The curator of an open session that sent one view per model reply up to message `upto`.
+async fn ran_until(h: &[Message], upto: usize) -> BuiltIn {
+    let mut open = BuiltIn::new("").unwrap();
+    for p in 0..upto {
+        if h[p].role == Role::Assistant {
+            open.view(3000, &h[..p]).await.unwrap();
+        }
+    }
+    open
+}
+
+/// A session saved halfway (`ContextPolicy::save`) and resumed later from that state (`restore`), with the replies
+/// after it taken one by one: the view is the one the open session sends, and the one a full replay sends.
+#[tokio::test]
+async fn a_session_resumed_from_its_saved_state_sends_the_open_view() {
+    let h = read_session(60);
+    let half = (h.len() / 2..h.len()).find(|&p| h[p].role == Role::Assistant).unwrap();
+    let mut open = ran_until(&h, half + 1).await;
+    let bytes = open.save().expect("the curator saves its state")();
+    assert!(open.save().is_none(), "nothing new to save");
+    for p in half + 1..h.len() {
+        if h[p].role == Role::Assistant {
+            open.view(3000, &h[..p]).await.unwrap();
+        }
+    }
+    let open = open.view(3000, &h).await.unwrap();
+    let mut resumed = BuiltIn::new("").unwrap();
+    resumed.restore(bytes);
+    let resumed = resumed.view(3000, &h).await.unwrap();
+    let replayed = BuiltIn::new("").unwrap().view(3000, &h).await.unwrap();
+    assert!(saving(estimate_tokens(&h), estimate_tokens(&open.messages)) > 0, "the open session was cut");
+    let sent = |v: &View| serde_json::to_string(&v.messages).unwrap();
+    assert_eq!(sent(&resumed), sent(&open));
+    assert_eq!(sent(&replayed), sent(&open));
+    assert_eq!(resumed.tokens, open.tokens);
+}
+
+/// A resume writes the state again only when it took replies again: a state saved after the last reply is as good
+/// to start from next time, and writing it over would only cost the write.
+#[tokio::test]
+async fn a_resume_saves_the_state_again_only_after_taking_replies_again() {
+    let h = read_session(40);
+    let last = (0..h.len()).rev().find(|&p| h[p].role == Role::Assistant).unwrap();
+    let half = (h.len() / 2..h.len()).find(|&p| h[p].role == Role::Assistant).unwrap();
+    for (upto, again) in [(last + 1, false), (half + 1, true)] {
+        let bytes = ran_until(&h, upto).await.save().unwrap()();
+        let mut resumed = BuiltIn::new("").unwrap();
+        resumed.restore(bytes);
+        resumed.view(3000, &h).await.unwrap();
+        assert_eq!(resumed.save().is_some(), again, "saved up to message {upto} of {}", h.len());
+    }
+}
+
+/// A saved state that does not fit the session any more (cut short, or saved before the history was edited) is
+/// not used: the curator is rebuilt from the history, as without one.
+#[tokio::test]
+async fn a_saved_state_that_does_not_fit_is_ignored() {
+    let h = read_session(30);
+    let mut open = ran_until(&h, h.len()).await;
+    let bytes = open.save().unwrap()();
+    let replayed = BuiltIn::new("").unwrap().view(3000, &h).await.unwrap();
+    let sent = |v: &View| serde_json::to_string(&v.messages).unwrap();
+    let mut edited = h.clone();
+    edited[0] = Message::user("Go through every module.");
+    let edited_replay = BuiltIn::new("").unwrap().view(3000, &edited).await.unwrap();
+    for (bad, hist, want) in [
+        (bytes[..bytes.len() / 3].to_vec(), &h, &replayed),
+        (b"not a state".to_vec(), &h, &replayed),
+        (bytes.clone(), &edited, &edited_replay),
+    ] {
+        let mut c = BuiltIn::new("").unwrap();
+        c.restore(bad);
+        assert_eq!(sent(&c.view(3000, hist).await.unwrap()), sent(want));
+    }
+}
+
+/// The state is written next to the session file and read back from there; a session in the trash takes it along.
+#[test]
+fn the_saved_state_sits_next_to_the_session_and_moves_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = dir.path().join("20261116-080000-ab12.jsonl");
+    std::fs::write(&session, "{}\n").unwrap();
+    saved::write(&session, Box::new(|| b"state".to_vec()));
+    assert_eq!(saved::path_for(&session), dir.path().join("20261116-080000-ab12.jsonl.curator"));
+    assert_eq!(saved::read(&session).as_deref(), Some(&b"state"[..]));
+    let names: Vec<String> =
+        std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert_eq!(names.len(), 2, "no file of the write is left behind: {names:?}");
+    let to = crate::session::trash_in(dir.path(), "20261116-080000-ab12").unwrap();
+    assert_eq!(saved::read(&to).as_deref(), Some(&b"state"[..]));
+    assert!(saved::read(&session).is_none());
+    crate::session::restore_in(dir.path(), "20261116-080000-ab12").unwrap();
+    assert_eq!(saved::read(&session).as_deref(), Some(&b"state"[..]));
+}

@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::Engine;
 
 /// The last view sent on a topic (`Params.pockets`): (message, hash of it as sent), and when.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Pocket {
     sent: Vec<(usize, u64)>,
     at: f64,
@@ -15,7 +15,7 @@ pub(super) struct Pocket {
 
 /// The view just decided, weighed against the pockets: the tokens the cache gives it if it keeps the views
 /// up to each age, (age, tokens) youngest first, each giving more than the one before; and its tokens.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Probe {
     steps: Vec<(f64, i64)>,
     total: i64,
