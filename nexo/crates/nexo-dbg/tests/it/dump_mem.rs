@@ -112,6 +112,18 @@ fn a_function_decrypted_at_run_time_is_dumped_and_reads_back_as_code_at_its_addr
 }
 
 #[test]
+fn a_length_that_is_also_a_file_address_of_the_program_is_a_count_of_bytes() {
+    let Some((dir, mut s)) = stopped_in_ready() else { return };
+    // in gcc's default PIE, 0x1000 is `.init` and 0x400 lies in `.dynsym`: as places they would move by the load shift
+    for (len, n) in [("4096", 4096usize), ("0x400", 0x400)] {
+        let path = dir.path().join(format!("code-{len}.bin"));
+        let out = run(&mut s, &format!("dump $rdi {len} {}", path.display()));
+        assert!(out.contains(&format!("wrote {n} bytes")), "{out}");
+        assert_eq!(std::fs::read(&path).unwrap()[..CODE.len()], CODE);
+    }
+}
+
+#[test]
 fn a_heap_buffer_decrypted_at_run_time_is_dumped_and_its_text_reads_back() {
     let Some((dir, mut s)) = stopped_in_ready() else { return };
     let path = dir.path().join("msg.bin");

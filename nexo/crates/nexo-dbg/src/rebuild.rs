@@ -27,15 +27,15 @@ pub fn kind(head: &[u8]) -> Kind {
 }
 
 fn u16_at(b: &[u8], at: usize) -> Option<u64> {
-    Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?) as u64)
+    Some(u16::from_le_bytes(b.get(at..at.checked_add(2)?)?.try_into().ok()?) as u64)
 }
 
 fn u32_at(b: &[u8], at: usize) -> Option<u64> {
-    Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as u64)
+    Some(u32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?) as u64)
 }
 
 fn u64_at(b: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
+    Some(u64::from_le_bytes(b.get(at..at.checked_add(8)?)?.try_into().ok()?))
 }
 
 /// An address-sized field: 8 bytes in a 64-bit file, 4 in a 32-bit one.
@@ -191,22 +191,26 @@ pub fn elf(mem: &[u8], disk: Option<&[u8]>, from: &str) -> Result<Rebuilt, Strin
     };
     // the loader adds the load shift to the dynamic table's addresses in place; the file's own table has the
     // addresses every other part of the file uses
+    // (a table that lies before the image or past its end is left as the loader wrote it: the kernel never reads it)
     if let Some(&(_, doff, vaddr, filesz, _)) = ph.iter().find(|p| p.0 == PT_DYNAMIC) {
-        let dst = vaddr.wrapping_sub(start) as usize;
-        if let (Some(src), true) = (d.get(doff as usize..(doff + filesz) as usize), dst + filesz as usize <= out.len())
-        {
-            out[dst..dst + filesz as usize].copy_from_slice(src);
+        let span = |a: u64| Some(usize::try_from(a).ok()?..usize::try_from(a.checked_add(filesz)?).ok()?);
+        let dst = vaddr.checked_sub(start).and_then(span).filter(|r| r.end <= out.len());
+        if let (Some(src), Some(dst)) = (span(doff).and_then(|r| d.get(r)), dst) {
+            out[dst].copy_from_slice(src);
         }
     }
-    let shoff = word_at(d, l.shoff, wide).unwrap_or(0) as usize;
+    let shoff = word_at(d, l.shoff, wide).and_then(|o| usize::try_from(o).ok()).unwrap_or(0);
+    // a section header is 0x40 bytes in a 64-bit file and 0x28 in a 32-bit one; a smaller entry size (0 in a
+    // stripped or packed file whose loader never reads the table) holds no section
     let shsize = u16_at(d, l.phentsize + 4).unwrap_or(0) as usize;
     let mut shnum = u16_at(d, l.shnum).unwrap_or(0) as usize;
     if shnum == 0 && shoff != 0 {
         // more sections than the header field holds: the count is the first section header's size
-        shnum = word_at(d, shoff + l.sh_size, wide).unwrap_or(0) as usize;
+        shnum = shoff.checked_add(l.sh_size).and_then(|a| word_at(d, a, wide)).map_or(0, |n| n as usize);
     }
-    let Some(mut shdrs) = d.get(shoff..shoff + shsize * shnum).filter(|_| shoff != 0 && shnum > 0).map(<[u8]>::to_vec)
-    else {
+    let table = shsize.checked_mul(shnum).and_then(|n| shoff.checked_add(n)).and_then(|end| d.get(shoff..end));
+    let whole = shsize >= if wide { 0x40 } else { 0x28 };
+    let Some(mut shdrs) = table.filter(|_| shoff != 0 && shnum > 0 && whole).map(<[u8]>::to_vec) else {
         put(&mut out, l.shoff, wsize, 0);
         put(&mut out, l.shnum, 2, 0);
         put(&mut out, l.shnum + 2, 2, 0);
@@ -214,6 +218,9 @@ pub fn elf(mem: &[u8], disk: Option<&[u8]>, from: &str) -> Result<Rebuilt, Strin
         return Ok(Rebuilt { bytes: out, notes });
     };
     let mut filled = 0;
+    // the sections of a file share its bytes, so together they hold no more than it does; headers that point many
+    // times at the same bytes would otherwise grow the rebuilt file past any size
+    let (mut carried, mut left_out) = (0usize, 0usize);
     for i in 1..shnum {
         let at = i * shsize;
         let typ = u32_at(&shdrs, at + 4).unwrap_or(0);
@@ -232,6 +239,13 @@ pub fn elf(mem: &[u8], disk: Option<&[u8]>, from: &str) -> Result<Rebuilt, Strin
         } else if typ != SHT_NOBITS && size > 0 {
             // symbols, names and debug sections are not loaded: they come from the file on disk
             let Some(src) = d.get(doff as usize..doff.saturating_add(size) as usize) else { continue };
+            if carried + src.len() > d.len() {
+                // its header stays, as a section with no bytes in the file
+                put(&mut shdrs, at + 4, 4, SHT_NOBITS);
+                left_out += 1;
+                continue;
+            }
+            carried += src.len();
             out.resize(out.len().next_multiple_of(8), 0);
             let to = out.len() as u64;
             put(&mut shdrs, at + l.sh_offset, wsize, to);
@@ -251,6 +265,11 @@ pub fn elf(mem: &[u8], disk: Option<&[u8]>, from: &str) -> Result<Rebuilt, Strin
     );
     if filled > 0 {
         note.push_str(&format!("; {filled} zero-filled section(s) such as .bss hold their run-time bytes"));
+    }
+    if left_out > 0 {
+        note.push_str(&format!(
+            "; {left_out} section(s) have no bytes in it: with them the sections would hold more bytes than {from} has"
+        ));
     }
     notes.push(note);
     Ok(Rebuilt { bytes: out, notes })
@@ -409,6 +428,67 @@ mod tests {
         std::fs::write(&out, &r.bytes).unwrap();
         let img = nexo_bin::Image::open(&out).unwrap();
         assert!(img.sections.iter().any(|s| s.name == ".text"));
+    }
+
+    /// A 64-bit ELF image of 0x1000 bytes loaded at 0x1000: one PT_LOAD for all of it, then `extra` program headers.
+    fn elf64(extra: &[Phdr]) -> Vec<u8> {
+        let mut b = vec![0u8; 0x1000];
+        b[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        put(&mut b, 0x20, 8, 0x40);
+        put(&mut b, 0x36, 2, 0x38);
+        put(&mut b, 0x38, 2, 1 + extra.len() as u64);
+        for (i, p) in [(PT_LOAD, 0, 0x1000, 0x1000, 0x1000)].iter().chain(extra).enumerate() {
+            let at = 0x40 + i * 0x38;
+            put(&mut b, at, 4, p.0);
+            for (field, v) in [(8, p.1), (0x10, p.2), (0x20, p.3), (0x28, p.4)] {
+                put(&mut b, at + field, 8, v);
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn a_section_count_from_a_header_with_no_entry_size_is_no_section_and_ends_at_once() {
+        let mut d = elf64(&[]);
+        // e_shnum 0 says the count is the first section header's size; e_shentsize 0 makes the table empty
+        put(&mut d, 0x28, 8, 0x200);
+        put(&mut d, 0x200 + 0x20, 8, 1 << 40);
+        let r = elf(&d, Some(&d), "packed").unwrap();
+        assert!(r.notes.iter().any(|n| n.contains("no section headers")), "{:?}", r.notes);
+        // a count whose table size wraps past the end of the numbers
+        put(&mut d, 0x3a, 2, 0x40);
+        put(&mut d, 0x200 + 0x20, 8, u64::MAX / 0x20);
+        let r = elf(&d, Some(&d), "packed").unwrap();
+        assert!(r.notes.iter().any(|n| n.contains("no section headers")), "{:?}", r.notes);
+    }
+
+    #[test]
+    fn a_dynamic_table_before_the_image_or_past_its_end_is_left_as_it_is() {
+        for at in [0x800, u64::MAX - 0x10] {
+            let d = elf64(&[(PT_DYNAMIC, 0, at, 0x900, 0x900)]);
+            let r = elf(&d, Some(&d), "odd").unwrap();
+            assert_eq!(r.bytes[..0x1000], d[..], "the image is unchanged where the table would go");
+        }
+    }
+
+    #[test]
+    fn sections_that_point_many_times_at_the_same_bytes_are_carried_once_at_most() {
+        let mut d = elf64(&[]);
+        d.resize(0x8000, 0);
+        // 0x100 headers of non-loaded sections, each 0x1000 bytes at file offset 0
+        let (shoff, n) = (0x2000usize, 0x100usize);
+        put(&mut d, 0x28, 8, shoff as u64);
+        put(&mut d, 0x3a, 2, 0x40);
+        put(&mut d, 0x3c, 2, n as u64);
+        for i in 1..n {
+            let at = shoff + i * 0x40;
+            put(&mut d, at + 4, 4, SHT_PROGBITS);
+            put(&mut d, at + 0x20, 8, 0x1000);
+        }
+        let mem = d[..0x1000].to_vec();
+        let r = elf(&mem, Some(&d), "many").unwrap();
+        assert!(r.bytes.len() <= mem.len() + d.len() + n * 0x40 + 16, "{} bytes", r.bytes.len());
+        assert!(r.notes.iter().any(|x| x.contains("have no bytes in it")), "{:?}", r.notes);
     }
 
     #[test]

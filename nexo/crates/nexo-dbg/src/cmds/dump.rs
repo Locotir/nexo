@@ -1,7 +1,7 @@
 //! `dump`: memory of the stopped program written to a file, so code that exists only at run time (unpacked,
 //! decrypted, JIT output, shellcode) and the data it works on can be read with `bin` like any file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::rebuild::{self, Kind};
@@ -43,13 +43,88 @@ fn parse(w: &[String]) -> Option<(Ask<'_>, Option<usize>)> {
     }
 }
 
+/// The indexes in `w` of the words [`Args`] keeps as positional: an option, and the value of one that takes a value,
+/// are left out, so the path is found where `cmd_dump` reads it whatever options the words carry.
+fn positional(w: &[String]) -> Vec<usize> {
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < w.len() {
+        match w[i].strip_prefix("--").filter(|n| !n.is_empty()) {
+            Some(n) if BOOL_FLAGS.contains(&n) => i += 1,
+            Some(_) => i += 2,
+            None => {
+                out.push(i);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// The index in `words` (a command, `dump` first) of the file a `dump` writes, so a caller can make a relative path
 /// absolute against the folder it means before the words reach the session.
 pub fn dump_path_at(words: &[String]) -> Option<usize> {
     if words.first().map(String::as_str) != Some("dump") {
         return None;
     }
-    parse(&words[1..]).and_then(|(_, p)| p).map(|i| i + 1)
+    let at = positional(&words[1..]);
+    let pos: Vec<String> = at.iter().map(|&i| words[1 + i].clone()).collect();
+    parse(&pos).and_then(|(_, p)| p).map(|k| at[k] + 1)
+}
+
+/// A word as [`split_words`] reads it back: in quotes when it holds a space or a `;`; None when it holds a `"`.
+fn word_text(w: &str) -> Option<String> {
+    if w.contains('"') {
+        None
+    } else if w.is_empty() || w.contains(|c: char| c.is_whitespace() || c == ';') {
+        Some(format!("\"{w}\""))
+    } else {
+        Some(w.to_string())
+    }
+}
+
+/// One part of a script with the relative file its `dump` writes made absolute against `dir`; the part as it was
+/// when it writes no relative file or a word of it cannot be written back.
+pub fn dump_part_in(part: &str, dir: &Path) -> String {
+    let mut w = split_words(part);
+    let Some(i) = dump_path_at(&w).filter(|&i| Path::new(&w[i]).is_relative()) else { return part.to_string() };
+    w[i] = dir.join(&w[i]).display().to_string();
+    w.iter().map(|x| word_text(x)).collect::<Option<Vec<_>>>().map_or_else(|| part.to_string(), |v| v.join(" "))
+}
+
+/// One command with the relative file each `dump` in it writes made absolute against `dir` (each part of a `do`
+/// script too), so the file lands where a shell in `dir` puts it whichever folder the session runs in.
+pub fn dumps_in(words: &mut Vec<String>, dir: &Path) {
+    match words.first().map(String::as_str) {
+        Some("dump") => {
+            if let Some(i) = dump_path_at(words).filter(|&i| Path::new(&words[i]).is_relative()) {
+                words[i] = dir.join(&words[i]).display().to_string();
+            }
+        }
+        Some("do") => {
+            let at: Vec<usize> = positional(&words[1..]).iter().map(|i| i + 1).collect();
+            let Some(&first) = at.first() else { return };
+            let script = at.iter().map(|&i| words[i].as_str()).collect::<Vec<_>>().join(" ");
+            let parts = crate::gdbdialect::units(&script);
+            let moved: Vec<String> = parts.iter().map(|p| dump_part_in(p, dir)).collect();
+            if moved != parts {
+                words[first] = moved.join("; ");
+                for &i in at[1..].iter().rev() {
+                    words.remove(i);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The files the `dump`s in one command write, as given: its own, or those of the parts of a `do` script (the lines
+/// of a `commands` block among them).
+pub fn dump_files(words: &[String]) -> Vec<String> {
+    let of = |w: &[String]| dump_path_at(w).map(|i| w[i].clone());
+    match words.first().map(String::as_str) {
+        Some("do") => crate::client::do_parts(&words[1..]).unwrap_or_default().iter().filter_map(|w| of(w)).collect(),
+        _ => of(words).into_iter().collect(),
+    }
 }
 
 /// The machine the program's code is for, in the words `bin --arch` takes.
@@ -75,9 +150,11 @@ impl Session {
                     (self.addr_of(&a.pos[skip + 2])?, self.addr_of(&a.pos[skip + 3])?)
                 } else {
                     match len {
+                        // the length is a count of bytes: a number that is also a file address of the program
+                        // (0x1000 is `.init` in a PIE) is not moved by the load shift as a place would be
                         Some(n) => {
                             let lo = self.addr_of(at)?;
-                            (lo, lo.saturating_add(self.addr_of(n)?))
+                            (lo, lo.saturating_add(parse_addr(n)?))
                         }
                         None => self.range_of(at)?,
                     }
@@ -341,5 +418,33 @@ mod tests {
         assert_eq!(at("dump binary memory out.bin 0x1000 0x2000"), Some(3));
         assert_eq!(at("dump memory out.bin 0x1000 0x2000"), Some(2));
         assert_eq!(at("mem 0x1000 out.bin"), None);
+        // an option is not a word of the range or the path, as in `cmd_dump`
+        assert_eq!(at("dump $rdi 64 out.bin --all"), Some(3));
+        assert_eq!(at("dump --raw $rdi 64 out.bin"), Some(4));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_file_a_command_or_its_script_dumps_to_is_named_and_a_relative_one_is_moved_into_the_folder() {
+        let dir = std::path::Path::new("/work/project");
+        let words = |s: &str| crate::split_words(s);
+        assert_eq!(super::dump_files(&words("dump $rdi 64 out.bin --all")), ["out.bin"]);
+        let script = "do \"break f; commands; dump module libc lc.dump; end; cont; dump $rsi..$rsi+8 /abs/m.bin\"";
+        assert_eq!(super::dump_files(&words(script)), ["lc.dump", "/abs/m.bin"]);
+        assert!(super::dump_files(&words("mem 0x1000 64")).is_empty());
+
+        let mut w = words("dump $rdi 64 out.bin");
+        super::dumps_in(&mut w, dir);
+        assert_eq!(w[3], "/work/project/out.bin");
+        let mut w = words(script);
+        super::dumps_in(&mut w, dir);
+        assert_eq!(super::dump_files(&w), ["/work/project/lc.dump", "/abs/m.bin"]);
+        assert_eq!(w.len(), 2, "{w:?}");
+
+        // a folder with a space stays one word; a part with no relative file is left as written
+        let moved = super::dump_part_in("dump \"$rdi + 8\" 16 o.bin", std::path::Path::new("/my dir"));
+        assert_eq!(crate::split_words(&moved), ["dump", "$rdi + 8", "16", "/my dir/o.bin"]);
+        assert_eq!(super::dump_part_in("dump 0x10..0x20 /a.bin", dir), "dump 0x10..0x20 /a.bin");
+        assert_eq!(super::dump_part_in("bt 3", dir), "bt 3");
     }
 }

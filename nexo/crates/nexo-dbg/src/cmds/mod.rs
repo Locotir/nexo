@@ -10,7 +10,7 @@ use crate::engine::{rows, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind
 use crate::platform::{Access, Fault, HwSlot, Os, Tid};
 use crate::{fail, usage, Result};
 
-pub use dump::dump_path_at;
+pub use dump::{dump_files, dump_part_in, dump_path_at, dumps_in};
 
 mod breaks;
 mod calls;

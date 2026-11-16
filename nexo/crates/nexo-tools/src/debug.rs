@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
+use nexo_core::tool::Check;
 use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use nexo_dbg::{DbgClass, Host};
 use serde_json::{json, Value};
@@ -136,6 +137,23 @@ impl Debug {
     }
 }
 
+/// The first file a call's `dump`s write that a permission rule denies, said as the reason nothing ran. The rules
+/// that cover `edit` see this call's `command` and not the files named inside it, so each one is asked here; the call
+/// was already asked about as one that changes the program, so only a rule that denies the place stops it. A file
+/// still relative is relative to the folder the session runs in.
+fn denied_dump(files: &[String], ctx: &ToolContext) -> Option<String> {
+    let check = ctx.check.as_ref()?;
+    files.iter().find_map(|f| {
+        let mut p = PathBuf::from(f);
+        if p.is_relative() {
+            p = std::env::current_dir().map_or(p.clone(), |d| d.join(&p));
+        }
+        let path = p.display().to_string();
+        (check("edit", ToolKind::Write, &json!({ "path": path })) == Check::Deny)
+            .then(|| format!("a permission rule denies writing {path}, so this call ran nothing"))
+    })
+}
+
 /// A wait past the cap inside a script part is cut too: `cont --wait 9999` must come back.
 fn cap_waits(part: &str) -> String {
     let (mut out, mut rest) = (String::new(), part);
@@ -229,7 +247,7 @@ impl Tool for Debug {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
-        let words = match Debug::words(&args) {
+        let mut words = match Debug::words(&args) {
             Ok(w) => w,
             Err(e) => return ToolOutput::error(e),
         };
@@ -246,8 +264,18 @@ impl Tool for Debug {
         if !shell.is_empty() {
             return ToolOutput::error(nexo_dbg::debug_fact(&shell, &ctx.cwd.display().to_string()));
         }
-        let parts: Vec<String> = units.iter().map(|p| cap_waits(p)).collect();
-        if parts.len() < 2 || words.first().is_some_and(|w| w == "do") {
+        // the file a `dump` writes is relative to the project, as in the shell, in a script too
+        nexo_dbg::dumps_in(&mut words, &ctx.cwd);
+        let parts: Vec<String> = units.iter().map(|p| nexo_dbg::dump_part_in(&cap_waits(p), &ctx.cwd)).collect();
+        let single = parts.len() < 2 || words.first().is_some_and(|w| w == "do");
+        let files = match single {
+            true => nexo_dbg::dump_files(&words),
+            false => parts.iter().flat_map(|p| nexo_dbg::dump_files(&nexo_dbg::split_words(p))).collect(),
+        };
+        if let Some(denied) = denied_dump(&files, ctx) {
+            return ToolOutput::error(denied);
+        }
+        if single {
             return self.one(words, &args, ctx).await;
         }
         match nexo_dbg::gdb_plan(&parts) {
@@ -333,12 +361,6 @@ impl Debug {
                 if let Some(f) = words.get(i + 1).filter(|f| Path::new(f).is_relative()).cloned() {
                     words[i + 1] = ctx.cwd.join(f).display().to_string();
                 }
-            }
-        }
-        // the file a `dump` writes is relative to the project too
-        if let Some(i) = nexo_dbg::dump_path_at(&words) {
-            if Path::new(&words[i]).is_relative() {
-                words[i] = ctx.cwd.join(&words[i]).display().to_string();
             }
         }
         if let Some(s) = args.get("session").and_then(Value::as_str).filter(|s| !s.is_empty()) {
@@ -497,6 +519,45 @@ mod tests {
 
     async fn call(t: &Debug, cmd: &str) -> ToolOutput {
         t.run(json!({"command": cmd}), &ToolContext::new(std::env::temp_dir())).await
+    }
+
+    #[tokio::test]
+    async fn a_dump_to_a_place_a_rule_denies_runs_nothing_in_every_form_of_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let t = Debug::in_dir(&state);
+        let locked = dir.path().join("locked");
+        let deny = locked.display().to_string();
+        let mut ctx = ToolContext::new(dir.path().to_path_buf());
+        ctx.check = Some(std::sync::Arc::new(move |tool: &str, kind, args: &Value| {
+            assert_eq!((tool, kind), ("edit", ToolKind::Write));
+            if args["path"].as_str().unwrap().starts_with(&deny) {
+                Check::Deny
+            } else {
+                Check::Ask
+            }
+        }));
+        let sleep = sleep_bin();
+        for c in [
+            "dump $rsp 8 locked/a.bin".to_string(),
+            "dump $rsp 8 locked/a.bin --all".to_string(),
+            format!("run {sleep} 30; dump $rsp 8 locked/a.bin"),
+            "do \"break main; commands; dump module libc locked/l.dump; end\"".to_string(),
+            format!("dump binary memory {} 0x1000 0x2000", locked.join("m.bin").display()),
+        ] {
+            let o = t.run(json!({"command": c}), &ctx).await;
+            let said = format!("a permission rule denies writing {}", locked.display());
+            assert!(o.is_error && o.content.contains(&said), "{c}: {}", o.content);
+        }
+        assert!(nexo_dbg::sessions(&state).is_empty(), "no program was started");
+
+        // a place no rule denies: the file is written, relative to the project in a script too
+        let o = t.run(json!({"command": format!("run {sleep} 30; dump $rsp 8 open.bin")}), &ctx).await;
+        assert!(!o.is_error && o.content.contains("wrote 8 bytes"), "{}", o.content);
+        assert_eq!(std::fs::metadata(dir.path().join("open.bin")).unwrap().len(), 8);
+        let id = o.content.split_whitespace().nth(1).unwrap().to_string();
+        let end = t.run(json!({"command": "end", "session": id}), &ctx).await;
+        assert!(end.content.contains("ended"), "{}", end.content);
     }
 
     #[tokio::test]
