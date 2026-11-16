@@ -4,6 +4,11 @@ nexo has no numbered releases. CI builds a release on every push to `main` and n
 `build-<commit>` (the last five are kept). `nexo --version` prints the same commit. The workspace
 version in `nexo/Cargo.toml` is 0.1.0. Dates are commit dates; newest first.
 
+## 2026-11-16
+
+### Added
+- Ready-built releases for macOS (Apple silicon and Intel): `install.sh`, `nexo update` and the GitHub Action download them, checked against their SHA-256.
+
 ## 2026-11-10
 
 ### Added

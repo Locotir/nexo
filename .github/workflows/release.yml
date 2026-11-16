@@ -32,6 +32,10 @@ jobs:
           # Windows files carry their C runtime: nothing else to install
           - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: nexo-windows-x86_64.exe }
           - { os: windows-11-arm, target: aarch64-pc-windows-msvc, asset: nexo-windows-aarch64.exe }
+          # macOS files: Apple silicon on the arm64 runner (macos-latest), Intel on its own runner (macos-15-intel).
+          # Each is signed ad hoc below: an arm64 program without a signature is killed at launch.
+          - { os: macos-latest, target: aarch64-apple-darwin, asset: nexo-macos-aarch64 }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, asset: nexo-macos-x86_64 }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -65,6 +69,8 @@ jobs:
       - name: build
         env:
           RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
+          # rustc and the C code of the TLS libraries agree on one oldest macOS (11.0 is the oldest an arm64 Mac has)
+          MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'apple') && '11.0' || '' }}
         run: cargo ${BUILD:-build} --release --locked -p nexo-cli --target ${{ matrix.target }}
       - name: collect
         run: |
@@ -72,6 +78,15 @@ jobs:
           case "${{ matrix.target }}" in *windows*) src="$src.exe" ;; esac
           mkdir -p ../out
           cp "$src" "../out/${{ matrix.asset }}"
+          case "${{ matrix.target }}" in
+            *apple*)
+              # Sign ad hoc, then prove it: an arm64 Mac refuses a program with no valid signature (Killed: 9).
+              # This is the last step that may change the file: the SHA-256 list is taken from these bytes, so
+              # never run strip, install_name_tool or lipo on it afterwards. Copying and uploading keep the bytes.
+              codesign --force --sign - "../out/${{ matrix.asset }}"
+              codesign --verify --strict --verbose=2 "../out/${{ matrix.asset }}"
+              ;;
+          esac
           ../out/${{ matrix.asset }} --version
       - uses: actions/upload-artifact@v4
         with:

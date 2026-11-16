@@ -86,7 +86,7 @@ nexo/
     nexo-bench              the benchmark behind `nexo bench`
     nexo-tui                the full-screen interface
     nexo-cli                the `nexo` binary
-.github/workflows/         ci.yml (format, build, test, clippy on Linux and Windows), install.yml, release.yml
+.github/workflows/         ci.yml (format, build, test, clippy on Linux, macOS and Windows), install.yml, release.yml
 ```
 
 ## Replaying the curator on a recorded run

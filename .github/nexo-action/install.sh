@@ -15,7 +15,8 @@ asset_name() {
   case "${RUNNER_OS:-$(uname -s)}" in
     Linux) os=linux ;;
     Windows) os=windows ;;
-    *) die "no ready-built nexo for ${RUNNER_OS:-$(uname -s)}: use a Linux or Windows runner" ;;
+    macOS | Darwin) os=macos ;;
+    *) die "no ready-built nexo for ${RUNNER_OS:-$(uname -s)}: use a Linux, macOS or Windows runner" ;;
   esac
   case "${RUNNER_ARCH:-$(uname -m)}" in
     X64 | x86_64 | amd64) arch=x86_64 ;;
@@ -24,6 +25,9 @@ asset_name() {
   esac
   if [ "$os" = windows ]; then echo "nexo-$os-$arch.exe"; else echo "nexo-$os-$arch"; fi
 }
+
+# the SHA-256 of a file: Linux runners have sha256sum, macOS only shasum
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
 
 # https only, bounded time, a few retries; every download goes through this
 fetch_url() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 "$@"; }
@@ -68,7 +72,7 @@ fetch() {
   fetch_url "$base/SHA256SUMS" -o "$stage/SHA256SUMS" || die "no SHA256SUMS in release $tag"
   fetch_url "$base/$name" -o "$stage/$name" || die "no $name in release $tag"
   grep " \*\{0,1\}$name\$" "$stage/SHA256SUMS" >"$stage/want" || die "$name is not in SHA256SUMS"
-  (cd "$stage" && sha256sum -c --status want) || die "$name does not match its SHA-256"
+  [ "$(cut -d' ' -f1 "$stage/want")" = "$(sha256 "$stage/$name" | cut -d' ' -f1)" ] || die "$name does not match its SHA-256"
   chmod 755 "$stage/$name"
   mv -f "$stage/$name" "$exe"
   printf '%s\n' "$tag" >"$dir/.tag"

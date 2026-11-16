@@ -410,3 +410,79 @@ fn tags_and_limits_are_read_strictly() {
     assert!(limit_text(403, Some("12"), Some("1"), 0).is_none() && limit_text(404, Some("0"), None, 0).is_none());
     assert!(limit_text(403, Some("0"), None, 0).unwrap().ends_with("try again later"));
 }
+
+/// The six names a release can hold, as the release workflow, the installers and `nexo update` must all spell them.
+const RELEASE_NAMES: [&str; 6] = [
+    "nexo-linux-x86_64",
+    "nexo-linux-aarch64",
+    "nexo-macos-x86_64",
+    "nexo-macos-aarch64",
+    "nexo-windows-x86_64.exe",
+    "nexo-windows-aarch64.exe",
+];
+
+/// A file of the repository outside `nexo/`, or `None` when this checkout holds only `nexo/` (the macOS test VM does).
+fn repo_file(rel: &str) -> Option<String> {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(rel)).ok()
+}
+
+#[test]
+fn the_release_file_for_this_system_is_one_of_the_published_names() {
+    let Some(asset) = ASSET else { return };
+    assert!(RELEASE_NAMES.contains(&asset), "{asset}");
+    if cfg!(target_os = "macos") {
+        assert!(asset.starts_with("nexo-macos-"), "{asset}");
+    }
+}
+
+#[test]
+fn the_release_workflow_the_installers_and_the_updater_agree_on_the_file_names() {
+    let Some(release) = repo_file(".github/workflows/release.yml") else { return };
+    let mut built: Vec<&str> =
+        release.split("asset: ").skip(1).filter_map(|r| r.split([' ', ',', '}']).next()).collect();
+    built.sort_unstable();
+    let mut want = RELEASE_NAMES.to_vec();
+    want.sort_unstable();
+    assert_eq!(built, want, "release.yml builds exactly the names the code can ask for");
+    if let Some(asset) = ASSET {
+        assert!(release.contains(&format!("asset: {asset} ")), "release.yml builds {asset}");
+    }
+    let sh = repo_file("install.sh").expect("install.sh sits beside nexo/");
+    for name in RELEASE_NAMES.iter().filter(|n| !n.ends_with(".exe")) {
+        assert!(sh.contains(&format!("={name} ;;")), "install.sh picks {name}");
+    }
+    let ps = repo_file("install.ps1").expect("install.ps1 sits beside nexo/");
+    assert!(ps.contains("nexo-windows-$(Get-NexoArch).exe"), "install.ps1 builds the Windows names from the processor");
+    let action = repo_file(".github/nexo-action/install.sh").expect("the action sits beside nexo/");
+    assert!(action.contains("os=macos") && action.contains("nexo-$os-$arch"), "the action builds the macOS names");
+    let install = repo_file(".github/workflows/install.yml").expect("install.yml sits beside nexo/");
+    for name in RELEASE_NAMES.iter().filter(|n| !n.ends_with(".exe") && !n.contains("windows")) {
+        assert!(install.contains(&format!("asset: {name} ")), "install.yml checks {name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replacing_nexo_gives_it_a_new_file_and_never_rewrites_the_old_one_in_place() {
+    use std::os::unix::fs::MetadataExt;
+    let d = tempfile::tempdir().unwrap();
+    let (exe, new) = (d.path().join("nexo"), d.path().join("fresh"));
+    std::fs::write(&exe, b"old").unwrap();
+    std::fs::write(&new, b"new").unwrap();
+    let before = std::fs::metadata(&exe).unwrap().ino();
+    // a running program keeps its old file; on an Apple silicon Mac a file rewritten in place is killed at launch
+    let held = std::fs::File::open(&exe).unwrap();
+    place(&new, &exe).unwrap();
+    assert_ne!(std::fs::metadata(&exe).unwrap().ino(), before, "a new file, not the old one rewritten");
+    assert_eq!(std::fs::read(&exe).unwrap(), std::fs::read(&new).unwrap());
+    assert_eq!(std::io::read_to_string(held).unwrap(), "old", "what was running still reads the old bytes");
+}
+
+#[test]
+fn macos_lines_of_the_sums_list_are_found_by_their_exact_names() {
+    let hex = sha256_hex(b"x");
+    let sums = format!("{hex}  nexo-macos-aarch64\n{}  nexo-macos-x86_64\n", "1".repeat(64));
+    assert_eq!(expected_sum(&sums, "nexo-macos-aarch64"), Some(hex.as_str()));
+    assert_ne!(expected_sum(&sums, "nexo-macos-x86_64"), Some(hex.as_str()));
+    assert_eq!(expected_sum(&sums, "nexo-macos"), None);
+}

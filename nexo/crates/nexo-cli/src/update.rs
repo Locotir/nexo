@@ -69,7 +69,8 @@ fn notice(behind: u32) -> Option<String> {
 /// The `--check` line when a newer release is out but its commit count is not known.
 const NEWER_NO_COUNT: &str = "A newer nexo release is out. Run `nexo update`, then restart nexo.";
 
-/// The ready-built file for this machine, as the release workflow names it; `None` where none is published.
+/// The ready-built file for this machine, as the release workflow names it (`nexo-<system>-<processor>`: Linux, macOS
+/// and Windows, each on x86_64 and aarch64); `None` where none is published.
 const ASSET: Option<&str> = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
     Some("nexo-linux-x86_64")
 } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
@@ -78,6 +79,10 @@ const ASSET: Option<&str> = if cfg!(all(target_os = "linux", target_arch = "x86_
     Some("nexo-windows-x86_64.exe")
 } else if cfg!(all(windows, target_arch = "aarch64")) {
     Some("nexo-windows-aarch64.exe")
+} else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    Some("nexo-macos-aarch64")
+} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+    Some("nexo-macos-x86_64")
 } else {
     None
 };
@@ -152,6 +157,9 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
             if let Err(e) = placed {
                 ui.abort();
                 anyhow::bail!("downloaded, but cannot replace {} ({e})", exe.display());
+            }
+            if let Some(w) = signature_warning(&exe) {
+                ui.end(Kind::Warn, &w);
             }
             ui.end(Kind::Ok, &format!("installed {}", exe.display()));
             ui.end(Kind::Final, &update_text(tag.strip_prefix("build-"), commit()));

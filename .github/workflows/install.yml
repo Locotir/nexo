@@ -67,6 +67,61 @@ jobs:
           env -i HOME="$home" SHELL=/bin/zsh PATH=/usr/bin:/bin sh ./install.sh
           [ "$(grep -cF '# nexo' "$home/.zshrc")" = 1 ]
 
+  macos:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, asset: nexo-macos-aarch64 }
+          - { os: macos-15-intel, asset: nexo-macos-x86_64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SHA }}
+      - name: install twice into a fresh home
+        run: |
+          set -eu
+          home="$RUNNER_TEMP/home"
+          mkdir -p "$home"
+          for run in 1 2; do
+            echo "--- run $run"
+            env -i HOME="$home" PATH=/usr/bin:/bin sh ./install.sh
+          done
+          echo "HOME_DIR=$home" >>"$GITHUB_ENV"
+      - name: the installed file runs, is signed, is the release file, and the PATH line is there once
+        run: |
+          set -eu
+          "$HOME_DIR/.local/bin/nexo" --version
+          # copying and renaming must have kept the signature the release build gave the file
+          codesign --verify --strict "$HOME_DIR/.local/bin/nexo"
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/latest/download/SHA256SUMS" -o "$RUNNER_TEMP/SHA256SUMS"
+          want="$(grep " \*\{0,1\}${{ matrix.asset }}\$" "$RUNNER_TEMP/SHA256SUMS" | cut -d' ' -f1)"
+          got="$(shasum -a 256 "$HOME_DIR/.local/bin/nexo" | cut -d' ' -f1)"
+          echo "want $want"
+          echo "got  $got"
+          [ -n "$want" ] && [ "$want" = "$got" ]
+          n="$(grep -cF '# nexo' "$HOME_DIR/.profile")"
+          echo "rc lines: $n"
+          [ "$n" = 1 ]
+      - name: a zsh user with no .zshrc gets one with the PATH line
+        run: |
+          set -eu
+          home="$RUNNER_TEMP/zhome"
+          mkdir -p "$home"
+          env -i HOME="$home" SHELL=/bin/zsh PATH=/usr/bin:/bin sh ./install.sh
+          [ "$(grep -cF '# nexo' "$home/.zshrc")" = 1 ]
+      - name: a bash user with a .bash_profile gets the PATH line there once
+        run: |
+          set -eu
+          home="$RUNNER_TEMP/bhome"
+          mkdir -p "$home"
+          : >"$home/.bash_profile"
+          for run in 1 2; do env -i HOME="$home" PATH=/usr/bin:/bin sh ./install.sh; done
+          [ "$(grep -cF '# nexo' "$home/.bash_profile")" = 1 ]
+
   windows:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:

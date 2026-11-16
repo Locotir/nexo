@@ -135,6 +135,7 @@ httpmock = "0.9"
 lto = "thin"
 codegen-units = 4
 strip = true
+# macOS arm64: never strip or patch the file after the build; the signature would break (the release workflow checks it)
 
 # the curator replays whole conversations in its tests: optimised, they run in a fraction of the time
 [profile.dev.package.nexo-curator]

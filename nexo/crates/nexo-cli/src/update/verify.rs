@@ -61,6 +61,21 @@ pub(super) fn place_with(
     Ok(())
 }
 
+/// On macOS, a warning when the file just placed has no valid code signature: an Apple silicon Mac kills such a
+/// program at launch. It never blocks the update (the release files are signed by the build, and copying keeps that).
+pub(super) fn signature_warning(exe: &Path) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("codesign").arg("-v").arg(exe).output().ok()?;
+    if out.status.success() {
+        return None;
+    }
+    let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let p = exe.display();
+    Some(format!("installed, but macOS does not accept the signature of {p} ({why}); run: codesign --force -s - {p}"))
+}
+
 /// Runs the installer script (into `dir` when given); it installs what is missing and builds.
 pub(super) fn installer(dir: Option<&Path>) -> anyhow::Result<i32> {
     let (shell, flag, run) = if cfg!(windows) {

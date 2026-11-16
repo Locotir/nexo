@@ -4,7 +4,7 @@ A terminal coding harness for any model provider: a full-screen interface
 (mouse, folding transcript, search, palette) and a headless mode, with tools
 (read, edit, write, shell, search), permissions, sessions, MCP servers, and
 a built-in context curator as its default context policy.
-Written in Rust (ratatui), for Linux and Windows (both built and tested on every push; macOS is not tested).
+Written in Rust (ratatui), for Linux, macOS and Windows (built and tested on every push by CI).
 
 ![nexo fixing a failing test in the terminal](../docs/img/demo.svg)
 
@@ -25,7 +25,7 @@ irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 ```
 
 Both download the ready-built binary from the [latest release](https://github.com/Locotir/nexo/releases/latest)
-(Linux and Windows, x86_64 and ARM; checked against its SHA-256 list) into `~/.local/bin` or
+(Linux, macOS and Windows, x86_64 and ARM; checked against its SHA-256 list) into `~/.local/bin` or
 `%LOCALAPPDATA%\Programs\nexo` and add that folder to PATH. Where no binary fits, or with `NEXO_BUILD=1`,
 they install what a build needs (Rust, a C compiler or the Visual Studio C++ build tools) and build from
 source. `NEXO_INSTALL_DIR` picks another folder.
@@ -42,7 +42,7 @@ cargo build --release          # target/release/nexo (target\release\nexo.exe on
 install -m 755 target/release/nexo ~/.local/bin/
 ```
 
-Linux and Windows are built and tested on every push; macOS is not. On Windows, settings and sessions
+On Windows, settings and sessions
 live in `%USERPROFILE%\.nexo`, commands run in Git Bash when Git for Windows is installed (else
 PowerShell; `/status` shows which), and keys typed in `/model` go to `%USERPROFILE%\.nexo\keys\<name>`.
 
