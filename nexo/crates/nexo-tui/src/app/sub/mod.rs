@@ -16,7 +16,9 @@
 
 use super::*;
 use crate::toast::Kind;
-use nexo_core::subs::{SubInfo, SubItem, SubTranscript, KEEP_RUNS};
+use nexo_core::subs::{SubInfo, KEEP_RUNS};
+#[cfg(any(unix, test))]
+use nexo_core::subs::{SubItem, SubTranscript};
 
 mod local;
 #[cfg(any(unix, test))]
