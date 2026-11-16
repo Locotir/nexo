@@ -215,9 +215,7 @@ fn every_listed_theme_changes_what_is_drawn_and_an_unknown_name_lists_the_known_
         let (mut a, _rx) = app();
         a.opts.animations = false;
         assert_eq!(a.theme.name, "dark");
-        let colours = |a: &mut App| -> Vec<_> {
-            buf_of(a, 80, 24).content().iter().map(|c| (c.fg, c.bg)).collect()
-        };
+        let colours = |a: &mut App| -> Vec<_> { buf_of(a, 80, 24).content().iter().map(|c| (c.fg, c.bg)).collect() };
         let before = colours(&mut a);
         // Not persisted: the persisting path writes the real user config file.
         a.set_theme(name, false);
