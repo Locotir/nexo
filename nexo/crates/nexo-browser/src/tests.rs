@@ -637,7 +637,9 @@ async fn mouse_double_right_drag_hover_and_wheel() {
     browser.close().await.unwrap();
 }
 
-/// A one-thread HTTP server: `/` is a page that posts to `/api`, which answers JSON and a header.
+/// A small HTTP server: `/` is a page that posts to `/api`, which answers JSON and a header.
+/// Each connection gets its own thread: Chrome opens idle connections ahead of a request, and a server that read
+/// one connection at a time would sit on an empty one while the real request waited behind it.
 fn serve() -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -645,23 +647,49 @@ fn serve() -> String {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 4096];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let head = String::from_utf8_lossy(&buf[..n]).to_string();
-            let (ctype, body) = if head.starts_with("POST /api?q=ok&token=urlsecret") {
-                ("application/json", r#"{"hello":"world"}"#.to_string())
-            } else {
-                (
+            std::thread::spawn(move || {
+                // The whole request, body included: closing a socket with request bytes unread resets the connection,
+                // and the browser may then lose the response it was just sent.
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    let Some((head, rest)) = text.split_once("\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        }
+                        continue;
+                    };
+                    let wanted = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if rest.len() >= wanted || n == 0 {
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&raw).to_string();
+                let (ctype, body) = if head.starts_with("POST /api?q=ok&token=urlsecret") {
+                    ("application/json", r#"{"hello":"world"}"#.to_string())
+                } else {
+                    (
                     "text/html",
                     "<html><body><script>document.cookie = 'sid=cookiesecret'; fetch('/api?q=ok&token=urlsecret', {method: 'POST', headers: {'X-Test': 'yes', 'Authorization': 'Bearer headersecret', 'X-Session-Id': 'sessionsecret'}, body: 'x'})</script></body></html>"
                         .to_string(),
                 )
-            };
-            let reply = format!(
+                };
+                let reply = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nX-Reply: here\r\nX-Api-Key: replysecret\r\nSet-Cookie: sid=setcookiesecret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
-            let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.write_all(reply.as_bytes());
+            });
         }
     });
     format!("http://127.0.0.1:{port}/")

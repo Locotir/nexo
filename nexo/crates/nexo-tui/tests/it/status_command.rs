@@ -200,7 +200,7 @@ fn the_scripts_colours_stay_only_on_24_bit_and_italics_never_show() {
             assert!(a.theme.degraded);
         }
         tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some());
-        assert!(line(&a).is_some(), "no line within 30 s");
+        assert!(line(&a).is_some(), "no line within 30 s: {:?}", a.status_cmd.as_ref().map(|s| s.error.clone()));
         let (rows, t) = screen(&mut a, 80, 24);
         let bar = rows.last().unwrap();
         let buf = t.backend().buffer();

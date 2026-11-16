@@ -139,10 +139,14 @@ fn shell(cmd: &str) -> Command {
     }
 }
 
+/// True when the script died of SIGPIPE: killed by it, or (when a wrapper shell stayed between nexo and the
+/// script, as `sh -c "sh script"` does where the shell does not exec its last command) reported as 128 + 13.
+/// Both happen when the script writes more after the first line, whose pipe nexo has already closed; which of
+/// the two nexo sees depends on the shell and on how fast the script runs, so both must pass.
 #[cfg(unix)]
 fn cut_off(s: &std::process::ExitStatus) -> bool {
     use std::os::unix::process::ExitStatusExt;
-    s.signal() == Some(13)
+    s.signal() == Some(13) || s.code() == Some(128 + 13)
 }
 
 #[cfg(not(unix))]
@@ -400,6 +404,9 @@ mod tests {
         // many lines after the first: the pipe closes under the script, which is fine
         let line = run("echo first; i=0; while [ $i -lt 2000 ]; do echo more $i; i=$((i+1)); done", &dir, "", TIMEOUT);
         assert_eq!(line.as_deref(), Ok("first"));
+        // the same, under a wrapper shell that stays and reports the script's SIGPIPE as exit code 141
+        let wrapped = "sh -c 'echo first; i=0; while [ $i -lt 2000 ]; do echo more $i; i=$((i+1)); done'; exit $?";
+        assert_eq!(run(wrapped, &dir, "", TIMEOUT).as_deref(), Ok("first"));
         assert!(run("exit 3", &dir, "", TIMEOUT).unwrap_err().contains("exited"));
         assert!(run("true", &dir, "", TIMEOUT).unwrap_err().contains("nothing"));
         let t = Instant::now();
