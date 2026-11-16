@@ -48,7 +48,7 @@ fn commands() -> String {
 }
 
 const COMMANDS: &str = "\
-run [--main] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); input is sent, then closed
+run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); env, folder, ASLR (off by default) and argv[0] as given; input is sent, then closed
 a; b  several commands in one call (`run ./p <<< \"1 2\"; cont` runs to the crash)
 attach <pid>  attach (asks)
 break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once
@@ -307,7 +307,21 @@ impl Debug {
         }
         // `run ./prog` and its `< file` are relative to the project, as in the shell
         if words.first().map(String::as_str) == Some("run") {
-            let at = if words.get(1).is_some_and(|w| w == "--main") { 2 } else { 1 };
+            // launch options come first; a relative `--cwd` is relative to the project too
+            let mut at = 1;
+            while let Some(flag) = words.get(at).map(String::as_str) {
+                match flag {
+                    "--main" | "--aslr" => at += 1,
+                    "--env" | "--unset" | "--argv0" => at += 2,
+                    "--cwd" => {
+                        if let Some(d) = words.get(at + 1).filter(|d| Path::new(d.as_str()).is_relative()).cloned() {
+                            words[at + 1] = ctx.cwd.join(d).display().to_string();
+                        }
+                        at += 2;
+                    }
+                    _ => break,
+                }
+            }
             if let Some(p) = words.get(at).cloned() {
                 if Path::new(&p).is_relative() && (p.contains('/') || ctx.cwd.join(&p).is_file()) {
                     words[at] = ctx.cwd.join(&p).display().to_string();
@@ -641,7 +655,7 @@ mod host_tests {
         // everything else is the same on every host
         assert!(
             c.contains("ltrace [names]")
-                && c.contains("run [--main] <path>")
+                && c.contains("run [--main] [--env K=V]")
                 && c.ends_with("detach, kill, end, sessions, help")
         );
         assert_eq!(COMPACT.contains("strace"), !NO_SYSCALLS);

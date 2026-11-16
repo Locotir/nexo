@@ -131,15 +131,20 @@ impl Windows {
             SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
             SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
         }
-        let mut cmd = quote(&l.exe.display().to_string());
+        // The image is named by `lpApplicationName` when `argv[0]` is changed: the first word of the command line is
+        // then only what the program reads as its own name.
+        let mut cmd = quote(&l.argv0.clone().unwrap_or_else(|| l.exe.display().to_string()));
+        let app = l.argv0.as_ref().map(|_| wide(l.exe.as_os_str()));
         for a in &l.args {
             cmd.push(' ');
             cmd.push_str(&quote(a));
         }
         let mut cmdw: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
         let mut env: Vec<u16> = Vec::new();
-        for (k, v) in l.env.iter().cloned().chain(std::env::vars().filter(|(k, _)| !l.env.iter().any(|(n, _)| n == k)))
-        {
+        let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+        let inherited = std::env::vars()
+            .filter(|(k, _)| !l.env.iter().any(|(n, _)| same(n, k)) && !l.unset.iter().any(|n| same(n, k)));
+        for (k, v) in l.env.iter().cloned().chain(inherited) {
             env.extend(format!("{k}={v}").encode_utf16());
             env.push(0);
         }
@@ -155,7 +160,7 @@ impl Windows {
         // SAFETY: every pointer is valid for the call; the buffers outlive it.
         let ok = unsafe {
             CreateProcessW(
-                std::ptr::null(),
+                app.as_ref().map_or(std::ptr::null(), |a| a.as_ptr()),
                 cmdw.as_mut_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),

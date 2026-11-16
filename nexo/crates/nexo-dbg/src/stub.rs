@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 
-use crate::platform::{self, Access, Event, HwSlot, Launch, Resume, Stop, Target, Tid};
+use crate::platform::{self, Access, Event, HwSlot, Resume, Stop, Target, Tid};
 use crate::rsp::{hex, parse_target_xml, regs_from_g, regs_into_g, stub_xml, unhex, Conn, Frame, Layout};
 use crate::server::Kind;
 use crate::{fail, Error, Result};
@@ -591,11 +591,12 @@ pub fn serve_gdb(kind: &Kind, port: u16, ready: &mut dyn FnMut(SocketAddr)) -> R
         .map_err(|e| Error::Fail(format!("cannot listen on 127.0.0.1:{port}: {e}")))?;
     let addr = listener.local_addr().map_err(|e| Error::Fail(e.to_string()))?;
     let t = match kind {
-        Kind::Run { exe, args } => {
+        Kind::Run { .. } | Kind::RunWith { .. } => {
+            let Some((exe, args, opts)) = kind.program() else { return fail("unreachable") };
             if !exe.is_file() {
                 return fail(format!("{} is not a file", exe.display()));
             }
-            platform::launch(&Launch { exe: exe.clone(), args: args.clone(), ..Launch::default() })?
+            platform::launch(&opts.launch(exe, args))?
         }
         Kind::Attach(pid) => platform::attach(*pid)?,
         _ => return fail("`serve --gdb` takes a program to run or a pid to attach to"),

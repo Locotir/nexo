@@ -53,7 +53,8 @@ pub use engine::{Session, State, StopInfo};
 pub use gdbdialect::Plan as GdbPlan;
 pub use knowledge::set_data_dir;
 pub use platform::{
-    attach, launch, runs_here, Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid, Touch,
+    attach, launch, runs_here, Access, Event, Fault, HwSlot, Launch, LaunchOpts, Map, Module, Os, Resume, Stop, Target,
+    Tid, Touch,
 };
 pub use regs::Regs;
 pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply, Start, IDLE};

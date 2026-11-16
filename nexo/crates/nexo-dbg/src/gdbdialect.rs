@@ -48,7 +48,6 @@ pub fn is_noise_setting(words: &[String]) -> bool {
                 | "breakpoint"
                 | "disassembly-flavor"
                 | "startup-with-shell"
-                | "disable-randomization"
                 | "listsize"
                 | "step-mode"
                 | "language"
@@ -74,14 +73,47 @@ pub enum SetKind {
     Register(String, String),
     /// `set args ...`.
     Args(Vec<String>),
-    /// `set var x = ...`, `set {int}addr = ...`, `set environment`: changes the program.
+    /// `set var x = ...`, `set {int}addr = ...`: changes the program.
     Memory,
+    /// `set environment NAME=VALUE` (or `NAME VALUE`): part of how the program starts.
+    Env(String, String),
+    /// `set cwd DIR`: the folder the program starts in.
+    Cwd(String),
+    /// `set disable-randomization on|off`: whether the program starts with address randomisation off.
+    Randomization { off: bool },
+}
+
+/// `NAME=VALUE` or `NAME VALUE` after `set environment`; a name alone is an empty value, as in gdb.
+fn env_pair(rest: &[String]) -> Option<(String, String)> {
+    let first = rest.first()?;
+    if let Some((k, v)) = first.split_once('=') {
+        let tail: Vec<&str> = rest[1..].iter().map(String::as_str).collect();
+        let v = if tail.is_empty() { v.to_string() } else { format!("{v} {}", tail.join(" ")) };
+        return (!k.is_empty()).then(|| (k.to_string(), v));
+    }
+    match rest.get(1).map(String::as_str) {
+        Some("=") => Some((first.clone(), rest[2..].join(" "))),
+        _ => Some((first.clone(), rest[1..].join(" "))),
+    }
 }
 
 /// Classify the words of a `set` command; `is_reg` says whether a name is a register.
 pub fn set_kind(words: &[String], is_reg: &dyn Fn(&str) -> bool) -> SetKind {
     if words.get(1).is_some_and(|w| w == "args") {
         return SetKind::Args(words[2..].to_vec());
+    }
+    match words.get(1).map(String::as_str) {
+        Some("environment" | "env") => {
+            if let Some((k, v)) = env_pair(&words[2..]) {
+                return SetKind::Env(k, v);
+            }
+        }
+        Some("cwd") if words.len() > 2 => return SetKind::Cwd(words[2..].join(" ")),
+        Some("disable-randomization") => {
+            let off = !matches!(words.get(2).map(String::as_str), Some("off" | "0" | "no" | "disable"));
+            return SetKind::Randomization { off };
+        }
+        _ => {}
     }
     if is_noise_setting(words) {
         return SetKind::Noise;
@@ -647,9 +679,14 @@ pub fn plan(parts: &[String], is_reg: &dyn Fn(&str) -> bool) -> Result<Option<Pl
     };
     let (mut exe, mut args): (Option<String>, Vec<String>) = (None, Vec::new());
     let (mut rest, mut dropped, mut end) = (Vec::new(), 0usize, false);
-    let sink = |p: &str, exe: &mut Option<String>, args: &mut Vec<String>| -> bool {
+    let mut flags: Vec<String> = Vec::new();
+    let sink = |p: &str, exe: &mut Option<String>, args: &mut Vec<String>, flags: &mut Vec<String>| -> bool {
         let w = crate::split_words(p);
         match w.first().map(String::as_str) {
+            Some("unset") if w.len() == 3 && matches!(w[1].as_str(), "environment" | "env") => {
+                flags.extend(["--unset".to_string(), w[2].clone()]);
+                true
+            }
             Some("file" | "exec-file") if w.len() == 2 => {
                 *exe = Some(w[1].clone());
                 true
@@ -657,6 +694,21 @@ pub fn plan(parts: &[String], is_reg: &dyn Fn(&str) -> bool) -> Result<Option<Pl
             Some("set") => match set_kind(&w, is_reg) {
                 SetKind::Args(a) => {
                     *args = a;
+                    true
+                }
+                SetKind::Env(k, v) => {
+                    flags.extend(["--env".to_string(), format!("{k}={v}")]);
+                    true
+                }
+                SetKind::Cwd(d) => {
+                    flags.extend(["--cwd".to_string(), d]);
+                    true
+                }
+                SetKind::Randomization { off } => {
+                    flags.retain(|f| f != "--aslr");
+                    if !off {
+                        flags.push("--aslr".to_string());
+                    }
                     true
                 }
                 SetKind::Noise => true,
@@ -668,7 +720,7 @@ pub fn plan(parts: &[String], is_reg: &dyn Fn(&str) -> bool) -> Result<Option<Pl
     for p in &parts[..at] {
         let w = crate::split_words(p);
         let noise = w.first().is_some_and(|f| f == "set") && is_noise_setting(&w);
-        if sink(p, &mut exe, &mut args) {
+        if sink(p, &mut exe, &mut args, &mut flags) {
             dropped += usize::from(noise);
         } else {
             rest.push(p.clone());
@@ -680,10 +732,17 @@ pub fn plan(parts: &[String], is_reg: &dyn Fn(&str) -> bool) -> Result<Option<Pl
     let run = crate::split_words(&parts[at]);
     let to_main = run[0] == "start";
     let mut run_args: Vec<String> = run[1..].to_vec();
-    let own_flag = run_args.first().is_some_and(|w| w == "--main");
-    if own_flag {
-        run_args.remove(0);
+    // the debugger's own launch options may follow `run`: they join the ones the script set
+    while let Some(f) = run_args.first().cloned() {
+        let take = match f.as_str() {
+            "--main" | "--aslr" => 1,
+            "--env" | "--unset" | "--cwd" | "--argv0" if run_args.len() > 1 => 2,
+            _ => break,
+        };
+        flags.extend(run_args.drain(..take));
     }
+    let own_flag = flags.iter().any(|f| f == "--main");
+    flags.retain(|f| f != "--main");
     let exe = match exe {
         Some(e) => e,
         // without `file`, the program is the first word of `run` (the debugger's own shape)
@@ -701,9 +760,16 @@ pub fn plan(parts: &[String], is_reg: &dyn Fn(&str) -> bool) -> Result<Option<Pl
     let quote =
         |w: &str| if w.contains(char::is_whitespace) || w.is_empty() { format!("\"{w}\"") } else { w.to_string() };
     let tail: Vec<String> = run_args.iter().map(|w| quote(w)).collect();
+    let mut lead = String::new();
+    if to_main || own_flag {
+        lead.push_str(" --main");
+    }
+    for f in &flags {
+        lead.push(' ');
+        lead.push_str(&quote(f));
+    }
     let start = format!(
-        "run{} {}{}",
-        if to_main || own_flag { " --main" } else { "" },
+        "run{lead} {}{}",
         quote(&exe),
         if tail.is_empty() { String::new() } else { format!(" {}", tail.join(" ")) }
     );
@@ -833,6 +899,12 @@ mod tests {
         assert_eq!(k("set var x = 1"), SetKind::Memory);
         assert_eq!(k("set {int}0x1000 = 1"), SetKind::Memory);
         assert_eq!(k("set args -e t.bin"), SetKind::Args(s(&["-e", "t.bin"])));
+        assert_eq!(k("set environment A=1"), SetKind::Env("A".into(), "1".into()));
+        assert_eq!(k("set environment A 1 2"), SetKind::Env("A".into(), "1 2".into()));
+        assert_eq!(k("set env A = 1"), SetKind::Env("A".into(), "1".into()));
+        assert_eq!(k("set cwd /tmp"), SetKind::Cwd("/tmp".into()));
+        assert_eq!(k("set disable-randomization off"), SetKind::Randomization { off: false });
+        assert_eq!(k("set disable-randomization"), SetKind::Randomization { off: true });
         assert_eq!(k("set $a == 1"), SetKind::Memory);
     }
 

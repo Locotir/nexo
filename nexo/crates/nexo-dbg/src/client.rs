@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use nexo_bin::{Lines, Output, PageAsk, MIN_LINES};
 use serde_json::json;
 
+use crate::platform::LaunchOpts;
 use crate::{Error, Kind, Reply};
 
 /// One call: our own options taken out of the words, and the command that is left.
@@ -160,6 +161,7 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
         // a hook that sets an argument or the result changes the program
         "hook" if rest.iter().any(|w| w == "set" || w == "ret") => DbgClass::Change,
         "hook" => DbgClass::Control,
+        "unset" => DbgClass::Control,
         "set" => match set_effect(&rest) {
             SetEffect::Keeps => DbgClass::Control,
             SetEffect::Writes => DbgClass::Change,
@@ -201,9 +203,12 @@ enum SetEffect {
 /// What a gdb `set` does: a setting or a convenience variable changes nothing in the program; a register or memory does.
 fn set_effect(words: &[String]) -> SetEffect {
     match crate::gdbdialect::set_kind(words, &|n| crate::Regs::default().get(n).is_some()) {
-        crate::gdbdialect::SetKind::Noise | crate::gdbdialect::SetKind::Var | crate::gdbdialect::SetKind::Args(_) => {
-            SetEffect::Keeps
-        }
+        crate::gdbdialect::SetKind::Noise
+        | crate::gdbdialect::SetKind::Var
+        | crate::gdbdialect::SetKind::Args(_)
+        | crate::gdbdialect::SetKind::Env(..)
+        | crate::gdbdialect::SetKind::Cwd(_)
+        | crate::gdbdialect::SetKind::Randomization { .. } => SetEffect::Keeps,
         crate::gdbdialect::SetKind::Register(..) | crate::gdbdialect::SetKind::Memory => SetEffect::Writes,
     }
 }
@@ -280,6 +285,7 @@ const READ_ALLOWED: &[&str] = &[
     "silent",
     "quit",
     "set",
+    "unset",
 ];
 
 /// The commands inside a `do` script, split exactly as the server splits them: the plain words after `do` are
@@ -394,8 +400,71 @@ pub fn parse(words: &[String]) -> Result<Call, Error> {
     Ok(o)
 }
 
-/// What `run` was given: `run [--main] <path> [args] [< file | <<< text]`.
+const RUN_USAGE: &str = "usage: run [--main] [--env K=V]... [--unset K]... [--cwd DIR] [--aslr] [--argv0 NAME] <path> [args] [< file | <<< text]";
+
+/// How many leading words of a `run` are launch options (`--main`, `--env K=V`, `--unset K`, `--cwd DIR`,
+/// `--aslr`, `--argv0 NAME`), and what they set. The program path is the word after them.
+pub fn launch_flags(words: &[String], to_main: &mut bool, opts: &mut LaunchOpts) -> Result<usize, Error> {
+    let mut i = 0;
+    let value = |i: usize, flag: &str| -> Result<&String, Error> {
+        words.get(i + 1).ok_or_else(|| Error::Usage(format!("{flag} needs a value: {RUN_USAGE}")))
+    };
+    while let Some(w) = words.get(i) {
+        match w.as_str() {
+            "--main" => *to_main = true,
+            "--aslr" => opts.aslr = true,
+            "--env" => {
+                let v = value(i, "--env")?;
+                let Some((k, val)) = v.split_once('=').filter(|(k, _)| !k.is_empty()) else {
+                    return Err(Error::Usage(format!("--env takes NAME=VALUE; {v:?} has no name before an =")));
+                };
+                if k.contains(['\0', '=']) || val.contains('\0') {
+                    return Err(Error::Usage(format!("{k:?} cannot be an environment variable (a zero byte)")));
+                }
+                // the later word wins, as in a shell
+                opts.env.retain(|(n, _)| n != k);
+                opts.unset.retain(|n| n != k);
+                opts.env.push((k.to_string(), val.to_string()));
+                i += 1;
+            }
+            "--unset" => {
+                let k = value(i, "--unset")?;
+                if k.is_empty() || k.contains(['\0', '=']) {
+                    return Err(Error::Usage(format!("--unset takes a variable name; {k:?} is not one")));
+                }
+                opts.env.retain(|(n, _)| n != k);
+                if !opts.unset.contains(k) {
+                    opts.unset.push(k.clone());
+                }
+                i += 1;
+            }
+            "--cwd" => {
+                let d = PathBuf::from(value(i, "--cwd")?);
+                let abs = if d.is_relative() { std::env::current_dir().map(|h| h.join(&d)).unwrap_or(d) } else { d };
+                if !abs.is_dir() {
+                    return Err(Error::Usage(format!("--cwd {} is not a folder", abs.display())));
+                }
+                opts.cwd = Some(abs);
+                i += 1;
+            }
+            "--argv0" => {
+                let a = value(i, "--argv0")?;
+                if a.is_empty() || a.contains('\0') {
+                    return Err(Error::Usage("--argv0 takes the name the program sees as its own (not empty)".into()));
+                }
+                opts.argv0 = Some(a.clone());
+                i += 1;
+            }
+            _ => break,
+        }
+        i += 1;
+    }
+    Ok(i)
+}
+
+/// What `run` was given: `run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] <path> [args] [< file | <<< text]`.
 struct RunWords {
+    opts: LaunchOpts,
     exe: String,
     args: Vec<String>,
     /// What goes to the program's input before it runs; the input is closed after it.
@@ -426,13 +495,10 @@ fn shell_syntax(s: &str) -> Option<&'static str> {
 }
 
 fn run_words(words: &[String]) -> Result<RunWords, Error> {
-    let mut w = words;
-    let to_main = w.first().is_some_and(|x| x == "--main");
-    if to_main {
-        w = &w[1..];
-    }
-    let Some((exe, rest)) = w.split_first() else {
-        return Err(Error::Usage("usage: run [--main] <path> [args] [< file | <<< text]".into()));
+    let (mut to_main, mut opts) = (false, LaunchOpts::default());
+    let flags = launch_flags(words, &mut to_main, &mut opts)?;
+    let Some((exe, rest)) = words[flags..].split_first() else {
+        return Err(Error::Usage(RUN_USAGE.into()));
     };
     let mut args: Vec<String> = rest.iter().filter(|x| *x != "--").cloned().collect();
     let mut input = None;
@@ -469,7 +535,7 @@ fn run_words(words: &[String]) -> Result<RunWords, Error> {
         });
         args.drain(i..i + 2);
     }
-    Ok(RunWords { exe: exe.clone(), args, input, to_main })
+    Ok(RunWords { exe: exe.clone(), args, input, to_main, opts })
 }
 
 fn pick_session(dir: &Path, want: &Option<String>) -> Result<String, Error> {
@@ -630,7 +696,11 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
                 let r = run_words(&o.words[1..])?;
                 input = r.input;
                 to_main = r.to_main;
-                Kind::Run { exe: PathBuf::from(r.exe), args: r.args }
+                if r.opts.is_default() {
+                    Kind::Run { exe: PathBuf::from(r.exe), args: r.args }
+                } else {
+                    Kind::RunWith { exe: PathBuf::from(r.exe), args: r.args, opts: r.opts }
+                }
             } else {
                 let pid = o
                     .words

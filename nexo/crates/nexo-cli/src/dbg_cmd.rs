@@ -18,6 +18,7 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
     let (mut id, mut dir, mut owner, mut run, mut attach) = (None, None, None, None, None);
     let (mut core, mut exe): (Option<PathBuf>, Option<PathBuf>) = (None, None);
     let mut remote: Option<String> = None;
+    let mut opts = nexo_dbg::LaunchOpts::default();
     let mut args = Vec::new();
     let mut it = w.iter();
     while let Some(k) = it.next() {
@@ -28,6 +29,14 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
             "--owner" => owner = v.parse().ok(),
             "--run" => run = Some(PathBuf::from(v)),
             "--arg" => args.push(v.clone()),
+            "--env" => match v.split_once('=') {
+                Some((k, val)) => opts.env.push((k.to_string(), val.to_string())),
+                None => return Err(Error::Usage("--env needs NAME=VALUE".into())),
+            },
+            "--unset" => opts.unset.push(v.clone()),
+            "--cwd" => opts.cwd = Some(PathBuf::from(v)),
+            "--aslr" => opts.aslr = v == "on",
+            "--argv0" => opts.argv0 = Some(v.clone()),
             "--attach" => attach = v.parse().ok(),
             "--core" => core = Some(PathBuf::from(v)),
             "--exe" => exe = Some(PathBuf::from(v)),
@@ -37,7 +46,8 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
     }
     let kind = match (run, attach, core) {
         _ if remote.is_some() => Kind::Remote { addr: remote.unwrap_or_default(), exe },
-        (Some(exe), _, _) => Kind::Run { exe, args },
+        (Some(exe), _, _) if opts.is_default() => Kind::Run { exe, args },
+        (Some(exe), _, _) => Kind::RunWith { exe, args, opts },
         (None, Some(pid), _) => Kind::Attach(pid),
         (None, None, Some(file)) => Kind::Core { file, exe },
         _ => return Err(Error::Usage("the server needs --run, --attach or --core".into())),

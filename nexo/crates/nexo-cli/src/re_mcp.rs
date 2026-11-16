@@ -239,6 +239,25 @@ impl Server {
         if kind == "run" && args.get("main").and_then(Value::as_bool) == Some(true) {
             words.push("--main".into());
         }
+        if kind == "run" {
+            if let Some(Value::Object(env)) = args.get("env") {
+                for (k, v) in env {
+                    words.extend(["--env".to_string(), format!("{k}={}", scalar(Some(v)).unwrap_or_default())]);
+                }
+            }
+            for k in list_of(args.get("unset"))? {
+                words.extend(["--unset".to_string(), k]);
+            }
+            if let Some(d) = scalar(args.get("cwd")).filter(|d| !d.is_empty()) {
+                words.extend(["--cwd".to_string(), d]);
+            }
+            if args.get("aslr").and_then(Value::as_bool) == Some(true) {
+                words.push("--aslr".into());
+            }
+            if let Some(a) = scalar(args.get("argv0")).filter(|a| !a.is_empty()) {
+                words.extend(["--argv0".to_string(), a]);
+            }
+        }
         let target = if kind == "attach" { same_user(&target)?.to_string() } else { target };
         if kind == "core" && target.starts_with('-') {
             return Err(format!("a core file name cannot start with '-' (it would be read as a flag): use ./{target}"));

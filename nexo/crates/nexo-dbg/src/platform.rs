@@ -138,9 +138,77 @@ pub struct Launch {
     pub args: Vec<String>,
     /// Added to (or replacing) the environment of this process.
     pub env: Vec<(String, String)>,
+    /// Names taken out of the environment this process passes on.
+    pub unset: Vec<String>,
     pub cwd: Option<PathBuf>,
     /// Leave address randomisation on (it is turned off by default so addresses repeat between runs).
     pub aslr: bool,
+    /// What the program sees as `argv[0]` (the path it was started from when `None`).
+    pub argv0: Option<String>,
+}
+
+/// What a `run` may change about how the program starts: its environment, working folder, address randomisation
+/// and `argv[0]`. The default is the debugger's own start: this process's environment and folder, randomisation off.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchOpts {
+    pub env: Vec<(String, String)>,
+    pub unset: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub aslr: bool,
+    pub argv0: Option<String>,
+}
+
+impl LaunchOpts {
+    pub fn is_default(&self) -> bool {
+        *self == LaunchOpts::default()
+    }
+
+    /// The program to start with these options. A relative path is made absolute first when the folder changes,
+    /// because it is resolved after the change; the program still sees the name it was given as `argv[0]`.
+    pub fn launch(&self, exe: &std::path::Path, args: &[String]) -> Launch {
+        let (mut exe, mut argv0) = (exe.to_path_buf(), self.argv0.clone());
+        if self.cwd.is_some() && exe.is_relative() {
+            if let Ok(here) = std::env::current_dir() {
+                argv0.get_or_insert_with(|| exe.display().to_string());
+                exe = here.join(&exe);
+            }
+        }
+        Launch {
+            exe,
+            args: args.to_vec(),
+            env: self.env.clone(),
+            unset: self.unset.clone(),
+            cwd: self.cwd.clone(),
+            aslr: self.aslr,
+            argv0,
+        }
+    }
+
+    /// One line for the start answer: what was changed, with variable names only (a value may be a secret).
+    pub fn fact(&self) -> Option<String> {
+        let mut v = Vec::new();
+        if !self.env.is_empty() {
+            let names: Vec<&str> = self.env.iter().map(|(k, _)| k.as_str()).collect();
+            v.push(format!("environment set: {}", names.join(", ")));
+        }
+        if !self.unset.is_empty() {
+            v.push(format!("environment unset: {}", self.unset.join(", ")));
+        }
+        if let Some(c) = &self.cwd {
+            v.push(format!("working folder {}", c.display()));
+        }
+        if self.aslr {
+            v.push("address randomisation on".to_string());
+        }
+        if let Some(a) = &self.argv0 {
+            v.push(format!("argv[0] {a}"));
+        }
+        if v.is_empty() {
+            None
+        } else {
+            Some(format!("launch: {}", v.join("; ")))
+        }
+    }
 }
 
 /// A program under control. Every call but `wait`, `interrupt`, `stdin` and `output` needs the

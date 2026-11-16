@@ -167,13 +167,18 @@ impl Linux {
     pub fn launch(l: &Launch) -> Result<Linux> {
         let c = |b: &[u8]| CString::new(b).map_err(|_| Error::Usage("an argument holds a zero byte".into()));
         let exe = c(l.exe.as_os_str().as_bytes())?;
-        let mut argv = vec![exe.clone()];
+        let mut argv = vec![match &l.argv0 {
+            Some(a) => c(a.as_bytes())?,
+            None => exe.clone(),
+        }];
         for a in &l.args {
             argv.push(c(a.as_bytes())?);
         }
         let mut envp = Vec::new();
         for (k, v) in std::env::vars_os() {
-            if !l.env.iter().any(|(n, _)| n.as_bytes() == k.as_bytes()) {
+            if !l.env.iter().any(|(n, _)| n.as_bytes() == k.as_bytes())
+                && !l.unset.iter().any(|n| n.as_bytes() == k.as_bytes())
+            {
                 envp.push(c(&[k.as_bytes(), b"=", v.as_bytes()].concat())?);
             }
         }

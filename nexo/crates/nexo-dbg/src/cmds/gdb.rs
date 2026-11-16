@@ -84,6 +84,9 @@ impl Session {
             "printf" => self.gdb_printf(rest),
             "echo" => Ok(rows("echo", lines_of(&g::unescape(&rest.join(" "))), json!({}))),
             "set" => self.gdb_set(words),
+            "unset" => usage(
+                "environment, working folder and address randomisation are fixed when the program starts: `run [--env K=V] [--unset K] [--cwd DIR] [--aslr] <path>`; a gdb script can set them before `run`",
+            ),
             "show" => Ok(rows("show", vec!["settings are fixed here: nothing to show".into()], json!({}))),
             "commands" => self.gdb_commands(rest),
             "silent" => Ok(rows("silent", Vec::new(), json!({}))),
@@ -407,6 +410,9 @@ impl Session {
             }
             g::SetKind::Register(r, e) => self.exec(&["setreg".to_string(), r, e]),
             g::SetKind::Args(_) => usage("the arguments go in `run <path> <args>`; a gdb script can use `set args` before `run`"),
+            g::SetKind::Env(..) | g::SetKind::Cwd(_) | g::SetKind::Randomization { .. } => usage(
+                "environment, working folder and address randomisation are fixed when the program starts: `run [--env K=V] [--unset K] [--cwd DIR] [--aslr] <path>`; a gdb script can set them before `run`",
+            ),
             g::SetKind::Memory => usage(
                 "`set var x = ...` and `set {type}addr = ...` write into the program: `write <addr> <hex bytes>` (asks); `set $name = expr` keeps a value for later expressions",
             ),

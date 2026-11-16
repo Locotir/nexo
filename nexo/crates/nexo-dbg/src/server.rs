@@ -13,7 +13,7 @@ use nexo_bin::{Image, Output, Row};
 use serde_json::{json, Value};
 
 use crate::engine::{rows, Session, State};
-use crate::platform::{self, Launch};
+use crate::platform::{self, LaunchOpts};
 use crate::{fail, Error, Result};
 
 /// A session with no call for this long ends (the program is killed, or let go if it was attached).
@@ -24,6 +24,12 @@ pub enum Kind {
     Run {
         exe: PathBuf,
         args: Vec<String>,
+    },
+    /// A program started with its own environment, working folder, address randomisation or `argv[0]`.
+    RunWith {
+        exe: PathBuf,
+        args: Vec<String>,
+        opts: LaunchOpts,
     },
     Attach(u32),
     /// A core file, and the program's file when the dump's own record of it is not the one to use.
@@ -36,6 +42,17 @@ pub enum Kind {
         addr: String,
         exe: Option<PathBuf>,
     },
+}
+
+impl Kind {
+    /// The program a `run` starts, its arguments and how it is started (`None` for the other kinds).
+    pub fn program(&self) -> Option<(&Path, &[String], LaunchOpts)> {
+        match self {
+            Kind::Run { exe, args } => Some((exe, args, LaunchOpts::default())),
+            Kind::RunWith { exe, args, opts } => Some((exe, args, opts.clone())),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -191,14 +208,20 @@ fn make_session(kind: &Kind) -> Result<Made> {
         return Ok((Session::new(Box::new(r), img), None, None));
     }
     let t = match kind {
-        Kind::Run { exe, args } => {
+        Kind::Run { .. } | Kind::RunWith { .. } => {
+            let Some((exe, args, opts)) = kind.program() else { return fail("unreachable") };
             if !exe.is_file() {
                 return fail(format!("{} is not a file", exe.display()));
             }
             if let Some(why) = platform::foreign_program(exe) {
                 return fail(why);
             }
-            platform::launch(&Launch { exe: exe.clone(), args: args.clone(), ..Launch::default() })?
+            if let Some(dir) = &opts.cwd {
+                if !dir.is_dir() {
+                    return fail(format!("the working folder {} is not a folder", dir.display()));
+                }
+            }
+            platform::launch(&opts.launch(exe, args))?
         }
         Kind::Attach(pid) => platform::attach(*pid)?,
         Kind::Core { .. } | Kind::Remote { .. } => return fail("unreachable"),
@@ -206,7 +229,7 @@ fn make_session(kind: &Kind) -> Result<Made> {
     let mut t = t;
     let mods = t.modules().unwrap_or_default();
     let path = match kind {
-        Kind::Run { exe, .. } => exe.clone(),
+        Kind::Run { exe, .. } | Kind::RunWith { exe, .. } => exe.clone(),
         _ => PathBuf::from(mods.first().map(|m| m.path.clone()).unwrap_or_default()),
     };
     let mut img = match Image::open_arch(&path, platform::NATIVE_SLICE) {
@@ -225,7 +248,7 @@ fn make_session(kind: &Kind) -> Result<Made> {
 pub fn open(kind: &Kind) -> Result<(Session, Output)> {
     let (mut sess, death, debug) = make_session(kind)?;
     let mut first = match kind {
-        Kind::Run { .. } => run_to_entry(&mut sess),
+        Kind::Run { .. } | Kind::RunWith { .. } => run_to_entry(&mut sess, kind.program().and_then(|p| p.2.fact())),
         Kind::Attach(pid) => attach_report(&mut sess, *pid),
         Kind::Core { file, .. } => core_report(&mut sess, file, death),
         Kind::Remote { addr, .. } => remote_report(&mut sess, addr),
@@ -313,7 +336,7 @@ pub fn serve(start: &Start) -> i32 {
     code
 }
 
-fn run_to_entry(s: &mut Session) -> Output {
+fn run_to_entry(s: &mut Session, launch: Option<String>) -> Output {
     let Some(entry) = s.t.entry() else {
         return rows("stop", vec!["started; the entry point is unknown".into()], json!({}));
     };
@@ -328,6 +351,9 @@ fn run_to_entry(s: &mut Session) -> Output {
             o.rows.insert(0, Row { key: 0, text: format!("started pid {pid}"), json: None });
             if let Some(note) = s.t.note() {
                 o.rows.insert(1, Row { key: 0, text: note, json: None });
+            }
+            if let Some(text) = launch {
+                o.rows.insert(1, Row { key: 0, text, json: None });
             }
             for (i, r) in o.rows.iter_mut().enumerate() {
                 r.key = i as u64;
@@ -581,6 +607,27 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
             cmd.arg("--run").arg(exe);
             for a in args {
                 cmd.arg("--arg").arg(a);
+            }
+        }
+        Kind::RunWith { exe, args, opts } => {
+            cmd.arg("--run").arg(exe);
+            for a in args {
+                cmd.arg("--arg").arg(a);
+            }
+            for (k, v) in &opts.env {
+                cmd.arg("--env").arg(format!("{k}={v}"));
+            }
+            for k in &opts.unset {
+                cmd.arg("--unset").arg(k);
+            }
+            if let Some(d) = &opts.cwd {
+                cmd.arg("--cwd").arg(d);
+            }
+            if opts.aslr {
+                cmd.arg("--aslr").arg("on");
+            }
+            if let Some(a) = &opts.argv0 {
+                cmd.arg("--argv0").arg(a);
             }
         }
         Kind::Attach(pid) => {
