@@ -461,3 +461,23 @@ fn a_read_of_several_files_is_judged_file_by_file() {
     // the dialog names the first file
     assert_eq!(target_of(ToolKind::Read, &json!({ "paths": ["src/a.rs", "b.rs"] })).as_deref(), Some("src/a.rs"));
 }
+
+#[test]
+fn deny_rules_read_locale_strings_and_ansi_strings_the_way_bash_does() {
+    // Checked with `bash -c`: `$"rm" -rf x` runs rm (bash drops the `$`), and in `cat $'\c' ; rm -rf x ; '\'`
+    // the `\c` takes the quote's place inside the string, so the string ends at the next quote and the
+    // `;` and the `rm` after it are real: bash runs cat, then rm, then `\`.
+    for cmd in ["$\"rm\" -rf x", "cat $'\\c' ; rm -rf x ; '\\'", "ls; $\"rm\" x", "bash -c '$\"rm\" x'"] {
+        assert!(matches!(decide_bash("bash", "bash(rm *)", cmd), Decision::Deny(_)), "{cmd}");
+    }
+    // the plain cases stay as they were
+    assert!(matches!(decide_bash("bash", "bash(rm *)", "rm -rf x"), Decision::Deny(_)));
+    assert!(matches!(decide_bash("bash", "bash(rm *)", "'rm' -rf x"), Decision::Deny(_)));
+    assert_eq!(decide_bash("bash", "bash(rm *)", "ls -la"), Decision::Allow);
+    // a word the lexer cannot know is never vouched for by an allow rule
+    let c = cwd();
+    let allow = |cmd: &str| rule_matches("bash(echo *)", "bash", ToolKind::Exec, &json!({"command": cmd}), &c);
+    assert!(allow("echo hi"));
+    assert!(!allow("echo $\"hi\""));
+    assert!(!allow("echo 'open"));
+}

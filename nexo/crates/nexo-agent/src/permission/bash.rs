@@ -2,13 +2,14 @@
 
 /// The simple commands of a shell line, split on `;`, `&&`, `||`, `|`, `&`, newlines and parentheses
 /// outside quotes, and whether it is more than the parser can vouch for: a substitution (`$(..)`,
-/// backticks, `<(..)`) that runs something else, an ANSI-C string (`$'..'`), a `${..}` with an `@`
+/// backticks, `<(..)`) that runs something else, an ANSI-C or locale string (`$'..'`, `$".."`), a quote left open, a `${..}` with an `@`
 /// operator (`${x@P}` runs what it expands), or a redirection that writes a file other than
 /// `/dev/null`. With `subst` the substitutions are split out as commands too (for deny rules).
 pub(super) fn simple_commands(cmd: &str, subst: bool) -> (Vec<String>, bool) {
     use nexo_core::shell::{lex, End, Redirect};
     let lx = lex(cmd, false);
-    let mut complex = !lx.substs.is_empty() || lx.ansi || lx.braced_at;
+    // a locale string (`$".."`) is a different word in bash and in `sh`, and an open quote is no line a shell runs
+    let mut complex = !lx.substs.is_empty() || lx.ansi || lx.braced_at || lx.locale || lx.open_quote;
     let mut parts: Vec<String> = Vec::new();
     let push = |parts: &mut Vec<String>, text: String| {
         let t = text.trim();
@@ -63,98 +64,12 @@ pub(super) fn simple_commands(cmd: &str, subst: bool) -> (Vec<String>, bool) {
 }
 
 /// The words of a simple command as the program receives them: quotes and backslashes removed,
-/// `$'..'` decoded, redirections (`2>/dev/null`, `> out`) left out.
+/// `$'..'` decoded, redirections (`2>/dev/null`, `> out`) left out. It is the shared lexer's reading, so
+/// the rules and the read-only check see the same words: `$"rm"` is `rm` (bash drops the `$`; a line
+/// with one never passes an allow rule, see `simple_commands`) and `$'\c'` ends where bash ends it.
 pub(super) fn words(s: &str) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    let (mut out, mut cur, mut quoted) = (Vec::new(), String::new(), false);
-    let mut i = 0;
-    let end_word = |out: &mut Vec<String>, cur: &mut String, quoted: &mut bool| {
-        if *quoted || !cur.is_empty() {
-            out.push(std::mem::take(cur));
-        }
-        *quoted = false;
-    };
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        match c {
-            '\'' => {
-                quoted = true;
-                i += 1;
-                while i < chars.len() && chars[i] != '\'' {
-                    cur.push(chars[i]);
-                    i += 1;
-                }
-            }
-            '"' => {
-                quoted = true;
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\' && matches!(chars.get(i + 1), Some('"' | '\\' | '$' | '`' | '\n')) {
-                        i += 1;
-                    }
-                    cur.push(chars[i]);
-                    i += 1;
-                }
-            }
-            '$' if next == Some('\'') => {
-                quoted = true;
-                i += 2;
-                while i < chars.len() && chars[i] != '\'' {
-                    if chars[i] == '\\' && i + 1 < chars.len() {
-                        i = ansi_escape(&chars, i + 1, &mut cur);
-                    } else {
-                        cur.push(chars[i]);
-                        i += 1;
-                    }
-                }
-            }
-            '\\' => {
-                if let Some(n) = next {
-                    if n != '\n' {
-                        cur.push(n);
-                    }
-                    i += 1;
-                }
-            }
-            '<' | '>' => {
-                // a redirection: its descriptor number, the operator and its target are no words
-                if quoted || !cur.chars().all(|d| d.is_ascii_digit()) {
-                    end_word(&mut out, &mut cur, &mut quoted);
-                }
-                cur.clear();
-                while i < chars.len() && matches!(chars[i], '<' | '>' | '&' | '|') {
-                    i += 1;
-                }
-                while i < chars.len() && chars[i].is_whitespace() {
-                    i += 1;
-                }
-                while i < chars.len() && !chars[i].is_whitespace() {
-                    if let Some(q @ ('\'' | '"')) = chars.get(i).copied() {
-                        i += 1;
-                        while i < chars.len() && chars[i] != q {
-                            i += 1;
-                        }
-                    }
-                    i += 1;
-                }
-                continue;
-            }
-            '&' if next == Some('>') => {
-                end_word(&mut out, &mut cur, &mut quoted);
-                i += 1;
-                continue;
-            }
-            c if c.is_whitespace() => end_word(&mut out, &mut cur, &mut quoted),
-            c => cur.push(c),
-        }
-        i += 1;
-    }
-    end_word(&mut out, &mut cur, &mut quoted);
-    out
+    nexo_core::shell::lex(s, false).cmds.into_iter().flat_map(|c| c.words).collect()
 }
-
-pub(super) use nexo_core::shell::ansi_escape;
 
 /// `rm` of `/bin/rm`.
 pub(super) fn basename(w: &str) -> &str {
@@ -167,6 +82,11 @@ pub(super) use nexo_core::shell::is_assignment;
 /// (wrappers like `sudo`, `env` and `nice` skipped, `/bin/rm` as `rm`), and the scripts handed to a
 /// shell (`bash -c '..'`, `eval`, `env -S`) taken apart the same way.
 pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) {
+    // A locale string (`$"rm"`) is the word `rm` in bash and `$rm` in a plain `sh`, and which one runs is not
+    // for the rule to guess: the line is also read the bash way, so a deny or ask rule for `rm` still meets it.
+    if cmd.contains("$\"") && nexo_core::shell::lex(cmd, false).locale {
+        deny_forms(&cmd.replace("$\"", "\""), depth, out);
+    }
     let (parts, _) = simple_commands(cmd, true);
     for p in parts {
         let (ws, scripts) = unwrap_command(words(&p));
