@@ -11,6 +11,32 @@ pub enum Class {
     Float,
     /// System V `long double`: always in memory, 16 bytes aligned to 16.
     X87,
+    /// A struct, a union, an `__int128` or a complex number: `size` bytes aligned to `align`, split as System V
+    /// classifies it. Win64 passes one of 1, 2, 4 or 8 bytes as an integer and any other by its address.
+    Agg {
+        size: u64,
+        align: u64,
+        sysv: SysV,
+    },
+}
+
+/// How System V passes an aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysV {
+    /// In registers while enough are free: each of its one or two eightbytes in an xmm register when `true`, else
+    /// in an integer register.
+    Regs(bool, Option<bool>),
+    /// In memory: more than 16 bytes, or a member that is not aligned.
+    Memory,
+    /// It holds a `long double`: in memory as an argument, in st0 as a result.
+    X87,
+}
+
+/// One eightbyte of an aggregate System V passes in registers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Half {
+    Gp(usize),
+    Xmm(usize),
 }
 
 /// Where one argument is.
@@ -21,8 +47,13 @@ pub enum Loc {
     Xmm(usize),
     /// Bytes past the first stack argument.
     Stack(u64),
+    /// An aggregate in registers (System V), eightbyte by eightbyte.
+    Split(Half, Option<Half>),
+    /// Win64: the address of the caller's copy, in the `n`th integer argument register.
+    RefGp(usize),
+    /// Win64: the address of the caller's copy, in the stack slot this many bytes past the first.
+    RefStack(u64),
 }
-
 /// The argument places of one call, handed out in order.
 pub struct Abi {
     win: bool,
@@ -65,11 +96,46 @@ impl Abi {
             // Win64 counts positions, not registers of each kind; a long double there is a double
             let pos = self.gp;
             self.gp += 1;
+            let int = match class {
+                Class::Agg { size, .. } if !matches!(size, 1 | 2 | 4 | 8) => {
+                    return match pos {
+                        0..=3 => Loc::RefGp(pos),
+                        _ => match self.on_stack(8, 8) {
+                            Loc::Stack(at) => Loc::RefStack(at),
+                            other => other,
+                        },
+                    }
+                }
+                Class::Int | Class::Agg { .. } => true,
+                _ => vararg,
+            };
             return match pos {
-                0..=3 if class == Class::Int || vararg => Loc::Gp(pos),
+                0..=3 if int => Loc::Gp(pos),
                 0..=3 => Loc::Xmm(pos),
                 _ => self.on_stack(8, 8),
             };
+        }
+        if let Class::Agg { size, align, sysv } = class {
+            if let SysV::Regs(first, second) = sysv {
+                let halves = [Some(first), second];
+                let sse = halves.iter().flatten().filter(|&&x| x).count();
+                let int = halves.iter().flatten().count() - sse;
+                // the whole value goes in registers or none of it does; registers it does not take stay for later ones
+                if self.gp + int <= 6 && self.xmm + sse <= 8 {
+                    let mut half = |x: bool| {
+                        if x {
+                            self.xmm += 1;
+                            Half::Xmm(self.xmm - 1)
+                        } else {
+                            self.gp += 1;
+                            Half::Gp(self.gp - 1)
+                        }
+                    };
+                    let a = half(first);
+                    return Loc::Split(a, second.map(half));
+                }
+            }
+            return self.on_stack(size.next_multiple_of(8), align.clamp(8, 16));
         }
         match class {
             Class::Int if self.gp < 6 => {
@@ -246,6 +312,30 @@ mod tests {
         assert_eq!(first_stack_arg(Os::Windows, 0x1000, false), 0x1028);
         assert_eq!(first_stack_arg(Os::Linux, 0x1000, false), 0x1008);
         assert_eq!(first_stack_arg(Os::Linux, 0x1000, true), 0x1000);
+    }
+
+    #[test]
+    fn a_struct_by_value_takes_the_registers_of_its_eightbytes_or_a_stack_slot_and_shifts_what_follows() {
+        let pair = Class::Agg { size: 16, align: 8, sysv: SysV::Regs(true, Some(false)) };
+        let big = Class::Agg { size: 24, align: 8, sysv: SysV::Memory };
+        let wide = Class::Agg { size: 16, align: 16, sysv: SysV::Regs(false, Some(false)) };
+        let mut a = Abi::new(Os::Linux);
+        assert_eq!(a.next(pair, false), Loc::Split(Half::Xmm(0), Some(Half::Gp(0))));
+        assert_eq!(a.next(big, false), Loc::Stack(0));
+        assert_eq!(a.next(Class::Int, false), Loc::Gp(1));
+        assert_eq!(a.next(wide, false), Loc::Split(Half::Gp(2), Some(Half::Gp(3))));
+        assert_eq!(a.next(Class::Float, false), Loc::Xmm(1));
+        // two integer registers are left: an __int128 that needs both still fits, the next one goes to the stack
+        // aligned to 16, and a later int still gets the register it left free
+        assert_eq!(a.next(Class::Int, false), Loc::Gp(4));
+        assert_eq!(a.next(wide, false), Loc::Stack(32));
+        assert_eq!(a.next(Class::Int, false), Loc::Gp(5));
+        let mut w = Abi::new(Os::Windows);
+        assert_eq!(w.next(big, false), Loc::RefGp(0));
+        assert_eq!(w.next(Class::Agg { size: 4, align: 4, sysv: SysV::Regs(true, None) }, false), Loc::Gp(1));
+        assert_eq!(w.next(Class::Float, false), Loc::Xmm(2));
+        assert_eq!(w.next(Class::Int, false), Loc::Gp(3));
+        assert_eq!(w.next(pair, false), Loc::RefStack(0));
     }
 
     #[test]

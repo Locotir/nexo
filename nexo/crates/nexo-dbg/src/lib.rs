@@ -4,6 +4,7 @@
 //!
 //! Nothing here hides the debugger from the program it runs.
 
+mod argshape;
 mod callargs;
 mod client;
 mod cmds;

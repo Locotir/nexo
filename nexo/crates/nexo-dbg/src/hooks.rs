@@ -4,10 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use nexo_bin::{Output, Place, Proto};
+use nexo_bin::{Output, Place};
 use serde_json::json;
 
-use crate::callargs::{conversions, first_stack_arg, format_kind, int_regs, Abi, Class, Conv, Loc, Sizes};
+use crate::argshape::{agg_text, Agg, Shape, Sig};
+use crate::callargs::{conversions, first_stack_arg, format_kind, int_regs, Abi, Class, Conv, Half, Loc, Sizes, SysV};
 use crate::cmds::Args;
 use crate::engine::{rows, Session, Why};
 use crate::platform::{Os, Tid};
@@ -45,7 +46,8 @@ pub struct Hook {
     /// Memory address of the entry.
     pub addr: u64,
     pub name: String,
-    pub proto: Option<Proto>,
+    /// The prototype, with what each of its types is as the call passes it.
+    pub sig: Option<Sig>,
     /// The hook sits on a `call [slot]` and not on the function.
     pub call_len: Option<u8>,
     pub bt: usize,
@@ -69,7 +71,8 @@ pub struct Pending {
     pub hook: Option<u32>,
     pub name: String,
     pub text: String,
-    pub ret_ty: Option<String>,
+    /// What the function returns, from its prototype.
+    pub ret: Option<Shape>,
 }
 
 fn is_float(ty: &str) -> bool {
@@ -154,6 +157,20 @@ fn label(named: bool, name: &str, shown: String) -> String {
     }
 }
 
+/// Why the arguments from some point on have no known place: the first of them says why, the rest show `?`.
+#[derive(Default)]
+struct Lost {
+    why: Option<String>,
+    told: bool,
+}
+
+impl Lost {
+    fn text(&mut self) -> Option<String> {
+        let why = self.why.as_ref()?;
+        Some(if std::mem::replace(&mut self.told, true) { "?".into() } else { format!("? ({why})") })
+    }
+}
+
 /// Where one 64-bit call's arguments are read from: its registers, its vector registers (read the first time an
 /// argument needs them) and its first stack argument.
 struct Entry<'a> {
@@ -163,17 +180,80 @@ struct Entry<'a> {
     vec: Option<Option<Vector>>,
 }
 
-/// Where argument `n` of a 64-bit call is, with its class and its declared type (`None` past the prototype's
-/// arguments or with none, where it is taken as an integer of the `...`).
-fn arg_place(proto: Option<&Proto>, n: usize, os: Os) -> (Class, Loc, Option<&str>) {
+/// How a call passes a value of shape `s`; `None` when that is not known.
+fn class(s: &Shape, os: Os) -> Option<Class> {
+    match s {
+        Shape::Scalar(t) => Some(class_of(t, os)),
+        Shape::Agg(a) => Some(Class::Agg { size: a.size, align: a.align, sysv: a.sysv }),
+        Shape::Unknown(_) => None,
+    }
+}
+
+/// Why no argument from one of shape `s` on has a known place.
+fn unplaced(s: &Shape) -> String {
+    let t = match s {
+        Shape::Unknown(t) | Shape::Scalar(t) => t.as_str(),
+        Shape::Agg(a) => a.text.as_str(),
+    };
+    format!("{t} is passed by value and the file does not describe it: where it and the arguments after it are is not known (`nexo bin struct` names its fields)")
+}
+
+/// Why no argument has a known place when the function returns `ret`.
+fn unplaced_ret(ret: &Shape) -> String {
+    let t = match ret {
+        Shape::Unknown(t) | Shape::Scalar(t) => t.as_str(),
+        Shape::Agg(a) => a.text.as_str(),
+    };
+    format!("it returns a {t} the file does not describe: whether the caller passes a hidden pointer for it first, and so where any argument is, is not known (`nexo bin struct` names its fields)")
+}
+
+/// The caller of a function that returns `ret` through memory passes where as a hidden first argument.
+fn hidden(sig: Option<&Sig>, os: Os, x32: bool) -> std::result::Result<bool, String> {
+    match sig {
+        None => Ok(false),
+        Some(s) => s.ret.hidden_return(os, x32).ok_or_else(|| unplaced_ret(&s.ret)),
+    }
+}
+
+/// Where argument `n` of a 64-bit call is, with its class and its shape (`None` past the prototype's arguments or
+/// with none, where it is taken as an integer of the `...`). `Err`: why that is not known.
+fn arg_place(sig: Option<&Sig>, n: usize, os: Os) -> std::result::Result<(Class, Loc, Option<&Shape>), String> {
     let mut abi = Abi::new(os);
+    if hidden(sig, os, false)? {
+        abi.next(Class::Int, false);
+    }
     let mut at = (Class::Int, Loc::Gp(0), None);
     for i in 0..=n {
-        let ty = proto.and_then(|p| p.args.get(i)).map(|(t, _)| t.as_str());
-        let class = ty.map_or(Class::Int, |t| class_of(t, os));
-        at = (class, abi.next(class, ty.is_none()), ty);
+        let s = sig.and_then(|s| s.args.get(i));
+        let c = match s {
+            Some(s) => class(s, os).ok_or_else(|| unplaced(s))?,
+            None => Class::Int,
+        };
+        at = (c, abi.next(c, s.is_none()), s);
     }
-    at
+    Ok(at)
+}
+
+/// The bytes before argument `n` of a 32-bit call, past the hidden pointer for a result returned through memory.
+/// `Err`: why that is not known.
+fn pushed_offset(sig: Option<&Sig>, n: usize, os: Os) -> std::result::Result<u64, String> {
+    let mut at = if hidden(sig, os, true)? { 4 } else { 0 };
+    for i in 0..n {
+        at += match sig.and_then(|s| s.args.get(i)) {
+            Some(s) => pushed_bytes(s).ok_or_else(|| unplaced(s))?,
+            None => 4,
+        };
+    }
+    Ok(at)
+}
+
+/// The bytes a 32-bit caller pushes for a value of shape `s`; `None` when that is not known.
+fn pushed_bytes(s: &Shape) -> Option<u64> {
+    match s {
+        Shape::Scalar(t) => Some(pushed_size(t)),
+        Shape::Agg(a) => Some(a.size.next_multiple_of(4)),
+        Shape::Unknown(_) => None,
+    }
 }
 
 fn is_ptr(ty: &str) -> bool {
@@ -189,6 +269,12 @@ fn is_text(ty: &str) -> bool {
 /// `long`, `size_t` and `intptr_t` have 4.
 fn int_kind(ty: &str, x32: bool) -> (u32, bool) {
     let t = ty.trim();
+    // the debug info's own spelling: `u8`, `i32`
+    if let Some(bits) =
+        t.strip_prefix(['i', 'u']).and_then(|b| b.parse::<u32>().ok()).filter(|b| [8, 16, 32, 64].contains(b))
+    {
+        return (bits / 8, t.starts_with('u'));
+    }
     let unsigned = t.contains("unsigned") || t.starts_with("size_t") || t.starts_with("uint") || t == "bool";
     let wide = t.contains("long long") || t.contains("64");
     let bytes = if wide || !x32 && (t.contains("long") || t.contains("size_t") || t == "intptr_t") {
@@ -283,6 +369,42 @@ impl Session {
                 let b = self.read_vec(e.stack + off, n);
                 (b.len() == n).then_some(b)
             }
+            Loc::Split(a, b) => {
+                let mut out = Vec::new();
+                for h in [Some(a), b].into_iter().flatten() {
+                    let at = match h {
+                        Half::Gp(i) => Loc::Gp(i),
+                        Half::Xmm(i) => Loc::Xmm(i),
+                    };
+                    out.extend(self.arg_bytes(e, at, 8)?);
+                }
+                out.truncate(n);
+                Some(out)
+            }
+            Loc::RefGp(i) => self.copy_at(e, Loc::Gp(i), n),
+            Loc::RefStack(off) => self.copy_at(e, Loc::Stack(off), n),
+        }
+    }
+
+    /// `n` bytes of the caller's copy whose address is at `slot` (Win64 passes a large struct so).
+    fn copy_at(&mut self, e: &mut Entry, slot: Loc, n: usize) -> Option<Vec<u8>> {
+        let at = value_of(&self.arg_bytes(e, slot, 8)?);
+        let b = self.read_vec(at, n);
+        (b.len() == n).then_some(b)
+    }
+
+    /// The argument of shape `s` at `loc` as a person reads it, with its value when it is a scalar.
+    fn arg_shown(&mut self, e: &mut Entry, s: &Shape, class: Class, loc: Loc) -> (String, Option<u64>) {
+        if let Shape::Agg(a) = s {
+            return match self.arg_bytes(e, loc, a.size as usize) {
+                Some(b) => (agg_text(a, &b), None),
+                None => (Self::unread(e, loc), None),
+            };
+        }
+        let ty = s.scalar().unwrap_or("long");
+        match self.arg_value(e, Some(ty), class, loc) {
+            Some(v) => (self.typed(ty, v), Some(v)),
+            None => (Self::unread(e, loc), None),
         }
     }
 
@@ -301,6 +423,8 @@ impl Session {
         match loc {
             Loc::Stack(off) => format!("(its stack slot {:#x} cannot be read)", e.stack + off),
             Loc::Xmm(i) => format!("(in xmm{i}; this target gives no vector registers)"),
+            Loc::Split(..) => "(in registers this target does not give)".into(),
+            Loc::RefGp(_) | Loc::RefStack(_) => "(the caller's copy it points at cannot be read)".into(),
             Loc::Gp(_) => "?".into(),
         }
     }
@@ -337,35 +461,51 @@ impl Session {
         &mut self,
         tid: Tid,
         name: &str,
-        proto: Option<&Proto>,
+        sig: Option<&Sig>,
         r: &Regs,
         named: bool,
         call_len: Option<u8>,
-    ) -> (String, Option<String>) {
+    ) -> (String, Option<Shape>) {
         if r.x32 {
-            return self.pushed_args(name, proto, r, named, call_len);
+            return self.pushed_args(name, sig, r, named, call_len);
         }
         let os = self.t.os();
         let regs = int_regs(os);
         let reg = |i: usize| regs.get(i).and_then(|n| r.get(n));
-        if let Some(p) = proto {
+        if let Some(s) = sig {
+            let p = &s.proto;
             let mut e = Entry { tid, r, stack: first_stack_arg(os, r.rsp(), call_len.is_some()), vec: None };
             let mut abi = Abi::new(os);
+            let mut lost = Lost::default();
+            match hidden(sig, os, false) {
+                // the address the result goes to comes first
+                Ok(true) => _ = abi.next(Class::Int, false),
+                Ok(false) => {}
+                Err(why) => lost.why = Some(why),
+            }
             let (mut parts, mut fmt) = (Vec::new(), None);
-            for (ty, an) in &p.args {
-                let class = class_of(ty, os);
-                let loc = abi.next(class, false);
-                let v = self.arg_value(&mut e, Some(ty), class, loc);
-                if is_text(ty) {
-                    fmt = v;
+            for (shape, (_, an)) in s.args.iter().zip(&p.args) {
+                let c = class(shape, os);
+                if c.is_none() && lost.why.is_none() {
+                    lost.why = Some(unplaced(shape));
                 }
-                let shown = match v {
-                    Some(v) => self.typed(ty, v),
-                    None => Self::unread(&e, loc),
+                let shown = match (lost.text(), c) {
+                    (Some(t), _) => t,
+                    (None, None) => "?".into(),
+                    (None, Some(c)) => {
+                        let loc = abi.next(c, false);
+                        let (text, v) = self.arg_shown(&mut e, shape, c, loc);
+                        if shape.scalar().is_some_and(is_text) {
+                            fmt = v;
+                        }
+                        text
+                    }
                 };
                 parts.push(label(named, an, shown));
             }
-            if p.variadic {
+            if p.variadic && lost.why.is_some() {
+                parts.push("...".into());
+            } else if p.variadic {
                 let sz = Sizes { long: if os == Os::Windows { 4 } else { 8 }, ptr: 8 };
                 let mut next = |s: &mut Self, c: Conv| {
                     let class = match c {
@@ -378,7 +518,7 @@ impl Session {
                 };
                 parts.extend(self.varargs(name, fmt, sz, &mut next));
             }
-            return (format!("{name}({})", parts.join(", ")), Some(p.ret.clone()));
+            return (format!("{name}({})", parts.join(", ")), Some(s.ret.clone()));
         }
         if let Some((n, _)) = nexo_bin::arg_count(name) {
             let v: Vec<String> = (0..n).map(|i| reg(i).map(|x| format!("{x:#x}")).unwrap_or("?".into())).collect();
@@ -413,27 +553,54 @@ impl Session {
     fn pushed_args(
         &mut self,
         name: &str,
-        proto: Option<&Proto>,
+        sig: Option<&Sig>,
         r: &Regs,
         named: bool,
         call_len: Option<u8>,
-    ) -> (String, Option<String>) {
+    ) -> (String, Option<Shape>) {
         let first = Self::first_pushed(r, call_len);
-        if let Some(p) = proto {
+        if let Some(s) = sig {
+            let p = &s.proto;
             let (mut parts, mut at, mut fmt) = (Vec::new(), first, None);
-            for (ty, an) in &p.args {
-                let v = self.pushed_value(at, ty);
-                if is_text(ty) {
-                    fmt = v;
+            let mut lost = Lost::default();
+            match hidden(sig, self.t.os(), true) {
+                // the address the result goes to was pushed last, so it comes first
+                Ok(true) => at += 4,
+                Ok(false) => {}
+                Err(why) => lost.why = Some(why),
+            }
+            for (shape, (_, an)) in s.args.iter().zip(&p.args) {
+                if matches!(shape, Shape::Unknown(_)) && lost.why.is_none() {
+                    lost.why = Some(unplaced(shape));
                 }
-                let shown = match v {
-                    Some(v) => self.typed(ty, v),
-                    None => format!("(its stack slot {at:#x} cannot be read)"),
+                let shown = match (lost.text(), shape) {
+                    (Some(t), _) => t,
+                    (None, Shape::Agg(a)) => {
+                        let b = self.read_vec(at, a.size as usize);
+                        if b.len() as u64 == a.size {
+                            agg_text(a, &b)
+                        } else {
+                            format!("(its stack slot {at:#x} cannot be read)")
+                        }
+                    }
+                    (None, _) => {
+                        let ty = shape.scalar().unwrap_or("int");
+                        let v = self.pushed_value(at, ty);
+                        if is_text(ty) {
+                            fmt = v;
+                        }
+                        match v {
+                            Some(v) => self.typed(ty, v),
+                            None => format!("(its stack slot {at:#x} cannot be read)"),
+                        }
+                    }
                 };
-                at += pushed_size(ty);
+                at += pushed_bytes(shape).unwrap_or(4);
                 parts.push(label(named, an, shown));
             }
-            if p.variadic {
+            if p.variadic && lost.why.is_some() {
+                parts.push("...".into());
+            } else if p.variadic {
                 // the `...` follow in slots of their own size: a double 8 bytes, a long double 12, a long long 8
                 let mut next = |s: &mut Self, c: Conv| {
                     let ty = match c {
@@ -448,7 +615,7 @@ impl Session {
                 };
                 parts.extend(self.varargs(name, fmt, Sizes { long: 4, ptr: 4 }, &mut next));
             }
-            return (format!("{name}({})", parts.join(", ")), Some(p.ret.clone()));
+            return (format!("{name}({})", parts.join(", ")), Some(s.ret.clone()));
         }
         let word = |s: &mut Self, i: u64| s.word_at(first + 4 * i, 4).map_or("?".into(), |x| format!("{x:#x}"));
         if let Some((n, _)) = nexo_bin::arg_count(name) {
@@ -458,6 +625,54 @@ impl Session {
         let off = first - r.rsp();
         let v: Vec<String> = (0..3u64).map(|i| format!("[esp+{}]={}", off + 4 * i, word(self, i))).collect();
         (format!("{name}({}; no prototype)", v.join(", ")), None)
+    }
+
+    /// The bytes of an aggregate a function returned: from the address it gives back in rax (eax) when the caller
+    /// passed one, else from the registers of its eightbytes (System V: rax and rdx, xmm0 and xmm1), from rax (Win64,
+    /// xmm0 for an `__int128`) or from edx:eax (a 32-bit thread).
+    fn returned_agg(&mut self, tid: Tid, a: &Agg, r: &Regs) -> std::result::Result<Vec<u8>, String> {
+        let os = self.t.os();
+        let n = a.size as usize;
+        if Shape::Agg(a.clone()).hidden_return(os, r.x32) == Some(true) {
+            let at = if r.x32 { r.gp[0] & 0xffff_ffff } else { r.gp[0] };
+            let b = self.read_vec(at, n);
+            return if b.len() == n { Ok(b) } else { Err(format!("the result at {at:#x} cannot be read")) };
+        }
+        if r.x32 {
+            let v = (r.gp[0] & 0xffff_ffff) | (r.gp[3] & 0xffff_ffff) << 32;
+            return Ok(v.to_le_bytes()[..n.min(8)].to_vec());
+        }
+        let rax = r.gp[0].to_le_bytes();
+        let halves = match (os, a.sysv) {
+            (Os::Windows, _) if !matches!(a.parts, crate::argshape::Parts::Int128 { .. }) => {
+                return Ok(rax[..n.min(8)].to_vec())
+            }
+            (Os::Windows, _) => [Some(true), Some(true)],
+            (_, SysV::Regs(first, second)) => [Some(first), second],
+            _ => return Err("it comes back on the x87 stack, which is not split into its parts here".into()),
+        };
+        let vec = if halves.iter().flatten().any(|&x| x) {
+            Some(self.vector(tid).ok_or("this target gives no vector registers")?)
+        } else {
+            None
+        };
+        let gps = [r.gp[0], r.get("rdx").unwrap_or(0)];
+        let (mut gi, mut xi, mut out) = (0, 0, Vec::new());
+        for x in halves.into_iter().flatten() {
+            if let (true, Some(v)) = (x, &vec) {
+                // a Win64 `__int128` fills all 16 bytes of xmm0
+                if os == Os::Windows {
+                    return Ok(v.xmm(0).to_vec());
+                }
+                out.extend(&v.xmm(xi)[..8]);
+                xi += 1;
+            } else {
+                out.extend(gps[gi.min(1)].to_le_bytes());
+                gi += 1;
+            }
+        }
+        out.truncate(n);
+        Ok(out)
     }
 
     /// What a function returned, as `typed` takes it: rax (eax, or edx:eax for an 8-byte value, in a 32-bit thread);
@@ -520,39 +735,26 @@ impl Session {
 
     /// Set argument `n` of a call stopped at its entry to `v` (as `typed` takes it): its register, its xmm register
     /// or its stack slot. The text says what was done.
-    fn set_arg(
-        &mut self,
-        tid: Tid,
-        proto: Option<&Proto>,
-        r: &mut Regs,
-        call_len: Option<u8>,
-        n: usize,
-        v: u64,
-    ) -> String {
-        let ty = proto.and_then(|p| p.args.get(n)).map(|(t, _)| t.as_str());
+    fn set_arg(&mut self, tid: Tid, sig: Option<&Sig>, r: &mut Regs, call_len: Option<u8>, n: usize, v: u64) -> String {
+        let os = self.t.os();
+        // `hook` takes `set` only for a scalar: past the prototype's arguments, an integer
+        let ty = sig.and_then(|s| s.args.get(n)).and_then(Shape::scalar);
         let shown = match ty {
             Some(t) if is_float(t) => float_text(bits_f64(t, v)),
             _ => format!("{v:#x}"),
         };
+        let size = if ty.and_then(fp) == Some(Fp::Single) { 4 } else { 8 };
         let wrote = if r.x32 {
-            let at = Self::first_pushed(r, call_len)
-                + match proto {
-                    Some(p) => {
-                        p.args.iter().take(n).map(|(t, _)| pushed_size(t)).sum::<u64>()
-                            + 4 * n.saturating_sub(p.args.len()) as u64
-                    }
-                    None => 4 * n as u64,
+            pushed_offset(sig, n, os).and_then(|off| {
+                let at = Self::first_pushed(r, call_len) + off;
+                let b = match ty.and_then(fp) {
+                    Some(Fp::Extended) => f64_to_f80(f64::from_bits(v)).to_vec(),
+                    _ => v.to_le_bytes()[..ty.map_or(4, |t| pushed_size(t).min(8) as usize)].to_vec(),
                 };
-            let b = match ty.and_then(fp) {
-                Some(Fp::Extended) => f64_to_f80(f64::from_bits(v)).to_vec(),
-                _ => v.to_le_bytes()[..ty.map_or(4, |t| pushed_size(t).min(8) as usize)].to_vec(),
-            };
-            self.t.write(at, &b).map_err(|_| format!("its stack slot {at:#x} cannot be written"))
+                self.t.write(at, &b).map_err(|_| format!("its stack slot {at:#x} cannot be written"))
+            })
         } else {
-            let os = self.t.os();
-            let (class, loc, ty) = arg_place(proto, n, os);
-            let size = if ty.and_then(fp) == Some(Fp::Single) { 4 } else { 8 };
-            match loc {
+            arg_place(sig, n, os).and_then(|(class, loc, _)| match loc {
                 Loc::Gp(i) => {
                     let name = int_regs(os)[i];
                     r.set(name, v);
@@ -576,7 +778,8 @@ impl Session {
                     };
                     self.t.write(at, &b).map_err(|_| format!("its stack slot {at:#x} cannot be written"))
                 }
-            }
+                Loc::Split(..) | Loc::RefGp(_) | Loc::RefStack(_) => Err("it is a struct passed by value".into()),
+            })
         };
         match wrote {
             Ok(()) => format!("arg{n}={shown}"),
@@ -607,10 +810,17 @@ impl Session {
                 self.tr.pending.iter().rposition(|p| p.tid == tid && p.ret_addr == addr && p.sp_after == sp)
             {
                 let p = self.tr.pending.remove(i);
-                let ty = p.ret_ty.as_deref();
-                let mut ret = match self.returned(tid, ty, &r) {
-                    Ok(got) => self.ret_text(ty, got),
-                    Err(why) => format!("? ({why})"),
+                let ty = p.ret.as_ref().and_then(Shape::scalar);
+                let mut ret = match &p.ret {
+                    Some(Shape::Agg(a)) => match self.returned_agg(tid, a, &r) {
+                        Ok(b) => agg_text(a, &b),
+                        Err(why) => format!("? ({why})"),
+                    },
+                    Some(Shape::Unknown(t)) => format!("? (a {t} the file does not describe)"),
+                    _ => match self.returned(tid, ty, &r) {
+                        Ok(got) => self.ret_text(ty, got),
+                        Err(why) => format!("? ({why})"),
+                    },
                 };
                 if let Some(h) = p.hook.and_then(|id| self.tr.hooks.iter_mut().find(|h| h.id == id)) {
                     h.returns += 1;
@@ -634,9 +844,9 @@ impl Session {
             .and_then(|l| l.sites.get(&addr).filter(|s| l.names.is_empty() || l.names.contains(&s.name)).cloned());
         if let Some(s) = site {
             let r = self.t.regs(tid)?;
-            let proto = nexo_bin::libc_proto(&s.name);
-            let (text, ret_ty) = self.call_args(tid, &s.name, proto.as_ref(), &r, false, s.call_len);
-            self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret_ty)?;
+            let sig = nexo_bin::libc_proto(&s.name).map(|p| Sig::new(None, p));
+            let (text, ret) = self.call_args(tid, &s.name, sig.as_ref(), &r, false, s.call_len);
+            self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret)?;
         }
         let ids: Vec<u32> = self.tr.hooks.iter().filter(|h| h.addr == addr).map(|h| h.id).collect();
         for id in ids {
@@ -644,11 +854,11 @@ impl Session {
             let h = self.tr.hooks[i].clone();
             self.tr.hooks[i].hits += 1;
             let mut r = self.t.regs(tid)?;
-            let (mut text, ret_ty) = self.call_args(tid, &h.name, h.proto.as_ref(), &r, true, h.call_len);
+            let (mut text, ret) = self.call_args(tid, &h.name, h.sig.as_ref(), &r, true, h.call_len);
             text = format!("#{id} {text}");
             if !h.set.is_empty() {
                 let done: Vec<String> =
-                    h.set.iter().map(|&(n, v)| self.set_arg(tid, h.proto.as_ref(), &mut r, h.call_len, n, v)).collect();
+                    h.set.iter().map(|&(n, v)| self.set_arg(tid, h.sig.as_ref(), &mut r, h.call_len, n, v)).collect();
                 if !r.x32 {
                     self.t.set_regs(tid, &r)?;
                 }
@@ -673,7 +883,7 @@ impl Session {
                 }
             }
             text.push_str(&format!(" [hit {}]", h.hits + 1));
-            self.pend(tid, &r, h.call_len, Kind::Hook, Some(id), &h.name, text.clone(), ret_ty)?;
+            self.pend(tid, &r, h.call_len, Kind::Hook, Some(id), &h.name, text.clone(), ret)?;
             if h.stop && verdict.is_none() {
                 verdict = Some((tid, Why::Hook(id, text)));
             }
@@ -691,7 +901,7 @@ impl Session {
         hook: Option<u32>,
         name: &str,
         text: String,
-        ret_ty: Option<String>,
+        ret: Option<Shape>,
     ) -> Result<()> {
         let (ret_addr, sp_after) = match call_len {
             None => {
@@ -709,7 +919,12 @@ impl Session {
             self.tr.push(kind, name, format!("{text} = ? (too many calls in flight to follow this one)"));
             return Ok(());
         }
-        self.tr.pending.push(Pending { tid, ret_addr, sp_after, kind, hook, name: name.into(), text, ret_ty });
+        // an i386 System V function pops the hidden pointer for a result it returns through memory
+        let os = self.t.os();
+        let popped =
+            r.x32 && os != Os::Windows && ret.as_ref().is_some_and(|s| s.hidden_return(os, true) == Some(true));
+        let sp_after = sp_after + if popped { 4 } else { 0 };
+        self.tr.pending.push(Pending { tid, ret_addr, sp_after, kind, hook, name: name.into(), text, ret });
         Ok(())
     }
 
@@ -854,6 +1069,9 @@ impl Session {
         let proto = file_addr
             .and_then(|fa| nexo_bin::proto_at(self.mods.main_image(), fa))
             .or_else(|| nexo_bin::libc_proto(&name));
+        // the program's debug info says what each type name of the prototype is
+        let sig = proto.map(|p| Sig::new(Some(self.mods.main_image()), p));
+        let (os, x32) = (self.t.os(), self.bits() == 32);
         // a value for a float argument or result is a float (`2.5`), any other a number
         let value = |ty: Option<&str>, w: &str, what: &str| -> Result<u64> {
             match ty {
@@ -863,12 +1081,32 @@ impl Session {
                 _ => num(Some(&w), what),
             }
         };
-        let arg_ty = |n: usize| proto.as_ref().and_then(|p| p.args.get(n)).map(|(t, _)| t.as_str());
-        let set = set_words.iter().map(|&(n, w)| Ok((n, value(arg_ty(n), w, "set")?))).collect::<Result<Vec<_>>>()?;
-        let ret = ret_word.map(|w| value(proto.as_ref().map(|p| p.ret.as_str()), w, "ret")).transpose()?;
+        // `set` writes one register or stack slot: a scalar whose place is known
+        let arg_ty = |n: usize| -> Result<Option<&str>> {
+            let place = if x32 {
+                pushed_offset(sig.as_ref(), n, os).map(|_| ())
+            } else {
+                arg_place(sig.as_ref(), n, os).map(|_| ())
+            };
+            place.map_err(|why| crate::Error::Usage(format!("set arg{n}: {why}")))?;
+            match sig.as_ref().and_then(|s| s.args.get(n)) {
+                Some(Shape::Agg(a)) => Err(crate::Error::Usage(format!(
+                    "set arg{n}: it is a {} passed by value ({} bytes), and `set` writes one number",
+                    a.text, a.size
+                ))),
+                s => Ok(s.and_then(Shape::scalar)),
+            }
+        };
+        let set = set_words.iter().map(|&(n, w)| Ok((n, value(arg_ty(n)?, w, "set")?))).collect::<Result<Vec<_>>>()?;
+        let ret = match (ret_word, sig.as_ref().map(|s| &s.ret)) {
+            (Some(_), Some(Shape::Agg(Agg { text, .. }) | Shape::Unknown(text))) => {
+                return usage(format!("ret: the function returns a {text}, and `ret` writes one number"))
+            }
+            (w, s) => w.map(|w| value(s.and_then(Shape::scalar), w, "ret")).transpose()?,
+        };
         let id = self.new_id();
-        let typed = match &proto {
-            Some(p) => format!(
+        let typed = match &sig {
+            Some(Sig { proto: p, .. }) => format!(
                 "{} {}({})",
                 p.ret,
                 p.name,
@@ -881,7 +1119,7 @@ impl Session {
             l.push("this hook changes the program: arguments are set at the entry, the result at the return".into());
         }
         l.push("`cont`, then `hook show`; `hooks` lists the counters".into());
-        self.tr.hooks.push(Hook { id, addr, name, proto, call_len, bt, stop, set, ret, hits: 0, returns: 0 });
+        self.tr.hooks.push(Hook { id, addr, name, sig, call_len, bt, stop, set, ret, hits: 0, returns: 0 });
         Ok(rows("hook", l, json!({"id": id, "addr": addr})))
     }
 
@@ -938,11 +1176,11 @@ impl Session {
                 _ => format!("{v:#x}"),
             };
             for &(n, v) in &h.set {
-                let ty = h.proto.as_ref().and_then(|p| p.args.get(n)).map(|(t, _)| t.as_str());
+                let ty = h.sig.as_ref().and_then(|s| s.args.get(n)).and_then(Shape::scalar);
                 what.push(format!("set arg{n} {}", shown(ty, v)));
             }
             if let Some(v) = h.ret {
-                what.push(format!("ret {}", shown(h.proto.as_ref().map(|p| p.ret.as_str()), v)));
+                what.push(format!("ret {}", shown(h.sig.as_ref().and_then(|s| s.ret.scalar()), v)));
             }
             l.push(format!(
                 "hook #{} {:#x} {} entries {} returns {}{}",

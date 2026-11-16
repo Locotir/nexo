@@ -73,7 +73,8 @@ pub struct Member {
 }
 
 impl Ty {
-    fn size(&self) -> Option<u64> {
+    /// The bytes one value takes; `None` for `str` and `T[]`.
+    pub fn size(&self) -> Option<u64> {
         match self {
             Ty::Int { w, .. } | Ty::Float { w } | Ty::Ptr { w, .. } => Some(*w as u64),
             Ty::Char | Ty::Bool => Some(1),
@@ -84,7 +85,8 @@ impl Ty {
         }
     }
 
-    fn align(&self) -> u64 {
+    /// The alignment the value has in memory (a member that is not a base type or a struct counts by its size).
+    pub fn align(&self) -> u64 {
         match self {
             Ty::Array { elem, .. } => elem.align(),
             Ty::Struct(l) => l.fields.iter().map(|m| m.ty.align()).max().unwrap_or(1),
@@ -303,7 +305,9 @@ fn parse_ty(img: &Image, text: &str, depth: usize) -> std::result::Result<Ty, Mi
     let mut ty = if stars > 0 {
         let void = matches!(name.as_str(), "void" | "ptr");
         // at the top, a pointer to a name nothing knows is a typo, not a pointer
-        let known = void || (!kw && base_ty(&name, pw).is_some()) || layout(img, &name, depth)?.is_some();
+        let known = void
+            || (!kw && (base_ty(&name, pw).is_some() || img.dwarf().typedefs.contains_key(&name)))
+            || layout(img, &name, depth)?.is_some();
         if depth == 0 && !known {
             return Err(Miss::Unknown(name));
         }
@@ -313,6 +317,9 @@ fn parse_ty(img: &Image, text: &str, depth: usize) -> std::result::Result<Ty, Mi
         t
     } else if let Some(l) = layout(img, &name, depth)? {
         Ty::Struct(Box::new(l))
+    } else if let Some(t) = img.dwarf().typedefs.get(&name).filter(|_| !kw && depth <= MAX_DEPTH) {
+        // a typedef is the type it stands for (the map holds it with every typedef on the way resolved)
+        parse_ty(img, t, depth + 1)?
     } else {
         return Err(Miss::Unknown(name));
     };

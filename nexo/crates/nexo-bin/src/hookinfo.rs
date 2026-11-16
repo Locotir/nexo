@@ -105,6 +105,16 @@ pub fn proto_at(img: &Image, addr: u64) -> Option<Proto> {
     crate::decomp::types::protos(&img.user, img).remove(&addr)
 }
 
+/// The type a typedef name stands for in the file's debug info (`real` -> `double`), qualifiers dropped; `None`
+/// for a pointer, a type that is not a typedef, or a typedef of a struct (whose layout goes by the typedef's name).
+pub fn typedef_of(img: &Image, ty: &str) -> Option<String> {
+    if ty.contains('*') {
+        return None;
+    }
+    let bare: Vec<&str> = ty.split_whitespace().filter(|w| !matches!(*w, "const" | "volatile")).collect();
+    img.dwarf().typedefs.get(&bare.join(" ")).cloned()
+}
+
 /// How many arguments the decompiler's table says a library function takes (no types), and the
 /// position of its format string when it is variadic.
 pub fn arg_count(name: &str) -> Option<(usize, Option<usize>)> {

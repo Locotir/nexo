@@ -3,6 +3,7 @@
 //! test, which other tests opening sessions in the same process must not see.
 
 mod addr_forms;
+mod agg_args;
 mod args_params;
 mod break_boundary;
 mod call_into;

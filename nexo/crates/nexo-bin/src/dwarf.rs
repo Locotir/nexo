@@ -24,6 +24,9 @@ pub struct Dwarf {
     pub structs: BTreeMap<String, String>,
     /// Byte size of each struct in `structs` (`DW_AT_byte_size`; the PDB's size), where the file says it.
     pub struct_sizes: BTreeMap<String, u64>,
+    /// The type each typedef that does not name a struct stands for, with every typedef on the way resolved:
+    /// `real` -> `double`, `handle_t` -> `void *`. A call passes a value by what it is, not by its name.
+    pub typedefs: BTreeMap<String, String>,
     /// Stack local names by function start address: `local_c` -> `count`.
     pub vars: BTreeMap<u64, BTreeMap<String, String>>,
     /// C types of stack slots (locals and spilled arguments) by function address: `local_20` -> `struct item *`.
@@ -198,6 +201,11 @@ impl<'a> Ctx<'_, 'a> {
         let name = self.string(e, gimli::DW_AT_name).unwrap_or_default();
         match enc {
             gimli::DW_ATE_boolean => "bool".into(),
+            gimli::DW_ATE_complex_float => match size {
+                8 => "_Complex float".into(),
+                16 => "_Complex double".into(),
+                _ => "_Complex long double".into(),
+            },
             gimli::DW_ATE_float => match size {
                 4 => "float".into(),
                 8 => "double".into(),
@@ -345,10 +353,12 @@ fn read_unit(dwarf: &gimli::Dwarf<R<'_>>, unit: &gimli::Unit<R<'_>>, out: &mut D
     }
     finish_func(func.take(), out);
     finish_agg(agg.take(), out, &mut by_off);
-    // a typedef of a struct (possibly anonymous) names the same members
+    // a typedef of a struct (possibly anonymous) names the same members; any other names the type at the end of
+    // its chain of typedefs and qualifiers
     for (name, target) in typedefs {
         let mut t = target;
-        for _ in 0..4 {
+        let mut end = None;
+        for _ in 0..MAX_TYPE_DEPTH {
             let Some(o) = t else { break };
             if let Some((f, size)) = by_off.get(&o.0) {
                 out.structs.entry(name.clone()).or_insert_with(|| f.clone());
@@ -361,8 +371,17 @@ fn read_unit(dwarf: &gimli::Dwarf<R<'_>>, unit: &gimli::Unit<R<'_>>, out: &mut D
                 gimli::DW_TAG_const_type | gimli::DW_TAG_volatile_type | gimli::DW_TAG_typedef => {
                     cx.unit_ref(&d, gimli::DW_AT_type)
                 }
-                _ => None,
+                _ => {
+                    end = Some(o);
+                    None
+                }
             });
+        }
+        if let Some(o) = end {
+            let ty = cx.ctype(Some(o), 0);
+            if ty != name {
+                out.typedefs.entry(name).or_insert(ty);
+            }
         }
     }
     Ok(())
@@ -479,6 +498,9 @@ mod tests {
     const SRC: &str = r#"
 struct item { int id; long count; struct item *next; const char *label; };
 typedef struct { int x; int y; } point_t;
+typedef double real;
+typedef const real meters;
+typedef const char *name_t;
 
 __attribute__((noinline)) int total(struct item *it, int limit) {
     int sum = 0;
@@ -494,10 +516,12 @@ __attribute__((noinline)) long area(point_t *p, unsigned char scale, ...) {
     return (long)p->x * p->y * scale;
 }
 
+__attribute__((noinline)) real scale(meters m, name_t n) { return m * 2 + n[0]; }
+
 int main(int argc, char **argv) {
     struct item a = {1, 5, 0, "a"};
     point_t p = {argc, 3};
-    return total(&a, argc) + (int)area(&p, 2);
+    return total(&a, argc) + (int)area(&p, 2) + (int)scale(argc, "a");
 }
 "#;
 
@@ -537,6 +561,12 @@ int main(int argc, char **argv) {
         assert!(d.structs["item"].contains("0x8:i64:count") && d.structs["item"].contains("next"), "{:?}", d.structs);
         assert!(d.structs["point_t"].contains("0x4:i32:y"), "{:?}", d.structs);
         assert!(d.vars.values().any(|m| m.values().any(|n| n == "sum")), "{:?}", d.vars);
+        // a prototype keeps the names its source gave; the typedef map says what each one is
+        let scale = d.protos.values().find(|p| p.contains(" scale(")).expect("prototype of scale");
+        assert_eq!(scale, "real scale(meters m, name_t n)");
+        assert_eq!(d.typedefs.get("meters").map(String::as_str), Some("double"), "{:?}", d.typedefs);
+        assert_eq!(d.typedefs.get("name_t").map(String::as_str), Some("const char *"), "{:?}", d.typedefs);
+        assert!(!d.typedefs.contains_key("point_t"), "{:?}", d.typedefs);
 
         let data_dir = dir.path().join("data");
         let o = decomp_window(&img, &data_dir, &["total".to_string()], false, None, 200).unwrap();
