@@ -96,7 +96,12 @@ pub(super) fn boot_id() -> Option<String> {
 
 /// The trimmed output of a program that succeeded and printed something.
 fn command_text(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
+    command_text_in(std::process::Command::new(program).args(args))
+}
+
+/// [`command_text`] for a command that is already built (with its own environment).
+fn command_text_in(cmd: &mut std::process::Command) -> Option<String> {
+    let out = cmd.output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !text.is_empty()).then_some(text)
 }
@@ -104,7 +109,14 @@ fn command_text(program: &str, args: &[&str]) -> Option<String> {
 /// A number for the start time `ps` prints for `pid`. The text is hashed with FNV-1a, which never changes
 /// between versions, so a lock written by an older nexo still reads the same.
 pub(super) fn ps_start(pid: u32) -> Option<u64> {
-    let text = command_text("ps", &["-o", "lstart=", "-p", &pid.to_string()])?;
+    // `ps` prints the time as local text (locale and timezone), so a fixed locale and zone keep the hash the
+    // same for every nexo that looks at this process, whatever its environment.
+    let text = command_text_in(
+        std::process::Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC0"),
+    )?;
     Some(text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)))
 }
 

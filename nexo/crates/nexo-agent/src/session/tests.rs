@@ -1207,3 +1207,20 @@ fn a_lock_is_judged_by_the_start_time_and_boot_read_from_the_system_on_macos() {
     assert!(boot_id().is_some());
     assert_eq!(boot_id(), boot_id());
 }
+
+#[cfg(unix)]
+#[test]
+fn the_start_read_from_ps_does_not_depend_on_the_locale_or_the_timezone() {
+    let me = std::process::id();
+    let fnv = |t: &str| {
+        t.trim().bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    };
+    let printed = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &me.to_string()])
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC0")
+        .output()
+        .unwrap();
+    // the hash is that of the text in the C locale and UTC, which every nexo gets, whatever its own settings
+    assert_eq!(ps_start(me), Some(fnv(&String::from_utf8_lossy(&printed.stdout))));
+}

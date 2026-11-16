@@ -38,7 +38,8 @@ async fn a_relative_file_is_read_from_the_session_folder_and_the_shell_form_work
     for c in ["info prog", "info ./prog", "nexo bin info prog", "bin info prog"] {
         let o = call(dir.path(), c).await;
         assert!(!o.is_error, "{c}: {}", o.content);
-        assert!(o.content.to_lowercase().contains("elf") || o.content.contains("PE"), "{c}: {}", o.content);
+        let low = o.content.to_lowercase();
+        assert!(low.contains("elf") || low.contains("mach-o") || o.content.contains("PE"), "{c}: {}", o.content);
     }
     let o = call(dir.path(), "overview prog --lines 12").await;
     assert!(!o.is_error, "{}", o.content);

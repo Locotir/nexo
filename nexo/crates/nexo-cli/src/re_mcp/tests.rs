@@ -102,9 +102,15 @@ fn tools_call_info_returns_the_text_nexo_bin_prints() {
         crate::bin_cmd::execute(&b).unwrap()
     };
     assert_eq!(text, expect);
-    // the format line names what `cc` really produced: ELF on Linux, PE on Windows (MinGW)
+    // the format line names what `cc` really produced: ELF on Linux, Mach-O on macOS, PE on Windows (MinGW)
     let magic = std::fs::read(&exe).unwrap();
-    let want = if magic.starts_with(b"MZ") { "pe32" } else { "elf" };
+    let want = if magic.starts_with(b"MZ") {
+        "pe32"
+    } else if magic.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) || magic.starts_with(&[0xca, 0xfe, 0xba, 0xbe]) {
+        "mach-o"
+    } else {
+        "elf"
+    };
     assert!(text.to_lowercase().contains(want), "expected {want} in\n{text}");
     // a positional and a flag together
     let a = talk(false, &[call(2, "bin_funcs", json!({"file": exe, "lines": 12}))]);
