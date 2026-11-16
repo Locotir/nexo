@@ -24,6 +24,12 @@ pub fn person_words(text: &str) -> &str {
 /// What follows the time in the line nexo puts first in a request after the person stopped the one before it
 /// (`nexo_core::agent::STOP_WORDS`).
 const STOP_WORDS: &str = "the person stopped the request above";
+/// What the line says when something other than the person ended the request (`nexo_core::agent::STOPPED_BY`).
+const STOPPED_BY: &str = "the request above was stopped by";
+/// The line nexo writes before the parts of joined messages (`nexo_core::agent::JOINED_MARK`).
+const JOINED_MARK: &str = "[messages typed one after another]";
+/// What a stop line says before the words of the request it names (`nexo_core::agent::REQUEST_WAS`).
+pub(crate) const REQUEST_WAS: &str = "; the request was \"";
 
 /// The time and the rest of a line `[HH:MM:SS...]`.
 fn timed(line: &str) -> Option<(&str, &str)> {
@@ -39,7 +45,24 @@ fn timed(line: &str) -> Option<(&str, &str)> {
 pub fn stop_line_of(text: &str) -> Option<(&str, &str)> {
     let first = text.split('\n').next()?;
     let (at, rest) = timed(first)?;
-    rest.strip_prefix(' ')?.starts_with(STOP_WORDS).then_some((first, at))
+    let rest = rest.strip_prefix(' ')?;
+    (rest.starts_with(STOP_WORDS) || rest.starts_with(STOPPED_BY)).then_some((first, at))
+}
+
+/// What the stop line `line` says about who ended the request: the person, or what else did it.
+pub fn stopped_by(line: &str) -> &str {
+    let rest = timed(line).map_or("", |(_, r)| r.trim_start());
+    match rest.strip_prefix(STOPPED_BY) {
+        Some(by) => by.trim_start().split(" while ").next().unwrap_or(by).split(" before ").next().unwrap_or(by),
+        None => "the person",
+    }
+}
+
+/// The start of the words of the request a stop line names, when it quotes one (cut short, without a trailing `…`).
+pub fn stopped_request(line: &str) -> Option<&str> {
+    let quoted = &line[line.rfind(REQUEST_WAS)? + REQUEST_WAS.len()..];
+    let quoted = quoted.strip_suffix(']').unwrap_or(quoted).strip_suffix('"').unwrap_or(quoted);
+    Some(quoted.strip_suffix('…').unwrap_or(quoted)).filter(|q| !q.is_empty())
 }
 
 /// What a part's header adds when the person stopped the request it was typed during
@@ -55,13 +78,17 @@ fn is_part_header(line: &str) -> bool {
 /// with the line that says when it was typed; None for one request.
 fn headed_parts(words: &str) -> Option<Vec<(&str, &str)>> {
     let mut lines = words.split_inclusive('\n');
+    if lines.next()?.trim_end_matches(['\n', '\r']) != JOINED_MARK {
+        return None;
+    }
+    let top = words.find('\n').map_or(0, |i| i + 1);
     let first = lines.next()?;
     let mut header = first.trim_end_matches(['\n', '\r']);
     if !is_part_header(header) {
         return None;
     }
     let mut parts = Vec::new();
-    let (mut start, mut at) = (first.len(), first.len());
+    let (mut start, mut at) = (top + first.len(), top + first.len());
     for line in lines {
         let bare = line.trim_end_matches(['\n', '\r']);
         if is_part_header(bare) {
@@ -255,7 +282,7 @@ mod tests {
 
     #[test]
     fn requests_queued_while_the_model_worked_are_all_asked_now_without_their_headers() {
-        let text = format!("{DURING}\nfix parse in lexer.rs\n\n{DURING_LATER}\nand update the README");
+        let text = format!("{JOINED_MARK}\n{DURING}\nfix parse in lexer.rs\n\n{DURING_LATER}\nand update the README");
         assert_eq!(request_words(&text), "fix parse in lexer.rs\n\nand update the README");
         assert_eq!(asked_now(&text), "fix parse in lexer.rs\n\nand update the README");
     }
@@ -264,7 +291,9 @@ mod tests {
     fn a_part_typed_before_a_stop_gives_way_to_the_one_typed_after_it() {
         let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply; it got no \
                     answer]";
-        let words = format!("{STOPPED_HEADER}\ny documenta cada función\n\n[16:13:10]\nDetente, cambiamos de tema");
+        let words = format!(
+            "{JOINED_MARK}\n{STOPPED_HEADER}\ny documenta cada función\n\n[16:13:10]\nDetente, cambiamos de tema"
+        );
         assert_eq!(request_words(&format!("{stop}\n\n{PERSON_MARK}\n{words}")), "Detente, cambiamos de tema");
         assert_eq!(request_words(&words), "Detente, cambiamos de tema");
     }
@@ -272,7 +301,7 @@ mod tests {
     #[test]
     fn parts_stopped_to_run_them_at_once_are_all_asked_now() {
         let later = STOPPED_HEADER.replace("16:13:05", "16:13:07");
-        let text = format!("{STOPPED_HEADER}\nfix parse in lexer.rs\n\n{later}\nand update the README");
+        let text = format!("{JOINED_MARK}\n{STOPPED_HEADER}\nfix parse in lexer.rs\n\n{later}\nand update the README");
         assert_eq!(request_words(&text), "fix parse in lexer.rs\n\nand update the README");
     }
 
@@ -280,5 +309,27 @@ mod tests {
     fn one_request_is_read_as_it_is() {
         assert_eq!(request_words("[12:00:00 is when it broke]\nfix it"), "[12:00:00 is when it broke]\nfix it");
         assert!(matches!(request_words("fix it"), Cow::Borrowed("fix it")));
+    }
+
+    #[test]
+    fn a_pasted_log_with_time_lines_is_one_request_and_not_parts() {
+        let pasted = "[16:13:05]\nalice: it broke\n\n[16:13:10]\nbob: since when";
+        assert_eq!(joined_parts(pasted), None);
+        assert_eq!(request_words(pasted), pasted);
+        assert!(!is_marked(&format!("{PERSON_MARK}\n{pasted}")));
+    }
+
+    #[test]
+    fn a_stop_line_says_who_ended_the_request_and_which_one_it_was() {
+        let person = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply; it got no \
+                      answer; the request was \"read lexer.rs\"]";
+        let client = "[16:13:08 the request above was stopped by the client's cancel before bash ls ran; the request \
+                      ended there; the request was \"list the files…\"]";
+        assert_eq!(stopped_by(person), "the person");
+        assert_eq!(stopped_by(client), "the client's cancel");
+        assert_eq!(stopped_request(person), Some("read lexer.rs"));
+        assert_eq!(stopped_request(client), Some("list the files"));
+        assert!(stop_line_of(client).is_some());
+        assert_eq!(stopped_request("[16:13:08 the person stopped the request above (Esc) while you waited]"), None);
     }
 }

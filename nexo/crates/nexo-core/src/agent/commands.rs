@@ -92,6 +92,9 @@ pub enum AgentCommand {
     FlowStop {
         run: String,
     },
+    /// Stop the running turn as `Interrupt` does, and say who or what did it (Ctrl+C, the client that drives nexo,
+    /// the run's time limit): the next request tells the model so, instead of calling every stop the person's Esc.
+    StopBy(Stopper),
     /// Stop the running turn and run the queued request at once (Enter on an empty draft). With
     /// nothing queued it is an `Interrupt`.
     InterruptRun,

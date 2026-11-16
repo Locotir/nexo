@@ -498,7 +498,7 @@ async fn ask(
                 }
                 cut = true;
                 tally.lock().unwrap().stop.get_or_insert(Stop::Timeout);
-                let _ = handle.commands.send(AgentCommand::Interrupt);
+                let _ = handle.commands.send(AgentCommand::StopBy(nexo_core::agent::Stopper::TimeLimit));
                 timer.as_mut().reset(tokio::time::Instant::now() + GRACE);
                 continue;
             }

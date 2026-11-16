@@ -230,7 +230,7 @@ fn of_requests_joined_after_a_stop_the_newest_decides_the_topic_and_the_lines_lo
     let alone = reading_of(newest);
     assert!(!alone.2, "{alone:?}");
     let headed = format!(
-        "[16:13:05, typed while you worked on the request above, before the person stopped it]\n{older}\n\n[16:13:10]\n{newest}"
+        "[messages typed one after another]\n[16:13:05, typed while you worked on the request above, before the person stopped it]\n{older}\n\n[16:13:10]\n{newest}"
     );
     assert_eq!(reading_of(&headed), alone);
     let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply after bash wc -l \
@@ -245,7 +245,7 @@ fn requests_joined_with_no_stop_between_them_are_all_read_as_asked_now() {
     // queued while the model worked and never stopped: the person still wants the older one done, so it ties the
     // request to the documenting turn and brings its lines back as the whole block does
     let headed = format!(
-        "[16:13:05, typed while you worked on the request above]\n{older}\n\n[16:13:07, typed while you worked on the \
+        "[messages typed one after another]\n[16:13:05, typed while you worked on the request above]\n{older}\n\n[16:13:07, typed while you worked on the \
          request above]\n{newest}"
     );
     let read = reading_of(&headed);
@@ -272,4 +272,52 @@ fn a_thread_the_person_stopped_says_so_on_its_card_and_an_answered_one_does_not(
     assert_ne!(stopped, answered);
     assert!(card(stopped).ends_with(". Ended: stopped by the person before an answer (16:13)."), "{}", card(stopped));
     assert!(!card(answered).contains("Ended:"), "{}", card(answered));
+}
+
+/// The terms of the request after a stop line that names a call on `lexerzzz.rs`, and the same turn's words.
+#[test]
+fn a_request_after_a_stop_is_not_linked_toward_the_file_the_stop_line_names() {
+    let stop = "[16:13:08 the person stopped the request above (Esc) while you waited for your reply after bash cat \
+                lexerzzz.rs; it got no answer; the request was \"Documenta cada función de parser.rs\"]";
+    let mut msgs = vec![json!({"role": "user", "content": "Documenta cada función de parser.rs."})];
+    msgs.extend(step(1, "cat lexerzzz.rs", &report()));
+    let asked = "How many lines has notes.md?";
+    msgs.push(json!({"role": "user", "content": format!("{stop}\n\n{}\n{asked}", crate::msg::PERSON_MARK)}));
+    msgs.extend(step(2, "wc -l notes.md", "12 notes.md"));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+    let mut e = Engine::new(params("nudge=0;eoq=0;link=0.99;close=2;margin=0;ahead=1").unwrap());
+    e.sync(&msgs);
+    e.view();
+    let unit = *e.fz.by_msg(3).iter().find(|&&i| e.tr.units[i].kind == UKind::User).unwrap();
+    let held = |w: &str| e.fz.terms[unit].iter().any(|&s| e.int.get(s) == w);
+    assert!(held("notes") && !held("lexerzzz"), "the request's own words only");
+    for name in ["lexerzzz", "lexerzzz.rs"] {
+        if let Some(sym) = e.int.find(name) {
+            assert!(!e.goal.named_in(1, sym), "the turn's words do not hold the stopped call's file");
+        }
+    }
+}
+
+#[test]
+fn a_stop_line_marks_the_turn_it_quotes_and_not_one_a_goal_message_stands_between() {
+    let stop =
+        "[16:13:08 the request above was stopped by the client's cancel while you waited for your reply; it got \
+                no answer; the request was \"Documenta cada función de parser.rs\"]";
+    let mut msgs = vec![json!({"role": "user", "content": "Documenta cada función de parser.rs."})];
+    msgs.extend(step(1, "cat parser.rs", &report()));
+    // the stop is pending and a message that does not carry it starts a turn of its own
+    msgs.push(json!({"role": "user", "content": "Count the words of changelog.md please."}));
+    msgs.extend(step(2, "wc -w changelog.md", "40 changelog.md"));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "40"}]}));
+    msgs.push(json!({"role": "user", "content": format!("{stop}\n\n{}\nHow many lines has notes.md?", crate::msg::PERSON_MARK)}));
+    msgs.extend(step(3, "wc -l notes.md", "12 notes.md"));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+    let mut e = Engine::new(params("nudge=0;eoq=0;close=2;margin=0;ahead=1;link=0.99").unwrap());
+    e.sync(&msgs);
+    e.view();
+    assert_eq!(
+        e.goal.ended(&e.tr, 0).as_deref(),
+        Some("Ended: stopped by the client's cancel before an answer (16:13)")
+    );
+    assert_eq!(e.goal.ended(&e.tr, 1), None, "the stop was of the first request, not of the one before the line");
 }

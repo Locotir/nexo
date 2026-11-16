@@ -29,7 +29,9 @@ pub(super) fn take_all(inbox: &mut VecDeque<Queued>) -> Option<(String, Vec<Atta
         }
     }
     let text = if parts.len() > 1 {
-        parts.iter().map(|(text, header)| format!("{header}\n{text}")).collect::<Vec<_>>().join("\n\n")
+        let joined = parts.iter().map(|(text, header)| format!("{header}\n{text}")).collect::<Vec<_>>().join("\n\n");
+        // the line before the first header says nexo wrote them: lines of the person's own that look like one stay theirs
+        format!("{}\n{joined}", nexo_core::agent::JOINED_MARK)
     } else {
         parts.pop().map(|(text, _)| text).unwrap_or_default()
     };
@@ -73,7 +75,7 @@ mod tests {
     fn queued_requests_become_one_in_the_order_they_were_written_each_under_its_time() {
         let mut inbox = q(&["stop everything, thanks", "for now do nothing, I will tell you"]);
         let (text, _) = take_all(&mut inbox).unwrap();
-        assert_eq!(text, "[16:13:00]\nstop everything, thanks\n\n[16:13:01]\nfor now do nothing, I will tell you");
+        assert_eq!(text, "[messages typed one after another]\n[16:13:00]\nstop everything, thanks\n\n[16:13:01]\nfor now do nothing, I will tell you");
         assert!(inbox.is_empty());
     }
 
@@ -103,7 +105,13 @@ mod tests {
             (after.text.clone(), Vec::new(), h2.clone()),
         ]);
         let (text, _) = take_all(&mut inbox).unwrap();
-        assert_eq!(text, format!("{h1}\ny documenta cada función\n\n{h2}\nDetente, cambiamos de tema"));
+        assert_eq!(
+            text,
+            format!(
+                "{}\n{h1}\ny documenta cada función\n\n{h2}\nDetente, cambiamos de tema",
+                nexo_core::agent::JOINED_MARK
+            )
+        );
         assert_eq!(
             nexo_core::agent::joined_parts(&text),
             Some(vec!["y documenta cada función", "Detente, cambiamos de tema"])

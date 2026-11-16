@@ -14,9 +14,14 @@ fn cut(content: &[Part]) -> bool {
     content.iter().any(|p| p.as_text().is_some_and(|t| t.contains("interrupted by the person")))
 }
 
-/// The calls in `names`, at most [`NAMED`] of them.
+/// The calls in `names`, at most [`NAMED`] of them, each on one line and short: a summary can hold a whole question
+/// or prompt with its newlines, and the line must stay one line.
 fn named(names: &[String]) -> String {
-    let shown = names[..names.len().min(NAMED)].join(", ");
+    let shown = names[..names.len().min(NAMED)]
+        .iter()
+        .map(|n| nexo_core::agent::one_line(n, nexo_core::agent::CALL_SHOWN))
+        .collect::<Vec<_>>()
+        .join(", ");
     match names.len().saturating_sub(NAMED) {
         0 => shown,
         n => format!("{shown} and {n} more"),
@@ -68,12 +73,24 @@ pub(super) fn what_ran(turn: &[Message], tools: &ToolSet) -> String {
 /// line the next request carries, and the requests queued while it ran are marked as typed before the stop.
 pub(super) async fn record(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
     let at = rt.stopped.take();
+    let by = rt.stopper.take().unwrap_or(nexo_core::agent::Stopper::Esc);
     let mut st = rt.state.lock().await;
     let asked = std::mem::take(&mut st.request_in);
     let (Some(at), TurnEnd::Interrupted, true) = (at, reason, asked) else { return };
-    let how = if run_queue { "to run the queued request at once" } else { "(Esc)" };
-    let what = what_ran(&st.history[st.turn_start.min(st.history.len())..], &st.tools);
-    let line = nexo_core::agent::stop_line(&nexo_core::clock::local_hms(at), how, &what);
+    let turn = &st.history[st.turn_start.min(st.history.len())..];
+    // what the stopped request asked, so the line names it even when other messages come between it and the next
+    // request (a goal's continue mark, a job's note) and the line does not sit right after it
+    let quote = turn.first().map(|m| nexo_core::agent::request_quote(&m.text())).filter(|q| !q.is_empty());
+    let mut what = what_ran(turn, &st.tools);
+    if let Some(q) = quote {
+        what = format!("{what}{}{q}\"", nexo_core::agent::REQUEST_WAS);
+    }
+    let at = nexo_core::clock::local_hms(at);
+    let line = if run_queue {
+        nexo_core::agent::stop_line(&at, "to run the queued request at once", &what)
+    } else {
+        nexo_core::agent::stop_line_by(&at, by, &what)
+    };
     if let Err(e) = st.session.record_stop(&line) {
         tracing::debug!("the stop was not saved: {e}");
     }
@@ -136,5 +153,16 @@ mod tests {
     fn a_stop_while_the_reply_came_says_it_was_cut() {
         let turn = [Message::user("explain"), Message::assistant("The loop starts")];
         assert_eq!(what_ran(&turn, &ToolSet::default()), "while your reply above was being written; it was cut there");
+    }
+
+    #[test]
+    fn a_call_summary_with_newlines_keeps_the_stop_line_on_one_line() {
+        // the summaries of ask, recall and goal_brief hold their text as it is, newlines and all
+        let asks = vec!["ask: which file?\n\nthe long one\r\nor the short one, and a long tail that goes on and on and on and on and on".to_string()];
+        let what = format!("while {} ran; the request ended there", named(&asks));
+        let line = nexo_core::agent::stop_line("16:13:08", "(Esc)", &what);
+        assert!(!line.contains('\n') && what.contains("ask: which file? the long one or the short one"), "{line:?}");
+        assert!(nexo_core::agent::stop_line_of(&format!("{line}\n\nnext")).is_some(), "{line:?}");
+        assert!(what.chars().count() < 160, "{what}");
     }
 }

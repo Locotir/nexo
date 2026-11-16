@@ -183,6 +183,16 @@ pub struct Chunk {
     pub terms: Set,
 }
 
+/// What the person asks now in unit `i`, when it is a request message nexo marked (a stop line before it, or joined
+/// parts): [`crate::msg::request_words`]. None for any other unit, whose words are all its own.
+pub fn marked_request(tr: &Tracer, i: usize) -> Option<String> {
+    if tr.units[i].kind != UKind::User {
+        return None;
+    }
+    let text = tr.unit_text(i);
+    (is_request(&text) && crate::msg::is_marked(&text)).then(|| crate::msg::request_words(&text).into_owned())
+}
+
 fn unit_chunks(tr: &Tracer, i: usize, int: &mut Interner) -> Vec<Chunk> {
     let u = &tr.units[i];
     let text = tr.unit_text(i);
@@ -401,6 +411,10 @@ impl Featurizer {
             let cs = unit_chunks(tr, i, int);
             let ts = if u.kind == UKind::Result {
                 set_of(cs.iter().flat_map(|c| c.terms.iter().copied()).collect())
+            } else if let Some(asked) = marked_request(tr, i) {
+                // a request nexo marked: its terms are those of what the person asks now (the stop line names the
+                // stopped request's last call, and the parts asked of the stopped request are not this request)
+                terms(&asked, int)
             } else {
                 cs[0].terms.clone()
             };

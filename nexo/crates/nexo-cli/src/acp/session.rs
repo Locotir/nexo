@@ -188,7 +188,7 @@ impl Sess {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        let _ = self.cmds.send(AgentCommand::Interrupt);
+        let _ = self.cmds.send(AgentCommand::StopBy(nexo_core::agent::Stopper::Client));
     }
 
     pub fn set_mode(&self, rpc: &Rpc, mode: PermissionMode) {

@@ -259,7 +259,7 @@ pub async fn run(
                     std::process::exit(EXIT_INTERRUPTED);
                 }
                 if busy {
-                    let _ = handle.commands.send(AgentCommand::Interrupt);
+                    let _ = handle.commands.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
                 } else {
                     exit = EXIT_INTERRUPTED;
                     break 'main;

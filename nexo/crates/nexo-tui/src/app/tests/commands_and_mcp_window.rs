@@ -80,7 +80,7 @@ fn ctrl_c_in_a_permission_dialog_denies_it_and_stops_the_turn() {
     assert!(a.modal.is_none());
     let sent: Vec<AgentCommand> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
     assert!(
-        matches!(&sent[..], [AgentCommand::Permission { id, decision: PermissionDecision::Deny { .. } }, AgentCommand::Interrupt] if id == "p1"),
+        matches!(&sent[..], [AgentCommand::Permission { id, decision: PermissionDecision::Deny { .. } }, AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC)] if id == "p1"),
         "{sent:?}"
     );
     // a second press quits, as at the prompt

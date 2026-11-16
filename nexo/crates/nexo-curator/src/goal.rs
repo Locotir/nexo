@@ -126,7 +126,10 @@ impl Threads {
                 t.seen.extend(tr.units[i].words.iter().copied());
                 if tr.units[i].kind != UKind::Result {
                     t.said.extend(fz.terms[i].iter().copied());
-                    t.named.extend(tr.units[i].words.iter().copied());
+                    match crate::learn::marked_request(tr, i) {
+                        Some(asked) => t.named.extend(crate::hindsight::words(&asked, int)),
+                        None => t.named.extend(tr.units[i].words.iter().copied()),
+                    }
                 }
                 t.tokens += tr.units[i].tokens;
                 t.units.push(i);
@@ -334,6 +337,12 @@ impl Threads {
         self.turns.iter().map(|t| (t.start, t.thread)).collect()
     }
 
+    /// For tests: whether what the person and the agent wrote in turn `j` names `w`.
+    #[cfg(test)]
+    pub fn named_in(&self, j: usize, w: Sym) -> bool {
+        self.turns[j].named.contains(&w) || self.turns[j].said.contains(&w)
+    }
+
     /// The thread of the turn that holds message `mi`.
     pub fn thread_at(&self, mi: usize) -> usize {
         let i = self.turns.partition_point(|t| t.start <= mi);
@@ -380,12 +389,28 @@ impl Threads {
 
     /// How turn `j` ended when the person stopped it: the request after it starts with the line nexo records
     /// for a stop (`nexo_core::agent::stop_line`), which says whether the stopped request got an answer.
-    fn ended(&self, tr: &Tracer, j: usize) -> Option<String> {
-        let next = self.turns.get(j + 1)?.start;
-        let text = crate::msg::text_of(tr.msgs.get(next)?.get("content"));
-        let (line, at) = stop_line_of(&text)?;
-        let before = if line.contains("it got no answer") { " before an answer" } else { "" };
-        Some(format!("Ended: stopped by the person{before} ({})", &at[..5]))
+    pub(crate) fn ended(&self, tr: &Tracer, j: usize) -> Option<String> {
+        let ask = self.turns[j].ask.replace('"', "'");
+        let mut k = j + 1;
+        while let Some(t) = self.turns.get(k) {
+            let text = crate::msg::text_of(tr.msgs.get(t.start)?.get("content"));
+            if let Some((line, at)) = stop_line_of(&text) {
+                // the line quotes the request it ended: a goal's or a supervisor's message between that request and
+                // the next person's one leaves the line on a later turn, which must not mark this one
+                let ours = match crate::msg::stopped_request(line) {
+                    Some(quoted) => ask.contains(quoted),
+                    None => k == j + 1,
+                };
+                if ours {
+                    let facts = line.split(crate::msg::REQUEST_WAS).next().unwrap_or(line);
+                    let before = if facts.contains("it got no answer") { " before an answer" } else { "" };
+                    let by = crate::msg::stopped_by(line);
+                    return Some(format!("Ended: stopped by {by}{before} ({})", &at[..5]));
+                }
+            }
+            k += 1;
+        }
+        None
     }
 
     /// What the request that opened turn `j` asked, as a card names it.

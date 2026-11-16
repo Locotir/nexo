@@ -368,8 +368,8 @@ async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
     assert_eq!(
         untimed(&client.requests()[1].messages.last().unwrap().text()),
         "[00:00:00 the person stopped the request above (Esc) while your reply above was being written; it was cut \
-         there]\n\n[the person's message]\n[00:00:00, typed while you worked on the request above, before the person \
-         stopped it]\ntwo\n\n[00:00:00]\nthree",
+         there; the request was \"one\"]\n\n[the person's message]\n[messages typed one after another]\n[00:00:00, \
+         typed while you worked on the request above, before the person stopped it]\ntwo\n\n[00:00:00]\nthree",
     );
     r.stop().await;
 }
@@ -377,6 +377,36 @@ async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
 /// `text` with every digit as 0: the times these requests carry are the clock's.
 fn untimed(text: &str) -> String {
     text.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect()
+}
+
+#[tokio::test]
+async fn a_stop_line_says_who_stopped_the_request_as_it_was() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Events(text("second")),
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Events(text("fourth")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    for (k, (by, who)) in [
+        (nexo_core::agent::Stopper::CtrlC, "the person stopped the request above (Ctrl+C)"),
+        (nexo_core::agent::Stopper::TimeLimit, "the request above was stopped by the run's time limit"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+        r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+        r.send(AgentCommand::StopBy(by));
+        assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
+        r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+        r.turn().await;
+        let sent = untimed(&client.requests()[2 * k + 1].messages.last().unwrap().text());
+        assert!(sent.starts_with(&format!("[00:00:00 {who} ")), "{sent}");
+    }
+    r.stop().await;
 }
 
 #[tokio::test]
@@ -406,7 +436,7 @@ async fn interrupt_run_stops_the_turn_and_runs_the_queued_request() {
     assert_eq!(
         untimed(&reqs[1].messages.last().unwrap().text()),
         "[00:00:00 the person stopped the request above to run the queued request at once while your reply above was \
-         being written; it was cut there]\n\n[the person's message]\ntwo",
+         being written; it was cut there; the request was \"one\"]\n\n[the person's message]\ntwo",
         "the queued text is the request, alone with no time, after the stop"
     );
     // the agent is idle again and takes the next message as usual
@@ -444,7 +474,8 @@ async fn two_queued_requests_run_as_one_request_after_an_interrupt() {
     assert_eq!(
         untimed(&reqs[1].messages.last().unwrap().text()),
         "[00:00:00 the person stopped the request above to run the queued request at once while your reply above was \
-         being written; it was cut there]\n\n[the person's message]\n[00:00:00, typed while you worked on the request \
+         being written; it was cut there; the request was \"one\"]\n\n[the person's message]\n[messages typed one after \
+         another]\n[00:00:00, typed while you worked on the request \
          above, before the person stopped it]\nstop everything\n\n[00:00:00, typed while you worked on the request \
          above, before the person stopped it]\ndo nothing for now"
     );

@@ -199,7 +199,8 @@ fn requests_joined_after_an_esc_come_back_as_one_echo_that_takes_both_and_shows_
     assert_eq!(pending(&a), 1);
     let stop = stop_line("16:13:08", "(Esc)", "while you waited for your reply; it got no answer");
     let words = format!(
-        "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+        "{}\n{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+        nexo_core::agent::JOINED_MARK,
         part_header("16:13:05", true, true),
         part_header("16:13:10", false, false)
     );
@@ -224,7 +225,8 @@ fn undo_and_rewind_put_joined_requests_back_as_typed_without_the_times_nexo_wrot
     let (mut a, mut rx) = app();
     let stop = stop_line("16:13:08", "(Esc)", "while you waited for your reply; it got no answer");
     let words = format!(
-        "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+        "{}\n{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+        nexo_core::agent::JOINED_MARK,
         part_header("16:13:05", true, true),
         part_header("16:13:10", false, false)
     );

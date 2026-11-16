@@ -35,6 +35,8 @@ pub(super) struct Runtime {
     pub(super) run_queue: bool,
     /// When the person stopped the running turn (Esc or Enter on a queued request), until its end records it.
     pub(super) stopped: Option<SystemTime>,
+    /// Who or what stopped it (`stopped` is set along with it).
+    pub(super) stopper: Option<nexo_core::agent::Stopper>,
     /// What a check-in decided, back to this loop (the only place a turn starts).
     pub(super) resume_tx: tokio::sync::mpsc::UnboundedSender<Resume>,
     pub(super) resume_rx: tokio::sync::mpsc::UnboundedReceiver<Resume>,
@@ -237,6 +239,7 @@ impl Runtime {
             cancel: CancellationToken::new(),
             run_queue: false,
             stopped: None,
+            stopper: None,
             resume_tx,
             resume_rx,
         })

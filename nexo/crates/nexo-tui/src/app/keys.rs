@@ -202,7 +202,7 @@ impl App {
         }
         self.last_ctrl_c = Some(now);
         if self.busy {
-            self.send(AgentCommand::Interrupt);
+            self.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
             self.flash("interrupting… (Ctrl+C again to quit)");
         } else if !self.input.is_empty() {
             self.keep_draft();

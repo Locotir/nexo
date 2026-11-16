@@ -4,8 +4,67 @@
 //! request above]`). The model reads which line came first and what happened in between instead of one block whose
 //! older half reads as part of the newest request. The curator reads the same lines (`nexo_curator::msg`).
 
+use super::person_words;
+
 /// What follows the time in the line that says the person stopped the request before this one.
 pub const STOP_WORDS: &str = "the person stopped the request above";
+/// What follows the time in the line that says something other than the person ended the request before this one
+/// (the client that drives nexo, the run's time limit): `the request above was stopped by the client's cancel`.
+pub const STOPPED_BY: &str = "the request above was stopped by";
+/// The line before the parts of messages nexo joined into one. Without it a message whose own lines look like a
+/// header (a pasted chat log with `[16:13:05]` lines) would read as messages the person typed one by one.
+pub const JOINED_MARK: &str = "[messages typed one after another]";
+/// What a stop line says, before what ran, of the request it names: `; the request was "..."`.
+pub const REQUEST_WAS: &str = "; the request was \"";
+/// The most characters of a request a stop line quotes.
+const QUOTED: usize = 50;
+/// The most characters of one call's summary in a stop line.
+pub const CALL_SHOWN: usize = 80;
+
+/// Who or what ended a request, and how the person did it when they did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stopper {
+    /// Esc in the terminal interface.
+    Esc,
+    /// Ctrl+C, in the terminal interface or a headless run.
+    CtrlC,
+    /// The client driving nexo (ACP) cancelled the request.
+    Client,
+    /// The run's time limit (the benchmark harness), not the person.
+    TimeLimit,
+}
+
+impl Stopper {
+    /// How a stop line says it, from the words that follow its time.
+    pub fn words(self) -> String {
+        match self {
+            Stopper::Esc => format!("{STOP_WORDS} (Esc)"),
+            Stopper::CtrlC => format!("{STOP_WORDS} (Ctrl+C)"),
+            Stopper::Client => format!("{STOPPED_BY} the client's cancel"),
+            Stopper::TimeLimit => format!("{STOPPED_BY} the run's time limit"),
+        }
+    }
+}
+
+/// `s` on one line: its whitespace, newlines included, as single spaces, cut to `max` characters.
+pub fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// What the person asked in the message `text` (as the model got it), as a stop line quotes it: the newest part of
+/// messages joined into one, on one line and cut short, with `"` as `'` so the quote has one end.
+pub fn request_quote(text: &str) -> String {
+    let words = person_words(text);
+    let words = stop_line_of(words).map_or(words, |l| words[l.len()..].trim_start());
+    let newest = joined_parts(words).and_then(|p| p.last().copied()).unwrap_or(words);
+    one_line(&newest.replace('"', "'"), QUOTED)
+}
 /// What a part's header says after its time when the part was typed while the model worked.
 pub const TYPED_DURING: &str = "typed while you worked on the request above";
 /// What it adds when the person then stopped that request.
@@ -25,16 +84,23 @@ fn timed(line: &str) -> Option<(&str, &str)> {
 }
 
 /// The line that says the person stopped the request before: at `at` (`HH:MM:SS`), `how` (`(Esc)`), and what was
-/// running then with how the request was left (`while you waited for your reply; it got no answer`).
+/// running then with how the request was left (`while you waited for your reply; it got no answer`). Always one
+/// line: what a call's summary holds of newlines is spaces here.
 pub fn stop_line(at: &str, how: &str, what: &str) -> String {
-    format!("[{at} {STOP_WORDS} {how} {what}]")
+    format!("[{at} {STOP_WORDS} {} {}]", one_line(how, 200), one_line(what, 800))
+}
+
+/// The same line for a request ended by `by`: the person with Esc or Ctrl+C, the client, the run's time limit.
+pub fn stop_line_by(at: &str, by: Stopper, what: &str) -> String {
+    format!("[{at} {} {}]", by.words(), one_line(what, 800))
 }
 
 /// The stop line `text` starts with, if it starts with one.
 pub fn stop_line_of(text: &str) -> Option<&str> {
     let first = text.split('\n').next()?;
     let (_, rest) = timed(first)?;
-    rest.strip_prefix(' ')?.starts_with(STOP_WORDS).then_some(first)
+    let rest = rest.strip_prefix(' ')?;
+    (rest.starts_with(STOP_WORDS) || rest.starts_with(STOPPED_BY)).then_some(first)
 }
 
 /// The header of one part of messages joined into one: when it was typed, and whether the model was working then
@@ -53,16 +119,21 @@ pub fn is_part_header(line: &str) -> bool {
 }
 
 /// The parts of the person's words when they are messages joined into one, oldest first, each without its header;
-/// None when the words are one message (they do not start with a header).
+/// None when the words are one message (they do not start with [`JOINED_MARK`], the line nexo writes before the
+/// first header: a header alone could be the person's own text).
 pub fn joined_parts(words: &str) -> Option<Vec<&str>> {
     let mut lines = words.split_inclusive('\n');
+    if lines.next()?.trim_end_matches(['\n', '\r']) != JOINED_MARK {
+        return None;
+    }
     let first = lines.next()?;
     if !is_part_header(first.trim_end_matches(['\n', '\r'])) {
         return None;
     }
     let mut parts = Vec::new();
-    let mut start = first.len();
-    let mut at = first.len();
+    let top = words.find('\n').map_or(0, |i| i + 1);
+    let mut start = top + first.len();
+    let mut at = start;
     for line in lines {
         if is_part_header(line.trim_end_matches(['\n', '\r'])) {
             parts.push(words[start..at].trim_matches('\n'));
@@ -87,6 +158,7 @@ pub fn as_typed(words: &str) -> std::borrow::Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::PERSON_MARK;
 
     #[test]
     fn a_stop_line_is_found_at_the_start_of_a_message_and_nowhere_else() {
@@ -103,7 +175,7 @@ mod tests {
     #[test]
     fn joined_words_split_into_their_parts_and_one_message_does_not() {
         let words = format!(
-            "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+            "{JOINED_MARK}\n{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
             part_header("16:13:05", true, true),
             part_header("16:13:10", false, false)
         );
@@ -115,11 +187,51 @@ mod tests {
     #[test]
     fn joined_words_read_back_as_typed_have_no_headers_and_one_message_is_unchanged() {
         let words = format!(
-            "{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
+            "{JOINED_MARK}\n{}\ny documenta cada función\n\n{}\nDetente, cambiamos de tema",
             part_header("16:13:05", true, true),
             part_header("16:13:10", false, false)
         );
         assert_eq!(as_typed(&words), "y documenta cada función\n\nDetente, cambiamos de tema");
         assert_eq!(as_typed("[12:00:00 is when it broke]\nfix it"), "[12:00:00 is when it broke]\nfix it");
+    }
+
+    #[test]
+    fn a_pasted_log_with_time_lines_stays_the_persons_text_and_only_nexos_joined_messages_split() {
+        let pasted = "[16:13:05]\nalice: it broke\n\n[16:13:10]\nbob: since when";
+        assert_eq!(joined_parts(pasted), None);
+        assert_eq!(as_typed(pasted), pasted);
+        let joined = format!("{JOINED_MARK}\n[16:13:05]\n{pasted}\n\n[16:13:20]\nfix it");
+        let parts = joined_parts(&joined).unwrap();
+        assert_eq!(parts.len(), 4, "{parts:?}");
+        assert_eq!(parts.last(), Some(&"fix it"));
+    }
+
+    #[test]
+    fn a_stop_line_is_one_line_whatever_the_call_summaries_hold() {
+        let line =
+            stop_line("16:13:08", "(Esc)", "while ask: which file?\n\nthe long one\r\nran; the request ended there");
+        assert!(!line.contains('\n') && !line.contains('\r'), "{line:?}");
+        assert_eq!(stop_line_of(&format!("{line}\n\nnext")), Some(line.as_str()));
+        assert!(line.contains("ask: which file? the long one ran"), "{line}");
+    }
+
+    #[test]
+    fn a_stop_line_says_who_ended_the_request_as_it_really_was() {
+        let what = "while you waited for your reply; it got no answer";
+        let line = |by| stop_line_by("16:13:08", by, what);
+        assert!(line(Stopper::Esc).starts_with("[16:13:08 the person stopped the request above (Esc) while"));
+        assert!(line(Stopper::CtrlC).contains("the person stopped the request above (Ctrl+C)"));
+        for (by, who) in [(Stopper::Client, "the client's cancel"), (Stopper::TimeLimit, "the run's time limit")] {
+            let l = line(by);
+            assert!(l.contains(who) && !l.contains("the person"), "{l}");
+            assert_eq!(stop_line_of(&format!("{l}\n\nnext")), Some(l.as_str()));
+        }
+    }
+
+    #[test]
+    fn a_request_is_quoted_by_its_newest_part_on_one_line_without_double_quotes() {
+        let joined = format!("{JOINED_MARK}\n[16:13:05]\nold one\n\n[16:13:10]\nsay \"hi\"\nplease");
+        assert_eq!(request_quote(&format!("note\n\n{PERSON_MARK}\n{joined}")), "say 'hi' please");
+        assert!(request_quote(&"x ".repeat(100)).ends_with('…'));
     }
 }
