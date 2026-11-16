@@ -85,11 +85,7 @@ pub fn print_providers(cfg: &Config, all: bool, json: bool) -> i32 {
 }
 
 pub(super) fn shorten(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(n - 1).collect::<String>())
-    }
+    nexo_core::mail::clip(s, n)
 }
 
 /// The limits of every model known under `name`: the configured ones, the

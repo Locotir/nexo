@@ -176,12 +176,9 @@ impl Conn {
     }
 }
 
+/// Lower-case hex of `b`, two digits a byte.
 pub fn hex(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
-    for x in b {
-        s.push_str(&format!("{x:02x}"));
-    }
-    s
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 pub fn unhex(s: &[u8]) -> Option<Vec<u8>> {
@@ -417,6 +414,13 @@ pub fn parse_map_line(line: &str) -> Option<crate::platform::Map> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_writes_two_lower_case_digits_a_byte_and_reads_back() {
+        assert_eq!(hex(&[0, 1, 0xab, 255]), "0001abff");
+        assert_eq!(hex(&[]), "");
+        assert_eq!(unhex(b"0001abff").unwrap(), vec![0, 1, 0xab, 255]);
+    }
 
     #[test]
     fn packets_escape_the_reserved_bytes_and_read_back() {

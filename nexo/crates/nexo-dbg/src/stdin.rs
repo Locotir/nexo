@@ -43,10 +43,6 @@ pub fn decode(s: &str) -> std::result::Result<Vec<u8>, String> {
     Ok(out)
 }
 
-pub fn to_hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
 fn from_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) || !s.is_ascii() {
         return Err("--hex takes an even number of hex digits".into());
@@ -113,7 +109,7 @@ mod tests {
     #[test]
     fn hex_roundtrip() {
         let b = [0u8, 1, 0x7f, 0x80, 0xff];
-        assert_eq!(from_hex(&to_hex(&b)).unwrap(), b);
+        assert_eq!(from_hex(&crate::rsp::hex(&b)).unwrap(), b);
         assert!(from_hex("abc").is_err());
     }
 }

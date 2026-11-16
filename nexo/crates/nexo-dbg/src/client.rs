@@ -634,7 +634,7 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
             let mut r = crate::request(dir, &id, &["__first".to_string()])?;
             let mut extra = Vec::new();
             if let Some(bytes) = input {
-                let mut w = vec!["stdin".to_string(), "--hex".into(), "--raw".into(), crate::stdin::to_hex(&bytes)];
+                let mut w = vec!["stdin".to_string(), "--hex".into(), "--raw".into(), crate::rsp::hex(&bytes)];
                 let sent = crate::request(dir, &id, &w)?;
                 extra.extend(sent.out.rows.into_iter().map(|r| format!("{} and closed the input", r.text)));
                 w.truncate(1);

@@ -172,19 +172,21 @@ fn server_message(body: &str) -> Option<String> {
     found.map(|m| shorten(m.lines().next().unwrap_or(""), 240)).filter(|m| !m.is_empty() && !m.starts_with("HTTP "))
 }
 
-fn shorten(s: &str, n: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(n - 1).collect();
-        format!("{cut}…")
-    }
+/// `s` trimmed, cut to `n` characters with `…` when longer. The one copy in this crate.
+pub(crate) fn shorten(s: &str, n: usize) -> String {
+    crate::mail::clip(s.trim(), n)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shorten_trims_then_cuts_with_an_ellipsis() {
+        assert_eq!(shorten("  abc  ", 5), "abc");
+        assert_eq!(shorten("abcdef", 4), "abc…");
+        assert_eq!(shorten("", 0), "");
+    }
 
     #[test]
     fn classifies_statuses() {

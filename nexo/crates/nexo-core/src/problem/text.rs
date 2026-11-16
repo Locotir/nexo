@@ -12,15 +12,7 @@ pub(super) fn host_of(url: &str) -> String {
     auth.split(':').next().unwrap_or("").to_ascii_lowercase()
 }
 
-pub(super) fn shorten(s: &str, n: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(n.saturating_sub(1)).collect();
-        format!("{cut}…")
-    }
-}
+pub(super) use crate::error::shorten;
 
 /// "45 seconds", "3 minutes".
 pub(super) fn wait_words(d: Duration) -> String {
