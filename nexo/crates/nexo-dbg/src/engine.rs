@@ -417,6 +417,15 @@ impl Env for Ev<'_> {
         self.lost |= why.is_some();
         why
     }
+
+    fn ptr_bytes(&mut self) -> u8 {
+        // the program's file class, as `Session::ptr_size` reads it
+        if self.mods.main_image().bits == 32 {
+            4
+        } else {
+            8
+        }
+    }
 }
 
 pub fn rows(op: &'static str, lines: Vec<String>, meta: Value) -> Output {

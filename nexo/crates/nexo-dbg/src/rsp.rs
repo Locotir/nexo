@@ -326,6 +326,36 @@ pub fn stub_xml() -> String {
     x
 }
 
+/// The i386 general registers in `g` packet order, with their [`GP`] index.
+const I386: [(&str, usize); 8] =
+    [("eax", 0), ("ecx", 2), ("edx", 3), ("ebx", 1), ("esp", 7), ("ebp", 6), ("esi", 4), ("edi", 5)];
+
+/// The target description the stub serves for a thread running 32-bit code: gdb's i386 core registers in its
+/// order (the x87 ones read as zero) and `orig_eax`.
+pub fn stub_xml32() -> String {
+    let mut x = String::from(
+        "<?xml version=\"1.0\"?><!DOCTYPE target SYSTEM \"gdb-target.dtd\"><target version=\"1.0\"><architecture>i386</architecture><osabi>GNU/Linux</osabi><feature name=\"org.gnu.gdb.i386.core\">",
+    );
+    for (n, _) in I386 {
+        let ty = if n == "esp" || n == "ebp" { "data_ptr" } else { "int32" };
+        x.push_str(&format!("<reg name=\"{n}\" bitsize=\"32\" type=\"{ty}\"/>"));
+    }
+    x.push_str(
+        "<reg name=\"eip\" bitsize=\"32\" type=\"code_ptr\"/><reg name=\"eflags\" bitsize=\"32\" type=\"int32\"/>",
+    );
+    for n in ["cs", "ss", "ds", "es", "fs", "gs"] {
+        x.push_str(&format!("<reg name=\"{n}\" bitsize=\"32\" type=\"int32\"/>"));
+    }
+    for i in 0..8 {
+        x.push_str(&format!("<reg name=\"st{i}\" bitsize=\"80\" type=\"i387_ext\"/>"));
+    }
+    for n in ["fctrl", "fstat", "ftag", "fiseg", "fioff", "foseg", "fooff", "fop"] {
+        x.push_str(&format!("<reg name=\"{n}\" bitsize=\"32\" type=\"int\" group=\"float\"/>"));
+    }
+    x.push_str("</feature><feature name=\"org.gnu.gdb.i386.linux\"><reg name=\"orig_eax\" bitsize=\"32\" type=\"int\" group=\"system\"/></feature></target>");
+    x
+}
+
 fn le(g: &[u8], off: usize, bits: u32) -> u64 {
     let n = (bits as usize / 8).min(8);
     let mut b = [0u8; 8];
@@ -337,14 +367,32 @@ fn le(g: &[u8], off: usize, bits: u32) -> u64 {
 
 /// The registers in a `g` packet, by name; the ones nexo does not keep (x87, vector) are skipped.
 pub fn regs_from_g(l: &Layout, g: &[u8]) -> Regs {
-    let mut r = Regs::default();
+    regs_over_g(l, g, Regs::default())
+}
+
+/// `base` with the registers a `g` packet carries put over it, so an i386 packet, which has no segment bases,
+/// leaves the thread's own.
+pub fn regs_over_g(l: &Layout, g: &[u8], base: Regs) -> Regs {
+    let mut r = base;
+    // `eax` and `orig_eax` are sign-extended as gdb does for a 32-bit program, so -1 and the `-ERESTART*` codes
+    // read the same to the kernel's 64-bit syscall-restart check
+    let wide = |v: u64| v as u32 as i32 as i64 as u64;
     for s in &l.slots {
         let v = le(g, s.off, s.bits);
         if let Some(i) = GP.iter().position(|n| *n == s.name) {
             r.gp[i] = v;
             continue;
         }
+        if let Some(&(_, i)) = I386.iter().find(|(n, _)| *n == s.name) {
+            r.gp[i] = if i == 0 { wide(v) } else { v };
+            continue;
+        }
         match s.name.as_str() {
+            "eip" => {
+                r.rip = v;
+                r.x32 = true;
+            }
+            "orig_eax" => r.orig_rax = wide(v),
             "rip" => r.rip = v,
             "eflags" => r.eflags = v,
             "cs" => r.seg[0] = v,
@@ -370,8 +418,12 @@ pub fn regs_into_g(l: &Layout, r: &Regs, g: &mut [u8]) {
     for s in &l.slots {
         let v = if let Some(i) = GP.iter().position(|n| *n == s.name) {
             r.gp[i]
+        } else if let Some(&(_, i)) = I386.iter().find(|(n, _)| *n == s.name) {
+            r.gp[i]
         } else {
             match s.name.as_str() {
+                "eip" => r.rip,
+                "orig_eax" => r.orig_rax,
                 "rip" => r.rip,
                 "eflags" => r.eflags,
                 "cs" => r.seg[0],
@@ -463,6 +515,40 @@ mod tests {
         r.orig_rax = u64::MAX;
         regs_into_g(&l, &r, &mut g);
         assert_eq!(regs_from_g(&l, &g), r);
+    }
+
+    #[test]
+    fn the_32_bit_description_is_gdbs_i386_order_over_the_threads_registers() {
+        let (arch, l) = parse_target_xml(&stub_xml32());
+        assert_eq!(arch.as_deref(), Some("i386"));
+        let names: Vec<&str> = l.slots[..10].iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip", "eflags"]);
+        assert!(l.slots[..16].iter().all(|s| s.bits == 32));
+        assert_eq!(l.slots[8].off, 32);
+        assert_eq!(l.slots.last().map(|s| s.name.as_str()), Some("orig_eax"));
+        // 16 words, 8 x87 registers of 10 bytes, 8 x87 control words, orig_eax
+        assert_eq!(l.len, 16 * 4 + 8 * 10 + 8 * 4 + 4);
+        let base = Regs { has_bases: true, x32: true, fs_base: 0xf7d0_0000, gs_base: 0x1234, ..Regs::default() };
+        let mut r = base;
+        r.gp[1] = 0x11; // ebx
+        r.gp[2] = 0x22; // ecx
+        r.gp[7] = 0xffff_d000; // esp
+        r.rip = 0x0804_9000;
+        r.eflags = 0x246;
+        r.seg[0] = 0x23;
+        let mut g = vec![0u8; l.len];
+        regs_into_g(&l, &r, &mut g);
+        assert_eq!(&g[4..8], &0x22u32.to_le_bytes(), "ecx is the second word");
+        assert_eq!(&g[12..16], &0x11u32.to_le_bytes(), "ebx is the fourth word");
+        assert_eq!(&g[32..36], &0x0804_9000u32.to_le_bytes());
+        assert_eq!(regs_over_g(&l, &g, base), r, "the segment bases the packet does not carry are kept");
+        // gdb writes -1 to orig_eax to stop a syscall restart, and eax may hold -ERESTARTSYS
+        let o = l.slots.iter().find(|s| s.name == "orig_eax").unwrap().off;
+        g[o..o + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        g[0..4].copy_from_slice(&(-512i32).to_le_bytes());
+        let back = regs_over_g(&l, &g, base);
+        assert_eq!(back.orig_rax, u64::MAX);
+        assert_eq!(back.gp[0], (-512i64) as u64);
     }
 
     #[test]

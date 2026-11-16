@@ -76,6 +76,10 @@ impl Env for CallEv<'_> {
         self.ev().missing(name)
     }
 
+    fn ptr_bytes(&mut self) -> u8 {
+        self.ev().ptr_bytes()
+    }
+
     fn call(&mut self, target: u64, args: &[Arg]) -> Result<u64> {
         let text = self.s.call_text(target, args);
         match self.s.call_now(self.tid, target, args, text, self.wait)? {

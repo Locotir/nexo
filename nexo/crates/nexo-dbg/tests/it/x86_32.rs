@@ -3,7 +3,10 @@
 //! eip, its frames and the arguments its callers pushed on the stack. Skipped when gcc cannot build 32-bit programs
 //! (no multilib C library).
 
-use nexo_dbg::{open, split_words, Kind, Session};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+
+use nexo_dbg::{open, serve_gdb, split_words, Kind, Session};
 
 const SRC: &str = r#"
 #include <stdio.h>
@@ -29,24 +32,30 @@ fn refused(s: &mut Session, cmd: &str) -> String {
     s.exec(&split_words(cmd)).map(|o| o.text_all()).expect_err(cmd).to_string()
 }
 
-/// The program built 32-bit with `flags`, started and stopped at its entry, with what the debugger said there.
-fn start(test: &str, flags: &[&str]) -> Option<(Session, String, tempfile::TempDir)> {
+/// `src` built 32-bit with `flags`.
+fn build(test: &str, src: &str, flags: &[&str]) -> Option<(PathBuf, tempfile::TempDir)> {
     let dir = tempfile::tempdir().unwrap();
-    let src = dir.path().join("p.c");
-    std::fs::write(&src, SRC).unwrap();
+    let c = dir.path().join("p.c");
+    std::fs::write(&c, src).unwrap();
     let exe = dir.path().join("p");
     let built = std::process::Command::new("gcc")
         .arg("-m32")
         .args(flags)
         .arg("-o")
         .arg(&exe)
-        .arg(&src)
+        .arg(&c)
         .output()
         .is_ok_and(|o| o.status.success());
     if !built {
         eprintln!("SKIPPED {test}: gcc -m32 cannot build a 32-bit program here, so nothing was checked");
         return None;
     }
+    Some((exe, dir))
+}
+
+/// The program built 32-bit with `flags`, started and stopped at its entry, with what the debugger said there.
+fn start(test: &str, flags: &[&str]) -> Option<(Session, String, tempfile::TempDir)> {
+    let (exe, dir) = build(test, SRC, flags)?;
     let (s, first) = open(&Kind::Run { exe, args: vec![] }).expect("start");
     Some((s, first.text_all(), dir))
 }
@@ -130,6 +139,11 @@ fn the_pushed_arguments_are_read_at_a_function_entry_hooks_and_the_library_trace
     let t = run(&mut s, "args");
     assert!(t.contains("\"hello\" (on the stack, where the caller pushed it)"), "{t}");
     assert!(t.contains("n (int) = 5 (on the stack"), "{t}");
+    // the pushed words read through the program's own 4-byte pointers: `t` alone, then the text it points to
+    let t = run(&mut s, "print *(char*)*(char**)($esp+4)");
+    assert!(t.contains("(104)"), "{t}");
+    let t = run(&mut s, "print *(int*)($esp+8) * 10 + sizeof(long) + sizeof(char*)");
+    assert!(t.contains("(58)"), "{t}");
 
     run(&mut s, "hook add");
     run(&mut s, "ltrace strlen");
@@ -167,4 +181,125 @@ fn a_hook_changes_a_pushed_argument_and_the_returned_value() {
     let t = run(&mut s, "hook show");
     assert!(t.contains("add(a=5, b=3)") && t.contains("arg1=0xa"), "{t}");
     assert!(t.contains("= 30") && t.contains("changed to 100"), "{t}");
+}
+
+const TABLE: &str = r#"
+#include <stdio.h>
+__attribute__((noinline)) int add_one(int x) { return x + 1; }
+__attribute__((noinline)) int double_it(int x) { return x * 2; }
+int (*volatile table[2])(int) = { add_one, double_it };
+int main(void) {
+    int v = 1;
+    for (int i = 0; i < 4; i++) v = table[i & 1](v);
+    printf("%d\n", v);
+    return 0;
+}
+"#;
+
+#[test]
+fn the_calls_through_a_pointer_of_a_32_bit_program_are_logged_by_name() {
+    let test = "the_calls_through_a_pointer_of_a_32_bit_program_are_logged_by_name";
+    let Some((exe, _d)) = build(test, TABLE, &["-g", "-O0"]) else { return };
+    let (mut s, _) = open(&Kind::Run { exe, args: vec![] }).expect("start");
+    let on = run(&mut s, "calls");
+    assert!(on.starts_with("logging ") && on.contains(" indirect calls"), "{on}");
+    let t = run(&mut s, "cont");
+    assert!(t.contains("exited with code 0") && t.contains("10"), "{t}");
+    let log = run(&mut s, "log");
+    let names: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains(" main+"))
+        .map(|l| {
+            if l.contains("add_one") {
+                "add_one"
+            } else if l.contains("double_it") {
+                "double_it"
+            } else {
+                "?"
+            }
+        })
+        .collect();
+    assert_eq!(names, ["add_one", "double_it", "add_one", "double_it"], "{log}");
+}
+
+/// A raw GDB remote client: one packet out, the stub's reply back.
+struct Wire(std::net::TcpStream);
+
+impl Wire {
+    fn ask(&mut self, body: &str) -> String {
+        let sum = body.bytes().fold(0u8, u8::wrapping_add);
+        write!(self.0, "${body}#{sum:02x}").unwrap();
+        let mut b = [0u8; 1];
+        loop {
+            self.0.read_exact(&mut b).expect("the stub answers");
+            if b[0] == b'$' {
+                break;
+            }
+        }
+        let mut out = Vec::new();
+        loop {
+            self.0.read_exact(&mut b).unwrap();
+            match b[0] {
+                b'#' => break,
+                b'}' => {
+                    self.0.read_exact(&mut b).unwrap();
+                    out.push(b[0] ^ 0x20);
+                }
+                c => out.push(c),
+            }
+        }
+        let mut sum = [0u8; 2];
+        self.0.read_exact(&mut sum).unwrap();
+        self.0.write_all(b"+").unwrap();
+        String::from_utf8(out).unwrap()
+    }
+}
+
+/// nexo's stub on a thread, serving `exe`; the address it listens on.
+fn serve(exe: PathBuf) -> (String, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || {
+        let r = serve_gdb(&Kind::Run { exe, args: vec![] }, 0, &mut |a| {
+            let _ = tx.send(a.to_string());
+        });
+        assert!(r.is_ok(), "{r:?}");
+    });
+    (rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the stub did not come up"), h)
+}
+
+#[test]
+fn the_stub_serves_a_32_bit_program_as_i386() {
+    let test = "the_stub_serves_a_32_bit_program_as_i386";
+    let src = "void _start(void) { __asm__ volatile(\"movl $1, %eax\\n movl $7, %ebx\\n int $0x80\"); }\n";
+    let Some((exe, _d)) = build(test, src, &["-nostdlib", "-static", "-fno-pie", "-no-pie"]) else { return };
+    let elf = std::fs::read(&exe).unwrap();
+    let entry = u32::from_le_bytes(elf[0x18..0x1c].try_into().unwrap());
+
+    // nexo's own client reads x86-64 only, and is told the program's real architecture
+    let (addr, h) = serve(exe.clone());
+    let e = open(&Kind::Remote { addr, exe: None }).map(|_| ()).expect_err("an i386 remote").to_string();
+    assert!(e.contains("i386") && e.contains("x86-64 remotes only"), "{e}");
+    h.join().unwrap();
+
+    let (addr, h) = serve(exe);
+    let mut w = Wire(std::net::TcpStream::connect(&addr).unwrap());
+    w.0.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+    let xml = w.ask("qXfer:features:read:target.xml:0,fff");
+    assert!(xml.contains("<architecture>i386</architecture>"), "{xml}");
+    assert!(xml.contains("name=\"eax\" bitsize=\"32\"") && !xml.contains("rax"), "{xml}");
+    // eax ecx edx ebx esp ebp esi edi eip eflags and six segments, eight x87 registers, eight x87 words, orig_eax
+    let g = w.ask("g");
+    assert_eq!(g.len(), 2 * (16 * 4 + 8 * 10 + 8 * 4 + 4), "{g}");
+    let word = |i: usize| u32::from_str_radix(&g[i * 8..i * 8 + 8], 16).map(u32::swap_bytes).unwrap();
+    assert_eq!(word(8), entry, "eip is the ninth word: {g}");
+    assert_eq!(word(10), 0x23, "cs is the 32-bit code segment: {g}");
+    assert_eq!(w.ask("p8"), format!("{:08x}", entry.swap_bytes()));
+    // a register written alone leaves the others as they were
+    assert_eq!(w.ask("P3=2a000000"), "OK");
+    assert_eq!(w.ask("p3"), "2a000000");
+    assert_eq!(w.ask("p8"), format!("{:08x}", entry.swap_bytes()));
+    // the program runs on from there: exit(7)
+    assert_eq!(w.ask("c"), "W07");
+    drop(w);
+    h.join().unwrap();
 }

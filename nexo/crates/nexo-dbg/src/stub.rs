@@ -2,7 +2,8 @@
 //! drive a program that nexo started or attached to. Bound to 127.0.0.1 only; one client; the program ends
 //! (killed if nexo started it, let go if nexo attached) when the client detaches, kills or goes away.
 //!
-//! The x87 and vector registers read as zero (the debugger does not keep them) and a program that stops on
+//! A program running 32-bit code is described as gdb's i386 (`eax` .. `edi`, `eip`), any other as x86-64. The x87
+//! and vector registers read as zero (the debugger does not keep them) and a program that stops on
 //! a signal gets it back on the next resume whatever the client asks. One thread steps at a time.
 
 use std::collections::BTreeMap;
@@ -10,12 +11,14 @@ use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 
 use crate::platform::{self, Access, Event, HwSlot, Resume, Stop, Target, Tid};
-use crate::rsp::{hex, parse_target_xml, regs_from_g, regs_into_g, stub_xml, unhex, Conn, Frame, Layout};
+use crate::rsp::{hex, parse_target_xml, regs_into_g, regs_over_g, stub_xml, stub_xml32, unhex, Conn, Frame, Layout};
 use crate::server::Kind;
 use crate::{fail, Error, Result};
 
 struct Stub {
     t: Box<dyn Target>,
+    /// The program runs 32-bit code: its registers are served as i386.
+    x32: bool,
     layout: Layout,
     /// Breakpoints in memory: address to the byte the program has there.
     bps: BTreeMap<u64, u8>,
@@ -81,6 +84,21 @@ impl Stub {
 
     fn first_tid(&self) -> Tid {
         self.tids().first().copied().unwrap_or(self.t.pid())
+    }
+
+    /// The target description for the code the program runs now.
+    fn xml(&self) -> String {
+        if self.x32 {
+            stub_xml32()
+        } else {
+            stub_xml()
+        }
+    }
+
+    /// Read again whether the program runs 32-bit code: at the start, and after an exec, which may change it.
+    fn relayout(&mut self, tid: Tid) {
+        self.x32 = self.t.regs(tid).is_ok_and(|r| r.x32);
+        self.layout = parse_target_xml(&self.xml()).1;
     }
 
     fn pick(&self, want: Tid) -> Tid {
@@ -213,7 +231,10 @@ impl Stub {
                     }
                     Stop::Fault(f) => (f.number as u8, String::new()),
                     Stop::Interrupt => (2, String::new()),
-                    Stop::Exec => (5, "exec:;".to_string()),
+                    Stop::Exec => {
+                        self.relayout(tid);
+                        (5, "exec:;".to_string())
+                    }
                     _ => (5, String::new()),
                 };
                 format!("T{sig:02x}thread:{tid:x};{extra}")
@@ -268,7 +289,8 @@ impl Stub {
             b'G' => {
                 let tid = self.pick(self.g);
                 let Some(g) = unhex(&p[1..]).filter(|g| g.len() >= self.layout.len) else { return err(1) };
-                let r = regs_from_g(&self.layout, &g);
+                let Ok(base) = self.t.regs(tid) else { return err(2) };
+                let r = regs_over_g(&self.layout, &g, base);
                 if self.t.set_regs(tid, &r).is_ok() {
                     ok()
                 } else {
@@ -295,7 +317,7 @@ impl Stub {
                     return err(1);
                 }
                 g[sl.off..sl.off + w].copy_from_slice(&v);
-                let new = regs_from_g(&self.layout, &g);
+                let new = regs_over_g(&self.layout, &g, r);
                 if self.t.set_regs(tid, &new).is_ok() {
                     ok()
                 } else {
@@ -528,7 +550,7 @@ impl Stub {
             if annex != "target.xml" {
                 return err(1);
             }
-            return chunk(stub_xml().as_bytes(), arg);
+            return chunk(self.xml().as_bytes(), arg);
         }
         if let Some(rest) = s.strip_prefix("qXfer:auxv:read:") {
             let arg = rest.split_once(':')?.1;
@@ -601,10 +623,10 @@ pub fn serve_gdb(kind: &Kind, port: u16, ready: &mut dyn FnMut(SocketAddr)) -> R
         Kind::Attach(pid) => platform::attach(*pid)?,
         _ => return fail("`serve --gdb` takes a program to run or a pid to attach to"),
     };
-    let (_, layout) = parse_target_xml(&stub_xml());
     let mut st = Stub {
         t,
-        layout,
+        x32: false,
+        layout: Layout::default(),
         bps: BTreeMap::new(),
         watch: Vec::new(),
         g: 0,
@@ -615,6 +637,7 @@ pub fn serve_gdb(kind: &Kind, port: u16, ready: &mut dyn FnMut(SocketAddr)) -> R
         end: End::No,
     };
     let first = st.first_tid();
+    st.relayout(first);
     st.last = format!("T05thread:{first:x};");
     ready(addr);
     let (stream, _) = listener.accept().map_err(|e| Error::Fail(e.to_string()))?;

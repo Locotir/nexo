@@ -29,6 +29,11 @@ pub trait Env {
     fn call(&mut self, _target: u64, _args: &[Arg]) -> Result<u64> {
         fail("a call into the program runs from `call <expr>` and `print <expr>`, not from here")
     }
+    /// Bytes of a pointer in the program: 8, or 4 in a 32-bit program. `long`, `size_t` and the other
+    /// pointer-wide C types, and a word read through a plain number (`*esp`), have this size too.
+    fn ptr_bytes(&mut self) -> u8 {
+        8
+    }
 }
 
 /// An argument of a call into the program: a number, or text in quotes that the call gets the address of.
@@ -51,13 +56,13 @@ pub struct Ty {
 }
 
 impl Ty {
-    /// Bytes one step of pointer arithmetic moves: the base size for one star, 8 for more, 1 for a plain number
-    /// (a plain number is not scaled).
-    pub fn step(self) -> u64 {
+    /// Bytes one step of pointer arithmetic moves: the base size for one star, a pointer (`ptr` bytes) for more, 1
+    /// for a plain number (a plain number is not scaled).
+    pub fn step(self, ptr: u8) -> u64 {
         match self.stars {
             0 => 1,
             1 => u64::from(self.bytes),
-            _ => 8,
+            _ => u64::from(ptr),
         }
     }
 
@@ -83,9 +88,15 @@ fn plain(v: u64) -> Val {
     Val { v, ty: U64 }
 }
 
+/// The type of a plain word of memory in a program whose pointers are `ptr` bytes.
+fn word_ty(ptr: u8) -> Ty {
+    Ty { bytes: ptr, ..U64 }
+}
+
 /// A type written with one word, or a few (`unsigned long long`, `const char`): its base size and signedness,
-/// and whether it is a character type. `None` when a word is not a C type.
-pub fn base_type(words: &[&str]) -> Option<(u8, bool, bool)> {
+/// and whether it is a character type. `long` and the pointer-wide types (`size_t`, `intptr_t`) are `ptr` bytes,
+/// the size of a pointer in the program. `None` when a word is not a C type.
+pub fn base_type(words: &[&str], ptr: u8) -> Option<(u8, bool, bool)> {
     let w: Vec<&str> =
         words.iter().copied().filter(|w| !matches!(*w, "const" | "volatile" | "struct" | "union" | "enum")).collect();
     let unsigned = w.contains(&"unsigned");
@@ -96,7 +107,8 @@ pub fn base_type(words: &[&str]) -> Option<(u8, bool, bool)> {
         ["char"] => (1, signed, true),
         ["short"] | ["short", "int"] => (2, true, false),
         ["int"] => (4, true, false),
-        ["long"] | ["long", "int"] | ["long", "long"] | ["long", "long", "int"] => (8, true, false),
+        ["long"] | ["long", "int"] => (ptr, true, false),
+        ["long", "long"] | ["long", "long", "int"] => (8, true, false),
         ["void"] => (1, false, false),
         ["bool"] | ["_Bool"] => (1, false, false),
         [one] => {
@@ -104,10 +116,12 @@ pub fn base_type(words: &[&str]) -> Option<(u8, bool, bool)> {
                 "u8" | "uint8_t" | "byte" | "i8" | "int8_t" => (1, *one == "i8" || *one == "int8_t", true),
                 "u16" | "uint16_t" | "word" => (2, false, false),
                 "u32" | "uint32_t" | "dword" | "uint" => (4, false, false),
-                "u64" | "uint64_t" | "qword" | "ptr" | "usize" | "size_t" | "uintptr_t" => (8, false, false),
+                "u64" | "uint64_t" | "qword" => (8, false, false),
+                "ptr" | "usize" | "size_t" | "uintptr_t" => (ptr, false, false),
                 "i16" | "int16_t" => (2, true, false),
                 "i32" | "int32_t" | "wchar_t" => (4, true, false),
-                "i64" | "int64_t" | "isize" | "ssize_t" | "intptr_t" | "ptrdiff_t" | "off_t" => (8, true, false),
+                "i64" | "int64_t" => (8, true, false),
+                "isize" | "ssize_t" | "intptr_t" | "ptrdiff_t" | "off_t" => (ptr, true, false),
                 _ => return None,
             };
             if unsigned || signed {
@@ -323,6 +337,8 @@ struct P<'a> {
     t: Vec<Tok>,
     i: usize,
     env: &'a mut dyn Env,
+    /// Bytes of a pointer in the program (see [`Env::ptr_bytes`]).
+    ptr: u8,
 }
 
 pub fn eval(src: &str, env: &mut dyn Env) -> Result<Val> {
@@ -330,7 +346,8 @@ pub fn eval(src: &str, env: &mut dyn Env) -> Result<Val> {
     if t.is_empty() {
         return fail("the expression is empty");
     }
-    let mut p = P { t, i: 0, env };
+    let ptr = env.ptr_bytes();
+    let mut p = P { t, i: 0, env, ptr };
     // `$v = expr` keeps a convenience variable
     if let (Some(Tok::Id(n)), Some(Tok::Op("="))) = (p.t.first().cloned(), p.t.get(1)) {
         if let Some(name) = n.strip_prefix('$').filter(|x| !x.is_empty()) {
@@ -407,7 +424,7 @@ impl P<'_> {
             for op in LEVELS[level] {
                 if self.eat(op) {
                     let r = self.bin(level + 1)?;
-                    l = apply(op, l, r)?;
+                    l = apply(op, l, r, self.ptr)?;
                     continue 'outer;
                 }
             }
@@ -421,7 +438,7 @@ impl P<'_> {
             for op in ["*", "/", "%"] {
                 if self.eat(op) {
                     let r = self.unary()?;
-                    l = apply(op, l, r)?;
+                    l = apply(op, l, r, self.ptr)?;
                     continue 'outer;
                 }
             }
@@ -451,7 +468,7 @@ impl P<'_> {
         if !matches!(self.t.get(i), Some(Tok::Op(")"))) {
             return None;
         }
-        let (bytes, signed, ch) = base_type(&words)?;
+        let (bytes, signed, ch) = base_type(&words, self.ptr)?;
         Some((Ty { bytes, signed, stars, ch }, i + 1))
     }
 
@@ -476,19 +493,21 @@ impl P<'_> {
         }
         if self.eat("*") {
             let p = self.unary()?;
-            return self.deref(p.v, p.ty.pointee().with_plain(p.ty));
+            return self.deref(p.v, p.ty.pointee().with_plain(p.ty, self.ptr));
         }
         if self.peek_op("(") {
             // a cast: `(u32)x`, `(char*)p`, `(void**)p`, `(unsigned long)x`
             if let Some((ty, next)) = self.type_at(self.i + 1) {
                 self.i = next;
                 let v = self.unary()?;
-                let v = if ty.stars > 0 || ty.bytes == 8 {
+                // a pointer is cut to the program's pointer size, a number to its type's size
+                let n = ty.target_bytes_of(self.ptr) as u32;
+                let v = if n >= 8 {
                     v.v
                 } else {
-                    let cut = v.v & (u64::MAX >> (64 - 8 * u32::from(ty.bytes)));
-                    if ty.signed {
-                        let sh = 64 - 8 * u32::from(ty.bytes);
+                    let cut = v.v & (u64::MAX >> (64 - 8 * n));
+                    if ty.signed && ty.stars == 0 {
+                        let sh = 64 - 8 * n;
                         (((cut << sh) as i64) >> sh) as u64
                     } else {
                         cut
@@ -501,9 +520,9 @@ impl P<'_> {
     }
 
     fn deref(&mut self, addr: u64, ty: Ty) -> Result<Val> {
-        match self.env.load(addr, ty.target_bytes_of()) {
+        let n = ty.target_bytes_of(self.ptr);
+        match self.env.load(addr, n) {
             Some(raw) => {
-                let n = ty.target_bytes_of();
                 let v = if ty.signed && ty.stars == 0 && n < 8 {
                     let sh = 64 - 8 * (n as u32);
                     (((raw << sh) as i64) >> sh) as u64
@@ -512,7 +531,7 @@ impl P<'_> {
                 };
                 Ok(Val { v, ty })
             }
-            None => fail(format!("cannot read {} bytes at {addr:#x}", ty.target_bytes_of())),
+            None => fail(format!("cannot read {n} bytes at {addr:#x}")),
         }
     }
 
@@ -525,7 +544,11 @@ impl P<'_> {
                 if !self.eat("]") {
                     return fail("`[` needs a `]`");
                 }
-                let (step, ty) = if v.ty.is_ptr() { (v.ty.step(), v.ty.pointee().with_plain(v.ty)) } else { (8, U64) };
+                let (step, ty) = if v.ty.is_ptr() {
+                    (v.ty.step(self.ptr), v.ty.pointee().with_plain(v.ty, self.ptr))
+                } else {
+                    (u64::from(self.ptr), word_ty(self.ptr))
+                };
                 v = self.deref(v.v.wrapping_add(i.v.wrapping_mul(step)), ty)?;
             } else if self.eat("(") {
                 // `f(a, b)` runs the function at that address in the program
@@ -569,7 +592,7 @@ impl P<'_> {
                 self.i += 2;
                 let Some((ty, next)) = self.type_at(self.i) else { return fail("sizeof takes a C type: sizeof(int)") };
                 self.i = next;
-                Ok(plain(if ty.stars > 0 { 8 } else { u64::from(ty.bytes) }))
+                Ok(plain(ty.target_bytes_of(self.ptr) as u64))
             }
             Some(Tok::Id(n)) => {
                 self.i += 1;
@@ -610,26 +633,27 @@ impl P<'_> {
 }
 
 impl Ty {
-    /// The type of `*p` when `p` has type `outer`: a plain number read as 8 bytes stays plain.
-    fn with_plain(self, outer: Ty) -> Ty {
+    /// The type of `*p` when `p` has type `outer`: through a plain number, a plain word of `ptr` bytes is read.
+    fn with_plain(self, outer: Ty, ptr: u8) -> Ty {
         if outer.stars == 0 {
-            U64
+            word_ty(ptr)
         } else {
             self
         }
     }
 
-    /// Bytes read for a value of this type, as the type of a loaded value: a pointer is 8, a plain value its size.
-    fn target_bytes_of(self) -> usize {
+    /// Bytes read for a value of this type, as the type of a loaded value: a pointer is `ptr` bytes, a plain value
+    /// its size.
+    fn target_bytes_of(self, ptr: u8) -> usize {
         if self.stars > 0 {
-            8
+            ptr as usize
         } else {
             self.bytes as usize
         }
     }
 }
 
-fn apply(op: &str, l: Val, r: Val) -> Result<Val> {
+fn apply(op: &str, l: Val, r: Val, ptr: u8) -> Result<Val> {
     let signed = l.ty.signed || r.ty.signed;
     let (mut a, mut b) = (l.v, r.v);
     // pointer arithmetic moves in whole elements, as in C: `(u32*)p + 2` is p + 8
@@ -637,19 +661,19 @@ fn apply(op: &str, l: Val, r: Val) -> Result<Val> {
     let mut ty = Ty { signed, ..U64 };
     match op {
         "+" if lp && !rp => {
-            b = b.wrapping_mul(l.ty.step());
+            b = b.wrapping_mul(l.ty.step(ptr));
             ty = l.ty;
         }
         "+" if rp && !lp => {
-            a = a.wrapping_mul(r.ty.step());
+            a = a.wrapping_mul(r.ty.step(ptr));
             ty = r.ty;
         }
         "-" if lp && !rp => {
-            b = b.wrapping_mul(l.ty.step());
+            b = b.wrapping_mul(l.ty.step(ptr));
             ty = l.ty;
         }
         "-" if lp && rp => {
-            let d = (a as i64).wrapping_sub(b as i64) / l.ty.step().max(1) as i64;
+            let d = (a as i64).wrapping_sub(b as i64) / l.ty.step(ptr).max(1) as i64;
             return Ok(Val { v: d as u64, ty: Ty { signed: true, ..U64 } });
         }
         _ => {}
@@ -858,5 +882,59 @@ mod tests {
         }
         let e = value("f(1)", &mut NoCalls).unwrap_err().to_string();
         assert!(e.contains("`call <expr>` and `print <expr>`"), "{e}");
+    }
+
+    /// A 32-bit program stopped at `main`: its stack holds the return address, then `argv`, then other words.
+    struct Main32;
+    impl Env for Main32 {
+        fn reg(&mut self, n: &str) -> Option<u64> {
+            (n.trim_start_matches('$') == "esp").then_some(0x8000)
+        }
+        fn sym(&mut self, _: &str) -> Option<u64> {
+            None
+        }
+        fn load(&mut self, a: u64, size: usize) -> Option<u64> {
+            let words: [(u64, u32); 6] = [
+                (0x8000, 0x1111_1111),
+                (0x8004, 0x8010),
+                (0x8008, 0xdead_beef),
+                (0x8010, 0x8020),
+                (0x8014, 0x8024),
+                (0x8020, u32::from_le_bytes(*b"ab\0\0")),
+            ];
+            let mut mem = [0u8; 0x28];
+            for (at, w) in words {
+                let o = (at - 0x8000) as usize;
+                mem[o..o + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            let o = usize::try_from(a.checked_sub(0x8000)?).ok()?;
+            let mut b = [0u8; 8];
+            b[..size].copy_from_slice(mem.get(o..o + size)?);
+            Some(u64::from_le_bytes(b))
+        }
+        fn ptr_bytes(&mut self) -> u8 {
+            4
+        }
+    }
+
+    #[test]
+    fn in_a_32_bit_program_pointers_and_long_are_4_bytes() {
+        let v = |s: &str| value(s, &mut Main32).unwrap_or_else(|x| panic!("{s}: {x}"));
+        // `argv` alone, not `argv` with the word after it in the high half
+        assert_eq!(v("*(char**)($esp+4)"), 0x8010);
+        assert_eq!(v("**(char***)($esp+4)"), 0x8020);
+        assert_eq!(v("*(u8*)**(char***)($esp+4)"), u64::from(b'a'));
+        // pointer arithmetic over pointers moves 4 bytes a step
+        assert_eq!(v("((char**)0x8010)[1]"), 0x8024);
+        assert_eq!(v("*((char**)0x8010 + 1)"), 0x8024);
+        assert_eq!(v("(void**)0x10 + 2"), 0x18);
+        assert_eq!(v("(char**)0x8014 - (char**)0x8010"), 1);
+        // a word read through a plain number is a stack slot of the program
+        assert_eq!(v("*$esp"), 0x1111_1111);
+        assert_eq!(v("$esp[1]"), 0x8010);
+        assert_eq!(v("sizeof(char*) + sizeof(long) + sizeof(size_t)"), 12);
+        assert_eq!(v("sizeof(long long) + sizeof(u64)"), 16);
+        assert_eq!(v("(long)0xffffffff < 0"), 1);
+        assert_eq!(v("(char*)-1"), 0xffff_ffff);
     }
 }

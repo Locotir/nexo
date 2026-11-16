@@ -113,10 +113,11 @@ pub const MAX_INDIRECT_CALLS: usize = 4000;
 /// (`call rax`, `call [rbx+8]`), found by reading the code sections once from start to end. At most
 /// `MAX_INDIRECT_CALLS`; the second value is how many more there were.
 pub fn indirect_calls(img: &Image) -> (Vec<u64>, usize) {
-    // the debugger runs 64-bit programs only
-    if img.arm64 || img.bits == 32 {
+    // the debugger runs x86 programs only; a 32-bit one's code is read as 32-bit code
+    if img.arm64 {
         return (Vec::new(), 0);
     }
+    let bits = if img.bits == 32 { 32 } else { 64 };
     let (mut out, mut more) = (Vec::new(), 0usize);
     for s in img
         .sections
@@ -124,7 +125,7 @@ pub fn indirect_calls(img: &Image) -> (Vec<u64>, usize) {
         .filter(|s| s.exec && s.alloc && !s.name.starts_with(".plt") && s.name != ".init" && s.name != ".fini")
     {
         let bytes = img.section_bytes(s);
-        let mut d = Decoder::with_ip(64, bytes, s.addr, DecoderOptions::NONE);
+        let mut d = Decoder::with_ip(bits, bytes, s.addr, DecoderOptions::NONE);
         while d.can_decode() {
             let ins = d.decode();
             if !ins.is_invalid() && ins.flow_control() == FlowControl::IndirectCall {

@@ -313,7 +313,7 @@ impl Session {
         let src = rest.join(" ");
         let v = self.eval_any(&src)?;
         let letter = fmt.and_then(|f| f.chars().find(|c| c.is_ascii_alphabetic())).unwrap_or('x');
-        let bits = if v.ty.stars == 0 { u32::from(v.ty.bytes) * 8 } else { 64 };
+        let bits = if v.ty.stars == 0 { u32::from(v.ty.bytes) * 8 } else { self.ptr_size() as u32 * 8 };
         let size = (bits / 8) as usize;
         let shown = match letter {
             's' => self.cstr(v.v),
