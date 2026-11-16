@@ -414,12 +414,39 @@ fn the_readers_a_model_reaches_for_first_are_seen_too() {
     assert_eq!(op("python3 -c \"print(open('p', 'rb').read(64))\""), "overview p");
     assert_eq!(op("perl -e 'open(F, \"<\", \"p\"); print <F>'"), "overview p");
     assert_eq!(op("python3 - <<'EOF'\nimport struct\ndata = open(\"p\", \"rb\").read()\nEOF"), "overview p");
+    std::fs::write(dir.path().join("parse.py"), "import sys\nprint(open(sys.argv[1], 'rb').read(64))\n").unwrap();
     assert_eq!(op("python3 parse.py p"), "overview p");
     // grep reads a compiled file only when told to take it as text: the pattern goes to `strings --grep`
     assert_eq!(op("grep -a helper p"), "strings p --grep helper");
     assert_eq!(op("grep -ai Helper p"), "strings p --grep \"(?i)Helper\"");
     assert_eq!(op("grep --text --ignore-case helper p"), "strings p --grep \"(?i)helper\"");
     assert_eq!(op("grep -ac helper p"), "strings p");
+}
+
+#[test]
+fn a_script_that_runs_the_program_it_names_is_not_reading_it() {
+    let dir = tempfile::tempdir().unwrap();
+    small_in(dir.path(), "app");
+    std::fs::write(dir.path().join("parse.py"), "import sys\ndata = open(sys.argv[1], 'rb').read()\n").unwrap();
+    std::fs::write(dir.path().join("run_tests.py"), "import subprocess, sys\nsubprocess.run([sys.argv[1]])\n").unwrap();
+    let w = |c: &str| wanted(c, dir.path());
+    // a parser opens the file: from a script file, on the line, or line by line with `perl -n`
+    assert!(w("python3 parse.py app"));
+    assert!(w("python3 -c \"import lief; print(lief.parse('app').header)\""));
+    assert!(w("perl -ne 'print if /GLIBC/' app"));
+    // a test runner or a launcher starts it; a module or a script that cannot be read says nothing of what it does
+    for c in [
+        "python3 run_tests.py app",
+        "python3 -c \"import subprocess; subprocess.run(['./app'])\"",
+        "python3 -c \"import os; os.system('./app')\"",
+        "python3 - <<'EOF'\nimport subprocess\nout = subprocess.check_output(['./app'])\nEOF",
+        "perl -e 'system(\"./app\")'",
+        "perl -e 'open(my $f, \"-|\", \"./app\"); print <$f>'",
+        "python3 -m pytest app",
+        "python3 missing.py app",
+    ] {
+        assert!(!w(c), "{c}");
+    }
 }
 
 #[test]

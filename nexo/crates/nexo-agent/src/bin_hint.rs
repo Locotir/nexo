@@ -15,10 +15,12 @@
 use std::path::Path;
 
 mod op;
+mod script;
 mod told;
 
 use nexo_core::message::Part;
 use op::op_for;
+use script::Code;
 use serde_json::Value;
 
 use crate::hint_cmd::{self, Offer, Seg};
@@ -107,7 +109,8 @@ fn is_short(w: &str) -> bool {
 }
 
 /// The file of `s` that `nexo bin` reads, as the command wrote it, and what it is: one of its first words (`if=`
-/// of `dd`), its `< file`, and for a script (`python -c`, `perl -e`, a heredoc) a quoted string of it.
+/// of `dd`), its `< file`, and for a script (`python -c`, `perl -e`, a heredoc) a quoted string of it. A script
+/// counts only when its code reads files and starts no program (see [`Code`]).
 fn file_of(prog: &str, s: &Seg) -> Option<(String, nexo_bin::Compiled)> {
     let mut words: Vec<&str> = s.words[1..]
         .iter()
@@ -117,14 +120,11 @@ fn file_of(prog: &str, s: &Seg) -> Option<(String, nexo_bin::Compiled)> {
     if let Some(hint_cmd::Input::File(f)) = &s.input {
         words.push(f);
     }
-    if prog == "python" {
-        let code = s.words.iter().position(|w| w == "-c" || w == "-e").and_then(|i| s.words.get(i + 1));
-        words.extend(code.map(|c| literals(c)).unwrap_or_default());
-        if let Some(hint_cmd::Input::Text(body)) = &s.input {
-            words.extend(literals(body));
-        }
-    }
-    words.into_iter().find_map(|w| hint_cmd::kind(&s.dir, w).map(|k| (w.to_string(), k)))
+    let code = (prog == "python").then(|| Code::of(s));
+    words.extend(code.as_ref().map(Code::literals).unwrap_or_default());
+    let found = words.into_iter().find_map(|w| hint_cmd::kind(&s.dir, w).map(|k| (w.to_string(), k)))?;
+    // looked at last: a script file is opened only when the command names a compiled one
+    code.is_none_or(|c| c.reads(&s.dir)).then_some(found)
 }
 
 /// The first quoted strings of a script on one line each (`open('prog', 'rb')`): the files it may name.
