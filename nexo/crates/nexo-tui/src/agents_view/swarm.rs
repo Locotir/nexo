@@ -86,9 +86,13 @@ pub(super) struct Member {
     period: Option<u64>,
 }
 
-/// Whether a session's last word was an error: its satellite ends with a cross.
+/// Whether a session's last word was an error: its satellite ends with a cross. A lane speaks with its own word,
+/// as its row does: one with a session of its own is told no error on its row when its runner gives up.
 fn failed(r: &AgentRow) -> bool {
-    r.ribbon.iter().rev().take(2).any(|e| e.kind == EvKind::Error)
+    match &r.lane {
+        Some(l) => l.state == "failed",
+        None => r.ribbon.iter().rev().take(2).any(|e| e.kind == EvKind::Error),
+    }
 }
 
 impl AgentsView {

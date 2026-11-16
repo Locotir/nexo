@@ -567,6 +567,27 @@ fn the_lanes_that_are_on_circle_their_header_and_a_new_one_grows_from_a_point() 
 }
 
 #[test]
+fn a_lane_whose_runner_gives_up_ends_with_a_cross_and_one_that_is_stopped_with_a_pulse() {
+    for (word, mark) in [("failed", "✗"), ("stopped", "●")] {
+        let t0 = Instant::now();
+        let mut v = AgentsView::with_rows(vec![lane("IOS", "running")], NOW, false);
+        paint(&mut v, 80, 24, t0, true);
+        // a lane with a session of its own is told no error on its row: only its lane word says it failed
+        let mut ended = lane("IOS", word);
+        ended.lane.as_mut().unwrap().runner = false;
+        assert!(ended.ribbon.iter().all(|e| e.kind != EvKind::Error));
+        // a failed lane also shows under NEEDS YOU, which moves the header down: read the screen it ends on
+        let plain = paint(&mut AgentsView::with_rows(vec![ended.clone()], NOW, true), 80, 24, t0, false);
+        let y = line_of(&plain, " LANES ");
+        v.set_rows(vec![ended]);
+        let t1 = at(t0, 2000);
+        paint(&mut v, 80, 24, t1, true);
+        let pulse = sats_on(&paint(&mut v, 80, 24, at(t1, 60), true), &plain, y);
+        assert!(pulse.contains(&mark.to_string()), "{word}: {pulse:?}");
+    }
+}
+
+#[test]
 fn with_the_motion_off_the_swarm_stands_still_and_asks_for_no_frame() {
     let t0 = Instant::now();
     let rows = family(State::Working, &[State::Working, State::Idle { min: 2 }]);
