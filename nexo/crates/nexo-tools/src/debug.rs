@@ -13,9 +13,10 @@ use serde_json::{json, Value};
 /// Seconds a `--wait` may ask for in one call: a longer wait is cut to this and the call says it is still running.
 pub const MAX_WAIT_SECS: u64 = 60;
 
-/// Where the debugger has a backend: the host the binary was built for.
+/// Where the debugger has a backend: the host the binary was built for (x86-64 Linux, Windows and macOS). The same
+/// gate as `nexo dbg` and the `bin` answers' line that names a `debug` call, so the three never disagree.
 pub const fn available() -> bool {
-    cfg!(all(target_arch = "x86_64", any(target_os = "linux", windows)))
+    nexo_dbg::runs_here()
 }
 
 /// The host a program runs on under this tool, from the target the binary was built for: `Linux x86-64`.
@@ -38,10 +39,12 @@ fn host_name(os: &str, arch: &str) -> String {
     format!("{os} {arch}")
 }
 
-/// The command list as this host has it: Windows has no system call tracing, so those lines are not offered.
+/// Whether this host has no system call tracing: Windows, and macOS (its tracer, dtruss, needs root).
+const NO_SYSCALLS: bool = cfg!(any(windows, target_os = "macos"));
+
+/// The command list as this host has it: where there is no system call tracing those lines are not offered.
 fn commands() -> String {
-    let windows = cfg!(windows);
-    COMMANDS.lines().filter(|l| !(windows && l.starts_with("strace "))).collect::<Vec<_>>().join("\n")
+    COMMANDS.lines().filter(|l| !(NO_SYSCALLS && l.starts_with("strace "))).collect::<Vec<_>>().join("\n")
 }
 
 const COMMANDS: &str = "\
@@ -64,7 +67,7 @@ gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info 
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
 
-const COMPACT: &str = if cfg!(windows) {
+const COMPACT: &str = if NO_SYSCALLS {
     "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as does break. `bin` reads the file. `help`"
 } else {
     "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as do break, strace. `bin` reads the file. `help`"
@@ -625,14 +628,24 @@ mod host_tests {
     #[test]
     fn the_trace_lines_are_offered_only_where_the_host_has_system_calls() {
         let c = commands();
-        assert_eq!(c.contains("strace "), !cfg!(windows), "{c}");
-        assert_eq!(c.contains("catch syscall"), !cfg!(windows), "{c}");
+        assert_eq!(NO_SYSCALLS, cfg!(any(windows, target_os = "macos")));
+        assert_eq!(c.contains("strace "), !NO_SYSCALLS, "{c}");
+        assert_eq!(c.contains("catch syscall"), !NO_SYSCALLS, "{c}");
         // everything else is the same on every host
         assert!(
             c.contains("ltrace [names]")
                 && c.contains("run [--main] <path>")
                 && c.ends_with("detach, kill, end, sessions, help")
         );
-        assert_eq!(COMPACT.contains("strace"), !cfg!(windows));
+        assert_eq!(COMPACT.contains("strace"), !NO_SYSCALLS);
+    }
+
+    #[test]
+    fn the_tool_is_offered_where_nexo_dbg_runs_programs() {
+        assert_eq!(available(), nexo_dbg::runs_here());
+        assert_eq!(
+            available(),
+            cfg!(all(target_arch = "x86_64", any(target_os = "linux", windows, target_os = "macos")))
+        );
     }
 }
