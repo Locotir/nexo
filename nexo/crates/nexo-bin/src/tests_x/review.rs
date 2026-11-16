@@ -22,6 +22,10 @@ fn system_file(path: &str) -> Option<Image> {
 
 #[test]
 fn xref_of_an_import_name_answers_with_the_plt_call_sites() {
+    // a Mach-O `ls` has `___stubs`, not `name@plt` stubs: the test reads ELF imports
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     let Some(img) = system_file("/usr/bin/ls") else { return };
     let funcs = img.funcs();
     // an import with a PLT stub that has callers

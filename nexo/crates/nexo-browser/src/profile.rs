@@ -158,6 +158,18 @@ fn clear(dir: &Path) {
 
 #[cfg(unix)]
 fn hostname() -> String {
+    // the same call Chrome makes when it writes `<host>-<pid>` into SingletonLock; the `hostname` command can
+    // differ from it on macOS when the name was set with scutil
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is writable for its whole length, and gethostname writes at most that many bytes.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc == 0 {
+        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+        if !name.is_empty() {
+            return name;
+        }
+    }
     if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
         return h.trim().to_string();
     }
@@ -249,6 +261,28 @@ mod tests {
 
     fn link(dir: &Path, target: &str) {
         std::os::unix::fs::symlink(target, dir.join("SingletonLock")).unwrap();
+    }
+
+    #[test]
+    fn the_host_name_is_the_one_the_system_call_gives_and_not_empty() {
+        let host = hostname();
+        assert!(!host.is_empty());
+        let out = std::process::Command::new("hostname").output();
+        if let Ok(o) = out {
+            assert_eq!(host, String::from_utf8_lossy(&o.stdout).trim());
+        }
+    }
+
+    #[test]
+    fn a_macos_browser_path_is_a_browser() {
+        for p in [
+            "/applications/google chrome.app/contents/macos/google chrome",
+            "/applications/microsoft edge.app/contents/macos/microsoft edge",
+            "/applications/brave browser.app/contents/macos/brave browser",
+        ] {
+            assert_eq!(classify(p), Process::Browser, "{p}");
+        }
+        assert_eq!(classify("/usr/bin/vim"), Process::Other);
     }
 
     #[test]

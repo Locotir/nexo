@@ -58,10 +58,21 @@ async fn call_tool(client: &McpClient, name: &str, args: Value) -> nexo_core::To
     t.run(args, &ctx()).await
 }
 
+/// Whether the system still lists the process (a zombie too): /proc on Linux, `ps` elsewhere.
+fn listed(pid: u32) -> bool {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok();
+    }
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|o| !o.stdout.iter().all(u8::is_ascii_whitespace))
+}
+
 /// Waits (up to 15 s) for the process to be gone; a zombie counts as still there.
 async fn gone(pid: u32) -> bool {
     for _ in 0..300 {
-        if std::fs::read_to_string(format!("/proc/{pid}/stat")).is_err() {
+        if !listed(pid) {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

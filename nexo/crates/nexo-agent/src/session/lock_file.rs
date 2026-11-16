@@ -68,8 +68,12 @@ fn foreign(text: &str) -> bool {
     differs(words.next().flatten(), host_name()) || differs(words.next().flatten(), pid_ns())
 }
 
-/// When process `pid` started (clock ticks after boot), where the system says so (Linux).
+/// When process `pid` started, where the system says so: clock ticks after boot on Linux, a hash of the start
+/// time `ps` prints on macOS.
 pub(super) fn proc_start(pid: u32) -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        return ps_start(pid);
+    }
     if !cfg!(target_os = "linux") {
         return None;
     }
@@ -78,13 +82,35 @@ pub(super) fn proc_start(pid: u32) -> Option<u64> {
     stat.get(stat.rfind(')')? + 1..)?.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// The id of the running boot, where the system says so (Linux).
+/// The id of the running boot, where the system says so (Linux and macOS).
 pub(super) fn boot_id() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return command_text("sysctl", &["-n", "kern.bootsessionuuid"]);
+    }
     if !cfg!(target_os = "linux") {
         return None;
     }
     let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
     Some(id.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The trimmed output of a program that succeeded and printed something.
+fn command_text(program: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(program).args(args).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// A number for the start time `ps` prints for `pid`. The text is hashed with FNV-1a, which never changes
+/// between versions, so a lock written by an older nexo still reads the same.
+pub(super) fn ps_start(pid: u32) -> Option<u64> {
+    let text = command_text("ps", &["-o", "lstart=", "-p", &pid.to_string()])?;
+    Some(text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)))
+}
+
+/// The state letters `ps` prints for `pid` (`T` when stopped).
+pub(super) fn ps_state(pid: u32) -> Option<String> {
+    command_text("ps", &["-o", "state=", "-p", &pid.to_string()])
 }
 
 /// The pid written in a lock, if it can be read.
@@ -132,8 +158,11 @@ pub(super) fn holder(lock: &Path) -> Option<Option<u32>> {
     judge(lock)?.1
 }
 
-/// Whether process `pid` is stopped (Ctrl+Z or a stop signal), where the system says so (Linux).
+/// Whether process `pid` is stopped (Ctrl+Z or a stop signal), where the system says so (Linux and macOS).
 pub(super) fn stopped(pid: u32) -> bool {
+    if cfg!(target_os = "macos") {
+        return ps_state(pid).is_some_and(|s| s.starts_with('T'));
+    }
     if !cfg!(target_os = "linux") {
         return false;
     }

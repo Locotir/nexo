@@ -57,7 +57,7 @@ fn a_message_for_another_program_is_asked_about_then_typed_into_its_inbox() {
     std::fs::create_dir_all(&socks).unwrap();
     let listener = UnixListener::bind(socks.join(format!("{}.sock", std::process::id()))).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let cwd = std::fs::read_link("/proc/self/cwd").unwrap().to_string_lossy().into_owned();
+    let cwd = std::env::current_dir().unwrap().canonicalize().unwrap().to_string_lossy().into_owned();
     let mut v = AgentsView::with_rows(vec![claude_row(&cwd)], 1_060, true);
     v.set_reach(nexo_core::reach::Reach {
         cc_socks: Some(socks),

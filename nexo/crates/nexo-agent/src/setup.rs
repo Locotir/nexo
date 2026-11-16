@@ -253,8 +253,8 @@ impl TrialKey {
     }
 }
 
-/// Whether the process that wrote this trial file is surely gone. Known only where the system
-/// lists its processes as folders (Linux); elsewhere the file's age decides.
+/// Whether the process that wrote this trial file is surely gone: no folder for it under /proc (Linux) or no
+/// process answering signal 0 (other Unix). Where neither can be asked (Windows), the file's age decides.
 fn writer_gone(name: &str, age: Option<Duration>) -> bool {
     if !age.is_some_and(|a| a > YOUNG) {
         return false;
@@ -264,8 +264,23 @@ fn writer_gone(name: &str, age: Option<Duration>) -> bool {
         Some(pid) if cfg!(target_os = "linux") && Path::new("/proc/self").exists() => {
             !Path::new(&format!("/proc/{pid}")).exists()
         }
+        Some(pid) if cfg!(unix) => no_such_process(pid),
         _ => false,
     }
+}
+
+/// Whether signal 0 finds no process under `pid` (a process of another user still exists: EPERM).
+#[cfg(unix)]
+fn no_such_process(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    // SAFETY: signal 0 sends nothing; it only reports whether the process exists.
+    let r = unsafe { libc::kill(pid, 0) };
+    r != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn no_such_process(_pid: u32) -> bool {
+    false
 }
 
 /// Removes the trial files a killed run left in the keys folder: those of this process that no check
@@ -472,11 +487,11 @@ mod tests {
             }
             let old = std::time::SystemTime::now() - Duration::from_secs(3600);
             std::fs::File::options().write(true).open(&theirs).unwrap().set_modified(old).unwrap();
-            // a killed run's file is old enough to go at once, on Linux, where its process can be looked up
+            // a killed run's file is old enough to go at once, where its process can be looked up (Unix)
             std::fs::File::options().write(true).open(&killed).unwrap().set_modified(old_enough()).unwrap();
-            assert_eq!(sweep_trial_keys(), if cfg!(target_os = "linux") { 3 } else { 2 });
+            assert_eq!(sweep_trial_keys(), if cfg!(unix) { 3 } else { 2 });
             assert!(!mine.exists() && !theirs.exists());
-            assert_eq!(killed.exists(), !cfg!(target_os = "linux"), "a killed run's key goes at the next start");
+            assert_eq!(killed.exists(), !cfg!(unix), "a killed run's key goes at the next start");
             assert!(fresh_theirs.exists(), "a young file of another process may be a check running there");
             assert!(live.path().exists() && own.exists(), "a live check and a saved key stay");
         });
@@ -495,7 +510,7 @@ mod tests {
         assert!(!writer_gone(&mine, None));
         assert!(!writer_gone(gone, Some(Duration::from_secs(2))), "young: the list may hide a live writer");
         assert!(!writer_gone(gone, None), "age unknown: not removed on a guess");
-        assert_eq!(writer_gone(gone, Some(Duration::from_secs(60))), cfg!(target_os = "linux"));
+        assert_eq!(writer_gone(gone, Some(Duration::from_secs(60))), cfg!(unix));
     }
 
     #[test]

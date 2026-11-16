@@ -635,16 +635,23 @@ async fn the_call_ends_when_the_shell_exits_even_if_a_child_holds_the_pipes() {
     }
 }
 
-/// Whether process `pid` still runs (a zombie counts as gone).
-#[cfg(target_os = "linux")]
+/// Whether process `pid` still runs (a zombie counts as gone). Linux reads /proc; elsewhere `ps` prints the state.
+#[cfg(unix)]
 fn alive(pid: i32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(s) => !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
-        Err(_) => false,
+    if cfg!(target_os = "linux") {
+        return match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
+            Err(_) => false,
+        };
     }
+    let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+    out.is_ok_and(|o| {
+        let state = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        !state.is_empty() && !state.starts_with('Z')
+    })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[tokio::test]
 async fn dropping_the_call_kills_what_the_command_started() {
     let d = tempfile::tempdir().unwrap();
@@ -664,7 +671,7 @@ async fn dropping_the_call_kills_what_the_command_started() {
     assert!(!alive(pid), "the background child of the dropped command still runs");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[tokio::test]
 async fn a_detached_command_names_its_log_and_pid_and_outlives_the_registry() {
     let d = tempfile::tempdir().unwrap();

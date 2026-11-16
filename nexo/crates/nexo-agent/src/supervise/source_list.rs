@@ -113,9 +113,24 @@ impl Source for ListSource {
 fn alive(pid: u64) -> Option<bool> {
     let proc = std::path::Path::new("/proc");
     if !proc.join("self").exists() {
-        return None;
+        return signal_alive(pid);
     }
     Some(proc.join(pid.to_string()).exists())
+}
+
+/// Where the system has no /proc folders (macOS): signal 0 only checks that the process exists, and a process
+/// of another user (EPERM) exists too.
+#[cfg(unix)]
+fn signal_alive(pid: u64) -> Option<bool> {
+    let pid = libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)?;
+    // SAFETY: signal 0 sends nothing.
+    let r = unsafe { libc::kill(pid, 0) };
+    Some(r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
+
+#[cfg(not(unix))]
+fn signal_alive(_pid: u64) -> Option<bool> {
+    None
 }
 
 /// The observations of a list. `alive` answers whether a pid still runs.
@@ -158,6 +173,14 @@ fn parse_all(text: &str, now: Secs, alive: impl Fn(u64) -> Option<bool>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_signal_check_sees_this_process_and_not_a_missing_one() {
+        assert_eq!(signal_alive(u64::from(std::process::id())), Some(true));
+        assert_eq!(signal_alive(0), None);
+        assert_eq!(signal_alive(u64::from(u32::MAX)), None);
+    }
 
     #[test]
     fn the_program_is_the_command_name() {

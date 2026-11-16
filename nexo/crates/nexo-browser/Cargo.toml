@@ -22,6 +22,10 @@ gif = { version = "=0.14.2", default-features = false, features = ["std", "color
 font8x8 = { version = "=0.3.1", default-features = false }
 nexo-relay = { workspace = true }
 
+# Unix: the host name the browser itself writes into its profile lock
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 # Windows: App Paths registry lookup and the job object that ends the browser with nexo (pure bindings, MIT/Apache-2.0)
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Registry", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

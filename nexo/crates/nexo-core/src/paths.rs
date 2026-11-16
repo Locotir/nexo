@@ -52,6 +52,11 @@ pub fn shown_from(p: &Path, home: Option<&Path>) -> String {
 /// place, never over a file already there, and an old folder left empty is removed.
 /// A folder set by `NEXO_*_DIR` is left alone. Returns the folders it moved from.
 pub fn move_old_dirs() -> Vec<PathBuf> {
+    // nexo never used the XDG folders on macOS, and there `dirs` points config and data into the same
+    // ~/Library folder: nothing to move, and nothing to merge twice
+    if cfg!(target_os = "macos") {
+        return Vec::new();
+    }
     let pairs = [
         ("NEXO_CONFIG_DIR", dirs::config_dir(), config_dir()),
         ("NEXO_DATA_DIR", dirs::data_dir(), data_dir()),

@@ -48,16 +48,9 @@ pub struct Outcome {
 pub fn run_tests(lang: Lang, wd: &Path, seal: &Seal) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
     let line = format!("{} 2>&1", seal.wrap(command(lang)));
-    let out = Command::new("timeout")
-        .args(["-k", "5", &TIMEOUT_S.to_string(), "sh", "-c", &line])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("timeout: {e}"))?;
+    let (code, raw, timed_out) = run_line(&line, TIMEOUT_S)?;
     let seconds = started.elapsed().as_secs_f64();
-    let raw = String::from_utf8_lossy(&out.stdout).into_owned();
-    let code = out.status.code();
-    // timeout(1) exits 124 when the command ran out of time, 137 when it had to be killed
-    if matches!(code, Some(124) | Some(137)) {
+    if timed_out {
         return Ok(Outcome {
             pass: false,
             timed_out: true,
@@ -69,6 +62,72 @@ pub fn run_tests(lang: Lang, wd: &Path, seal: &Seal) -> Result<Outcome, String> 
     let summary = with_crash(summarize(lang, &raw), &raw);
     let output = prompts::cap_output(&prompts::cleanup_output(&raw, wd));
     Ok(Outcome { pass: code == Some(0), timed_out: false, output, summary, seconds })
+}
+
+/// The GNU `timeout` program: `timeout` on Linux, `gtimeout` where Homebrew coreutils is installed (a stock Mac
+/// has neither), None when there is none.
+fn gnu_timeout() -> Option<&'static str> {
+    if cfg!(target_os = "linux") {
+        return Some("timeout");
+    }
+    Command::new("gtimeout").arg("--version").output().is_ok_and(|o| o.status.success()).then_some("gtimeout")
+}
+
+/// Runs the shell line for at most `secs` seconds. Gives the exit code, the output (standard error included by
+/// the line itself) and whether the time ran out.
+fn run_line(line: &str, secs: u64) -> Result<(Option<i32>, String, bool), String> {
+    let Some(program) = gnu_timeout() else { return run_with_deadline(line, secs) };
+    let out = Command::new(program)
+        .args(["-k", "5", &secs.to_string(), "sh", "-c", line])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{program}: {e}"))?;
+    let code = out.status.code();
+    // timeout(1) exits 124 when the command ran out of time, 137 when it had to be killed
+    let timed_out = matches!(code, Some(124) | Some(137));
+    Ok((code, String::from_utf8_lossy(&out.stdout).into_owned(), timed_out))
+}
+
+/// The same without a `timeout` program: the line leads its own process group, and when the time is up the
+/// whole group is killed, so what the tests started goes too.
+#[cfg(unix)]
+fn run_with_deadline(line: &str, secs: u64) -> Result<(Option<i32>, String, bool), String> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    use std::time::{Duration, Instant};
+    let mut child = Command::new("sh")
+        .args(["-c", line])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("sh: {e}"))?;
+    let mut pipe = child.stdout.take().ok_or("no output pipe")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("sh: {e}"))? {
+            break (status, false);
+        }
+        if Instant::now() >= deadline {
+            let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
+            let _ = child.kill();
+            break (child.wait().map_err(|e| format!("sh: {e}"))?, true);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // after a group kill every holder of the pipe is gone, so the reader ends
+    let bytes = reader.join().unwrap_or_default();
+    Ok((status.code(), String::from_utf8_lossy(&bytes).into_owned(), timed_out))
+}
+
+#[cfg(not(unix))]
+fn run_with_deadline(_line: &str, _secs: u64) -> Result<(Option<i32>, String, bool), String> {
+    Err("running the tests needs a `timeout` program on this system".into())
 }
 
 /// Text a test run prints when the test process itself died (a signal, a stack overflow, a Go panic), not
@@ -190,6 +249,22 @@ pub fn summarize(lang: Lang, output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_line_that_outlives_its_deadline_is_killed_and_said_to_have_timed_out() {
+        let t = std::time::Instant::now();
+        let (_, _, timed_out) = run_with_deadline("sleep 5", 1).unwrap();
+        assert!(timed_out);
+        assert!(t.elapsed() < std::time::Duration::from_secs(4), "{:?}", t.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_line_that_ends_in_time_gives_its_output_and_code() {
+        let (code, out, timed_out) = run_with_deadline("echo hi; exit 3", 20).unwrap();
+        assert_eq!((code, out.trim(), timed_out), (Some(3), "hi", false));
+    }
 
     #[test]
     fn pytest_summaries_are_read() {

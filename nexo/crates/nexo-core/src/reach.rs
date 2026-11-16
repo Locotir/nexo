@@ -363,14 +363,45 @@ fn alive(pid: u32) -> bool {
 }
 
 fn cwd_of(pid: u32) -> String {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+    let from_proc = std::fs::read_link(format!("/proc/{pid}/cwd")).map(|p| p.to_string_lossy().to_string());
+    match from_proc {
+        Ok(p) => p,
+        // no /proc folders (macOS and the BSDs): ask lsof
+        Err(_) if cfg!(not(target_os = "linux")) => lsof_cwd_of(pid).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
 }
 
-/// The parent process of `pid` (Linux; elsewhere unknown).
+/// The working folder of `pid` as `lsof` lists it (`n<path>` after the `fcwd` line).
+fn lsof_cwd_of(pid: u32) -> Option<String> {
+    let out =
+        std::process::Command::new("lsof").args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix('n').map(str::to_string))
+}
+
+/// The parent process of `pid` (read from /proc on Linux, from `ps` elsewhere).
 fn parent_of(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // `pid (comm) state ppid …`: the command may hold spaces and parentheses, so read after the last `)`
-    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // `pid (comm) state ppid …`: the command may hold spaces and parentheses, so read after the last `)`
+        return stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok();
+    }
+    if cfg!(not(target_os = "linux")) {
+        ps_parent_of(pid)
+    } else {
+        None
+    }
+}
+
+/// The parent of `pid` as `ps` prints it.
+fn ps_parent_of(pid: u32) -> Option<u32> {
+    let out = std::process::Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 #[cfg(test)]

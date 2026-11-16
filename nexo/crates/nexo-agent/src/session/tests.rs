@@ -747,7 +747,7 @@ fn a_session_taken_over_stays_lost_after_its_taker_is_gone() {
     assert_eq!(Session::open_path(&p).unwrap().messages().len(), 1);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_paused_holder_is_named_with_the_way_back() {
     let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
@@ -1181,4 +1181,29 @@ fn a_session_saved_with_the_start_note_as_its_title_shows_the_first_message_with
     // a title the person chose is never replaced
     s.set_title("my own name").unwrap();
     assert_eq!(meta_in(d.path(), &id).unwrap().title, "my own name");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_start_read_from_ps_is_the_same_on_every_call_and_differs_between_processes() {
+    let me = std::process::id();
+    let first = ps_start(me).expect("ps lists this process");
+    assert_eq!(ps_start(me), Some(first));
+    // a process that started later has another start text, unless both began in the same second
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let other = ps_start(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(other.is_some());
+    assert_eq!(ps_state(me).map(|s| s.starts_with('T')), Some(false));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_lock_is_judged_by_the_start_time_and_boot_read_from_the_system_on_macos() {
+    let me = std::process::id();
+    assert_eq!(proc_start(me), ps_start(me));
+    assert!(proc_start(me).is_some());
+    assert!(boot_id().is_some());
+    assert_eq!(boot_id(), boot_id());
 }

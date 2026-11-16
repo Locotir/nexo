@@ -1849,6 +1849,7 @@ dependencies = [
  "font8x8",
  "futures",
  "gif",
+ "libc",
  "nexo-browser-host",
  "nexo-relay",
  "png",

@@ -160,3 +160,24 @@ fn a_tmux_pane_gets_the_text_and_enter() {
     let e = r.send(&Target::Tmux("nosuch".into()), "x").unwrap_err();
     assert!(e.starts_with("Not sent: tmux pane nosuch"), "{e}");
 }
+
+#[cfg(unix)]
+#[test]
+fn the_ps_fallback_finds_the_parent_of_this_process() {
+    // SAFETY: getppid has no failure mode and touches no memory.
+    let parent = unsafe { libc::getppid() } as u32;
+    assert_eq!(ps_parent_of(std::process::id()), Some(parent));
+    assert_eq!(parent_of(std::process::id()), Some(parent));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_lsof_fallback_finds_the_working_folder_of_this_process() {
+    // lsof is not on every Linux box; the fallback only runs where /proc is missing
+    if std::process::Command::new("lsof").arg("-v").output().is_err() {
+        return;
+    }
+    let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+    let got = lsof_cwd_of(std::process::id()).map(|p| std::path::PathBuf::from(p).canonicalize().unwrap());
+    assert_eq!(got, Some(here));
+}
