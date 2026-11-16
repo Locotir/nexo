@@ -75,17 +75,19 @@ fn machine_tool(name: &str) -> Option<Arc<dyn Tool>> {
 }
 
 /// The lines for the note at the head of a request when the project map changed since the model last
-/// saw it (in the system text or in an earlier note); the map is then remembered as shown. None when it
-/// did not change.
+/// saw it (in the system text or in an earlier note): what changed in it, not the entries the model has
+/// already seen as they are; the map is then remembered as shown. None when it did not change.
 pub(super) fn tree_note(st: &mut State) -> Option<String> {
     let now = prompt::project_tree(&st.cwd);
     if now == st.prefix.shown {
         return None;
     }
-    st.prefix.shown = now.clone();
+    let cwd = st.cwd.clone();
+    let note = prompt::project_tree_change(&st.prefix.shown, &now, |p| cwd.join(p).exists());
+    st.prefix.shown = now;
     let _ = st.session.record_prefix(&st.prefix);
     saving(st);
-    Some(if now.is_empty() { "Project: no files are listed any more.".to_string() } else { now })
+    Some(if st.prefix.shown.is_empty() { "Project: no files are listed any more.".to_string() } else { note })
 }
 
 /// The line for the note at the head of a request when today is not the date the system text gives (the day the

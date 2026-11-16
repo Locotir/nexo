@@ -281,6 +281,67 @@ pub fn project_tree(cwd: &Path) -> String {
     block.trim_start().lines().filter(|l| !l.starts_with("check: ")).collect::<Vec<_>>().join("\n")
 }
 
+/// What changed in the project map from `before` (the map the model last saw) to `now`, both as
+/// [`project_tree`] gives them: the lines of `now` that are new or read otherwise (a folder's count, a new
+/// file, the manifests) in their order in the map, then the entries that left it because they no longer
+/// exist (`exists` says whether a path the map named is still there: an entry that only left the map for
+/// its size is not gone). The whole of `now` when there was no map before, when the change cannot be said
+/// that way, or when saying it is not shorter than the map.
+pub fn project_tree_change(before: &str, now: &str, exists: impl Fn(&str) -> bool) -> String {
+    use std::collections::{HashMap, HashSet};
+    if before.is_empty() || now.is_empty() {
+        return now.to_string();
+    }
+    let old: HashMap<String, &str> = before.lines().skip(1).map(|l| (map_key(l), l)).collect();
+    let kept: HashSet<String> = now.lines().skip(1).map(map_key).collect();
+    let mut lines: Vec<String> =
+        now.lines().skip(1).filter(|l| old.get(&map_key(l)) != Some(l)).map(str::to_string).collect();
+    // a line that is no entry (the manifests) and is no more: said as none, or it would read as before
+    lines.extend(
+        before
+            .lines()
+            .skip(1)
+            .filter(|l| map_path(l).is_none() && !l.trim_start().starts_with("- ... "))
+            .filter_map(|l| l.split_once(": ").map(|(k, _)| k))
+            .filter(|k| !kept.contains(*k))
+            .map(|k| format!("{k}: none")),
+    );
+    let gone: Vec<&str> =
+        before.lines().skip(1).filter_map(map_path).filter(|p| !kept.contains(*p) && !exists(p)).collect();
+    if !gone.is_empty() {
+        lines.push(format!("Gone: {}", gone.join(", ")));
+    }
+    let out = format!("Project (changes since you last saw it; the rest as before):\n{}", lines.join("\n"));
+    if lines.is_empty() || out.len() >= now.len() {
+        now.to_string()
+    } else {
+        out
+    }
+}
+
+/// The path a line of the project map names: `src/` for `- src/ (3 files)`, `src/m1.rs` for
+/// `  - src/m1.rs`. None for its other lines (the count of the rest, the manifests).
+fn map_path(line: &str) -> Option<&str> {
+    let entry = line.trim_start().strip_prefix("- ")?;
+    if entry.starts_with("... ") {
+        return None;
+    }
+    Some(match entry.rsplit_once(" (") {
+        Some((path, n)) if n.ends_with(" files)") => path,
+        _ => entry,
+    })
+}
+
+/// What a line of the project map is about: the path it names, else the words before its colon
+/// (`Manifests`), else the line itself.
+fn map_key(line: &str) -> String {
+    match map_path(line) {
+        Some(p) => p.to_string(),
+        None if line.trim_start().starts_with("- ... ") => "- ...".to_string(),
+        None => line.split_once(": ").map_or(line, |(k, _)| k).to_string(),
+    }
+}
+
 fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
     use std::collections::BTreeMap;
     // the person's home is no project: its map would change with every file anything writes under it,

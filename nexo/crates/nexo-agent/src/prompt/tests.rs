@@ -440,3 +440,59 @@ fn the_mac_facts_name_the_bsd_userland_and_leave_out_orders() {
     assert!(macos_facts("").starts_with("\nmacOS has"));
     assert!(!t.to_lowercase().contains("always") && !t.to_lowercase().contains("never"), "{t}");
 }
+
+const MAP_BEFORE: &str = "Project (changed since you last saw it):\n- AGENTS.md\n- NEXO.md\n- README.md\n- old.rs\n- docs/ (2 files)\n  - docs/guide.md\n  - docs/notes.md\n- src/ (2 files)\n  - src/a.rs\n  - src/b.rs\nManifests: Cargo.toml (demo)";
+
+#[test]
+fn a_changed_map_names_only_what_changed_and_what_is_gone() {
+    // a file made in src/ and old.rs deleted: the note says those, not the files that stayed as they were
+    let now = "Project (changed since you last saw it):\n- AGENTS.md\n- NEXO.md\n- README.md\n- docs/ (2 files)\n  - docs/guide.md\n  - docs/notes.md\n- src/ (3 files)\n  - src/a.rs\n  - src/b.rs\n  - src/c.rs\nManifests: Cargo.toml (demo)";
+    let n = project_tree_change(MAP_BEFORE, now, |_| false);
+    assert_eq!(
+        n,
+        "Project (changes since you last saw it; the rest as before):\n- src/ (3 files)\n  - src/c.rs\nGone: old.rs"
+    );
+}
+
+#[test]
+fn an_entry_that_only_left_the_map_is_not_said_gone() {
+    // old.rs is still there (the map left it out for its size): it is not named as gone
+    let now = "Project (changed since you last saw it):\n- AGENTS.md\n- NEXO.md\n- README.md\n- docs/ (2 files)\n  - docs/guide.md\n  - docs/notes.md\n- src/ (3 files)\n  - src/a.rs\n  - src/b.rs\n  - src/c.rs\n- ... 1 more entries\nManifests: Cargo.toml (demo)";
+    let n = project_tree_change(MAP_BEFORE, now, |p| p == "old.rs");
+    assert!(!n.contains("Gone"), "{n}");
+    assert!(n.contains("\n- ... 1 more entries"), "{n}");
+}
+
+#[test]
+fn manifests_that_are_no_more_are_said_none() {
+    let now = MAP_BEFORE.replace("\nManifests: Cargo.toml (demo)", "");
+    let n = project_tree_change(MAP_BEFORE, &now, |_| true);
+    assert!(n.ends_with("\nManifests: none"), "{n}");
+    assert!(!n.contains("README"), "{n}");
+}
+
+#[test]
+fn with_no_map_before_or_most_of_it_new_the_whole_map_goes() {
+    let now = "Project (changed since you last saw it):\n- a.rs\n- b.rs";
+    assert_eq!(project_tree_change("", now, |_| false), now);
+    // every entry new: saying the change is no shorter than the map itself
+    assert_eq!(project_tree_change(MAP_BEFORE, now, |_| false), now);
+}
+
+#[test]
+fn the_tree_change_follows_the_map_on_disk() {
+    let d = tempfile::tempdir().unwrap();
+    for f in ["README.md", "AGENTS.md", "NEXO.md", "old.rs", "src/a.rs", "src/b.rs", "docs/guide.md"] {
+        std::fs::create_dir_all(d.path().join(f).parent().unwrap()).unwrap();
+        std::fs::write(d.path().join(f), "").unwrap();
+    }
+    let before = project_tree(d.path());
+    std::fs::write(d.path().join("src/c.rs"), "").unwrap();
+    std::fs::remove_file(d.path().join("old.rs")).unwrap();
+    let now = project_tree(d.path());
+    let n = project_tree_change(&before, &now, |p| d.path().join(p).exists());
+    assert_eq!(
+        n,
+        "Project (changes since you last saw it; the rest as before):\n- src/ (3 files)\n  - src/c.rs\nGone: old.rs"
+    );
+}
