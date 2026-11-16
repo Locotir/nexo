@@ -241,34 +241,104 @@ fn abilities(tools: &ToolSet) -> String {
     format!("\n\nYou can do:\n{}", lines.join("\n"))
 }
 
-/// The machine and the project: the system (with the Linux distribution, which says apt, apk or
-/// dnf), whether `cwd` is in a git repository and the project map. A session builds this once (see
-/// [`Volatile`]) and sends it unchanged for as long as it lives, so the cached prompt prefix stays.
+/// [`environment_with`] walking the project itself.
+#[cfg(test)]
 fn environment(cwd: &Path) -> String {
+    environment_with(cwd, scan_project(cwd, PROJECT_WALK).as_ref())
+}
+
+/// The machine and the project: the system (with the Linux distribution, which says apt, apk or
+/// dnf), whether `cwd` is in a git repository and the project map from its walk. A session builds this
+/// once (see [`Volatile`]) and sends it unchanged for as long as it lives, so the cached prompt prefix stays.
+fn environment_with(cwd: &Path, scan: Option<&ProjectScan>) -> String {
     let distro = std::fs::read_to_string("/etc/os-release").ok().and_then(|t| os_name(&t));
     let system = match distro {
         Some(d) => format!("{} ({d}), {}", std::env::consts::OS, std::env::consts::ARCH),
         None => format!("{}, {}", std::env::consts::OS, std::env::consts::ARCH),
     };
     let mac = if cfg!(target_os = "macos") { macos_facts(&macos_version()) } else { String::new() };
-    format!("\nSystem: {system}{mac}\nGit: {}{}", git_line(cwd), project_block(cwd))
+    format!("\nSystem: {system}{mac}\nGit: {}{}", git_line(cwd), project_block(cwd, scan))
 }
 
 /// The most characters the Project block takes.
 const PROJECT_CAP: usize = 2500;
 /// The most tree entries the Project block lists.
 const PROJECT_ENTRIES: usize = 60;
+/// The most entries the project walk reads. A session can start in a folder of any size, and the walk runs
+/// before its first request (and before each later one, for the tree note), so it reads a fixed number of
+/// entries however big the tree is; the block then says that it covers those only.
+const PROJECT_WALK: usize = 20_000;
 
-/// A bounded map of the project at `cwd`: its tree two levels down (directories with their file
-/// counts, files in `.gitignore` left out), the manifests with their names, and the command that
+/// One walk of a project: its top two levels with their file counts and the manifests, and whether the walk
+/// stopped at its cap before the end of the tree. The Project block and the tree note are both drawn from
+/// it, so a new session reads the tree once.
+#[derive(Debug, Default)]
+struct ProjectScan {
+    top: std::collections::BTreeMap<String, (bool, usize)>,
+    second: std::collections::BTreeMap<String, (bool, usize)>,
+    manifests: Vec<String>,
+    /// The entries the walk read, the folder itself included.
+    read: usize,
+    cut: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many project walks this thread made, so a test can count them.
+    static WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Walks the project at `cwd`, reading at most `cap` entries (files in `.gitignore` left out). None for the
+/// person's home.
+fn scan_project(cwd: &Path, cap: usize) -> Option<ProjectScan> {
+    // the person's home is no project: its map would change with every file anything writes under it,
+    // and each change would come back as a note in the middle of the session
+    if compat::no_project(cwd) {
+        return None;
+    }
+    #[cfg(test)]
+    WALKS.with(|w| w.set(w.get() + 1));
+    let mut s = ProjectScan::default();
+    let walk = ignore::WalkBuilder::new(cwd).require_git(false).build();
+    for e in walk.flatten() {
+        if s.read >= cap {
+            s.cut = true;
+            break;
+        }
+        s.read += 1;
+        let Ok(rel) = e.path().strip_prefix(cwd) else { continue };
+        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+        if !is_dir && parts.len() <= 2 && MANIFESTS.contains(&parts[parts.len() - 1].as_str()) {
+            s.manifests.push(manifest_line(&parts.join("/"), e.path()));
+        }
+        let files = usize::from(!is_dir);
+        let t = s.top.entry(parts[0].clone()).or_insert((parts.len() > 1 || is_dir, 0));
+        t.1 += files;
+        if parts.len() >= 2 {
+            let sub = s.second.entry(format!("{}/{}", parts[0], parts[1])).or_insert((parts.len() > 2 || is_dir, 0));
+            sub.1 += files;
+        }
+    }
+    s.manifests.sort();
+    Some(s)
+}
+
+/// A bounded map of the project at `cwd` from its walk: its tree two levels down (directories with their
+/// file counts, files in `.gitignore` left out), the manifests with their names, and the command that
 /// checks it. Empty when the folder holds nothing worth listing.
-fn project_block(cwd: &Path) -> String {
-    project_block_with(cwd, &crate::missing::session_line(cwd))
+fn project_block(cwd: &Path, scan: Option<&ProjectScan>) -> String {
+    // the probe for missing commands starts a shell, so it runs only when there is a block to end with its line
+    project_block_head(cwd, scan, || crate::missing::session_line(cwd), PROJECT_HEAD)
 }
 
 /// [`project_block`] with `missing` (the "Not installed here" line, or empty) given.
+#[cfg(test)]
 fn project_block_with(cwd: &Path, missing: &str) -> String {
-    project_block_head(cwd, missing, PROJECT_HEAD)
+    project_block_head(cwd, scan_project(cwd, PROJECT_WALK).as_ref(), || missing.to_string(), PROJECT_HEAD)
 }
 
 /// The head of the Project block in the system text.
@@ -276,8 +346,13 @@ const PROJECT_HEAD: &str = "Project (as when the session began; changes come in 
 
 /// The project map alone, as the note at the start of a request shows it when it changed.
 pub fn project_tree(cwd: &Path) -> String {
+    tree_from(cwd, scan_project(cwd, PROJECT_WALK).as_ref())
+}
+
+/// [`project_tree`] from a walk already made.
+fn tree_from(cwd: &Path, scan: Option<&ProjectScan>) -> String {
     // the check command is a line of the request note already, so the tree note leaves it out
-    let block = project_block_head(cwd, "", "Project (changed since you last saw it)");
+    let block = project_block_head(cwd, scan, String::new, "Project (changed since you last saw it)");
     block.trim_start().lines().filter(|l| !l.starts_with("check: ")).collect::<Vec<_>>().join("\n")
 }
 
@@ -342,38 +417,13 @@ fn map_key(line: &str) -> String {
     }
 }
 
-fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
-    use std::collections::BTreeMap;
-    // the person's home is no project: its map would change with every file anything writes under it,
-    // and each change would come back as a note in the middle of the session
-    if compat::no_project(cwd) {
+fn project_block_head(cwd: &Path, scan: Option<&ProjectScan>, missing: impl FnOnce() -> String, head: &str) -> String {
+    let Some(ProjectScan { top, second, manifests, read, cut }) = scan else {
         return String::new();
-    }
-    let mut top: BTreeMap<String, (bool, usize)> = BTreeMap::new();
-    let mut second: BTreeMap<String, (bool, usize)> = BTreeMap::new();
-    let mut manifests = Vec::new();
-    let walk = ignore::WalkBuilder::new(cwd).require_git(false).build();
-    for e in walk.flatten().take(20_000) {
-        let Ok(rel) = e.path().strip_prefix(cwd) else { continue };
-        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
-        if parts.is_empty() {
-            continue;
-        }
-        let is_dir = e.file_type().is_some_and(|t| t.is_dir());
-        if !is_dir && parts.len() <= 2 && MANIFESTS.contains(&parts[parts.len() - 1].as_str()) {
-            manifests.push(manifest_line(&parts.join("/"), e.path()));
-        }
-        let files = usize::from(!is_dir);
-        let t = top.entry(parts[0].clone()).or_insert((parts.len() > 1 || is_dir, 0));
-        t.1 += files;
-        if parts.len() >= 2 {
-            let s = second.entry(format!("{}/{}", parts[0], parts[1])).or_insert((parts.len() > 2 || is_dir, 0));
-            s.1 += files;
-        }
-    }
+    };
     let mut lines = Vec::new();
     let mut entries = 0;
-    'tree: for (name, (dir, n)) in &top {
+    'tree: for (name, (dir, n)) in top {
         if entries >= PROJECT_ENTRIES {
             break;
         }
@@ -395,14 +445,20 @@ fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
     if lines.is_empty() {
         return String::new();
     }
+    // first, so the cap on characters never cuts it: without it, a folder past the walk's cap would read as absent
+    let partial = if *cut {
+        format!("\n(from the first {read} entries of the tree; the counts leave out the rest)")
+    } else {
+        String::new()
+    };
     let mut tail = String::new();
-    manifests.sort();
     if !manifests.is_empty() {
         tail.push_str(&format!("\nManifests: {}", manifests.join(", ")));
     }
     if let Some(check) = nexo_tools::project::check_command(cwd) {
         tail.push_str(&format!("\ncheck: {}", check.command));
     }
+    let missing = missing();
     let room = PROJECT_CAP - if missing.is_empty() { 0 } else { missing.len() + 1 };
     // over the cap, whole entries leave the tree and its last line counts them: a line cut short would name
     // a file that is not there, and the count of the rest would go with it
@@ -413,22 +469,22 @@ fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
             String::new()
         }
     };
-    let mut size = head.len() + 3 + lines.join("\n").len() + tail.len();
+    let mut size = head.len() + 3 + partial.len() + lines.join("\n").len() + tail.len();
     while lines.len() > 1 && size + more(entries).len() > room {
         size -= lines.pop().map_or(0, |l| l.len() + 1);
         entries -= 1;
     }
-    let mut out = format!("\n{head}:\n{}{}{tail}", lines.join("\n"), more(entries));
+    let mut out = format!("\n{head}:{partial}\n{}{}{tail}", lines.join("\n"), more(entries));
     if out.len() > room {
-        let mut cut = room;
-        while !out.is_char_boundary(cut) {
-            cut -= 1;
+        let mut end = room;
+        while !out.is_char_boundary(end) {
+            end -= 1;
         }
-        out.truncate(cut);
+        out.truncate(end);
     }
     if !missing.is_empty() {
         out.push('\n');
-        out.push_str(missing);
+        out.push_str(&missing);
     }
     out
 }
@@ -566,6 +622,21 @@ fn capped(text: &str, cap: usize) -> String {
 impl Volatile {
     /// Reads the date, the project and the instruction files of `cwd` now.
     pub fn capture(cwd: &Path, cfg: &AgentConfig) -> Volatile {
+        Self::capture_with_tree(cwd, cfg).0
+    }
+
+    /// [`Volatile::capture`] and the project map as the tree note shows it ([`project_tree`]), both from one
+    /// walk of the tree.
+    pub fn capture_with_tree(cwd: &Path, cfg: &AgentConfig) -> (Volatile, String) {
+        let mut v = Self::instructions_now(cwd, cfg);
+        let scan = scan_project(cwd, PROJECT_WALK);
+        v.environment = environment_with(cwd, scan.as_ref());
+        (v, tree_from(cwd, scan.as_ref()))
+    }
+
+    /// The date and the instruction files of `cwd` now, with no environment: what a resumed session compares
+    /// with the ones it began with, without walking the project for a map it keeps as it was.
+    pub fn instructions_now(cwd: &Path, cfg: &AgentConfig) -> Volatile {
         let mut instructions = String::new();
         let mut files = Vec::new();
         let mut nested_text = String::new();
@@ -601,26 +672,37 @@ impl Volatile {
                     full: text.chars().count(),
                 });
             }
-            let nested = compat::nested_instructions(cwd);
-            if !nested.is_empty() {
-                // forward slashes on every system: the model reads one path style
-                let list: Vec<String> =
-                    nested.iter().map(|p| format!("- {}", p.display().to_string().replace('\\', "/"))).collect();
-                nested_text = format!(
-                    "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}",
-                    list.join("\n")
-                );
-                instructions.push_str(&nested_text);
-            }
+            nested_text = nested_list(&compat::nested_scan(cwd));
+            instructions.push_str(&nested_text);
         }
         Volatile {
             date: time::OffsetDateTime::now_utc().date().to_string(),
-            environment: environment(cwd),
+            environment: String::new(),
             instructions,
             files,
             nested: nested_text,
         }
     }
+}
+
+/// The instruction files in folders the agent is not in, and where the search for them stopped when it did
+/// not read the whole tree: a file past that point is not known to be absent.
+fn nested_list(scan: &compat::NestedScan) -> String {
+    if scan.files.is_empty() {
+        return scan
+            .stopped_after
+            .map(|n| format!("\n\nNo instruction files in other folders in the first {n} entries of the tree; the rest was not searched."))
+            .unwrap_or_default();
+    }
+    let stopped = scan.stopped_after.map(|n| format!("the search read the first {n} entries of the tree"));
+    // forward slashes on every system: the model reads one path style
+    let list: Vec<String> =
+        scan.files.iter().map(|p| format!("- {}", p.display().to_string().replace('\\', "/"))).collect();
+    let tail = stopped.map(|s| format!("\n({s}; folders past them were not searched)")).unwrap_or_default();
+    format!(
+        "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}{tail}",
+        list.join("\n")
+    )
 }
 
 /// [`system_prompt_for`] with the volatile parts given (see [`Volatile`]).

@@ -46,7 +46,7 @@ fn environment_block_stays_under_its_cap() {
         std::fs::write(d.path().join(format!("file_with_a_long_name_{i}.txt")), "").unwrap();
         std::fs::write(d.path().join(format!("data/another_long_file_name_{i}.txt")), "").unwrap();
     }
-    let b = project_block(d.path());
+    let b = project_block_with(d.path(), "");
     assert!(b.len() <= PROJECT_CAP, "{}", b.len());
     assert!(b.matches("\n- ").count() + b.matches("\n  - ").count() <= PROJECT_ENTRIES + 1, "{b}");
     assert!(b.contains("more entries"), "{b}");
@@ -65,6 +65,78 @@ fn a_tree_over_the_cap_loses_whole_entries_and_counts_them() {
     assert!(b.len() <= PROJECT_CAP && b.ends_with(missing), "{}", b.len());
     assert!(b.contains(" more entries\nNot installed"), "{b}");
     assert!(b.lines().filter(|l| l.contains("another_long")).all(|l| l.ends_with(".txt")), "{b}");
+}
+
+#[test]
+fn the_project_walk_reads_no_more_entries_than_its_cap_and_the_block_says_so() {
+    let d = tempfile::tempdir().unwrap();
+    for dir in ["a", "b", "c"] {
+        std::fs::create_dir(d.path().join(dir)).unwrap();
+        for i in 0..20 {
+            std::fs::write(d.path().join(format!("{dir}/f{i}.txt")), "").unwrap();
+        }
+    }
+    let cut = scan_project(d.path(), 25).unwrap();
+    assert!(cut.cut && cut.read == 25, "{cut:?}");
+    let files: usize = cut.top.values().map(|(_, n)| n).sum();
+    assert!(files < 60, "{cut:?}");
+    let b = project_block_head(d.path(), Some(&cut), String::new, PROJECT_HEAD);
+    assert!(b.contains("(from the first 25 entries of the tree; the counts leave out the rest)"), "{b}");
+    let whole = scan_project(d.path(), PROJECT_WALK).unwrap();
+    assert!(!whole.cut && whole.read == 64, "{whole:?}");
+    assert!(!project_block_head(d.path(), Some(&whole), String::new, PROJECT_HEAD).contains("first"));
+}
+
+#[test]
+fn a_new_session_walks_the_project_once_and_a_resumed_one_not_at_all() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir(d.path().join("src")).unwrap();
+    std::fs::write(d.path().join("src/lib.rs"), "").unwrap();
+    let cfg = AgentConfig::default();
+    WALKS.with(|w| w.set(0));
+    let (vol, tree) = Volatile::capture_with_tree(d.path(), &cfg);
+    assert_eq!(WALKS.with(|w| w.get()), 1);
+    assert!(vol.environment.contains("- src/ (1 files)"), "{}", vol.environment);
+    assert_eq!(tree, project_tree(d.path()));
+    WALKS.with(|w| w.set(0));
+    let again = Volatile::instructions_now(d.path(), &cfg);
+    assert_eq!(WALKS.with(|w| w.get()), 0);
+    assert_eq!((again.instructions, again.files), (vol.instructions, vol.files));
+}
+
+#[test]
+fn the_missing_commands_probe_runs_only_for_a_block_it_ends() {
+    let d = tempfile::tempdir().unwrap();
+    let probed = std::cell::Cell::new(0);
+    let probe = || {
+        probed.set(probed.get() + 1);
+        "Not installed here: xxd.".to_string()
+    };
+    assert_eq!(project_block_head(d.path(), scan_project(d.path(), PROJECT_WALK).as_ref(), probe, PROJECT_HEAD), "");
+    assert_eq!(project_block_head(d.path(), None, probe, PROJECT_HEAD), "");
+    assert_eq!(probed.get(), 0, "an empty folder and the home have no block");
+    std::fs::write(d.path().join("a.txt"), "").unwrap();
+    let b = project_block_head(d.path(), scan_project(d.path(), PROJECT_WALK).as_ref(), probe, PROJECT_HEAD);
+    assert!(b.ends_with("xxd.") && probed.get() == 1, "{b}");
+}
+
+#[test]
+fn the_nested_list_says_where_its_search_stopped() {
+    let none = compat::NestedScan::default();
+    assert_eq!(nested_list(&none), "");
+    let stopped = compat::NestedScan { files: Vec::new(), stopped_after: Some(20_000) };
+    assert_eq!(
+        nested_list(&stopped),
+        "\n\nNo instruction files in other folders in the first 20000 entries of the tree; the rest was not searched."
+    );
+    let some = compat::NestedScan { files: vec![PathBuf::from("web/AGENTS.md")], stopped_after: Some(20_000) };
+    let l = nested_list(&some);
+    assert!(
+        l.contains("- web/AGENTS.md\n(the search read the first 20000 entries of the tree; folders past them"),
+        "{l}"
+    );
+    let whole = compat::NestedScan { stopped_after: None, ..some };
+    assert!(nested_list(&whole).ends_with("- web/AGENTS.md"));
 }
 
 #[test]

@@ -36,7 +36,7 @@ pub(super) fn settle(
             }
             // instruction files edited since, or read otherwise by a newer nexo (one that no longer reads a
             // home folder's): the session goes on with them as they are now, at the cost of one uncached request
-            let now = prompt::Volatile::capture(cwd, cfg);
+            let now = prompt::Volatile::instructions_now(cwd, cfg);
             // a session saved before the files were kept apart gets them apart too, with the same text
             if now.instructions != p.volatile.instructions || now.files != p.volatile.files {
                 p.volatile.instructions = now.instructions;
@@ -57,11 +57,9 @@ pub(super) fn fresh(
     cfg: &nexo_core::config::AgentConfig,
     tools: &ToolSet,
 ) -> Prefix {
-    let p = Prefix {
-        tools: tools.names().map(String::from).collect(),
-        volatile: prompt::Volatile::capture(cwd, cfg),
-        shown: prompt::project_tree(cwd),
-    };
+    // one walk of the project gives both the map in the system text and the one the tree note compares with
+    let (volatile, shown) = prompt::Volatile::capture_with_tree(cwd, cfg);
+    let p = Prefix { tools: tools.names().map(String::from).collect(), volatile, shown };
     // an unsaved prefix still holds for this process
     let _ = session.record_prefix(&p);
     p

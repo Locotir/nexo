@@ -8,6 +8,18 @@ use super::*;
 pub(super) const IMPORT_DEPTH: usize = 5;
 /// The most nested instruction files listed.
 pub(super) const NESTED_MAX: usize = 20;
+/// The most tree entries the search for nested instruction files reads. A session starts in a tree of any
+/// size, a home-sized one included, and this search runs before its first request, so it reads a fixed
+/// number of entries however big the tree is.
+pub const NESTED_WALK: usize = 20_000;
+
+/// What the search for nested instruction files found, and where it stopped when it did not read the whole
+/// tree (the number of entries it read), so the list can say which part of the tree it covers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NestedScan {
+    pub files: Vec<PathBuf>,
+    pub stopped_after: Option<usize>,
+}
 
 /// One instructions file, its `@path` imports already placed after the line that names them.
 #[derive(Debug, Clone, PartialEq)]
@@ -232,20 +244,32 @@ pub(super) fn expand_imports(text: &str, dir: &Path, depth: usize, stack: &mut V
 /// Instruction files below the project root that are not loaded (those in a folder the agent
 /// is not working in), as paths relative to the root; the agent reads one when it works there.
 pub fn nested_instructions(cwd: &Path) -> Vec<PathBuf> {
-    nested_instructions_with(cwd, claude_code(), dirs::home_dir().as_deref())
+    nested_scan(cwd).files
 }
 
+/// [`nested_instructions`] with where the search stopped, when it did not read the whole tree.
+pub fn nested_scan(cwd: &Path) -> NestedScan {
+    nested_scan_with(cwd, claude_code(), dirs::home_dir().as_deref(), NESTED_WALK)
+}
+
+#[cfg(test)]
 pub(super) fn nested_instructions_with(cwd: &Path, claude: bool, own_home: Option<&Path>) -> Vec<PathBuf> {
+    nested_scan_with(cwd, claude, own_home, NESTED_WALK).files
+}
+
+pub(super) fn nested_scan_with(cwd: &Path, claude: bool, own_home: Option<&Path>, cap: usize) -> NestedScan {
     // the person's home is no project: the other folders' files under it are theirs, not a part of this one
     if project_dirs(cwd, own_home).is_empty() {
-        return Vec::new();
+        return NestedScan::default();
     }
     let root = project_root_with(cwd, own_home);
     let loaded: Vec<&Path> = cwd.ancestors().take_while(|d| d.starts_with(&root)).collect();
     let mut found = Vec::new();
+    let mut stopped_after = None;
     let walk = ignore::WalkBuilder::new(&root).max_depth(Some(5)).build();
     for (seen, e) in walk.flatten().enumerate() {
-        if seen > 20_000 || found.len() >= NESTED_MAX {
+        if seen >= cap || found.len() >= NESTED_MAX {
+            stopped_after = Some(seen);
             break;
         }
         let name = e.file_name().to_string_lossy();
@@ -264,5 +288,5 @@ pub(super) fn nested_instructions_with(cwd: &Path, claude: bool, own_home: Optio
         found.push(e.path().strip_prefix(&root).unwrap_or(e.path()).to_path_buf());
     }
     found.sort();
-    found
+    NestedScan { files: found, stopped_after }
 }

@@ -300,3 +300,28 @@ fn a_home_kept_in_git_reads_its_dot_folders_once_as_the_persons_own() {
     let src = sources(other.path(), cfg.path(), &trust, Some(home.path()), "commands", Some("commands"), None);
     assert!(src.iter().any(|s| s.origin.starts_with("project")), "{src:?}");
 }
+
+#[test]
+fn the_nested_search_reads_no_more_entries_than_its_cap_and_says_where_it_stopped() {
+    let p = repo();
+    for i in 0..40 {
+        w(p.path().join(format!("f{i:02}.txt")), "");
+    }
+    w(p.path().join("web/AGENTS.md"), "web");
+    let whole = nested_scan_with(p.path(), true, None, NESTED_WALK);
+    assert_eq!(whole, NestedScan { files: vec![PathBuf::from("web/AGENTS.md")], stopped_after: None });
+    let cut = nested_scan_with(p.path(), true, None, 10);
+    assert_eq!(cut.stopped_after, Some(10), "{cut:?}");
+    assert!(cut.files.len() <= 1, "{cut:?}");
+}
+
+#[test]
+fn the_nested_search_stops_at_its_most_files_and_says_so() {
+    let p = repo();
+    for i in 0..NESTED_MAX + 5 {
+        w(p.path().join(format!("pkg{i:02}/AGENTS.md")), "x");
+    }
+    let scan = nested_scan_with(p.path(), true, None, NESTED_WALK);
+    assert_eq!(scan.files.len(), NESTED_MAX);
+    assert!(scan.stopped_after.is_some(), "{scan:?}");
+}
