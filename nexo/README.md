@@ -654,6 +654,52 @@ browser open `chrome://extensions`, turn on Developer mode, click Load unpacked 
 The panel ticks each step as it happens, and `u` tells the session to use the browser. Without the slash
 command, `nexo chrome-setup` does the same in the shell. Nothing is controlled until you click Allow in the browser.
 
+### Compiled programs
+
+nexo reads and runs compiled programs with its own kit, nothing else installed. The `bin` tool reads a file as
+bytes and never runs or changes it; the `debug` tool runs a program under nexo's own debugger. In the shell the
+same kit is `nexo bin <op> <file>` and `nexo dbg`, and `nexo re` prints a map of both.
+
+| `bin` op | What it gives |
+|---|---|
+| `overview` | the map in one call: main, imports by capability, top strings and functions, next commands |
+| `info` | format, entry, sections, counts, what the headers say about hardening |
+| `funcs`, `calls`, `tree`, `path` | functions with size and callers, who calls what, call trees, the call chains from one to another |
+| `fn`, `decomp`, `cfg` | a function disassembled (Intel syntax), as pseudo-C, as a control-flow graph |
+| `xref`, `slice` | who calls, reads, writes or points at an address; the instructions that produced a value |
+| `strings`, `find`, `bytes` | strings with their references (`--grep`), hex patterns and immediates, the bytes of a range as a table |
+| `crypto`, `diff`, `emu` | known crypto constants, two builds compared function by function, one function run in an emulator |
+| `managed` | JVM `.class` and `.jar` files and .NET assemblies: types, members, bytecode with names, strings, call sites |
+| `name`, `note`, `proto`, `struct`, `var`, `sigs` | names, notes and types that stay with the file; library signatures for stripped programs |
+| `asm`, `patch` | x86 instructions assembled; patched bytes written to a new copy (asked about like an edit) |
+
+It reads ELF, PE and Mach-O programs and libraries (64-bit, and 32-bit x86), JVM classes and jars, .NET
+assemblies, and WebAssembly modules (`info`, `overview`, `funcs`, `fn`, `calls`, `xref`, `strings`).
+
+| Platform | `bin` | `debug` |
+|---|---|---|
+| Linux x86-64 | on | on |
+| Windows x86-64 | on | on |
+| macOS, arm64 | on | off: the debugger has no backend there, and the tool is not offered |
+
+```toml
+[tools]
+bin = true      # the bin tool; on everywhere
+debug = true    # the debug tool; on by default where the debugger has a backend
+```
+
+When the model meets a compiled file, what it is comes with it: `read`, `grep`, `ls` and `glob` say the format,
+architecture, system, size and whether it is stripped, with the `bin` call that reads it. A shell command that
+reads one by hand (`objdump`, `strings`, `xxd`, `file`, `cat`, `grep -a`, a Python script that opens it) ends
+with one line of the same facts, once, and again only for another program after 20 rounds. A program attached
+with `@`, or named in a message, gets the same. A session that never meets a compiled file carries none of it:
+each of the two tools is a short line in a request.
+
+Other harnesses can use the kit too: `nexo re --mcp` serves it as an MCP server on stdin and stdout, one tool for
+each `bin` op plus `dbg_start`, `dbg_command` and `dbg_stop`. Ops that save names or write a copy, and a debugger
+that runs or attaches to a program, are refused unless it starts with `--allow-changes`; a core file is read
+without it.
+
 ### Your own system prompt
 
 `nexo prompt` prints the prompt as it would be sent from the directory
@@ -817,7 +863,9 @@ nexo's DeepSeek preset starts on `deepseek-flash` (1M-token window, replies up t
 
 See `ARCHITECTURE.md`: the crates, one rule (`core ← providers, tools, agent,
 tui ← cli`), the public API each crate commits to, the session file format
-and the interface's specification.
+and the interface's specification. `crates/nexo-bin` reads compiled programs as bytes and `crates/nexo-dbg`
+is the debugger; both stand alone, and the `bin` and `debug` tools and `nexo bin`, `nexo dbg` and `nexo re`
+are built on them.
 
 ```sh
 cargo test --workspace

@@ -60,6 +60,20 @@ runs all of them; the last column names the test function.
 | Hooks (`pre_tool` can block, `post_tool`, `turn_end`) | ✅ | `a_pre_tool_hook_blocks_with_its_reason_and_others_report_failures`, `a_pre_tool_hook_blocks_a_call_and_the_model_reads_why` |
 | Undo / rewind put back the files the agent wrote | ✅ | `a_rewind_puts_back_the_files_the_agent_wrote`, `undo_init_status_tools_and_the_editor_key` |
 
+## Compiled programs
+
+| Feature | Status | Checked by |
+|---|---|---|
+| `bin` tool and `nexo bin`: map, functions, disassembly, pseudo-C, references, strings and bytes of ELF, PE and Mach-O files; the file is never run or changed, and the tool is a short line in a request | ✅ | `it_is_a_read_tool_and_every_request_carries_only_the_short_text`, `overview_answers_through_the_parser`, `xref_funcs_calls_and_strings_answer_through_the_parser` |
+| JVM classes and jars, .NET assemblies (`managed`) | ✅ | `a_class_file_lists_its_type_with_counts`, `an_assembly_is_recognised_and_lists_its_types` |
+| WebAssembly modules | ✅ | `a_wasm_module_is_found_by_its_signature_and_answers_the_same_ops` |
+| Library signatures name the functions of stripped programs (`sigs`) | ✅ | `sigs_makes_a_file_that_names_library_functions_of_a_stripped_program` |
+| `debug` tool and `nexo dbg`: run, break, step, bt, regs, mem, strace and ltrace (on by default on Linux and Windows x86-64, not offered elsewhere; `[tools] bin/debug` switch them) | ✅ | `a_run_with_input_and_more_commands_after_a_semicolon_is_one_call`, `strace_runs_through_the_tool_with_the_stable_header`, `each_form_names_the_file_address_plus_the_load_bias` |
+| `nexo re --mcp`: the kit for other harnesses, one MCP tool per `bin` op plus three debugger tools; changes only with `--allow-changes` | ✅ | `tools_list_has_one_tool_per_bin_op_plus_the_three_debugger_tools`, `a_write_is_refused_without_the_flag_and_the_refusal_names_the_flag` |
+| `read`, `grep`, `ls` and `glob` say what a compiled file is (format, architecture, system, size, stripped) and the `bin` call that reads it | ✅ | `a_compiled_program_is_answered_with_what_it_is_and_the_call_that_reads_it`, `a_compiled_program_that_holds_the_pattern_is_named_with_the_call_that_searches_it`, `a_compiled_program_is_marked_with_what_it_is`, `a_compiled_program_found_is_marked_with_what_it_is`, `the_managed_kinds_and_webassembly_are_named_and_other_files_are_not` |
+| A shell command that reads a compiled file by hand (`objdump`, `strings`, `file`, `cat`, `grep -a`, a script) ends with one line of those facts and the call; again only for another file after 20 rounds | ✅ | `the_line_tells_what_the_file_is_and_the_exact_call_as_a_tool_call_or_in_the_shell`, `the_readers_a_model_reaches_for_first_are_seen_too`, `managed_code_a_32_bit_program_and_a_webassembly_module_are_told_with_their_own_call`, `another_file_is_told_again_only_after_a_long_stretch_and_a_resumed_session_counts_the_same`, `the_first_time_a_compiled_program_is_read_by_hand_the_result_says_nexo_bin_exists_once` |
+| A program attached with `@`, or named in a message, says what it is and the call that reads it | ✅ | `an_attached_program_is_told_by_what_it_is_and_the_call_that_reads_it`, `a_message_that_names_a_compiled_program_says_where_the_kit_is_once_and_a_plain_one_says_nothing`, `the_gdb_paste_gets_the_debug_call_and_objdump_the_bin_call_once_each` |
+
 ## Sessions and context
 
 | Feature | Status | Checked by |

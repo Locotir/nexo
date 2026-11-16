@@ -15,12 +15,15 @@ nexo-curator     the context curator: the goal engine (ledger, rules/notes/pin b
 nexo-tui         the interface: consumes AgentEvent, produces AgentCommand; never touches providers or tools
 nexo-cli         the `nexo` binary: wires config → providers → tools → agent → tui / headless
 nexo-bench       `nexo bench`: agent tasks run against a real model under several context policies, scored and summed up
+nexo-bin         compiled programs read as bytes (ELF, PE, Mach-O, JVM, .NET, WebAssembly): map, functions, disassembly, pseudo-C, references; never run
+nexo-dbg         the debugger behind the `debug` tool and `nexo dbg` (Linux and Windows x86-64): run, break, step, memory, system calls
 ```
 
 Dependency direction: `core ← providers, tools, agent, tui ← cli`. The TUI
 depends on **core only** (it is driven through the channels of
 `nexo_core::agent`); the agent depends on core, providers, tools and
-the curator (which depends on no other nexo crate); the benchmark drives the
+the curator (which depends on no other nexo crate); `nexo-bin` depends on no
+other nexo crate and `nexo-dbg` only on it, and the tools use both; the benchmark drives the
 agent the way the binary does, and the binary depends on everything. Nothing depends upward or sideways. A crate that needs
 a type another crate owns asks for it to move into core.
 
