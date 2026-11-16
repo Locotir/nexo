@@ -33,7 +33,13 @@ pub fn probe(list: &[&str], cwd: &Path) -> Option<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let script = r#"for c in "$@"; do command -v "$c" >/dev/null 2>&1 || printf '%s\n' "$c"; done"#;
+    // On a Mac the programs of the Command Line Tools are shims in /usr/bin that find nothing without the tools:
+    // they are named `shim:<name>` and `settle_shims` decides what they are.
+    let script = r#"mac=0; [ "$(uname)" = Darwin ] && mac=1
+for c in "$@"; do
+  p=$(command -v "$c" 2>/dev/null) || { printf '%s\n' "$c"; continue; }
+  [ $mac = 1 ] && [ "$p" = "/usr/bin/$c" ] && printf 'shim:%s\n' "$c"
+done; true"#;
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(script)
@@ -54,7 +60,9 @@ pub fn probe(list: &[&str], cwd: &Path) -> Option<String> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(st)) if st.success() => return reader.join().ok(),
+            Ok(Some(st)) if st.success() => {
+                return reader.join().ok().map(|o| settle_shims(&o, cfg!(target_os = "macos") && !developer_tools()))
+            }
             Ok(Some(_)) | Err(_) => return None,
             Ok(None) if start.elapsed() >= Duration::from_secs(2) => {
                 let _ = child.kill();
@@ -64,6 +72,38 @@ pub fn probe(list: &[&str], cwd: &Path) -> Option<String> {
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
         }
     }
+}
+
+/// The programs a Mac ships as shims for the Command Line Tools.
+#[cfg(unix)]
+const SHIMS: [&str; 5] = ["git", "python3", "make", "gcc", "clang"];
+
+/// Whether `xcode-select -p` finds a developer folder (the real programs behind the shims).
+#[cfg(unix)]
+fn developer_tools() -> bool {
+    std::process::Command::new("xcode-select")
+        .arg("-p")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
+}
+
+#[cfg(unix)]
+/// The probe output with each `shim:<name>` line turned into `<name>` (missing) when the shims have no tools behind
+/// them, and dropped otherwise.
+fn settle_shims(out: &str, shims_empty: bool) -> String {
+    let mut text = String::new();
+    for l in out.lines() {
+        match l.strip_prefix("shim:") {
+            Some(n) if shims_empty && SHIMS.contains(&n) => text.push_str(&format!("{n}\n")),
+            Some(_) => {}
+            None => text.push_str(&format!("{l}\n")),
+        }
+    }
+    text
 }
 
 #[cfg(not(unix))]
@@ -90,6 +130,14 @@ mod tests {
         let got = missing(&COMMANDS, "xxd\ncurl\n\nnot-in-list\nfile\n");
         assert_eq!(got, ["curl", "file", "xxd"]);
         assert!(missing(&COMMANDS, "").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shims_are_missing_only_when_the_developer_tools_are_not_there() {
+        let out = "curl\nshim:git\nshim:make\nshim:ls\n";
+        assert_eq!(missing(&COMMANDS, &settle_shims(out, true)), ["git", "curl", "make"]);
+        assert_eq!(missing(&COMMANDS, &settle_shims(out, false)), ["curl"]);
     }
 
     #[test]

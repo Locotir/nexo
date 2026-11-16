@@ -121,7 +121,7 @@ fn looks_only(segment: &str) -> bool {
 
 /// Whether a shell command can have changed something: anything not made only of looks and builds.
 fn bash_changes(cmd: &str) -> bool {
-    if cmd.contains('>') || cmd.contains("sed -i") || cmd.contains(" tee ") {
+    if cmd.contains('>') || cmd.contains("sed -i") || cmd.contains("sed -I") || cmd.contains(" tee ") {
         return true;
     }
     !cmd.split(['\n', ';', '|', '&']).filter(|s| !s.trim().is_empty()).all(looks_only)

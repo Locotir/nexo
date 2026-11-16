@@ -103,6 +103,8 @@ fn fixed_list_is_denied_even_when_approved() {
         "rm -rf /*",
         "rm -rf ~",
         "rm -fr $HOME/",
+        "rm -rf /Users",
+        "rm -rf /Users/*",
         "rm -r /etc/foo",
         "git push --force origin main",
         "git push -f",
@@ -250,4 +252,22 @@ fn load_reads_files_and_reports_bad_ones() {
     let l = Policy::load(Some(&user), None);
     assert_eq!(l.errors.len(), 1);
     assert_eq!(l.policy, Policy::default());
+}
+
+#[test]
+fn the_macos_ways_to_wipe_a_machine_are_catastrophic() {
+    for cmd in [
+        "rm -rf /Users",
+        "rm -rf /Users/*",
+        "diskutil eraseDisk APFS X disk2",
+        "sudo diskutil secureErase 0 /dev/disk2",
+        "diskutil apfs deleteContainer disk3",
+        "newfs_apfs /dev/disk3",
+        "dd if=/dev/zero of=/dev/rdisk2",
+    ] {
+        assert!(catastrophic(cmd).is_some(), "{cmd}");
+    }
+    for cmd in ["diskutil list", "diskutil info disk2", "diskutil apfs list", "rm -rf /Users/p/build"] {
+        assert!(catastrophic(cmd).is_none(), "{cmd}");
+    }
 }

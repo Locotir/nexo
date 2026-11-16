@@ -10,7 +10,12 @@ pub(super) fn home_dir() -> Option<PathBuf> {
 }
 
 pub(super) fn glob(pattern: &str, separators: bool) -> Option<globset::GlobMatcher> {
-    GlobBuilder::new(pattern).literal_separator(separators).build().ok().map(|g| g.compile_matcher())
+    GlobBuilder::new(pattern)
+        .literal_separator(separators)
+        .case_insensitive(cfg!(target_os = "macos"))
+        .build()
+        .ok()
+        .map(|g| g.compile_matcher())
 }
 
 pub(super) fn matches(pattern: &str, text: &str, separators: bool) -> bool {

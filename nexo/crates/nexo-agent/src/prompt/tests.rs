@@ -417,3 +417,11 @@ fn the_caps_leave_a_short_text_whole_and_share_the_rest_among_the_long_ones() {
     assert_eq!(fit::budget(Some(8_192)), Some(8_192));
     assert_eq!(fit::budget(Some(8_000)), Some(8_000));
 }
+
+#[test]
+fn the_mac_facts_name_the_bsd_userland_and_leave_out_orders() {
+    let t = macos_facts("15.1");
+    assert!(t.contains("macOS 15.1") && t.contains("BSD") && t.contains("sed -i ''") && t.contains("timeout"), "{t}");
+    assert!(macos_facts("").starts_with("\nmacOS has"));
+    assert!(!t.to_lowercase().contains("always") && !t.to_lowercase().contains("never"), "{t}");
+}

@@ -19,7 +19,12 @@ pub(super) fn split_rule(rule: &str) -> (&str, Option<&str>) {
 }
 
 pub(super) fn glob(pattern: &str) -> Option<GlobMatcher> {
-    GlobBuilder::new(pattern).literal_separator(false).build().ok().map(|g: Glob| g.compile_matcher())
+    GlobBuilder::new(pattern)
+        .literal_separator(false)
+        .case_insensitive(cfg!(target_os = "macos"))
+        .build()
+        .ok()
+        .map(|g: Glob| g.compile_matcher())
 }
 
 /// What a call acts on: the command for exec tools, the path for file tools,

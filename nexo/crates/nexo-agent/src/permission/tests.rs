@@ -123,6 +123,12 @@ fn deny_rules_see_through_paths_quotes_wrappers_and_shells() {
         "$'\\x72m' x",
         "$'\\162m' x",
         "ls && /bin/rm x",
+        "caffeinate -i rm -rf x",
+        "arch -arm64 rm x",
+        "arch -arch arm64 -e A=1 rm x",
+        "xcrun --sdk macosx rm x",
+        "sandbox-exec -p '(version 1)' rm x",
+        "osascript -e 'do shell script \"rm -rf ~\"'",
     ];
     for cmd in dodges {
         assert!(matches!(decide_bash("bash", "bash(rm *)", cmd), Decision::Deny(_)), "{cmd}");
@@ -498,4 +504,14 @@ fn deny_rules_hold_for_words_the_lexer_cannot_know() {
         assert!(matches!(decide_bash("bash", "bash(rm *)", cmd), Decision::Deny(_)), "{cmd}");
     }
     assert_eq!(decide_bash("bash", "bash(rm *)", "echo \"\\$\" ; ls y"), Decision::Allow);
+}
+
+#[test]
+fn guarded_names_fold_case_only_where_the_disk_does() {
+    for name in [".GIT/hooks/pre-commit", ".Zshrc", "a/.NEXO/config.toml", ".Mcp.Json"] {
+        assert!(paths::guarded_in(Path::new(name), true), "{name}");
+        assert!(!paths::guarded_in(Path::new(name), false), "{name}");
+    }
+    assert!(paths::guarded_in(Path::new(".git/config"), false));
+    assert!(!paths::guarded_in(Path::new("src/main.rs"), true));
 }

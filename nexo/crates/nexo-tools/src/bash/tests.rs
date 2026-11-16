@@ -62,6 +62,10 @@ fn read_only_commands_are_read_kind() {
         ("sed -n '1,20p' src/a.rs", ToolKind::Read),
         ("sed -i 's/a/b/' x", ToolKind::Exec),
         ("sed -n '1w out' x", ToolKind::Exec),
+        // BSD sed edits in place with an upper-case -I too: any flag sed is not known to take refuses the read
+        ("sed -n -I '' 5p f", ToolKind::Exec),
+        ("sed -n -i.bak 5p f", ToolKind::Exec),
+        ("sed -n 5p f", ToolKind::Read),
         ("cargo test", ToolKind::Exec),
         ("cat a | grep b", ToolKind::Read),
         ("grep -rn 'a|b' src 2>&1 | head -5", ToolKind::Read),
@@ -350,6 +354,9 @@ async fn a_leading_fixed_sleep_is_refused_with_a_poll_rewrite() {
         ("  sleep 5s\necho hi", "timeout 10 "),
         ("sleep 45", "timeout 90 "),
     ] {
+        // a Mac has no timeout(1): its one-command form counts turns instead
+        let has = if cfg!(target_os = "macos") { has.replace("timeout ", "-ge ") } else { has.to_string() };
+        let has = has.as_str();
         let t = std::time::Instant::now();
         let out = Bash.run(json!({"command": cmd}), &c).await;
         assert!(t.elapsed() < Duration::from_secs(1), "{cmd} ran");
@@ -826,4 +833,26 @@ async fn output_is_held_to_the_room_of_a_small_window_and_says_what_was_kept() {
     // a short output is as it always was
     let out = Bash.run(json!({"command": "seq 1 5"}), &c).await;
     assert_eq!(out.content.trim(), "1\n2\n3\n4\n5");
+}
+
+#[test]
+fn the_wait_loop_for_a_mac_does_not_use_timeout() {
+    let mac = wait_command(true, 20, "[ -e f ]", "; echo hi");
+    assert!(!mac.contains("timeout"), "{mac}");
+    assert_eq!(mac, "sh -c 'i=0; until [ -e f ]; do i=$((i+1)); [ $i -ge 20 ] && exit 1; sleep 1; done'; echo hi");
+    assert_eq!(wait_command(false, 20, "[ -e f ]", ""), "timeout 20 sh -c 'until [ -e f ]; do sleep 1; done'");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_mac_wait_loop_ends_at_once_when_ready_and_fails_after_the_cap() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("ready");
+    std::fs::write(&f, "").unwrap();
+    let run = |cond: &str, cap: u64| {
+        let line = wait_command(true, cap, cond, "");
+        std::process::Command::new("sh").arg("-c").arg(line).status().unwrap().code()
+    };
+    assert_eq!(run(&format!("[ -e {} ]", f.display()), 3), Some(0));
+    assert_eq!(run("[ -e /no/such/file/anywhere ]", 1), Some(1));
 }

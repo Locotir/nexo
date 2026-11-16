@@ -115,10 +115,20 @@ pub(super) fn blind_sleep(command: &str) -> Option<String> {
         "bash: not run. A fixed wait (`{}`) wastes time when the thing is already ready and is too short when it is not.\n\
          Wait for the condition instead: {{\"wait_until\": {cond_json}, \"command\": {rest_json}, \"timeout\": {cap}}}. \
          It is a command that succeeds once ready: `[ -e FILE ]`, `curl -sf URL`, `grep -q READY LOG`. \
-         In one command: timeout {cap} sh -c 'until {cond}; do sleep 1; done'{tail}\n\
+         In one command: {}\n\
          To wait for a command you started with `background: true`, use jobs {{\"action\": \"output\", \"id\": N, \"wait\": 60}}.",
-        one_line(&waited, 60)
+        one_line(&waited, 60),
+        wait_command(cfg!(target_os = "macos"), cap, &cond, &tail)
     ))
+}
+
+/// The one-command wait the refusal offers. A stock Mac has no `timeout` (only coreutils' `gtimeout`) and its
+/// `sleep` takes plain seconds, so there the loop counts its own turns.
+pub(super) fn wait_command(macos: bool, cap: u64, cond: &str, tail: &str) -> String {
+    if macos {
+        return format!("sh -c 'i=0; until {cond}; do i=$((i+1)); [ $i -ge {cap} ] && exit 1; sleep 1; done'{tail}");
+    }
+    format!("timeout {cap} sh -c 'until {cond}; do sleep 1; done'{tail}")
 }
 
 /// Polls the shell condition `cond` about every 0.5 s for up to `timeout`. None once it succeeds

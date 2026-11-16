@@ -250,7 +250,8 @@ fn environment(cwd: &Path) -> String {
         Some(d) => format!("{} ({d}), {}", std::env::consts::OS, std::env::consts::ARCH),
         None => format!("{}, {}", std::env::consts::OS, std::env::consts::ARCH),
     };
-    format!("\nSystem: {system}\nGit: {}{}", git_line(cwd), project_block(cwd))
+    let mac = if cfg!(target_os = "macos") { macos_facts(&macos_version()) } else { String::new() };
+    format!("\nSystem: {system}{mac}\nGit: {}{}", git_line(cwd), project_block(cwd))
 }
 
 /// The most characters the Project block takes.
@@ -378,6 +379,26 @@ fn manifest_line(shown: &str, path: &Path) -> String {
         Some(n) if !n.is_empty() => format!("{shown} ({n})"),
         _ => shown.to_string(),
     }
+}
+
+/// The macOS version (`15.1`), or an empty string when `sw_vers` does not answer.
+fn macos_version() -> String {
+    let out = std::process::Command::new("sw_vers").arg("-productVersion").output().ok();
+    out.filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// What differs on a Mac from the GNU systems commands are usually written for. Facts only: the userland is
+/// BSD, `sh` is bash 3.2, and a few common programs are not there.
+fn macos_facts(version: &str) -> String {
+    let name = if version.is_empty() { "macOS".to_string() } else { format!("macOS {version}") };
+    format!(
+        "\n{name} has a BSD userland and `sh` is bash 3.2: `sed -i` takes a suffix argument (`sed -i ''`), \
+         `readlink -f`, `stat -c`, `date -d`, `xargs -r`, `grep -P`, `timeout`, `sha256sum`, `free` and `nproc` are not there \
+         (`shasum -a 256`, `sysctl -n hw.ncpu` are), and `<()`, `mapfile` and associative arrays do not work in `sh`. \
+         Homebrew coreutils installs the GNU ones as `gtimeout`, `gsed`, `greadlink`."
+    )
 }
 
 /// `PRETTY_NAME` of an os-release file, else `NAME VERSION_ID`.

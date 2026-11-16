@@ -122,6 +122,11 @@ pub(super) fn unwrap_command(ws: Vec<String>) -> (Vec<String>, Vec<String>) {
             "nice" => &["-n", "--adjustment"],
             "sudo" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "--user", "--group", "--chdir"],
             "doas" => &["-u", "-C"],
+            // macOS wrappers that run the program after them: `caffeinate -i rm`, `arch -arm64 rm`, `xcrun rm`
+            "caffeinate" => &["-t", "-w"],
+            "arch" => &["-arch", "-e", "-d"],
+            "xcrun" => &["--sdk", "-sdk", "--toolchain", "-toolchain"],
+            "sandbox-exec" => &["-f", "-p", "-n", "-D"],
             "env" => &["-u", "-C", "--unset", "--chdir"],
             _ => break,
         };
@@ -166,6 +171,8 @@ pub(super) fn unwrap_command(ws: Vec<String>) -> (Vec<String>, Vec<String>) {
             }
         }
         Some("eval") => scripts.push(ws[1..].join(" ")),
+        // `osascript -e 'do shell script "rm x"'` hands the quoted text to a shell
+        Some("osascript") => scripts.extend(ws[1..].iter().filter_map(|w| osascript_shell(w))),
         _ => {}
     }
     (ws, scripts)
@@ -209,4 +216,22 @@ pub(super) fn runs_code(part: &str) -> bool {
         }),
         _ => false,
     }
+}
+
+/// The shell text inside an AppleScript `do shell script "..."` (its quotes and backslashes undone).
+fn osascript_shell(script: &str) -> Option<String> {
+    let at = script.find("do shell script")? + "do shell script".len();
+    let mut chars = script[at..].trim_start().chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }

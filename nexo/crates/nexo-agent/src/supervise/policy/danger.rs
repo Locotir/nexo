@@ -25,7 +25,7 @@ pub fn catastrophic(cmd: &str) -> Option<&'static str> {
                 let whole = |a: &String| {
                     matches!(
                         a.trim_end_matches('/'),
-                        "" | "/*" | "~" | "$HOME" | "${HOME}" | "~/*" | "$HOME/*" | "/home"
+                        "" | "/*" | "~" | "$HOME" | "${HOME}" | "~/*" | "$HOME/*" | "/home" | "/Users" | "/Users/*"
                     )
                 };
                 if recursive && operands().any(whole) {
@@ -33,6 +33,11 @@ pub fn catastrophic(cmd: &str) -> Option<&'static str> {
                 }
             }
             p if p.starts_with("mkfs") && operands().any(|a| disk(a)) => return Some("a new file system over a disk"),
+            // macOS: `newfs_apfs /dev/disk3`, `diskutil eraseDisk ...`, `diskutil apfs deleteContainer ...`
+            p if p.starts_with("newfs_") && operands().any(|a| disk(a)) => {
+                return Some("a new file system over a disk")
+            }
+            "diskutil" if wipes_disk(args) => return Some("a disk erased"),
             "dd" if args.iter().any(|a| a.strip_prefix("of=").is_some_and(disk)) => {
                 return Some("raw bytes written over a disk");
             }
@@ -46,6 +51,20 @@ pub fn catastrophic(cmd: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Whether `diskutil`'s arguments erase or repartition a disk or APFS container.
+fn wipes_disk(args: &[String]) -> bool {
+    let first = args.first().map(|a| a.to_ascii_lowercase());
+    match first.as_deref() {
+        Some(
+            "erasedisk" | "erasevolume" | "partitiondisk" | "secureerase" | "reformat" | "zerodisk" | "randomdisk",
+        ) => true,
+        Some("apfs" | "ap" | "corestorage") => args
+            .get(1)
+            .is_some_and(|a| a.eq_ignore_ascii_case("deleteContainer") || a.eq_ignore_ascii_case("eraseVolume")),
+        _ => false,
+    }
 }
 
 /// Why a command is never approved, when it is one of the fixed dangerous calls.
@@ -62,7 +81,10 @@ pub(super) fn dangerous(cmd: &str, cwd: &Path, home: Option<&Path>) -> Option<&'
                     .any(|f| *f == "--recursive" || (!f.starts_with("--") && f.chars().any(|c| c == 'r' || c == 'R')));
                 if recursive {
                     let broad = |a: &str| {
-                        matches!(a.trim_end_matches('/'), "" | "/*" | "~" | "$HOME" | "~/*" | "$HOME/*" | "/home")
+                        matches!(
+                            a.trim_end_matches('/'),
+                            "" | "/*" | "~" | "$HOME" | "~/*" | "$HOME/*" | "/home" | "/Users" | "/Users/*"
+                        )
                     };
                     if operands.iter().any(|a| broad(a)) {
                         return Some("rm -rf on the root or home folder");

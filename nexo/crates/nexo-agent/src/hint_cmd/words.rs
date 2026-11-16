@@ -33,7 +33,9 @@ pub(super) fn strip_wrappers(mut w: Vec<String>) -> Vec<String> {
         let skip = match program(first).as_str() {
             "env" => rest.iter().take_while(|a| a.starts_with('-') || is_assignment(a)).count(),
             "sudo" | "doas" => opts(&["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"]),
-            "time" | "nohup" | "exec" | "setsid" | "catchsegv" | "unbuffer" | "stdbuf" => opts(&[]),
+            "time" | "nohup" | "exec" | "setsid" | "catchsegv" | "unbuffer" | "stdbuf" | "caffeinate" => opts(&[]),
+            "arch" => opts(&["-arch", "-e", "-d"]),
+            "xcrun" => opts(&["--sdk", "-sdk", "--toolchain", "-toolchain"]),
             "nice" => opts(&["-n"]),
             "timeout" => {
                 let n = opts(&["-s", "-k", "--signal", "--kill-after"]);

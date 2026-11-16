@@ -204,6 +204,16 @@ mod tests {
         assert_eq!(n, "[sandbox: this command changed .git/hooks/pre-commit, which runs outside the sandbox later]");
     }
 
+    // APFS keeps names without regard to case: a write through `.GIT/hooks` is a write to `.git/hooks`, and the
+    // snapshot reads the real entries, so the note still fires.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_hook_written_through_another_case_is_still_seen() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join(".git/hooks")).unwrap();
+        let n = diff(d.path(), || fs::write(d.path().join(".GIT/hooks/pre-commit"), "x").unwrap()).unwrap();
+        assert!(n.to_lowercase().contains(".git/hooks/pre-commit"), "{n}");
+    }
     #[test]
     fn created_removed_and_resized_files_count() {
         let d = tempfile::tempdir().unwrap();

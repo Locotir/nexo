@@ -39,6 +39,8 @@ fn kinds() -> &'static [(&'static str, Regex)] {
                 r"command not found|is not recognized as|: not found\b|no such command|unknown command",
             ),
             ("no permission", r"permission denied|read-only file system|operation not permitted|access is denied"),
+            // GNU says "invalid option", BSD "illegal option" and a "usage:" line: the flags are for another userland
+            ("wrong flags", r"illegal option|invalid option|unknown option|unrecognized option|^usage:"),
             ("missing", r"no such file|does not exist|cannot find|can't open|not a directory|file not found"),
             ("timeout", r"timed out"),
         ]
@@ -363,6 +365,16 @@ mod tests {
         one(&mut r, "bash", c.clone(), "ls: cannot access 'one': No such file or directory", true);
         assert!(!tagged(&one(&mut r, "bash", c.clone(), "ls: cannot access 'two': No such file or directory", true)));
         assert!(tagged(&one(&mut r, "bash", c, "ls: cannot access 'two': No such file or directory", true)));
+    }
+
+    #[test]
+    fn bsd_flag_errors_are_a_repeat_the_second_time() {
+        let mut r = Repeats::default();
+        let c = json!({"command": "date -d yesterday"});
+        let out = "date: illegal option -- d\nusage: date [-jnRu] [-I[date|hours|minutes|seconds]] [-f input_fmt]";
+        assert!(!tagged(&one(&mut r, "bash", c.clone(), out, true)));
+        let t = one(&mut r, "bash", c, out, true);
+        assert!(tagged(&t) && t.contains("(wrong flags)"), "{t}");
     }
 
     #[test]
