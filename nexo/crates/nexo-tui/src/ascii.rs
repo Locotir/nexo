@@ -22,14 +22,34 @@ pub fn wanted_from(forced: &str, term: &str, locale: &str, legacy_windows: bool)
     !l.is_empty() && !l.contains("utf-8") && !l.contains("utf8")
 }
 
+/// Whether the environment looks like the bare legacy Windows console (conhost). Every modern
+/// terminal on Windows names itself through one of these variables (Windows Terminal, VS Code,
+/// WezTerm, Alacritty, ConEmu, Tabby, mintty, a TERM from ssh or MSYS), and they all draw braille
+/// and box glyphs; only a console that sets none of them is the one whose font has no braille.
+pub fn legacy_console(get: &dyn Fn(&str) -> String) -> bool {
+    const MODERN: [&str; 11] = [
+        "WT_SESSION",
+        "TERM",
+        "TERM_PROGRAM",
+        "WEZTERM_EXECUTABLE",
+        "ALACRITTY_LOG",
+        "ALACRITTY_SOCKET",
+        "ConEmuPID",
+        "ANSICON",
+        "COLORTERM",
+        "VSCODE_INJECTION",
+        "TABBY_CONFIG_DIRECTORY",
+    ];
+    MODERN.iter().all(|k| get(k).is_empty())
+}
+
 /// The fallback, read once from the environment.
 pub fn wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         let get = |k: &str| std::env::var(k).unwrap_or_default();
         let locale = ["LC_ALL", "LC_CTYPE", "LANG"].iter().map(|k| get(k)).find(|v| !v.is_empty()).unwrap_or_default();
-        // Windows Terminal sets WT_SESSION; the legacy console sets neither it nor TERM
-        let legacy = cfg!(windows) && get("WT_SESSION").is_empty() && get("TERM").is_empty();
+        let legacy = cfg!(windows) && legacy_console(&get);
         wanted_from(&get("NEXO_ASCII"), &get("TERM"), &locale, legacy)
     })
 }
@@ -110,6 +130,15 @@ mod tests {
         assert!(!wanted_from("", "", "", false));
         assert!(!wanted_from("0", "", "", true));
         assert!(wanted_from("1", "", "", false));
+    }
+
+    #[test]
+    fn only_a_console_that_names_no_modern_terminal_is_legacy() {
+        let with = |name: &'static str| move |k: &str| if k == name { "x".to_string() } else { String::new() };
+        assert!(legacy_console(&|_: &str| String::new()));
+        for k in ["WT_SESSION", "TERM", "TERM_PROGRAM", "WEZTERM_EXECUTABLE", "ALACRITTY_LOG", "ConEmuPID", "COLORTERM"] {
+            assert!(!legacy_console(&with(k)), "{k} should mark a modern terminal");
+        }
     }
 
     #[test]
