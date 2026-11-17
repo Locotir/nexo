@@ -111,7 +111,7 @@ starter file):
 
 ```toml
 [providers.myserver]
-protocol = "openai-chat"              # openai-chat | openai-responses | gemini
+protocol = "openai-chat"              # openai-chat | openai-responses | anthropic | gemini
 base_url = "http://localhost:8000/v1"
 api_key_env = "MYSERVER_API_KEY"      # or api_key_cmd = "...", or `nexo auth login myserver --key`
 models = ["my-model"]
@@ -133,7 +133,7 @@ server.
 | Message | Do |
 |---|---|
 | `needs a key: set $VAR, or run nexo auth login X` | one of the four ways in step 2 |
-| `no provider can be used` | step 2, then `nexo use <provider>` |
+| `no provider can be used`, `no provider chosen and no key found` | step 2, then `nexo use <provider>` |
 | `unknown provider` | `nexo providers --all` for the right name, or step 5 |
 | `401` / `auth` error | the key is wrong or the login expired: `nexo auth login <provider>` again |
 | `no Copilot chat access` | the GitHub account has no Copilot plan with chat |

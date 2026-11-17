@@ -467,6 +467,24 @@ mod tests {
         assert_eq!(login_cmd(&mut cfg, None, None, None).await.unwrap(), 0);
     }
 
+    /// The guide is what an assistant reads to set a provider up, so it names every protocol the code
+    /// accepts and the first words of both "nothing usable" errors it will meet.
+    #[test]
+    fn the_setup_guide_lists_every_protocol_and_both_nothing_chosen_errors() {
+        for id in [
+            nexo_providers::anthropic::ID,
+            nexo_providers::gemini::ID,
+            nexo_providers::openai_responses::ID,
+            "openai-chat",
+        ] {
+            assert!(GUIDE.contains(id), "the guide does not name the protocol {id}");
+        }
+        let first_line = crate::setup::nothing_chosen_message();
+        let first_line = first_line.lines().next().unwrap().to_string();
+        assert!(GUIDE.contains(&first_line), "the guide does not name {first_line:?}");
+        assert!(GUIDE.contains("no provider can be used"));
+    }
+
     #[test]
     fn a_hidden_key_is_what_was_typed_or_pasted_up_to_enter() {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
