@@ -100,7 +100,11 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             for (i, &idx) in p.ranked.iter().enumerate() {
                 let it = &p.items[idx];
                 let armed = i == p.selected && p.armed.as_deref() == Some(it.value.as_str());
-                let hint = if armed { "Del again delete · Esc keep" } else { it.hint.as_str() };
+                let hint = match (armed, p.kind) {
+                    (true, PickKind::Rewind) => "rewind to here? Enter again",
+                    (true, _) => "Del again delete · Esc keep",
+                    (false, _) => it.hint.as_str(),
+                };
                 // a picker that takes many shows which rows are ticked
                 let label_text = if p.multi {
                     format!("{} {}", if p.ticked.contains(&it.value) { "[x]" } else { "[ ]" }, it.label)

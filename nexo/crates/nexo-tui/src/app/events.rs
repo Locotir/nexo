@@ -439,6 +439,10 @@ impl App {
                 .filter_map(|r| Some((crate::app::sub::job_of_run(&r.info.id)?, r.info.id.clone())))
                 .collect();
             v.set_runs(runs);
+            #[cfg(any(unix, test))]
+            v.set_deliveries(
+                self.remote_left.iter().map(|(id, d)| (id.clone(), crate::app::sub::delivery_state(d))).collect(),
+            );
             if v.wants_tails(at) {
                 self.commands.send(AgentCommand::JobTails).ok();
             }

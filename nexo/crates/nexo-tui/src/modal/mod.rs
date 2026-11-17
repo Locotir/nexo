@@ -58,7 +58,8 @@ pub struct Picker {
     pub items: Vec<PickItem>,
     pub ranked: Vec<usize>,
     pub selected: usize,
-    /// The value a first Delete marked; a second Delete on it removes it (sessions only).
+    /// The value a first Delete marked; a second Delete on it removes it (sessions only). In the rewind
+    /// picker, the message a first Enter marked; a second Enter rewinds to it.
     pub armed: Option<String>,
     /// Space ticks rows and Enter takes all the ticked ones (the row under the cursor when none is ticked).
     pub multi: bool,
@@ -352,7 +353,8 @@ pub enum Modal {
     Setup(Box<Setup>),
     /// `/context`, `/usage`: a window with tabs.
     Info(Box<crate::overlay::Info>),
-    /// `/panel`: the agent sessions, read-only.
+    /// `/panel`: the agent sessions. Enter on another nexo session opens a live view of it, where typed text
+    /// goes to that session.
     Agents(Box<crate::agents_view::AgentsView>),
     /// `/jobs`: the background jobs and their output.
     Jobs(Box<crate::jobs_view::JobsView>),
@@ -375,6 +377,8 @@ pub enum Modal {
 pub enum ModalOut {
     Nothing,
     Close,
+    /// Close every window back to the chat (the close box of a window).
+    CloseAll,
     Permission {
         id: String,
         decision: PermissionDecision,
@@ -654,6 +658,15 @@ impl Modal {
                 KeyCode::Enter | KeyCode::Tab if p.multi && !p.ticked.is_empty() => {
                     ModalOut::PickMany { kind: p.kind, values: p.ticked.clone() }
                 }
+                // rewinding drops the turns after the message: the first Enter asks, the second rewinds
+                KeyCode::Enter if p.kind == PickKind::Rewind => {
+                    let Some(v) = p.current().map(|it| it.value.clone()) else { return ModalOut::Close };
+                    if p.armed.as_deref() == Some(v.as_str()) {
+                        return ModalOut::Pick { kind: p.kind, value: v };
+                    }
+                    p.armed = Some(v);
+                    ModalOut::Nothing
+                }
                 KeyCode::Enter | KeyCode::Tab => match p.current() {
                     Some(it) => ModalOut::Pick { kind: p.kind, value: it.value.clone() },
                     None => ModalOut::Close,
@@ -697,7 +710,7 @@ impl Modal {
             Modal::Sent(v) => v.key(key),
             Modal::Trust(t) => t.key(key),
             Modal::Info(i) => match key.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
+                KeyCode::Esc | KeyCode::Char('q') => ModalOut::Close,
                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                     i.next(1);
                     ModalOut::Nothing
@@ -744,7 +757,7 @@ impl Modal {
                     *scroll = 0;
                     ModalOut::Nothing
                 }
-                KeyCode::Esc | KeyCode::Enter => ModalOut::Close,
+                KeyCode::Esc => ModalOut::Close,
                 KeyCode::Char('?') if query.is_empty() => ModalOut::Close,
                 KeyCode::Up => {
                     *scroll = scroll.saturating_sub(1);

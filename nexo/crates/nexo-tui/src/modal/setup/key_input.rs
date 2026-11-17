@@ -3,6 +3,11 @@
 use super::*;
 
 impl Setup {
+    /// Whether a text field (an address, a key) has the keys: Ctrl+C then acts as Esc.
+    pub fn typing(&self) -> bool {
+        matches!(self.step, Step::Address | Step::Key)
+    }
+
     pub fn key(&mut self, key: KeyEvent) -> SetupOut {
         if key.code == KeyCode::Esc {
             return self.back();

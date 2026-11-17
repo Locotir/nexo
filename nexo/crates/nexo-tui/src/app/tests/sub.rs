@@ -218,7 +218,7 @@ fn enter_sends_to_that_run_only_and_a_slash_text_sends_nothing() {
     a.submit();
     assert!(drain(&mut rx).is_empty(), "no command runs from here");
     assert_eq!(a.input.text(), "/jobs", "the text stays in the box");
-    assert!(a.toasts.iter().any(|t| t.text == "commands run in the main chat · Esc back"));
+    assert!(a.toasts.iter().any(|t| t.text == "commands run in the main chat · Esc: back to the chat"));
     assert!(a.in_sub());
 }
 
@@ -848,7 +848,7 @@ fn remote_snapshots_refresh_isolate_local_events_and_restore_panel() {
         Box::new(crate::agents_view::AgentsView::with_rows(vec![panel_row("remote", SourceKind::Nexo)], 0, true));
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     a.open_remote_receiver(RUN, rx); // deliberately collide with a local run identity
-    a.sub_view.as_mut().unwrap().panel = Some(panel);
+    *a.back.last_mut().unwrap() = crate::app::types::Back::Sub(Some(Modal::Agents(panel)));
     let (observer, ends) = channels();
     ends.events.send(AgentEvent::SessionChanged { session_id: RUN.into(), title: String::new() }).unwrap();
     ends.events.send(AgentEvent::TextDelta { text: "first".into() }).unwrap();
@@ -901,10 +901,10 @@ fn remote_delivery_receipts_guard_uncertainty_and_preserve_edits() {
         RemoteDelivery::Sending { text: "message".into(), request_id: "request".into(), rx };
     tx.send(RemoteReceipt::Unknown).unwrap();
     a.sub_tick();
-    a.esc_sub();
-    assert_eq!(a.input.full_text(), "independent edit");
     a.submit_sub();
     assert!(matches!(a.sub_view.as_ref().unwrap().remote.as_ref().unwrap().delivery, RemoteDelivery::Unknown { .. }));
+    a.esc_sub();
+    assert_eq!(a.input.full_text(), "");
     a.esc_sub();
     assert!(!a.in_sub());
     assert!(a.input.history().iter().any(|s| s == "message"));
@@ -937,7 +937,7 @@ fn remote_identity_change_stays_invalid_after_disconnect() {
 }
 
 #[test]
-fn remote_pending_close_retries_after_receipt() {
+fn a_message_on_its_way_finishes_after_its_view_closes() {
     use super::super::sub::{RemoteDelivery, RemoteReceipt};
     let (mut a, _) = with_run();
     let (_tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -946,10 +946,10 @@ fn remote_pending_close_retries_after_receipt() {
     a.sub_view.as_mut().unwrap().remote.as_mut().unwrap().delivery =
         RemoteDelivery::Sending { text: "message".into(), request_id: "request".into(), rx };
     a.handle_agent(AgentEvent::HistoryCleared);
-    assert!(a.in_sub());
+    assert!(!a.in_sub());
     tx.send(RemoteReceipt::Accepted).unwrap();
     a.sub_tick();
-    assert!(!a.in_sub());
+    assert!(a.input.history().iter().any(|s| s == "message"));
 }
 
 #[test]

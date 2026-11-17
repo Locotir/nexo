@@ -7,6 +7,9 @@ use crate::app::{App, WHEEL_LINES};
 use crate::input::Edit;
 use crate::modal::contains;
 
+/// How long a permission card that just appeared ignores the keys that answer it.
+pub const PERMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Whether a click with these modifiers opens the link under the pointer: Ctrl everywhere, and Option on a Mac,
 /// where Ctrl+click is a right click that Terminal.app and iTerm2 never pass on.
 fn opens_link(mods: KeyModifiers, macos: bool) -> bool {
@@ -177,8 +180,29 @@ pub fn key(app: &mut App, k: KeyEvent) {
     app.dirty = true;
     // AltGr's characters are text, unless the person bound that very key (`ctrl+alt+/` in the keymap)
     let k = if app.keymap.action(&k).is_none() { altgr_char(k) } else { k };
+    let now = app.now();
     // a permission or question dialog takes the keys first; the diff viewer waits under it
     if let Some(m) = &mut app.modal {
+        // a permission card that just appeared does not take the keys that answer it: a key meant for
+        // what was on screen a moment ago must not allow or deny
+        if matches!(m, crate::modal::Modal::Permission(_))
+            && matches!(k.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('y' | 'Y' | 'n' | 'N'))
+            && app.permission_at.is_some_and(|t| now.saturating_duration_since(t) < PERMISSION_WAIT)
+        {
+            app.flash("a permission just appeared · read it, then answer");
+            return;
+        }
+        // Ctrl+C where text is typed in a window acts as Esc there: the text and the window stay
+        let typing = match m {
+            crate::modal::Modal::Agents(a) => a.typing(),
+            crate::modal::Modal::Setup(s) => s.typing(),
+            _ => false,
+        };
+        if typing && app.keymap.action(&k) == Some(Action::Cancel) {
+            let out = m.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            app.modal_out(out);
+            return;
+        }
         // Ctrl+C is never swallowed by a dialog: a permission is denied, a question left
         // unanswered, any other dialog closed; then it acts as at the prompt (stop, arm quit)
         if app.keymap.action(&k) == Some(Action::Cancel) {
@@ -199,8 +223,13 @@ pub fn key(app: &mut App, k: KeyEvent) {
             }
             return app.ctrl_c();
         }
+        // an Esc that closes a window is the start of the way back: the next quick presses stop there
+        let depth = app.back.len();
         let out = m.key(k);
         app.modal_out(out);
+        if k.code == KeyCode::Esc && (app.modal.is_none() || app.back.len() < depth) {
+            app.stepped_back_at = Some(app.now());
+        }
         return;
     }
     if app.diffview.is_some() {

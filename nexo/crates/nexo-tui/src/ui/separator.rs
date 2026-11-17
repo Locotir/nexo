@@ -136,8 +136,10 @@ fn sub_rule(app: &App, w: usize) -> Line<'static> {
         }
     }
     let (head, tail) = ("sub · ", if ended { " · ended" } else { "" });
-    // the rule keeps a dash and a space on each side
-    let room = w.saturating_sub(4);
+    // the rule keeps a dash and a space on each side, and room for the short way back (" esc ") when it can: the
+    // title is cut before the hint goes
+    let with_esc = w.saturating_sub(3 + width(" esc ") + 2);
+    let room = if with_esc >= width(head) + width(tail) + 2 { with_esc } else { w.saturating_sub(4) };
     let budget = room.saturating_sub(width(head) + width(tail));
     let label = if budget >= 2 || title.is_empty() {
         format!("{head}{}{tail}", truncate(&title, budget))
@@ -150,8 +152,8 @@ fn sub_rule(app: &App, w: usize) -> Line<'static> {
     }
     let dashes = w.saturating_sub(3 + width(&label));
     // the way back, dim at the right end, when the rule has room for it beside the title
-    let back = " esc back ";
-    if dashes >= width(back) + 4 {
+    let back = if dashes >= width(" esc back ") + 4 { " esc back " } else { " esc " };
+    if dashes >= width(back) + 2 {
         return Line::from(vec![
             Span::styled("─ ", line),
             Span::styled(label, theme.bold(theme.accent)),

@@ -293,7 +293,8 @@ impl App {
         }
         if trimmed.starts_with('/') && !starts_with_path(trimmed) {
             self.fx.reject_at = self.fx_on().then(|| self.now());
-            self.toast(Kind::Info, "commands run in the main chat · Esc back");
+            let back = format!("commands run in the main chat · Esc: back to {}", self.sub_back_target());
+            self.toast(Kind::Info, &back);
             return;
         }
         #[cfg(any(unix, test))]
@@ -315,43 +316,13 @@ impl App {
 
     /// Esc in the view: the text goes first, then the view. Nothing is interrupted.
     pub(in crate::app) fn esc_sub(&mut self) {
-        #[cfg(any(unix, test))]
-        if let Some(r) = self.sub_view.as_mut().and_then(|v| v.remote.as_mut()) {
-            match &r.delivery {
-                RemoteDelivery::Sending { .. } => {
-                    self.toast(Kind::Info, "remote delivery pending · please wait");
-                    return;
-                }
-                RemoteDelivery::Unknown { text, .. } => {
-                    if !r.abandon_unknown_confirm {
-                        r.abandon_unknown_confirm = true;
-                        self.toast(
-                            Kind::Error,
-                            "delivery may have succeeded · Esc again to leave; check before resending",
-                        );
-                        return;
-                    }
-                    let uncertain = text.clone();
-                    let draft = self.input.full_text();
-                    self.input.push_history(&uncertain);
-                    if !draft.is_empty() {
-                        self.input.push_history(&draft);
-                    }
-                    r.delivery = RemoteDelivery::Ready;
-                    self.close_sub();
-                    self.toast(
-                        Kind::Error,
-                        "delivery still unknown · texts saved in input history; check before resending",
-                    );
-                    return;
-                }
-                RemoteDelivery::Ready => {}
-            }
-        }
         if self.input.is_empty() {
             self.close_sub();
+            self.stepped_back_at = Some(self.now());
         } else {
+            self.keep_draft();
             self.input.clear();
+            self.flash("draft saved, ↑ brings it back · Esc again goes back");
         }
         self.dirty = true;
     }

@@ -224,6 +224,8 @@ pub struct AgentsView {
     history: Option<Result<nexo_agent::session::HistorySnapshot, String>>,
     /// The runs of this session's sub-agents by job id (a message to a running one goes to its run).
     runs: Vec<(u32, String)>,
+    /// Messages to other nexo sessions whose view was left before they were answered: row key, where it stands.
+    deliveries: Vec<(String, &'static str)>,
     /// The end of the output of this session's jobs, by job id, as `/jobs` reads it.
     tails: HashMap<u32, String>,
     /// The last time the tails were asked for.
@@ -304,6 +306,7 @@ impl AgentsView {
             history_rx: None,
             history: None,
             runs: Vec::new(),
+            deliveries: Vec::new(),
             tails: HashMap::new(),
             tails_asked: None,
             starter: nexo_core::team::spawn::runner,
@@ -393,6 +396,12 @@ impl AgentsView {
     /// The runs of this session's sub-agents, by job id: `n` on a running one sends to its run.
     pub fn set_runs(&mut self, runs: Vec<(u32, String)>) {
         self.runs = runs;
+    }
+
+    /// Where messages left on their way to other nexo sessions stand, by session id: the row says it in place
+    /// of its step.
+    pub fn set_deliveries(&mut self, deliveries: Vec<(String, &'static str)>) {
+        self.deliveries = deliveries.into_iter().map(|(id, state)| (format!("nexo:{id}"), state)).collect();
     }
 
     /// The end of the output of this session's jobs (the answer to `JobTails`).

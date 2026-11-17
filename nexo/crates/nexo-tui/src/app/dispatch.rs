@@ -95,19 +95,7 @@ impl App {
                 }
                 Err(e) => self.notice(Level::Warn, format!("/pricing: {e}")),
             },
-            Command::Settings => {
-                let on = |b: bool| if b { "on" } else { "off" };
-                let row = |label: &str, hint: String| PickItem { label: label.into(), value: label.into(), hint };
-                let items = vec![
-                    row("mouse", on(self.mouse_on).into()),
-                    row("timestamps", on(self.timestamps).into()),
-                    row("vim", on(self.input.vim.is_some()).into()),
-                    row("theme", self.theme.name.to_string()),
-                    row("permissions", self.permission_mode.as_str().to_string()),
-                ];
-                self.modal =
-                    Some(Modal::Picker(Picker::new(PickKind::Settings, "Settings · Enter switches", items, None)));
-            }
+            Command::Settings => self.modal = Some(self.settings_picker(None)),
             Command::Mouse => self.toggle_mouse(),
             Command::Timestamps => {
                 self.timestamps = !self.timestamps;

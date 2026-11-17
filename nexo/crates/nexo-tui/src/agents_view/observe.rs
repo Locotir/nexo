@@ -55,7 +55,7 @@ impl AgentsView {
             self.observe_scroll = self.observe_scroll.min(self.observe_max);
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.observing = None;
                 self.history_rx = None;
                 self.history = None;

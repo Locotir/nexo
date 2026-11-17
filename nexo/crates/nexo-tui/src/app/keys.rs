@@ -166,7 +166,13 @@ impl App {
     }
 
     pub fn quit(&mut self) {
+        // every unsent draft goes to history: the open view's, then the main chat's it holds
         self.keep_draft();
+        if self.sub_view.is_some() {
+            self.input.clear();
+            self.close_sub_to(false);
+            self.keep_draft();
+        }
         self.send(AgentCommand::Shutdown);
         self.should_quit = true;
     }
@@ -201,6 +207,22 @@ impl App {
             return;
         }
         self.last_ctrl_c = Some(now);
+        // in a run's view Ctrl+C acts on that run: it stops it, else steps back as Esc does
+        if self.in_sub() {
+            match self.sub_view.as_ref().filter(|_| self.sub_running()).and_then(|v| super::sub::job_of_run(&v.id)) {
+                Some(id) => {
+                    self.send(AgentCommand::KillJob { id: Some(id) });
+                    self.flash("stopping this sub-agent (Ctrl+C again to quit)");
+                }
+                None => {
+                    self.keep_draft();
+                    self.input.clear();
+                    self.close_sub();
+                    self.flash("Ctrl+C again to quit");
+                }
+            }
+            return;
+        }
         if self.busy {
             self.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
             self.flash("interrupting… (Ctrl+C again to quit)");
@@ -245,6 +267,11 @@ impl App {
             return self.esc_sub();
         }
         let now = self.now();
+        // the quick presses after an Esc that closed a window were meant for the way back: they stop there
+        if self.stepped_back_at.is_some_and(|t| now.saturating_duration_since(t) < STEP_BACK_WAIT) {
+            self.stepped_back_at = Some(now);
+            return;
+        }
         let again = self.last_esc.is_some_and(|t| now.duration_since(t).as_secs_f32() < 1.5);
         self.last_esc = Some(now);
         let after_interrupt = again && std::mem::take(&mut self.esc_interrupted);
@@ -277,6 +304,46 @@ impl App {
         self.dirty = true;
     }
 
+    /// `/settings`: one row per setting with its value, `at` the row selected.
+    pub(super) fn settings_picker(&self, at: Option<&str>) -> Modal {
+        let on = |b: bool| if b { "on" } else { "off" };
+        let row = |label: &str, hint: String| PickItem { label: label.into(), value: label.into(), hint };
+        let items = vec![
+            row("mouse", on(self.mouse_on).into()),
+            row("timestamps", on(self.timestamps).into()),
+            row("vim", on(self.input.vim.is_some()).into()),
+            row("theme", self.theme.name.to_string()),
+            row("permissions", self.permission_mode.as_str().to_string()),
+        ];
+        Modal::Picker(Picker::new(PickKind::Settings, "Settings · Enter switches", items, at))
+    }
+
+    /// The window on show closes; the window it was opened from comes back, else a queued permission.
+    pub(super) fn step_back_window(&mut self) {
+        self.pop_window();
+        self.next_permission();
+    }
+
+    /// The window on show closes; the window it was opened from comes back.
+    fn pop_window(&mut self) {
+        self.modal = None;
+        if matches!(self.back.last(), Some(Back::Window(_))) {
+            if let Some(Back::Window(m)) = self.back.pop() {
+                self.modal = Some(m);
+            }
+        }
+    }
+
+    /// /settings on show reads its values again (a switch, or a picker it opened, changed one).
+    pub(super) fn refresh_settings(&mut self) {
+        if let Some(Modal::Picker(p)) = &self.modal {
+            if p.kind == PickKind::Settings {
+                let at = p.current().map(|i| i.value.clone());
+                self.modal = Some(self.settings_picker(at.as_deref()));
+            }
+        }
+    }
+
     pub fn modal_out(&mut self, out: ModalOut) {
         match out {
             ModalOut::Nothing => self.sync_theme_preview(),
@@ -294,35 +361,21 @@ impl App {
                 });
                 if nexo && self.session_id.as_deref() == Some(key.as_str()) {
                     // this session's own row is the way back to its chat, from a run's or another session's
-                    // conversation too; the panel a run was entered from is not shown again
-                    if let Some(v) = self.sub_view.as_mut() {
-                        v.panel = None;
-                    }
-                    self.close_sub();
+                    // conversation too; the windows on the way back are not shown again
                     self.modal = None;
+                    self.close_sub_to(false);
+                    self.back.clear();
                     self.next_permission();
                 } else if let Some(id) = id {
-                    let panel = match self.modal.take() {
-                        Some(Modal::Agents(v)) => v,
-                        other => {
-                            self.modal = other;
-                            return;
-                        }
-                    };
-                    self.open_sub(&id);
-                    if let Some(view) = self.sub_view.as_mut() {
-                        view.panel = Some(panel);
-                    } else {
-                        self.modal = Some(Modal::Agents(panel));
+                    // the panel stays on the way back: Esc in the run's view returns to it
+                    if matches!(self.modal, Some(Modal::Agents(_))) {
+                        self.open_sub(&id);
+                        self.next_permission();
                     }
-                    self.next_permission();
                 } else if nexo && self.session_id.as_deref() != Some(&key) && !key.contains('.') {
                     #[cfg(unix)]
-                    if let Some(Modal::Agents(panel)) = self.modal.take() {
+                    if matches!(self.modal, Some(Modal::Agents(_))) {
                         self.open_remote(&key);
-                        if let Some(view) = self.sub_view.as_mut() {
-                            view.panel = Some(panel);
-                        }
                     }
                     #[cfg(not(unix))]
                     if let Some(Modal::Agents(view)) = &mut self.modal {
@@ -333,14 +386,24 @@ impl App {
                 }
             }
             ModalOut::OpenSub(id) => {
-                self.modal = None;
+                // the window that asked (/jobs) is where Esc in the run's view comes back to
                 self.open_sub(&id);
+                self.modal = None;
+                self.next_permission();
+            }
+            ModalOut::CloseAll => {
+                // every window on the way back closes; a run's view stays, Esc in it goes to the chat
+                self.end_theme_preview(false);
+                self.modal = None;
+                self.back.retain(|b| matches!(b, Back::Sub(_)));
+                for b in &mut self.back {
+                    *b = Back::Sub(None);
+                }
                 self.next_permission();
             }
             ModalOut::Close => {
                 self.end_theme_preview(false);
-                self.modal = None;
-                self.next_permission();
+                self.step_back_window();
             }
             ModalOut::Permission { id, decision } => {
                 // the card is in the main chat, whichever view the person is in
@@ -372,7 +435,7 @@ impl App {
                 Err(e) => self.notice(Level::Warn, format!("copy failed: {e}")),
             },
             ModalOut::SendAndClose(cmd) => {
-                self.modal = None;
+                self.pop_window();
                 if let AgentCommand::SaveModel { name, model, .. } = &cmd {
                     self.flash(&format!("{name}/{model}: saving and switching…"));
                 }
@@ -384,14 +447,15 @@ impl App {
                 self.next_permission();
             }
             ModalOut::PickMany { kind, values } => {
-                self.modal = None;
+                self.pop_window();
                 if kind == PickKind::Memory {
                     self.flash(&format!("reading {} sessions…", values.len()));
                     self.send(AgentCommand::ShareMemories { ids: values });
                 }
             }
             ModalOut::Pick { kind, value } => {
-                self.modal = None;
+                // the window it was opened from comes back first: a pick that opens another window covers it
+                self.pop_window();
                 match kind {
                     PickKind::Model => {
                         let (provider, model) = self.model_target(value);
@@ -444,7 +508,18 @@ impl App {
                             "theme" => Command::Theme(None),
                             _ => Command::Permissions(None),
                         };
+                        // Enter switches and stays; a picker it opens comes back here
+                        let at = Some(value.as_str());
+                        self.modal = None;
                         self.run_command(cmd);
+                        let settings = self.settings_picker(at);
+                        match self.modal.take() {
+                            Some(m) => {
+                                self.back.push(Back::Window(settings));
+                                self.modal = Some(m);
+                            }
+                            None => self.modal = Some(settings),
+                        }
                     }
                     PickKind::Queue => {
                         if let Ok(i) = value.parse::<usize>() {
@@ -469,6 +544,7 @@ impl App {
                 self.next_permission();
             }
         }
+        self.refresh_settings();
         self.dirty = true;
     }
 }

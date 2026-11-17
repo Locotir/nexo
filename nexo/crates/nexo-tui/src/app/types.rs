@@ -144,3 +144,11 @@ pub struct LinkHit {
 pub fn plan_value(usd: f64) -> String {
     format!("≈${usd:.4} API value")
 }
+
+/// One level of the way back: what Esc returns to (see `App::back`).
+pub enum Back {
+    /// A run's view is open; the window it was entered from (none: the chat).
+    Sub(Option<crate::modal::Modal>),
+    /// A window opened from this one (a picker from /settings).
+    Window(crate::modal::Modal),
+}

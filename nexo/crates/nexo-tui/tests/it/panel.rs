@@ -189,11 +189,11 @@ fn the_footer_lists_only_the_keys_that_act_on_the_selected_kind_of_row() {
     assert!(!keys.contains(&"n message") && !keys.contains(&"k stop"), "a lane without a session takes no mail");
     select(&mut v, "s1");
     let keys = v.footer_keys();
-    assert!(keys.contains(&"n message") && keys.contains(&"⏎ observe"), "{keys:?}");
+    assert!(keys.contains(&"n message") && keys.contains(&"⏎ back to chat"), "{keys:?}");
     assert!(!lane_keys.iter().any(|k| keys.contains(k)), "{keys:?}");
     select(&mut v, "s1.3");
     let keys = v.footer_keys();
-    assert!(keys.contains(&"n message") && keys.contains(&"k stop") && keys.contains(&"⏎ output"), "{keys:?}");
+    assert!(keys.contains(&"n message") && keys.contains(&"k stop") && keys.contains(&"⏎ live"), "{keys:?}");
     select(&mut v, "s1.4");
     let keys = v.footer_keys();
     assert!(!keys.contains(&"n message") && !keys.contains(&"k stop"), "a finished job: {keys:?}");

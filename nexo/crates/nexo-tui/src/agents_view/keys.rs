@@ -26,17 +26,30 @@ impl Route {
 }
 
 impl AgentsView {
+    /// Whether text is being typed here (a message, a form, a filter): Ctrl+C then acts as Esc.
+    pub fn typing(&self) -> bool {
+        self.edit.is_some() || self.form.is_some() || self.finding
+    }
+
     pub fn key(&mut self, key: KeyEvent) -> ModalOut {
         if let Some(t) = self.confirm.take() {
             self.answer_typing(t, matches!(key.code, KeyCode::Enter | KeyCode::Char('y')));
             return ModalOut::Nothing;
         }
-        if let Some(id) = self.kill_ask.take() {
-            if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                self.note = Some(format!("stopping job {id}"));
-                return ModalOut::Send(AgentCommand::KillJob { id: Some(id) });
+        // the same keys as the typing question above: Enter and y confirm, Esc and n cancel, the rest wait
+        if let Some(id) = self.kill_ask {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.kill_ask = None;
+                    self.note = Some(format!("stopping job {id}"));
+                    return ModalOut::Send(AgentCommand::KillJob { id: Some(id) });
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.kill_ask = None;
+                    self.note = Some(format!("job {id} keeps running"));
+                }
+                _ => {}
             }
-            self.note = Some(format!("job {id} keeps running"));
             return ModalOut::Nothing;
         }
         if self.edit.is_some() {
@@ -66,6 +79,12 @@ impl AgentsView {
             KeyCode::Esc if self.focus || self.open => {
                 self.focus = false;
                 self.open = false;
+            }
+            // a kept text filter goes first; the next Esc steps back
+            KeyCode::Esc if self.find.is_some() => {
+                let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
+                self.find = None;
+                self.retarget(keep);
             }
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
             KeyCode::Enter => return self.enter(),
@@ -486,20 +505,20 @@ impl AgentsView {
         self.refresh();
     }
 
-    /// A click on the close box closes. A click outside closes too, except while something is being typed
-    /// (it would be lost). A click on a tree line selects it, a second one soon after is Enter; a click in the
-    /// pane moves the keys there.
+    /// A click on the close box closes every window back to the chat. A click outside is Esc: one level up,
+    /// a message being typed is kept (`n` picks it up again). A click on a tree line selects it, a second one
+    /// soon after is Enter; a click in the pane moves the keys there.
     pub fn click(&mut self, x: u16, y: u16) -> ModalOut {
         self.click_at(x, y, Instant::now())
     }
 
     pub(super) fn click_at(&mut self, x: u16, y: u16, now: Instant) -> ModalOut {
         if contains(self.close, x, y) {
-            return ModalOut::Close;
+            return ModalOut::CloseAll;
         }
         let typing = self.edit.is_some() || self.confirm.is_some() || self.form.is_some() || self.finding;
         if !contains(self.window, x, y) {
-            return if typing { ModalOut::Nothing } else { ModalOut::Close };
+            return self.key(KeyEvent::from(KeyCode::Esc));
         }
         if typing || self.policy_page || self.observing.is_some() {
             return ModalOut::Nothing;

@@ -8,6 +8,7 @@ impl App {
     pub(super) fn on_permission_ask(&mut self, request: PermissionRequest) {
         if self.modal.is_none() {
             self.modal = Some(Modal::permission(request));
+            self.permission_at = Some(self.now());
         } else {
             self.pending_permissions.push_back(request);
         }

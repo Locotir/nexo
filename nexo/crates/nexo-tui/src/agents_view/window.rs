@@ -300,7 +300,7 @@ impl AgentsView {
                 }
                 Kind::This => {
                     k.push("n message");
-                    k.push("⏎ observe");
+                    k.push("⏎ back to chat");
                 }
                 Kind::Sub => {
                     if self.local_job().is_some_and(|j| self.runs.iter().any(|(id, _)| *id == j)) {
@@ -309,10 +309,10 @@ impl AgentsView {
                     if self.local_job().is_some() && row.state != State::Done {
                         k.push("k stop");
                     }
-                    k.push("⏎ output");
+                    k.push(if row.state == State::Done { "⏎ log" } else { "⏎ live" });
                 }
                 Kind::Job => {
-                    k.push("⏎ output");
+                    k.push(if row.state == State::Done { "⏎ log" } else { "⏎ live" });
                 }
                 Kind::Peer | Kind::Other => {
                     k.extend(["n message", "⏎ observe"]);

@@ -197,7 +197,8 @@ impl AgentsView {
                 if let Some(b) = self.badge(row, theme, now, fx) {
                     out.insert(0, (b.content.to_string(), b.style.fg.unwrap_or(theme.accent2)));
                 }
-                let step = row.last_step.clone().or_else(|| {
+                let delivery = self.deliveries.iter().find(|(k, _)| *k == row.key).map(|(_, s)| s.to_string());
+                let step = delivery.or_else(|| row.last_step.clone()).or_else(|| {
                     (kind == Kind::Peer || kind == Kind::Other).then(|| row.cwd.clone().map(|c| tilde(&c))).flatten()
                 });
                 (out, step)

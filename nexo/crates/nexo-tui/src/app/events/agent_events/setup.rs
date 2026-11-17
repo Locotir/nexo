@@ -49,6 +49,7 @@ impl App {
             self.fx.mode_at = Some(self.now());
         }
         self.permission_mode = mode;
+        self.refresh_settings();
         match mode {
             PermissionMode::Plan => self.flash("plan mode: reads only, then a plan to approve · Shift+Tab leaves"),
             _ => self.flash(&format!("permissions: {}", mode.as_str())),

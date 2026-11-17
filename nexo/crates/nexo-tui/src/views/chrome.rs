@@ -63,7 +63,7 @@ impl ChromeView {
 
     pub fn key(&mut self, key: KeyEvent, now: Instant) -> ModalOut {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => ModalOut::Close,
+            KeyCode::Esc | KeyCode::Char('q') => ModalOut::Close,
             KeyCode::Char('s') => ModalOut::Send(AgentCommand::ChromeSetup),
             KeyCode::Char('c') => match self.folder() {
                 Some(f) => ModalOut::Copy(f),

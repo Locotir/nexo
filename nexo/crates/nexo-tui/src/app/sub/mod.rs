@@ -111,8 +111,6 @@ pub struct SubView {
     main_in: bool,
     /// What the person had typed in the main chat's box.
     draft: Option<crate::input::Draft>,
-    /// Panel to return to when entered from it.
-    pub(super) panel: Option<Box<crate::agents_view::AgentsView>>,
     /// The transcript answer came.
     answered: bool,
     /// Items the answer held: item events up to this count are in the view already.
@@ -138,8 +136,6 @@ pub(super) struct RemoteView {
     pub(super) delivery: RemoteDelivery,
     identity: Option<nexo_core::agent::ObservationTarget>,
     invalid: bool,
-    close_requested: bool,
-    abandon_unknown_confirm: bool,
 }
 
 #[cfg(any(unix, test))]
@@ -154,6 +150,15 @@ pub(super) enum RemoteDelivery {
     Ready,
     Sending { text: String, request_id: String, rx: std::sync::mpsc::Receiver<RemoteReceipt> },
     Unknown { text: String, request_id: String },
+}
+
+/// Where a message left on its way to another session stands, in the words of its panel row.
+#[cfg(any(unix, test))]
+pub(super) fn delivery_state(d: &RemoteDelivery) -> &'static str {
+    match d {
+        RemoteDelivery::Unknown { .. } => "delivery unknown · do not resend",
+        _ => "sending your message…",
+    }
 }
 
 #[cfg(any(unix, test))]
@@ -189,11 +194,31 @@ impl App {
         self.sub_view.as_ref().filter(|v| !v.main_in).map_or(0, |v| v.pending)
     }
 
+    /// Where Esc in the open view goes back to, in words.
+    pub fn sub_back_target(&self) -> &'static str {
+        match self.back.iter().rev().find_map(|b| match b {
+            Back::Sub(origin) => Some(origin),
+            Back::Window(_) => None,
+        }) {
+            Some(Some(crate::modal::Modal::Agents(_))) => "the panel",
+            Some(Some(crate::modal::Modal::Jobs(_))) => "/jobs",
+            Some(Some(_)) => "the window",
+            _ => "the chat",
+        }
+    }
+
+    /// Whether the run whose view is open still runs.
+    pub fn sub_running(&self) -> bool {
+        let Some(v) = self.sub_view.as_ref().filter(|v| !v.main_in) else { return false };
+        self.sub_runs.iter().any(|r| r.info.id == v.id && r.info.state.running())
+    }
+
     /// The open run's title and whether it ended, for the rule over the box.
     pub fn sub_label(&self) -> Option<(String, bool)> {
         let v = self.sub_view.as_ref().filter(|v| !v.main_in)?;
         if v.is_remote() {
-            return Some((format!("remote · {} · directed", v.id), false));
+            // what is typed here goes to that session: the rule says so
+            return Some((format!("to {}", v.id), false));
         }
         Some(match self.sub_runs.iter().find(|r| r.info.id == v.id) {
             Some(r) => (r.info.title.clone(), !r.info.state.running()),
@@ -253,12 +278,18 @@ impl App {
             return;
         }
         if self.sub_view.as_ref().is_some_and(|v| v.id == id) {
+            // already on show: the window that led here closes, the way back stays as it was
+            self.modal = None;
             return;
         }
-        self.close_sub();
+        // the window on screen is where Esc comes back to; a view open before is left, not gone back to
+        let origin = self.modal.take();
+        self.close_sub_to(false);
         if self.sub_view.is_some() {
+            self.modal = origin;
             return;
         }
+        self.back.push(Back::Sub(origin));
         self.palette = None;
         self.suggestion = None;
         let draft = self.input.take_draft();
@@ -269,7 +300,6 @@ impl App {
             parked: Parked::empty(),
             main_in: true,
             draft: Some(draft),
-            panel: None,
             pending: 0,
             answered: false,
             base: 0,
@@ -284,23 +314,28 @@ impl App {
         self.dirty = true;
     }
 
-    /// Back to the main chat, as it was.
+    /// Back one level: to the window the view was entered from, else to the main chat as it was.
     pub fn close_sub(&mut self) {
+        self.close_sub_to(true);
+    }
+
+    /// Closes the view; with `back`, the window it was entered from comes back.
+    pub(super) fn close_sub_to(&mut self, back: bool) {
         if self.sub_view.is_none() {
             return;
         }
+        // a message still on its way goes on without the view; its state shows on the panel row
         #[cfg(any(unix, test))]
-        if self
-            .sub_view
-            .as_ref()
-            .and_then(|v| v.remote.as_ref())
-            .is_some_and(|r| !matches!(r.delivery, RemoteDelivery::Ready))
-        {
-            if let Some(r) = self.sub_view.as_mut().and_then(|v| v.remote.as_mut()) {
-                r.close_requested = true;
+        if let Some(v) = self.sub_view.as_mut() {
+            if let Some(r) = v.remote.as_mut() {
+                let delivery = std::mem::replace(&mut r.delivery, RemoteDelivery::Ready);
+                if let RemoteDelivery::Unknown { text, .. } = &delivery {
+                    self.input.push_history(text);
+                }
+                if !matches!(delivery, RemoteDelivery::Ready) {
+                    self.remote_left.push((v.id.clone(), delivery));
+                }
             }
-            self.toast(Kind::Error, "remote delivery unresolved · close deferred");
-            return;
         }
         if self.in_sub() {
             self.swap_fields();
@@ -309,8 +344,13 @@ impl App {
             if let Some(d) = v.draft {
                 self.input.put_draft(d);
             }
-            if self.modal.is_none() {
-                self.modal = v.panel.map(Modal::Agents);
+        }
+        // this view's level of the way back goes, with any window opened inside the view
+        if let Some(i) = self.back.iter().rposition(|b| matches!(b, Back::Sub(_))) {
+            if let Some(Back::Sub(origin)) = self.back.drain(i..).next() {
+                if back && self.modal.is_none() {
+                    self.modal = origin;
+                }
             }
         }
         self.palette = None;

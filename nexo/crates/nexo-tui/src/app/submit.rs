@@ -104,6 +104,7 @@ impl App {
         if self.modal.is_none() {
             if let Some(r) = self.pending_permissions.pop_front() {
                 self.modal = Some(Modal::permission(r));
+                self.permission_at = Some(self.now());
             } else if let Some(q) = self.pending_questions.pop_front() {
                 self.modal = Some(Modal::question(q));
             }

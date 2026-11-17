@@ -56,10 +56,13 @@ impl App {
         id: &str,
         rx: std::sync::mpsc::Receiver<Result<RemoteUpdate, String>>,
     ) {
-        self.close_sub();
+        let origin = self.modal.take();
+        self.close_sub_to(false);
         if self.sub_view.is_some() {
+            self.modal = origin;
             return;
         }
+        self.back.push(Back::Sub(origin));
         self.palette = None;
         self.suggestion = None;
         let draft = self.input.take_draft();
@@ -74,13 +77,10 @@ impl App {
                 delivery: RemoteDelivery::Ready,
                 identity: None,
                 invalid: false,
-                close_requested: false,
-                abandon_unknown_confirm: false,
             }),
             parked: Parked::empty(),
             main_in: true,
             draft: Some(draft),
-            panel: None,
             pending: 0,
             answered: false,
             base: 0,
@@ -89,6 +89,13 @@ impl App {
             last_ask: None,
             again: false,
         });
+        // a message left on its way to this session belongs to the view again
+        if let Some(i) = self.remote_left.iter().position(|(k, _)| k == id) {
+            let (_, delivery) = self.remote_left.remove(i);
+            if let Some(r) = self.sub_view.as_mut().and_then(|v| v.remote.as_mut()) {
+                r.delivery = delivery;
+            }
+        }
         self.swap_fields();
         self.push(Block::Notice { level: Level::Info, text: "Connecting to remote observation…".into() });
         self.dirty = true;
@@ -97,6 +104,7 @@ impl App {
     #[cfg(any(unix, test))]
     pub(super) fn remote_tick(&mut self) {
         self.remote_delivery_tick();
+        self.remote_left_tick();
         let result = self.sub_view.as_ref().and_then(|v| v.remote.as_ref()).and_then(|r| match r.rx.try_recv() {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
@@ -226,20 +234,44 @@ impl App {
             }
         }
         self.dirty = true;
-        let close = self
-            .sub_view
-            .as_ref()
-            .and_then(|v| v.remote.as_ref())
-            .is_some_and(|r| r.close_requested && matches!(r.delivery, RemoteDelivery::Ready));
-        if close {
-            let draft = self.input.full_text();
-            if !draft.is_empty() {
-                self.input.push_history(&draft);
-            }
-            self.close_sub();
-            if !draft.is_empty() {
-                self.toast(Kind::Info, "remote draft saved in input history");
-            }
+    }
+
+    /// The receipts of messages whose view was left: the text goes to the input history and a toast says how it
+    /// ended; an unknown one stays, locked, for the panel row and for the view when it opens again.
+    pub(super) fn remote_left_tick(&mut self) {
+        let mut ended = Vec::new();
+        for (id, delivery) in &mut self.remote_left {
+            let RemoteDelivery::Sending { text, request_id, rx } = delivery else { continue };
+            let result = match rx.try_recv() {
+                Ok(result) => result,
+                Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => RemoteReceipt::Unknown,
+            };
+            let text = std::mem::take(text);
+            *delivery = if matches!(result, RemoteReceipt::Unknown) {
+                RemoteDelivery::Unknown { text: text.clone(), request_id: std::mem::take(request_id) }
+            } else {
+                RemoteDelivery::Ready
+            };
+            ended.push((id.clone(), text, result));
+        }
+        self.remote_left.retain(|(_, d)| !matches!(d, RemoteDelivery::Ready));
+        for (id, text, result) in ended {
+            self.input.push_history(&text);
+            let id = safe_tool_text(&id);
+            let kind = if matches!(result, RemoteReceipt::Accepted) { Kind::Info } else { Kind::Error };
+            let line = match result {
+                RemoteReceipt::Accepted => format!("message to {id} consumed"),
+                RemoteReceipt::Rejected(reason) => {
+                    format!("{id} rejected the message: {} · text in input history", safe_tool_text(&reason))
+                }
+                RemoteReceipt::BeforeSend(error) => {
+                    format!("message to {id} not sent: {} · text in input history", safe_tool_text(&error))
+                }
+                RemoteReceipt::Unknown => format!("delivery to {id} unknown · do not resend"),
+            };
+            self.toast(kind, &line);
+            self.dirty = true;
         }
     }
 

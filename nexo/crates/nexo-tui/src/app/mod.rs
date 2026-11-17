@@ -51,6 +51,8 @@ pub use status_and_call_text::*;
 pub use types::*;
 
 pub const WHEEL_LINES: usize = 3;
+/// How long after an Esc that closed a window or a view further Esc presses are swallowed.
+pub const STEP_BACK_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
 const MAX_PROGRESS: usize = 500;
 /// Columns of the changed-files panel, and the narrowest terminal that gets one.
 pub const FILES_PANEL_W: u16 = 30;
@@ -168,6 +170,10 @@ pub struct App {
     /// was started with.
     pub(super) panel_full: bool,
     pub(super) panel_notes: Vec<String>,
+    /// Messages sent from a remote view that was left before they were answered, by session id: they go on,
+    /// and the panel row of that session says where they stand.
+    #[cfg(any(unix, test))]
+    remote_left: Vec<(String, sub::RemoteDelivery)>,
     pub(super) panel_policy: Option<nexo_supervise::Policy>,
     pub spinner: usize,
     /// A conversation was loaded and the curator has not yet said what it keeps: the footer shows a spinner.
@@ -377,6 +383,12 @@ pub struct App {
     /// When the palette and the dialog on top opened: they pop in.
     pub palette_at: Option<Instant>,
     pub modal_at: Option<Instant>,
+    /// Where Esc goes back to, one entry per level opened from another, the newest last.
+    pub back: Vec<Back>,
+    /// When an Esc last closed a window or a view: quick Esc presses after it are swallowed.
+    pub stepped_back_at: Option<Instant>,
+    /// When the permission card on show appeared: its answer keys wait a moment.
+    pub permission_at: Option<Instant>,
     /// Whether the last frame had a palette, a dialog: what is new this frame pops.
     pub palette_was: bool,
     pub modal_was: bool,
@@ -446,6 +458,8 @@ impl App {
             fleet_at: None,
             panel_full: false,
             panel_notes: Vec::new(),
+            #[cfg(any(unix, test))]
+            remote_left: Vec::new(),
             panel_policy: None,
             spinner: 0,
             context_wait: false,
@@ -566,6 +580,9 @@ impl App {
             turns_ended: 0,
             palette_at: None,
             modal_at: None,
+            back: Vec::new(),
+            stepped_back_at: None,
+            permission_at: None,
             palette_was: false,
             dialog_size: Default::default(),
             kept_draft: None,
