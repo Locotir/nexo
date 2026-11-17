@@ -29,9 +29,28 @@ const KEPT: &[&str] = &[
 /// input; reference cycles are caught on their own.
 const MAX_DEPTH: usize = 64;
 
+/// How many references one schema may inline. Definitions that refer to each other several times
+/// grow exponentially when inlined, and the depth limit does not bound that; past the budget the
+/// further references become plain objects, which keeps the request small and the cleaning fast.
+/// Only references are counted, so the plain properties of a tool are never starved by a big one.
+const MAX_EXPANSIONS: usize = 2000;
+
+/// What the cleaning of one schema carries along: where local `$ref`s point into, the references
+/// being expanded right now (so a cycle ends in a plain object instead of looping) and how many
+/// references were inlined so far.
+struct Cx<'a> {
+    root: &'a Value,
+    stack: Vec<String>,
+    expansions: usize,
+}
+
 /// The schema as the function declaration takes it.
 pub fn clean_schema(v: &Value) -> Value {
-    norm(v, v, &mut Vec::new(), 0)
+    let mut cx = Cx { root: v, stack: Vec::new(), expansions: 0 };
+    let mut out = norm(v, &mut cx, 0);
+    // the top level is the caller's to judge: a tool with no arguments goes without `parameters`
+    prune(&mut out);
+    out
 }
 
 /// The stand-in for a schema we cannot express: a reference that loops or points nowhere.
@@ -72,9 +91,8 @@ fn fill(into: &mut Map<String, Value>, from: &Map<String, Value>) {
     }
 }
 
-/// One schema node. `root` is where local `$ref`s point into and `stack` the references being
-/// expanded right now, so a cycle ends in a plain object instead of looping.
-fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Value {
+/// One schema node.
+fn norm(node: &Value, cx: &mut Cx, depth: usize) -> Value {
     let Value::Object(o) = node else {
         // `true` and `false` schemas, or junk: no constraint we can express
         return json!({});
@@ -83,10 +101,15 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
         return any_object();
     }
     if let Some(r) = o.get("$ref") {
+        cx.expansions += 1;
+        if cx.expansions > MAX_EXPANSIONS {
+            return any_object();
+        }
+        let root = cx.root;
         // a local reference is inlined, with the keys beside it (a description, say) on top
         let target = r
             .as_str()
-            .filter(|r| !stack.iter().any(|s| s == r))
+            .filter(|r| !cx.stack.iter().any(|s| s == r))
             .and_then(|r| r.strip_prefix('#').map(|p| (r, p)))
             .and_then(|(r, p)| root.pointer(p).map(|t| (r.to_string(), t)));
         let Some((r, Value::Object(t))) = target else { return any_object() };
@@ -96,9 +119,9 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
                 merged.insert(k.clone(), v.clone());
             }
         }
-        stack.push(r);
-        let out = norm(&Value::Object(merged), root, stack, depth + 1);
-        stack.pop();
+        cx.stack.push(r);
+        let out = norm(&Value::Object(merged), cx, depth + 1);
+        cx.stack.pop();
         return out;
     }
 
@@ -107,18 +130,25 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
     let mut types: Vec<String> = Vec::new();
     let mut enum_values: Option<Vec<Value>> = None;
     let mut format: Option<&Value> = None;
+    let mut tuple: Vec<Value> = Vec::new();
     for (k, v) in o {
         match k.as_str() {
             // the children of `properties` are names chosen by the tool, not keywords
             "properties" => {
                 if let Value::Object(props) = v {
-                    let kept = props.iter().map(|(n, s)| (n.clone(), norm(s, root, stack, depth + 1))).collect();
+                    let kept = props.iter().map(|(n, s)| (n.clone(), norm(s, cx, depth + 1))).collect();
                     out.insert(k.clone(), Value::Object(kept));
                 }
             }
-            // the tuple form (an array of schemas) has no counterpart
             "items" if v.is_object() || v.is_boolean() => {
-                out.insert(k.clone(), norm(v, root, stack, depth + 1));
+                out.insert(k.clone(), norm(v, cx, depth + 1));
+            }
+            // the tuple form (an array of schemas) has no counterpart; what the positions have in
+            // common is kept below
+            "items" => {
+                if let Value::Array(members) = v {
+                    tuple = members.iter().map(|m| norm(m, cx, depth + 1)).collect();
+                }
             }
             "type" => match v {
                 Value::String(t) => types.push(t.clone()),
@@ -152,7 +182,7 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
     // `allOf` of objects is one object with all the properties and required names
     let all_of = o.get("allOf").and_then(Value::as_array).into_iter().flatten();
     for m in all_of {
-        if let Value::Object(m) = norm(m, root, stack, depth + 1) {
+        if let Value::Object(m) = norm(m, cx, depth + 1) {
             fill(&mut out, &m);
         }
     }
@@ -164,7 +194,7 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
         if is_null_schema(m) {
             nullable = true;
         } else {
-            members.push(norm(m, root, stack, depth + 1));
+            members.push(norm(m, cx, depth + 1));
         }
     }
     match members.len() {
@@ -186,6 +216,24 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
     }
 
     let ty = out.get("type").and_then(Value::as_str).map(str::to_string);
+
+    // The API answers 400 to an array without `items`. A tuple is widened to the choice of its
+    // positions and the model is told the order; anything else gets the scalar types.
+    if ty.as_deref() == Some("array") && out.get("items").is_none_or(untyped) {
+        let items = widen(&tuple);
+        if tuple.len() > 1 {
+            let kinds: Vec<&str> = tuple.iter().filter_map(|m| m.get("type").and_then(Value::as_str)).collect();
+            if kinds.len() == tuple.len() {
+                let note = format!("Items by position: {}.", kinds.join(", "));
+                let text = match out.get("description").and_then(Value::as_str) {
+                    Some(d) if !d.is_empty() => format!("{d} {note}"),
+                    _ => note,
+                };
+                out.insert("description".into(), Value::String(text));
+            }
+        }
+        out.insert("items".into(), items);
+    }
 
     // only the formats the API lists, and only on the type that has them
     if let (Some(Value::String(f)), Some(ty)) = (format, ty.as_deref()) {
@@ -225,4 +273,66 @@ fn norm(node: &Value, root: &Value, stack: &mut Vec<String>, depth: usize) -> Va
         out.insert("nullable".into(), Value::Bool(true));
     }
     Value::Object(out)
+}
+
+/// A schema that says nothing about the type of a value.
+fn untyped(v: &Value) -> bool {
+    v.get("type").is_none() && v.get("anyOf").is_none()
+}
+
+/// One schema for the members of a tuple: the member itself, the choice between distinct ones,
+/// or, with no members, the choice between the scalar types (an object has no usable form here).
+fn widen(members: &[Value]) -> Value {
+    let mut distinct: Vec<Value> = Vec::new();
+    for m in members.iter().filter(|m| !untyped(m)) {
+        if !distinct.contains(m) {
+            distinct.push(m.clone());
+        }
+    }
+    match distinct.len() {
+        0 => json!({"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]}),
+        1 => distinct.remove(0),
+        _ => json!({"anyOf": distinct}),
+    }
+}
+
+/// Whether the API would reject this node: an object with no properties ("should be non-empty
+/// for OBJECT type"), an array of such objects, a choice with nothing left to choose from.
+/// Everywhere below the top, such a node is cut out of its parent and the parent's description
+/// names what is missing, so the model knows it cannot pass it. The top level is left to the
+/// caller, which sends a tool with no arguments without `parameters`.
+fn prune(node: &mut Value) -> bool {
+    let Value::Object(o) = node else { return false };
+    let mut left_out: Vec<String> = Vec::new();
+    if let Some(Value::Object(props)) = o.get_mut("properties") {
+        props.retain(|name, schema| {
+            let unusable = prune(schema);
+            if unusable {
+                left_out.push(name.clone());
+            }
+            !unusable
+        });
+    }
+    if !left_out.is_empty() {
+        if let Some(Value::Array(required)) = o.get_mut("required") {
+            required.retain(|r| r.as_str().is_none_or(|r| !left_out.iter().any(|n| n == r)));
+        }
+        let note = format!("Not offered here, the API cannot take their schema: {}.", left_out.join(", "));
+        let text = match o.get("description").and_then(Value::as_str) {
+            Some(d) if !d.is_empty() => format!("{d} {note}"),
+            _ => note,
+        };
+        o.insert("description".into(), Value::String(text));
+    }
+    if o.get_mut("items").is_some_and(prune) {
+        return true;
+    }
+    if let Some(Value::Array(members)) = o.get_mut("anyOf") {
+        members.retain_mut(|m| !prune(m));
+        if members.is_empty() {
+            return true;
+        }
+    }
+    let no_properties = o.get("properties").and_then(Value::as_object).is_none_or(|p| p.is_empty());
+    o.get("type").and_then(Value::as_str) == Some("object") && no_properties && !o.contains_key("anyOf")
 }
