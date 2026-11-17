@@ -169,6 +169,7 @@ fn parses_typed_events() {
             cache_read: 20,
             cache_write: 0,
             cache_write_1h: 0,
+            dropped_blocks: 0,
             reasoning: 4
         })
     );

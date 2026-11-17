@@ -162,6 +162,7 @@ fn parses_named_events_with_cache_usage() {
             cache_read: 90,
             cache_write: 5,
             cache_write_1h: 0,
+            dropped_blocks: 0,
             reasoning: 0
         })
     );
@@ -655,4 +656,35 @@ fn usage_reads_the_one_hour_part_of_the_writes_and_prices_it() {
         nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 500.0 * 2.50 + 1500.0 * 4.0) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
+}
+
+fn usage_of(events: &[&str]) -> nexo_core::Usage {
+    let mut p = MessagesParser::default();
+    let mut evs = Vec::new();
+    for e in events {
+        evs.extend(p.feed(e));
+    }
+    evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap()
+}
+
+#[test]
+fn usage_counts_the_blocks_the_server_rewrote_in_the_history() {
+    let done = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
+    let start = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[{"a":1},{"b":2}]}}"#;
+    assert_eq!(usage_of(&[start, done]).dropped_blocks, 2);
+    // the count may come with the closing delta instead of the opening message
+    let late = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4},"input_transformations":[{"a":1}]}"#;
+    let open =
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[]}}"#;
+    assert_eq!(usage_of(&[open, late]).dropped_blocks, 1);
+}
+
+#[test]
+fn usage_counts_no_dropped_blocks_when_the_array_is_empty_or_missing() {
+    let done = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
+    let empty =
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[]}}"#;
+    let none = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10}}}"#;
+    assert_eq!(usage_of(&[empty, done]).dropped_blocks, 0);
+    assert_eq!(usage_of(&[none, done]).dropped_blocks, 0);
 }

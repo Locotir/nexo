@@ -43,6 +43,7 @@ impl Feed for MessagesParser {
                     model: m["model"].as_str().map(String::from),
                 });
                 self.take_usage(&m["usage"]);
+                self.take_transformations(m);
             }
             "content_block_start" => {
                 let idx = v["index"].as_u64().unwrap_or(0);
@@ -116,6 +117,7 @@ impl Feed for MessagesParser {
             }
             "message_delta" => {
                 self.take_usage(&v["usage"]);
+                self.take_transformations(&v);
                 if let Some(r) = v["delta"]["stop_reason"].as_str() {
                     out.extend(self.end_calls());
                     if !self.prog.finished {
@@ -207,6 +209,16 @@ impl MessagesParser {
         // the split of the writes by lifetime, where the response gives one
         if let Some(n) = u["cache_creation"]["ephemeral_1h_input_tokens"].as_u64() {
             self.usage.cache_write_1h = n;
+        }
+    }
+
+    /// How many blocks the server rewrote in the request history, from the `input_transformations`
+    /// array that sits beside `usage`. With `drop_block` binding this is how many reasoning blocks the
+    /// prefix no longer matched. Only the length is read, since the shape of an entry is not documented;
+    /// a later value replaces an earlier one, and a response that has no such array leaves the count alone.
+    fn take_transformations(&mut self, holder: &Value) {
+        if let Some(a) = holder["input_transformations"].as_array() {
+            self.usage.dropped_blocks = a.len() as u64;
         }
     }
 

@@ -74,6 +74,8 @@ pub struct Tally {
     pub cache_write: u64,
     pub output: u64,
     pub reasoning: u64,
+    /// History blocks the server dropped or rewrote, summed over the calls' `input_transformations`.
+    pub dropped_blocks: u64,
     pub cost: f64,
     /// Calls that spent tokens and no money: the model has no price.
     pub unpriced: u64,
@@ -108,6 +110,7 @@ impl Tally {
         self.cache_write += o.cache_write;
         self.output += o.output;
         self.reasoning += o.reasoning;
+        self.dropped_blocks += o.dropped_blocks;
         self.cost += o.cost;
         self.unpriced += o.unpriced;
         self.long_calls += o.long_calls;

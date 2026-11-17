@@ -593,6 +593,7 @@ mod tests {
             cache_read: 1_000_000,
             cache_write: 1_000_000,
             cache_write_1h: 0,
+            dropped_blocks: 0,
             reasoning: 0,
         };
         let cost = |m: &str| a.pricing_for(m).unwrap().cost(&u);

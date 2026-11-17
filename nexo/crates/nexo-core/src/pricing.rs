@@ -81,6 +81,7 @@ mod tests {
             cache_read: 2_000_000,
             cache_write: 1_000_000,
             cache_write_1h: 0,
+            dropped_blocks: 0,
             reasoning: 0,
         };
         assert!((p.cost(&u) - (1.0 + 1.0 + 0.2 + 1.0)).abs() < 1e-9);
