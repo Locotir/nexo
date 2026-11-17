@@ -14,6 +14,8 @@ pub struct ResponsesParser {
     calls: Vec<(u64, String, String, String)>,
     /// Reasoning items by output index: their ids.
     reasoning: Vec<(u64, String)>,
+    /// Output indexes whose text arrived as deltas, so a finished message item is not emitted twice.
+    seen_text: Vec<u64>,
     prog: Progress,
     start_sent: bool,
 }
@@ -58,6 +60,10 @@ impl Feed for ResponsesParser {
             // a refusal is the model's answer, and the person reads it
             "response.output_text.delta" | "response.refusal.delta" => {
                 if let Some(d) = v["delta"].as_str() {
+                    let idx = v["output_index"].as_u64().unwrap_or(0);
+                    if !self.seen_text.contains(&idx) {
+                        self.seen_text.push(idx);
+                    }
                     self.prog.content = true;
                     out.push(StreamEvent::TextDelta(d.to_string()));
                 }
@@ -68,8 +74,10 @@ impl Feed for ResponsesParser {
                     out.push(StreamEvent::ReasoningDelta(d.to_string()));
                 }
             }
-            "response.reasoning_summary_text.done" | "response.reasoning_summary_part.done" => {
-                // a paragraph break between summary parts
+            "response.reasoning_summary_part.added" if v["summary_index"].as_u64().unwrap_or(0) >= 1 => {
+                // a paragraph break before every part but the first. The API ends each part with two
+                // events (`text.done` and `part.done`), so a break on those would double up and
+                // would also trail the last part.
                 out.push(StreamEvent::ReasoningDelta("\n".into()));
             }
             "response.output_item.added" => {
@@ -119,6 +127,24 @@ impl Feed for ResponsesParser {
                         let enc = item["encrypted_content"].as_str().map(String::from);
                         if id.is_some() || enc.is_some() {
                             out.push(StreamEvent::ReasoningMeta { signature: id, encrypted: enc });
+                        }
+                    }
+                    Some("message") if !self.seen_text.contains(&idx) => {
+                        // a server that sends the finished message without text deltas (some proxies,
+                        // short replies): without this the turn would end empty and without an error
+                        let text: String = item["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|c| match c["type"].as_str() {
+                                Some("output_text") => c["text"].as_str(),
+                                Some("refusal") => c["refusal"].as_str(),
+                                _ => None,
+                            })
+                            .collect();
+                        if !text.is_empty() {
+                            self.prog.content = true;
+                            out.push(StreamEvent::TextDelta(text));
                         }
                     }
                     Some("function_call") => {

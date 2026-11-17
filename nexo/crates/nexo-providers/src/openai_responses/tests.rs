@@ -425,3 +425,104 @@ fn pin_an_error_body_is_shown_as_type_and_message() {
         "{evs:?}"
     );
 }
+
+fn text_of(evs: &[StreamEvent]) -> String {
+    evs.iter().filter_map(|e| if let StreamEvent::TextDelta(t) = e { Some(t.as_str()) } else { None }).collect()
+}
+
+#[test]
+fn a_message_that_arrives_whole_without_text_deltas_is_not_an_empty_turn() {
+    let data = [
+        r#"{"type":"response.created","response":{"id":"r"}}"#,
+        r#"{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","content":[]}}"#,
+        r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"All "},{"type":"output_text","text":"done."}]}}"#,
+        r#"{"type":"response.completed","response":{"id":"r"}}"#,
+    ];
+    let mut p = ResponsesParser::default();
+    let evs: Vec<StreamEvent> = data.iter().flat_map(|d| p.feed(d)).collect();
+    assert_eq!(text_of(&evs), "All done.");
+    assert_eq!(evs.last(), Some(&StreamEvent::Finish(FinishReason::Stop)));
+}
+
+#[test]
+fn a_refusal_that_arrives_whole_is_shown_like_text() {
+    let mut p = ResponsesParser::default();
+    let evs = p.feed(r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"refusal","refusal":"I cannot help with that."}]}}"#);
+    assert_eq!(evs, vec![StreamEvent::TextDelta("I cannot help with that.".into())]);
+}
+
+#[test]
+fn a_message_streamed_as_deltas_is_not_emitted_again_when_its_item_is_done() {
+    let data = [
+        r#"{"type":"response.output_text.delta","output_index":1,"delta":"Hel"}"#,
+        r#"{"type":"response.output_text.delta","output_index":1,"delta":"lo"}"#,
+        r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"Hello"}]}}"#,
+        // another message item, whose text did not stream, still counts
+        r#"{"type":"response.output_item.done","output_index":2,"item":{"type":"message","content":[{"type":"output_text","text":" again"}]}}"#,
+    ];
+    let mut p = ResponsesParser::default();
+    let evs: Vec<StreamEvent> = data.iter().flat_map(|d| p.feed(d)).collect();
+    assert_eq!(text_of(&evs), "Hello again");
+}
+
+#[test]
+fn two_reasoning_summary_parts_are_joined_by_one_newline() {
+    let data = [
+        r#"{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning"}}"#,
+        r#"{"type":"response.reasoning_summary_part.added","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}"#,
+        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"First"}"#,
+        r#"{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"First"}"#,
+        r#"{"type":"response.reasoning_summary_part.done","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"First"}}"#,
+        r#"{"type":"response.reasoning_summary_part.added","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":""}}"#,
+        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"Second"}"#,
+        r#"{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":1,"text":"Second"}"#,
+        r#"{"type":"response.reasoning_summary_part.done","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":"Second"}}"#,
+    ];
+    let mut p = ResponsesParser::default();
+    let evs: Vec<StreamEvent> = data.iter().flat_map(|d| p.feed(d)).collect();
+    let shown: String = evs
+        .iter()
+        .filter_map(|e| if let StreamEvent::ReasoningDelta(t) = e { Some(t.as_str()) } else { None })
+        .collect();
+    assert_eq!(shown, "First\nSecond");
+}
+
+fn catalogue_of_reasoning_models() -> Catalogue {
+    Catalogue::parse(include_str!("../../tests/fixtures/models_dev_excerpt.json")).unwrap()
+}
+
+fn encrypted_asked_for(cfg: &ProviderConfig, model: &str, reasoning: Option<ReasoningConfig>, cat: bool) -> bool {
+    let mut req = ModelRequest::new(model, "sys", vec![Message::user("hi")]);
+    req.reasoning = reasoning;
+    let c = catalogue_of_reasoning_models();
+    OpenAiResponses::body_in(cfg, &req, cat.then_some(&c))["include"] == json!(["reasoning.encrypted_content"])
+}
+
+#[test]
+fn a_reasoning_model_with_no_reasoning_setting_still_gets_its_encrypted_reasoning_back() {
+    let openai = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+    assert!(encrypted_asked_for(&openai, "gpt-5", None, true));
+    // a dated name finds the catalogue entry, and a ChatGPT login is the same API
+    assert!(encrypted_asked_for(&openai, "gpt-5-2026-01-01", None, true));
+    let mut codex = ProviderConfig::new(ID, "https://chatgpt.com/backend-api/codex", None);
+    codex.login = Some("codex".into());
+    assert!(encrypted_asked_for(&codex, "gpt-5", None, true));
+    // a stored conversation keeps its reasoning on the server
+    let mut stored = openai.clone();
+    stored.extra.insert("store".into(), toml::Value::Boolean(true));
+    assert!(!encrypted_asked_for(&stored, "gpt-5", None, true));
+}
+
+#[test]
+fn encrypted_reasoning_is_not_asked_for_where_the_model_may_not_reason_or_the_server_is_unknown() {
+    let openai = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+    // the catalogue does not say, or has no such model, or is missing: the field could be a 400
+    assert!(!encrypted_asked_for(&openai, "gpt-5-mini", None, true));
+    assert!(!encrypted_asked_for(&openai, "gpt-4.1", None, true));
+    assert!(!encrypted_asked_for(&openai, "gpt-5", None, false));
+    // reasoning switched off by the person
+    assert!(!encrypted_asked_for(&openai, "gpt-5", Some(ReasoningConfig::Off), true));
+    // a third-party server is left to `include_reasoning`
+    let router = ProviderConfig::new(ID, "https://router.example.com/v1", None);
+    assert!(!encrypted_asked_for(&router, "gpt-5", None, true));
+}

@@ -14,6 +14,7 @@ use nexo_core::{EventStream, ModelInfo, ModelRequest, Protocol, ProviderConfig, 
 pub use parser::{usage, ResponsesParser};
 use serde_json::{json, Value};
 
+use crate::catalogue::Catalogue;
 use crate::http;
 use crate::openai_chat::{temp, OpenAiChat};
 use crate::sse::SseEvent;
@@ -29,6 +30,11 @@ impl OpenAiResponses {
     }
 
     pub fn body(cfg: &ProviderConfig, req: &ModelRequest) -> Value {
+        Self::body_in(cfg, req, crate::catalogue::cached().as_deref())
+    }
+
+    /// `body` with the model catalogue given, so a test does not depend on the one cached on disk.
+    fn body_in(cfg: &ProviderConfig, req: &ModelRequest, catalogue: Option<&Catalogue>) -> Value {
         let input = input_items(req);
         let mut body = json!({"model": req.model, "input": input, "stream": true});
         // a subscription backend (ChatGPT's) sets the limit itself, rejects a sampling temperature and
@@ -74,6 +80,17 @@ impl OpenAiResponses {
         if cfg.extra.get("include_reasoning").and_then(|v| v.as_bool()).unwrap_or(false) && include.is_empty() {
             include.push("reasoning.encrypted_content");
         }
+        // With no reasoning setting, a model that reasons by default still produces reasoning items, and with
+        // `store: false` they come back only when asked for (encrypted); without them the next round of a tool
+        // loop starts without the model's earlier reasoning. Sent only where the catalogue says the model
+        // reasons, because a model that does not reason answers 400 to the field.
+        if include.is_empty()
+            && req.reasoning.is_none()
+            && !body["store"].as_bool().unwrap_or(false)
+            && reasons_by_default(cfg, &req.model, catalogue)
+        {
+            include.push("reasoning.encrypted_content");
+        }
         if !include.is_empty() {
             body["include"] = json!(include);
         }
@@ -106,6 +123,19 @@ impl OpenAiResponses {
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {
         crate::parse::run(events, ResponsesParser::default())
     }
+}
+
+/// Whether the catalogue says `model` reasons, on a server known to take `reasoning.encrypted_content`
+/// (OpenAI itself and a ChatGPT login). Any other server, or a catalogue that does not say, is no.
+fn reasons_by_default(cfg: &ProviderConfig, model: &str, catalogue: Option<&Catalogue>) -> bool {
+    let preset = if cfg.login.as_deref() == Some("codex") {
+        "codex"
+    } else if crate::openai_chat::is_openai(cfg) {
+        "openai"
+    } else {
+        return false;
+    };
+    catalogue.and_then(|c| c.lookup(preset, model)).and_then(|e| e.reasoning) == Some(true)
 }
 
 /// On by default only where the field is known to be accepted (OpenAI itself and a ChatGPT login);
