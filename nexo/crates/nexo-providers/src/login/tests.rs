@@ -3,7 +3,7 @@ use super::*;
 use base64::Engine;
 use httpmock::prelude::*;
 use nexo_core::auth::{self, Credential};
-use nexo_core::ProviderConfig;
+use nexo_core::{ErrorKind, ProviderConfig};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -297,4 +297,78 @@ async fn a_key_command_is_run_off_the_worker_and_gives_its_key() {
     assert_eq!(direct_key(&cfg).await.as_deref(), Some("sk-slow"));
     h.abort();
     assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) >= 5, "the runtime was held while the command ran");
+}
+
+/// An expiring or expired login of `flow`, as the store would hold it.
+fn oauth_of(flow: &str, refresh: &str) -> Credential {
+    let mut md = BTreeMap::new();
+    md.insert("flow".to_string(), flow.to_string());
+    Credential::Oauth { access: "at1".into(), refresh: refresh.into(), expires: auth::now() + 5, metadata: md }
+}
+
+#[tokio::test]
+async fn a_revoked_refresh_token_tells_the_user_to_log_in_again() {
+    let s = MockServer::start();
+    let token = s.mock(|w, t| {
+        w.method(POST).path("/oauth/token");
+        t.status(400).json_body(json!({"error": "invalid_grant", "error_description": "token revoked"}));
+    });
+    let e = refresh_at(&at(&s), &oauth_of("codex", "rt1")).await.unwrap_err();
+    token.assert_calls(1);
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["codex", "400", "token revoked", "nexo auth login"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test]
+async fn a_renewal_the_server_fails_without_a_body_still_names_the_flow_and_status() {
+    let s = MockServer::start();
+    s.mock(|w, t| {
+        w.method(POST).path("/token");
+        t.status(500);
+    });
+    let e = refresh_at(&at(&s), &oauth_of("xai", "rt1")).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["xai", "500", "nexo auth login"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test]
+async fn a_login_without_a_refresh_token_asks_for_a_new_login_without_calling_the_server() {
+    let s = MockServer::start();
+    let token = s.mock(|w, t| {
+        w.method(POST).path("/oauth/token");
+        t.status(200).json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+    });
+    let e = refresh_at(&at(&s), &oauth_of("codex", "")).await.unwrap_err();
+    token.assert_calls(0);
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["codex", "nexo auth login"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_renewal_the_server_never_answers_fails_naming_the_login() {
+    let s = MockServer::start();
+    s.mock(|w, t| {
+        w.method(POST).path("/oauth/token");
+        // longer than RENEWAL_LIMIT, which is one second under test
+        t.status(200)
+            .delay(Duration::from_millis(2500))
+            .json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+    });
+    let dir = std::env::temp_dir().join(format!("nexo-login-timeout-test-{}", std::process::id()));
+    let store = dir.join("auth.json");
+    auth::set_in(&store, "codex", oauth_of("codex", "rt1")).unwrap();
+    let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+    cfg.auth = Some("codex".into());
+    let e = prepare_in(&store, &at(&s), &cfg).await.unwrap_err();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["codex", "did not answer", "1s"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
 }
