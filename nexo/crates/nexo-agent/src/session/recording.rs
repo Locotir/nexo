@@ -177,6 +177,10 @@ impl Session {
         let output = ToolOutput { images: Vec::new(), ..output.clone() };
         self.outputs.insert(call_id.to_string(), output);
         self.held.insert(call_id.to_string());
+        // nothing is written here, so a file that vanished is noticed now and not when the round ends
+        if let Err(e) = self.check_present() {
+            self.track(&Err(e));
+        }
     }
 
     /// Writes the held outputs the tool results of `m` answer, each without its text when `m` holds it as it is.

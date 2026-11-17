@@ -238,6 +238,8 @@ impl Session {
         if std::mem::replace(&mut self.closed, true) {
             return;
         }
+        // an output kept for the result of a round that never ended (the turn was dropped) is not lost with the session
+        self.write_held_whole();
         // opened and left without a word: nothing worth keeping in the list
         let empty = self.file.is_some()
             && self.locked

@@ -637,6 +637,7 @@ pub(super) async fn run_call(
             let seen = {
                 let mut st = state.lock().await;
                 st.session.hold_output(id, &out);
+                saving(&mut st);
                 match (name, &file) {
                     ("read", Some((path, p))) if !out.is_error => {
                         let offset = args.get("offset").and_then(Value::as_u64);
