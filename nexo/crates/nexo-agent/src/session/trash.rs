@@ -22,6 +22,7 @@ pub fn trash_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     std::fs::rename(&from, &to)?;
     // the context state saved with it (`context::saved`) goes with it, or it is dropped
     move_saved_state(&from, &to);
+    move_todo(dir, &trash_dir_in(dir), id);
     Ok(to)
 }
 
@@ -42,7 +43,18 @@ pub fn restore_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     }
     std::fs::rename(&from, &to)?;
     move_saved_state(&from, &to);
+    move_todo(&trash_dir_in(dir), dir, id);
     Ok(to)
+}
+
+/// Moves the task list saved with session `id` (`nexo_tools::todo`) from one folder to another, so the trash does
+/// not leave it behind in the live folder. Like the context state it is only ever a shortcut: one that cannot move
+/// is removed.
+fn move_todo(from_dir: &Path, to_dir: &Path, id: &str) {
+    let (a, b) = (nexo_tools::todo::file_in(from_dir, id), nexo_tools::todo::file_in(to_dir, id));
+    if a.is_file() && std::fs::rename(&a, &b).is_err() {
+        let _ = std::fs::remove_file(&a);
+    }
 }
 
 /// Moves the context state saved with a session (`context::saved`) along with it. It is only ever a shortcut:

@@ -210,3 +210,95 @@ async fn tool_round_and_next_turn_preserve_prefix_and_account_for_cache_usage() 
     assert_eq!(usage.total_input(), 6010);
     assert!((usage.cache_read as f64 / usage.total_input() as f64 - 4000.0 / 6010.0).abs() < 1e-12);
 }
+
+fn with_todo(d: &std::path::Path) -> nexo_core::ToolSet {
+    tools().with(Arc::new(nexo_tools::todo::Todo::with_dir(d.to_path_buf())))
+}
+
+/// The task list changes between two requests, and what the cache holds in front of the conversation does not:
+/// the list rides with each request in its trailing text part, never in the system text.
+#[tokio::test]
+async fn a_task_list_change_leaves_the_system_text_alone_and_the_list_rides_with_the_request() {
+    let d = test_tmpdir().unwrap();
+    let items = json!({"items": [{"text": "read the code", "status": "done"}, {"text": "fix the bug", "status": "in_progress"}]});
+    let client = Scripted::new(vec![
+        Reply::Events(text("one")),
+        Reply::Events(call("c1", "todo", items)),
+        Reply::Events(text("two")),
+        Reply::Events(text("three")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.check_at_start = false;
+    let mut r = start_with(client.clone(), cfg, None, d.path(), with_todo(d.path())).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "second".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "third".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 4);
+    for q in &reqs[1..] {
+        assert_eq!(q.system, reqs[0].system, "a todo call does not change the system text");
+    }
+    assert!(!reqs[0].system.contains("todo-list"));
+    // before the call there is no list; the request after it, inside the same turn, and the next turn's carry it
+    assert!(!last_user_text(&reqs[0]).contains("<todo-list>") && !last_user_text(&reqs[1]).contains("<todo-list>"));
+    for q in &reqs[2..] {
+        let note = last_user_text(q);
+        assert!(note.contains("<todo-list>\n[x] read the code\n[>] fix the bug\n1/2 done\n</todo-list>"), "{note}");
+    }
+    // it is not kept in the conversation: the saved messages of the earlier requests stay the same bytes
+    assert_eq!(
+        serde_json::to_string(&reqs[3].messages[0]).unwrap(),
+        serde_json::to_string(&reqs[0].messages[0]).unwrap()
+    );
+    assert!(!reqs[3].messages[..reqs[3].messages.len() - 1].iter().any(|m| m.text().contains("<todo-list>")));
+}
+
+/// A resumed session has its saved list on its first request, and one that was left does not leak into the next.
+#[tokio::test]
+async fn a_resumed_session_carries_its_saved_task_list_and_not_the_one_left_behind() {
+    let d = test_tmpdir().unwrap();
+    // session A, with no list
+    let client = Scripted::new(vec![Reply::Events(text("a"))]);
+    let mut r = start_with(client, config(PermissionMode::Ask), None, d.path(), with_todo(d.path())).await;
+    let a = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::Submit { text: "plain".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    // session B makes a list
+    let items = json!({"items": [{"text": "step one"}]});
+    let client = Scripted::new(vec![Reply::Events(call("c1", "todo", items)), Reply::Events(text("b"))]);
+    let mut r = start_with(client, config(PermissionMode::Ask), None, d.path(), with_todo(d.path())).await;
+    let b = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    // a new process resumes B: its first request carries the list
+    let client = Scripted::new(vec![Reply::Events(text("again")), Reply::Events(text("on A"))]);
+    let mut r = start_with(client.clone(), config(PermissionMode::Ask), Some(b), d.path(), with_todo(d.path())).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    r.turn().await;
+    assert!(
+        last_user_text(&client.requests()[0]).contains("[ ] step one"),
+        "{}",
+        last_user_text(&client.requests()[0])
+    );
+    // and moving to A in the same process leaves B's list behind
+    r.send(AgentCommand::Resume { id: a.clone() });
+    r.until(|e| matches!(e, AgentEvent::SessionChanged { session_id, .. } if *session_id == a)).await;
+    r.send(AgentCommand::Submit { text: "now A".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    assert!(!last_user_text(&client.requests()[1]).contains("step one"), "{}", last_user_text(&client.requests()[1]));
+}

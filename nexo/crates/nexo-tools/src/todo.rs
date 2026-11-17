@@ -3,7 +3,7 @@
 //! lives in the tool for the session and in `<sessions>/<id>.todo.json`, so
 //! a resumed session gets it back.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -47,7 +47,7 @@ impl Todo {
             return None;
         }
         let dir = self.dir.clone().unwrap_or_else(paths::sessions_dir);
-        Some(dir.join(format!("{session_id}.todo.json")))
+        Some(file_in(&dir, session_id))
     }
 
     fn load(&self, session_id: &str) -> Option<Vec<TodoItem>> {
@@ -55,16 +55,26 @@ impl Todo {
         serde_json::from_str(&text).ok()
     }
 
-    fn save(&self, session_id: &str, items: &[TodoItem]) {
-        if let Some(f) = self.file(session_id) {
-            if let Some(d) = f.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            if let Ok(text) = serde_json::to_string(items) {
-                let _ = std::fs::write(f, text);
-            }
+    /// Writes the list to a temporary file and renames it over the saved one, so a crash or a full disk
+    /// leaves the last good list in place instead of a cut file that no longer parses.
+    fn save(&self, session_id: &str, items: &[TodoItem]) -> std::io::Result<()> {
+        let Some(f) = self.file(session_id) else { return Ok(()) };
+        if let Some(d) = f.parent() {
+            std::fs::create_dir_all(d)?;
         }
+        let text = serde_json::to_string(items).map_err(std::io::Error::other)?;
+        let tmp = f.with_extension(format!("json.{}.tmp", std::process::id()));
+        let written = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &f));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
     }
+}
+
+/// Where the list of session `id` is saved under `dir`.
+pub fn file_in(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.todo.json"))
 }
 
 /// Reads the `items` argument; an error names what is wrong.
@@ -172,6 +182,14 @@ impl Tool for Todo {
         (!v.is_empty()).then_some(v)
     }
 
+    fn session_opened(&self, session_id: &str) {
+        // the list of the session before must not ride on this one: what was saved for it, or nothing
+        let saved = self.load(session_id).unwrap_or_default();
+        if let Ok(mut g) = self.items.lock() {
+            *g = saved;
+        }
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Other
     }
@@ -203,8 +221,12 @@ impl Tool for Todo {
         if let Ok(mut g) = self.items.lock() {
             *g = items.clone();
         }
-        self.save(&ctx.session_id, &items);
-        ToolOutput::ok(render(&items)).with_display(ToolDisplay::Todo { items })
+        // the list in memory is the one that counts; a save that fails is said, not hidden
+        let mut content = render(&items);
+        if let Err(e) = self.save(&ctx.session_id, &items) {
+            content.push_str(&format!("\n(the list could not be saved: {e})"));
+        }
+        ToolOutput::ok(content).with_display(ToolDisplay::Todo { items })
     }
 }
 
@@ -270,5 +292,46 @@ mod tests {
         assert_eq!(items[1].status, TodoStatus::Done);
         t.run(json!({"items": []}), &ctx(dir.path(), "s2")).await;
         assert_eq!(t.todo_items(), None);
+    }
+
+    #[tokio::test]
+    async fn opening_a_session_loads_its_saved_list_and_drops_the_one_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Todo::with_dir(dir.path().to_path_buf());
+        t.run(json!({"items": [{"text": "a"}, {"text": "b", "status": "done"}]}), &ctx(dir.path(), "s3")).await;
+        // a new process: the tool starts empty and the session it opens hands it the saved list
+        let again = Todo::with_dir(dir.path().to_path_buf());
+        assert_eq!(again.todo_items(), None);
+        again.session_opened("s3");
+        assert_eq!(again.todo_items(), t.todo_items());
+        // another session, with nothing saved, must not inherit that list
+        again.session_opened("other");
+        assert_eq!(again.todo_items(), None);
+    }
+
+    #[tokio::test]
+    async fn a_save_leaves_no_temporary_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Todo::with_dir(dir.path().to_path_buf());
+        t.run(json!({"items": [{"text": "a"}]}), &ctx(dir.path(), "s4")).await;
+        t.run(json!({"items": [{"text": "a", "status": "done"}]}), &ctx(dir.path(), "s4")).await;
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["s4.todo.json".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_list_that_cannot_be_saved_is_still_kept_and_the_output_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        // a file where the folder should be: the folder cannot be created
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "x").unwrap();
+        let t = Todo::with_dir(blocked.join("sessions"));
+        let out = t.run(json!({"items": [{"text": "a"}]}), &ctx(dir.path(), "s5")).await;
+        assert!(!out.is_error);
+        assert!(out.content.starts_with("[ ] a\n0/1 done\n(the list could not be saved: "), "{}", out.content);
+        assert_eq!(t.todo_items().map(|v| v.len()), Some(1));
     }
 }

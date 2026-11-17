@@ -35,6 +35,17 @@ pub(super) fn replay_history(events: &EventTx, session: &Session, tools: &ToolSe
     );
 }
 
+/// Tells the tools the session that is now the conversation, so one that keeps a list for it (`todo`) takes up
+/// what was saved for this session and lets go of what it held for the one before.
+pub(super) fn session_opened(st: &State) {
+    let id = st.session.id();
+    for name in st.tools.names() {
+        if let Some(t) = st.tools.get(name) {
+            t.session_opened(id);
+        }
+    }
+}
+
 /// Makes `session` the conversation: the interface starts over and gets the replay.
 pub(super) fn install_session(st: &mut State, session: Session) {
     // the jobs of the session left behind stop, and none of them is reported to this one
@@ -44,6 +55,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     // its scratch folder (`$NEXO_TMP`) goes with it
     nexo_tools::bash::wipe_tmp(st.session.id());
     st.session = session;
+    session_opened(st);
     prefix::adopt(st);
     st.checkpoints.clear();
     st.history.replace(st.session.messages().to_vec());
@@ -456,6 +468,7 @@ pub(super) async fn clear(state: &Shared) {
         let s = &mut *st;
         s.prefix = prefix::fresh(&mut s.session, &s.cwd, &s.config.agent, &s.tools);
     }
+    session_opened(&st);
     st.system = full_system(&st);
     st.history.clear();
     st.checkpoints.clear();

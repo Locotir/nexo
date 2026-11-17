@@ -25,21 +25,23 @@ pub(super) fn full_system(st: &State) -> String {
         };
         base = format!("{base}\n\n{directive}");
     }
-    let base = with_goal(&base, st.goal.as_deref());
-    match st.tools.get("todo").and_then(|t| t.todo_items()) {
-        Some(items) if !items.is_empty() => format!("{base}\n\n{}", todo_block(&items)),
-        _ => base,
-    }
+    // the task list is not here: a change in it would change the system text and with it the cached
+    // conversation after it. It rides on each request instead (`todo_note`).
+    with_goal(&base, st.goal.as_deref())
 }
 
-/// The task list as a section of the system prompt. History compaction never touches the system
-/// prompt, so the list stays in front of the model however long the work runs.
+/// The task list as it stands, for the request about to be sent. It rides with that request only, so a change
+/// in it costs its own few tokens and not the cached conversation; and as history compaction never touches
+/// a request's own notes, it stays in front of the model however long the work runs.
 pub(super) fn todo_block(items: &[nexo_core::tool::TodoItem]) -> String {
     let body = nexo_tools::todo::render(items);
-    format!(
-        "<todo-list>\nYour task list, kept here every turn so it never slips out of context as the conversation \
-         is compacted. Keep it current with the `todo` tool as steps finish or the plan changes.\n{body}\n</todo-list>"
-    )
+    format!("<todo-list>\n{body}\n</todo-list>")
+}
+
+/// [`todo_block`] of the live list, when the `todo` tool holds one.
+pub(super) fn todo_note(st: &State) -> Option<String> {
+    let items = st.tools.get("todo")?.todo_items()?;
+    (!items.is_empty()).then(|| todo_block(&items))
 }
 
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
@@ -765,8 +767,8 @@ mod todo_tests {
             item("working item", TodoStatus::InProgress),
             item("finished item", TodoStatus::Done),
         ]);
-        assert!(b.starts_with("<todo-list>\n") && b.ends_with("\n</todo-list>"));
-        assert!(b.contains("\n[ ] pending item\n[>] working item\n[x] finished item\n"));
+        // the facts only: the items, their marks and the count, with no instruction around them
+        assert_eq!(b, "<todo-list>\n[ ] pending item\n[>] working item\n[x] finished item\n1/3 done\n</todo-list>");
     }
 
     #[test]

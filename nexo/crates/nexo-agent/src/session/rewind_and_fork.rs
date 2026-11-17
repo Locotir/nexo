@@ -176,6 +176,25 @@ impl Session {
         if let Some(line) = self.stop_at(keep) {
             f.record_stop(&line)?; // its next request says the person stopped the one before it
         }
+        // the task list goes with a fork of the whole conversation; a shorter one may not match the list that was
+        // saved, so it starts with none, which is the honest fact
+        if keep == self.messages.len() {
+            copy_todo(&dir, &self.meta.id, &f.meta.id);
+        }
         Ok(f)
+    }
+}
+
+/// Copies the task list saved with session `from` to session `to` (best effort: the list is only a shortcut to
+/// the work in progress, and the fork works without it). It goes through a temporary file, so `to` never holds
+/// a cut copy.
+fn copy_todo(dir: &Path, from: &str, to: &str) {
+    let (a, b) = (nexo_tools::todo::file_in(dir, from), nexo_tools::todo::file_in(dir, to));
+    if !a.is_file() {
+        return;
+    }
+    let tmp = b.with_extension(format!("json.{}.tmp", std::process::id()));
+    if std::fs::copy(&a, &tmp).and_then(|_| std::fs::rename(&tmp, &b)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }

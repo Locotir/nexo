@@ -1395,3 +1395,39 @@ fn a_fork_keeps_the_time_each_copied_message_was_said() {
     let f = s.fork(2).unwrap();
     assert_eq!(message_stamps(f.path()), ["2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"]);
 }
+
+#[test]
+fn a_trashed_session_takes_its_task_list_along_and_a_restore_brings_it_back() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append(&Message::user("keep me")).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let live = nexo_tools::todo::file_in(d.path(), &id);
+    let binned = nexo_tools::todo::file_in(&trash_dir_in(d.path()), &id);
+    std::fs::write(&live, "[]").unwrap();
+    trash_in(d.path(), &id).unwrap();
+    assert!(!live.exists(), "no orphan list stays in the live folder");
+    assert!(binned.is_file());
+    restore_in(d.path(), &id).unwrap();
+    assert!(live.is_file() && !binned.exists());
+}
+
+#[test]
+fn a_fork_of_the_whole_conversation_copies_the_task_list_and_a_shorter_one_does_not() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    for t in ["one", "two", "three"] {
+        s.append(&Message::user(t)).unwrap();
+    }
+    std::fs::write(nexo_tools::todo::file_in(d.path(), s.id()), r#"[{"text":"a","status":"done"}]"#).unwrap();
+    let whole = s.fork(3).unwrap();
+    let copied = nexo_tools::todo::file_in(d.path(), whole.id());
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), r#"[{"text":"a","status":"done"}]"#);
+    let part = s.fork(2).unwrap();
+    assert!(!nexo_tools::todo::file_in(d.path(), part.id()).exists(), "the list may not match fewer messages");
+    let leftovers = std::fs::read_dir(d.path())
+        .unwrap()
+        .filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
+    assert_eq!(leftovers.count(), 0);
+}

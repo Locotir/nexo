@@ -326,6 +326,9 @@ pub trait Tool: Send + Sync {
     fn todo_items(&self) -> Option<Vec<TodoItem>> {
         None
     }
+    /// A session became the conversation (opened, resumed or started over): a tool that keeps something
+    /// for the session takes up what was saved for `session_id`, or empties what it held for the one before.
+    fn session_opened(&self, _session_id: &str) {}
     /// What the tool is connected to for the person to see, when it holds a connection to something of theirs (the
     /// `browser` tool: their own browser, if that is the one in use); `/chrome` shows it.
     fn in_use(&self) -> Option<String> {
