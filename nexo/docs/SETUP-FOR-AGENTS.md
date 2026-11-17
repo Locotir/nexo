@@ -36,7 +36,7 @@ subscription login it takes, if any), `key` (where the key is found now, or
 | Subscription login | `nexo auth login copilot` | the person pays for a subscription (table below) |
 | Stored key | `nexo auth login <provider> --key` | a key, kept by nexo (asked for, or read from stdin) |
 | Environment variable | `export DEEPSEEK_API_KEY=...` (Windows: `setx DEEPSEEK_API_KEY "..."`, then a new terminal) | a key already in the shell or a secrets manager |
-| Command | `api_key_cmd = "pass show deepseek"` in the config | a password manager |
+| Command | `api_key_cmd = "pass show deepseek"` in the config | a password manager; it is stopped (with what it started) after 20 s, or `extra.api_key_cmd_secs` (1 to 600) |
 
 A key in the environment, a file or a command always wins over the store.
 

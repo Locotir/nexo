@@ -43,23 +43,46 @@ pub struct ProviderConfig {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
-/// How long `api_key_cmd` may run. The lookup happens on every request and inside async code, so a password
-/// manager waiting for an unlock or a tty must not hold a worker (and with it every request) for good.
-const KEY_CMD_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long `api_key_cmd` may run unless `extra.api_key_cmd_secs` says otherwise. The lookup happens on every
+/// request, so a password manager waiting for an unlock or a tty must not hold it for good; the time is long
+/// enough for a person to answer a biometric or master-password prompt.
+const KEY_CMD_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Ends `pid` and everything it started. The command runs as the leader of its own process group, so a
+/// pipeline or a `;` list is stopped whole: killing the shell alone would leave its children running with
+/// the stdout pipe open. Windows has no groups, so the tree under the shell goes (`taskkill /T`).
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    // SAFETY: a plain signal to a process group this process created.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
 
 /// What `cmd` prints when it succeeds within `limit`; None when it fails, prints nothing, or is still running
-/// at the limit (it is killed then). Stdin is null, so it cannot prompt on the tty. It is not cached: a
-/// command that mints short-lived tokens, or that works once the person unlocks the manager, must run again.
+/// at the limit (it and what it started are killed then). Stdin is null, so it cannot prompt on the tty. It is
+/// not cached: a command that mints short-lived tokens, or that works once the person unlocks the manager,
+/// must run again. It blocks the thread for up to `limit`: async code calls it through `spawn_blocking`.
 pub(super) fn run_key_cmd(cmd: &str, limit: std::time::Duration) -> Option<String> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut child = crate::shell::shell()
-        .command(cmd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut command = crate::shell::shell().command(cmd);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
     // read on a thread of its own, so a command that prints a lot cannot fill the pipe and stall
     let mut out = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
@@ -74,6 +97,8 @@ pub(super) fn run_key_cmd(cmd: &str, limit: std::time::Duration) -> Option<Strin
             Ok(Some(s)) => break s,
             Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
             Ok(None) => {
+                // the group first, while its leader still holds the id; the pipe closes with the last of them
+                kill_tree(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 // once per process, and only the command's first word: its output may be the key
@@ -94,6 +119,12 @@ pub(super) fn run_key_cmd(cmd: &str, limit: std::time::Duration) -> Option<Strin
 }
 
 impl ProviderConfig {
+    /// How long `api_key_cmd` may run: `extra.api_key_cmd_secs` (1 to 600) when set, else 20 s.
+    pub fn key_cmd_limit(&self) -> std::time::Duration {
+        let secs = self.extra.get("api_key_cmd_secs").and_then(toml::Value::as_integer);
+        secs.filter(|s| (1..=600).contains(s)).map_or(KEY_CMD_LIMIT, |s| std::time::Duration::from_secs(s as u64))
+    }
+
     pub fn new(protocol: &str, base_url: &str, api_key_env: Option<&str>) -> ProviderConfig {
         ProviderConfig {
             protocol: protocol.into(),
@@ -140,7 +171,7 @@ impl ProviderConfig {
             }
         }
         if let Some(cmd) = &self.api_key_cmd {
-            if let Some(k) = run_key_cmd(cmd, KEY_CMD_LIMIT) {
+            if let Some(k) = run_key_cmd(cmd, self.key_cmd_limit()) {
                 return Some(k);
             }
         }

@@ -364,3 +364,37 @@ fn a_layer_that_does_not_combine_is_reported_and_the_earlier_settings_stay() {
     assert!(why.is_some(), "the skipped layer is returned, not swallowed");
     assert_eq!(user.model.as_deref(), Some("a"), "the earlier settings stay");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn what_a_stopped_key_command_started_is_stopped_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("child.pid");
+    // a pipeline-like command: the shell has a child of its own that outlives it unless the group goes
+    let cmd = format!("sleep 30 & echo $! > '{}'; wait", pidfile.display());
+    let k = provider_settings::run_key_cmd(&cmd, std::time::Duration::from_millis(500));
+    assert_eq!(k, None);
+    let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    // gone, or a zombie waiting to be reaped
+    let gone = || match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(s) => s.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')),
+    };
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !gone() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(gone(), "the child of the key command is still running");
+}
+
+#[test]
+fn the_time_a_key_command_may_take_is_a_setting() {
+    let mut p = ProviderConfig::new("openai-chat", "https://api.example", None);
+    let default = p.key_cmd_limit();
+    assert!(default >= std::time::Duration::from_secs(10), "{default:?}");
+    p.extra.insert("api_key_cmd_secs".into(), toml::Value::Integer(90));
+    assert_eq!(p.key_cmd_limit(), std::time::Duration::from_secs(90));
+    // nonsense falls back to the default
+    p.extra.insert("api_key_cmd_secs".into(), toml::Value::Integer(-1));
+    assert_eq!(p.key_cmd_limit(), default);
+}

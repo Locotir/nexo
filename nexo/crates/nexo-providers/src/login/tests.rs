@@ -260,3 +260,41 @@ async fn a_credential_store_that_does_not_parse_is_said_not_read_as_signed_out()
     assert!(msg.contains("auth.json"), "{msg}");
     assert!(none.unwrap().1.is_none());
 }
+
+#[tokio::test]
+async fn an_unreadable_store_is_not_shown_with_the_advice_to_log_in_again() {
+    let dir = std::env::temp_dir().join(format!("nexo-login-corrupt-hint-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("auth.json");
+    std::fs::write(&store, "not json").unwrap();
+    let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+    cfg.auth = Some("codex".into());
+    cfg.login = Some("codex".into());
+    let e = prepare_in(&store, &Endpoints::default(), &cfg).await.expect_err("a corrupt store is an error");
+    let _ = std::fs::remove_dir_all(&dir);
+    // an `Auth` error is shown as "run `nexo auth login`", and a login cannot be written over this file
+    assert_ne!(e.kind, nexo_core::ErrorKind::Auth);
+    assert!(!e.to_string().contains("nexo auth login"), "{e}");
+    assert!(!e.human().contains("nexo auth login"), "{}", e.human());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_key_command_is_run_off_the_worker_and_gives_its_key() {
+    let mut cfg = ProviderConfig::new("openai-chat", "https://api.example", None);
+    cfg.api_key_cmd = Some("echo sk-from-cmd".into());
+    assert_eq!(direct_key(&cfg).await.as_deref(), Some("sk-from-cmd"));
+    // a heartbeat on the same single thread keeps ticking while a slow command runs
+    cfg.api_key_cmd = Some("sleep 1; echo sk-slow".into());
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let beat = ticks.clone();
+    let h = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            beat.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    assert_eq!(direct_key(&cfg).await.as_deref(), Some("sk-slow"));
+    h.abort();
+    assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) >= 5, "the runtime was held while the command ran");
+}

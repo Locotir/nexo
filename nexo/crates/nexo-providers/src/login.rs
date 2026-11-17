@@ -27,7 +27,7 @@ pub use codex::account_id;
 pub use nexo_http::form;
 pub(crate) use oauth::{fail, post, text, tokens, Body};
 pub(crate) use renew::refresh_plain;
-pub use renew::{apply, prepare, prepare_in, refresh, refresh_at};
+pub use renew::{apply, direct_key, prepare, prepare_in, refresh, refresh_at};
 
 use std::time::Duration;
 

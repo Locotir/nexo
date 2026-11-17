@@ -369,3 +369,16 @@ fn only_a_subscription_login_has_a_plan() {
     c.login = Some("copilot".into());
     assert_eq!(kind_of(&c), Some("copilot"));
 }
+
+#[tokio::test]
+async fn a_credential_store_that_does_not_parse_is_an_error_not_a_provider_without_a_plan() {
+    use httpmock::prelude::*;
+    let s = MockServer::start();
+    let (_dir, store) = store_with("xai", "xai-tok");
+    std::fs::write(&store, "not json").unwrap();
+    let mut cfg = ProviderConfig::new("openai-chat", "https://api.x.ai/v1", None);
+    cfg.login = Some("xai".into());
+    cfg.auth = Some("xai".into());
+    let e = fetch_in(&store, &endpoints(&s), "xai", &cfg).await.expect_err("said, not read as signed out");
+    assert!(e.to_string().contains("cannot be read"), "{e}");
+}
