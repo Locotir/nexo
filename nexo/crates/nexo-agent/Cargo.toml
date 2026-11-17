@@ -41,3 +41,10 @@ libc = { workspace = true }
 tempfile = { workspace = true }
 nexo-dbg = { workspace = true }
 nexo-bin = { workspace = true, features = ["fixtures"] }
+
+# The cold-start debug test drives the debugger's own test program. An example of another package cannot be
+# built for a test, so the same source is built here under a name of its own (it would clash with nexo-dbg's
+# example in the shared examples folder otherwise) and `cargo test -p nexo-agent` has it before the test starts.
+[[example]]
+name = "dbg_target_cold"
+path = "../nexo-dbg/examples/dbg_target.rs"
