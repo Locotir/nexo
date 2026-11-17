@@ -1,8 +1,10 @@
 //! What a panic shows: one plain line, the details in a file, the terminal given back when the interface itself
 //! died, instead of the raw Rust message.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// Whether a panic already printed its line, so that the exit of the main thread does not print a second one.
 static PRINTED: AtomicBool = AtomicBool::new(false);
@@ -28,6 +30,19 @@ fn crash_report(thread: &str, at: Option<(&str, u32)>, message: &str, backtrace:
     )
 }
 
+/// Lines of panics that happened while the interface held the screen, kept for when the terminal is given back:
+/// printing them then would land in the middle of the live screen.
+static HELD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// How many held lines are printed; the report files have the rest.
+const HELD_SHOWN: usize = 3;
+
+/// Writes to stderr and ignores a failure: a closed stderr (`nexo ... 2>&1 | head`) makes `eprintln!` panic, and a
+/// panic inside the panic hook aborts the process instead of letting it exit.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
 /// Writes the report under the data dir (resolved here, after `adopt_root_home` ran) and returns where it went.
 fn write_report(text: &str) -> Option<PathBuf> {
     let dir = nexo_core::paths::data_dir();
@@ -35,9 +50,53 @@ fn write_report(text: &str) -> Option<PathBuf> {
     let stamp = time::OffsetDateTime::now_utc()
         .format(time::macros::format_description!("[year][month][day]-[hour][minute][second]"))
         .unwrap_or_else(|_| "unknown-time".into());
-    let path = dir.join(format!("crash-{stamp}.log"));
-    std::fs::write(&path, text).ok()?;
-    Some(path)
+    write_report_in(&dir, &stamp, text)
+}
+
+/// Creates `crash-<stamp>.log` in `dir`, or the first free `crash-<stamp>-<n>.log` when that name is taken: several
+/// panics in one second must each keep their report. The file is private (the message can carry a URL or prompt
+/// text) and never replaces an existing one.
+fn write_report_in(dir: &Path, stamp: &str, text: &str) -> Option<PathBuf> {
+    for n in 1..=50u32 {
+        let name = if n == 1 { format!("crash-{stamp}.log") } else { format!("crash-{stamp}-{n}.log") };
+        let path = dir.join(name);
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        match o.open(&path) {
+            Ok(mut f) => return f.write_all(text.as_bytes()).ok().map(|()| path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Keeps a crash line for `print_held`.
+fn hold(line: String) {
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+}
+
+/// The held lines as they are printed: the first few, and how many more the data dir has.
+fn held_text(lines: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = lines.iter().take(HELD_SHOWN).cloned().collect();
+    if lines.len() > HELD_SHOWN {
+        out.push(format!("{} more crash reports are in the same folder.", lines.len() - HELD_SHOWN));
+    }
+    out
+}
+
+/// Prints what panics said while the interface held the screen. Called when the process ends, after the terminal was
+/// released, so that a quit caused by a dead agent task does not look like a normal one.
+pub fn print_held() {
+    let lines = std::mem::take(&mut *HELD.lock().unwrap_or_else(|e| e.into_inner()));
+    for line in held_text(&lines) {
+        say(&line);
+    }
 }
 
 fn payload_text(info: &std::panic::PanicHookInfo<'_>) -> String {
@@ -65,12 +124,13 @@ fn hook(info: &std::panic::PanicHookInfo<'_>) {
         nexo_tui::terminal::restore();
     } else if nexo_tui::terminal::holds_terminal() {
         // A tool or provider task panicked: tokio catches it and the interface keeps running, so text printed now
-        // would land in the middle of the screen. The report file has it.
+        // would land in the middle of the screen. The report file has it, and the line is printed when nexo ends.
+        hold(crash_line(at, path.as_deref()));
         return;
     }
-    eprintln!("{}", crash_line(at, path.as_deref()));
+    say(&crash_line(at, path.as_deref()));
     if let Some(id) = nexo_tui::terminal::noted_session() {
-        eprintln!("The session is kept: nexo --resume {id}");
+        say(&format!("The session is kept: nexo --resume {id}"));
     }
     PRINTED.store(true, Ordering::Relaxed);
 }
@@ -82,7 +142,7 @@ pub fn install() {
 /// The main thread ended in a panic: the hook said so already, unless it could not.
 pub fn after_main_panic() -> i32 {
     if !PRINTED.load(Ordering::Relaxed) {
-        eprintln!("{}", crash_line(None, None));
+        say(&crash_line(None, None));
     }
     1
 }
@@ -108,5 +168,36 @@ mod tests {
         for part in ["thread: tokio-runtime-worker", "at: a.rs:7", "message: index out of bounds", "0: frame"] {
             assert!(text.contains(part), "missing {part:?} in {text}");
         }
+    }
+
+    #[test]
+    fn two_panics_in_one_second_keep_both_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = write_report_in(dir.path(), "20261117-010000", "first").unwrap();
+        let second = write_report_in(dir.path(), "20261117-010000", "second").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_crash_report_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_report_in(dir.path(), "20261117-010000", "message with a url").unwrap();
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn panics_under_the_live_screen_are_printed_once_it_is_given_back() {
+        hold("nexo hit an internal error at a.rs:1. Details: /d/crash-1.log".into());
+        let held = HELD.lock().unwrap().clone();
+        assert_eq!(held_text(&held), ["nexo hit an internal error at a.rs:1. Details: /d/crash-1.log"]);
+        HELD.lock().unwrap().clear();
+        let many: Vec<String> = (1..=5).map(|n| format!("line {n}")).collect();
+        let shown = held_text(&many);
+        assert_eq!(shown.len(), HELD_SHOWN + 1);
+        assert_eq!(shown.last().unwrap(), "2 more crash reports are in the same folder.");
     }
 }

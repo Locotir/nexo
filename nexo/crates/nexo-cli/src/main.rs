@@ -98,6 +98,8 @@ fn main() {
         })
         .map_err(|e| eprintln!("nexo: cannot start the main thread: {e}"))
         .map_or(1, |main| main.join().unwrap_or_else(|_| crash::after_main_panic()));
+    // The interface let go of the screen by now: say what panicked underneath it, if anything did.
+    crash::print_held();
     // `exit` runs no destructors: the audit log writes what it has queued first
     nexo_agent::audit::close_all();
     std::process::exit(code);
