@@ -43,12 +43,18 @@ pub fn probe(list: &[&str], cwd: &Path) -> Option<String> {
         return None;
     }
     // On a Mac the programs of the Command Line Tools are shims in /usr/bin that find nothing without the tools:
-    // they are named `shim:<name>` and `settle_shims` decides what they are.
+    // they are named `shim:<name>` and `settle_shims` decides what they are. Only the Mac branch captures a path
+    // (a command substitution forks, and a fork is slow under Git Bash); everywhere else `command -v` is a builtin
+    // and the loop starts no process, so the one cost left is the shell's own start.
     let script = format!(
         r#"mac=0; [ "$(uname)" = Darwin ] && mac=1
 for c in {}; do
-  p=$(command -v "$c" 2>/dev/null) || { printf '%s\n' "$c"; continue; }
-  [ $mac = 1 ] && [ "$p" = "/usr/bin/$c" ] && printf 'shim:%s\n' "$c"
+  if [ $mac = 1 ]; then
+    p=$(command -v "$c" 2>/dev/null) || {{ printf '%s\n' "$c"; continue; }}
+    [ "$p" = "/usr/bin/$c" ] && printf 'shim:%s\n' "$c"
+  else
+    command -v "$c" >/dev/null 2>&1 || printf '%s\n' "$c"
+  fi
 done; true"#,
         list.join(" ")
     );
