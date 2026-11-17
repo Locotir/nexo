@@ -273,6 +273,23 @@ fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
             out.extend(crate::render::wrap::wrap_plain(d, w.max(20), theme.dim(), &[Span::raw("        ")]));
         }
     }
+    // what the status bar leaves out unless the cache lets a call down: the share served from it, session and last
+    // call; wrapped under its label when the window is narrow
+    if let Some(share) = (app.session_usage.cache_read * 100).checked_div(app.session_usage.total_input()) {
+        let cached = app.last_call_cached.min(app.last_call_input);
+        let k = |n: u64| fmt_k(n).replace(".0k", "k");
+        let text = format!(
+            "{share}% of session · last call {} cached, {} full price",
+            k(cached),
+            k(app.last_call_input - cached)
+        );
+        out.push(Line::default());
+        let mut lines = crate::render::wrap::wrap_plain(&text, w.max(20), theme.dim(), &[Span::raw("        ")]);
+        if let Some(label) = lines.first_mut().and_then(|l| l.spans.first_mut()) {
+            *label = Span::styled("cache   ", theme.dim());
+        }
+        out.extend(lines);
+    }
     // what the curator added to the last call (only once a call has come with it)
     if let Some(items) = app.curated.first() {
         out.push(Line::default());

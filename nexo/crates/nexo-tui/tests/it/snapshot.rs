@@ -182,7 +182,11 @@ fn the_layout_at_100_by_30() {
         "wide enough for the directory: {}",
         wide[wide.len() - 1]
     );
-    assert!(wide[wide.len() - 1].contains("81% cached · 1 call"), "{}", wide[wide.len() - 1]);
+    assert!(
+        wide[wide.len() - 1].contains(" 1 call") && !wide[wide.len() - 1].contains("cached"),
+        "the cache share is not in the bar: {}",
+        wide[wide.len() - 1]
+    );
     let mid = draw(&mut a, 150, 30);
     let mid = &mid[mid.len() - 1];
     assert!(

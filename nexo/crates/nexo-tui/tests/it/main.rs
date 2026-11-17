@@ -5,6 +5,7 @@ mod agents_message;
 mod agents_panel;
 mod agents_panel_keys;
 mod ask_paste;
+mod cache_chip;
 mod cards;
 mod complete_perf;
 mod complete_words;

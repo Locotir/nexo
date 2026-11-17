@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The full-price part of a call, in tokens, below which a cache miss is not worth a word in the status bar.
+const CACHE_MISS_FRESH: u64 = 8_000;
+
 impl App {
     /// The context gauge: (tokens the last call sent, the window), when known.
     /// The last call's real input against the model's window; None when no
@@ -31,6 +34,17 @@ impl App {
         let cached = self.last_call_cached.min(self.last_call_input);
         let out = self.context.as_ref().map_or(0, |c| c.history_tokens.saturating_sub(c.view_tokens));
         Some(crate::render::gauge::Split { cached, fresh: self.last_call_input - cached, out })
+    }
+
+    /// Tokens the last call paid full price for when the cache let it down: an earlier call of the session was
+    /// served from the cache, this one got under half of its input from it, and at least 8k went at full price.
+    /// None otherwise, so a provider that never reports caching never raises it.
+    pub fn cache_miss(&self) -> Option<u64> {
+        let input = self.last_call_input;
+        let cached = self.last_call_cached.min(input);
+        let fresh = input - cached;
+        let earlier = self.session_usage.cache_read.saturating_sub(self.last_call_cached) > 0;
+        (earlier && cached * 2 < input && fresh >= CACHE_MISS_FRESH).then_some(fresh)
     }
 
     /// Tokens the next call sends, for the bar when no window is known.

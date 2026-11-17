@@ -86,7 +86,7 @@ More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo
 
 ## In the interface
 
-The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `yolo` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `81% cached` is the share of input the cache served (green from 50%), `12 calls` the calls so far and `⏱ 14s` the running turn. `/context` prints all of them.
+The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `yolo` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `12 calls` the calls so far (a `cache miss · 31k full price` chip joins them only when a call lost the cache; the share is in `/context`) and `⏱ 14s` the running turn. `/context` prints all of them.
 
 
 | Keys | What |

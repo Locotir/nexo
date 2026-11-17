@@ -144,20 +144,14 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             None => Seg { text: p, style: base.fg(theme.accent2) },
         }
     });
-    // the share of input the cache served (billed at a fraction) and the model calls so far
+    // the model calls so far, and a chip only when the cache let the last call down (the share itself is in /context)
     let extra = {
-        let u = &app.session_usage;
         let mut g = Vec::new();
-        if u.total_input() > 0 {
-            let pct = share(u.cache_read, u.total_input());
-            let colour = if pct >= 50 {
-                theme.success
-            } else if pct >= 20 {
-                theme.warn
-            } else {
-                theme.dim
-            };
-            g.push(Seg { text: format!("{pct:>3}% cached"), style: base.fg(colour) });
+        if let Some(fresh) = app.cache_miss() {
+            g.push(Seg {
+                text: format!("cache miss · {} full price", fmt_k(fresh).replace(".0k", "k")),
+                style: base.fg(theme.warn),
+            });
         }
         let calls = app.call_inputs.len();
         if calls > 0 {
