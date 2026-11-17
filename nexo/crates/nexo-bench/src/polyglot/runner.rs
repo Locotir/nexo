@@ -65,7 +65,12 @@ pub fn run_tests(lang: Lang, wd: &Path, seal: &Seal) -> Result<Outcome, String> 
     }
     let killed = ending == Ending::Killed;
     let summary = if killed { "killed (signal 9)".into() } else { with_crash(summarize(lang, &raw), &raw) };
-    let output = prompts::cap_output(&prompts::cleanup_output(&raw, wd));
+    let mut output = prompts::cap_output(&prompts::cleanup_output(&raw, wd));
+    if killed && output.trim().is_empty() {
+        // An out-of-memory kill often leaves nothing printed; the model is told what happened instead of being
+        // shown an empty list of errors.
+        output = prompts::KILLED.into();
+    }
     Ok(Outcome { pass: code == Some(0), timed_out: false, killed, output, summary, seconds })
 }
 
@@ -102,6 +107,19 @@ fn ending_of(code: Option<i32>, elapsed: std::time::Duration, secs: u64) -> Endi
     }
 }
 
+/// The exit code of `status`, with a death by signal given as a shell would: 128 plus the signal. GNU `timeout`
+/// raises the signal on itself when its direct child (the `sh`) is killed, so the status then has no code at all.
+fn exit_code(status: &std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return Some(128 + sig);
+        }
+    }
+    status.code()
+}
+
 /// Runs the shell line for at most `secs` seconds. Gives the exit code, the output (standard error included by
 /// the line itself) and how it ended.
 fn run_line(line: &str, secs: u64) -> Result<(Option<i32>, String, Ending), String> {
@@ -115,7 +133,7 @@ fn run_line(line: &str, secs: u64) -> Result<(Option<i32>, String, Ending), Stri
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("{program}: {e}"))?;
-    let code = out.status.code();
+    let code = exit_code(&out.status);
     let ending = ending_of(code, started.elapsed(), secs);
     Ok((code, String::from_utf8_lossy(&out.stdout).into_owned(), ending))
 }
@@ -305,7 +323,15 @@ mod tests {
     // Needs the GNU `timeout` program, which Linux has: without it the fallback gives no exit code of 137.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_test_line_killed_from_outside_is_not_called_a_timeout() {
+    fn a_test_line_whose_child_is_killed_from_outside_is_not_called_a_timeout() {
+        let (code, _, ending) = run_line("sleep 60 & kill -9 $!; wait $!", 30).unwrap();
+        assert_eq!((code, ending), (Some(137), Ending::Killed));
+    }
+
+    // `timeout` re-raises the signal on itself when its direct child dies from one, so no exit code comes back.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_test_line_that_is_itself_killed_from_outside_is_not_called_a_timeout() {
         let (code, _, ending) = run_line("kill -9 $$", 30).unwrap();
         assert_eq!((code, ending), (Some(137), Ending::Killed));
     }
