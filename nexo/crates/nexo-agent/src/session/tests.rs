@@ -1487,13 +1487,18 @@ fn a_session_that_cannot_be_opened_names_its_file_and_the_cause() {
 fn a_fresh_lock_of_a_process_that_has_exited_is_stale_on_windows() {
     let d = tempfile::tempdir().unwrap();
     let lock = d.path().join("x.jsonl.lock");
-    let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
-    let pid = child.id();
-    child.wait().unwrap();
-    drop(child);
-    // just written, so only the pid can tell that nobody holds it
-    std::fs::write(&lock, pid.to_string()).unwrap();
-    assert_eq!(holder(&lock), None);
+    // Windows reuses freed pids fast and tests run in parallel, so another test may own the pid when the lock is
+    // read; a fresh exited pid per try makes that rare miss pass, while a real fault fails all five tries.
+    let stale = (0..5).any(|_| {
+        let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        // just written, so only the pid can tell that nobody holds it
+        std::fs::write(&lock, pid.to_string()).unwrap();
+        holder(&lock).is_none()
+    });
+    assert!(stale);
     // this process runs, and its own stamp (with the start time) names it
     std::fs::write(&lock, stamp()).unwrap();
     assert_eq!(holder(&lock), Some(Some(std::process::id())));

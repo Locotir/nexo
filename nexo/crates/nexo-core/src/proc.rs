@@ -104,13 +104,21 @@ pub(crate) fn exited_pid() -> u32 {
     pid
 }
 
+/// Whether `check` holds for the pid of an exited child, tried on up to five fresh ones. Windows hands freed pids
+/// to the next spawn, and tests run as parallel threads, so another test can own the pid when `check` looks; a
+/// new pid per try makes that rare miss pass, while a real fault still fails all five.
+#[cfg(all(test, windows))]
+pub(crate) fn holds_for_an_exited_pid(check: impl Fn(u32) -> bool) -> bool {
+    (0..5).any(|_| check(exited_pid()))
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
     #[test]
     fn a_process_that_has_exited_is_not_alive() {
-        assert_eq!(pid_alive(exited_pid()), Some(false));
+        assert!(holds_for_an_exited_pid(|pid| pid_alive(pid) == Some(false)));
     }
 
     #[test]

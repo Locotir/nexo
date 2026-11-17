@@ -78,6 +78,6 @@ pub(super) fn text_hash(s: &str) -> u64 {
 #[cfg(all(test, windows))]
 #[test]
 fn a_peer_whose_process_has_exited_is_not_alive_on_windows() {
-    assert!(!pid_alive(crate::proc::exited_pid()));
+    assert!(crate::proc::holds_for_an_exited_pid(|pid| !pid_alive(pid)));
     assert!(pid_alive(std::process::id()));
 }

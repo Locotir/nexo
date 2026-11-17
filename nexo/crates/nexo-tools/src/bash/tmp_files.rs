@@ -105,17 +105,22 @@ pub fn sweep_tmp_in(tmp: &std::path::Path, alive: &dyn Fn(i32) -> bool, min_age:
 #[cfg(all(test, windows))]
 #[test]
 fn a_folder_of_an_exited_process_goes_at_once_on_windows_while_this_ones_stays() {
-    let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
-    let gone = child.id();
-    child.wait().unwrap();
-    drop(child);
     let t = tempfile::tempdir().unwrap();
-    let dead = t.path().join(format!("nexo-tmp-{gone}-main"));
     let own = t.path().join(format!("nexo-tmp-{}-main", std::process::id()));
-    std::fs::create_dir_all(&dead).unwrap();
     std::fs::create_dir_all(&own).unwrap();
-    // no 7-day floor: the folder is as old as the age given, which is none
-    sweep_tmp_in(t.path(), &pid_alive, std::time::Duration::ZERO);
-    assert!(!dead.exists());
+    // Windows reuses freed pids fast and tests run in parallel, so another test may own the pid when the sweep
+    // looks; a fresh exited pid per try makes that rare miss pass, while a real fault fails all five tries.
+    let swept = (0..5).any(|_| {
+        let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        drop(child);
+        let dead = t.path().join(format!("nexo-tmp-{gone}-main"));
+        std::fs::create_dir_all(&dead).unwrap();
+        // no 7-day floor: the folder is as old as the age given, which is none
+        sweep_tmp_in(t.path(), &pid_alive, std::time::Duration::ZERO);
+        !dead.exists()
+    });
+    assert!(swept);
     assert!(own.exists());
 }
