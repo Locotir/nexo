@@ -276,4 +276,71 @@ mod tests {
         assert_eq!(c.message().tool_calls().next().unwrap().2["command"], "ls");
         assert_eq!(c.finish_reason(), FinishReason::ToolUse);
     }
+
+    #[test]
+    fn a_cut_argument_text_becomes_empty_arguments() {
+        let mut c = Collector::new();
+        c.push(StreamEvent::ToolCallStart { id: "c".into(), name: "read".into() });
+        c.push(StreamEvent::ToolCallDelta { id: "c".into(), partial_json: "{\"path\":\"a".into() });
+        let m = c.message();
+        let calls: Vec<_> = m.tool_calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "read");
+        assert_eq!(*calls[0].2, serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_delta_for_a_call_never_started_opens_a_call_without_a_name() {
+        // Not a shape any adapter sends today; this pins what the collector does if one ever does.
+        let mut c = Collector::new();
+        c.push(StreamEvent::ToolCallDelta { id: "x".into(), partial_json: "{\"a\":1}".into() });
+        let m = c.message();
+        let calls: Vec<_> = m.tool_calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!((calls[0].0, calls[0].1), ("x", ""));
+        assert_eq!(*calls[0].2, serde_json::json!({"a": 1}));
+    }
+
+    #[test]
+    fn finished_parts_keep_their_order_and_an_open_call_comes_last() {
+        let mut c = Collector::new();
+        c.push(StreamEvent::ToolCallStart { id: "a".into(), name: "read".into() });
+        c.push(StreamEvent::ToolCallEnd { id: "a".into(), name: "read".into(), args: serde_json::json!({}) });
+        c.push(StreamEvent::TextDelta("t".into()));
+        c.push(StreamEvent::ToolCallStart { id: "b".into(), name: "grep".into() });
+        let kinds = |m: &Message| {
+            m.content
+                .iter()
+                .map(|p| match p {
+                    Part::ToolCall { id, .. } => format!("call {id}"),
+                    Part::Text { text } => format!("text {text}"),
+                    _ => "other".into(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(&c.message()), ["call a", "text t", "call b"]);
+
+        // A call that started first but is still open is placed after the parts that finished meanwhile.
+        let mut c = Collector::new();
+        c.push(StreamEvent::ToolCallStart { id: "b".into(), name: "grep".into() });
+        c.push(StreamEvent::TextDelta("t".into()));
+        c.push(StreamEvent::ToolCallStart { id: "a".into(), name: "read".into() });
+        c.push(StreamEvent::ToolCallEnd { id: "a".into(), name: "read".into(), args: serde_json::json!({}) });
+        assert_eq!(kinds(&c.message()), ["text t", "call a", "call b"]);
+    }
+
+    #[test]
+    fn the_finish_reason_falls_back_from_the_events_that_arrived() {
+        assert_eq!(Collector::new().finish_reason(), FinishReason::Stop);
+
+        let mut c = Collector::new();
+        c.push(StreamEvent::Error(ProviderError::new(crate::error::ErrorKind::Network, "cut")));
+        assert_eq!(c.finish_reason(), FinishReason::Error);
+
+        // A reason the provider sent wins over what the parts suggest.
+        let mut c = Collector::new();
+        c.push(StreamEvent::ToolCallStart { id: "c".into(), name: "bash".into() });
+        c.push(StreamEvent::Finish(FinishReason::Length));
+        assert_eq!(c.finish_reason(), FinishReason::Length);
+    }
 }
