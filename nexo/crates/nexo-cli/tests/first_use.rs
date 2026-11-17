@@ -172,3 +172,36 @@ fn a_config_that_does_not_parse_is_one_line_with_the_place_and_the_key() {
     assert_eq!(e.trim().lines().count(), 1, "{e}");
     assert!(e.contains("config.toml") && e.contains("line 1") && e.contains("`provider = 5`"), "{e}");
 }
+
+const BROKEN: &str = "provider = \"mock\"\nmodel = = \"mock\"\n";
+
+#[test]
+fn the_commands_that_need_no_config_still_run_when_the_file_cannot_be_parsed() {
+    let d = tempfile::tempdir().unwrap();
+    for args in [&["config", "path"][..], &["guide"], &["sessions"], &["auth", "list"]] {
+        let o = nexo(d.path(), BROKEN, args);
+        assert_eq!(o.status.code(), Some(0), "nexo {args:?}: {}", err(&o));
+    }
+    let o = nexo(d.path(), BROKEN, &["config", "path"]);
+    assert!(out(&o).contains("config.toml"), "{}", out(&o));
+}
+
+#[test]
+fn doctor_names_the_file_that_cannot_be_parsed_and_the_way_out() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), BROKEN, &["doctor", "--offline"]);
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    let s = out(&o);
+    assert!(s.contains("FIX  config") && s.contains("config.toml") && s.contains("line 2"), "{s}");
+    assert!(s.contains("nexo config init"), "{s}");
+}
+
+#[test]
+fn a_command_that_needs_the_config_says_where_to_look_when_it_cannot_be_parsed() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), BROKEN, &["providers"]);
+    assert_eq!(o.status.code(), Some(1));
+    let e = err(&o);
+    assert!(e.contains("cannot parse") && e.contains("nexo doctor") && e.contains("nexo config path"), "{e}");
+    assert_eq!(e.trim().lines().count(), 1, "{e}");
+}

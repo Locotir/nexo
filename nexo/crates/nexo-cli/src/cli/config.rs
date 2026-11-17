@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// A file that cannot be parsed already names itself and the line; this adds where to look next, on
+/// the same line, so a person who sees only this message still has a command to run.
+pub(super) fn point_to_the_files(e: anyhow::Error) -> anyhow::Error {
+    match e.downcast_ref::<nexo_core::config::ConfigError>() {
+        Some(nexo_core::config::ConfigError::Parse(..)) => {
+            anyhow::anyhow!("{e:#}; run `nexo doctor` or `nexo config path` to see the files")
+        }
+        _ => e,
+    }
+}
+
 /// The configuration of `cwd` with the presets and the providers the person asked for.
 pub(super) fn load_config(args: &Args, cwd: &std::path::Path) -> anyhow::Result<nexo_core::Config> {
     load_config_for(args.provider.as_deref(), cwd)
