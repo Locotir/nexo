@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 pub use events::{Ev, EvDetail, EvKind};
 use nexo_core::mail::Stage;
 
-pub use classify::{classify, ends_in_question, loop_signal, LoopWhy};
+pub use classify::{classify, ends_in_question, loop_signal, LoopKind, LoopWhy};
 pub use policy::{Loaded, Policy, Verdict};
 pub use run::{AgentRow, LaneInfo, MailRow, Options, Panel, Setup, Supervisor};
 pub use source::{Source, SourceKind};

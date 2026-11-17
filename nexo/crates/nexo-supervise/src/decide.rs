@@ -4,7 +4,7 @@
 //! not answer to nudges ends up as an alert instead of a fourth nudge.
 
 use super::policy::Policy;
-use super::{AgentTrack, Secs, State};
+use super::{loop_signal, AgentTrack, Secs, State};
 
 /// The person wrote in the session this recently: the supervisor stays out of the way.
 pub const PERSON_PRESENT_SECS: Secs = 300;
@@ -90,12 +90,29 @@ pub struct Ctx<'a> {
     pub now: Secs,
 }
 
-/// The text of a nudge with `{idle}`, `{errors}` and `{tool}` filled in.
+/// The text of a nudge with `{idle}`, `{errors}`, `{tool}` and `{why}` filled in. The errors and the tool come
+/// from the loop classifier, so the text names the rule that fired and never calls scattered errors "in a row".
 pub fn fill(template: &str, track: &AgentTrack, now: Secs) -> String {
     let idle = track.idle_secs(now).map_or("a while".to_string(), human);
-    let errors = track.results.iter().filter(|r| r.is_error).count();
-    let tool = track.results.iter().rev().find(|r| r.is_error).map_or("a tool", |r| r.name.as_str());
-    template.replace("{idle}", &idle).replace("{errors}", &errors.to_string()).replace("{tool}", tool)
+    let (errors, tool, why) = match loop_signal(track, now) {
+        Some(w) => (w.errors, w.tool.clone(), w.fact()),
+        // The state moved on since it was classified: count what is left, without claiming a rule.
+        None => {
+            let errors = track.results.iter().filter(|r| r.is_error).count();
+            let tool = track.results.iter().rev().find(|r| r.is_error).map(|r| r.name.clone()).unwrap_or_default();
+            let why = match errors {
+                0 => "errors were logged recently".to_string(),
+                n => format!("{n} of your last {} tool calls failed", track.results.len()),
+            };
+            (errors, tool, why)
+        }
+    };
+    let tool = if tool.is_empty() { "a tool" } else { tool.as_str() };
+    template
+        .replace("{idle}", &idle)
+        .replace("{errors}", &errors.to_string())
+        .replace("{tool}", tool)
+        .replace("{why}", &why)
 }
 
 pub fn human(secs: u64) -> String {
@@ -184,6 +201,69 @@ mod tests {
             }
             a => panic!("{a:?}"),
         }
+    }
+
+    fn feed(t: &mut AgentTrack, at: Secs, kind: super::super::ObsKind) {
+        t.apply(&super::super::Observation { agent_key: "k".into(), at, kind });
+    }
+
+    fn failed_or_not(name: &str, input: &str, is_error: bool) -> super::super::ObsKind {
+        super::super::ObsKind::ToolResult { name: name.into(), input_hash: super::super::input_hash(input), is_error }
+    }
+
+    fn looping_text(t: &AgentTrack, now: Secs) -> String {
+        match run(t, State::Looping, &Ledger::default(), now) {
+            Action::Nudge { text, rule: "looping" } => text,
+            a => panic!("{a:?}"),
+        }
+    }
+
+    #[test]
+    fn scattered_errors_in_the_window_are_not_called_errors_in_a_row() {
+        let now = 100_000;
+        let mut t = track(now);
+        for i in 0..8 {
+            feed(&mut t, now - 100 + i, failed_or_not("Bash", &format!("cmd{i}"), i % 2 == 0));
+        }
+        let text = looping_text(&t, now);
+        assert!(text.contains("4 of your last 8 tool calls failed (last one: `Bash`)"), "{text}");
+        assert!(!text.contains("in a row"), "{text}");
+    }
+
+    #[test]
+    fn the_same_call_failing_names_the_call_and_the_count() {
+        let now = 100_000;
+        let mut t = track(now);
+        feed(&mut t, now - 100, failed_or_not("Edit", "fine", false));
+        for i in 1..=3 {
+            feed(&mut t, now - 100 + i, failed_or_not("Edit", "same", true));
+        }
+        let text = looping_text(&t, now);
+        assert!(text.contains("your last 3 `Edit` calls were the same call and all failed"), "{text}");
+    }
+
+    #[test]
+    fn logged_errors_without_a_failed_tool_do_not_claim_zero_errors() {
+        let now = 100_000;
+        let mut t = track(now);
+        for i in 0..3 {
+            feed(&mut t, now - 200 + i * 50, super::super::ObsKind::SystemError);
+        }
+        assert!(loop_signal(&t, now).is_some());
+        let text = looping_text(&t, now);
+        assert!(text.contains("3 errors were logged in the last 10 minutes"), "{text}");
+        assert!(!text.contains("0 errors") && !text.contains("in a row"), "{text}");
+    }
+
+    #[test]
+    fn a_policy_file_that_still_uses_the_old_slots_keeps_working() {
+        let now = 100_000;
+        let mut t = track(now);
+        feed(&mut t, now - 100, failed_or_not("Edit", "fine", false));
+        for i in 1..=3 {
+            feed(&mut t, now - 100 + i, failed_or_not("Edit", "same", true));
+        }
+        assert_eq!(fill("{errors} errors with {tool}", &t, now), "3 errors with Edit");
     }
 
     #[test]
