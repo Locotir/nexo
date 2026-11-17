@@ -51,8 +51,7 @@ impl App {
                     if self.permission_mode != PermissionMode::Plan {
                         self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
                     }
-                    self.input.set_text(text);
-                    self.submit();
+                    self.submit_expanded(text, false);
                 }
                 _ if self.permission_mode == PermissionMode::Plan => {
                     self.notice(Level::Info, "already in plan mode · /plan off or Shift+Tab leaves it")
@@ -75,13 +74,15 @@ impl App {
                 ) {
                     self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
                 }
-                self.input.set_text(&format!(
-                    "Plan this multi-agent task and submit it using ultracode_execute. \
+                self.submit_expanded(
+                    &format!(
+                        "Plan this multi-agent task and submit it using ultracode_execute. \
                     Do not launch agents directly. Consider configured providers and model prices; \
                     mark unavailable information unknown and never invent it. Use start_clean only if requested; \
                     it does not isolate project files or remove the agent profile.\n\nTask:\n{task}"
-                ));
-                self.submit_ultracode();
+                    ),
+                    true,
+                );
             }
             Command::Prompt => self.send(AgentCommand::ShowPrompt),
             Command::PromptEdit => self.prompt_edit(),
@@ -178,8 +179,7 @@ impl App {
                 if self.session_title.is_empty() {
                     self.send(AgentCommand::Rename { title: "/init".into() });
                 }
-                self.input.set_text(INIT_PROMPT);
-                self.submit();
+                self.submit_expanded(INIT_PROMPT, false);
             }
             Command::Review(arg) => self.git_prompt(
                 "/review",

@@ -164,14 +164,18 @@ impl App {
 
     /// Enter on the draft.
     pub fn submit(&mut self) {
-        self.submit_with_kind(false);
+        self.submit_inner(false, true);
     }
 
-    pub(super) fn submit_ultracode(&mut self) {
-        self.submit_with_kind(true);
+    /// Sends text that a command expanded from what was typed (a diff prompt, a skill, a custom
+    /// command). The typed command is already in the history, so the expansion is not recorded: Up and
+    /// Ctrl+R would otherwise bring back up to 48 KB of diff instead of `/review`.
+    pub(super) fn submit_expanded(&mut self, text: &str, ultracode: bool) {
+        self.input.set_text(text);
+        self.submit_inner(ultracode, false);
     }
 
-    fn submit_with_kind(&mut self, ultracode: bool) {
+    fn submit_inner(&mut self, ultracode: bool, record: bool) {
         if self.in_sub() {
             return self.submit_sub();
         }
@@ -201,8 +205,7 @@ impl App {
                     match s.instructions(args) {
                         Ok(text) => {
                             self.input.push_history(trimmed);
-                            self.input.set_text(&text);
-                            return self.submit();
+                            return self.submit_expanded(&text, false);
                         }
                         Err(e) => {
                             self.notice(Level::Warn, format!("cannot read skill {}: {e}", s.name));
@@ -221,8 +224,7 @@ impl App {
             }
             if let Some(c) = self.custom_commands.iter().find(|c| c.name == name).cloned() {
                 self.input.push_history(trimmed);
-                self.input.set_text(&c.expand(args));
-                return self.submit();
+                return self.submit_expanded(&c.expand(args), false);
             }
         }
         if trimmed.starts_with('/') && !starts_with_path(trimmed) {
@@ -248,7 +250,9 @@ impl App {
             }
             return;
         }
-        self.input.push_history(trimmed);
+        if record {
+            self.input.push_history(trimmed);
+        }
         // the agent is gone (its end of the channel is closed): nothing would take the request, so the draft stays
         if !self.locked && self.commands.is_closed() {
             self.notice(

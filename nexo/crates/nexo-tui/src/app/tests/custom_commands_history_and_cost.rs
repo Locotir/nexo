@@ -233,3 +233,30 @@ fn every_listed_theme_changes_what_is_drawn_and_an_unknown_name_lists_the_known_
     assert!(said.contains("neon"), "{said}");
     assert_eq!(a.theme.name, "dark", "an unknown name changes nothing");
 }
+
+#[test]
+fn a_command_that_expands_into_a_prompt_records_only_what_was_typed() {
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("prompt-history.jsonl");
+    let (mut a, mut rx) = app();
+    a.input.persist_history(file.clone());
+    a.custom_commands = vec![crate::custom::CustomCommand {
+        name: "triage".into(),
+        description: String::new(),
+        body: "Review $ARGUMENTS against CONTRIBUTING.md.".into(),
+        path: PathBuf::from("triage.md"),
+        hint: String::new(),
+        allowed_tools: String::new(),
+        origin: String::new(),
+    }];
+    a.input.set_text("/init");
+    a.submit();
+    a.input.set_text("/triage src/lib.rs");
+    a.submit();
+    let sent: Vec<_> =
+        std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, AgentCommand::Submit { .. })).collect();
+    assert_eq!(sent.len(), 2, "both expansions reach the agent");
+    assert_eq!(a.input.history(), ["/init", "/triage src/lib.rs"]);
+    let stored = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(stored.lines().collect::<Vec<_>>(), ["\"/init\"", "\"/triage src/lib.rs\""]);
+}
