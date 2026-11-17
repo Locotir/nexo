@@ -1,6 +1,7 @@
 use super::*;
 
-/// A tool that never looks at the cancel token, as a blocking call would not.
+/// A tool that ends itself on the cancel, as a sub-agent does (`handles_cancel`), and never does: the turn cannot drop it,
+/// so only the close can cut it off.
 struct Stuck;
 
 #[async_trait]
@@ -16,6 +17,9 @@ impl Tool for Stuck {
     }
     fn summary(&self, _args: &Value) -> String {
         "stuck".into()
+    }
+    fn handles_cancel(&self) -> bool {
+        true
     }
     async fn run(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
         tokio::time::sleep(Duration::from_secs(120)).await;
@@ -39,6 +43,6 @@ async fn a_turn_stuck_in_a_tool_does_not_stop_the_session_end_hook() {
     r.send(AgentCommand::Shutdown);
     r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
     r.task.await.unwrap().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(20), "the close waited for the tool: {:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(15), "the close waited for the tool: {:?}", started.elapsed());
     assert!(marker.exists(), "the session_end hook did not run");
 }

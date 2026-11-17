@@ -200,10 +200,11 @@ pub(super) async fn headless_collect(
     Ok((text, code))
 }
 
-/// How long leaving the interface waits for the agent to close its session. A request in flight gets up to the time
-/// the agent gives a stuck turn (2 s) to unwind, and then the save, the release and the `session_end` hook have to run,
-/// so this is longer than the headless wait; the terminal is already restored, so nothing on screen waits with it.
-const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long leaving the interface waits for the agent to close its session. It is a few seconds more than the time
+/// the agent gives a stuck turn (6 s), which leaves the save and the release room; a request in flight has to unwind
+/// first, and the `session_end` hook comes after them and is cut off with the agent if it is still running. The
+/// terminal is already restored, so nothing on screen waits with it.
+const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Asks the agent to close its session and waits up to `wait` for it to finish (the `session_end` hook, the last
 /// state write, the scratch wipe), then aborts it so a stuck close cannot keep the process alive. The interface
