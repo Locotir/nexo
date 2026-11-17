@@ -22,13 +22,13 @@ pub(super) fn glob(pattern: &str) -> Option<GlobMatcher> {
     build_glob(pattern, false)
 }
 
-/// A glob over file names: on macOS the volume folds case, so `.GIT` is `.git` and the rule must see it. Command
-/// patterns never fold: `git branch -d *` must not cover `-D`.
+/// A glob over file names: on macOS and Windows the volume folds case, so `.GIT` is `.git` and the rule must see it.
+/// Command patterns never fold: `git branch -d *` must not cover `-D`.
 pub(super) fn path_glob(pattern: &str) -> Option<GlobMatcher> {
-    build_glob(pattern, cfg!(target_os = "macos"))
+    build_glob(pattern, nexo_core::paths::FOLD_CASE)
 }
 
-fn build_glob(pattern: &str, fold: bool) -> Option<GlobMatcher> {
+pub(super) fn build_glob(pattern: &str, fold: bool) -> Option<GlobMatcher> {
     GlobBuilder::new(pattern)
         .literal_separator(false)
         .case_insensitive(fold)

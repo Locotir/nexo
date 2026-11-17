@@ -195,6 +195,10 @@ pub fn canonical(p: &Path) -> std::io::Result<PathBuf> {
     Ok(c)
 }
 
+/// Whether the disks of this platform compare file names without case: APFS by default on macOS, NTFS on Windows.
+/// Every path rule and guarded-folder check folds case by this one flag, so `.GIT` is `.git` for all of them.
+pub const FOLD_CASE: bool = cfg!(any(target_os = "macos", windows));
+
 /// A file that holds keys or credentials, by where it is and what it is called: anything under
 /// `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker` or `.password-store`, the macOS keychains
 /// (`Library/Keychains`, `*.keychain`, `*.keychain-db`), the GitHub and Google Cloud command line

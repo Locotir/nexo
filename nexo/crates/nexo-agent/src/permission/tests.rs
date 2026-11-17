@@ -528,9 +528,19 @@ fn allow_rules_for_commands_keep_the_case_of_their_flags() {
     }
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn path_rules_fold_case_on_macos() {
+fn path_globs_fold_case_when_asked_and_never_for_commands() {
+    // platform independent: the fold flag decides, so Linux runs the same check Windows CI does
+    let fold = rules::build_glob(".git/**", true).unwrap();
+    assert!(fold.is_match(".GIT/config") && fold.is_match(".git/config"));
+    assert!(!rules::build_glob(".git/**", false).unwrap().is_match(".GIT/config"));
+    let command = rules::glob("git branch -d *").unwrap();
+    assert!(command.is_match("git branch -d old") && !command.is_match("git branch -D old"));
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn path_rules_fold_case_where_the_disk_does() {
     let p = Policy { mode: PermissionMode::Ask, allow: vec![], deny: vec!["write(.git/**)".into()] };
     let d = p.decide("write", ToolKind::Write, &json!({ "path": ".GIT/config" }), &cwd());
     assert!(matches!(d, Decision::Deny(_)));

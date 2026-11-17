@@ -100,7 +100,7 @@ pub(super) const GUARDED_FILES: &[&str] = &[
 ];
 
 /// Whether `rel` has a guarded folder in it or is a guarded file; `fold` compares names without case, as a
-/// case-insensitive disk (APFS by default) does: `.GIT/hooks` is the folder `.git/hooks` there.
+/// case-insensitive disk (APFS by default, NTFS) does: `.GIT/hooks` is the folder `.git/hooks` there.
 pub(super) fn guarded_in(rel: &Path, fold: bool) -> bool {
     let named = |list: &[&str], n: &str| list.iter().any(|g| if fold { g.eq_ignore_ascii_case(n) } else { *g == n });
     rel.components().any(|c| c.as_os_str().to_str().is_some_and(|n| named(GUARDED_DIRS, n)))
@@ -114,8 +114,7 @@ pub(super) fn editable(args: &Value, cwd: &Path) -> bool {
     let (lex, root) = (lexical(&p, cwd), normalise(cwd));
     let (real, real_root) = (real_path(&lex), real_path(&root));
     let (Ok(rel), Ok(real_rel)) = (lex.strip_prefix(&root), real.strip_prefix(&real_root)) else { return false };
-    let fold = cfg!(target_os = "macos");
-    let guarded = |r: &Path| guarded_in(r, fold);
+    let guarded = |r: &Path| guarded_in(r, nexo_core::paths::FOLD_CASE);
     !rel.as_os_str().is_empty() && !guarded(rel) && !guarded(real_rel) && !is_sensitive(&p, cwd)
 }
 

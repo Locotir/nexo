@@ -574,6 +574,14 @@ fn the_session_folder_named_through_a_link_is_still_the_session_folder() {
     assert!(matches!(rm(format!("rm -rf {}", alias.display())), Verdict::Deny(_)));
 }
 
+#[test]
+fn path_rules_of_a_session_fold_case_only_where_the_disk_does() {
+    // command patterns (separators=false) keep their case on every system
+    assert!(!paths::matches("git branch -d *", "git branch -D old", false));
+    assert_eq!(paths::matches(".git/**", ".GIT/config", true), nexo_core::paths::FOLD_CASE);
+    assert!(paths::matches(".git/**", ".git/config", true));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_session_folder_in_tmp_holds_the_files_named_by_tmp() {
