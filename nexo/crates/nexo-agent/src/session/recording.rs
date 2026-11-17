@@ -313,13 +313,15 @@ impl Session {
                 }
             })
             .collect();
-        let (old, outputs) = (std::mem::replace(&mut self.messages, messages.to_vec()), self.outputs.clone());
+        let old = std::mem::replace(&mut self.messages, messages.to_vec());
         let old_stamps = std::mem::replace(&mut self.stamps, stamps);
         let done = self.rewrite();
         self.track(&done);
-        // as in `rewind`: when the file was not replaced, memory keeps matching it
+        // as in `rewind`: when the file was not replaced, memory keeps matching it. The tool outputs are not
+        // touched by a rewrite (`rewind` is what prunes them), so only the messages go back: copying every
+        // output on each compaction to restore what never changed was wasted memory.
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
-            (self.messages, self.stamps, self.outputs) = (old, old_stamps, outputs);
+            (self.messages, self.stamps) = (old, old_stamps);
             self.meta.messages = self.messages.len();
         }
         done
