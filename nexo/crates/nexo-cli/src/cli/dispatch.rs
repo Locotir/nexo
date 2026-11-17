@@ -218,7 +218,17 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
     } else {
         setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?
     };
-    let resume = if args.continue_ { nexo_agent::session::latest_for(&cwd).map(|m| m.id) } else { args.resume.clone() };
+    let resume = if args.continue_ {
+        // `nexo -p -c` may chain on the last script run; an interactive `-c` wants the person's own conversation
+        let last = if args.prompt.is_some() {
+            nexo_agent::session::latest_for(&cwd)
+        } else {
+            nexo_agent::session::latest_own_for(&cwd)
+        };
+        last.map(|m| m.id)
+    } else {
+        args.resume.clone()
+    };
     if args.continue_ && resume.is_none() {
         eprintln!("nexo: no earlier session in {}; starting a new one", cwd.display());
     }

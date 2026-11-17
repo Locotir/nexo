@@ -50,7 +50,9 @@ pub fn run(a: &ExportArgs, cwd: &std::path::Path) -> anyhow::Result<i32> {
         Some(id) => Session::open(id).map_err(|_| anyhow::anyhow!("no session {id:?}; `nexo sessions` lists them"))?,
         None => {
             // a session nothing was said in has nothing to export
-            let Some(meta) = session::latest_for(cwd).or_else(|| session::list().into_iter().find(|m| m.messages > 0))
+            let Some(meta) = session::latest_own_for(cwd)
+                .or_else(|| session::latest_for(cwd))
+                .or_else(|| session::list().into_iter().find(|m| m.messages > 0))
             else {
                 println!("no sessions yet");
                 return Ok(0);

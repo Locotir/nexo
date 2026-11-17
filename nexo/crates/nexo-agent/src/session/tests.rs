@@ -487,6 +487,40 @@ fn continue_skips_empty_sessions_and_matches_the_folder_however_written() {
 }
 
 #[test]
+fn continue_in_a_folder_skips_a_scripts_session_unless_it_is_the_only_one() {
+    let d = tempfile::tempdir().unwrap();
+    let work = d.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let dir = d.path().join("sessions");
+    let mut own = Session::create_in(&dir, &work, "mock", "m").unwrap();
+    own.append(&Message::user("a real conversation")).unwrap();
+    let own_id = own.id().to_string();
+    drop(own);
+    // a newer session a program started: its meta line says `headless`, as `nexo -p` writes it
+    let mut script = Session::create_in(&dir, &work, "mock", "m").unwrap();
+    script.append(&Message::user("a script run")).unwrap();
+    let script_id = script.id().to_string();
+    let script_path = script.path().to_path_buf();
+    drop(script);
+    let text = std::fs::read_to_string(&script_path).unwrap();
+    let (first, rest) = text.split_once('\n').unwrap();
+    let Line::Meta(mut m) = serde_json::from_str(first).unwrap() else { panic!("no meta line") };
+    m.headless = true;
+    std::fs::write(&script_path, format!("{}\n{rest}", serde_json::to_string(&Line::Meta(m)).unwrap())).unwrap();
+    // the script run is the newer file, whatever the clock said when both were written
+    let f = File::options().write(true).open(&script_path).unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60)).unwrap();
+    drop(f);
+    assert_eq!(latest_for_in(&dir, &work).map(|m| m.id), Some(script_id));
+    assert_eq!(latest_own_for_in(&dir, &work).map(|m| m.id), Some(own_id.clone()));
+    std::fs::remove_file(dir.join(format!("{own_id}.jsonl"))).unwrap();
+    assert!(
+        latest_own_for_in(&dir, &work).is_none(),
+        "a folder with only a script's session has none of the person's own"
+    );
+}
+
+#[test]
 fn a_live_writer_keeps_its_lock_however_old() {
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();

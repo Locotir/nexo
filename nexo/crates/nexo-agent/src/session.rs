@@ -375,6 +375,18 @@ pub fn latest_for_in(dir: &Path, cwd: &Path) -> Option<SessionMeta> {
     list_in(dir).into_iter().find(|m| m.messages > 0 && same_form(&m.cwd) == want)
 }
 
+/// Like `latest_for`, but skips the sessions a program started (`nexo -p`), as the /resume picker does: the
+/// last conversation the person had, not the last script run in the folder. `nexo -p -c` keeps `latest_for`
+/// because a script may chain on its own earlier run.
+pub fn latest_own_for(cwd: &Path) -> Option<SessionMeta> {
+    latest_own_for_in(&dir(), cwd)
+}
+
+pub fn latest_own_for_in(dir: &Path, cwd: &Path) -> Option<SessionMeta> {
+    let want = same_form(cwd);
+    list_in(dir).into_iter().find(|m| m.messages > 0 && !m.headless && same_form(&m.cwd) == want)
+}
+
 /// A folder in one form, however it was written: canonical where it exists, and on Windows
 /// without the `\\?\` prefix canonicalizing adds.
 fn same_form(p: &Path) -> PathBuf {
