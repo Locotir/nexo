@@ -737,6 +737,78 @@ async fn a_detached_command_names_its_log_and_pid_and_outlives_the_registry() {
     let _ = std::fs::remove_file(&log);
 }
 
+/// A command that reads its input must meet an end of file at once, never wait for a person who is not there. Comparing
+/// stdin with /dev/null is what tells the closed stdin apart: `cat` and `read` alone also return when the test harness
+/// itself runs with an empty stdin, so they would pass without the setting.
+const STDIN_PROBE: &str = "test /dev/null -ef /dev/stdin && echo stdin-null; cat; echo cat-$?; read x; echo read-$?";
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_foreground_command_reads_end_of_file_from_stdin_and_does_not_wait() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let t = std::time::Instant::now();
+    let out = Bash.run(json!({"command": STDIN_PROBE, "timeout": 5}), &c).await;
+    assert!(!out.is_error && !out.content.contains("timed out"), "{}", out.content);
+    for want in ["stdin-null", "cat-0", "read-1"] {
+        assert!(out.content.contains(want), "{want} missing: {}", out.content);
+    }
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_job_reads_end_of_file_from_stdin() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let cmd = format!("{{ {STDIN_PROBE}; }} > seen.txt 2>&1; echo finished >> seen.txt");
+    let out = Bash.run(json!({"command": cmd, "background": true}), &c).await;
+    assert!(out.content.contains("Started background job"), "{}", out.content);
+    let seen = d.path().join("seen.txt");
+    let t = std::time::Instant::now();
+    while !std::fs::read_to_string(&seen).unwrap_or_default().contains("finished")
+        && t.elapsed() < Duration::from_secs(5)
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = std::fs::read_to_string(&seen).unwrap_or_default();
+    for want in ["stdin-null", "cat-0", "read-1", "finished"] {
+        assert!(seen.contains(want), "{want} missing: {seen:?}");
+    }
+    c.jobs.kill_all();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_detached_command_reads_end_of_file_from_stdin() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let cmd = format!("{STDIN_PROBE}; echo finished");
+    let out = Bash.run(json!({"command": cmd, "background": true, "detach": true}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    let log = out.content.split("output is in ").nth(1).unwrap().split(". Stop").next().unwrap().to_string();
+    let t = std::time::Instant::now();
+    while !std::fs::read_to_string(&log).unwrap_or_default().contains("finished")
+        && t.elapsed() < Duration::from_secs(5)
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    for want in ["stdin-null", "cat-0", "read-1", "finished"] {
+        assert!(seen.contains(want), "{want} missing: {seen:?}");
+    }
+}
+
 #[tokio::test]
 async fn detach_needs_background() {
     let d = tempfile::tempdir().unwrap();
