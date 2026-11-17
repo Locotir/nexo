@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use crate::{assemble, fixtures, patch, Image, PatchData as D, PatchTarget as T};
+use crate::{assemble, fixtures, patch, patch_file, patch_with, Image, PatchData as D, PatchOpts, PatchTarget as T};
 
 #[test]
 fn asm_labels_use_rel32_at_the_requested_origin_in_both_modes() {
@@ -257,4 +257,116 @@ fn an_ad_hoc_file_with_a_sha1_primary_and_a_sha256_alternate_is_checked_through_
     let seen = read_signature(&sha1_only);
     assert_eq!(seen, Signature::AdHocUnchecked);
     assert!(seen.describe().contains("ad hoc") && !seen.describe().contains("certificate"), "{}", seen.describe());
+}
+
+fn elf_input(dir: &Path) -> (fixtures::Fixture, std::path::PathBuf, Image) {
+    let f = fixtures::elf64(false);
+    let input = dir.join("input");
+    fs::write(&input, &f.bytes).unwrap();
+    let img = Image::open(&input).unwrap();
+    (f, input, img)
+}
+
+#[test]
+fn a_patch_file_with_a_bad_line_is_refused_with_its_line_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let (f, _, img) = elf_input(dir.path());
+    let out = dir.path().join("out");
+    let at = format!("{:#x}", f.b);
+    let opts = PatchOpts::default();
+    let cases: Vec<(String, &str)> = vec![
+        ("# nothing\n\n".into(), "no patches"),
+        (format!("# ok\n{at}\n"), "line 2"),
+        (format!("{at} 9\n"), "line 1"),
+        (format!("{at} 90 9090\n"), "OLD_HEX has 1 bytes"),
+        (format!("{at} nop 0\n"), "nop length"),
+        (format!("{at} 90\nzzz 90\n"), "line 2"),
+        (format!("{at} 90 90 90\n"), "expected"),
+    ];
+    for (text, word) in &cases {
+        let e = patch_file(&img, Some(&out), text, opts).unwrap_err().to_string();
+        assert!(e.contains(word), "{text:?}: {e}");
+        assert!(!out.exists());
+    }
+    let e = patch_file(&img, Some(&out), &format!("{at} 90\n"), PatchOpts { verify: true, ..opts }).unwrap_err();
+    assert!(e.to_string().contains("--verify needs OLD_HEX"), "{e}");
+}
+
+#[test]
+fn a_patch_file_is_all_or_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let (f, _, img) = elf_input(dir.path());
+    let out = dir.path().join("out");
+    let (b0, b1, b4) = (f.b, f.b + 1, f.b + 4);
+    // two lines touch the byte at b+1: nothing is written, though the first line alone is fine
+    let text = format!("{b0:#x} 9090\n{b1:#x} 9090\n");
+    let e = patch_file(&img, Some(&out), &text, PatchOpts::default()).unwrap_err().to_string();
+    assert!(e.contains("overlap") && e.contains("nothing was written"), "{e}");
+    assert!(!out.exists());
+    // the second line is outside every section: the first is not applied either
+    let text = format!("{b0:#x} 9090\n0x10 90\n");
+    assert!(patch_file(&img, Some(&out), &text, PatchOpts::default()).is_err());
+    assert!(!out.exists());
+    // good lines, in any order, old bytes given on one
+    let old = crate::ops::hex(img.read_at(b0, 2).unwrap()).replace(' ', "");
+    let text = format!("{b4:#x} nop 2 # two nops\n{b0:#x} {old} cccc\n");
+    let answer = patch_file(&img, Some(&out), &text, PatchOpts::default()).unwrap();
+    assert!(answer.text_all().contains("2 patches"));
+    let copy = Image::open(&out).unwrap();
+    assert_eq!(copy.read_at(b0, 2).unwrap(), [0xcc, 0xcc]);
+    assert_eq!(copy.read_at(b4, 2).unwrap(), [0x90, 0x90]);
+}
+
+#[test]
+fn verify_refuses_bytes_that_differ_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (f, input, img) = elf_input(dir.path());
+    let out = dir.path().join("out");
+    let spaced = crate::ops::hex(img.read_at(f.b, 2).unwrap());
+    let real = spaced.replace(' ', "");
+    let wrong = if real == "ffff" { "0000" } else { "ffff" };
+    let opts = PatchOpts { old: Some(wrong), verify: true, ..Default::default() };
+    let e = patch_with(&img, Some(&out), T::Address(f.b), D::Bytes("9090"), opts).unwrap_err().to_string();
+    assert!(e.contains("refused") && e.contains(&spaced), "{e}");
+    assert!(!out.exists());
+    // --old alone checks too; --verify without --old is a usage error
+    let opts = PatchOpts { old: Some(wrong), ..Default::default() };
+    assert!(patch_with(&img, Some(&out), T::Address(f.b), D::Bytes("9090"), opts).is_err());
+    let opts = PatchOpts { verify: true, ..Default::default() };
+    assert!(patch_with(&img, Some(&out), T::Address(f.b), D::Bytes("9090"), opts)
+        .unwrap_err()
+        .to_string()
+        .contains("--old"));
+    assert!(!out.exists());
+    // the right bytes pass
+    let opts = PatchOpts { old: Some(&real), verify: true, ..Default::default() };
+    patch_with(&img, Some(&out), T::Address(f.b), D::Bytes("9090"), opts).unwrap();
+    assert_eq!(Image::open(&out).unwrap().read_at(f.b, 2).unwrap(), [0x90, 0x90]);
+    assert_eq!(fs::read(input).unwrap(), f.bytes);
+}
+
+#[test]
+fn in_place_keeps_a_backup_and_never_overwrites_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (f, input, img) = elf_input(dir.path());
+    let backup = dir.path().join("input.orig");
+    let opts = PatchOpts { in_place: true, ..Default::default() };
+    // --out and --in-place together, and neither
+    assert!(patch_with(&img, Some(&dir.path().join("o")), T::Address(f.b), D::Nop(1), opts).is_err());
+    assert!(patch_with(&img, None, T::Address(f.b), D::Nop(1), PatchOpts::default()).is_err());
+    let answer = patch_with(&img, None, T::Address(f.b), D::Nop(2), opts).unwrap();
+    assert!(answer.text_all().contains("input.orig"), "{}", answer.text_all());
+    assert_eq!(fs::read(&backup).unwrap(), f.bytes);
+    assert_eq!(Image::open(&input).unwrap().read_at(f.b, 2).unwrap(), [0x90, 0x90]);
+    assert!(!dir.path().join("input.nexo-tmp").exists());
+    // a second one is refused and leaves both files as they are
+    let patched = fs::read(&input).unwrap();
+    let img = Image::open(&input).unwrap();
+    let e = patch_with(&img, None, T::Address(f.b), D::Nop(3), opts).unwrap_err().to_string();
+    assert!(e.contains("already exists"), "{e}");
+    assert_eq!(fs::read(&input).unwrap(), patched);
+    assert_eq!(fs::read(&backup).unwrap(), f.bytes);
+    // a patch file works in place the same way
+    let e = patch_file(&img, None, &format!("{:#x} 90\n", f.b), opts).unwrap_err().to_string();
+    assert!(e.contains("already exists"), "{e}");
 }
