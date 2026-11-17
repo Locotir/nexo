@@ -55,8 +55,10 @@ impl Setup {
         // the providers with a model of their own first (the one in use at the top), then the
         // other ready ones, running servers before the rest
         let mut order: Vec<String> = Vec::new();
+        // a model of a keyless local preset is listed even when nothing runs there, so it only leads
+        // when the preset is usable; the others wait under "others" until a server answers
         for (p, _) in &self.models {
-            if !order.contains(p) {
+            if !order.contains(p) && self.usable(p) {
                 order.push(p.clone());
             }
         }

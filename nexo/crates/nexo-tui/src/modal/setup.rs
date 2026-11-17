@@ -169,6 +169,16 @@ pub fn provider_ready(name: &str, c: &ProviderConfig, local: &[(String, String)]
     }
 }
 
+impl Setup {
+    /// Whether the models of a provider can be offered as ready: the one in use, one that is not a
+    /// configured provider, or one that passes `provider_ready`. Phantom local presets fail it.
+    pub(super) fn usable(&self, name: &str) -> bool {
+        let in_use = self.current.split_once('/').is_some_and(|(p, _)| p == name);
+        in_use
+            || self.providers.iter().find(|(n, _)| n == name).is_none_or(|(_, c)| provider_ready(name, c, &self.local))
+    }
+}
+
 /// The configured providers whose own server must be asked by the local scan: they want no key and
 /// their address is on this machine, so only a server found running makes them ready. `(name, base_url)`.
 pub fn own_local_servers(providers: &[(String, ProviderConfig)]) -> Vec<(String, String)> {
@@ -259,7 +269,7 @@ impl Setup {
         };
         s.fill_providers();
         // nothing to switch to yet: the first run starts with a few clear choices
-        if s.models.is_empty() {
+        if !s.models.iter().any(|(p, _)| s.usable(p)) {
             s.fill_start();
         }
         s
