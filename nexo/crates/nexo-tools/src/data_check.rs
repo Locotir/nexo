@@ -97,10 +97,24 @@ fn block_owner(indent: usize, code: &str) -> Option<usize> {
     Some(if rest == token { item.unwrap_or(col) } else { col })
 }
 
+/// Whether `code` (a line without its indentation or comment) ends in a plain scalar: not a key or dash
+/// waiting for its value, a closed quote or flow collection, a document marker, or a tag or anchor.
+fn ends_plain(code: &str) -> bool {
+    let last = code.chars().next_back().unwrap_or(':');
+    let token = code.rsplit(char::is_whitespace).next().unwrap_or("");
+    !(":\"']}".contains(last)
+        || code.chars().all(|c| c == '-' || c == '.' || c.is_whitespace())
+        || token.starts_with(['&', '!']))
+}
+
 fn yaml(text: &str) -> String {
     let mut depth: i32 = 0;
-    // a quoted scalar still open from an earlier line (flow scalars may span lines) and where it began
-    let mut open: Option<(char, usize)> = None;
+    // a quoted scalar still open from an earlier line (flow scalars may span lines): its quote, the line it
+    // began on and that line's indentation
+    let mut open: Option<(char, usize, usize)> = None;
+    // the indentation of the previous line when it ended in a plain scalar, whose deeper-indented next
+    // line is a continuation of that scalar, not the start of a new node
+    let mut plain: Option<usize> = None;
     // the column owning a block scalar whose body is being skipped: its text is not YAML
     let mut block: Option<usize> = None;
     for (i, raw) in text.lines().enumerate() {
@@ -113,18 +127,25 @@ fn yaml(text: &str) -> String {
             }
             block = None;
         }
+        // a continuation line of a quoted scalar is indented deeper than the line that opened it, so a
+        // line that is not ends the scalar early: the quote was never closed, whatever quote comes later
+        if let Some((q, line, _)) = open.filter(|o| !body.is_empty() && indent <= o.2) {
+            return format!("invalid YAML at line {line}: a {q} quote is not closed");
+        }
         if open.is_none() && raw[..indent].contains('\t') && !body.is_empty() {
             return format!("invalid YAML at line {n}: a tab in the indentation");
         }
-        let (mut quote, mut opened) = (open.map(|o| o.0), open.map_or(n, |o| o.1));
+        let (mut quote, mut opened) = (open.map(|o| o.0), open.map_or((n, indent), |o| (o.1, o.2)));
         let (mut prev, mut last, mut code_end) = (' ', None::<char>, body.len());
         let mut chars = body.char_indices().peekable();
         while let Some((at, c)) = chars.next() {
             // a quote or bracket starts a flow value only where a value can start, so `a: it's` and
             // `a: x]` are plain text
             let start = match last {
-                None => true,
-                Some('[' | '{' | ',') => true,
+                // a line that continues a plain scalar starts no node; neither does a comma outside a flow
+                // collection
+                None => depth > 0 || !plain.is_some_and(|p| indent > p),
+                Some('[' | '{' | ',') => depth > 0,
                 Some(':' | '-' | '?') => prev.is_whitespace(),
                 Some(_) => false,
             };
@@ -143,7 +164,7 @@ fn yaml(text: &str) -> String {
                 }
                 (None, '"' | '\'') if start => {
                     quote = Some(c);
-                    opened = n;
+                    opened = (n, indent);
                 }
                 (None, '[' | '{') if depth > 0 || start => depth += 1,
                 (None, ']' | '}') if depth > 0 || start => depth -= 1,
@@ -154,16 +175,20 @@ fn yaml(text: &str) -> String {
                 last = Some(c);
             }
         }
-        open = quote.map(|q| (q, opened));
+        open = quote.map(|q| (q, opened.0, opened.1));
         // a flow collection may span lines, but it never closes before it opens
         if depth < 0 {
             return format!("invalid YAML at line {n}: a closing bracket with no opening one");
         }
+        let code = body[..code_end].trim_end();
         if open.is_none() {
-            block = block_owner(indent, body[..code_end].trim_end());
+            block = block_owner(indent, code);
+        }
+        if !code.is_empty() {
+            plain = (open.is_none() && depth == 0 && block.is_none() && ends_plain(code)).then_some(indent);
         }
     }
-    if let Some((q, line)) = open {
+    if let Some((q, line, _)) = open {
         return format!("invalid YAML at line {line}: a {q} quote is not closed");
     }
     if depth > 0 {
@@ -347,6 +372,27 @@ mod tests {
         assert_eq!(yaml("a: see [the docs\nb: x]\n"), fine(2));
     }
 
+    #[test]
+    fn an_unclosed_quote_is_named_even_when_a_later_line_holds_a_quote_of_the_same_kind() {
+        let at2 = "invalid YAML at line 2: a \" quote is not closed";
+        assert_eq!(yaml("a: 1\nb: \"x\nc: 2\nd: \"y\"\n"), at2);
+        assert_eq!(yaml("a: 1\nb: 'x\nc: 2\nd: 'y'\n"), "invalid YAML at line 2: a ' quote is not closed");
+        assert_eq!(yaml("a:\n  - 'x\n  - 'y'\n"), "invalid YAML at line 2: a ' quote is not closed");
+        // a continuation indented deeper than the line that opened the quote stays a multi-line scalar
+        assert_eq!(yaml("a:\n  - 'x\n    y'\n  - z\n"), fine(4));
+        assert_eq!(yaml("a: \"x\n\n  y\"\nb: 1\n"), fine(4));
+    }
+
+    #[test]
+    fn a_quote_or_bracket_after_a_comma_in_a_plain_scalar_or_on_its_continuation_line_is_text() {
+        assert_eq!(yaml("title: Hello, \"world\nb: 1\n"), fine(2));
+        assert_eq!(yaml("a: one, [two\nb: 1\n"), fine(2));
+        assert_eq!(yaml("k: v\n  'quoted continuation\nz: 1\n"), fine(3));
+        assert_eq!(yaml("- v\n  [continuation\n- w\n"), fine(3));
+        // inside a flow collection a comma still starts a value, and a quoted key still opens a quote
+        assert_eq!(yaml("a: [1, \"x\n"), "invalid YAML at line 1: a \" quote is not closed");
+        assert_eq!(yaml("a: 1\n\"b\": \"x\n"), "invalid YAML at line 2: a \" quote is not closed");
+    }
     #[test]
     fn a_comment_may_hold_quotes_and_brackets() {
         assert_eq!(yaml("a: 1 # it's [odd\n# \"also\n"), fine(2));
