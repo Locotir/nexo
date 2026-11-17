@@ -43,7 +43,9 @@ impl Input {
                 }
             }
             (Some('g'), 'g') => e.move_cursor(CursorMove::Top),
-            (Some(_), _) => {}
+            // An operator followed by a key this subset does not implement (`dw`, `ciw`, `dt)`): say so,
+            // so a missing feature is not mistaken for a typo. The operator is already cleared.
+            (Some(op), _) => return Edit::Notice(format!("vim: {op}{c} not supported")),
             (None, 'd' | 'c' | 'g') => self.pending = Some(c),
             (None, 'h') => e.move_cursor(CursorMove::Back),
             (None, 'l') => e.move_cursor(CursorMove::Forward),

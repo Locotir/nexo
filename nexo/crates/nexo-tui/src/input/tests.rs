@@ -508,3 +508,16 @@ fn the_history_file_is_readable_by_its_owner_only() {
     assert_eq!(std::fs::read_to_string(&long).unwrap().lines().count(), MAX_HISTORY);
     assert_eq!(mode(&long), 0o600);
 }
+
+#[test]
+fn a_vim_operator_pair_that_is_not_implemented_says_so_and_leaves_the_draft_alone() {
+    let mut i = Input::new("");
+    i.set_text("hello world");
+    i.vim = Some(VimMode::Normal);
+    let n = |i: &mut Input, c: char| i.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+    assert_eq!(n(&mut i, 'd'), Edit::Changed, "the operator waits for its second key");
+    assert_eq!(n(&mut i, 'w'), Edit::Notice("vim: dw not supported".to_string()));
+    assert_eq!(i.text(), "hello world");
+    // the operator was cleared, so the next key is a plain one again
+    assert_eq!(n(&mut i, 'q'), Edit::Ignored, "an unknown key with no operator stays silent, as in vim");
+}

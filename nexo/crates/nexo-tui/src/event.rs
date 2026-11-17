@@ -396,6 +396,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
         // a recalled history entry: the palette stays shut so the next Up keeps browsing
         Edit::Recalled => {}
         Edit::Ignored => {}
+        Edit::Notice(msg) => app.flash(&msg),
     }
 }
 
