@@ -127,9 +127,63 @@ pub(super) const BUILDERS: [&str; 10] = [
     "gradle",
 ];
 
-/// The line of a build or test command's output that tells how it went, if `cmd` is one.
+/// Programs that run the command after them: their own options and numbers (a niceness, a timeout) are skipped.
+const WRAPPERS: [&str; 6] = ["nice", "time", "env", "nohup", "timeout", "exec"];
+
+/// The words of each command `cmd` runs: split at `;`, `&`, `|`, a newline and parentheses outside quotes, and
+/// at spaces outside quotes. A quoted part stays one word, so `pgrep -af "cargo test"` never reads as a build.
+fn segments(cmd: &str) -> Vec<Vec<String>> {
+    let (mut all, mut words, mut word) = (Vec::new(), Vec::new(), String::new());
+    let mut quote: Option<char> = None;
+    let mut chars = cmd.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') | (None, '\\') => word.extend(chars.next()),
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => quote = Some(c),
+            (None, ';' | '&' | '|' | '\n' | '(' | ')') => {
+                words.extend((!word.is_empty()).then(|| std::mem::take(&mut word)));
+                all.extend((!words.is_empty()).then(|| std::mem::take(&mut words)));
+            }
+            (None, c) if c.is_whitespace() => words.extend((!word.is_empty()).then(|| std::mem::take(&mut word))),
+            (None, c) => word.push(c),
+        }
+    }
+    words.extend((!word.is_empty()).then_some(word));
+    all.extend((!words.is_empty()).then_some(words));
+    all
+}
+
+/// Whether the command of `words` is a build or test of [`BUILDERS`]: its program (past variable assignments
+/// and wrappers) is the builder's, or a wrapper named after it (`nxcargo`), and its first word that is not an
+/// option is the builder's subcommand.
+fn runs_builder(words: &[String]) -> bool {
+    let assignment = |w: &str| w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.contains('/'));
+    let mut rest = words.iter().map(String::as_str).skip_while(|w| assignment(w)).peekable();
+    while rest.peek().is_some_and(|w| WRAPPERS.contains(w)) {
+        rest.next();
+        while rest
+            .peek()
+            .is_some_and(|w| w.starts_with('-') || w.starts_with(|c: char| c.is_ascii_digit()) || assignment(w))
+        {
+            rest.next();
+        }
+    }
+    let Some(program) = rest.next() else { return false };
+    let program = program.rsplit('/').next().unwrap_or(program);
+    let sub = rest.find(|w| !w.starts_with('-') && !w.starts_with('+'));
+    BUILDERS.iter().any(|b| {
+        let mut parts = b.split(' ');
+        let name = parts.next().unwrap_or(b);
+        program.ends_with(name) && parts.next().is_none_or(|s| sub == Some(s))
+    })
+}
+
+/// The line of a build or test command's output that tells how it went, if `cmd` runs one (as a command, never
+/// as an argument or inside quotes: `cat RULES.md; pgrep -af "cargo test"` is not a test).
 pub fn build_line(cmd: &str, output: &str) -> Option<String> {
-    if !BUILDERS.iter().any(|b| cmd.contains(b)) {
+    if !segments(cmd).iter().any(|words| runs_builder(words)) {
         return None;
     }
     const KEYS: [&str; 5] = ["test result", "error", "failed", "passed", "warning"];

@@ -113,6 +113,23 @@ fn an_idle_checkpoint_says_so() {
 }
 
 #[test]
+fn a_builder_counts_only_as_the_command_run_never_as_an_argument() {
+    let out = "test result: ok. 3 passed";
+    assert_eq!(build_line("cat RULES.md; pgrep -af \"cargo test\"", out), None);
+    assert_eq!(build_line("grep -rn 'cargo build' docs", out), None);
+    assert_eq!(build_line("echo make it so", out), None);
+    for cmd in [
+        "cd x && nxcargo test -p a",
+        "cargo test 2>&1 | tail",
+        "RUSTFLAGS=-Dwarnings nice -n 10 timeout 600 cargo +nightly -q test",
+        "ls; (cd crates && /usr/bin/cargo clippy --all-targets)",
+        "make -j 2",
+    ] {
+        assert_eq!(build_line(cmd, out).as_deref(), Some(out), "{cmd}");
+    }
+}
+
+#[test]
 fn build_lines_and_repeated_errors_are_noted() {
     assert_eq!(build_line("ls", "error: x"), None);
     assert_eq!(
