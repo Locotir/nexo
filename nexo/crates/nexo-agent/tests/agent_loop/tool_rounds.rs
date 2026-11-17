@@ -341,6 +341,66 @@ async fn a_write_asks_and_a_denial_reaches_the_model() {
 }
 
 #[tokio::test]
+async fn a_call_to_a_tool_that_does_not_exist_is_answered_and_the_turn_goes_on() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(call("u1", "no_such_tool", json!({}))), Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. }
+        if id == "u1" && output.is_error && output.content.contains("unknown tool `no_such_tool`"))));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ToolStart { .. })), "a tool that does not exist never starts");
+    assert_eq!(text_of(&evs), "ok");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    // The model's call is answered in the next request, so no call is left without its result.
+    match &client.requests()[1].messages.last().unwrap().content[0] {
+        Part::ToolResult { call_id, content, is_error, .. } => {
+            assert_eq!(call_id, "u1");
+            assert!(is_error);
+            assert!(nexo_core::message::result_text(content).contains("unknown tool"));
+        }
+        _ => panic!("the last message answers the call"),
+    }
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_valid_call_after_an_unknown_tool_in_one_message_is_not_run() {
+    let d = test_tmpdir().unwrap();
+    let two = vec![
+        StreamEvent::ToolCallStart { id: "u1".into(), name: "no_such_tool".into() },
+        StreamEvent::ToolCallEnd { id: "u1".into(), name: "no_such_tool".into(), args: json!({}) },
+        StreamEvent::ToolCallStart { id: "r1".into(), name: "read".into() },
+        StreamEvent::ToolCallEnd { id: "r1".into(), name: "read".into(), args: json!({"path": "a"}) },
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ];
+    let client = Scripted::new(vec![Reply::Events(two), Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ToolStart { .. })), "neither call starts");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    // An unknown tool runs alone, so its error stops the calls after it; both calls are still answered, in order.
+    let last = client.requests()[1].messages.last().unwrap().clone();
+    assert_eq!(last.content.len(), 2);
+    match (&last.content[0], &last.content[1]) {
+        (
+            Part::ToolResult { call_id: a, content: ca, is_error: true, .. },
+            Part::ToolResult { call_id: b, content: cb, is_error: true, .. },
+        ) => {
+            assert_eq!((a.as_str(), b.as_str()), ("u1", "r1"));
+            assert!(nexo_core::message::result_text(ca).contains("unknown tool"));
+            assert!(nexo_core::message::result_text(cb).starts_with("not run:"));
+        }
+        other => panic!("two paired error results expected, got {other:?}"),
+    }
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
     let d = test_tmpdir().unwrap();
     let client =
