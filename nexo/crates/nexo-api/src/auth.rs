@@ -248,3 +248,46 @@ pub fn of_call(x: &Exchange, auths: &[Auth]) -> Vec<usize> {
     }
     out
 }
+
+/// The call whose response handed a secret out, when [`Auth::source`] says so (`set by POST /api/login ($.access_token)`):
+/// `nexo api call --login` runs it first and reads the secret from `json_path`. A cookie or a header source gives none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Login {
+    pub method: String,
+    /// The path as the source shows it; it may hold `<opaque>` for a segment that looked like an id.
+    pub path: String,
+    /// `$.access_token`.
+    pub json_path: String,
+}
+
+/// Reads the login out of a source text; `None` when the source is not a response body field.
+pub fn login_of(source: &str) -> Option<Login> {
+    let rest = source.strip_prefix("set by ")?;
+    let (call, tail) = rest.rsplit_once(" (")?;
+    let json_path = tail.strip_suffix(')')?;
+    if !json_path.starts_with('$') {
+        return None;
+    }
+    let (method, path) = call.split_once(' ')?;
+    if method.is_empty() || !path.starts_with('/') {
+        return None;
+    }
+    Some(Login { method: method.to_string(), path: path.to_string(), json_path: json_path.to_string() })
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    #[test]
+    fn a_body_source_gives_a_login_and_the_others_do_not() {
+        let l = login_of("set by POST /api/login ($.access_token)").unwrap();
+        assert_eq!(
+            (l.method.as_str(), l.path.as_str(), l.json_path.as_str()),
+            ("POST", "/api/login", "$.access_token")
+        );
+        assert_eq!(login_of("set by GET /x (header x-token)"), None);
+        assert_eq!(login_of("cookie set by GET /"), None);
+        assert_eq!(login_of("nonsense"), None);
+    }
+}

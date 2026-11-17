@@ -5,6 +5,8 @@
 //! and no secret value survives the reading (see [`exchange`]).
 
 pub mod auth;
+pub mod call;
+pub mod diff;
 pub mod exchange;
 pub mod graphql;
 pub mod har;
@@ -13,6 +15,7 @@ pub mod openapi;
 pub mod paging;
 pub mod shape;
 pub mod spec;
+pub mod store;
 pub mod summary;
 pub mod template;
 

@@ -82,7 +82,7 @@ pub async fn main() -> i32 {
         return crate::re_cmd::run(r);
     }
     if let Some(Cmd::Api(a)) = &args.cmd {
-        return crate::api_cmd::run(a);
+        return crate::api_cmd::run(a).await;
     }
     if let (None, Some(word)) = (&args.cmd, &args.first) {
         use clap::CommandFactory;

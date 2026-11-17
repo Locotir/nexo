@@ -385,6 +385,15 @@ fn scrub_echo(v: &mut Value, raw: &Echo) {
     }
 }
 
+/// Cleans a JSON answer the way a capture is cleaned: every string field with a secret name becomes [`SECRET`], and
+/// so does every string equal to one of those values anywhere else in the document. Used before an answer is saved.
+pub fn scrub_json(v: &mut Value) {
+    let mut list = Vec::new();
+    let mut raw = Echo::new();
+    redact_json(v, "$", &mut list, &mut raw);
+    scrub_echo(v, &raw);
+}
+
 /// Builds a [`Body`] from captured text.
 fn make_body(mime: &str, text: &str, header_type: Option<&str>, list: &mut Vec<Secret>, raw: &mut Echo) -> Body {
     let mut mime = media_type(mime);
@@ -595,6 +604,21 @@ mod tests {
         assert_eq!(x.req_header("accept"), Some("*/*"));
         assert!(x.sent.iter().all(|s| s.place == Place::Header));
         assert_eq!(x.sent.len(), 2);
+    }
+
+    #[test]
+    fn scrub_json_hides_secret_fields_and_their_echoes() {
+        let mut v = serde_json::json!({
+            "access_token": "tkAAAA1111bbbb",
+            "user": { "name": "Ann", "note": "tkAAAA1111bbbb" },
+            "list": [{ "refresh_token": "rrrr22223333" }],
+        });
+        scrub_json(&mut v);
+        let text = v.to_string();
+        assert!(!text.contains("tkAAAA1111bbbb") && !text.contains("rrrr22223333"), "{text}");
+        assert_eq!(v["access_token"], SECRET);
+        assert_eq!(v["user"]["note"], SECRET);
+        assert_eq!(v["user"]["name"], "Ann");
     }
 
     #[test]
