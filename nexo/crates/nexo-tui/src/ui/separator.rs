@@ -149,6 +149,17 @@ fn sub_rule(app: &App, w: usize) -> Line<'static> {
         return Line::from(Span::styled("─".repeat(w), line));
     }
     let dashes = w.saturating_sub(3 + width(&label));
+    // the way back, dim at the right end, when the rule has room for it beside the title
+    let back = " esc back ";
+    if dashes >= width(back) + 4 {
+        return Line::from(vec![
+            Span::styled("─ ", line),
+            Span::styled(label, theme.bold(theme.accent)),
+            Span::styled(format!(" {}", "─".repeat(dashes - width(back) - 1)), line),
+            Span::styled(back, theme.dim()),
+            Span::styled("─", line),
+        ]);
+    }
     Line::from(vec![
         Span::styled("─ ", line),
         Span::styled(label, theme.bold(theme.accent)),

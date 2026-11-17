@@ -951,3 +951,45 @@ fn remote_pending_close_retries_after_receipt() {
     a.sub_tick();
     assert!(!a.in_sub());
 }
+
+#[test]
+fn this_sessions_panel_row_goes_back_to_its_chat_from_a_run() {
+    use nexo_supervise::SourceKind;
+    let (mut a, mut rx) = with_run();
+    a.session_id = Some("session".into());
+    a.input.set_text("main draft");
+    let rows = vec![panel_row("session.3", SourceKind::Nexo)];
+    a.modal = Some(Modal::Agents(Box::new(crate::agents_view::AgentsView::with_rows(rows, 0, true))));
+    drain(&mut rx);
+    press(&mut a, KeyCode::Enter);
+    assert!(a.in_sub());
+    // the panel again, from inside the run: Enter on this session is the way home, not a read-only window
+    let this = vec![panel_row("session", SourceKind::Nexo)];
+    a.modal = Some(Modal::Agents(Box::new(crate::agents_view::AgentsView::with_rows(this, 0, true))));
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.in_sub() && a.sub_view.is_none());
+    assert!(a.modal.is_none(), "the chat is on show, no window over it");
+    assert_eq!(a.input.text(), "main draft");
+    // and from the chat itself it just closes the panel
+    let this = vec![panel_row("session", SourceKind::Nexo)];
+    a.modal = Some(Modal::Agents(Box::new(crate::agents_view::AgentsView::with_rows(this, 0, true))));
+    press(&mut a, KeyCode::Enter);
+    assert!(a.modal.is_none() && !a.in_sub());
+}
+
+#[test]
+fn the_runs_rule_says_how_to_go_back_when_it_has_room() {
+    let (mut a, _rx) = with_run();
+    a.handle_agent(AgentEvent::SubState { info: info(RUN, "survey the parser", SubState::Background) });
+    a.open_sub(RUN);
+    answer(&mut a, RUN, vec![reply("x")], 0);
+    let rule = |a: &mut App, w: u16| {
+        let rows = frame(a, w, 8);
+        rows.iter().find(|r| r.contains("sub ·")).cloned().unwrap_or_else(|| panic!("{}", rows.join("\n")))
+    };
+    let wide = rule(&mut a, 80);
+    assert!(wide.trim_end().ends_with("esc back ─"), "{wide}");
+    assert_eq!(wide.trim_end().chars().count(), 80, "{wide}");
+    let narrow = rule(&mut a, 30);
+    assert!(!narrow.contains("esc back") && narrow.starts_with("─ sub · "), "{narrow}");
+}

@@ -292,7 +292,16 @@ impl App {
                     let run = runs.next()?.info.id.clone();
                     runs.next().is_none().then_some(run)
                 });
-                if let Some(id) = id {
+                if nexo && self.session_id.as_deref() == Some(key.as_str()) {
+                    // this session's own row is the way back to its chat, from a run's or another session's
+                    // conversation too; the panel a run was entered from is not shown again
+                    if let Some(v) = self.sub_view.as_mut() {
+                        v.panel = None;
+                    }
+                    self.close_sub();
+                    self.modal = None;
+                    self.next_permission();
+                } else if let Some(id) = id {
                     let panel = match self.modal.take() {
                         Some(Modal::Agents(v)) => v,
                         other => {
