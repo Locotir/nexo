@@ -176,7 +176,10 @@ pub fn pick(
     is_file: impl Fn(&std::path::Path) -> bool,
 ) -> Shell {
     if !windows {
-        return Shell { program: "sh".into(), args: vec!["-c".into()], kind: "sh" };
+        // An absolute path spares execvp a walk over every PATH folder on each spawn, and /bin/sh is
+        // fixed by POSIX (a PATH hit may not exist inside the sandbox). The bare name stays where it is absent.
+        let sh = if is_file(std::path::Path::new("/bin/sh")) { "/bin/sh" } else { "sh" };
+        return Shell { program: sh.into(), args: vec!["-c".into()], kind: "sh" };
     }
     // Git for Windows: `bash` on the PATH, or at its usual place, for all users (the program folders,
     // on whatever drive) or for one (under the user's local app data)
@@ -226,6 +229,10 @@ mod tests {
         assert_eq!(pick(true, |_| None, none).label(), "powershell");
         assert_eq!(git.label(), "bash");
         assert_eq!(pick(false, |_| None, none).label(), "sh");
+        // where /bin/sh exists it is spawned by absolute path and still shown as `sh`
+        let abs = pick(false, |_| None, |p| p == std::path::Path::new("/bin/sh"));
+        assert_eq!(abs.program, PathBuf::from("/bin/sh"));
+        assert_eq!(abs.label(), "sh");
         // PowerShell writes to a pipe in the console's code page unless told to write UTF-8
         let last = pwsh.args_for("Get-Date").pop().unwrap();
         assert!(last.starts_with(UTF8_OUTPUT) && last.ends_with("Get-Date"), "{last}");
