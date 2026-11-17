@@ -11,6 +11,9 @@ pub struct HistorySnapshot {
     /// A record crossing the beginning of the window was omitted in its entirety.
     pub partial_record_omitted: bool,
     pub incomplete_tail: bool,
+    /// Complete lines in the window that could not be read back (garbled bytes or a payload of the wrong shape).
+    /// They are skipped so one bad line, for example after a crash mid-write, does not hide the rest of the history.
+    pub unreadable_records: usize,
 }
 
 /// Reads only the most recent 256 KiB. A partial first or last record is never presented as complete.
@@ -50,16 +53,21 @@ fn history_in(dir: &Path, id: &str) -> anyhow::Result<HistorySnapshot> {
         lines.next();
     }
     let mut records = Vec::new();
+    let mut unreadable_records = 0;
     while let Some(line) = lines.next() {
         if lines.peek().is_none() || line.is_empty() {
             continue;
         }
-        let value: serde_json::Value =
-            serde_json::from_slice(line).map_err(|e| anyhow::anyhow!("invalid saved record: {e}"))?;
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            unreadable_records += 1;
+            continue;
+        };
         match value.get("type").and_then(|v| v.as_str()) {
             Some("message") => {
-                let message: super::Message = serde_json::from_value(value["message"].clone())
-                    .map_err(|e| anyhow::anyhow!("invalid saved message: {e}"))?;
+                let Ok(message) = serde_json::from_value::<super::Message>(value["message"].clone()) else {
+                    unreadable_records += 1;
+                    continue;
+                };
                 let role = match message.role {
                     super::Role::User => "User",
                     super::Role::Assistant => "Assistant",
@@ -69,8 +77,10 @@ fn history_in(dir: &Path, id: &str) -> anyhow::Result<HistorySnapshot> {
                 }
             }
             Some("tool_output") => {
-                let output: super::ToolOutput = serde_json::from_value(value["output"].clone())
-                    .map_err(|e| anyhow::anyhow!("invalid saved tool output: {e}"))?;
+                let Ok(output) = serde_json::from_value::<super::ToolOutput>(value["output"].clone()) else {
+                    unreadable_records += 1;
+                    continue;
+                };
                 records.push(clean(&format!(
                     "Tool output{}: {}",
                     if output.is_error { " (error)" } else { "" },
@@ -83,7 +93,13 @@ fn history_in(dir: &Path, id: &str) -> anyhow::Result<HistorySnapshot> {
             _ => {}
         }
     }
-    Ok(HistorySnapshot { records, older_omitted: start > 0, partial_record_omitted: partial_first, incomplete_tail })
+    Ok(HistorySnapshot {
+        records,
+        older_omitted: start > 0,
+        partial_record_omitted: partial_first,
+        incomplete_tail,
+        unreadable_records,
+    })
 }
 
 // Never render terminal controls, bidirectional formatting, or opaque image/reasoning data.
@@ -166,7 +182,40 @@ mod tests {
         assert_eq!(snapshot.records.len(), 2);
         assert!(snapshot.records[0].contains("reset"));
         std::fs::write(&path, b"broken\n").unwrap();
-        assert!(history_in(dir.path(), "abc").is_err());
+        let snapshot = history_in(dir.path(), "abc").unwrap();
+        assert!(snapshot.records.is_empty());
+        assert_eq!(snapshot.unreadable_records, 1);
+    }
+    #[test]
+    fn a_garbled_middle_line_is_counted_and_the_records_around_it_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = concat!(
+            r#"{"type":"message","message":{"role":"user","content":"before"}}"#,
+            "\n",
+            "{\"type\":\"mess\u{0}garbled\n",
+            r#"{"type":"message","message":{"role":"user","content":"after"}}"#,
+            "\n"
+        );
+        std::fs::write(dir.path().join("abc.jsonl"), data).unwrap();
+        let snapshot = history_in(dir.path(), "abc").unwrap();
+        assert_eq!(snapshot.records, vec!["User: before".to_string(), "User: after".to_string()]);
+        assert_eq!(snapshot.unreadable_records, 1);
+    }
+    #[test]
+    fn a_valid_line_with_a_bad_payload_is_counted_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = concat!(
+            r#"{"type":"message","message":{"role":"nobody","content":5}}"#,
+            "\n",
+            r#"{"type":"tool_output","output":"not an object"}"#,
+            "\n",
+            r#"{"type":"reset"}"#,
+            "\n"
+        );
+        std::fs::write(dir.path().join("abc.jsonl"), data).unwrap();
+        let snapshot = history_in(dir.path(), "abc").unwrap();
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.unreadable_records, 2);
     }
     #[test]
     fn readable_parts_and_controls_without_opaque_payloads() {
