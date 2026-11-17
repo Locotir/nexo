@@ -257,7 +257,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
     }
     match app.keymap.action(&k) {
         Some(Action::Cancel) => return app.ctrl_c(),
-        Some(Action::Quit) if app.input.is_empty() => return app.quit(),
+        Some(Action::Quit) if app.input.is_empty() => return app.ctrl_d(),
         Some(Action::Search) => return app.open_search(),
         Some(Action::FoldAll) => return app.fold_all(),
         Some(Action::Reasoning) => return app.toggle_reasoning(),

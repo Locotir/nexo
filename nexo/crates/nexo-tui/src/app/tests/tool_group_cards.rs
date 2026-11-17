@@ -31,6 +31,25 @@ fn ctrl_c_clears_a_draft_first_and_the_title_follows_the_turn() {
 }
 
 #[test]
+fn ctrl_d_while_a_turn_runs_needs_a_second_press_but_idle_quits_at_once() {
+    let (mut a, mut rx) = app();
+    a.busy = true;
+    a.ctrl_d();
+    assert!(!a.should_quit);
+    assert!(rx.try_recv().is_err(), "no Shutdown on the first press");
+    // an armed Ctrl+D must not turn a Ctrl+C meant to interrupt the turn into a quit
+    a.ctrl_c();
+    assert!(!a.should_quit);
+    a.ctrl_d();
+    assert!(a.should_quit);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| matches!(c, AgentCommand::Shutdown)));
+
+    let (mut a, _rx) = app();
+    a.ctrl_d();
+    assert!(a.should_quit);
+}
+
+#[test]
 fn a_long_command_is_cut_so_the_cache_mark_and_price_still_show() {
     use crate::render::wrap::width;
     let theme = Theme::dark();

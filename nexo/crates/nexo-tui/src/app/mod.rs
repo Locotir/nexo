@@ -201,6 +201,8 @@ pub struct App {
     /// Something glides, fades or pulses: the loop draws at ~60 fps while true.
     pub moving: bool,
     last_ctrl_c: Option<Instant>,
+    /// The last Ctrl+D pressed while a turn ran: a second one within two seconds quits.
+    last_ctrl_d: Option<Instant>,
     last_esc: Option<Instant>,
     /// The last Esc interrupted a turn: a quick second one belongs to it, it is not a rewind.
     esc_interrupted: bool,
@@ -481,6 +483,7 @@ impl App {
             force_clear: false,
             moving: false,
             last_ctrl_c: None,
+            last_ctrl_d: None,
             last_esc: None,
             esc_interrupted: false,
             status: None,
