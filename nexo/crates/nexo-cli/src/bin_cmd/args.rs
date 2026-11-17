@@ -1,7 +1,7 @@
 use clap::Args;
 use nexo_bin::{Lines, PageAsk};
 
-use super::{parse_addr, parse_lines, BinOp};
+use super::{parse_addr, parse_field, parse_lines, BinOp};
 
 #[derive(Args, Debug)]
 #[command(arg_required_else_help = true, args_conflicts_with_subcommands = true)]
@@ -33,6 +33,10 @@ pub struct Common {
     /// Print the answer as JSON (same bound).
     #[arg(long)]
     pub json: bool,
+    /// With --json: keep only these keys in each row (names as the JSON rows have them, like addr,size,name).
+    /// A name the rows do not have is an error that lists the ones they have.
+    #[arg(long, value_name = "A,B,C", value_delimiter = ',', value_parser = parse_field)]
+    pub fields: Vec<String>,
     /// Print on stderr how long the references took to build and how long the whole answer took.
     #[arg(long)]
     pub timing: bool,

@@ -14,6 +14,8 @@ mod ops;
 mod sigs;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_json;
 mod wasm;
 
 pub use args::{BinArgs, Common};
@@ -25,6 +27,15 @@ fn parse_addr(s: &str) -> Result<u64, String> {
 
 fn parse_lines(s: &str) -> Result<Lines, String> {
     Lines::parse(s).map_err(|e| e.to_string())
+}
+
+/// One name of `--fields`: letters, digits and `_`.
+fn parse_field(s: &str) -> Result<String, String> {
+    let t = s.trim();
+    if t.is_empty() || !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("{s:?} is not a field name (letters, digits and _; separate names with commas)"));
+    }
+    Ok(t.to_string())
 }
 
 impl BinOp {
@@ -180,6 +191,20 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
 
 /// Like [`execute`], with the data dir given (tests use a temporary one).
 pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
+    let Some(c) = a.op.as_ref().map(BinOp::common).filter(|c| !c.fields.is_empty()) else {
+        return execute_op(a, data_dir);
+    };
+    if !c.json {
+        return Err(Error::Usage("--fields needs --json: it picks keys of the JSON rows".into()));
+    }
+    let text = execute_op(a, data_dir)?;
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| Error::Usage("--fields: the answer of this op is not JSON rows".into()))?;
+    nexo_bin::project_items(&mut value, &c.fields)?;
+    serde_json::to_string_pretty(&value).map_err(|e| Error::Bad(e.to_string()))
+}
+
+fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let op = a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation or use --mcp".into()))?;
     let t0 = std::time::Instant::now();
     if let BinOp::Asm { source, at, bits, .. } = op {

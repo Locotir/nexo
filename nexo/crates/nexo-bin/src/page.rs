@@ -204,6 +204,40 @@ impl PageAsk {
     }
 }
 
+/// `--fields a,b,c`: keep only these keys in every object of the `items` of a JSON answer. A name that no item
+/// has is an error that lists the names the items do have (an answer with no object items cannot be checked, so
+/// it passes unchanged).
+pub fn project_items(value: &mut Value, fields: &[String]) -> Result<()> {
+    let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) else {
+        return Err(Error::Usage("--fields needs an answer with rows; this one has none".into()));
+    };
+    let mut known: Vec<String> = Vec::new();
+    for it in items.iter() {
+        if let Some(o) = it.as_object() {
+            for k in o.keys() {
+                if !known.contains(k) {
+                    known.push(k.clone());
+                }
+            }
+        }
+    }
+    if !known.is_empty() {
+        if let Some(bad) = fields.iter().find(|f| !known.contains(f)) {
+            known.sort();
+            return Err(Error::Usage(format!(
+                "--fields: {bad:?} is not a field of this answer; the fields are: {}",
+                known.join(", ")
+            )));
+        }
+    }
+    for it in items.iter_mut() {
+        if let Some(o) = it.as_object_mut() {
+            o.retain(|k, _| fields.contains(k));
+        }
+    }
+    Ok(())
+}
+
 /// A word safe to paste into a shell: quoted only when it has to be.
 pub fn shell_word(s: &str) -> String {
     let plain = !s.is_empty()
@@ -264,6 +298,21 @@ mod ask_tests {
         assert_eq!(ask(None, true).budget(), usize::MAX);
         assert_eq!(ask(Some(Lines::Rows(30)), true).budget(), 30);
         assert_eq!(ask(Some(Lines::All), false).budget(), usize::MAX);
+    }
+
+    #[test]
+    fn fields_keep_the_named_keys_and_name_the_known_ones_on_a_mistake() {
+        let mut v = json!({"op": "t", "items": [{"addr": 16, "size": 3, "name": "a"}, {"addr": 32, "size": 4}]});
+        project_items(&mut v, &["addr".to_string(), "name".to_string()]).unwrap();
+        assert_eq!(v["items"], json!([{"addr": 16, "name": "a"}, {"addr": 32}]));
+        assert_eq!(v["op"], "t");
+        let mut v = json!({"items": [{"addr": 16, "size": 3}]});
+        let e = project_items(&mut v, &["adr".to_string()]).unwrap_err().to_string();
+        assert!(e.contains("\"adr\"") && e.contains("addr, size"), "{e}");
+        assert_eq!(v["items"], json!([{"addr": 16, "size": 3}]));
+        let mut v = json!({"items": []});
+        project_items(&mut v, &["anything".to_string()]).unwrap();
+        assert!(project_items(&mut json!({"op": "t"}), &["a".to_string()]).is_err());
     }
 
     #[test]
