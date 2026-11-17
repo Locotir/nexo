@@ -51,6 +51,8 @@ impl Summariser {
         let mut req = ModelRequest::new(model.clone(), SUMMARY_SYSTEM, vec![Message::user(ask)]);
         req.max_tokens = reply;
         req.cache = false;
+        // thinking would eat the reply cap and a cut summary is thrown away: the least the model takes
+        req.reasoning = nexo_providers::probe::side_reasoning(&cfg, &model);
         let mut stream = self.client.stream(&cfg, &req, self.retries).await?;
         let mut c = Collector::new();
         while let Some(ev) = stream.next().await {

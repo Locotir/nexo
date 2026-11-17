@@ -61,6 +61,20 @@ pub fn nearest_level(levels: &[String], wanted: &str) -> Option<String> {
     ranked.into_iter().min_by_key(|(r, _)| (r.abs_diff(w), *r)).map(|(_, l)| l.clone())
 }
 
+/// The least thinking a side request can ask for among the `levels` a model lists: `off` where the model lists it and
+/// off thinks less than no level (`off_less`), else its lowest listed rung, never `off` when the model does not list
+/// it. A model with no list gets `off` only where that does something, else nothing is sent (None).
+pub fn lowest_level(levels: &[String], off_less: bool) -> Option<ReasoningConfig> {
+    let has = |l: &str| levels.iter().any(|x| x == l);
+    if levels.is_empty() {
+        return off_less.then_some(ReasoningConfig::Off);
+    }
+    if off_less && (has("off") || has("none")) {
+        return Some(ReasoningConfig::Off);
+    }
+    LEVEL_ORDER.iter().skip(1).find(|l| has(l)).and_then(|l| Effort::parse(l)).map(ReasoningConfig::Effort)
+}
+
 impl Effort {
     pub fn as_str(self) -> &'static str {
         match self {

@@ -60,14 +60,23 @@ pub(super) fn takes_xhigh(model: &str) -> bool {
 }
 
 /// The reasoning levels a Claude model takes: a thinking budget (`low` to `high`) before 4.6, adaptive effort
-/// above it with `max` and, where the model has it, `xhigh`. Any other id keeps the budget levels.
+/// above it with `max` and, where the model has it, `xhigh`; `off` only where it thinks less ([`off_thinks_less`]).
+/// Any other id keeps the budget levels.
 pub fn effort_levels(model: &str) -> &'static [&'static str] {
+    // where off thinks no less than no level (Fable, Mythos, Opus 5.5) it is not offered: `low` is the least there
+    let off = off_thinks_less(model);
     if !adaptive_thinking(model) {
         &["off", "low", "medium", "high"]
     } else if takes_xhigh(model) {
-        &["off", "low", "medium", "high", "xhigh", "max"]
-    } else {
+        if off {
+            &["off", "low", "medium", "high", "xhigh", "max"]
+        } else {
+            &["low", "medium", "high", "xhigh", "max"]
+        }
+    } else if off {
         &["off", "low", "medium", "high", "max"]
+    } else {
+        &["low", "medium", "high", "max"]
     }
 }
 
@@ -91,5 +100,21 @@ pub fn off_thinks_less(model: &str) -> bool {
         Some(("fable" | "mythos", ..)) => false,
         Some(("opus", major, minor)) => (major, minor) < (5, 5),
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod levels_tests {
+    use super::*;
+
+    #[test]
+    fn off_is_listed_only_where_it_thinks_less() {
+        for m in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5"] {
+            assert!(!effort_levels(m).contains(&"off"), "{m}");
+            assert_eq!(effort_levels(m)[0], "low", "{m}");
+        }
+        for m in ["claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-sonnet-4-6", "claude-sonnet-4-5"] {
+            assert_eq!(effort_levels(m)[0], "off", "{m}");
+        }
     }
 }

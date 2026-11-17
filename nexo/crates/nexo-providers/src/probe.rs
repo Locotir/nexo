@@ -710,6 +710,14 @@ pub fn off_thinks_less(protocol: &str, model: &str) -> bool {
     }
 }
 
+/// What a side request (a title, a summary, a read of one file, a judge) asks for: the least thinking `model` takes,
+/// from the levels its provider lists for it, so it never gets a level it rejects. `off` only where the model lists it
+/// and off really thinks less; else the lowest listed level; None when nothing is known to send.
+pub fn side_reasoning(cfg: &ProviderConfig, model: &str) -> Option<nexo_core::ReasoningConfig> {
+    let levels = cfg.efforts.get(model).map(Vec::as_slice).unwrap_or(&[]);
+    nexo_core::provider::lowest_level(levels, off_thinks_less(&cfg.protocol, model))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +725,26 @@ mod tests {
 
     fn cfg(protocol: &str, base: &str) -> ProviderConfig {
         ProviderConfig::new(protocol, base, None)
+    }
+
+    #[test]
+    fn a_side_request_takes_the_lowest_level_the_model_lists_and_off_only_where_it_helps() {
+        use nexo_core::{Effort, ReasoningConfig as R};
+        let with = |protocol: &str, levels: &[&str]| {
+            let mut c = cfg(protocol, "http://x");
+            c.efforts.insert("m".into(), levels.iter().map(|l| l.to_string()).collect());
+            side_reasoning(&c, "m")
+        };
+        // Gemini lists off and off thinks less there
+        assert_eq!(with("gemini", &["off", "low", "high"]), Some(R::Off));
+        // no off in the list: the lowest level, never off
+        assert_eq!(with("gemini", &["medium", "high"]), Some(R::Effort(Effort::Medium)));
+        assert_eq!(with("openai-chat", &["high", "xhigh"]), Some(R::Effort(Effort::High)));
+        // the OpenAI protocols send nothing for off: the lowest rung instead
+        assert_eq!(with("openai-chat", &["off", "minimal", "high"]), Some(R::Effort(Effort::Minimal)));
+        // no list: nothing for a model where off does nothing, off where it thins the thinking
+        assert_eq!(side_reasoning(&cfg("openai-chat", "http://x"), "m"), None);
+        assert_eq!(side_reasoning(&cfg("gemini", "http://x"), "m"), Some(R::Off));
     }
 
     #[test]

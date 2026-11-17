@@ -512,7 +512,12 @@ fn effort_levels_reach_the_wire_in_the_shape_each_vendor_documents() {
 fn offered_levels_per_model_follow_the_vendor_docs() {
     let l = |p: &str, k: &str, b: &str, m: &str| nexo_providers::probe::effort_levels(p, k, b, m, true);
     let a = "https://api.anthropic.com";
-    assert_eq!(l("anthropic", "", a, "claude-opus-5-5"), ["off", "low", "medium", "high", "xhigh", "max"]);
+    // off thinks no less on Opus 5.5 and Fable: it is not offered, `low` is the least
+    assert_eq!(l("anthropic", "", a, "claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"]);
+    assert!(!l("anthropic", "", a, "claude-fable-5-2").contains(&"off".to_string()));
+    for m in ["claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
+        assert_eq!(l("anthropic", "", a, m)[0], "off", "{m}");
+    }
     assert_eq!(l("anthropic", "", a, "claude-sonnet-4-6"), ["off", "low", "medium", "high", "max"]);
     assert_eq!(l("anthropic", "", a, "claude-sonnet-4-5"), ["off", "low", "medium", "high"]);
     assert_eq!(l("openai-chat", "", "https://api.openai.com/v1", "gpt-5.2"), ["low", "medium", "high", "xhigh"]);

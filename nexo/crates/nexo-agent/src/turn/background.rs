@@ -85,14 +85,8 @@ pub(super) const SUGGEST_TOKENS: u32 = 200;
 /// A side request that needs a few words: no thinking first (or the least the model takes, where off is not a
 /// level it has), and a cap that keeps it cheap on any model.
 pub(super) fn lean(req: &mut ModelRequest, levels: &[String], tokens: u32) {
-    let has = |l: &str| levels.iter().any(|x| x == l);
-    req.reasoning = Some(if has("minimal") && !has("off") && !has("none") {
-        ReasoningConfig::Effort(Effort::Minimal)
-    } else if has("low") && !has("off") && !has("none") {
-        ReasoningConfig::Effort(Effort::Low)
-    } else {
-        ReasoningConfig::Off
-    });
+    // a model that lists no `off` gets its lowest level, not off, which it may refuse
+    req.reasoning = nexo_core::provider::lowest_level(levels, true).or(Some(ReasoningConfig::Off));
     req.max_tokens = tokens;
 }
 
@@ -440,6 +434,8 @@ mod suggest_tests {
         assert_eq!(r(&["off", "low", "high"]), Some(ReasoningConfig::Off));
         assert_eq!(r(&["minimal", "low", "medium", "high"]), Some(ReasoningConfig::Effort(Effort::Minimal)));
         assert_eq!(r(&["low", "high"]), Some(ReasoningConfig::Effort(Effort::Low)));
+        // no `off` and no low rung in the list: its lowest level, not off
+        assert_eq!(r(&["medium", "high"]), Some(ReasoningConfig::Effort(Effort::Medium)));
         assert_eq!(suggest_request(&last, Message::assistant("ok"), &[]).max_tokens, SUGGEST_TOKENS);
     }
 

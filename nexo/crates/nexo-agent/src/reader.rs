@@ -167,6 +167,8 @@ pub async fn read(
     let mut req = ModelRequest::new(model.clone(), READER_SYSTEM, vec![Message::user(ask.prompt())]);
     req.max_tokens = NOTES_TOKENS;
     req.temperature = temperature;
+    // notes on lines already in hand: the least thinking the model takes, not the session's level
+    req.reasoning = nexo_providers::probe::side_reasoning(&cfg, &model);
     let mut stream = client.stream(&cfg, &req, retries).await?;
     let mut c = Collector::new();
     while let Some(ev) = stream.next().await {
