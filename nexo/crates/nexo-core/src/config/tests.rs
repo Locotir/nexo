@@ -335,3 +335,21 @@ fn old_curator_keys_are_ignored() {
     assert_eq!(c.context.policy, "curator");
     assert_eq!(c.context.curator_spec, "");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_key_command_that_does_not_finish_is_stopped_and_gives_no_key() {
+    let started = std::time::Instant::now();
+    let k = provider_settings::run_key_cmd("sleep 30", std::time::Duration::from_millis(300));
+    assert_eq!(k, None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "waited {:?}", started.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_key_command_that_prints_a_key_in_time_gives_it_and_one_that_fails_gives_none() {
+    let limit = std::time::Duration::from_secs(5);
+    assert_eq!(provider_settings::run_key_cmd("echo sk-test", limit).as_deref(), Some("sk-test"));
+    assert_eq!(provider_settings::run_key_cmd("echo sk-test; exit 1", limit), None);
+    assert_eq!(provider_settings::run_key_cmd("true", limit), None);
+}

@@ -43,6 +43,56 @@ pub struct ProviderConfig {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
+/// How long `api_key_cmd` may run. The lookup happens on every request and inside async code, so a password
+/// manager waiting for an unlock or a tty must not hold a worker (and with it every request) for good.
+const KEY_CMD_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What `cmd` prints when it succeeds within `limit`; None when it fails, prints nothing, or is still running
+/// at the limit (it is killed then). Stdin is null, so it cannot prompt on the tty. It is not cached: a
+/// command that mints short-lived tokens, or that works once the person unlocks the manager, must run again.
+pub(super) fn run_key_cmd(cmd: &str, limit: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = crate::shell::shell()
+        .command(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // read on a thread of its own, so a command that prints a lot cannot fill the pipe and stall
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = out.read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let end = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // once per process, and only the command's first word: its output may be the key
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    let word = cmd.split_whitespace().next().unwrap_or_default();
+                    tracing::warn!("api_key_cmd `{word}` did not finish in {}s and was stopped", limit.as_secs_f32());
+                });
+                return None;
+            }
+            Err(_) => return None,
+        }
+    };
+    // a child the command left running can hold the pipe open: wait for the output only a moment
+    let bytes = rx.recv_timeout(std::time::Duration::from_secs(1)).ok()?;
+    let k = String::from_utf8_lossy(&bytes).trim().to_string();
+    (status.success() && !k.is_empty()).then_some(k)
+}
+
 impl ProviderConfig {
     pub fn new(protocol: &str, base_url: &str, api_key_env: Option<&str>) -> ProviderConfig {
         ProviderConfig {
@@ -90,11 +140,8 @@ impl ProviderConfig {
             }
         }
         if let Some(cmd) = &self.api_key_cmd {
-            if let Ok(out) = crate::shell::shell().command(cmd).output() {
-                let k = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if out.status.success() && !k.is_empty() {
-                    return Some(k);
-                }
+            if let Some(k) = run_key_cmd(cmd, KEY_CMD_LIMIT) {
+                return Some(k);
             }
         }
         let entry = self.auth.as_deref()?;
