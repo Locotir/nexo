@@ -410,21 +410,23 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     build(&steps[steps.len() - 1])
 }
 
+/// Every piece the status bar can draw, in the order it draws them when none is configured.
+pub const STATUS_PIECES: [&str; 12] =
+    ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"];
+
 /// The status bar's pieces in the order they are drawn: the configured list (unknown names and
 /// repeats dropped), or all of them when it is empty. `tokens` and `cost` are drawn on the right.
 pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
-    const ALL: [&str; 12] =
-        ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"];
     let mut out: Vec<&'static str> = Vec::new();
     for n in cfg {
-        if let Some(p) = ALL.iter().find(|p| p.eq_ignore_ascii_case(n.trim())) {
+        if let Some(p) = STATUS_PIECES.iter().find(|p| p.eq_ignore_ascii_case(n.trim())) {
             if !out.contains(p) {
                 out.push(p);
             }
         }
     }
     if out.is_empty() && cfg.is_empty() {
-        out = ALL.to_vec();
+        out = STATUS_PIECES.to_vec();
     }
     out
 }
