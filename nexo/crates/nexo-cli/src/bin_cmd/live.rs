@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use nexo_bin::{Error, Image};
 
+use super::effect::Effect;
 use super::{BinOp, Common};
 
 /// The most memory `--live` reads from the program (bytes).
@@ -69,17 +70,20 @@ pub(crate) fn pick<'a>(list: &'a [Module], name: &str) -> Result<&'a Module, Str
 
 /// Why an op cannot read a module of a running program, or None when it can. Also the checks on the flags.
 pub(crate) fn check(op: &BinOp) -> Result<(), Error> {
-    let why = match op {
-        BinOp::Patch { .. } => "patch writes a file, and nothing here writes the running program's memory",
-        BinOp::Name { .. } | BinOp::Note { .. } | BinOp::Proto { .. } | BinOp::Struct { .. } | BinOp::Var { .. } => {
-            "it saves by file address, and a module of a running program is read at live addresses"
+    let why = if let Some(why) = op.no_module_reason() {
+        why
+    } else {
+        match op.effect() {
+            Effect::WritesFile => "patch writes a file, and nothing here writes the running program's memory",
+            Effect::SavesNotes if matches!(op, BinOp::Crypto { .. }) => {
+                "--save names things by file address, and the module is at live addresses"
+            }
+            Effect::SavesNotes => {
+                "it saves by file address, and a module of a running program is read at live addresses"
+            }
+            Effect::ReadOnly if op.common().raw => "--raw reads bare bytes from a file, not a module",
+            Effect::ReadOnly => return Ok(()),
         }
-        BinOp::Crypto { save: true, .. } => "--save names things by file address, and the module is at live addresses",
-        BinOp::Diff { .. } => "it compares two files",
-        BinOp::Asm { .. } | BinOp::Sigs { .. } => "it reads no module",
-        BinOp::Managed { .. } => "it reads a jar or a .NET assembly",
-        _ if op.common().raw => "--raw reads bare bytes from a file, not a module",
-        _ => return Ok(()),
     };
     Err(Error::Usage(format!("--module cannot be used here: {why}")))
 }

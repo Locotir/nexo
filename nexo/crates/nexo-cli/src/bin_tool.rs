@@ -14,8 +14,6 @@ use nexo_core::tool::Check;
 use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
-use crate::bin_cmd::BinOp;
-
 mod clap_facts;
 mod parse;
 mod shell;
@@ -103,7 +101,7 @@ impl Tool for Bin {
         let Some(line) = args.get("command").and_then(Value::as_str) else { return ToolKind::Read };
         let writes = units(line)
             .iter()
-            .any(|u| matches!(parse(u), Ok(Parsed::Op(b)) if b.op.as_ref().is_some_and(writes_a_file)));
+            .any(|u| matches!(parse(u), Ok(Parsed::Op(b)) if b.op.as_ref().is_some_and(|o| o.effect().writes_file())));
         if writes {
             ToolKind::Write
         } else {
@@ -228,10 +226,4 @@ async fn one(unit: &str, ctx: &ToolContext, debug: bool) -> ToolOutput {
         Ok(Err(e)) => ToolOutput::error(format!("bin: {e}")),
         Err(e) => ToolOutput::error(format!("bin stopped working: {e}")),
     }
-}
-
-/// Whether the op writes a file the person named (a patched copy, a signature file): a write. Names, notes, types
-/// and `crypto --save` go to nexo's own data folder for this binary, as `debug`'s `name` and `note` do: a read.
-fn writes_a_file(op: &BinOp) -> bool {
-    matches!(op, BinOp::Patch { .. } | BinOp::Sigs { out: Some(_), .. })
 }

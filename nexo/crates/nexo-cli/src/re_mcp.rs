@@ -23,9 +23,6 @@ use words::{list_of, scalar};
 /// The protocol versions this server speaks, newest first.
 const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// Ops of `nexo bin` that save names, notes, types or files; `crypto --save` does too.
-const SAVING_OPS: &[&str] = &["name", "note", "proto", "struct", "var", "sigs", "patch"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
     Bin(String),
@@ -206,17 +203,16 @@ impl Server {
         format!("refused: {what}. This server was started without --allow-changes; restart it with `nexo re --mcp --allow-changes` to allow it.")
     }
 
-    /// Whether this op line saves names, notes, types or files: `SAVING_OPS`, and `crypto` with `--save`.
-    fn saves(op: &str, save: bool) -> bool {
-        SAVING_OPS.contains(&op) || (op == "crypto" && save)
+    /// Whether this `nexo bin` argv saves names, notes, types or files: what `BinOp::effect` says of its op.
+    fn saves(argv: &[String]) -> bool {
+        crate::bin_cmd::argv_effect(argv).saves()
     }
 
     fn call_bin(&self, op: &str, args: &Value) -> Result<String, String> {
-        let saving = Self::saves(op, args.get("save").and_then(Value::as_bool) == Some(true));
-        if saving && !self.allow_changes {
+        let argv = bin_argv(op, args)?;
+        if Self::saves(&argv) && !self.allow_changes {
             return Err(self.refuse(&format!("`nexo bin {op}` saves names, notes, types or files")));
         }
-        let argv = bin_argv(op, args)?;
         crate::bin_cmd::script::run_argv(argv, crate::bin_cmd::bridge::Reader::Mcp).map_err(|(m, _)| m)
     }
 
@@ -234,7 +230,7 @@ impl Server {
         for u in &units {
             let argv = crate::bin_cmd::script::unit_argv(u).map_err(|e| format!("`{u}`: {e}"))?;
             let op = argv.get(2).map(String::as_str).unwrap_or("");
-            if Self::saves(op, argv.iter().any(|w| w == "--save")) && !self.allow_changes {
+            if Self::saves(&argv) && !self.allow_changes {
                 return Err(self.refuse(&format!("`nexo bin {op}` saves names, notes, types or files (in `{u}`)")));
             }
             argvs.push(argv);

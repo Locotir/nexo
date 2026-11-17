@@ -61,7 +61,11 @@ pub(super) fn bin_tools() -> Vec<Tool> {
             }
             let about = c.get_about().map(|a| a.to_string()).unwrap_or_default();
             let name = c.get_name();
-            let gate = if SAVING_OPS.contains(&name) { " Saves data: needs --allow-changes." } else { "" };
+            let gate = if crate::bin_cmd::effect_by_name(name).is_some_and(|e| e.saves()) {
+                " Saves data: needs --allow-changes."
+            } else {
+                ""
+            };
             Tool {
                 name: format!("bin_{name}"),
                 description: format!("nexo bin {name}: {about}{gate}"),
@@ -126,9 +130,14 @@ pub(super) fn bin_argv(op: &str, args: &Value) -> Result<Vec<String>, String> {
 
 /// `bin_batch`: the ops of one call in a string, as the agent tool takes them.
 pub(super) fn batch_tool() -> Tool {
+    let (all, flagged) = crate::bin_cmd::saving_names();
+    let names: Vec<String> = all
+        .iter()
+        .map(|n| if flagged.contains(n) { format!("{n} with a saving flag") } else { n.to_string() })
+        .collect();
     Tool {
         name: "bin_batch".into(),
-        description: "nexo bin: several ops in one call, `op1; op2; ...` (or one per line, `#` lines are comments), each answer under a `== op ==` line. A failing op is reported in its place and the rest run. Ops that save data (name, note, proto, struct, var, sigs, patch, crypto --save) need --allow-changes, as in their own tools.".into(),
+        description: format!("nexo bin: several ops in one call, `op1; op2; ...` (or one per line, `#` lines are comments), each answer under a `== op ==` line. A failing op is reported in its place and the rest run. Ops that save data ({}) need --allow-changes, as in their own tools.", names.join(", ")),
         schema: json!({"type": "object", "properties": {
             "ops": {"type": "string", "description": "the ops, each as after `nexo bin`: `info ./p; funcs ./p --grep main; fn ./p main`"}
         }, "required": ["ops"]}),
