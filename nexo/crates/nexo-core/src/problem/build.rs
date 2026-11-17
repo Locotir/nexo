@@ -86,18 +86,23 @@ impl ProblemCtx {
 
     /// The address as shown: no credentials, no query.
     pub(super) fn shown_url(&self) -> String {
-        let u = self.base_url.trim();
-        let (scheme, rest) = match u.split_once("://") {
-            Some((s, r)) => (format!("{s}://"), r),
-            None => (String::new(), u),
-        };
-        let rest = rest.split(['?', '#']).next().unwrap_or("");
-        let rest = match rest.split_once('@') {
-            Some((a, r)) if !a.contains('/') => r,
-            _ => rest,
-        };
-        format!("{scheme}{rest}")
+        shown_address(&self.base_url)
     }
+}
+
+/// An address as it may be printed: no credentials, no query, no fragment.
+pub fn shown_address(url: &str) -> String {
+    let u = url.trim();
+    let (scheme, rest) = match u.split_once("://") {
+        Some((s, r)) => (format!("{s}://"), r),
+        None => (String::new(), u),
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let rest = match rest.split_once('@') {
+        Some((a, r)) if !a.contains('/') => r,
+        _ => rest,
+    };
+    format!("{scheme}{rest}")
 }
 
 impl Problem {

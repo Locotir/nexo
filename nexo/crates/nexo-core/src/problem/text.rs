@@ -101,7 +101,7 @@ pub(super) fn safe(s: &str) -> String {
 }
 
 /// `m` without the `for url (...)` part reqwest puts in its message: the address is not a cause.
-pub(super) fn without_url(m: &str) -> String {
+pub fn without_url(m: &str) -> String {
     match m.find("for url (") {
         Some(i) => {
             let rest = &m[i..];

@@ -41,10 +41,12 @@ pub fn print_startup_error(fmt: Fmt, msg: &str) {
 /// What a failed connection adds: the address tried, and for Ollama the likely cause.
 pub fn unreachable_note(provider: &str, base_url: &str) -> String {
     let ollama = provider == "ollama" || base_url.contains(":11434");
+    // the address is printed without its credentials and query, as the failure card shows it
+    let shown = nexo_core::problem::shown_address(base_url);
     if ollama {
-        format!(" at {base_url}. Ollama does not seem to be running; start it with `ollama serve`")
+        format!(" at {shown}. Ollama does not seem to be running; start it with `ollama serve`")
     } else {
-        format!(" at {base_url}")
+        format!(" at {shown}")
     }
 }
 
@@ -57,7 +59,8 @@ pub fn with_reach_note(reach: Option<&str>, level: Level, text: &str, card: bool
             if note.contains("Ollama") {
                 format!("Could not reach the provider{note}")
             } else {
-                format!("Could not reach the provider{note}{rest}")
+                // the transport's words may carry the raw address; the note already names it without credentials
+                format!("Could not reach the provider{note}{}", nexo_core::problem::without_url(rest))
             }
         }
         _ => text.to_string(),
@@ -123,6 +126,26 @@ mod tests {
         assert!(red.ends_with(&plain[plain.find('\n').unwrap() + 1..]), "only the title is coloured");
         // any other notice keeps its `level: text` line
         assert_eq!(notice_line(Level::Warn, "careful", false, true), "warn: careful");
+    }
+
+    #[test]
+    fn a_plain_unreachable_notice_names_the_address_without_its_credentials_or_query() {
+        let url = "http://user:hunter2@127.0.0.1:9/v1?key=zzz9";
+        let reach = unreachable_note("local", url);
+        assert_eq!(reach, " at http://127.0.0.1:9/v1");
+        let t = "Could not reach the provider: error sending request for url (http://user:hunter2@127.0.0.1:9/v1?key=zzz9): connection refused";
+        let out = with_reach_note(Some(&reach), Level::Error, t, false);
+        assert!(
+            out.starts_with("Could not reach the provider at http://127.0.0.1:9/v1: ")
+                && out.ends_with("connection refused"),
+            "{out}"
+        );
+        assert!(!out.contains("hunter2") && !out.contains("zzz9"), "{out}");
+        // the Ollama form shows the clean address too
+        let o = unreachable_note("ollama", "http://me:pw@localhost:11434/v1?k=zzz9");
+        assert!(o.starts_with(" at http://localhost:11434/v1.") && !o.contains("pw") && !o.contains("zzz9"), "{o}");
+        // a card is returned as it is
+        assert_eq!(with_reach_note(Some(&reach), Level::Error, t, true), t);
     }
 
     #[test]
