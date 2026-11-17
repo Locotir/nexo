@@ -98,13 +98,16 @@ impl Glob {
             let deadline = Instant::now() + limits.time_cap;
             let mut cut = false;
             let mut found: Vec<(SystemTime, PathBuf, bool)> = Vec::new();
+            let mut links = Links::default();
             for entry in walker(&root2).build().flatten() {
                 // `>=` so a zero cap stops at once even on a clock coarse enough to read the same instant twice
                 if Instant::now() >= deadline {
                     cut = true;
                     break;
                 }
-                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let kind = entry.file_type();
+                let is_link = kind.is_some_and(|t| t.is_symlink());
+                if !is_link && !kind.is_some_and(|t| t.is_file()) {
                     continue;
                 }
                 let path = entry.path();
@@ -114,6 +117,10 @@ impl Glob {
                 } else {
                     glob.is_match(rel)
                 };
+                if is_link {
+                    links.count(path, hit);
+                    continue;
+                }
                 if hit {
                     // checked here, not per entry: a tree with exactly the cap in matches lost nothing
                     if found.len() >= limits.max_candidates {
@@ -135,10 +142,10 @@ impl Glob {
                 let kind = (kinds && program).then(|| listed_kind(&p)).flatten();
                 (display_path(&cwd, &p), kind)
             });
-            (found.collect::<Vec<_>>(), total, cut)
+            (found.collect::<Vec<_>>(), total, cut, links)
         })
         .await;
-        let Ok((found, total, cut)) = joined else {
+        let Ok((found, total, cut, links)) = joined else {
             return ToolOutput::error("glob: the search failed unexpectedly");
         };
         let lines: Vec<String> = found
@@ -150,7 +157,12 @@ impl Glob {
             .collect();
         let items: Vec<String> = found.into_iter().map(|(p, _)| p).collect();
         let mut content = if total == 0 {
-            format!("glob: no files match `{pattern}` in {shown_root}")
+            let mut s = format!("glob: no files match `{pattern}` in {shown_root}");
+            if let Some(note) = links.note() {
+                s.push('\n');
+                s.push_str(&note);
+            }
+            s
         } else if total > MAX_RESULTS {
             format!("{}\n… {} more files ({total} match); narrow the pattern", lines.join("\n"), total - MAX_RESULTS)
         } else {
@@ -161,6 +173,43 @@ impl Glob {
                 .push_str("\n[the walk was stopped early: too many files or too long; narrow the path or the pattern]");
         }
         ToolOutput::ok(content).with_display(ToolDisplay::List { items })
+    }
+}
+
+/// Symlinks the walkers met and did not follow (they do not, so that a link loop or a link to a key file
+/// cannot widen a search). Only links that could have changed the answer are counted: a link to a directory,
+/// or a link to a file that passes the name filter. Used to say why an empty answer may be empty.
+#[derive(Debug, Default)]
+pub struct Links {
+    pub files: usize,
+    pub dirs: usize,
+}
+
+impl Links {
+    /// Count the link at `path`; `name_hit` says whether its name or path passes the search's filter.
+    pub fn count(&mut self, path: &Path, name_hit: bool) {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_dir() => self.dirs += 1,
+            Ok(m) if m.is_file() && name_hit => self.files += 1,
+            _ => {}
+        }
+    }
+
+    /// One factual line for an empty answer, None when no link was skipped.
+    pub fn note(&self) -> Option<String> {
+        let all = self.files + self.dirs;
+        if all == 0 {
+            return None;
+        }
+        let dirs = match self.dirs {
+            0 => String::new(),
+            1 => " (1 to a directory)".into(),
+            n => format!(" ({n} to directories)"),
+        };
+        Some(format!(
+            "[{}{dirs} not followed; give the link's target as `path` to search it]",
+            nexo_core::count(all, "symlink")
+        ))
     }
 }
 
@@ -268,6 +317,27 @@ mod tests {
         std::fs::write(d.path().join("a.txt"), "").unwrap();
         let out = found(d.path(), "*.txt", MAX_CANDIDATES, Duration::ZERO).await;
         assert!(out.ends_with(STOPPED), "{out}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_empty_answer_says_how_many_symlinks_were_not_followed() {
+        // the targets live outside the searched tree, as a shared folder or a vendored checkout does
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("shared")).unwrap();
+        std::fs::write(outside.path().join("shared/lib.rs"), "").unwrap();
+        std::fs::write(outside.path().join("real.md"), "").unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::os::unix::fs::symlink(outside.path().join("shared"), d.path().join("vendor")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("real.md"), d.path().join("notes.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("real.md"), d.path().join("other.txt")).unwrap();
+        let note = "[2 symlinks (1 to a directory) not followed; give the link's target as `path` to search it]";
+        let out = Glob.run(json!({"pattern": "*.rs"}), &c).await;
+        assert!(out.content.starts_with("glob: no files match"), "{}", out.content);
+        assert!(out.content.ends_with(note), "{}", out.content);
+        let out = Glob.run(json!({"pattern": "*.rs", "path": "vendor"}), &c).await;
+        assert_eq!(out.content, "vendor/lib.rs");
     }
 
     #[tokio::test]

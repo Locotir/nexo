@@ -12,7 +12,7 @@ use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, T
 use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 
-use crate::glob::walker;
+use crate::glob::{walker, Links};
 use crate::program::{bin_call, bin_offered, callable, quoted, slash};
 use crate::util::{bool_arg, cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg};
 
@@ -179,13 +179,15 @@ impl Tool for Grep {
             let mut cut = false;
             // files that hold keys are searched only when named as `path` (the permission asks then)
             let mut kept_out = 0usize;
+            let mut skipped_links = Links::default();
             let mut files: Vec<PathBuf> = if root2.is_file() {
                 vec![root2.clone()]
             } else {
                 let found = Mutex::new((Vec::<PathBuf>::new(), 0usize));
                 let timed_out = AtomicBool::new(false);
+                let links = Mutex::new(Links::default());
                 walker(&root2).build_parallel().run(|| {
-                    let (timed_out, root2, name_filter) = (&timed_out, &root2, &name_filter);
+                    let (timed_out, root2, name_filter, links) = (&timed_out, &root2, &name_filter, &links);
                     let mut hand = Hand { into: &found, files: Vec::new(), kept_out: 0 };
                     Box::new(move |entry| {
                         if Instant::now() > deadline {
@@ -193,14 +195,12 @@ impl Tool for Grep {
                             return WalkState::Quit;
                         }
                         let Ok(e) = entry else { return WalkState::Continue };
-                        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                        let kind = e.file_type();
+                        let is_link = kind.is_some_and(|t| t.is_symlink());
+                        if !is_link && !kind.is_some_and(|t| t.is_file()) {
                             return WalkState::Continue;
                         }
                         let p = e.into_path();
-                        if nexo_core::paths::holds_keys(&p) {
-                            hand.kept_out += 1;
-                            return WalkState::Continue;
-                        }
                         let hit = |g: &globset::GlobMatcher| {
                             if by_name {
                                 p.file_name().map(|n| g.is_match(std::path::Path::new(n))).unwrap_or(false)
@@ -208,6 +208,17 @@ impl Tool for Grep {
                                 g.is_match(p.strip_prefix(root2).unwrap_or(&p))
                             }
                         };
+                        if is_link {
+                            // not followed; counted so that an empty answer can say links were passed over
+                            if let Ok(mut l) = links.lock() {
+                                l.count(&p, name_filter.as_ref().map(hit).unwrap_or(true));
+                            }
+                            return WalkState::Continue;
+                        }
+                        if nexo_core::paths::holds_keys(&p) {
+                            hand.kept_out += 1;
+                            return WalkState::Continue;
+                        }
                         if name_filter.as_ref().map(hit).unwrap_or(true) {
                             hand.files.push(p);
                         }
@@ -217,6 +228,7 @@ impl Tool for Grep {
                 cut = timed_out.load(Ordering::Relaxed);
                 let (v, k) = found.into_inner().unwrap_or_default();
                 kept_out = k;
+                skipped_links = links.into_inner().unwrap_or_default();
                 v
             };
             // the threads finish in any order; the answer is always in path order
@@ -268,10 +280,10 @@ impl Tool for Grep {
                     break;
                 }
             }
-            (m, cut, kept_out)
+            (m, cut, kept_out, skipped_links)
         })
         .await;
-        let Ok((m, cut, kept_out)) = joined else {
+        let Ok((m, cut, kept_out, skipped_links)) = joined else {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
         let Merge {
@@ -281,6 +293,10 @@ impl Tool for Grep {
             let mut s = format!("grep: no match for `{pattern}` in {shown_root}");
             if !multiline && (pattern.contains('\n') || pattern.contains("\\n")) {
                 s.push_str(". Patterns are matched line by line; set `multiline: true` to match across lines.");
+            }
+            if let Some(note) = skipped_links.note() {
+                s.push('\n');
+                s.push_str(&note);
             }
             s
         } else if !files_only && left > 0 {
@@ -850,5 +866,34 @@ mod tests {
         assert_eq!(out.content, "grep: no match for `zq_not_in_any_file_zq` in .");
         let out = Grep.run(json!({"pattern": "alpha"}), &c).await;
         assert!(!out.content.contains("not text"), "{}", out.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_no_match_answer_says_how_many_symlinks_were_not_followed() {
+        // the targets live outside the searched tree, as a shared folder or a vendored checkout does
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("shared")).unwrap();
+        std::fs::write(outside.path().join("shared/lib.rs"), "fn gamma() {}\n").unwrap();
+        std::fs::write(outside.path().join("real.rs"), "fn gamma() {}\n").unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::os::unix::fs::symlink(outside.path().join("shared"), d.path().join("vendor")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("real.rs"), d.path().join("link.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("real.rs"), d.path().join("link.txt")).unwrap();
+        let note = "[3 symlinks (1 to a directory) not followed; give the link's target as `path` to search it]";
+        let out = Grep.run(json!({"pattern": "gamma"}), &c).await;
+        assert_eq!(out.content, format!("grep: no match for `gamma` in .\n{note}"));
+        // a glob counts only the file links it would have searched, so link.txt drops out
+        let out = Grep.run(json!({"pattern": "gamma", "glob": "*.rs"}), &c).await;
+        assert!(
+            out.content.ends_with(
+                "[2 symlinks (1 to a directory) not followed; give the link's target as `path` to search it]"
+            ),
+            "{}",
+            out.content
+        );
+        let out = Grep.run(json!({"pattern": "gamma", "path": "vendor"}), &c).await;
+        assert!(out.content.contains("gamma"), "{}", out.content);
     }
 }
