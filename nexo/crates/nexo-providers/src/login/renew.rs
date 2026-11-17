@@ -68,7 +68,11 @@ pub async fn prepare_in(
         return Ok((cfg.clone(), Some(k)));
     }
     let Some(name) = cfg.auth.as_deref() else { return Ok((cfg.clone(), None)) };
-    let Some(mut cred) = auth::read_from(store).remove(name) else { return Ok((cfg.clone(), None)) };
+    // a store that cannot be parsed is said so: reading it as empty would send the person to log in again,
+    // and that login would then fail to write over the file
+    let Some(mut cred) = auth::read_checked(store).map_err(|e| fail(e.to_string()))?.remove(name) else {
+        return Ok((cfg.clone(), None));
+    };
     if cred.expiring(auth::now(), 60) {
         cred = renew_locked(store, at, name).await?.unwrap_or(cred);
     }

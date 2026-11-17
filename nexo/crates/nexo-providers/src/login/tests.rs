@@ -241,3 +241,22 @@ async fn xai_login_polls_with_the_device_grant_and_slows_down_when_asked() {
     assert!(oauth_poll_error::<()>(&json!({"error": "access_denied"})).is_err());
     assert!(login_at(&at(&s), "nope", &|_| {}).await.is_err());
 }
+
+#[tokio::test]
+async fn a_credential_store_that_does_not_parse_is_said_not_read_as_signed_out() {
+    let dir = std::env::temp_dir().join(format!("nexo-login-corrupt-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("auth.json");
+    std::fs::write(&store, "not json").unwrap();
+    let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+    cfg.auth = Some("codex".into());
+    let e = Endpoints::default();
+    let bad = prepare_in(&store, &e, &cfg).await;
+    // an absent store is still just no login yet
+    let none = prepare_in(&dir.join("absent.json"), &e, &cfg).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    let msg = bad.expect_err("a corrupt store is an error").to_string();
+    assert!(msg.contains("cannot be read"), "{msg}");
+    assert!(msg.contains("auth.json"), "{msg}");
+    assert!(none.unwrap().1.is_none());
+}

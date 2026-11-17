@@ -242,6 +242,13 @@ pub fn read_from(path: &Path) -> BTreeMap<String, Credential> {
     raw.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|c| (k, c))).collect()
 }
 
+/// Like [`read_from`], but a file that exists and does not parse is an error naming it, so a caller that
+/// is about to say "no login" can say what is really wrong. An absent or empty file is an empty store;
+/// entries of a kind this build does not know are skipped, as in `read_from`.
+pub fn read_checked(path: &Path) -> std::io::Result<BTreeMap<String, Credential>> {
+    Ok(read_raw(path)?.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|c| (k, c))).collect())
+}
+
 /// Makes `dir` and its missing parents. On Unix the ones made are `0700`, so the names of keys and sessions inside
 /// are not listed for other users; a folder that already exists keeps the rights it has.
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
