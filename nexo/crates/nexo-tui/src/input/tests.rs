@@ -62,6 +62,18 @@ fn a_long_paste_is_folded_in_the_draft_and_sent_whole() {
     assert_eq!(i.text(), "[Pasted text #1 +40 lines]", "numbering starts again with a new draft");
 }
 
+#[test]
+fn a_paste_that_contains_a_later_chip_label_is_sent_as_typed() {
+    let mut i = Input::new("");
+    let first = format!("log line\n{}\n{}", "[Pasted text #2 2000 chars]", "x\n".repeat(30));
+    let second = "y".repeat(2000);
+    i.insert_paste(&first);
+    i.insert_paste(" ");
+    i.insert_paste(&second);
+    assert_eq!(i.text(), "[Pasted text #1 +32 lines] [Pasted text #2 2000 chars]");
+    assert_eq!(i.full_text(), format!("{first} {second}"));
+}
+
 fn k(code: KeyCode, m: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, m)
 }
