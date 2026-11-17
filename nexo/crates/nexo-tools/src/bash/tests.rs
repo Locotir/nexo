@@ -739,29 +739,63 @@ async fn a_detached_command_names_its_log_and_pid_and_outlives_the_registry() {
 
 /// A command that reads its input must meet an end of file at once, never wait for a person who is not there. Comparing
 /// stdin with /dev/null is what tells the closed stdin apart: `cat` and `read` alone also return when the test harness
-/// itself runs with an empty stdin, so they would pass without the setting.
+/// itself runs with an empty stdin.
 const STDIN_PROBE: &str = "test /dev/null -ef /dev/stdin && echo stdin-null; cat; echo cat-$?; read x; echo read-$?";
+
+/// Runs `body` in a copy of this test binary whose stdin is an open pipe that never carries a byte and never closes.
+/// A harness started with `</dev/null` (CI, a background run) would let a command that inherits stdin read an end of
+/// file anyway, so the tests would pass without the setting; an open silent pipe makes that command block instead.
+/// The copy runs the same test with `NEXO_TEST_SILENT_STDIN` set, which is where `body` really runs.
+#[cfg(unix)]
+async fn with_a_silent_open_stdin(name: &str, body: impl std::future::Future<Output = ()>) {
+    const MARK: &str = "NEXO_TEST_SILENT_STDIN";
+    if std::env::var_os(MARK).is_some() {
+        return body.await;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &format!("bash::tests::{name}"), "--nocapture", "--test-threads=1"])
+        .env(MARK, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // held until the copy ends: `wait_with_output` would close a stdin it still owned
+    let held = child.stdin.take();
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output()).await.unwrap().unwrap();
+    drop(held);
+    let (so, se) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && so.contains("1 passed"), "{}\n{so}\n{se}", out.status);
+}
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_foreground_command_reads_end_of_file_from_stdin_and_does_not_wait() {
-    if !posix() {
-        return;
-    }
-    let d = tempfile::tempdir().unwrap();
-    let c = ToolContext::new(d.path().to_path_buf());
-    let t = std::time::Instant::now();
-    let out = Bash.run(json!({"command": STDIN_PROBE, "timeout": 5}), &c).await;
-    assert!(!out.is_error && !out.content.contains("timed out"), "{}", out.content);
-    for want in ["stdin-null", "cat-0", "read-1"] {
-        assert!(out.content.contains(want), "{want} missing: {}", out.content);
-    }
-    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    with_a_silent_open_stdin("a_foreground_command_reads_end_of_file_from_stdin_and_does_not_wait", async {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let t = std::time::Instant::now();
+        let out = Bash.run(json!({"command": STDIN_PROBE, "timeout": 5}), &c).await;
+        assert!(!out.is_error && !out.content.contains("timed out"), "{}", out.content);
+        for want in ["stdin-null", "cat-0", "read-1"] {
+            assert!(out.content.contains(want), "{want} missing: {}", out.content);
+        }
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    })
+    .await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_background_job_reads_end_of_file_from_stdin() {
+    with_a_silent_open_stdin("a_background_job_reads_end_of_file_from_stdin", background_job_reads_eof()).await;
+}
+
+#[cfg(unix)]
+async fn background_job_reads_eof() {
     if !posix() {
         return;
     }
@@ -787,6 +821,11 @@ async fn a_background_job_reads_end_of_file_from_stdin() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_detached_command_reads_end_of_file_from_stdin() {
+    with_a_silent_open_stdin("a_detached_command_reads_end_of_file_from_stdin", detached_command_reads_eof()).await;
+}
+
+#[cfg(unix)]
+async fn detached_command_reads_eof() {
     if !posix() {
         return;
     }
