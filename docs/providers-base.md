@@ -130,6 +130,10 @@ preset (or the models.dev catalogue). Reasoning tokens are part of output.
   vendors send no usage); `max_tokens` (`max_completion_tokens` for OpenAI's
   newer models); reasoning as `reasoning_effort` (OpenAI, xAI, Groq) or the
   vendor's field.
+  Earlier reasoning is replayed as `reasoning_content` on assistant turns for
+  `api.deepseek.com` (thinking mode answers 400 to a tool loop without it) and
+  only when `send_reasoning = true` is set in the provider `extra` elsewhere;
+  `send_reasoning = false` turns it off there too.
 * **Stream**: SSE; each `data:` line is a JSON chunk; `data: [DONE]` ends it.
   Deltas in `choices[0].delta`: `content` → TextDelta; `reasoning_content`
   (DeepSeek, Kimi, Qwen, xAI, OpenRouter) or `reasoning` → ReasoningDelta;

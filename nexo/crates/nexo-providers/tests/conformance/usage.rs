@@ -155,3 +155,18 @@ async fn t4_responses_usage_with_cached_reasoning_and_float_counts() {
 }
 
 // ================= t5: finish reasons =================
+
+#[tokio::test]
+async fn t4_chat_cache_write_tokens_openrouter() {
+    // before: the written tokens were billed as plain input and `cache_write` stayed 0
+    let u = json!({"prompt_tokens":194,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":100}});
+    let s = play("openai-chat", &sse(&[d(json!({"content":"x"})), fin("stop"), usage_chunk(u)])).await;
+    assert_eq!(s.usage, Usage { input: 94, output: 2, cache_write: 100, ..Usage::default() });
+}
+
+#[tokio::test]
+async fn t4_chat_cache_read_and_write_tokens_both_leave_the_plain_input() {
+    let u = json!({"prompt_tokens":300,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":120,"cache_write_tokens":80}});
+    let s = play("openai-chat", &sse(&[d(json!({"content":"x"})), fin("stop"), usage_chunk(u)])).await;
+    assert_eq!(s.usage, Usage { input: 100, output: 4, cache_read: 120, cache_write: 80, ..Usage::default() });
+}
