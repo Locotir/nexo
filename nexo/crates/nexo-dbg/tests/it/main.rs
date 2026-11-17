@@ -28,6 +28,7 @@ mod one_line_locals;
 mod page_guards;
 mod prologue_locals;
 mod range_page;
+mod record_back;
 mod rsp;
 mod separate_debug;
 mod source_level;

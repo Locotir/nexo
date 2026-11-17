@@ -654,9 +654,11 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
             "the program is chosen by `run <path> [args]`"
         }
         "start" | "starti" => "`run --main <path> [args]` starts and stops at main",
-        "checkpoint" | "restart" | "reverse-continue" | "record" => {
-            "this debugger cannot go back in time: `cont` forward, `history` lists past stops"
+        "reverse-step" | "reverse-stepi" | "reverse-next" | "reverse-nexti" | "reverse-continue" | "reverse-finish"
+        | "rs" | "rsi" | "rn" | "rni" | "rc" => {
+            "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record)"
         }
+        "checkpoint" | "restart" => "this debugger cannot go back in time: `cont` forward, `history` lists past stops",
         "quit" => "`end` as its own call closes the session",
         "kill" => "`kill` ends the program, `end` closes the session",
         "define" | "document" | "python" | "py" | "guile" => {
@@ -975,5 +977,18 @@ mod tests {
         assert_eq!(units("print c=='x'; print c=='\\''; d"), s(&["print c=='x'", "print c=='\\''", "d"]));
         // a double quote left open still keeps the rest as one part
         assert_eq!(units("a; say \"x; b"), s(&["a", "say \"x; b"]));
+    }
+
+    #[test]
+    fn record_is_a_command_and_the_reverse_ones_say_what_to_type() {
+        // `record` has its own command now: no hint stands in its place
+        assert_eq!(hint("record"), None);
+        assert_eq!(base_name("record"), "record");
+        for c in ["reverse-step", "reverse-stepi", "reverse-next", "reverse-continue", "reverse-finish", "rc"] {
+            let h = hint(c).unwrap_or_else(|| panic!("{c} has no hint"));
+            assert!(h.contains("back N") && h.contains("back --reg R") && h.contains("back --mem A"), "{c}: {h}");
+            assert!(h.contains("does not undo"), "{c}: {h}");
+        }
+        assert!(hint("checkpoint").unwrap().contains("cannot go back in time"));
     }
 }
