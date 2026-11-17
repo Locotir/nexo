@@ -287,7 +287,8 @@ fn emu_runs_code_built_for_x86_64_v3_with_fused_multiply_adds_like_the_real_prog
         let flags = [opt, "-march=x86-64-v3", "-ffp-contract=fast"];
         let Some(exe) = build(dir.path(), &format!("-v3{opt}"), &flags) else { return };
         let img = Image::open(&exe).unwrap();
-        let with_fma: Vec<&str> = ["poly", "hyp", "show", "scale"].into_iter().filter(|f| uses(&img, f, fused)).collect();
+        let with_fma: Vec<&str> =
+            ["poly", "hyp", "show", "scale"].into_iter().filter(|f| uses(&img, f, fused)).collect();
         assert!(!with_fma.is_empty(), "{opt}: the compiler fused nothing, so this test proves nothing");
         for n in ["0", "3", "-7", "11"] {
             let (text, _) = run(&img, "poly", &[n], |_| {});
