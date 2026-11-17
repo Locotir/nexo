@@ -52,7 +52,8 @@ mod macos;
 mod windows;
 
 pub use client::{
-    dbg_class, do_parts, execute, header, parse, parse_header, read_only_refusal, Call, DbgClass, Header, Host,
+    dbg_class, do_parts, execute, header, parse, parse_header, pick_session, read_only_refusal, Call, DbgClass, Header,
+    Host,
 };
 pub use cmds::{
     dump_files, dump_part_in, dump_path_at, dumps_in, help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY,

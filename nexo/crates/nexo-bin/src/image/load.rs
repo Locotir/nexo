@@ -34,6 +34,7 @@ pub(crate) fn blank(format: Format) -> Image {
         sorted: Vec::new(),
         rel_ptrs: Vec::new(),
         user: UserNames::default(),
+        slid: 0,
         funcs: OnceLock::new(),
         strings: OnceLock::new(),
         refs: OnceLock::new(),

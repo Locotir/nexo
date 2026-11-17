@@ -58,6 +58,15 @@ pub struct Common {
     /// With --raw: the address the first byte was loaded at (default 0).
     #[arg(long, value_parser = parse_addr, value_name = "ADDR", requires = "raw")]
     pub base: Option<u64>,
+    /// A module of the program a `nexo dbg` session is running (a name like `libc.so.6`, or part of its path): the
+    /// file is opened from the path the session gives, and addresses (`--at`, targets, answers) are live ones, the
+    /// module's load base added. FILE is not read then; write `-`. Not for ops that write or save by file address.
+    #[arg(long, value_name = "NAME")]
+    pub module: Option<String>,
+    /// With --module: take the module's bytes from the running program's memory (the session's `dump module`,
+    /// at most 64 MiB, the program stopped), so what the program changed or unpacked shows.
+    #[arg(long)]
+    pub live: bool,
 }
 
 impl Common {
