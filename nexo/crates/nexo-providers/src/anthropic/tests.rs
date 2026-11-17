@@ -584,6 +584,22 @@ fn cached_req() -> ModelRequest {
     req
 }
 
+/// What a context policy adds after the opening request changes from one request to the next: a breakpoint on the
+/// opening request keeps it read from the cache when only that addition changed.
+#[test]
+fn the_opening_request_is_a_breakpoint_of_its_own() {
+    let mut first = Message::user("the task");
+    first.content.push(Part::text("map of what was left out"));
+    let req = ModelRequest::new("claude-x", "sys", vec![first, Message::assistant("ok"), Message::user("go on")]);
+    let b = Anthropic::body(&ProviderConfig::new(ID, "https://api.anthropic.com", None), &req);
+    let msgs = b["messages"].as_array().unwrap();
+    assert_eq!(msgs[0]["content"][0]["cache_control"]["type"], "ephemeral");
+    assert!(msgs[0]["content"][1].get("cache_control").is_none(), "the addition stays after the breakpoint");
+    assert_eq!(msgs[2]["content"][0]["cache_control"]["type"], "ephemeral", "the last block is still one");
+    let marks = b.to_string().matches("cache_control").count();
+    assert!(marks <= 4, "the API takes at most four breakpoints, found {marks}");
+}
+
 #[test]
 fn the_long_cache_puts_one_hour_on_every_breakpoint() {
     let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);

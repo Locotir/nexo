@@ -104,6 +104,17 @@ impl Anthropic {
             }
         }
         if cache {
+            // the first block of the first message (the person's opening request) never changes, while what a
+            // context policy adds after it (a map of what it left out) does: the cache reads only up to a breakpoint
+            // it finds, so without one here a change to that addition rewrites the opening request too
+            if let Some(b) = messages
+                .first_mut()
+                .filter(|m| m["role"] == "user")
+                .and_then(|m| m["content"].as_array_mut())
+                .and_then(|c| c.first_mut())
+            {
+                b["cache_control"] = bp.clone();
+            }
             if let Some(c) = messages.last_mut().and_then(|m| m["content"].as_array_mut()) {
                 // a text that ends a message of several blocks rides on this request only (the time and facts line,
                 // a supervisor note): the breakpoint goes before it, so the next request, which no longer carries

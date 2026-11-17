@@ -67,6 +67,9 @@ pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
     // for the oracle: each request as given, the words the reply to each copied, and the view's tokens
     let (mut records, mut said_at, mut budgets) =
         (Vec::<(usize, Vec<Value>)>::new(), Vec::<Option<Vec<String>>>::new(), Vec::<i64>::new());
+    // `REPLAY_BREAKS=FILE`: one line per request that rewrote the past (what changed first, and the rule counters)
+    let mut breaks_out = std::env::var("REPLAY_BREAKS").ok().and_then(|p| std::fs::File::create(p).ok());
+    let mut last_stats = std::collections::BTreeMap::<String, i64>::new();
     let started = std::time::Instant::now();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (base, new, rec) = parse(line)?;
@@ -148,7 +151,11 @@ pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
         let reply = cur.view(system_tokens as u64, &whole.msgs, now).map_err(|e| format!("view: {e}"))?;
         cells = reply.memory.cells.iter().map(|c| c.state.as_str().to_string()).collect();
         steps = reply.stats.iter().filter(|(k, _)| k.ends_with("_steps")).map(|(k, v)| (k.to_string(), *v)).collect();
+        let before = breaks_before(&view.msgs, &reply.view, &view.tokens);
         let (hit, rewrote) = view.send(reply.view);
+        if let Some(out) = breaks_out.as_mut() {
+            breaks_line(out, requests, now, &view, hit, before, &reply.stats, &mut last_stats, &whole.msgs, base);
+        }
         curated.rewrites += usize::from(rewrote);
         keys.after(&view, &cells);
         curated.count(view.total() + system_tokens, hit + head);
@@ -171,4 +178,62 @@ pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
         "keys": keys.json(), "steps": steps,
         "own": {"lost": owned, "lost_by": owned_by, "saved": cur.savings().into_iter().collect::<std::collections::BTreeMap<_, _>>()},
     }))
+}
+
+/// For `REPLAY_BREAKS`: where the view about to be sent first differs from the last one sent, and the
+/// tokens of the old messages from there on.
+fn breaks_before(
+    old: &[Value],
+    new: &[Value],
+    old_tokens: &[i64],
+) -> (usize, i64, Option<Value>, Option<Value>, usize, i64) {
+    let same = new.iter().zip(old).take_while(|(a, b)| a == b).count();
+    let dropped = old_tokens.get(same..).map_or(0, |t| t.iter().sum());
+    (same, dropped, old.get(same).cloned(), new.get(same).cloned(), old.len(), old_tokens.iter().sum())
+}
+
+fn brief(m: &Option<Value>) -> String {
+    let Some(m) = m else { return "-".into() };
+    let t: String = text_of(m).chars().take(160).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    format!("{}[{}]", m["role"].as_str().unwrap_or("?"), t)
+}
+
+/// A tab-separated line: request, time, cache hit, tokens written, first differing view index, tokens of the old
+/// tail, view length, the counters that moved since the last request, and the old and new message there.
+#[allow(clippy::too_many_arguments)]
+fn breaks_line(
+    out: &mut std::fs::File,
+    n: usize,
+    now: f64,
+    view: &Sending,
+    hit: i64,
+    before: (usize, i64, Option<Value>, Option<Value>, usize, i64),
+    stats: &indexmap::IndexMap<&'static str, i64>,
+    last: &mut std::collections::BTreeMap<String, i64>,
+    whole: &[Value],
+    base: usize,
+) {
+    use std::io::Write;
+    let moved: Vec<String> = stats
+        .iter()
+        .filter(|(k, v)| last.get(**k).copied().unwrap_or(0) != **v)
+        .map(|(k, v)| format!("{k}:{:+}", v - last.get(*k).copied().unwrap_or(0)))
+        .collect();
+    for (k, v) in stats {
+        last.insert((*k).to_string(), *v);
+    }
+    let (same, dropped, old, new, old_len, old_total) = before;
+    let fresh: i64 = whole.get(base..).unwrap_or_default().iter().map(tokens_of).sum();
+    let total = view.total();
+    if same < old_len || n == 0 {
+        let _ = writeln!(
+            out,
+            "{n}\t{now:.0}\t{hit}\t{total}\t{same}\t{dropped}\t{old_total}\t{fresh}\t{}\t{}\t{}\t{}\t{}",
+            view.msgs.len(),
+            whole.len(),
+            moved.join(","),
+            brief(&old),
+            brief(&new)
+        );
+    }
 }

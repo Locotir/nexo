@@ -28,7 +28,10 @@ impl Sending {
     /// Sends `now` in place of the last messages; returns the tokens a prefix cache holds, and whether the
     /// start of `now` differs from what was sent before (the past was rewritten).
     pub(super) fn send(&mut self, now: Vec<Value>) -> (i64, bool) {
-        let hit = cached(&self.msgs, &now);
+        let hit = match marks() {
+            Some(head) => marked(&self.msgs, &now, head),
+            None => cached(&self.msgs, &now),
+        };
         let same = now.iter().zip(&self.msgs).take_while(|(a, b)| a == b).count();
         let rewrote = same < self.msgs.len();
         self.cut(same);
@@ -56,6 +59,42 @@ impl Sending {
 
     pub(super) fn total(&self) -> i64 {
         self.tokens.iter().sum()
+    }
+}
+
+/// `REPLAY_MARKS`: the cache is read only at breakpoints, as on the Anthropic API. `last`: one at the end of the
+/// last message; `head`: one after the first block of the first message too. Unset: any unchanged prefix is read.
+fn marks() -> Option<bool> {
+    static MARKS: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    *MARKS.get_or_init(|| match std::env::var("REPLAY_MARKS").as_deref() {
+        Err(_) => None,
+        Ok("last") => Some(false),
+        Ok("head") => Some(true),
+        Ok(v) => {
+            eprintln!("REPLAY_MARKS wants \"last\" or \"head\", not {v:?}");
+            std::process::exit(2);
+        }
+    })
+}
+
+/// The tokens of `now` read from the cache when the last request left breakpoints only at the end of its last
+/// message and, with `head`, after the first block of its first message: all it sent if `now` starts with all of
+/// it (its last message may have grown), else that first block if it is unchanged, else nothing.
+fn marked(prev: &[Value], now: &[Value], head: bool) -> i64 {
+    let same = now.iter().zip(prev).take_while(|(a, b)| a == b).count();
+    let whole = same == prev.len()
+        || (same + 1 == prev.len()
+            && now.get(same).is_some_and(|m| {
+                let (x, y) = (blocks_of(m), blocks_of(&prev[same]));
+                m.get("role") == prev[same].get("role") && x.len() >= y.len() && x[..y.len()] == y[..]
+            }));
+    if whole {
+        return prev.iter().map(tokens_of).sum();
+    }
+    let first = |m: Option<&Value>| m.filter(|m| m["role"] == "user").and_then(|m| blocks_of(m).first().cloned());
+    match (head, first(now.first()), first(prev.first())) {
+        (true, Some(a), Some(b)) if a == b => tokens_of(&json!({ "content": [a] })),
+        _ => 0,
     }
 }
 
