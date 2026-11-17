@@ -6,6 +6,11 @@
 //! the instruction it lands on inside the function, an import, a named function, a string, a data
 //! symbol or a section. So code that only moved counts as the same, and a call that now goes to another
 //! function counts as a change.
+//!
+//! AArch64 code is read the same way, from the decoder in `a64`: each instruction is hashed by its
+//! mnemonic, condition and operands, but a branch, `adr` or literal load by what it points at, an
+//! `adrp` by its register alone, and the `add`/load/store that finishes an `adrp` pair by the address
+//! the pair reaches (not the page offset), so code that only moved counts as the same.
 
 mod one;
 
@@ -14,6 +19,8 @@ use std::collections::HashMap;
 use iced_x86::{Instruction, Mnemonic, OpKind, Register};
 use serde_json::{json, Value};
 
+use crate::a64::scan::Via;
+use crate::a64::{Ins, Mem, Opd};
 use crate::disasm::walk;
 use crate::funcs::Func;
 use crate::ops::command;
@@ -80,9 +87,16 @@ fn same_data(x: &[Vec<u64>], y: &[Vec<u64>]) -> bool {
     x.len() == y.len() && x.iter().zip(y).all(|(u, v)| u.iter().any(|h| v.binary_search(h).is_ok()))
 }
 
+/// One decoded instruction, of either architecture.
+enum Code {
+    X86(Instruction),
+    /// With the address the instruction reaches through a register an `adrp` loaded, when known.
+    A64(Ins, Option<Via>),
+}
+
 /// One instruction of a function.
 struct Item {
-    ins: Instruction,
+    code: Code,
     ip: u64,
     len: u64,
     /// The first byte, for bytes that do not decode.
@@ -123,18 +137,39 @@ impl Body {
         let bytes = img.read_at(f.start, want.min(MAX_FUNC)).unwrap_or(&[]);
         let (items, starts) = (&mut self.items, &mut self.starts);
         let mut off = 0u64;
-        walk(bytes, f.start, |ins, raw| {
-            let ip = f.start + off;
-            off += raw.len() as u64;
-            starts.push(ip);
-            let bad = ins.is_invalid();
-            if !bad && matches!(ins.mnemonic(), Mnemonic::Nop | Mnemonic::Int3) {
-                return;
-            }
-            let zero = raw.iter().all(|&b| b == 0);
-            let byte = raw.first().copied().unwrap_or(0);
-            items.push(Item { ins: *ins, ip, len: raw.len() as u64, byte, bad, zero });
-        });
+        if img.arm64 {
+            crate::a64::view::walk(bytes, f.start, |ins, via, raw| {
+                let ip = f.start + off;
+                off += raw.len() as u64;
+                starts.push(ip);
+                if ins.raw == 0xd503_201f {
+                    return;
+                }
+                let zero = ins.raw == 0;
+                let byte = raw.first().copied().unwrap_or(0);
+                items.push(Item {
+                    code: Code::A64(*ins, via),
+                    ip,
+                    len: raw.len() as u64,
+                    byte,
+                    bad: !ins.is_decoded(),
+                    zero,
+                });
+            });
+        } else {
+            walk(bytes, f.start, |ins, raw| {
+                let ip = f.start + off;
+                off += raw.len() as u64;
+                starts.push(ip);
+                let bad = ins.is_invalid();
+                if !bad && matches!(ins.mnemonic(), Mnemonic::Nop | Mnemonic::Int3) {
+                    return;
+                }
+                let zero = raw.iter().all(|&b| b == 0);
+                let byte = raw.first().copied().unwrap_or(0);
+                items.push(Item { code: Code::X86(*ins), ip, len: raw.len() as u64, byte, bad, zero });
+            });
+        }
         while self.items.last().is_some_and(|i| i.zero) {
             self.items.pop();
         }
@@ -249,13 +284,146 @@ impl<'a> Side<'a> {
     /// The key of one instruction (equal in both builds when the instruction does the same) and the
     /// instruction a branch inside the function goes to.
     fn key(&self, f: &Func, body: &Body, it: &Item, refs: &mut Refs) -> (u64, Option<usize>) {
-        let mut t = Fnv::new();
         if it.bad {
+            let mut t = Fnv::new();
             t.push(0xbad);
-            t.push(u64::from(it.byte));
+            match &it.code {
+                Code::X86(_) => t.push(u64::from(it.byte)),
+                Code::A64(ins, _) => t.push(u64::from(ins.raw)),
+            }
             return (t.0, None);
         }
-        let ins = &it.ins;
+        match &it.code {
+            Code::X86(ins) => self.key_x86(f, body, ins, refs),
+            Code::A64(ins, via) => self.key_a64(f, body, ins, *via, refs),
+        }
+    }
+
+    /// [`Side::key`] of an AArch64 instruction: the mnemonic, condition and every operand, except that a
+    /// branch, `adr` or literal load is hashed as what it points at, an `adrp` keeps only its register,
+    /// and an instruction that finishes an `adrp` pair (`add`, load, store) keeps the address the pair
+    /// reaches instead of its low 12 bits.
+    fn key_a64(&self, f: &Func, body: &Body, ins: &Ins, via: Option<Via>, refs: &mut Refs) -> (u64, Option<usize>) {
+        let mut t = Fnv::new();
+        let mut local = None;
+        t.push(3);
+        t.text(ins.mn.as_str());
+        t.push(u64::from(ins.cc));
+        let reached = via.is_some();
+        let resolved = reached || ins.adrp.is_some();
+        for o in &ins.ops {
+            match *o {
+                Opd::None => {}
+                Opd::Gpr { n, x, sp } => {
+                    t.push(1);
+                    t.push(u64::from(n));
+                    t.push(u64::from(x) | (u64::from(sp) << 1));
+                }
+                Opd::Fp { n, sz } => {
+                    t.push(2);
+                    t.push(u64::from(n));
+                    t.push(u64::from(sz));
+                }
+                Opd::List { n, count, arr } => {
+                    t.push(3);
+                    t.push(u64::from(n));
+                    t.push(u64::from(count));
+                    t.push(u64::from(arr));
+                }
+                Opd::Imm(v) => {
+                    t.push(4);
+                    if !reached || ins.addimm.is_none() {
+                        t.push(v as u64);
+                    }
+                }
+                Opd::Dec(v) => {
+                    t.push(5);
+                    t.push(v as u64);
+                }
+                Opd::UImm(v) => {
+                    t.push(6);
+                    t.push(v);
+                }
+                Opd::FImm(v) => {
+                    t.push(7);
+                    t.push(v.to_bits());
+                }
+                Opd::Target(a) => {
+                    t.push(8);
+                    if !resolved {
+                        if let Some(l) = self.place(f, body, a, 0, &mut t, refs) {
+                            local = Some(l);
+                        }
+                    }
+                }
+                Opd::Mem(m) => match m {
+                    Mem::Off { base, off } => {
+                        t.push(9);
+                        t.push(u64::from(base));
+                        if !reached {
+                            t.push(off as u64);
+                        }
+                    }
+                    Mem::Pre { base, off } => {
+                        t.push(10);
+                        t.push(u64::from(base));
+                        t.push(off as u64);
+                    }
+                    Mem::Post { base, off } => {
+                        t.push(11);
+                        t.push(u64::from(base));
+                        t.push(off as u64);
+                    }
+                    Mem::Reg { base, idx, ext, shift } => {
+                        t.push(12);
+                        for v in [base, idx, ext, shift] {
+                            t.push(u64::from(v));
+                        }
+                    }
+                    Mem::PostReg { base, idx } => {
+                        t.push(13);
+                        t.push(u64::from(base));
+                        t.push(u64::from(idx));
+                    }
+                },
+                Opd::Cond(c) => {
+                    t.push(14);
+                    t.push(u64::from(c));
+                }
+                Opd::Shift { kind, amt } => {
+                    t.push(15);
+                    t.push(u64::from(kind));
+                    t.push(u64::from(amt));
+                }
+                Opd::Ext { kind, amt, show } => {
+                    t.push(16);
+                    t.push(u64::from(kind));
+                    t.push(u64::from(amt));
+                    t.push(u64::from(show));
+                }
+                Opd::Name(s) => {
+                    t.push(17);
+                    t.text(s);
+                }
+                Opd::Sys(k) => {
+                    t.push(18);
+                    t.push(u64::from(k));
+                }
+            }
+        }
+        if let Some(Via::Addr(a) | Via::Read(a) | Via::Write(a)) = via {
+            // a literal load reads 8 bytes at most; the other reaches carry no size
+            let size = if ins.literal.is_some() { 8 } else { 0 };
+            if let Some(l) = self.place(f, body, a, size, &mut t, refs) {
+                local = Some(l);
+            }
+        }
+        (t.0, local)
+    }
+
+    /// [`Side::key`] of an x86 instruction.
+    fn key_x86(&self, f: &Func, body: &Body, ins: &Instruction, refs: &mut Refs) -> (u64, Option<usize>) {
+        let mut t = Fnv::new();
         let mut local = None;
         // a short and a near jump are one instruction written two ways
         if ins.op_count() > 0 && ins.op0_kind() == OpKind::NearBranch64 {
@@ -781,8 +949,20 @@ pub fn diff_window(
     from: Option<u64>,
     budget: usize,
 ) -> Result<Output> {
-    a.require_x86("diff")?;
-    b.require_x86("diff")?;
+    if a.arm64 != b.arm64 {
+        let arch = |i: &Image| if i.arm64 { "arm64" } else { "x86" };
+        return Err(Error::Bad(format!(
+            "{} is {} and {} is {}: diff compares two builds of one program for the same architecture",
+            a.path.display(),
+            arch(a),
+            b.path.display(),
+            arch(b)
+        )));
+    }
+    if !a.arm64 {
+        a.require_x86("diff")?;
+        b.require_x86("diff")?;
+    }
     if a.format != b.format {
         return Err(Error::Bad(format!(
             "{} is {} and {} is {}: diff compares two builds of one program for the same format",
