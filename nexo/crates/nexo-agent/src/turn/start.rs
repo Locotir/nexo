@@ -1006,4 +1006,11 @@ mod request_only_tests {
         assert_eq!(t, nexo_core::message::estimate_tokens(&[Message::user(block)]));
         assert_eq!(request_only_tokens(&[]), 0);
     }
+
+    #[test]
+    fn the_levels_above_high_become_a_reasoning_setting_not_none() {
+        for (s, e) in [("xhigh", Effort::Xhigh), ("max", Effort::Max), (" MAX ", Effort::Max)] {
+            assert_eq!(reasoning_of(&Some(s.into())), Some(ReasoningConfig::Effort(e)), "{s}");
+        }
+    }
 }

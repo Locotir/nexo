@@ -766,3 +766,18 @@ fn usage_counts_no_transformations_when_the_array_is_empty_or_missing() {
     assert_eq!(usage_of(&[empty, done]).transformations, 0);
     assert_eq!(usage_of(&[none, done]).transformations, 0);
 }
+
+#[test]
+fn the_levels_above_high_reach_the_request_as_the_effort_or_the_larger_budget() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    for (e, want) in [(Effort::Xhigh, "xhigh"), (Effort::Max, "max")] {
+        let b = Anthropic::body(&cfg, &adaptive_req("claude-opus-5-5", Some(ReasoningConfig::Effort(e))));
+        assert_eq!(b["output_config"]["effort"], want);
+    }
+    for (e, want) in [(Effort::High, 16_384), (Effort::Xhigh, 24_576), (Effort::Max, 32_768)] {
+        let mut req = adaptive_req("claude-3-5-sonnet-latest", Some(ReasoningConfig::Effort(e)));
+        req.max_tokens = 64_000;
+        let b = Anthropic::body(&cfg, &req);
+        assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": want}), "{e:?}");
+    }
+}

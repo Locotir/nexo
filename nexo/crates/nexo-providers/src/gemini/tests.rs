@@ -464,3 +464,14 @@ fn definitions_that_refer_to_each_other_many_times_are_cut_off_instead_of_growin
     assert!(c.to_string().len() < 1_000_000);
     assert!(c["properties"]["start"]["properties"]["n"].is_object());
 }
+
+#[test]
+fn the_levels_above_high_take_the_high_thinking_budget() {
+    for e in [nexo_core::Effort::High, nexo_core::Effort::Xhigh, nexo_core::Effort::Max] {
+        let mut req = ModelRequest::new("gemini-2.5-pro", "", vec![Message::user("hi")]);
+        req.reasoning = Some(nexo_core::ReasoningConfig::Effort(e));
+        let cfg = ProviderConfig::new(ID, "https://generativelanguage.googleapis.com", None);
+        let b = Gemini::body(&cfg, &req);
+        assert_eq!(b["generationConfig"]["thinkingConfig"]["thinkingBudget"], 24_576, "{e:?}");
+    }
+}
