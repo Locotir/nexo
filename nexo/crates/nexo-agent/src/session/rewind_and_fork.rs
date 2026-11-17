@@ -62,6 +62,8 @@ impl Session {
             if !self.meta.title.is_empty() {
                 writeln!(f, "{}", serde_json::to_string(&Line::Title { title: self.meta.title.clone() })?)?;
             }
+            // a result this file holds as the output printed it carries the text for the output line too
+            let results = result_texts(&self.messages);
             let mut written = std::collections::BTreeSet::new();
             for (index, m) in self.messages.iter().enumerate() {
                 writeln!(
@@ -79,18 +81,14 @@ impl Session {
                         writeln!(
                             f,
                             "{}",
-                            serde_json::to_string(&Line::ToolOutput { call_id: id.into(), output: out.clone() })?
+                            serde_json::to_string(&output_line(id, out, held_by_result(&results, id, out)))?
                         )?;
                     }
                 }
             }
             // outputs of calls whose messages were replaced (compaction) stay, as they did in the log
             for (id, out) in self.outputs.iter().filter(|(id, _)| !written.contains(*id)) {
-                writeln!(
-                    f,
-                    "{}",
-                    serde_json::to_string(&Line::ToolOutput { call_id: id.clone(), output: out.clone() })?
-                )?;
+                writeln!(f, "{}", serde_json::to_string(&output_line(id, out, held_by_result(&results, id, out)))?)?;
             }
             if !self.usage.is_empty() || self.cost > 0.0 {
                 writeln!(
@@ -136,6 +134,8 @@ impl Session {
         match renamed {
             Ok(()) => {
                 self.file = Some(reopened.map_err(NotReopened)?);
+                // every output is in the file now, in the form its result allows
+                self.held.clear();
                 self.mark();
                 Ok(())
             }
@@ -165,10 +165,11 @@ impl Session {
             f.append_at(m, self.stamps.get(i).cloned().unwrap_or_else(now))?;
             for (id, _, _) in m.tool_calls() {
                 if let Some(out) = self.outputs.get(id) {
-                    f.record_output(id, out)?;
+                    f.hold_output(id, out); // written with the result that answers it, below
                 }
             }
         }
+        f.write_held_whole(); // a call kept without its result
         if f.meta.title.is_empty() && !self.meta.title.is_empty() {
             f.set_title(&format!("{} (fork)", self.meta.title))?;
         }

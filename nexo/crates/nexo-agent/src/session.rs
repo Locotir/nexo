@@ -2,7 +2,8 @@
 //! so nothing is lost and a session can be continued.
 //!
 //! Lines: `{"type":"meta",...}` first; then `message` (with its index),
-//! `tool_output`, `usage`, `title`, `stop` (the person stopped the latest
+//! `tool_output` (its text left out when the tool-result message holds it), `usage`, `title`, `prefix_shown` (the project
+//! map alone, for a changed tree), `stop` (the person stopped the latest
 //! request), and `reset` (the history was rewritten: what follows replaces
 //! what came before).
 
@@ -35,6 +36,7 @@ mod tree_and_titles;
 
 use lock_file::*;
 pub use sweep::{sweep_orphans, sweep_orphans_in_background};
+use recording::{held_by_result, output_line, result_texts};
 pub use trash::*;
 pub use tree_and_titles::*;
 
@@ -118,6 +120,11 @@ enum Line {
     ToolOutput {
         call_id: String,
         output: ToolOutput,
+        /// Set when this output's text is the one the call's tool-result message carries: `output.content` is then
+        /// left empty here (the message holds the text, the file has it once) and this is its length in chars.
+        /// Reading the session fills the text back in from the message; old files have none and hold it whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_chars: Option<usize>,
     },
     Usage {
         usage: Usage,
@@ -150,6 +157,12 @@ enum Line {
     },
     /// The prefix in force from here on; the last such line wins.
     Prefix(Prefix),
+    /// The project map the model was last shown, which is all a changed tree alters of the prefix: it replaces `shown` in
+    /// the prefix read before it, so a changed tree does not write the whole prefix again. A reader that does not know
+    /// the line skips it (and counts it among the lines it could not read).
+    PrefixShown {
+        shown: String,
+    },
     Reset,
     /// The person stopped the latest request (Esc): the line the next request carries, until a message that starts
     /// with it is appended (`Session::stop`). Old readers skip it.
@@ -196,6 +209,9 @@ pub struct Session {
     unsaved: bool,
     /// What the person has not yet been told about saving.
     news: Option<SaveNews>,
+    /// Calls whose output is kept in memory and not written yet: it goes into the file with the tool-result message
+    /// that answers the call (see [`Session::hold_output`]).
+    held: std::collections::BTreeSet<String>,
 }
 
 /// A change in whether the session is being saved, for the person to be told once.

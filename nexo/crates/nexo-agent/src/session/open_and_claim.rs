@@ -68,6 +68,7 @@ impl Session {
             skipped: 0,
             unsaved: false,
             news: None,
+            held: std::collections::BTreeSet::new(),
         })
     }
 
@@ -108,6 +109,7 @@ impl Session {
             skipped: 0,
             unsaved: false,
             news: None,
+            held: std::collections::BTreeSet::new(),
         }
     }
 
@@ -142,6 +144,8 @@ impl Session {
         let mut prefix = None;
         let mut stop = None;
         let mut skipped = 0;
+        // outputs whose line left the text to the tool-result message: filled in from it once the messages are read
+        let mut bare = std::collections::BTreeSet::new();
         for l in lines {
             match serde_json::from_str::<Line>(&l) {
                 Ok(Line::Message { message, ts, .. }) => {
@@ -153,7 +157,12 @@ impl Session {
                     messages.push(message)
                 }
                 Ok(Line::Stop { line, .. }) => stop = Some(line),
-                Ok(Line::ToolOutput { call_id, output }) => {
+                Ok(Line::ToolOutput { call_id, output, result_chars }) => {
+                    if result_chars.is_some() {
+                        bare.insert(call_id.clone());
+                    } else {
+                        bare.remove(&call_id);
+                    }
                     outputs.insert(call_id, output);
                 }
                 Ok(Line::Usage { usage: u, cost_usd, .. }) => {
@@ -170,7 +179,15 @@ impl Session {
                     goal_state = state;
                 }
                 Ok(Line::Prefix(p)) => prefix = Some(p),
+                // the map belongs to the prefix before it (one written after a rewrite already has the last)
+                Ok(Line::PrefixShown { shown }) => {
+                    if let Some(p) = &mut prefix {
+                        p.shown = shown;
+                    }
+                }
                 Ok(Line::Reset) => {
+                    // the results this reset drops are the only place the text of those outputs was
+                    fill_bare(&mut outputs, std::mem::take(&mut bare), &messages);
                     messages.clear();
                     stamps.clear();
                     stop = None;
@@ -179,6 +196,7 @@ impl Session {
                 Err(_) => skipped += 1, // a cut line: whatever was being written when the process died
             }
         }
+        fill_bare(&mut outputs, bare, &messages);
         if is_note_title(&meta.title) {
             meta.title = first_words_title(&messages);
         }
@@ -210,6 +228,7 @@ impl Session {
             skipped,
             unsaved: false,
             news: None,
+            held: std::collections::BTreeSet::new(),
         })
     }
 
@@ -283,5 +302,24 @@ fn read_error(path: &Path, e: &std::io::Error) -> anyhow::Error {
         anyhow::anyhow!("no session {id} at {}; `nexo sessions` lists them", path.display())
     } else {
         anyhow::anyhow!("session file {} cannot be read: {e}", path.display())
+    }
+}
+
+/// The text of the outputs whose line left it out (see `Line::ToolOutput`), taken from the tool results among
+/// `messages`. One whose result is not there (the file ended before it was appended) stays without text: the
+/// display is all of it that was saved.
+fn fill_bare(
+    outputs: &mut BTreeMap<String, ToolOutput>,
+    bare: std::collections::BTreeSet<String>,
+    messages: &[Message],
+) {
+    if bare.is_empty() {
+        return;
+    }
+    let texts = result_texts(messages);
+    for id in bare {
+        if let (Some(out), Some(text)) = (outputs.get_mut(&id), texts.get(id.as_str())) {
+            out.content = (*text).to_string();
+        }
     }
 }

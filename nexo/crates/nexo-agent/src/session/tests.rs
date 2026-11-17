@@ -1357,6 +1357,31 @@ fn message_stamps(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// A session with one call answered the way the loop saves it: the output held, then the result appended.
+fn answered(dir: &Path, printed: &ToolOutput, sent: &str) -> Session {
+    let mut s = Session::create_in(dir, Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("read the file")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", serde_json::json!({"path": "a"}))]))
+        .unwrap();
+    s.hold_output("c1", printed);
+    s.append(&Message::tool_results(vec![Part::tool_result("c1", sent, false)])).unwrap();
+    s
+}
+
+fn file_display(text: &str) -> ToolDisplay {
+    ToolDisplay::File { path: "a".into(), text: text.into(), start_line: 1 }
+}
+
+/// The `tool_output` lines of a session file.
+fn output_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| l.contains("\"type\":\"tool_output\""))
+        .map(String::from)
+        .collect()
+}
+
 #[test]
 fn a_rewind_keeps_the_time_each_kept_message_was_said() {
     let d = tempfile::tempdir().unwrap();
@@ -1503,4 +1528,187 @@ fn a_fresh_lock_of_a_process_that_has_exited_is_stale_on_windows() {
     std::fs::write(&lock, stamp()).unwrap();
     assert_eq!(holder(&lock), Some(Some(std::process::id())));
     assert!(proc_start(std::process::id()).is_some(), "Windows tells when a process started");
+}
+
+#[test]
+fn an_output_the_result_holds_is_saved_once_and_read_back_whole() {
+    let d = tempfile::tempdir().unwrap();
+    let printed = ToolOutput::ok("alpha\nbeta").with_display(file_display("alpha\nbeta"));
+    let s = answered(d.path(), &printed, "alpha\nbeta");
+    let lines = output_lines(s.path());
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("\"result_chars\":10"), "{}", lines[0]);
+    assert!(lines[0].contains("\"content\":\"\""), "the text is in the message: {}", lines[0]);
+    assert!(lines[0].contains("\"kind\":\"file\""), "the display stays: {}", lines[0]);
+    assert_eq!(s.outputs()["c1"].content, "alpha\nbeta", "memory holds the text");
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.outputs()["c1"], s.outputs()["c1"]);
+    assert_eq!(back.skipped_lines(), 0);
+}
+
+#[test]
+fn an_output_the_model_was_sent_other_text_for_stays_whole_in_its_line() {
+    let d = tempfile::tempdir().unwrap();
+    // a note that says the lines were seen, a digest, or a line a guard added: the output line is the only copy
+    let printed = ToolOutput::ok("the whole output").with_display(file_display("the whole output"));
+    let s = answered(d.path(), &printed, "unchanged since your last read");
+    let lines = output_lines(s.path());
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("the whole output") && !lines[0].contains("result_chars"), "{}", lines[0]);
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "the whole output");
+}
+
+#[test]
+fn an_empty_output_is_not_left_to_the_result_that_says_no_output() {
+    let d = tempfile::tempdir().unwrap();
+    let s = answered(d.path(), &ToolOutput::ok(""), "(no output)");
+    assert!(!output_lines(s.path())[0].contains("result_chars"));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "");
+}
+
+#[test]
+fn an_output_with_no_result_to_hold_it_is_written_whole() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("run it")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "bash", serde_json::json!({"command": "ls"}))]))
+        .unwrap();
+    s.hold_output("c1", &ToolOutput::ok("kept text"));
+    assert!(output_lines(s.path()).is_empty(), "held until the result that answers it is appended");
+    // a rewrite writes what is held, and the result is not in the file: the line is the only copy
+    s.rewind(2).unwrap();
+    let lines = output_lines(s.path());
+    assert_eq!((lines.len(), lines[0].contains("kept text")), (1, true), "{lines:?}");
+    // the result appended after it does not write the output again
+    s.append(&Message::tool_results(vec![Part::tool_result("c1", "kept text", false)])).unwrap();
+    assert_eq!(output_lines(s.path()).len(), 1);
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "kept text");
+}
+
+#[test]
+fn the_text_of_an_output_survives_a_rewind_a_fork_and_a_compaction() {
+    let d = tempfile::tempdir().unwrap();
+    let text = "line one\nline two\nline three";
+    // a plain display: a file display would hold the text a second time, which is not what this checks
+    let printed = ToolOutput::ok(text);
+    let mut s = answered(d.path(), &printed, text);
+    s.append(&Message::assistant("done")).unwrap();
+    let slim = |p: &Path| output_lines(p).iter().all(|l| l.contains("\"result_chars\":") && !l.contains("line two"));
+    assert!(slim(s.path()));
+    // a rewind that keeps the result writes the output without the text again
+    s.rewind(4).unwrap();
+    assert!(slim(s.path()), "{:?}", output_lines(s.path()));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, text);
+    // a fork copies the call and its result: the same
+    let f = s.fork(3).unwrap();
+    assert!(slim(f.path()), "{:?}", output_lines(f.path()));
+    assert_eq!(Session::open_path(f.path()).unwrap().outputs()["c1"].content, text);
+    // a fork cut before the result keeps the text in the output line
+    let cut = s.fork(2).unwrap();
+    assert!(output_lines(cut.path())[0].contains("line two"), "{:?}", output_lines(cut.path()));
+    assert_eq!(Session::open_path(cut.path()).unwrap().outputs()["c1"].content, text);
+    // a compaction that kept the result as it was
+    let kept = s.messages().to_vec();
+    s.reset_with(&kept).unwrap();
+    assert!(slim(s.path()));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, text);
+    // a compaction that shortened it: the output line is the only whole copy
+    let mut short = kept.clone();
+    short[2] = Message::tool_results(vec![Part::tool_result("c1", "line one [cut]", false)]);
+    s.reset_with(&short).unwrap();
+    assert!(output_lines(s.path())[0].contains("line two"), "{:?}", output_lines(s.path()));
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.outputs()["c1"].content, text);
+    assert_eq!(back.messages()[2], short[2]);
+    // a rewind to before the result drops it and the line becomes whole
+    let other = tempfile::tempdir().unwrap();
+    let mut s = answered(other.path(), &printed, text);
+    s.rewind(2).unwrap();
+    assert!(output_lines(s.path())[0].contains("line two"));
+}
+
+#[test]
+fn a_100_kb_read_is_saved_in_under_1_2_times_its_bytes_in_the_message_and_the_display() {
+    let d = tempfile::tempdir().unwrap();
+    let text: String = (0..2500).map(|i| format!("line {i:05} of the file, with some words in it\n")).collect();
+    assert!(text.len() > 100_000);
+    let printed = ToolOutput::ok(text.clone()).with_display(file_display(&text));
+    let s = answered(d.path(), &printed, &text);
+    // the text is in the message, and in the display (the raw file the person is shown): twice, not three times
+    let wanted = 2 * text.len();
+    let size = std::fs::metadata(s.path()).unwrap().len() as usize;
+    assert!(size * 10 < wanted * 12, "{size} bytes for {wanted} of text");
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, text);
+}
+
+#[test]
+fn a_file_written_before_the_text_was_left_out_reads_as_it_did() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("go")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "bash", serde_json::json!({"command": "ls"}))]))
+        .unwrap();
+    s.record_output("c1", &ToolOutput::ok("files")).unwrap();
+    s.append(&Message::tool_results(vec![Part::tool_result("c1", "files", false)])).unwrap();
+    assert!(!output_lines(s.path())[0].contains("result_chars"));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "files");
+}
+
+#[test]
+fn an_output_line_whose_result_was_never_saved_reads_without_text_instead_of_failing() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("go")).unwrap();
+    let mut f = OpenOptions::new().append(true).open(s.path()).unwrap();
+    writeln!(
+        f,
+        r#"{{"type":"tool_output","call_id":"x","output":{{"content":"","is_error":false,"display":{{"kind":"plain"}}}},"result_chars":5}}"#
+    )
+    .unwrap();
+    drop(f);
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!((back.skipped_lines(), back.outputs()["x"].content.as_str()), (0, ""));
+}
+
+#[test]
+fn a_changed_project_map_writes_only_the_map_and_a_resume_reads_it_back() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    let mut p = Prefix { tools: vec!["bash".into()], shown: "src/\n  a.rs".into(), ..Prefix::default() };
+    p.volatile.instructions = "x".repeat(20_000);
+    s.record_prefix(&p).unwrap();
+    let before = std::fs::metadata(s.path()).unwrap().len();
+    for n in 0..5 {
+        s.record_shown(&format!("src/\n  a.rs\n  b{n}.rs")).unwrap();
+    }
+    let grown = std::fs::metadata(s.path()).unwrap().len() - before;
+    assert!(grown < 1000, "five changed maps wrote {grown} bytes");
+    p.shown = "src/\n  a.rs\n  b4.rs".into();
+    assert_eq!(s.prefix(), Some(&p), "memory has the last map");
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.prefix(), Some(&p), "a resume reads the last map with the rest of the prefix");
+    assert_eq!(back.skipped_lines(), 0);
+    // a rewrite and a fork write the whole prefix once, with the last map
+    s.reset_with(&[Message::user("one")]).unwrap();
+    assert_eq!(Session::open_path(s.path()).unwrap().prefix(), Some(&p));
+    assert_eq!(Session::open_path(s.fork(1).unwrap().path()).unwrap().prefix(), Some(&p));
+    // a full prefix saved after a map (the instructions changed) wins
+    p.volatile.instructions = "y".into();
+    s.record_prefix(&p).unwrap();
+    s.record_shown("only").unwrap();
+    p.shown = "only".into();
+    assert_eq!(Session::open_path(s.path()).unwrap().prefix(), Some(&p));
+}
+
+#[test]
+fn a_map_with_no_prefix_before_it_is_ignored_on_open() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    s.record_shown("tree").unwrap();
+    assert!(s.prefix().is_none());
+    let back = Session::open_path(s.path()).unwrap();
+    assert!(back.prefix().is_none());
+    assert_eq!((back.skipped_lines(), back.messages().len()), (0, 1));
 }

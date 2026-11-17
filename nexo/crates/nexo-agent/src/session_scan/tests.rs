@@ -189,6 +189,19 @@ fn tool_output_is_weighted_by_the_calls_that_carried_it() {
 }
 
 #[test]
+fn an_output_line_without_its_text_is_weighted_by_the_length_it_says() {
+    let slim = json!({"type":"tool_output","call_id":"c1","output":{"content":"","is_error":false,"display":{"kind":"plain"}},"result_chars":4000});
+    let d = digest(&[
+        meta("/p", "m", T0),
+        msg(0, T0, "assistant", call("c1", "bash", "cargo test --all")),
+        slim, // the text is in the result message: 1000 tokens, as when the line holds it
+        usage(2_000, 0, 0, 1, 0, 0.1),
+    ]);
+    let bash = &d.days[&today()].tools["bash"];
+    assert_eq!((bash.runs, bash.tokens, bash.weighted), (1, 1000, 1000));
+}
+
+#[test]
 fn a_reset_lets_go_of_the_tool_output_and_an_orphan_output_is_ignored() {
     let d = digest(&[
         meta("/p", "m", T0),

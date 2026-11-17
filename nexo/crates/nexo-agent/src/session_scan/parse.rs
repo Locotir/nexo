@@ -73,6 +73,9 @@ pub(super) struct OutputLine {
     call_id: String,
     #[serde(default)]
     output: OutputLite,
+    /// The length of the text a slim line left to the tool result (its `content` is empty then).
+    #[serde(default)]
+    result_chars: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -208,7 +211,7 @@ impl Walk {
         let Ok(o) = serde_json::from_str::<OutputLine>(line) else { return };
         // the result of a call whose message is gone (a compaction) is not in the context
         let Some((tool, cmd)) = self.calls.get(&o.call_id).cloned() else { return };
-        let chars = o.output.content.chars().count() as u64;
+        let chars = o.result_chars.unwrap_or_else(|| o.output.content.chars().count()) as u64;
         let tokens = chars.div_ceil(4);
         let day = self.day;
         let t = self.day_mut(day).tools.entry(tool.clone()).or_default();

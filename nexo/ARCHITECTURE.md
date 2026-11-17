@@ -207,8 +207,9 @@ as `bash(git *)`, `bash(cargo test*)`), the path for file tools
 
 Session file: `~/.nexo/sessions/<id>.jsonl`, one JSON object per
 line: `{"type":"meta",...}` first, then `{"type":"message","index":n,"ts":...,"message":{...}}`,
-`{"type":"tool_output","call_id":...,"output":{...}}`, `{"type":"usage",...}`,
-`{"type":"title","title":...}`. The id is `YYYYMMDD-HHMMSS-<4 hex>`.
+`{"type":"tool_output","call_id":...,"output":{...}}` (with `"result_chars":n` and an empty `content` when the
+tool-result message holds the text: it is kept once), `{"type":"usage",...}`, `{"type":"title","title":...}`,
+`{"type":"prefix_shown","shown":...}` (the project map alone, when the tree changed). The id is `YYYYMMDD-HHMMSS-<4 hex>`.
 
 Model limits: what is known of the model in use (prices per million tokens,
 context window, largest reply) is resolved in this order, each source

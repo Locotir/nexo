@@ -77,6 +77,10 @@ fn history_in(dir: &Path, id: &str) -> anyhow::Result<HistorySnapshot> {
                 }
             }
             Some("tool_output") => {
+                // a line that left its text to the tool result (which follows, and is shown) has nothing to show
+                if value.get("result_chars").is_some() {
+                    continue;
+                }
                 let Ok(output) = serde_json::from_value::<super::ToolOutput>(value["output"].clone()) else {
                     unreadable_records += 1;
                     continue;
@@ -232,6 +236,20 @@ mod tests {
         assert!(joined.contains("Tool call: read"));
         assert!(joined.contains("Tool output: found"));
         assert!(!joined.contains("hidden") && !joined.contains("opaque"));
+    }
+
+    #[test]
+    fn an_output_line_that_left_its_text_to_the_result_shows_nothing_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = concat!(
+            r#"{"type":"message","index":0,"ts":"now","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":[{"type":"text","text":"found it"}],"is_error":false}]}}"#,
+            "\n",
+            r#"{"type":"tool_output","call_id":"x","output":{"content":"","is_error":false,"display":{"kind":"plain"}},"result_chars":8}"#,
+            "\n"
+        );
+        std::fs::write(dir.path().join("abc.jsonl"), data).unwrap();
+        let joined = history_in(dir.path(), "abc").unwrap().records.join("\n");
+        assert!(joined.contains("found it") && !joined.contains("Tool output"), "{joined}");
     }
 
     #[test]
