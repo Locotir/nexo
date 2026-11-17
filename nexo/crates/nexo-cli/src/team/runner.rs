@@ -33,6 +33,7 @@ async fn prepare(lane: &Lane) -> anyhow::Result<(nexo_core::Config, PathBuf, set
         config.check_mode(mode).map_err(|e| anyhow::anyhow!(e))?;
         config.permissions.mode = mode;
     }
+    lane.apply_sandbox(&mut config).map_err(|e| anyhow::anyhow!("lane {}: {e}", lane.name))?;
     if lane.model.is_none() && setup::nothing_chosen(&config) {
         anyhow::bail!(setup::nothing_chosen_message());
     }

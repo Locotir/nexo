@@ -15,6 +15,13 @@ sandbox_write_dirs = ["/srv/data"]   # more writable directories (only those tha
 TUI (no argument: switch between off and workspace-write); `/status` shows the mode, the backend and how the
 network is shut.
 
+A team lane sets the same three keys in its `[[lane]]` of `team.toml` (`sandbox`, `sandbox_network`,
+`sandbox_write_dirs`), so an unattended lane is boxed without boxing the person's own sessions; a lane that
+writes sibling folders lists them in `sandbox_write_dirs`. A managed policy still bounds them. Without these
+keys a lane runs with the setting of its folder and of the person. In yolo a bash call that asks for
+`unsandboxed: true` runs outside the box without a question (see below), so a lane in yolo is contained only
+as far as the model keeps to the sandbox.
+
 A project file (not yet trusted) can only tighten the sandbox: it cannot turn it off, open the network or add
 writable directories. `nexo config trust` lifts that, as for the other settings.
 
