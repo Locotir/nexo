@@ -44,7 +44,8 @@ impl Session {
         }
     }
 
-    /// Writes the whole file again from memory: to a temporary file next to it, renamed over it.
+    /// Writes the whole file again from memory, except the usage and model lines, which are copied from the file
+    /// as it stands: to a temporary file next to it, renamed over it.
     pub(super) fn rewrite(&mut self) -> anyhow::Result<()> {
         self.meta.messages = self.messages.len();
         self.meta.updated = now();
@@ -64,6 +65,9 @@ impl Session {
             }
             // a result this file holds as the output printed it carries the text for the output line too
             let results = result_texts(&self.messages);
+            // the calls already paid keep their line (time, model, kind, held tokens), so what was spent
+            // before a compaction or a rewind can still be told call by call
+            let (copied, copied_cost) = copy_detail(&self.path, &mut f)?;
             let mut written = std::collections::BTreeSet::new();
             for (index, m) in self.messages.iter().enumerate() {
                 writeln!(
@@ -90,13 +94,26 @@ impl Session {
             for (id, out) in self.outputs.iter().filter(|(id, _)| !written.contains(*id)) {
                 writeln!(f, "{}", serde_json::to_string(&output_line(id, out, held_by_result(&results, id, out)))?)?;
             }
-            if !self.usage.is_empty() || self.cost > 0.0 {
+            // Only what has no line of its own is summed: a usage write that failed (memory counts it
+            // first) or a file that could not be read. The copied lines carry the rest.
+            let rest = Usage {
+                input: self.usage.input.saturating_sub(copied.input),
+                output: self.usage.output.saturating_sub(copied.output),
+                cache_read: self.usage.cache_read.saturating_sub(copied.cache_read),
+                cache_write: self.usage.cache_write.saturating_sub(copied.cache_write),
+                cache_write_1h: self.usage.cache_write_1h.saturating_sub(copied.cache_write_1h),
+                transformations: self.usage.transformations.saturating_sub(copied.transformations),
+                reasoning: self.usage.reasoning.saturating_sub(copied.reasoning),
+            };
+            // the same lines added in another order differ in the last digits: that is not a cost
+            let rest_cost = (self.cost - copied_cost).max(0.0);
+            if !rest.is_empty() || rest_cost > 1e-9 {
                 writeln!(
                     f,
                     "{}",
                     serde_json::to_string(&Line::Usage {
-                        usage: self.usage,
-                        cost_usd: self.cost,
+                        usage: rest,
+                        cost_usd: rest_cost,
                         ts: Some(now()),
                         model: None,
                         kind: Some(UsageKind::Sum),
@@ -206,4 +223,33 @@ fn copy_todo(dir: &Path, from: &str, to: &str) {
     if std::fs::copy(&a, &tmp).and_then(|_| std::fs::rename(&tmp, &b)).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
+}
+
+/// Copies the `usage` and `model` lines of the file as it stands to `out`, byte for byte and in order, and
+/// returns what the usage lines add up to. A line is told by how it starts (the writer puts `type` first, as
+/// `read_meta` relies on) and kept only when it still parses, so a line cut by a crash is not carried along.
+/// Lines of an earlier `sum` are copied like the others, so a second rewrite folds nothing. A file that
+/// cannot be read copies nothing: the caller then sums from memory.
+fn copy_detail(path: &Path, out: &mut impl Write) -> anyhow::Result<(Usage, f64)> {
+    const USAGE: &[u8] = br#"{"type":"usage""#;
+    const MODEL: &[u8] = br#"{"type":"model""#;
+    let (mut total, mut cost) = (Usage::default(), 0.0);
+    let Ok(file) = File::open(path) else { return Ok((total, cost)) };
+    for line in BufReader::new(file).split(b'\n').map_while(Result::ok) {
+        let line = line.trim_ascii();
+        if !line.starts_with(USAGE) && !line.starts_with(MODEL) {
+            continue;
+        }
+        match serde_json::from_slice::<Line>(line) {
+            Ok(Line::Usage { usage, cost_usd, .. }) => {
+                total += usage;
+                cost += cost_usd;
+            }
+            Ok(Line::Model { .. }) => {}
+            _ => continue,
+        }
+        out.write_all(line)?;
+        out.write_all(b"\n")?;
+    }
+    Ok((total, cost))
 }

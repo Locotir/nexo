@@ -237,11 +237,79 @@ fn usage_lines_say_when_whose_and_how_much_was_held_and_old_readers_still_read_t
     std::fs::write(s.path(), old).unwrap();
     let mut back = Session::open_path(s.path()).unwrap();
     assert_eq!(back.usage().input, 6);
-    // a rewrite keeps the totals in one line marked as a sum
+    // a rewrite keeps each call's own line, with its time and model, and sums nothing it can copy
     back.rewind(1).unwrap();
     let text = std::fs::read_to_string(back.path()).unwrap();
-    let sums = text.lines().filter(|l| l.contains("\"type\":\"usage\"") && l.contains("\"kind\":\"sum\"")).count();
-    assert_eq!(sums, 1, "{text}");
+    let kept: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| v["type"] == "usage")
+        .collect();
+    assert_eq!(kept.len(), 2, "{text}");
+    assert!(kept.iter().all(|v| v["kind"] != "sum"), "{text}");
+    assert_eq!(kept[0]["model"], "m1");
+    assert!(kept[0]["ts"].as_str().is_some_and(|t| t.contains('T')));
+    assert_eq!(Session::open_path(back.path()).unwrap().usage().input, 6);
+}
+
+#[test]
+fn a_compaction_keeps_the_line_of_every_call_paid_before_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("hello there")).unwrap();
+    let main = |model: &str, held| UsageMeta { model: Some(model.into()), kind: Some(UsageKind::Main), held };
+    s.record_usage_meta(Usage { input: 5, ..Default::default() }, 0.5, main("m1", Some(42))).unwrap();
+    s.record_model("mock", "m2").unwrap();
+    s.record_usage_meta(Usage { input: 7, ..Default::default() }, 0.25, main("m2", None)).unwrap();
+    let before: Vec<String> = usage_and_model_lines(s.path());
+    assert_eq!(before.len(), 3);
+    s.reset_with(&[Message::user("[summary]")]).unwrap();
+    // the same bytes in the same order, so time, model, kind and held tokens survive
+    assert_eq!(usage_and_model_lines(s.path()), before);
+    // a second rewrite folds nothing either
+    s.reset_with(&[Message::user("[summary two]")]).unwrap();
+    assert_eq!(usage_and_model_lines(s.path()), before);
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.usage().input, 12);
+    assert!((back.cost() - 0.75).abs() < 1e-12);
+    assert_eq!(back.meta().model, "m2");
+}
+
+#[test]
+fn a_rewrite_sums_only_the_usage_that_has_no_line_in_the_file() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("hello there")).unwrap();
+    s.record_usage(Usage { input: 5, output: 1, ..Default::default() }, 0.5).unwrap();
+    s.record_usage(Usage { input: 3, ..Default::default() }, 0.25).unwrap();
+    // a usage write that failed: memory has the call, the file does not
+    let text = std::fs::read_to_string(s.path()).unwrap();
+    let last = text.lines().rfind(|l| l.contains("\"type\":\"usage\"")).unwrap();
+    std::fs::write(s.path(), text.replacen(&format!("{last}\n"), "", 1)).unwrap();
+    s.reset_with(&[Message::user("[summary]")]).unwrap();
+    let text = std::fs::read_to_string(s.path()).unwrap();
+    let usage: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| v["type"] == "usage")
+        .collect();
+    assert_eq!(usage.len(), 2, "{text}");
+    assert_ne!(usage[0]["kind"], "sum");
+    assert_eq!((usage[1]["kind"].as_str(), usage[1]["usage"]["input"].as_u64()), (Some("sum"), Some(3)), "{text}");
+    assert_eq!(usage[1]["usage"]["output"].as_u64(), Some(0), "only the remainder is summed");
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.usage().input, 8);
+    assert!((back.cost() - 0.75).abs() < 1e-12);
+}
+
+/// The `usage` and `model` lines of a session file, as written.
+fn usage_and_model_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("{\"type\":\"usage\"") || l.starts_with("{\"type\":\"model\""))
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]

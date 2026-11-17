@@ -660,3 +660,26 @@ fn the_history_changes_the_server_lists_are_summed_over_the_calls() {
     let d = digest(&[meta("/p", "m", T0), msg(0, T0, "user", text("a")), a, b, usage(1, 1, 0, 1, 0, 0.1)]);
     assert_eq!(total(&d).transformations, 5);
 }
+
+#[test]
+fn a_compacted_session_keeps_its_calls_and_its_split_by_model() {
+    use crate::session::{Session, UsageKind, UsageMeta};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(dir.path(), Path::new("/p"), "mock", "big").unwrap();
+    s.append(&nexo_core::message::Message::user("a")).unwrap();
+    let main = |model: &str| UsageMeta { model: Some(model.into()), kind: Some(UsageKind::Main), held: None };
+    let one = nexo_core::stream::Usage { input: 100, output: 10, ..Default::default() };
+    s.record_usage_meta(one, 0.5, main("big")).unwrap();
+    s.record_usage_meta(one, 0.5, main("big")).unwrap();
+    s.record_usage_meta(one, 0.1, main("small")).unwrap();
+    s.reset_with(&[nexo_core::message::Message::user("[summary]")]).unwrap();
+    s.record_usage_meta(one, 0.5, main("big")).unwrap();
+    let d = digest_reader("s", Cursor::new(std::fs::read(s.path()).unwrap()), 0);
+    let t = total(&d);
+    // the three calls before the compaction are calls, not one sum
+    assert_eq!((t.calls, t.summed_input), (4, 0));
+    let models: Vec<(String, u64)> =
+        d.days.values().flat_map(|day| day.models.iter().map(|(m, t)| (m.clone(), t.calls))).collect();
+    assert_eq!(models.iter().filter(|(m, _)| m == "big").map(|(_, c)| c).sum::<u64>(), 3);
+    assert_eq!(models.iter().filter(|(m, _)| m == "small").map(|(_, c)| c).sum::<u64>(), 1);
+}
