@@ -704,3 +704,34 @@ async fn a_sub_agents_report_ends_with_the_files_it_wrote_and_the_commands_it_ra
     );
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_sub_agent_sends_the_level_set_for_the_session() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"prompt": "look"}))),
+        Reply::Events(text("found it")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.providers
+        .get_mut("mock")
+        .unwrap()
+        .efforts
+        .insert("m1".into(), ["low", "medium", "high"].map(String::from).to_vec());
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::SetEffort { effort: Some("high".into()) });
+    r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+    r.send(AgentCommand::Submit { text: "look".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done, "{:?}", notices(&evs));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    let high = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::High));
+    // the main request, the sub-agent's own round (its own system prompt) and the main answer all carry it
+    assert!(reqs[1].system.starts_with("You are a sub-agent"));
+    assert_eq!((reqs[0].reasoning, reqs[1].reasoning, reqs[2].reasoning), (high, high, high));
+    r.stop().await;
+}

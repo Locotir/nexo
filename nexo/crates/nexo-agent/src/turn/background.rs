@@ -443,6 +443,21 @@ mod suggest_tests {
         assert_eq!(suggest_request(&last, Message::assistant("ok"), &[]).max_tokens, SUGGEST_TOKENS);
     }
 
+    /// The session's level does not ride on a side request: it asks for the least thinking the model lists, or none.
+    #[test]
+    fn a_suggestion_is_not_raised_to_the_level_of_the_session() {
+        let mut last = ModelRequest::new("m", "", vec![]);
+        last.reasoning = Some(ReasoningConfig::Effort(Effort::Xhigh));
+        let lv = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let r = suggest_request(&last, Message::assistant("ok"), &lv(&["low", "high", "xhigh"])).reasoning;
+        assert_eq!(r, Some(ReasoningConfig::Effort(Effort::Low)));
+        last.reasoning = Some(ReasoningConfig::Effort(Effort::High));
+        let r = suggest_request(&last, Message::assistant("ok"), &lv(&["off", "high"])).reasoning;
+        assert_eq!(r, Some(ReasoningConfig::Off));
+        // and the last request itself is left as it was sent
+        assert_eq!(last.reasoning, Some(ReasoningConfig::Effort(Effort::High)));
+    }
+
     #[test]
     fn only_a_short_request_shaped_line_is_shown_as_a_suggestion() {
         assert_eq!(tidy_suggestion("  \"run the\ntests\" ").as_deref(), Some("run the tests"));
