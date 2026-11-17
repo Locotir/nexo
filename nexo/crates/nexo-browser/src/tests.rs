@@ -377,13 +377,7 @@ async fn records_a_gif() {
     browser.record_start(RecordOptions::default()).await.unwrap();
     assert!(matches!(browser.record_start(RecordOptions::default()).await, Err(Error::Unusable { .. })));
     browser.wait(Wait::Millis(500)).await.unwrap();
-    let summary = match browser.record_stop_gif(&out).await {
-        Err(Error::Unusable { reason, .. }) if no_frames_on_a_mac(&reason) => {
-            eprintln!("skipped: {reason}: the headless Chrome of a Mac runner sends no screencast frames");
-            return;
-        }
-        other => other.unwrap(),
-    };
+    let summary = browser.record_stop_gif(&out).await.unwrap();
 
     let bytes = std::fs::read(&out).unwrap();
     assert!(bytes.starts_with(b"GIF8"));
@@ -458,16 +452,14 @@ async fn records_actions_and_draws_them_on_the_exported_gif() {
     // The click is logged before it happens, at the centre of the button (viewport 800x600: 300+60, 200+20).
     browser.record_note_click("click", "Press me").await;
     browser.click("Press me").await.unwrap();
+    browser.record_after_action().await;
     browser.wait(Wait::Millis(300)).await.unwrap();
     browser.record_note(ActionEvent::drag("drag", 50.0, 50.0, 250.0, 120.0));
+    browser.record_after_action().await;
     browser.wait(Wait::Millis(300)).await.unwrap();
 
     let info = browser.record_stop().await.unwrap();
     assert!(!info.running && !browser.recording());
-    if info.frames == 0 && cfg!(target_os = "macos") {
-        eprintln!("skipped: {info:?}: the headless Chrome of a Mac runner sends no screencast frames");
-        return;
-    }
     assert!(info.frames >= 1, "{info:?}");
     assert_eq!(info.events, 2);
     // A stopped recording logs nothing more and cannot be started over.
@@ -512,6 +504,104 @@ async fn records_actions_and_draws_them_on_the_exported_gif() {
     assert!(browser.record_info().is_none());
     browser.record_start(RecordOptions::default()).await.unwrap();
     assert!(browser.recording());
+    browser.close().await.unwrap();
+}
+
+const TWO_STEPS: &str = r##"<!doctype html><html><body style="margin:0;background:#fff">
+<button style="position:absolute;left:20px;top:20px;width:120px;height:40px"
+  onclick="document.body.style.background='#ddf'">First</button>
+<button style="position:absolute;left:20px;top:80px;width:120px;height:40px"
+  onclick="document.body.style.background='#333'">Second</button>
+</body></html>"##;
+
+/// The pixel sizes of the frames the recording holds, and how many screenshots stood in for the screencast.
+fn held_frames(browser: &Browser) -> (Vec<(u32, u32)>, usize) {
+    let held = lock(&browser.recorder);
+    let s = lock(&held.as_ref().unwrap().shared);
+    (s.frames.iter().map(|f| export::png_size(&f.png).unwrap()).collect(), s.shots)
+}
+
+/// The colour of the bottom right pixel of a decoded GIF frame, where only the page background shows.
+fn corner(frame: &[u8]) -> [u8; 3] {
+    let p = &frame[frame.len() - 4..];
+    [p[0], p[1], p[2]]
+}
+
+#[tokio::test]
+async fn a_browser_that_sends_no_screencast_frames_is_recorded_with_screenshots() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (dir, url) = write_page(TWO_STEPS);
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+
+    // Where the screencast works, as in the headless Chrome of Linux, it alone fills the recording: no screenshot
+    // is taken at the start, after an action or at the stop.
+    let cast_size = if cfg!(target_os = "linux") {
+        browser.record_start(RecordOptions::default()).await.unwrap();
+        browser.record_after_action().await;
+        browser.record_stop().await.unwrap();
+        let (sizes, shots) = held_frames(&browser);
+        assert!(!sizes.is_empty() && shots == 0, "{sizes:?}, {shots} screenshots");
+        browser.record_clear().await.unwrap();
+        Some(sizes[0])
+    } else {
+        None
+    };
+
+    // Without screencast frames, the start, each action and the stop each take the page as it is.
+    let silent = RecordOptions { screencast: false, ..RecordOptions::default() };
+    browser.record_start(silent).await.unwrap();
+    assert_eq!(browser.record_info().unwrap().frames, 1);
+    for (done, button) in ["First", "Second"].into_iter().enumerate() {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        browser.record_note_click("click", button).await;
+        browser.click(button).await.unwrap();
+        browser.record_after_action().await;
+        assert_eq!(browser.record_info().unwrap().frames, done + 2);
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let info = browser.record_stop().await.unwrap();
+    assert_eq!((info.frames, info.events), (4, 2), "{info:?}");
+    // They are scaled as the screencast scales its frames, so the export takes them alike.
+    let (sizes, shots) = held_frames(&browser);
+    assert_eq!(shots, 4);
+    assert!(sizes.iter().all(|s| *s == sizes[0]), "{sizes:?}");
+    if let Some(cast) = cast_size {
+        assert_eq!(sizes[0], cast);
+    }
+
+    // One GIF frame per state: the first, after each click, and the last.
+    let plain = dir.path().join("silent.gif");
+    let s = browser.record_export(&plain, &ExportOptions::plain()).await.unwrap();
+    let frames = decode_gif(&std::fs::read(&plain).unwrap());
+    assert_eq!((frames.len(), s.frames), (4, 4));
+    let corners: Vec<[u8; 3]> = frames.iter().map(|f| corner(f)).collect();
+    let states = [[0xff, 0xff, 0xff], [0xdd, 0xdd, 0xff], [0x33, 0x33, 0x33], [0x33, 0x33, 0x33]];
+    for (got, want) in corners.iter().zip(states) {
+        assert!(got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 16), "{corners:?}");
+    }
+    // The clicks are drawn where the buttons are on these frames too.
+    let marked = dir.path().join("marked.gif");
+    browser.record_export(&marked, &ExportOptions { clicks: true, ..ExportOptions::plain() }).await.unwrap();
+    assert!(count_pixels(&decode_gif(&std::fs::read(&marked).unwrap()), orange) > 100, "no orange click circle");
+    browser.record_clear().await.unwrap();
+
+    // When the screenshots fail too, the export says so and why, and claims nothing about the page.
+    let broken = RecordOptions { screencast: false, screenshots: false, ..RecordOptions::default() };
+    browser.record_start(broken).await.unwrap();
+    browser.record_after_action().await;
+    assert_eq!(browser.record_info().unwrap().frames, 0);
+    let err = browser.record_export(dir.path().join("none.gif"), &ExportOptions::plain()).await.unwrap_err();
+    let Error::Unusable { reason, .. } = err else { panic!("{err}") };
+    assert!(
+        reason.contains("the browser sent no screencast frames")
+            && reason.contains("screenshots are switched off by the test")
+            && !reason.contains("did not change"),
+        "{reason}"
+    );
+
     browser.close().await.unwrap();
 }
 
@@ -587,11 +677,6 @@ for (const t of ['dblclick', 'contextmenu', 'mousedown', 'mouseup', 'click', 'mo
 }
 </script>
 </body></html>"##;
-
-/// A Mac runner has no display and its headless Chrome may send no screencast frames at all.
-fn no_frames_on_a_mac(reason: &str) -> bool {
-    cfg!(target_os = "macos") && reason.contains("no frames were captured")
-}
 
 async fn mouse_events(browser: &Browser) -> Vec<String> {
     let out = browser.eval("window.ev.splice(0)").await.unwrap();

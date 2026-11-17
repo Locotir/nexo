@@ -5,7 +5,7 @@
 //! pieces: the picture shown is always the one that was on screen, with whatever overlays were active at that time.
 
 use crate::overlay::Canvas;
-use crate::record::{ActionEvent, ActionKind, Frame, RecordSummary};
+use crate::record::{why_empty, ActionEvent, ActionKind, Frame, RecordSummary};
 use crate::{Error, Result};
 use std::io::Cursor;
 use std::path::Path;
@@ -170,7 +170,7 @@ fn encode_err(e: impl std::fmt::Display) -> Error {
 }
 
 /// Decodes a PNG into RGBA8 pixels and its size.
-fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+pub(crate) fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(encode_err)?;
@@ -191,7 +191,7 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
 }
 
 /// Width and height of a PNG without decoding its pixels.
-fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     let reader = png::Decoder::new(Cursor::new(bytes)).read_info().ok()?;
     let info = reader.info();
     Some((info.width, info.height))
@@ -235,17 +235,18 @@ fn draw(canvas: &mut Canvas, piece: &Piece, events: &[ActionEvent], scale: f32, 
 
 /// Encodes a recording to a looping GIF at `path`. The canvas is the size of the first frame; frames of another
 /// size (the viewport was resized mid-recording) are left out. `stopped_at` is when capturing ended (epoch seconds).
+/// `shot_error` is why the screenshots taken in place of a silent screencast failed, said when there is no frame.
 pub(crate) fn render_gif(
     frames: &[Frame],
     events: &[ActionEvent],
     stopped_at: Option<f64>,
+    shot_error: Option<&str>,
     opts: &ExportOptions,
     path: &Path,
 ) -> Result<RecordSummary> {
-    let first = frames.first().ok_or_else(|| Error::Unusable {
-        target: "recording".to_string(),
-        reason: "no frames were captured (the page did not change)".to_string(),
-    })?;
+    let first = frames
+        .first()
+        .ok_or_else(|| Error::Unusable { target: "recording".to_string(), reason: why_empty(shot_error) })?;
     let size = png_size(&first.png).ok_or_else(|| encode_err("unreadable first frame"))?;
     let usable: Vec<&Frame> = frames.iter().filter(|f| png_size(&f.png) == Some(size)).collect();
     let mut times: Vec<f64> = Vec::with_capacity(usable.len());

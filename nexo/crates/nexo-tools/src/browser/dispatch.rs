@@ -46,7 +46,16 @@ impl BrowserTool {
 
     /// One action. The text is what happened or what was read; `page` says whether the fresh page follows it.
     pub(super) async fn step(&self, b: &Browser, action: Action<'_>, cwd: &Path) -> Result<Step, Step> {
-        gif::note(b, &action).await;
+        let noted = gif::note(b, &action).await;
+        let done = self.perform(b, action, cwd).await;
+        // Where the browser sends no screencast frames, the recording still gets the page as this action left it.
+        if noted {
+            b.record_after_action().await;
+        }
+        done
+    }
+
+    async fn perform(&self, b: &Browser, action: Action<'_>, cwd: &Path) -> Result<Step, Step> {
         match action {
             Action::Gif(call) => gif::run(b, call, cwd).await,
             Action::Navigate(url) => changed(b.navigate(url).await.map(|_| format!("opened {url}"))),

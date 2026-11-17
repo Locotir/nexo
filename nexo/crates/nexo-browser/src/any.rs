@@ -91,6 +91,12 @@ impl AnyBrowser {
         }
     }
 
+    pub async fn record_after_action(&self) {
+        if let AnyBrowser::Headless(b) = self {
+            b.record_after_action().await;
+        }
+    }
+
     pub fn record_info(&self) -> Option<RecordInfo> {
         match self {
             AnyBrowser::Headless(b) => b.record_info(),

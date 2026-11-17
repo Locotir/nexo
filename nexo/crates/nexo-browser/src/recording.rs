@@ -46,10 +46,11 @@ impl Browser {
         Ok(())
     }
 
-    /// Stops capturing; the frames and the action log are kept for [`Browser::record_export`].
+    /// Stops capturing; the frames and the action log are kept for [`Browser::record_export`]. The page as it is
+    /// now is the last frame (see [`Browser::record_after_action`]).
     pub async fn record_stop(&self) -> Result<RecordInfo> {
         let mut recorder = lock(&self.recorder).take().ok_or_else(none)?;
-        let stopped = recorder.stop().await;
+        let stopped = recorder.stop(true).await;
         let info = recorder.info();
         *lock(&self.recorder) = Some(recorder);
         // Frames already captured are worth keeping even if the page went away before the stop reached it.
@@ -74,7 +75,7 @@ impl Browser {
         let (path, opts) = (path.as_ref().to_path_buf(), *opts);
         tokio::task::spawn_blocking(move || {
             let s = lock(&shared);
-            export::render_gif(&s.frames, &s.events, stopped_at, &opts, &path)
+            export::render_gif(&s.frames, &s.events, stopped_at, s.shot_error.as_deref(), &opts, &path)
         })
         .await
         .map_err(|e| Error::Encode(e.to_string()))?
@@ -83,7 +84,7 @@ impl Browser {
     /// Throws the recording away (stopping it first if it runs) and says what it held.
     pub async fn record_clear(&self) -> Result<RecordInfo> {
         let mut recorder = lock(&self.recorder).take().ok_or_else(none)?;
-        let _ = recorder.stop().await;
+        let _ = recorder.stop(false).await;
         Ok(recorder.info())
     }
 
@@ -103,6 +104,17 @@ impl Browser {
     /// Whether frames are being captured right now.
     pub fn recording(&self) -> bool {
         lock(&self.recorder).as_ref().is_some_and(Recorder::running)
+    }
+
+    /// Makes sure the recording holds the page as the last action left it. The screencast sends a frame whenever the
+    /// page changes, so this does nothing while it works; where the browser sends no screencast frames, a screenshot
+    /// is taken in their place. Call it after each action logged with [`Browser::record_note`] or
+    /// [`Browser::record_note_click`]. Does nothing unless a recording is running.
+    pub async fn record_after_action(&self) {
+        let fallback = lock(&self.recorder).as_ref().and_then(Recorder::fallback);
+        if let Some(fallback) = fallback {
+            fallback.fill_in().await;
+        }
     }
 
     /// Logs an action at the current time. Does nothing unless a recording is running.

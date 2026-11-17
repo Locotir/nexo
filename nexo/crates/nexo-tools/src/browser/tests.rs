@@ -394,10 +394,6 @@ async fn records_a_session_and_exports_a_gif_with_overlays() {
     assert!(!out.is_error && out.content.contains("1 actions logged"), "{}", out.content);
 
     let out = run(json!({"action": "export_gif", "value": "out/demo.gif", "gif": {"quality": 20}})).await;
-    if out.is_error && cfg!(target_os = "macos") && out.content.contains("no frames were captured") {
-        eprintln!("skipped: {}: the headless Chrome of a Mac runner sends no screencast frames", out.content);
-        return;
-    }
     assert!(!out.is_error, "{}", out.content);
     let file = dir.path().join("out").join("demo.gif");
     let bytes = std::fs::read(&file).unwrap();

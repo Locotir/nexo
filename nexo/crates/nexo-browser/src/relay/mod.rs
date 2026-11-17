@@ -659,10 +659,11 @@ impl RelayBrowser {
         // Frames already on their way still count; the pump keeps no sink, so they are dropped here.
         let frames = sink.frames;
         let path = path.as_ref().to_path_buf();
-        let summary =
-            tokio::task::spawn_blocking(move || export::render_gif(&frames, &[], None, &ExportOptions::plain(), &path))
-                .await
-                .map_err(|e| Error::Encode(e.to_string()))?;
+        let summary = tokio::task::spawn_blocking(move || {
+            export::render_gif(&frames, &[], None, None, &ExportOptions::plain(), &path)
+        })
+        .await
+        .map_err(|e| Error::Encode(e.to_string()))?;
         stopped.and(summary)
     }
 

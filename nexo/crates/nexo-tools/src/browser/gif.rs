@@ -73,10 +73,11 @@ fn export_args(args: &Value) -> Result<(Option<&str>, ExportOptions), String> {
     Ok((path, opts))
 }
 
-/// Logs an action of the tool in the recording, if one is running. The one hook at the dispatch of an action.
-pub(super) async fn note(b: &Browser, action: &Action<'_>) {
+/// Logs an action of the tool in the recording, if one is running. The one hook at the dispatch of an action. Says
+/// whether it logged one, so the page can be taken once the action is done.
+pub(super) async fn note(b: &Browser, action: &Action<'_>) -> bool {
     if !b.recording() {
-        return;
+        return false;
     }
     match action {
         Action::Click(target) => b.record_note_click("click", target).await,
@@ -88,12 +89,12 @@ pub(super) async fn note(b: &Browser, action: &Action<'_>) {
             b.record_note(ActionEvent::click(format!("right click ({x:.0}, {y:.0})"), *x, *y))
         }
         Action::Drag([x1, y1, x2, y2], _) => b.record_note(ActionEvent::drag("drag", *x1, *y1, *x2, *y2)),
-        other => {
-            if let Some(label) = label_of(other) {
-                b.record_note(ActionEvent::other(one_line(&label, MAX_LABEL)));
-            }
-        }
+        other => match label_of(other) {
+            Some(label) => b.record_note(ActionEvent::other(one_line(&label, MAX_LABEL))),
+            None => return false,
+        },
     }
+    true
 }
 
 /// What to say on the GIF about an action that has no mark of its own. What was typed is never shown: it may be a
