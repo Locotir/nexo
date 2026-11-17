@@ -251,6 +251,8 @@ pub enum Cmd {
     ChromeSetup(crate::chrome_setup_cmd::ChromeSetupArgs),
     /// nexo RE, the binary kit: no word prints the map of `nexo bin` (read a file) and `nexo dbg` (run it); a word runs that op or command.
     Re(crate::re_cmd::ReArgs),
+    /// Turn the traffic of a website (a HAR file) into the API behind it: endpoints, shapes, auth, paging, OpenAPI; no secret is kept.
+    Api(crate::api_cmd::ApiArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
     Acp,
     /// Lanes that run on their own in the background (`<config dir>/team.toml`): start, status, stop, pause, hold, open.

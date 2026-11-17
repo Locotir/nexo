@@ -81,6 +81,9 @@ pub async fn main() -> i32 {
     if let Some(Cmd::Re(r)) = &args.cmd {
         return crate::re_cmd::run(r);
     }
+    if let Some(Cmd::Api(a)) = &args.cmd {
+        return crate::api_cmd::run(a);
+    }
     if let (None, Some(word)) = (&args.cmd, &args.first) {
         use clap::CommandFactory;
         let names: Vec<String> =

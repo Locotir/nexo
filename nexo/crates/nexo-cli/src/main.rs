@@ -4,6 +4,7 @@
 
 mod account;
 mod acp;
+mod api_cmd;
 mod audit_cmd;
 #[cfg(feature = "bench")]
 mod bench_cmd;

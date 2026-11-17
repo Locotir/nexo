@@ -1797,6 +1797,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexo-api"
+version = "0.2.0"
+dependencies = [
+ "base64 0.23.1",
+ "indexmap",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
 name = "nexo-bench"
 version = "0.2.0"
 dependencies = [
@@ -1859,6 +1870,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -1885,6 +1897,7 @@ dependencies = [
  "crossterm",
  "libc",
  "nexo-agent",
+ "nexo-api",
  "nexo-bench",
  "nexo-bin",
  "nexo-browser-host",

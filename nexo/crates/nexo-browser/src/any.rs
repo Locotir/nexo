@@ -3,12 +3,45 @@
 //! doc of [`RelayBrowser`] lists what differs on purpose.
 
 use crate::{
-    browsers, ActionEvent, Browser, BrowserEntry, ConsoleEntry, Element, Error, ExportOptions, FillReport,
-    LaunchOptions, Modifiers, NetDetail, NetEntry, PageText, PageTree, ReadPageOptions, RecordInfo, RecordOptions,
-    RecordSummary, RelayBrowser, Result, Snapshot, TabInfo, Wait,
+    browsers, ActionEvent, Browser, BrowserEntry, CaptureStats, ConsoleEntry, Element, Error, ExportOptions,
+    FillReport, LaunchOptions, Modifiers, NetDetail, NetEntry, PageText, PageTree, ReadPageOptions, RecordInfo,
+    RecordOptions, RecordSummary, RelayBrowser, Result, Snapshot, TabInfo, Wait,
 };
 use nexo_relay::Dirs;
 use std::path::Path;
+
+impl AnyBrowser {
+    /// Starts API capture (see [`Browser::capture_start`]; the person's own browser gives no headers or bodies).
+    pub fn capture_start(&self) {
+        match self {
+            AnyBrowser::Headless(b) => b.capture_start(),
+            AnyBrowser::Real(b) => b.capture_start(),
+        }
+    }
+
+    /// Stops API capture and returns what was kept and skipped.
+    pub async fn capture_stop(&self) -> CaptureStats {
+        match self {
+            AnyBrowser::Headless(b) => b.capture_stop().await,
+            AnyBrowser::Real(b) => b.capture_stop().await,
+        }
+    }
+
+    pub fn capture_stats(&self) -> CaptureStats {
+        match self {
+            AnyBrowser::Headless(b) => b.capture_stats(),
+            AnyBrowser::Real(b) => b.capture_stats(),
+        }
+    }
+
+    /// The capture as a HAR 1.2 file (JSON text).
+    pub fn export_har(&self) -> String {
+        match self {
+            AnyBrowser::Headless(b) => b.export_har(),
+            AnyBrowser::Real(b) => b.export_har(),
+        }
+    }
+}
 
 pub enum AnyBrowser {
     Headless(Box<Browser>),
