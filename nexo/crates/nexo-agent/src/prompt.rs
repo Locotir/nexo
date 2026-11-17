@@ -609,10 +609,11 @@ pub struct InstructionFile {
     pub full: usize,
 }
 
-/// The most characters of another agent's user file sent (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`).
+/// The most bytes (a close measure of token cost) of another agent's user file sent (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`).
 const FALLBACK_CAP: usize = 4000;
 
-/// `text` cut at the last line end within `cap` characters, with how much was left out.
+/// `text` cut at the last line end within `cap` bytes, with how many characters were left out (characters, to
+/// match `InstructionFile::full`; the byte count would read 2 to 3 times too large for non-ASCII text).
 fn capped(text: &str, cap: usize) -> String {
     if text.len() <= cap {
         return text.to_string();
@@ -622,7 +623,7 @@ fn capped(text: &str, cap: usize) -> String {
         cut -= 1;
     }
     let cut = text[..cut].rfind('\n').unwrap_or(cut);
-    format!("{}\n[{} more characters left out]", &text[..cut], text.len() - cut)
+    format!("{}\n[{} more characters left out]", &text[..cut], text[cut..].chars().count())
 }
 
 impl Volatile {

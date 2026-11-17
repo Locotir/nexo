@@ -595,3 +595,12 @@ fn the_tree_change_follows_the_map_on_disk() {
         "Project (changes since you last saw it; the rest as before):\n- src/ (3 files)\n  - src/c.rs\nGone: old.rs"
     );
 }
+
+#[test]
+fn the_omitted_count_is_in_characters_for_multibyte_text() {
+    // 3000 chars of 2 bytes each: the 4000 byte cap keeps 2000 chars and leaves 1000, not 2000 bytes' worth.
+    let text = "é".repeat(3000);
+    let out = capped(&text, 4000);
+    assert!(out.ends_with("[1000 more characters left out]"), "{out}");
+    assert_eq!(out.matches('é').count(), 2000);
+}
