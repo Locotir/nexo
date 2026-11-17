@@ -424,11 +424,13 @@ impl App {
 
     /// The line printed when the interface closes on a session something was said in: how to come back to it.
     pub fn resume_hint(&self) -> Option<String> {
+        self.resumable_id().map(|id| format!("nexo --resume {id}   (or nexo -c here)"))
+    }
+
+    /// The session `nexo --resume` can bring back: one something was said in. An empty one was never written.
+    pub fn resumable_id(&self) -> Option<&str> {
         let id = self.session_id.as_deref()?;
-        self.blocks
-            .iter()
-            .any(|b| matches!(b, Block::User { .. }))
-            .then(|| format!("nexo --resume {id}   (or nexo -c here)"))
+        self.blocks.iter().any(|b| matches!(b, Block::User { .. })).then_some(id)
     }
 
     pub(super) fn nothing_chosen(&self) -> bool {

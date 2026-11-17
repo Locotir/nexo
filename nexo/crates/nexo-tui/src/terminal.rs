@@ -2,6 +2,8 @@
 
 use std::io::{stdout, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::thread::ThreadId;
 
 use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::execute;
@@ -17,6 +19,45 @@ pub struct Term {
 /// Whether mouse capture is on right now, kept where the panic hook can read it: `/mouse` changes it
 /// while the program runs, so what was true at startup is not what the hook has to undo.
 static MOUSE: AtomicBool = AtomicBool::new(false);
+
+/// The thread that drives the interface while it holds the terminal. The process-wide panic hook (in `nexo-cli`)
+/// leaves raw mode only for a panic on this thread: tokio catches a panic in a spawned task and the interface keeps
+/// running, so restoring the terminal for that one would leave a live screen without raw mode.
+static TUI_THREAD: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+/// The session a panic can name in its resume line, once something was said in it.
+static SESSION: Mutex<Option<String>> = Mutex::new(None);
+
+fn claim_thread() {
+    *TUI_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
+}
+
+fn release_thread() {
+    *TUI_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Whether the calling thread is the one that holds the terminal right now.
+pub fn on_tui_thread() -> bool {
+    *TUI_THREAD.lock().unwrap_or_else(|e| e.into_inner()) == Some(std::thread::current().id())
+}
+
+/// Whether the interface holds the terminal now, on whatever thread.
+pub fn holds_terminal() -> bool {
+    TUI_THREAD.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// Records the session `nexo --resume` can bring back (None while nothing was said in it), for the panic hook.
+pub fn note_session(id: Option<&str>) {
+    let mut held = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_deref() != id {
+        *held = id.map(str::to_owned);
+    }
+}
+
+/// The session id the panic hook can offer to resume.
+pub fn noted_session() -> Option<String> {
+    SESSION.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 
 /// `NEXO_NO_ALT_SCREEN=1`: draw on the normal screen, so what the session showed stays in the
 /// terminal's scrollback after quitting (the inline way of the other terminal agents).
@@ -58,11 +99,7 @@ impl Term {
             return Err(e.into());
         }
         MOUSE.store(mouse, Ordering::Relaxed);
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            restore();
-            hook(info);
-        }));
+        claim_thread();
         let backend = CrosstermBackend::new(out);
         let terminal = if inline() {
             let rows = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
@@ -113,6 +150,7 @@ impl Term {
 
 impl Drop for Term {
     fn drop(&mut self) {
+        release_thread();
         restore();
         let _ = self.terminal.show_cursor();
     }
@@ -135,6 +173,24 @@ pub fn restore() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_thread_that_holds_the_terminal_counts_as_the_interface_thread() {
+        super::claim_thread();
+        assert!(super::on_tui_thread());
+        // a tokio worker or a tool thread panicking must not take the terminal from the interface
+        assert!(!std::thread::spawn(super::on_tui_thread).join().unwrap());
+        super::release_thread();
+        assert!(!super::on_tui_thread(), "a released terminal has no interface thread");
+    }
+
+    #[test]
+    fn a_noted_session_is_what_the_panic_hook_offers_to_resume() {
+        super::note_session(Some("20261117-010000-ab12"));
+        assert_eq!(super::noted_session().as_deref(), Some("20261117-010000-ab12"));
+        super::note_session(None);
+        assert_eq!(super::noted_session(), None);
+    }
+
     #[test]
     fn restore_undoes_the_mouse_state_of_now_not_the_one_at_startup() {
         use std::sync::atomic::Ordering;
