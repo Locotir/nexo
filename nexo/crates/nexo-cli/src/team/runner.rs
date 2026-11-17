@@ -311,6 +311,15 @@ pub async fn run(lane: &Lane, now: bool) -> i32 {
             nexo_core::mail::Inbound::parse(&config.mail.inbound),
         )
     });
+    // A lane's session is a program's, not the person's: it stays out of `/resume` and `nexo -c`, as a `nexo -p` run's
+    // does. Sessions this runner starts are marked at birth; the one the lane already has is marked now, before the
+    // agent opens it. `nexo team open` and `/team` still open it by its id.
+    nexo_agent::session::mark_headless();
+    if let Some(id) = &st.session_id {
+        if let Err(e) = nexo_agent::session::mark_headless_in(&nexo_agent::session::dir(), id) {
+            eprintln!("[{}] cannot mark the lane's session as a program's: {e}", stamp());
+        }
+    }
     let (mut handle, ends) = channels();
     let gate: Arc<dyn nexo_core::PermissionGate> = Arc::new(setup::HeadlessGate);
     let agent_setup =

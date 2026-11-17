@@ -36,7 +36,7 @@ fn the_argument_list_offers_running_jobs_and_deleted_sessions() {
     a.refresh_palette();
     assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("s9"));
     // /resume: a word of the title finds the session, Enter opens it
-    a.opts.sessions = vec![("20261101-1".into(), "parser fix".into()), ("20261102-1".into(), "docs".into())];
+    a.opts.sessions = vec![row("20261101-1", "parser fix"), row("20261102-1", "docs")];
     a.input.set_text("/resume pars");
     a.refresh_palette();
     assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("20261101-1"));
@@ -45,16 +45,17 @@ fn the_argument_list_offers_running_jobs_and_deleted_sessions() {
     // typed whole, by title, without the list
     a.run_command(Command::Resume("Docs".into()));
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Resume { id }) if id == "20261102-1"));
-    a.run_command(Command::Resume("nope".into()));
-    assert!(rx.try_recv().is_err(), "nothing sent for an unknown session");
+    a.run_command(Command::Resume("no such one".into()));
+    assert!(rx.try_recv().is_err(), "nothing sent for a title that matches no session");
     assert!(matches!(a.blocks.last(), Some(Block::Notice { .. })));
 }
 
 #[test]
 fn a_session_is_deleted_with_two_presses_and_comes_back_with_undelete() {
     let (mut a, mut rx) = app();
-    a.opts.sessions = vec![("s1".into(), "first".into()), ("s2".into(), "second".into())];
+    a.opts.sessions = vec![row("s1", "first"), row("s2", "second")];
     a.run_command(Command::Sessions);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListSessions)));
     press(&mut a, KeyCode::Delete);
     assert!(rx.try_recv().is_err(), "one press only marks the row");
     let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays") };
@@ -75,7 +76,7 @@ fn a_session_is_deleted_with_two_presses_and_comes_back_with_undelete() {
     a.run_command(Command::Undelete(None));
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::RestoreSession { id }) if id == "s1"));
     a.handle_agent(AgentEvent::SessionRestored { id: "s1".into(), title: "first".into() });
-    assert_eq!(a.opts.sessions[0].0, "s1");
+    assert_eq!(a.opts.sessions[0].id, "s1");
     assert!(a.trashed.is_empty());
     a.run_command(Command::Undelete(None));
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListTrash)), "nothing from this run: ask what the trash holds");
@@ -411,4 +412,47 @@ fn ticks_survive_a_filter_and_a_later_tick_adds_to_them() {
     press(&mut a, KeyCode::Enter);
     let Ok(AgentCommand::ShareMemories { ids }) = rx.try_recv() else { panic!("a share of several") };
     assert_eq!(ids, ["s1", "s2"]);
+}
+
+#[test]
+fn the_sessions_list_waits_for_the_disk_when_nothing_is_known_and_refreshes_an_open_one() {
+    let (mut a, mut rx) = app();
+    a.run_command(Command::Sessions);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListSessions)));
+    assert!(a.modal.is_none(), "nothing to show until the list comes");
+    let here = nexo_core::agent::SessionRow {
+        id: "s1".into(),
+        title: "parser fix".into(),
+        here: true,
+        messages: 4,
+        ..Default::default()
+    };
+    let elsewhere = nexo_core::agent::SessionRow {
+        id: "s2".into(),
+        title: "docs".into(),
+        cwd: "/work/site".into(),
+        messages: 9,
+        ..Default::default()
+    };
+    a.handle_agent(AgentEvent::SessionList { sessions: vec![here.clone(), elsewhere.clone()] });
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker opens when the list arrives") };
+    assert_eq!(p.kind, PickKind::Session);
+    assert_eq!(p.items.len(), 2);
+    assert!(p.items[1].hint.contains("site") && p.items[1].hint.contains("9 msg"), "{}", p.items[1].hint);
+    assert!(!p.items[0].hint.contains("site"), "this folder's sessions do not repeat the folder");
+    // an open picker takes a later list in place
+    a.handle_agent(AgentEvent::SessionList { sessions: vec![elsewhere] });
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays open") };
+    assert_eq!(p.items.len(), 1);
+    // a list read before a delete does not bring the session back
+    a.handle_agent(AgentEvent::SessionDeleted { id: "s1".into(), title: "parser fix".into() });
+    a.handle_agent(AgentEvent::SessionList { sessions: vec![here] });
+    assert!(a.opts.sessions.is_empty());
+}
+
+#[test]
+fn resume_sends_a_word_shaped_like_an_id_even_when_the_list_lacks_it() {
+    let (mut a, mut rx) = app();
+    a.run_command(Command::Resume("20261117-101500-ab12".into()));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Resume { id }) if id == "20261117-101500-ab12"));
 }

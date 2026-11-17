@@ -194,6 +194,10 @@ pub enum AgentEvent {
     SessionTree {
         entries: Vec<(usize, String, String)>,
     },
+    /// The earlier sessions `/resume` offers, this folder's first (answers `ListSessions`).
+    SessionList {
+        sessions: Vec<SessionRow>,
+    },
     /// The sessions in the trash, newest first: `(id, title)` each.
     Trash {
         sessions: Vec<(String, String)>,
@@ -426,4 +430,19 @@ impl From<crate::subs::SubChange> for AgentEvent {
             SubChange::Flow(info) => AgentEvent::FlowRun { info },
         }
     }
+}
+
+/// One earlier session as `/resume` lists it. Every session of the store is offered, whatever folder it ran in:
+/// resuming one does not change the folder this process works in, so the row says where it ran.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionRow {
+    pub id: String,
+    pub title: String,
+    /// The folder the session ran in; empty when it is not known.
+    pub cwd: PathBuf,
+    /// It ran in the folder of the process that listed it.
+    pub here: bool,
+    pub messages: usize,
+    /// When the session file was last written, in ms since the epoch; 0 when it is not known.
+    pub updated_ms: i64,
 }

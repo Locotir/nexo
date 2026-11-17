@@ -94,6 +94,7 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
                 Err(e) => notice(&rt.events, Level::Error, format!("cannot read the session tree: {e}")),
             }
         }
+        AgentCommand::ListSessions => on_list_sessions(rt).await,
         AgentCommand::DeleteSession { id } => delete_session(&rt.state, &id).await,
         AgentCommand::ShareMemory { id, focus } => share_memory(&rt.state, id, focus).await,
         AgentCommand::ShareMemories { ids } => share_memories(&rt.state, ids).await,
@@ -435,6 +436,18 @@ async fn on_resume(rt: &mut Runtime, id: String) {
             flow::forget_old(&rt.jobs, &mut rt.sub_changes, &rt.chan_gate);
         }
     }
+}
+
+/// The list `/resume` shows, read again from disk. It is read on a task of its own: with thousands of sessions it
+/// takes a while, and the agent keeps answering commands meanwhile.
+async fn on_list_sessions(rt: &mut Runtime) {
+    let cwd = rt.state.lock().await.cwd.clone();
+    let events = rt.events.clone();
+    tokio::spawn(async move {
+        if let Ok(sessions) = tokio::task::spawn_blocking(move || crate::session::picker_rows(&cwd)).await {
+            emit(&events, AgentEvent::SessionList { sessions });
+        }
+    });
 }
 
 /// `/fork` between turns; the sub-agents of the conversation it replaced are forgotten.

@@ -4,8 +4,8 @@
 //! Lines: `{"type":"meta",...}` first; then `message` (with its index),
 //! `tool_output` (its text left out when the tool-result message holds it), `usage`, `title`, `prefix_shown` (the project
 //! map alone, for a changed tree), `stop` (the person stopped the latest
-//! request), and `reset` (the history was rewritten: what follows replaces
-//! what came before).
+//! request), `headless` (a program took the session over), and `reset`
+//! (the history was rewritten: what follows replaces what came before).
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -59,7 +59,8 @@ pub struct SessionMeta {
     /// How many of the parent's messages the fork kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_at: Option<usize>,
-    /// Started by `nexo -p` (a script or another program), not by the person: left out of `/resume`.
+    /// Started by `nexo -p` or a team lane (a script or another program), not by the person: left out of `/resume`
+    /// and of `nexo -c`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headless: bool,
 }
@@ -164,6 +165,9 @@ enum Line {
         shown: String,
     },
     Reset,
+    /// A program (a lane's runner) took the session over: it is not the person's own from here on. The line is how
+    /// a session started before that is marked, since the first line of a file is not rewritten. Old readers skip it.
+    Headless,
     /// The person stopped the latest request (Esc): the line the next request carries, until a message that starts
     /// with it is appended (`Session::stop`). Old readers skip it.
     Stop {
@@ -378,9 +382,9 @@ pub fn latest_for_in(dir: &Path, cwd: &Path) -> Option<SessionMeta> {
     list_in(dir).into_iter().find(|m| m.messages > 0 && same_form(&m.cwd) == want)
 }
 
-/// Like `latest_for`, but skips the sessions a program started (`nexo -p`), as the /resume picker does: the
-/// last conversation the person had, not the last script run in the folder. `nexo -p -c` keeps `latest_for`
-/// because a script may chain on its own earlier run.
+/// The session `nexo -c` opens in `cwd`: [`latest_for`] without the sessions programs run (`nexo -p`, team lanes),
+/// which the person did not start and a lane's runner may hold. `nexo -c -p` keeps [`latest_for`]: a script
+/// continues the session of its own earlier run.
 pub fn latest_own_for(cwd: &Path) -> Option<SessionMeta> {
     latest_own_for_in(&dir(), cwd)
 }
@@ -388,6 +392,79 @@ pub fn latest_own_for(cwd: &Path) -> Option<SessionMeta> {
 pub fn latest_own_for_in(dir: &Path, cwd: &Path) -> Option<SessionMeta> {
     let want = same_form(cwd);
     list_in(dir).into_iter().find(|m| m.messages > 0 && !m.headless && same_form(&m.cwd) == want)
+}
+
+/// Marks the session `id` of `dir` as run by a program, when it was not marked at birth (a team lane keeps one
+/// session for good, and the lanes that exist were started before lanes were marked). It appends a line instead
+/// of rewriting the first one, and leaves a session another nexo holds alone: that nexo would take the longer
+/// file for somebody else's writing. Returns whether the line was written.
+pub fn mark_headless_in(dir: &Path, id: &str) -> anyhow::Result<bool> {
+    let Some(meta) = meta_in(dir, id) else { return Ok(false) };
+    let path = dir.join(format!("{id}.jsonl"));
+    if meta.headless || lock_file::holder(&lock_path(&path)).is_some_and(|p| p != Some(std::process::id())) {
+        return Ok(false);
+    }
+    let mut f = OpenOptions::new().read(true).append(true).open(&path)?;
+    // a file cut in the middle of a line gets the line's end first, so that the mark is a line of its own
+    let mut last = [b'\n'];
+    if std::io::Seek::seek(&mut f, std::io::SeekFrom::End(-1)).is_ok() {
+        std::io::Read::read_exact(&mut f, &mut last)?;
+    }
+    if last[0] != b'\n' {
+        f.write_all(b"\n")?;
+    }
+    write_line(&mut f, &Line::Headless)?;
+    Ok(true)
+}
+
+/// When the session was last written, in milliseconds since the epoch; 0 for a file with no readable time.
+pub fn updated_ms(m: &SessionMeta) -> i64 {
+    time::OffsetDateTime::parse(&m.updated, &time::format_description::well_known::Rfc3339)
+        .map(|t| (t.unix_timestamp_nanos() / 1_000_000) as i64)
+        .unwrap_or(0)
+}
+
+/// Whether two paths are the same folder however they are written (a link, a trailing slash).
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b || same_form(a) == same_form(b)
+}
+
+/// What `/resume` offers, newest first within two groups: the sessions that ran in `cwd`, then the others. Sessions
+/// nothing was said in and the ones programs run are left out. Every folder's sessions are offered because
+/// `/resume <id>` works on any of them; the row says where it ran.
+pub fn rows_for(metas: Vec<SessionMeta>, cwd: &Path) -> Vec<nexo_core::agent::SessionRow> {
+    // One canonical form per distinct folder: the plain comparison settles most rows, and a folder written another
+    // way (a link, a trailing slash) costs one look at the disk, not one per session.
+    let mut seen: std::collections::HashMap<PathBuf, bool> = std::collections::HashMap::new();
+    let mut want = None;
+    let mut rows: Vec<nexo_core::agent::SessionRow> = metas
+        .into_iter()
+        .filter(|m| m.messages > 0 && !m.headless)
+        .map(|m| {
+            let here = m.cwd == cwd
+                || *seen.entry(m.cwd.clone()).or_insert_with(|| {
+                    let want = want.get_or_insert_with(|| same_form(cwd));
+                    same_form(&m.cwd) == *want
+                });
+            let updated_ms = updated_ms(&m);
+            nexo_core::agent::SessionRow {
+                id: m.id,
+                title: m.title,
+                cwd: m.cwd,
+                here,
+                messages: m.messages,
+                updated_ms,
+            }
+        })
+        .collect();
+    // a stable sort: the order inside each group stays newest first
+    rows.sort_by_key(|r| !r.here);
+    rows
+}
+
+/// [`rows_for`] the sessions on disk.
+pub fn picker_rows(cwd: &Path) -> Vec<nexo_core::agent::SessionRow> {
+    rows_for(list(), cwd)
 }
 
 /// A folder in one form, however it was written: canonical where it exists, and on Windows
@@ -409,7 +486,7 @@ fn same_form(p: &Path) -> PathBuf {
 /// reset lines, and any line that does not start like the writer's, are parsed.
 fn read_meta(path: &Path) -> Option<SessionMeta> {
     const MESSAGE: &[u8] = br#"{"type":"message""#;
-    const SHORT: [&[u8]; 2] = [br#"{"type":"title""#, br#"{"type":"reset""#];
+    const SHORT: [&[u8]; 3] = [br#"{"type":"title""#, br#"{"type":"reset""#, br#"{"type":"headless""#];
     const OTHER: &[u8] = br#"{"type":""#;
     let f = File::open(path).ok()?;
     let mut r = BufReader::with_capacity(256 * 1024, f);
@@ -418,6 +495,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
     let Line::Meta(mut m) = serde_json::from_str(&first).ok()? else { return None };
     let mut n = 0;
     let mut title = None;
+    let mut headless = false;
     let mut buf = Vec::new();
     // each line on its own, as `open_path` reads them: a UTF-8 sequence cut by a crash spoils one line
     loop {
@@ -436,11 +514,13 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
                 Ok(Line::Message { .. }) => n += 1,
                 Ok(Line::Reset) => n = 0,
                 Ok(Line::Title { title: t }) => title = Some(t),
+                Ok(Line::Headless) => headless = true,
                 _ => {}
             }
         }
     }
     m.messages = n;
+    m.headless |= headless;
     if let Some(t) = title {
         m.title = t;
     }

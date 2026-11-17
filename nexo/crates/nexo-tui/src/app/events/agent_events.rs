@@ -111,6 +111,7 @@ impl App {
             AgentEvent::SessionDeleted { id, title } => self.on_session_deleted(id, title),
             AgentEvent::SessionRestored { id, title } => self.on_session_restored(id, title),
             AgentEvent::SessionTree { entries } => self.on_session_tree(entries),
+            AgentEvent::SessionList { sessions } => self.on_session_list(sessions),
             AgentEvent::Trash { sessions } => self.on_trash(sessions),
             AgentEvent::MemoryShared { pending } => self.on_memory_shared(pending),
             AgentEvent::Queued { pending } => self.on_queued(pending),

@@ -196,6 +196,7 @@ impl Session {
                     stamps.clear();
                     stop = None;
                 }
+                Ok(Line::Headless) => meta.headless = true,
                 Ok(Line::Meta(_)) => {}
                 Err(_) => skipped += 1, // a cut line: whatever was being written when the process died
             }

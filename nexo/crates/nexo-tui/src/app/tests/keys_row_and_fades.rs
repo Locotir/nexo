@@ -73,7 +73,7 @@ fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
     });
     a.shared = vec![("s1".into(), "the parser".into(), 2100)];
     a.session_id = Some("20261104-1".into());
-    a.opts.sessions = vec![("20261103-1".into(), "docs".into())];
+    a.opts.sessions = vec![row("20261103-1", "docs")];
     a.status = None;
     a.dirty = true;
     frame(&mut a, 200, 20);

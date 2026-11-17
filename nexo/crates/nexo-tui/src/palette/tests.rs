@@ -169,7 +169,12 @@ fn lists_running_jobs_and_sessions_deleted_in_this_run() {
     assert!(u[0].1.contains("brings back"));
     assert!(live_values("theme", &jobs, &t, &[], &[]).is_empty());
     // /resume finds a session by a word of its title
-    let s = vec![("20261101-1".to_string(), "parser fix".to_string()), ("20261102-1".to_string(), "docs".to_string())];
+    let row = |id: &str, title: &str| nexo_core::agent::SessionRow {
+        id: id.into(),
+        title: title.into(),
+        ..Default::default()
+    };
+    let s = vec![row("20261101-1", "parser fix"), row("20261102-1", "docs")];
     let p = Palette::args("resume", "pars", 8, live_values("resume", &[], &[], &s, &[]));
     assert_eq!(p.current(), Some("20261101-1"));
     assert!(p.runs_selection(), "Enter opens it");
@@ -299,4 +304,22 @@ fn add_dir_completes_after_a_backslash_with_backslashes() {
     };
     assert_eq!(v("~\\"), ["~\\work\\"]);
     assert_eq!(v("..\\"), ["..\\cwd\\", "..\\home\\", "..\\..\\"]);
+}
+
+#[test]
+fn a_session_row_says_how_much_how_long_ago_and_where_only_when_elsewhere() {
+    let now = 10 * 3_600_000;
+    let mut r = nexo_core::agent::SessionRow {
+        id: "s1".into(),
+        title: "parser fix".into(),
+        cwd: "/work/api".into(),
+        here: true,
+        messages: 12,
+        updated_ms: now - 3 * 3_600_000,
+    };
+    assert_eq!(session_hint(&r, now), "12 msg · 3h ago · parser fix");
+    r.here = false;
+    assert_eq!(session_hint(&r, now), "12 msg · 3h ago · api · parser fix", "the folder shows for another project");
+    let bare = nexo_core::agent::SessionRow { id: "s2".into(), title: "docs".into(), ..Default::default() };
+    assert_eq!(session_hint(&bare, now), "docs", "a row without counts or time shows the title alone");
 }

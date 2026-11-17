@@ -263,29 +263,32 @@ impl App {
             Command::Diff => self.open_diffview(),
             Command::Resume(what) => {
                 let w = what.trim();
-                let found = self.opts.sessions.iter().find(|(id, _)| id == w).or_else(|| {
-                    let mut by_title = self.opts.sessions.iter().filter(|(_, t)| t.eq_ignore_ascii_case(w));
+                let found = self.opts.sessions.iter().find(|r| r.id == w).or_else(|| {
+                    let mut by_title = self.opts.sessions.iter().filter(|r| r.title.eq_ignore_ascii_case(w));
                     by_title.next().filter(|_| by_title.next().is_none())
                 });
                 match found {
-                    Some((id, _)) => {
-                        let id = id.clone();
+                    Some(r) => {
+                        let id = r.id.clone();
                         self.send(AgentCommand::Resume { id });
                     }
-                    None => self.notice(Level::Warn, format!("/resume: no session '{w}' here · /resume lists them")),
+                    // The list is a snapshot: a session made since it was read (by this process before a /new or a
+                    // /fork, or in another terminal) is not in it. A word shaped like an id goes to the agent, which
+                    // knows the files and says so when there is no such session.
+                    None if !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+                        self.send(AgentCommand::Resume { id: w.to_string() })
+                    }
+                    None => self.notice(Level::Warn, format!("/resume: no session '{w}' · /resume lists them")),
                 }
             }
             Command::Sessions => {
+                // Read again from disk: the list from the start lacks the sessions made since. The picker opens at
+                // once on what is known and takes the fresh list when it comes; with nothing known it waits for it.
+                self.send(AgentCommand::ListSessions);
                 if self.opts.sessions.is_empty() {
-                    self.notice(Level::Info, "no earlier sessions here");
+                    self.sessions_asked = true;
                 } else {
-                    let items = self
-                        .opts
-                        .sessions
-                        .iter()
-                        .map(|(id, title)| PickItem { label: id.clone(), value: id.clone(), hint: title.clone() })
-                        .collect();
-                    self.modal = Some(Modal::Picker(Picker::new(PickKind::Session, "Sessions", items, None)));
+                    self.open_sessions();
                 }
             }
             // `/shared-memory` alone picks the sessions whose memory joins the next message; `read` and `write` are the
@@ -306,13 +309,8 @@ impl App {
             }
             Command::Mem(None) => {
                 let here = self.session_id.clone().unwrap_or_default();
-                let items: Vec<PickItem> = self
-                    .opts
-                    .sessions
-                    .iter()
-                    .filter(|(id, _)| *id != here)
-                    .map(|(id, title)| PickItem { label: id.clone(), value: id.clone(), hint: title.clone() })
-                    .collect();
+                // the sessions of every folder: what another project learned is a fair thing to share
+                let items: Vec<PickItem> = self.session_items().into_iter().filter(|it| it.value != here).collect();
                 if items.is_empty() {
                     self.notice(Level::Info, "no other session to share from");
                 } else {

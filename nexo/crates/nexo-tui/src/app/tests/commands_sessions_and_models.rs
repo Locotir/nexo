@@ -369,8 +369,9 @@ fn the_rewind_picker_lists_the_persons_messages_newest_first_and_rewinds() {
 #[test]
 fn sessions_resume_and_export_and_diff_reach_the_agent() {
     let (mut a, mut rx) = app();
-    a.opts.sessions = vec![("20261027-1".into(), "one".into())];
+    a.opts.sessions = vec![row("20261027-1", "one")];
     a.run_command(Command::Sessions);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListSessions)), "the list is read again from disk");
     a.modal_out(ModalOut::Pick { kind: PickKind::Session, value: "20261027-1".into() });
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Resume { id }) if id == "20261027-1"));
     a.input.set_text("/export notes.md");

@@ -30,21 +30,23 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Auth { what: AuthCmd::List }) => return Ok(crate::account::list_cmd()),
         Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
         Some(Cmd::Export(a)) => return crate::export_cmd::run(a, &cwd),
-        Some(Cmd::Sessions { what: None | Some(SessionsCmd::List) }) => return Ok(setup::print_sessions()),
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Rename { id, title }) }) => {
+        Some(Cmd::Sessions { here, limit, what: None | Some(SessionsCmd::List) }) => {
+            return Ok(setup::print_sessions(*here, *limit))
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Rename { id, title }), .. }) => {
             return setup::rename_session(id, &title.join(" "));
         }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Delete { ids }) }) => {
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Delete { ids }), .. }) => {
             return Ok(setup::trash_sessions(ids, false))
         }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }) }) => {
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }), .. }) => {
             return Ok(setup::trash_sessions(ids, true))
         }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Size) }) => return Ok(setup::size_sessions()),
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Prune { older_than, headless, trash, yes }) }) => {
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Size), .. }) => return Ok(setup::size_sessions()),
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Prune { older_than, headless, trash, yes }), .. }) => {
             return Ok(setup::prune_sessions(older_than, *headless, *trash, *yes));
         }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Live { json }) }) => {
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Live { json }), .. }) => {
             return Ok(crate::sessions_live::run(*json));
         }
         _ => {}

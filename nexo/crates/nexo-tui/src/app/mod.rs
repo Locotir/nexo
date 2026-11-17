@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nexo_core::agent::{
-    AgentCommand, AgentEvent, Attachment, CallMark, CommandTx, ContextCell, ContextZone, GoalState, Level, TurnEnd,
+    AgentCommand, AgentEvent, Attachment, CallMark, CommandTx, ContextCell, ContextZone, GoalState, Level, SessionRow,
+    TurnEnd,
 };
 use nexo_core::message::{result_text, Message, Part, Role};
 use nexo_core::permission::{PermissionDecision, PermissionMode, PermissionRequest};
@@ -246,6 +247,9 @@ pub struct App {
     pub session_title: String,
     /// Sessions deleted from here, the last at the end: `/undelete` brings them back.
     pub trashed: Vec<String>,
+    /// `/resume` asked the agent for the session list and opens its picker when the list arrives (the list from the
+    /// start had nothing to show).
+    pub sessions_asked: bool,
     /// Memory of other sessions waiting to go with the next message: `(id, title, tokens)`.
     pub shared: Vec<(String, String, usize)>,
     /// The person's messages so far, `(index in the history, text)`, for the rewind picker.
@@ -513,6 +517,7 @@ impl App {
             palette_rows: Vec::new(),
             session_title: String::new(),
             trashed: Vec::new(),
+            sessions_asked: false,
             shared: Vec::new(),
             user_messages: Vec::new(),
             selection: None,

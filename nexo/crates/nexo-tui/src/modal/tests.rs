@@ -270,3 +270,17 @@ fn a_permission_body_is_laid_out_once_per_width_and_again_when_the_width_changes
     // another width is built again, from the request as it is now
     assert_ne!(first, p.body(30, &theme, false));
 }
+
+#[test]
+fn a_fresher_list_keeps_the_filter_and_the_row_under_the_cursor() {
+    let item = |v: &str, hint: &str| PickItem { label: v.into(), value: v.into(), hint: hint.into() };
+    let mut p = Picker::new(PickKind::Session, "Sessions", vec![item("a", "parser"), item("b", "parser two")], None);
+    p.query = "parser".into();
+    p.refilter();
+    p.selected = p.ranked.iter().position(|&i| p.items[i].value == "b").unwrap();
+    // a new row came in first and `a` went away: the cursor stays on `b`, the filter on its word
+    p.replace_items(vec![item("c", "parser three"), item("b", "parser two")]);
+    assert_eq!(p.query, "parser");
+    assert_eq!(p.current().map(|i| i.value.as_str()), Some("b"));
+    assert_eq!(p.ranked.len(), 2);
+}

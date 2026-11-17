@@ -168,6 +168,12 @@ pub enum Cmd {
     Guide,
     /// List the recorded sessions, rename them, move them to the trash and back, or show the live ones.
     Sessions {
+        /// Only the sessions that ran in this folder.
+        #[arg(long)]
+        here: bool,
+        /// Only the newest N (after --here).
+        #[arg(short = 'n', long, value_name = "N")]
+        limit: Option<usize>,
         #[command(subcommand)]
         what: Option<SessionsCmd>,
     },

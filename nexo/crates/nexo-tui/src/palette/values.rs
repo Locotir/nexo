@@ -42,16 +42,19 @@ pub fn arg_values(
 /// Values taken from what is going on now, after the fixed ones: each running
 /// background job for `/jobs kill <id>`, and the sessions deleted in this run
 /// for `/undelete`, the last one first (the one a bare `/undelete` brings back),
-/// and the earlier sessions here for `/resume`, with their titles.
+/// and the earlier sessions for `/resume`, each with its [`session_hint`].
 pub fn live_values(
     command: &str,
     jobs: &[JobInfo],
     trashed: &[String],
-    sessions: &[(String, String)],
+    sessions: &[nexo_core::agent::SessionRow],
     peers: &[(String, String)],
 ) -> Vec<(String, String)> {
     match command {
-        "resume" => sessions.to_vec(),
+        "resume" => {
+            let now = nexo_core::mailbox::now_ms();
+            sessions.iter().map(|r| (r.id.clone(), session_hint(r, now))).collect()
+        }
         "msg" => peers.to_vec(),
         "jobs" => jobs
             .iter()
@@ -75,6 +78,28 @@ pub fn live_values(
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// What the lists of sessions show after the id, dim: how much was said, how long ago, the folder it ran in (only
+/// for a session of another folder: resuming it runs its history in this process's folder, so the difference
+/// matters) and the title. The folder is in the text, so typing its name in the filter finds its sessions.
+pub fn session_hint(row: &nexo_core::agent::SessionRow, now_ms: i64) -> String {
+    let mut parts = Vec::new();
+    if row.messages > 0 {
+        parts.push(format!("{} msg", row.messages));
+    }
+    if row.updated_ms > 0 {
+        parts.push(format!("{} ago", nexo_core::team::age(now_ms - row.updated_ms)));
+    }
+    if !row.here {
+        if let Some(name) = row.cwd.file_name() {
+            parts.push(name.to_string_lossy().into_owned());
+        }
+    }
+    if !row.title.is_empty() {
+        parts.push(row.title.clone());
+    }
+    parts.join(" · ")
 }
 
 /// The folders `/add-dir` offers for what is typed so far: the folders inside the part before the

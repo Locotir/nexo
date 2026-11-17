@@ -43,7 +43,10 @@ pub(super) async fn interactive(
     );
     let models = setup::model_choices(&config);
     // The session files are read while the agent is set up, not before it.
-    let listing = tokio::task::spawn_blocking(nexo_agent::session::list);
+    let listing = {
+        let cwd = cwd.clone();
+        tokio::task::spawn_blocking(move || nexo_agent::session::picker_rows(&cwd))
+    };
     // what a crash left next to them goes in the background too, never before the first frame
     nexo_agent::session::sweep_orphans_in_background();
     // sessions write to each other through the mailbox; it takes its session when the agent has one
@@ -56,14 +59,8 @@ pub(super) async fn interactive(
         )
     });
     let agent_setup = setup::agent_setup_in_background(&config, &cwd, &picked, resume.clone(), mailbox.clone()).await?;
-    // A session nothing was said in has nothing to resume.
-    let sessions = listing
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|m| m.messages > 0 && !m.headless)
-        .map(|m| (m.id, m.title))
-        .collect();
+    // The rows leave out the sessions nothing was said in and the ones programs run, and put this folder's first.
+    let sessions = listing.await.unwrap_or_default();
     let opts = nexo_tui::TuiOptions {
         cwd: cwd.clone(),
         // nothing chosen: the interface names none and opens on the locked home

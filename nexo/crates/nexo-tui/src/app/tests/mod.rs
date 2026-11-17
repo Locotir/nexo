@@ -4,6 +4,11 @@ use super::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 
+/// A listed session with nothing but its id and title, as the lists the interface builds itself have them.
+fn row(id: &str, title: &str) -> nexo_core::agent::SessionRow {
+    nexo_core::agent::SessionRow { id: id.into(), title: title.into(), ..Default::default() }
+}
+
 fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let opts = TuiOptions {

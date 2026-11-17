@@ -116,6 +116,22 @@ impl Picker {
         self.selected = at.min(self.ranked.len().saturating_sub(1));
     }
 
+    /// Swaps the rows for a fresher list while the picker is open: the filter stays, the cursor stays on its row
+    /// when that row is still listed, and a mark or a tick on a row that went is dropped.
+    pub fn replace_items(&mut self, items: Vec<PickItem>) {
+        let at = self.current().map(|it| it.value.clone());
+        self.items = items;
+        self.refilter();
+        if let Some(pos) = at.and_then(|v| self.ranked.iter().position(|&i| self.items[i].value == v)) {
+            self.selected = pos;
+        }
+        let items = &self.items;
+        self.ticked.retain(|t| items.iter().any(|it| it.value == *t));
+        if self.armed.as_ref().is_some_and(|a| !items.iter().any(|it| it.value == *a)) {
+            self.armed = None;
+        }
+    }
+
     pub(crate) fn refilter(&mut self) {
         let labels: Vec<String> = self.items.iter().map(|i| format!("{} {}", i.label, i.hint)).collect();
         self.ranked = fuzzy::rank(&self.query, &labels);

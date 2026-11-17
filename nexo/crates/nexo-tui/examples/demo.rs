@@ -247,8 +247,20 @@ async fn main() -> anyhow::Result<()> {
             ("deepseek".into(), "deepseek-chat".into()),
         ],
         sessions: vec![
-            ("20261027-101500-7f3a".into(), "fix the failing test".into()),
-            ("20261026-180002-c0de".into(), "add a tonnes unit".into()),
+            nexo_core::agent::SessionRow {
+                id: "20261027-101500-7f3a".into(),
+                title: "fix the failing test".into(),
+                here: true,
+                messages: 12,
+                ..Default::default()
+            },
+            nexo_core::agent::SessionRow {
+                id: "20261026-180002-c0de".into(),
+                title: "add a tonnes unit".into(),
+                here: true,
+                messages: 4,
+                ..Default::default()
+            },
         ],
         // DEMO_STILL=1 (or NEXO_DEMO_STILL=1) runs with the animations off, to compare the settled frame
         animations: std::env::var_os("DEMO_STILL").is_none() && std::env::var_os("NEXO_DEMO_STILL").is_none(),

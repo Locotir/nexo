@@ -1807,3 +1807,76 @@ fn a_session_file_that_vanished_is_told_when_an_output_is_held_not_when_the_roun
     s.hold_output("c1", &ToolOutput::ok("text"));
     assert!(matches!(s.take_save_news(), Some(SaveNews::Stopped(_))));
 }
+
+#[test]
+fn a_session_marked_after_the_fact_is_a_programs_and_the_mark_is_written_once() {
+    let d = tempfile::tempdir().unwrap();
+    let id = {
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        s.append(&Message::user("hello there")).unwrap();
+        s.meta().id.clone()
+    };
+    assert!(!meta_in(d.path(), &id).unwrap().headless);
+    assert!(mark_headless_in(d.path(), &id).unwrap(), "the line is written");
+    assert!(meta_in(d.path(), &id).unwrap().headless);
+    assert!(!mark_headless_in(d.path(), &id).unwrap(), "a marked session is left as it is");
+    assert_eq!(meta_in(d.path(), &id).unwrap().messages, 1, "the mark is not a message");
+    let reopened = Session::open_path(&d.path().join(format!("{id}.jsonl"))).unwrap();
+    assert!(reopened.meta().headless, "a reopened session keeps the mark");
+    assert!(!mark_headless_in(d.path(), "nothing-like-it").unwrap(), "an unknown id is not an error");
+}
+
+#[test]
+fn the_latest_conversation_of_a_folder_skips_the_ones_programs_ran() {
+    let d = tempfile::tempdir().unwrap();
+    let mut own = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    own.append(&Message::user("mine")).unwrap();
+    let own_id = own.meta().id.clone();
+    drop(own);
+    let mut lane = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    lane.append(&Message::user("a lane's")).unwrap();
+    let lane_id = lane.meta().id.clone();
+    drop(lane);
+    assert!(mark_headless_in(d.path(), &lane_id).unwrap());
+    assert_eq!(latest_own_for_in(d.path(), Path::new("/p")).map(|m| m.id), Some(own_id));
+    assert!(latest_own_for_in(d.path(), Path::new("/elsewhere")).is_none());
+}
+
+#[test]
+fn the_resume_rows_put_this_folder_first_and_leave_out_empty_and_program_sessions() {
+    let mk = |id: &str, cwd: &str, messages: usize, headless: bool, updated: &str| SessionMeta {
+        id: id.into(),
+        cwd: cwd.into(),
+        created: String::new(),
+        updated: updated.into(),
+        provider: "x".into(),
+        model: "y".into(),
+        title: format!("title {id}"),
+        messages,
+        parent: None,
+        fork_at: None,
+        headless,
+    };
+    // newest first, as `list` returns them
+    let metas = vec![
+        mk("other-new", "/o", 3, false, "2026-11-17T12:00:00Z"),
+        mk("empty", "/p", 0, false, "2026-11-17T11:00:00Z"),
+        mk("lane", "/p", 9, true, "2026-11-17T10:00:00Z"),
+        mk("here-old", "/p", 2, false, "2026-11-17T09:00:00Z"),
+        mk("here-older", "/p", 5, false, "2026-11-16T09:00:00Z"),
+    ];
+    let rows = rows_for(metas, Path::new("/p"));
+    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["here-old", "here-older", "other-new"]);
+    assert_eq!(rows.iter().map(|r| r.here).collect::<Vec<_>>(), [true, true, false]);
+    assert_eq!(rows[0].messages, 2);
+    assert!(rows[0].updated_ms > rows[1].updated_ms && rows[1].updated_ms > 0, "the age is carried as a time");
+}
+
+#[test]
+fn a_folder_written_with_a_trailing_slash_is_still_this_folder() {
+    let d = tempfile::tempdir().unwrap();
+    let with_slash = PathBuf::from(format!("{}/", d.path().display()));
+    assert!(same_folder(&with_slash, d.path()));
+    assert!(!same_folder(d.path(), Path::new("/definitely/not/here")));
+}
