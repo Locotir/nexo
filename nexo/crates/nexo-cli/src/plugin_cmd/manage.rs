@@ -9,6 +9,11 @@ pub(super) fn update(config_dir: &Path, cwd: &Path, name: Option<&str>, ask: Ask
         Some(n) => bail!("no plugin {n} is installed"),
         None => reg.plugins.keys().cloned().collect(),
     };
+    if names.is_empty() {
+        // Same wording as `plugin list`; a silent success looks like a hang.
+        println!("no plugins installed");
+        return Ok(0);
+    }
     let mut code = 0;
     for n in names {
         match update_one(config_dir, cwd, &n, ask) {

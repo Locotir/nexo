@@ -33,6 +33,11 @@ pub fn run(config: &Config, what: &AuditCmd) -> anyhow::Result<i32> {
         .map(|s| since_stamp(s, time::OffsetDateTime::now_utc()))
         .transpose()
         .map_err(|e| anyhow::anyhow!(e))?;
+    // A mistyped path would otherwise read as an empty, clean log and exit 0.
+    if let Some(f) = file.as_ref().filter(|f| !f.is_file()) {
+        eprintln!("nexo audit: no such file {}", f.display());
+        return Ok(crate::headless::EXIT_USAGE);
+    }
     let logs = match file {
         Some(f) => vec![f.clone()],
         None => files(&config.audit),
