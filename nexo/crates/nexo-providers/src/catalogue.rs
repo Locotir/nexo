@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use nexo_core::{ErrorKind, Pricing, ProviderError};
-use serde_json::Value;
 
 pub const URL: &str = "https://models.dev/api.json";
 /// A cached file older than this is refreshed (in the background).
@@ -65,16 +64,15 @@ pub fn catalogue_ids(preset: &str) -> Vec<String> {
 impl Catalogue {
     /// Parses the dataset. Models without a price keep `pricing: None`.
     pub fn parse(text: &str) -> Result<Catalogue, String> {
-        let root: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-        let obj = root.as_object().ok_or("the catalogue is not an object")?;
+        // Typed, so the 6 MB file is never built into a `Value` tree (that cost about 55 ms and 60 MB at every
+        // start); every leaf is tolerant of a wrong type, as the dataset is not ours to keep clean.
+        let root: BTreeMap<String, raw::Obj<raw::Provider>> =
+            serde_json::from_str(text).map_err(|e| format!("not a JSON object: {e}"))?;
         let mut providers = BTreeMap::new();
-        for (pid, p) in obj {
-            let Some(models) = p.get("models").and_then(Value::as_object) else { continue };
-            let mut out = BTreeMap::new();
-            for (mid, m) in models {
-                out.insert(mid.clone(), entry_of(m));
-            }
-            providers.insert(pid.clone(), out);
+        for (pid, p) in root {
+            let Some(models) = p.0.and_then(|p| p.models.0) else { continue };
+            let out = models.into_iter().map(|(mid, m)| (mid, entry_of(m.0.unwrap_or_default()))).collect();
+            providers.insert(pid, out);
         }
         if providers.is_empty() {
             return Err("the catalogue has no providers".into());
@@ -190,34 +188,278 @@ fn fuzzy<'a>(models: &'a BTreeMap<String, Entry>, model: &str) -> Option<&'a Ent
     best.map(|(_, e)| e)
 }
 
-fn entry_of(m: &Value) -> Entry {
-    let num = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|x| x.is_finite() && *x >= 0.0);
-    let int =
-        |v: Option<&Value>| v.and_then(Value::as_u64).filter(|x| *x > 0 && *x <= u32::MAX as u64).map(|x| x as u32);
-    let cost = m.get("cost");
-    let pricing = cost.and_then(|c| {
+/// The wire shape of the dataset, read straight into small structs. Every leaf tolerates a wrong type
+/// (it reads as absent) and a wrongly shaped object is skipped, as the old `Value` walk did.
+mod raw {
+    use std::collections::BTreeMap;
+    use std::fmt;
+
+    use serde::de::value::MapAccessDeserializer;
+    use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+    use serde::Deserialize;
+
+    /// One JSON scalar of any kind; an array or object reads as `Other`.
+    #[derive(Default)]
+    pub enum Scalar {
+        #[default]
+        Absent,
+        Bool(bool),
+        Uint(u64),
+        Int(i64),
+        Float(f64),
+        Str(String),
+        /// null, an array or an object: present, but none of the above.
+        Other,
+    }
+
+    impl Scalar {
+        pub fn present(&self) -> bool {
+            !matches!(self, Scalar::Absent)
+        }
+        pub fn as_f64(&self) -> Option<f64> {
+            match *self {
+                Scalar::Uint(n) => Some(n as f64),
+                Scalar::Int(n) => Some(n as f64),
+                Scalar::Float(n) => Some(n),
+                _ => None,
+            }
+        }
+        /// Only a non-negative integer, as `Value::as_u64` (a float such as `1e5` is not one).
+        pub fn as_u64(&self) -> Option<u64> {
+            match *self {
+                Scalar::Uint(n) => Some(n),
+                _ => None,
+            }
+        }
+        pub fn as_bool(&self) -> Option<bool> {
+            match *self {
+                Scalar::Bool(b) => Some(b),
+                _ => None,
+            }
+        }
+        pub fn as_str(&self) -> Option<&str> {
+            match self {
+                Scalar::Str(s) => Some(s),
+                _ => None,
+            }
+        }
+    }
+
+    fn drain_map<'de, A: MapAccess<'de>>(mut m: A) -> Result<(), A::Error> {
+        while m.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
+
+    fn drain_seq<'de, A: SeqAccess<'de>>(mut s: A) -> Result<(), A::Error> {
+        while s.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
+
+    impl<'de> Deserialize<'de> for Scalar {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Scalar;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("any JSON value")
+                }
+                fn visit_bool<E>(self, v: bool) -> Result<Scalar, E> {
+                    Ok(Scalar::Bool(v))
+                }
+                fn visit_u64<E>(self, v: u64) -> Result<Scalar, E> {
+                    Ok(Scalar::Uint(v))
+                }
+                fn visit_i64<E>(self, v: i64) -> Result<Scalar, E> {
+                    Ok(Scalar::Int(v))
+                }
+                fn visit_f64<E>(self, v: f64) -> Result<Scalar, E> {
+                    Ok(Scalar::Float(v))
+                }
+                fn visit_str<E>(self, v: &str) -> Result<Scalar, E> {
+                    Ok(Scalar::Str(v.to_string()))
+                }
+                fn visit_unit<E>(self) -> Result<Scalar, E> {
+                    Ok(Scalar::Other)
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, s: A) -> Result<Scalar, A::Error> {
+                    drain_seq(s).map(|_| Scalar::Other)
+                }
+                fn visit_map<A: MapAccess<'de>>(self, m: A) -> Result<Scalar, A::Error> {
+                    drain_map(m).map(|_| Scalar::Other)
+                }
+            }
+            d.deserialize_any(V)
+        }
+    }
+
+    /// A list of scalars; None when the value is not an array.
+    #[derive(Default)]
+    pub struct List(pub Option<Vec<Scalar>>);
+
+    impl<'de> Deserialize<'de> for List {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = List;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("any JSON value")
+                }
+                fn visit_bool<E>(self, _: bool) -> Result<List, E> {
+                    Ok(List(None))
+                }
+                fn visit_u64<E>(self, _: u64) -> Result<List, E> {
+                    Ok(List(None))
+                }
+                fn visit_i64<E>(self, _: i64) -> Result<List, E> {
+                    Ok(List(None))
+                }
+                fn visit_f64<E>(self, _: f64) -> Result<List, E> {
+                    Ok(List(None))
+                }
+                fn visit_str<E>(self, _: &str) -> Result<List, E> {
+                    Ok(List(None))
+                }
+                fn visit_unit<E>(self) -> Result<List, E> {
+                    Ok(List(None))
+                }
+                fn visit_map<A: MapAccess<'de>>(self, m: A) -> Result<List, A::Error> {
+                    drain_map(m).map(|_| List(None))
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, mut s: A) -> Result<List, A::Error> {
+                    let mut v = Vec::new();
+                    while let Some(x) = s.next_element::<Scalar>()? {
+                        v.push(x);
+                    }
+                    Ok(List(Some(v)))
+                }
+            }
+            d.deserialize_any(V)
+        }
+    }
+
+    impl List {
+        /// Whether the list holds the string `s`; None when the value was not a list.
+        pub fn has(&self, s: &str) -> Option<bool> {
+            self.0.as_ref().map(|v| v.iter().any(|x| x.as_str() == Some(s)))
+        }
+    }
+
+    /// A JSON object read as `T`; None when the value is anything else.
+    pub struct Obj<T>(pub Option<T>);
+
+    impl<T> Default for Obj<T> {
+        fn default() -> Self {
+            Obj(None)
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Obj<T> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V<T>(std::marker::PhantomData<T>);
+            impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
+                type Value = Obj<T>;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("any JSON value")
+                }
+                fn visit_bool<E>(self, _: bool) -> Result<Obj<T>, E> {
+                    Ok(Obj(None))
+                }
+                fn visit_u64<E>(self, _: u64) -> Result<Obj<T>, E> {
+                    Ok(Obj(None))
+                }
+                fn visit_i64<E>(self, _: i64) -> Result<Obj<T>, E> {
+                    Ok(Obj(None))
+                }
+                fn visit_f64<E>(self, _: f64) -> Result<Obj<T>, E> {
+                    Ok(Obj(None))
+                }
+                fn visit_str<E>(self, _: &str) -> Result<Obj<T>, E> {
+                    Ok(Obj(None))
+                }
+                fn visit_unit<E>(self) -> Result<Obj<T>, E> {
+                    Ok(Obj(None))
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, s: A) -> Result<Obj<T>, A::Error> {
+                    drain_seq(s).map(|_| Obj(None))
+                }
+                fn visit_map<A: MapAccess<'de>>(self, m: A) -> Result<Obj<T>, A::Error> {
+                    T::deserialize(MapAccessDeserializer::new(m)).map(|t| Obj(Some(t)))
+                }
+            }
+            d.deserialize_any(V(std::marker::PhantomData))
+        }
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    pub struct Provider {
+        pub models: Obj<BTreeMap<String, Obj<Model>>>,
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    pub struct Model {
+        pub name: Scalar,
+        pub cost: Obj<Cost>,
+        pub limit: Obj<Limit>,
+        pub reasoning: Scalar,
+        pub tool_call: Scalar,
+        pub modalities: Obj<Modalities>,
+        pub release_date: Scalar,
+        pub status: Scalar,
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    pub struct Cost {
+        pub input: Scalar,
+        pub output: Scalar,
+        pub cache_read: Scalar,
+        pub cache_write: Scalar,
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    pub struct Limit {
+        pub context: Scalar,
+        pub output: Scalar,
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    pub struct Modalities {
+        pub input: List,
+        pub output: List,
+    }
+}
+
+fn entry_of(m: raw::Model) -> Entry {
+    let num = |s: &raw::Scalar| s.as_f64().filter(|x| x.is_finite() && *x >= 0.0);
+    let int = |s: &raw::Scalar| s.as_u64().filter(|x| *x > 0 && *x <= u32::MAX as u64).map(|x| x as u32);
+    let pricing = m.cost.0.as_ref().and_then(|c| {
         let p = Pricing {
-            input: num(c.get("input")).unwrap_or(0.0),
-            output: num(c.get("output")).unwrap_or(0.0),
-            cache_read: num(c.get("cache_read")).unwrap_or(0.0),
-            cache_write: num(c.get("cache_write")).unwrap_or(0.0),
+            input: num(&c.input).unwrap_or(0.0),
+            output: num(&c.output).unwrap_or(0.0),
+            cache_read: num(&c.cache_read).unwrap_or(0.0),
+            cache_write: num(&c.cache_write).unwrap_or(0.0),
             cache_write_1h: 0.0,
         };
         // a free model is a price too: input and output present, both 0
-        (p.is_known() || (c.get("input").is_some() && c.get("output").is_some())).then_some(p)
+        (p.is_known() || (c.input.present() && c.output.present())).then_some(p)
     });
-    let limit = m.get("limit");
+    let limit = m.limit.0.unwrap_or_default();
+    let modalities = m.modalities.0.unwrap_or_default();
     Entry {
-        name: m.get("name").and_then(Value::as_str).map(String::from),
+        name: m.name.as_str().map(String::from),
         pricing,
-        context: int(limit.and_then(|l| l.get("context"))),
-        output: int(limit.and_then(|l| l.get("output"))),
-        reasoning: m.get("reasoning").and_then(Value::as_bool),
-        tools: m.get("tool_call").and_then(Value::as_bool),
-        vision: m.pointer("/modalities/input").and_then(Value::as_array).map(|a| a.iter().any(|x| x == "image")),
-        text_out: m.pointer("/modalities/output").and_then(Value::as_array).map(|a| a.iter().any(|x| x == "text")),
-        released: m.get("release_date").and_then(Value::as_str).map(String::from),
-        retired: m.get("status").and_then(Value::as_str) == Some("deprecated"),
+        context: int(&limit.context),
+        output: int(&limit.output),
+        reasoning: m.reasoning.as_bool(),
+        tools: m.tool_call.as_bool(),
+        vision: modalities.input.has("image"),
+        text_out: modalities.output.has("text"),
+        released: m.release_date.as_str().map(String::from),
+        retired: m.status.as_str() == Some("deprecated"),
     }
 }
 
@@ -374,6 +616,32 @@ mod tests {
         assert_eq!(c.lookup("ollama", "qwen3:8b").unwrap().pricing, None);
         assert!(Catalogue::parse("{}").is_err());
         assert!(Catalogue::parse("[1]").is_err());
+    }
+
+    #[test]
+    fn a_wrongly_typed_field_reads_as_absent_and_never_fails_the_file() {
+        let text = r#"{
+            "broken": "not an object",
+            "nomodels": { "models": [1, 2] },
+            "p": { "models": {
+                "str": "not an object",
+                "m": {
+                    "name": 7, "reasoning": "yes", "tool_call": true, "release_date": null,
+                    "cost": { "input": "x", "output": [1], "cache_read": 0.5, "cache_write": -1 },
+                    "limit": { "context": 1e5, "output": 4096 },
+                    "modalities": { "input": ["text", 3, "image"], "output": "text" },
+                    "status": "deprecated", "extra": { "deep": [1, { "a": null }] }
+                }
+            } }
+        }"#;
+        let c = Catalogue::parse(text).unwrap();
+        assert_eq!(c.providers.len(), 1);
+        assert_eq!(c.providers["p"]["str"], Entry::default());
+        let e = &c.providers["p"]["m"];
+        assert_eq!((e.name.clone(), e.reasoning, e.tools, e.released.clone()), (None, None, Some(true), None));
+        assert_eq!(e.pricing.unwrap().cache_read, 0.5);
+        assert_eq!((e.context, e.output), (None, Some(4096)));
+        assert_eq!((e.vision, e.text_out, e.retired), (Some(true), None, true));
     }
 
     #[test]
