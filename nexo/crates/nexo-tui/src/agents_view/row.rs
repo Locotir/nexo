@@ -350,7 +350,8 @@ pub(super) fn money(v: f64) -> String {
 }
 
 /// A path under the home folder as `~/…`. The shared helper matches whole folders only, so a sibling that shares
-/// the home prefix (`/home/me-old`) stays whole, and it reads `USERPROFILE` where Windows has no `HOME`.
+/// the home prefix (`/home/me-old`) stays whole, and it reads `USERPROFILE` where Windows has no `HOME`. On Windows
+/// every path comes out with `/` between its parts, as the rest of nexo shows paths.
 pub(super) fn tilde(p: &str) -> String {
     tilde_in(p, crate::insights::home().as_deref())
 }

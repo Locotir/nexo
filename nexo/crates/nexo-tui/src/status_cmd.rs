@@ -403,8 +403,9 @@ mod tests {
         // "e" plus an acute accent is one column: cutting at room 2 keeps both parts or neither.
         let text: String = fit(spans("ae\u{301}bcd", Style::default()), 4).iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(text, "ae\u{301}b…");
-        // A flag is two regional indicators in one grapheme: it is kept whole or dropped whole.
-        let text: String = fit(spans("ab🇪🇸cd", Style::default()), 3).iter().map(|(t, _)| t.as_str()).collect();
+        // A flag is two regional indicators in one grapheme: it is kept whole or dropped whole. At room 3 a cut
+        // between the two indicators would leave "ab🇪", which is what a per-character loop gives.
+        let text: String = fit(spans("ab🇪🇸cd", Style::default()), 4).iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(text, "ab…");
     }
 
