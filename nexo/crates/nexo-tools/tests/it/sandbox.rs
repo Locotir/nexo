@@ -135,7 +135,9 @@ async fn the_sandbox_lets_bash_run_without_asking_and_says_so() {
         return;
     }
     let s = ws(false);
-    assert!(Bash.sandbox_holds(&json!({"command": "ls"}), &s));
+    // Network off only counts as held where something cuts the network, which depends on the host.
+    assert_eq!(Bash.sandbox_holds(&json!({"command": "ls"}), &s), sandbox::network_enforced());
+    assert!(Bash.sandbox_holds(&json!({"command": "ls"}), &ws(true)));
     assert!(!Bash.sandbox_holds(&json!({"command": "ls", "unsandboxed": true}), &s));
     assert!(!Bash.sandbox_holds(&json!({"command": "ls"}), &SandboxSettings::default()));
     let line = sandbox::describe(&s);

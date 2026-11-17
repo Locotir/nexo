@@ -452,6 +452,16 @@ const MARKERS: &[&str] = &[
     "eperm",
 ];
 
+/// What the note says about the network: nothing when it is on, and when it is off whether anything
+/// really cuts it, so the model is never told a network is shut when the system leaves it open.
+fn network_phrase(s: &SandboxSettings, enforced: bool) -> &'static str {
+    match (s.network, enforced) {
+        (true, _) => "",
+        (false, true) => "; the network is off",
+        (false, false) => "; the network is not blocked on this system",
+    }
+}
+
 /// A short note for the model when a command failed in the sandbox in a way the sandbox may have
 /// caused, so it can offer to run the command outside it (which asks the person first).
 pub fn note_for(s: &SandboxSettings, output: &str) -> Option<String> {
@@ -468,7 +478,7 @@ pub fn note_for(s: &SandboxSettings, output: &str) -> Option<String> {
         }
         _ => "writes nothing but the temp directory",
     };
-    let net = if s.network { "" } else { "; the network is off" };
+    let net = network_phrase(s, network_enforced());
     Some(format!(
         "[sandbox: this command ran in the {} sandbox ({writes}{net}). If it failed for that reason, tell \
          the person and, if it is needed, run it again with `unsandboxed: true`; they are asked first.]",
@@ -482,6 +492,14 @@ mod tests {
 
     fn ws() -> SandboxSettings {
         SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![])
+    }
+
+    #[test]
+    fn the_note_never_says_the_network_is_off_where_nothing_cuts_it() {
+        assert_eq!(network_phrase(&ws(), true), "; the network is off");
+        assert_eq!(network_phrase(&ws(), false), "; the network is not blocked on this system");
+        let on = SandboxSettings::new(SandboxMode::WorkspaceWrite, true, vec![]);
+        assert_eq!(network_phrase(&on, false), "");
     }
 
     #[test]
