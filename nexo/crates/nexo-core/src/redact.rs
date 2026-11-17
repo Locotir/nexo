@@ -32,8 +32,11 @@ fn rules() -> &'static [Rule] {
             (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}", MASK),
             // Authorization headers.
             (r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", "$1 [redacted]"),
-            // The Basic scheme only with its header prefix: a bare `basic <word>` would eat ordinary prose.
-            (r"(?i)\b(authorization:\s*basic)\s+[A-Za-z0-9+/]{8,}={0,2}", "$1 [redacted]"),
+            // The Basic scheme only with its header prefix: a bare `basic <word>` would eat ordinary prose. The prefix
+            // may be quoted, as in a JSON request dump (`"Authorization": "Basic ..."`).
+            (r#"(?i)\b(authorization["']?\s*[:=]\s*["']?basic)\s+[A-Za-z0-9+/]{8,}={0,2}"#, "$1 [redacted]"),
+            // curl -u user:pass, also --user. Only a value with a colon holds a password; a bare user name is not a secret.
+            (r#"(?i)(\bcurl\b[^\r\n]*?\s(?:-u|--user)(?:\s+|=)["']?)[^\s"':]+:[^\s"']+"#, "${1}[redacted]"),
             // Provider key formats that the `sk-` family does not cover.
             (r"\bAIza[0-9A-Za-z_-]{20,}", MASK),
             (r"\bgsk_[0-9A-Za-z]{16,}", MASK),
@@ -42,10 +45,12 @@ fn rules() -> &'static [Rule] {
             (r"\bxai-[A-Za-z0-9]{20,}", MASK),
             (r"\b[\x73r]k_(?:live|test)_[A-Za-z0-9]{16,}", MASK),
             // scheme://user:pass@host: an address carries its credentials before the `@`. HTTP client errors embed the URL.
-            (r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#]*@", "${1}[redacted]@"),
+            // A user name alone (`ssh://git@host`) is not a secret and stays, so notes and mail can name such an address;
+            // a lone long token before the `@` (`https://<token>@host`) is a credential and goes.
+            (r"(?i)\b([a-z][a-z0-9+.-]*://)(?:[^\s/?#@:]*:[^\s/?#]*|[a-z0-9_-]{24,})@", "${1}[redacted]@"),
             // ?key=..., &sig=..., ;auth=...: query parameters named like a secret (`api_key=` and `token=` are also caught by the assignment rule below).
             (
-                r#"(?i)([?&;]\s*[a-z0-9_.-]*(?:key|token|secret|password|passwd|signature|sig|auth)=)[^&\s)"'<>#,]+"#,
+                r#"(?i)([?&;]\s*[a-z0-9_.-]*(?:key|token|secret|password|passwd|signature|sig|auth)=)[^&\s)"'<>#,`$\[{*][^&\s)"'<>#,`]*"#,
                 "${1}[redacted]",
             ),
             // Lines of an env file: NAME=value.
@@ -159,6 +164,32 @@ mod tests {
         hides("https://h.example/f?X-Auth=a1b2c3d4", "a1b2c3d4");
         let kept = redact("https://example.org/path?page=2&sort=name");
         assert_eq!(kept, "https://example.org/path?page=2&sort=name");
+    }
+
+    #[test]
+    fn a_user_name_without_a_password_and_a_placeholder_query_value_are_not_secrets() {
+        for plain in [
+            "ssh://git@github.com/org/repo",
+            "https://user@host.example/x",
+            "see ?key=`$KEY` and &sig= in the docs",
+            "https://h.example/f?key=${API_KEY}&n=1",
+        ] {
+            assert_eq!(redact(plain), plain);
+        }
+        // A lone long token in the user position is a credential, as in a git remote.
+        let t = key("tok", "enabcdefghijklmnopqrstuvwxyz0123");
+        hides(&format!("origin https://{t}@git.example/org/repo"), &t);
+    }
+
+    #[test]
+    fn basic_authorization_in_json_and_curl_user_options() {
+        hides(r#"{"Authorization": "Basic dXNlcjpwYXNzd29yZA=="}"#, "dXNlcjpwYXNzd29yZA");
+        hides("headers = {'authorization': 'Basic dXNlcjpwYXNzd29yZA=='}", "dXNlcjpwYXNzd29yZA");
+        hides("curl -s -u admin:hunter2pw https://h.example/api", "hunter2pw");
+        hides("curl --user=admin:hunter2pw https://h.example/api", "hunter2pw");
+        hides("curl -u 'admin:hunter2pw' https://h.example/api", "hunter2pw");
+        let kept = "curl -u admin https://h.example/api && ls -u";
+        assert_eq!(redact(kept), kept);
     }
 
     #[test]
