@@ -251,3 +251,21 @@ fn a_session_in_a_worktree_says_where_to_look_when_the_config_cannot_be_parsed()
     let e = err(&o);
     assert!(e.contains("cannot parse") && e.contains("nexo doctor") && e.contains("nexo config path"), "{e}");
 }
+
+#[test]
+fn a_working_folder_that_does_not_exist_is_named_in_the_error() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), MOCK, &["--cwd", "no-such-folder", "-p", "hi"]);
+    assert_ne!(o.status.code(), Some(0));
+    let e = err(&o);
+    assert!(e.contains("cannot use --cwd no-such-folder"), "{e}");
+}
+
+#[test]
+fn a_login_with_no_key_and_no_terminal_says_how_to_pass_one() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), MOCK, &["auth", "login", "mock"]);
+    assert_ne!(o.status.code(), Some(0));
+    let e = err(&o);
+    assert!(e.contains("no key given: pass --key K, or --key - to read it from stdin"), "{e}");
+}

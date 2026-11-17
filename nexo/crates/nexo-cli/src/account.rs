@@ -156,7 +156,7 @@ fn read_key(name: &str, p: &ProviderConfig, key: Option<&str>) -> anyhow::Result
     };
     let k = k.trim().to_string();
     if k.is_empty() {
-        anyhow::bail!("no key given");
+        anyhow::bail!("no key given: pass --key K, or --key - to read it from stdin");
     }
     Ok(k)
 }

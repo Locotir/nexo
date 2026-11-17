@@ -743,5 +743,6 @@ fn a_missing_cwd_names_the_path_and_a_missing_session_names_the_id() {
     assert!(!out.status.success());
     assert!(err(&out).contains("cannot use --cwd /nonexistent/dir:"), "{}", err(&out));
     let out = nexo(d.path(), &["-p", "hi", "--resume", "nosuchid"]);
-    assert!(err(&out).contains("no session with id nosuchid; `nexo sessions` lists them"), "{}", err(&out));
+    assert!(err(&out).contains("no session nosuchid at"), "{}", err(&out));
+    assert!(err(&out).contains("`nexo sessions` lists them"), "{}", err(&out));
 }

@@ -118,13 +118,21 @@ impl Session {
     /// Reads a session file; a truncated last line is ignored. Each line is read on its own, so a
     /// UTF-8 sequence cut by a crash spoils only the line it is in.
     pub fn open_path(path: &Path) -> anyhow::Result<Session> {
-        let bytes = std::fs::read(path)?;
+        // The cause goes into the text itself: callers print the outer error with `{e}`, which would hide a
+        // chained io or serde error, and a bare "No such file or directory" does not say which file.
+        let bytes = std::fs::read(path).map_err(|e| read_error(path, &e))?;
         let mut lines = bytes
             .split(|b| *b == b'\n')
             .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)))
             .filter(|l| !l.is_empty());
         let first = lines.next().ok_or_else(|| anyhow::anyhow!("empty session file {}", path.display()))?;
-        let Line::Meta(mut meta) = serde_json::from_str(&first)? else {
+        let meta_line = serde_json::from_str(&first).map_err(|e| {
+            anyhow::anyhow!(
+                "session file {} is damaged at line 1: {e}. Start fresh with /new, or move the file away.",
+                path.display()
+            )
+        })?;
+        let Line::Meta(mut meta) = meta_line else {
             anyhow::bail!("{} does not start with a meta line", path.display());
         };
         let mut messages = Vec::new();
@@ -178,7 +186,10 @@ impl Session {
             meta.title = first_words_title(&messages);
         }
         meta.messages = messages.len();
-        let file = OpenOptions::new().append(true).open(path)?;
+        let file = OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|e| anyhow::anyhow!("session file {} cannot be written: {e}", path.display()))?;
         Ok(Session {
             meta,
             path: path.to_path_buf(),
@@ -264,5 +275,16 @@ impl Session {
             self.mark();
         }
         Ok(())
+    }
+}
+
+/// Words for a session file that could not be read: a missing one names the session, any other
+/// cause is shown as it came. A missing one also says where the ids are listed, the `nexo --resume` case.
+fn read_error(path: &Path, e: &std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        anyhow::anyhow!("no session {id} at {}; `nexo sessions` lists them", path.display())
+    } else {
+        anyhow::anyhow!("session file {} cannot be read: {e}", path.display())
     }
 }

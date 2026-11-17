@@ -118,7 +118,7 @@ impl App {
                 if r.error.as_ref() != Some(&error) {
                     r.error = Some(error.clone());
                     self.push(Block::Notice {
-                        level: Level::Info,
+                        level: Level::Warn,
                         text: format!("Remote observation disconnected: {}", safe_tool_text(&error)),
                     });
                     self.dirty = true;

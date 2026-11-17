@@ -1450,3 +1450,19 @@ fn a_rewind_past_a_task_list_call_removes_the_list_saved_for_it_and_one_before_t
     s.rewind(1).unwrap();
     assert!(!file.exists(), "the call that made the list is gone");
 }
+
+#[test]
+fn a_session_that_cannot_be_opened_names_its_file_and_the_cause() {
+    let d = tempfile::tempdir().unwrap();
+    let missing = d.path().join("abc123.jsonl");
+    let e = Session::open_path(&missing).err().expect("a missing file").to_string();
+    assert!(e.contains("no session abc123") && e.contains(&missing.display().to_string()), "{e}");
+    let bad = d.path().join("broken.jsonl");
+    std::fs::write(&bad, "this is not json\n").unwrap();
+    let e = Session::open_path(&bad).err().expect("a damaged file").to_string();
+    assert!(e.contains(&bad.display().to_string()) && e.contains("damaged at line 1") && e.contains("/new"), "{e}");
+    let dir_as_file = d.path().join("folder.jsonl");
+    std::fs::create_dir(&dir_as_file).unwrap();
+    let e = Session::open_path(&dir_as_file).err().expect("an unreadable file").to_string();
+    assert!(e.contains(&dir_as_file.display().to_string()) && e.contains("cannot be read"), "{e}");
+}
