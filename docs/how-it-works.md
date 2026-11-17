@@ -107,8 +107,9 @@ paths are in [`context-curator.md`](context-curator.md).
   floor then, for free, and a cut past where the cache stops is priced as free. On the recorded sessions
   replayed with a request every 30 s and a 2 h pause every 40, input cost falls up to 14 %, but up to
   2.8 times as many words the agent used later had left the view. `ttl` and `cold` are not settings.
-  The curator writes nothing to disk: what left the view comes back by the agent reading the file or
-  running the command again.
+  The blocks that left the view are not stored as text anywhere: they come back by the agent reading the
+  file or running the command again. The curator's state is saved in `<id>.jsonl.curator` beside the
+  session, so a resume replays only later replies; the session file is unchanged.
 - **Directives (off by default).** With `directives=1` the curator appends its efficiency directives to the
   system prompt, identical on every request so they stay cached; `nexo prompt` shows them. The default view
   is pure: the model gets no order the whole history would not give it.

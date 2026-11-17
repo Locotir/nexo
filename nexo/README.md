@@ -55,7 +55,7 @@ nexo                            # picks the first provider whose key is present
 nexo --provider openai --model gpt-5
 nexo "fix the failing test"     # opens the session and sends this first
 nexo -i shot.png "why is this red?"   # attaches an image to that first request (also with -p)
-nexo -p "what does this repository do?"            # headless: prints the reply
+nexo -p "what does this repository do?"            # headless: prints the reply (exit codes and JSON: docs/HEADLESS.md)
 nexo -p "run the tests and fix what fails" --permission-mode yolo --json
 nexo --continue                 # resume the latest session of this directory
 nexo --name "api cleanup"        # name the session from the start (-n; with --continue or --resume it renames that one)
@@ -84,10 +84,13 @@ More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo
 | `nexo audit` | the local audit log of tool calls and requests ([docs/AUDIT.md](docs/AUDIT.md)) |
 | `nexo supervise` | watch long-running sessions and answer their hooks |
 | `nexo acp` | run as an Agent Client Protocol server for editors ([docs/ACP.md](docs/ACP.md)) |
+| `nexo team` | lanes: named sessions that run on their own in the background on a clock ([docs/TEAM.md](docs/TEAM.md)) |
 
 ## In the interface
 
 The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `yolo` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `12 calls` the calls so far (a `cache miss · 31k full price` chip joins them only when a call lost the cache; the share is in `/context`) and `⏱ 14s` the running turn. `/context` prints all of them.
+
+Every word nexo puts on screen follows the rules in [docs/READABLE-TEXT.md](docs/READABLE-TEXT.md): short sentences, plain words.
 
 
 | Keys | What |
@@ -105,6 +108,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | `→` / `←` / `Enter` (a block selected) | open / fold / toggle it; `Esc` or typing lets it go |
 | `→` / `←` on a message, double click | your message shows only what you typed. The dim line under it, `+ nexo added · N tokens (start note, 2 files, hook…)`, says what nexo put around your words (hook context, shared memory, the start note, attached files, MCP resources; a supervisor note is marked `this request only`); `→` or a double click opens it to the exact text (long files cut with `… N more lines`), `←` or another double click folds it. Resumed sessions show the same, found again by their markers |
 | `/sent` (`/request`) | a window with the last request as the model got it: the system prompt by parts, the tools offered, then every message by role, the curator's text marked `[curator]`, a token count per section; `/` searches, `n`/`N` step, `y` copies the section, `e` opens a folded one |
+| `Ctrl+X` (while the agent works) | send the sub-agents the turn waits for to the background; they report when they end |
 | `Ctrl+O` | fold or open every tool group, tool card and thinking block |
 | `Ctrl+T` | show or hide the model's reasoning |
 | `Ctrl+P` | interpreted view: a markdown, JSON, CSV or TSV block (and a `.md`/`.json`/`.csv` file a tool read or wrote) shows rendered instead of as source; again: the source |
@@ -159,6 +163,10 @@ Other `[agent]` keys:
 
 | Key | Default | What |
 |---|---|---|
+| `max_turns` | `200` | tool rounds one request may take before `on_limit` applies (headless exit code 4, see [docs/HEADLESS.md](docs/HEADLESS.md)); sub-agents have their own limit and always stop there |
+| `on_limit` | `"checkpoint"` | at `max_turns`: `checkpoint` gives the model one short progress message and it decides to stop or go on, so a long job needs no "continue"; `ask` stops and waits for you |
+| `max_checkpoints` | unset | the most checkpoints one request may take: unset means 5 while no spend limit is in force and no cap when one is; `0` never checkpoints (as `ask`) |
+| `max_tokens` | `16384` | the reply size asked of the model |
 | `reasoning_budget` | `8000` | tokens a reply may reason before it says or calls anything; past it the reply is cut, its reasoning dropped, and the model asked for a call or the answer at its lowest listed effort (off, minimal or low) until a reply calls or answers; the third cut in a row stops the turn, and a model that lists none of those levels gets its third reply free up to `max_tokens` instead (`0` off; skipped when an effort level is set) |
 | `parallel_tasks` | `true` | `false` runs sub-agents that can change files one after another |
 | `subagents` | `true` | `false` removes the `task` tool |
@@ -861,8 +869,11 @@ view, each within its budget in tokens (0 turns it off):
   first; a later edit marks a written file "re-read before trusting", a large
   edit or a failed write drops it, a new write replaces it.
 
-The ledger takes what they leave. Nothing is written to disk: the blocks live
-in the anchor of the curated view.
+The ledger takes what they leave. The blocks that left the view are not stored
+as text anywhere: they live in the anchor of the curated view. The curator's
+state is saved in `<id>.jsonl.curator` beside the session file, so a resume
+replays only the later replies; the session file itself is unchanged, and the
+state file goes to the trash with the session.
 
 `/context-live` shows, beside the transcript, a map of the whole history with
 what each call sends (whole, cut, left out) and the cells that just changed
@@ -923,7 +934,7 @@ nexo's DeepSeek preset starts on `deepseek-flash` (1M-token window, replies up t
 
 ## Layout of the code
 
-See `ARCHITECTURE.md`: the crates, one rule (`core ← providers, tools, agent,
+See `ARCHITECTURE.md` (and [docs/CRATES.md](docs/CRATES.md) for the crate graph): the crates, one rule (`core ← providers, tools, agent,
 tui ← cli`), the public API each crate commits to, the session file format
 and the interface's specification. `crates/nexo-bin` reads compiled programs as bytes and `crates/nexo-dbg`
 is the debugger; both stand alone, and the `bin` and `debug` tools and `nexo bin`, `nexo dbg` and `nexo re`

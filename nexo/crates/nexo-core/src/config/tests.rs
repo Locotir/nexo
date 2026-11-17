@@ -417,3 +417,25 @@ fn a_provider_sets_how_long_a_reply_may_go_quiet_and_zero_means_never() {
     assert_eq!(idle(int(-5)), secs(300), "a value that is no number of seconds is not read");
     assert_eq!(idle(Some(toml::Value::String("soon".into()))), secs(300));
 }
+
+#[test]
+fn the_readme_agent_table_lists_the_turn_limit_keys_with_their_defaults() {
+    // The headless exit code 4 and every long job point at these keys, so the README must name them and must
+    // not drift from the defaults the code applies.
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let d = AgentConfig::default();
+    let rows = [
+        ("max_turns", d.max_turns.to_string()),
+        ("on_limit", "\"checkpoint\"".to_string()),
+        ("max_tokens", d.max_tokens.to_string()),
+    ];
+    assert_eq!((d.on_limit, d.max_checkpoints), (OnLimit::Checkpoint, None));
+    for (key, default) in rows {
+        let row = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{key}` |")))
+            .unwrap_or_else(|| panic!("no README row for {key}"));
+        assert!(row.contains(&format!("`{default}`")), "{key}: {row}");
+    }
+    assert!(readme.lines().any(|l| l.starts_with("| `max_checkpoints` | unset |")));
+}
