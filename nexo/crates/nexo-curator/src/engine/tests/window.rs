@@ -565,3 +565,31 @@ fn once_the_person_has_gone_back_to_an_earlier_topic_a_new_request_opens_no_epoc
     assert_eq!(run(false), 1, "a session that only moves on weighs the epoch");
     assert_eq!(run(true), 0, "a session that went back weighs none");
 }
+
+/// Where rewriting pays at the default spec (`ratio=0.1`, `margin=2.25`, `ahead=0.25`), worked by hand: the
+/// rewrite costs `margin * land * (1 - ratio)` = 2.025 land, and a new engine has made no steps, so the calls
+/// to come are the least, 4. Each line below is one branch of `fire_point`.
+#[test]
+fn the_point_where_a_rewrite_pays_follows_each_branch_of_the_cost() {
+    let fire = |spec: &str, land: i64| Engine::new(params(spec).unwrap()).fire_point(land);
+    // the numbers pass through floats: a token either way is the same answer
+    let near = |got: i64, want: i64| assert!((got - want).abs() <= 1, "got {got}, want {want}");
+    // under the knee both before and after: land + 2.025 land / (0.1 * 4) = 6.0625 land
+    near(fire("", 10_000), 60_625);
+    // keeping that much would pass the knee, where a long view also loses quality: the third branch,
+    // (2.025 land / 4 + 0.1 land + 0.05 knee) / (0.1 + 0.05)
+    near(fire("", 20_000), 114_166);
+    // landing on or past the knee: land + 2.025 land / ((0.1 + 0.05) * 4) = 4.375 land
+    near(fire("", 120_000), 525_000);
+    // a session with one call left pays the whole rewrite for one call of saved rent
+    let mut one = Engine::new(params("").unwrap());
+    one.set_left(Some(1));
+    near(one.fire_point(10_000), 175_000);
+    // no estimate of the calls to come: twice the target, the fixed rule the cost replaced
+    assert_eq!(fire("ahead=0", 10_000), 20_000);
+    // a free cache never pays to rewrite
+    assert_eq!(fire("ratio=0", 10_000), i64::MAX);
+    // the ratio and the margin are in the formula: a dearer cache pays sooner, a smaller margin too
+    near(fire("ratio=0.2", 10_000), 32_500);
+    assert!(fire("margin=1", 10_000) < fire("", 10_000));
+}
