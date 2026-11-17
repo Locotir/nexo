@@ -55,7 +55,7 @@ impl Modal {
                     if let [gutter, text] = row.spans.as_slice() {
                         let indent = Span::raw(" ".repeat(crate::render::wrap::width(&gutter.content) + 2));
                         lines.extend(crate::render::wrap::wrap_runs(
-                            &[(reveal(&text.content), text.style)],
+                            &[(reveal(&text.content).trim_end_matches('\r').to_string(), text.style)],
                             w,
                             std::slice::from_ref(gutter),
                             &[indent],
