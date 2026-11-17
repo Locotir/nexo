@@ -274,6 +274,37 @@ fn a_picture_in_a_tool_result_is_an_image_block_inside_it() {
     );
 }
 
+#[test]
+fn a_blank_text_next_to_a_picture_in_a_tool_result_is_left_out() {
+    let (m, _) = convert(
+        &Message::tool_results(vec![Part::ToolResult {
+            call_id: "c1".into(),
+            name: Some("read".into()),
+            content: vec![
+                Part::text("  \n"),
+                Part::Image { source: ImageSource::Base64 { media_type: "image/png".into(), data: "AAAA".into() } },
+            ],
+            is_error: false,
+        }]),
+        "claude-x",
+    );
+    let blocks = m["content"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["type"], "image");
+}
+
+#[test]
+fn a_stop_sequence_is_sent_to_the_5_5_line_as_well() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    for model in ["claude-sonnet-5-5", "claude-sonnet-4-5"] {
+        let mut req = modern_req(model);
+        req.stop = vec!["END".into()];
+        assert_eq!(Anthropic::body(&cfg, &req)["stop_sequences"], json!(["END"]), "{model}");
+        req.stop.clear();
+        assert!(Anthropic::body(&cfg, &req).get("stop_sequences").is_none(), "{model}");
+    }
+}
+
 fn modern_req(model: &str) -> ModelRequest {
     let mut req = ModelRequest::new(model, "sys", vec![Message::user("hi")]);
     req.tools = vec![ToolSpec { name: "read".into(), description: "d".into(), parameters: json!({"type": "object"}) }];
