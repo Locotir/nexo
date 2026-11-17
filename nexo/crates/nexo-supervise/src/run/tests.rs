@@ -106,7 +106,16 @@ fn nexo_events_fill_the_ribbon_the_counters_and_the_mail_feed() {
     nexo.observe(&AgentEvent::SessionChanged { session_id: "s1".into(), title: "api".into() }, 100);
     nexo.observe(&AgentEvent::TurnStart { turn: 1 }, 100);
     nexo.observe(&AgentEvent::TodoChanged { done: 1, total: 4 }, 101);
-    nexo.observe(&AgentEvent::Retrying { attempt: 1, wait_secs: 30, rate_limit: true }, 102);
+    nexo.observe(
+        &AgentEvent::Retrying {
+            attempt: 1,
+            retries: 4,
+            wait_secs: 30,
+            rate_limit: true,
+            reason: "rate limited".into(),
+        },
+        102,
+    );
     nexo.observe(&AgentEvent::Compacted { before_tokens: 9000, after_tokens: 900 }, 103);
     nexo.observe(
         &AgentEvent::MailSent {

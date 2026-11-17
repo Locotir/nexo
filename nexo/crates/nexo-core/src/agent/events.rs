@@ -382,8 +382,14 @@ pub enum AgentEvent {
     /// A request to the provider failed and is tried again.
     Retrying {
         attempt: u8,
+        /// How many retries the request may make in all.
+        #[serde(default)]
+        retries: u8,
         wait_secs: u32,
         rate_limit: bool,
+        /// What went wrong, in a few plain words (for the status line).
+        #[serde(default)]
+        reason: String,
     },
     /// The todo list changed: items done out of the total.
     TodoChanged {

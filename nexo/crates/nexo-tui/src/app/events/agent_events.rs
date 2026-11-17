@@ -129,7 +129,10 @@ impl App {
             AgentEvent::MailRead { ids } => self.on_mail_read(ids),
             AgentEvent::MailStage { id, stage } => self.mail_stage(&id, stage),
             AgentEvent::Peers { peers } => self.on_peers(peers),
-            AgentEvent::Compacted { .. } | AgentEvent::Retrying { .. } | AgentEvent::TodoChanged { .. } => {}
+            AgentEvent::Retrying { attempt, retries, wait_secs, reason, .. } => {
+                self.on_retrying(attempt, retries, wait_secs, reason)
+            }
+            AgentEvent::Compacted { .. } | AgentEvent::TodoChanged { .. } => {}
             // handled before this match (see `handle_sub`)
             AgentEvent::Sub { .. }
             | AgentEvent::SubDelta { .. }

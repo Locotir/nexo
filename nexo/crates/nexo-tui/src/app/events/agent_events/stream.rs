@@ -11,6 +11,18 @@ impl App {
         self.prep = Some(what);
     }
 
+    /// The provider failed and the request waits to be sent again: the work line says so, so a failing
+    /// provider is not mistaken for a slow model. The seconds are not in the label (nothing would update it
+    /// when the wait ends); the first retry says them once in a toast, which takes no row.
+    pub(super) fn on_retrying(&mut self, attempt: u8, retries: u8, wait_secs: u32, reason: String) {
+        let why = if reason.is_empty() { String::new() } else { format!(" ({reason})") };
+        self.prep = Some(format!("waiting for the model: retry {attempt} of {retries}{why}"));
+        if attempt == 1 {
+            let said = if reason.is_empty() { "the provider failed" } else { reason.as_str() };
+            self.toast(crate::toast::Kind::Info, &format!("{said}; trying again in {wait_secs} s"));
+        }
+    }
+
     pub(super) fn on_turn_start(&mut self) {
         // announced by `Preparing`: the clock already runs, and the agent's own `Queued` counts hold
         let announced = self.busy && self.prep.is_some();

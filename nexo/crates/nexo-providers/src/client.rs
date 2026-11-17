@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
+use nexo_core::model_client::{Retry, RetryObserver};
 use nexo_core::{
     ErrorKind, EventStream, ModelInfo, ModelRequest, Protocol, ProviderConfig, ProviderError, StreamEvent,
 };
@@ -65,6 +66,8 @@ struct Call {
     key: Option<String>,
     req: ModelRequest,
     retries: u32,
+    /// Told of each retry before its wait.
+    on_retry: Option<RetryObserver>,
 }
 
 /// Calls a provider and retries what can be retried: a failed request, or
@@ -124,6 +127,18 @@ impl Client {
         req: &ModelRequest,
         retries: u32,
     ) -> Result<EventStream, ProviderError> {
+        self.stream_with(cfg, req, retries, None).await
+    }
+
+    /// `stream`, telling `on_retry` of each retry, whether the request failed before a stream existed or the
+    /// stream broke before it said anything.
+    pub async fn stream_with(
+        &self,
+        cfg: &ProviderConfig,
+        req: &ModelRequest,
+        retries: u32,
+        on_retry: Option<RetryObserver>,
+    ) -> Result<EventStream, ProviderError> {
         let protocol = self.protocol(cfg)?;
         let (shaped, key) = crate::login::prepare(cfg).await.map_err(|e| self.explain(cfg, true, e))?;
         let cfg = &shaped;
@@ -135,12 +150,15 @@ impl Client {
                     attempt += 1;
                     let wait = self.backoff(attempt, &e);
                     tracing::warn!(attempt, ?wait, "{e}; retrying");
+                    if let Some(on) = &on_retry {
+                        on(Retry::after(&e, attempt, retries, wait));
+                    }
                     tokio::time::sleep(wait).await;
                 }
                 Err(e) => return Err(self.explain(cfg, key.is_some(), e)),
             }
         };
-        let call = Call { protocol, cfg: cfg.clone(), key, req: req.clone(), retries };
+        let call = Call { protocol, cfg: cfg.clone(), key, req: req.clone(), retries, on_retry };
         Ok(self.forward(inner, call, attempt))
     }
 
@@ -148,7 +166,7 @@ impl Client {
     fn forward(&self, mut inner: EventStream, call: Call, mut attempt: u32) -> EventStream {
         let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
         let this = self.clone();
-        let Call { protocol, cfg, key, req, retries } = call;
+        let Call { protocol, cfg, key, req, retries, on_retry } = call;
         tokio::spawn(async move {
             // what comes before the first content (start, opaque reasoning, usage) is held
             // back, so a retry never hands the caller the same preamble twice; the usage of an
@@ -190,6 +208,9 @@ impl Client {
                                 attempt += 1;
                                 let wait = this.backoff(attempt, &last);
                                 tracing::warn!(attempt, ?wait, "{last}; retrying");
+                                if let Some(on) = &on_retry {
+                                    on(Retry::after(&last, attempt, retries, wait));
+                                }
                                 tokio::select! {
                                     _ = tokio::time::sleep(wait) => {}
                                     _ = tx.closed() => return, // the caller left: no request to bill
@@ -338,8 +359,60 @@ mod tests {
             key: None,
             req: ModelRequest::new("m", "", vec![Message::user("hi")]),
             retries,
+            on_retry: None,
         };
         client.forward(Box::pin(futures::stream::iter(first)), call, 0).collect().await
+    }
+
+    /// What `on_retry` was told while a request that fails `failures` times at the start, then streams a
+    /// reply that breaks `broken` times before its first word, is answered.
+    async fn retries_seen(failures: usize, broken: usize, retries: u32) -> Vec<Retry> {
+        let mut overloaded = ProviderError::new(ErrorKind::Overloaded, "Overloaded").with_status(529);
+        overloaded.retry_after = Some(Duration::ZERO);
+        let cut = || Ok(vec![StreamEvent::Error(overloaded.clone()), StreamEvent::Done]);
+        let good = Ok(vec![StreamEvent::TextDelta("hi".into()), StreamEvent::Done]);
+        let mut script: Vec<_> = (0..failures).map(|_| Err(overloaded.clone())).collect();
+        script.extend((0..broken).map(|_| cut()));
+        script.push(good);
+        let mut registry = Registry::new();
+        registry.register(Arc::new(Scripted(Mutex::new(script))));
+        let seen: Arc<Mutex<Vec<Retry>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_retry: RetryObserver = Arc::new(move |r: Retry| sink.lock().unwrap().push(r));
+        let cfg = ProviderConfig::new("scripted", "http://127.0.0.1:9", None);
+        let req = ModelRequest::new("m", "", vec![Message::user("hi")]);
+        let stream = Client::new(registry).stream_with(&cfg, &req, retries, Some(on_retry)).await.unwrap();
+        let evs: Vec<_> = stream.collect().await;
+        assert!(evs.contains(&StreamEvent::TextDelta("hi".into())), "{evs:?}");
+        let told = seen.lock().unwrap();
+        told.clone()
+    }
+
+    #[tokio::test]
+    async fn a_request_that_fails_before_any_stream_exists_is_told_to_the_observer_before_each_retry() {
+        let told = retries_seen(2, 0, 4).await;
+        let at: Vec<_> = told.iter().map(|r| (r.attempt, r.retries)).collect();
+        assert_eq!(at, [(1, 4), (2, 4)], "{told:?}");
+        assert_eq!(told[0].reason, "provider overloaded, HTTP 529");
+        assert!(!told[0].rate_limit);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_breaks_before_its_first_word_is_told_to_the_observer_before_each_retry() {
+        let told = retries_seen(0, 2, 4).await;
+        let at: Vec<_> = told.iter().map(|r| r.attempt).collect();
+        assert_eq!(at, [1, 2], "{told:?}");
+        // a retry that fails again at the start counts on from the retries before it
+        let told = retries_seen(1, 1, 4).await;
+        assert_eq!(told.iter().map(|r| r.attempt).collect::<Vec<_>>(), [1, 2], "{told:?}");
+    }
+
+    #[test]
+    fn a_rate_limit_is_marked_as_one_for_the_observer() {
+        let e = ProviderError::new(ErrorKind::RateLimit, "slow down").with_status(429);
+        let r = Retry::after(&e, 1, 4, Duration::from_secs(6));
+        assert!(r.rate_limit);
+        assert_eq!((r.reason.as_str(), r.wait), ("rate limited, HTTP 429", Duration::from_secs(6)));
     }
 
     #[tokio::test]
@@ -418,6 +491,7 @@ mod gone {
             key: None,
             req: ModelRequest::new("m", "", vec![Message::user("hi")]),
             retries: 3,
+            on_retry: None,
         };
         let s = Client::new(Registry::new()).forward(Box::pin(futures::stream::iter(failed)), call, 0);
         // the task is now asleep in its backoff; the turn is cancelled and the stream dropped
@@ -438,6 +512,16 @@ impl nexo_core::model_client::ModelClient for Client {
         retries: u32,
     ) -> Result<nexo_core::provider::EventStream, nexo_core::error::ProviderError> {
         Client::stream(self, cfg, req, retries).await
+    }
+
+    async fn stream_observed(
+        &self,
+        cfg: &nexo_core::config::ProviderConfig,
+        req: &nexo_core::provider::ModelRequest,
+        retries: u32,
+        on_retry: nexo_core::model_client::RetryObserver,
+    ) -> Result<nexo_core::provider::EventStream, nexo_core::error::ProviderError> {
+        Client::stream_with(self, cfg, req, retries, Some(on_retry)).await
     }
 
     fn backoff(&self, n: u32, e: &nexo_core::error::ProviderError) -> std::time::Duration {

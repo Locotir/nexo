@@ -151,7 +151,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             }
         }
         let started = tokio::select! {
-            r = client.stream(&cfg, &req, retries) => r,
+            r = client.stream_observed(&cfg, &req, retries, retry_observer(&events)) => r,
             _ = cancel.cancelled() => return TurnEnd::Interrupted,
         };
         let mut stream = match started {
