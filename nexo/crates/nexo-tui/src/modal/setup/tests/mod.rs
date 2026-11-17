@@ -574,8 +574,26 @@ fn catalogue_models_of_an_unreachable_local_preset_do_not_skip_the_start_screen(
         "",
     );
     assert_eq!(s.step, Step::Start);
-    s.found_local(vec![("lmstudio".into(), "LM Studio".into())]);
+    // a server that answers for another preset does not make the lmstudio models usable
+    s.found_local(vec![("ollama".into(), "Ollama".into())]);
+    assert_eq!(s.step, Step::Start);
     assert_eq!(s.list.items[0].label, "Use the models on this computer (free)");
+}
+
+#[test]
+fn a_scan_that_finds_the_server_of_the_catalogue_models_opens_the_model_list() {
+    no_auth();
+    let ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_TEST_NO_SUCH_KEY"));
+    let mut s = Setup::new(
+        vec![("deepseek".into(), ds), keyless_lmstudio()],
+        vec![("lmstudio".into(), "a".into()), ("lmstudio".into(), "b".into())],
+        "",
+    );
+    assert_eq!(s.step, Step::Start);
+    // the scan that was cached before the dialog opened is applied right after `new`
+    s.found_local(vec![("lmstudio".into(), "LM Studio".into())]);
+    assert_eq!(s.step, Step::Provider);
+    assert_eq!(s.groups.first().map(|g| g.key.as_str()), Some("lmstudio"));
 }
 
 #[test]

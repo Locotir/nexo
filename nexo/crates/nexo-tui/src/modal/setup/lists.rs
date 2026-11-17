@@ -213,6 +213,11 @@ impl Setup {
     pub fn found_local(&mut self, found: Vec<(String, String)>) {
         self.local = found;
         self.scanned = true;
+        // a server that answers can make catalogue models usable: the start screen was only for
+        // someone with nothing to switch to, so the list of models takes its place
+        if self.step == Step::Start && self.models.iter().any(|(p, _)| self.usable(p)) {
+            self.step = Step::Provider;
+        }
         if self.step == Step::Start {
             self.fill_start();
         } else if self.step == Step::Provider {
