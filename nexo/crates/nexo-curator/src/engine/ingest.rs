@@ -11,8 +11,8 @@ use crate::msg::{blocks, get_str, key_of};
 use crate::rules::{clip, rules_in};
 use crate::textops::{self};
 use crate::tools::{
-    classify, debug_effect, debug_session, edit_size, full_write, heredoc_writes, printed_files, prints_files,
-    shell_writes, DbgEffect, Kind,
+    classify, debug_effect, debug_session, edit_size, files_printed_by_parts, full_write, heredoc_writes,
+    printed_files, prints_files, read_part, shell_part, shell_writes, DbgEffect, Kind,
 };
 
 use super::files::{basename, command_of, edited, file_key, forget, head_and_tail, same_file, Wrote, WROTE_TOKENS};
@@ -321,7 +321,22 @@ impl Engine {
                     }
                     _ => {}
                 }
+                if let Some(path) = info.filter(|x| x.kind == Kind::Read).and_then(|x| x.path.clone()) {
+                    let part = read_part(get_str(b, "name"), b.get("input")).unwrap_or_default();
+                    self.shell_part.insert(id.clone(), vec![(path, part)]);
+                }
                 if info.is_some_and(|x| x.kind == Kind::Exec) {
+                    let command = command_of(b);
+                    let parts: Vec<(String, String)> = files_printed_by_parts(&command)
+                        .into_iter()
+                        .map(|f| {
+                            let part = shell_part(&command, &f).unwrap_or_default();
+                            (f, part)
+                        })
+                        .collect();
+                    if !parts.is_empty() {
+                        self.shell_part.insert(id.clone(), parts);
+                    }
                     let read = printed_files(&command_of(b));
                     if !read.is_empty() {
                         self.shell_read.insert(id, read);
@@ -334,6 +349,9 @@ impl Engine {
                 }
                 if self.edits.iter().any(|e| e.2 == id) {
                     self.edit_ok.insert(id.clone(), !info.is_some_and(|x| x.error));
+                }
+                if let Some(parts) = self.shell_part.remove(&id) {
+                    self.shell_parts.insert(i, parts);
                 }
                 if let Some(read) = self.shell_read.remove(&id) {
                     self.shell_reads.insert(i, read);

@@ -93,3 +93,39 @@ fn mission_a_read_of_a_file_the_first_message_lists_stays_until_a_request_takes_
     e.sync(&msgs);
     assert!(!sent(&e.view()).contains("quokka 41"));
 }
+
+/// A file named by the request, read as 10 pages; how many of the pages' first lines the view holds.
+fn pages_kept(budget: i64) -> usize {
+    let page = |k: usize| listing(200 * k, 200 * k + 199);
+    let mut msgs =
+        vec![json!({"role": "user", "content": "Which client has the largest invoice total in report.txt?"})];
+    for k in 0..10 {
+        let cmd = format!("sed -n '{},{}p' report.txt", 200 * k + 1, 200 * k + 200);
+        msgs.extend(step(k + 1, &cmd, &page(k)));
+    }
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+    msgs.push(json!({"role": "user", "content": "Now sort report.txt by date, please."}));
+    let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1").unwrap());
+    if budget > 0 {
+        e.set_budget(budget);
+    }
+    e.sync(&msgs);
+    let view = sent(&e.view());
+    (0..10).filter(|&k| view.contains(&listing(200 * k + 5, 200 * k + 5)[..24])).count()
+}
+
+#[test]
+fn named_default_keeps_a_file_read_in_ten_pages_whole_without_a_window() {
+    assert_eq!(pages_kept(0), 10);
+}
+
+#[test]
+fn named_takes_at_most_half_of_a_small_window() {
+    let kept = pages_kept(32_000);
+    assert!(kept >= 1 && kept < 10, "kept {kept} pages of 10 with a 32k budget");
+}
+
+#[test]
+fn named_default_is_64000() {
+    assert_eq!(params("nudge=0").unwrap().named, 64000);
+}
