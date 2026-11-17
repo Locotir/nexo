@@ -393,8 +393,21 @@ fn the_schema_names_the_keys_of_a_change_and_of_a_file_entry() {
     assert_eq!(change["required"], json!(["old_string", "new_string"]));
     assert_eq!(change["properties"]["replace_all"]["type"], "boolean");
     let file = &p["properties"]["files"]["items"];
-    assert_eq!(file["required"], json!(["path"]), "a file entry may carry one pair instead of `edits`");
+    assert_eq!(file["required"], json!(["path"]));
     assert_eq!(file["properties"]["edits"]["items"], *change, "a file's edits are the same entries");
-    assert_eq!(file["properties"]["old_string"]["type"], "string");
     assert!(p.get("required").is_none(), "`path` is not required when `files` is used");
+}
+
+#[test]
+fn a_small_window_gets_the_entries_as_bare_objects_that_still_have_items() {
+    let mut spec = Edit.compact().unwrap().apply(Edit.spec());
+    Edit.trim_compact(&mut spec);
+    let props = &spec.parameters["properties"];
+    assert_eq!(props["edits"]["items"], json!({"type": "object"}));
+    let file = &props["files"]["items"];
+    assert_eq!(file["properties"]["path"]["type"], "string");
+    assert_eq!(file["properties"]["edits"]["items"], json!({"type": "object"}));
+    // what the whole text adds to a request, the short one leaves out: the compact text stays near its old size
+    let (short, whole) = (json!(spec).to_string().len(), json!(Edit.spec()).to_string().len());
+    assert!(short < 800 && short < whole - 400, "short {short}, whole {whole}");
 }

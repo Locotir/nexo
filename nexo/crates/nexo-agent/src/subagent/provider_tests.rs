@@ -37,7 +37,9 @@ const FIXED_32K: u64 = 2_400;
 /// the result of `select_browser`). `find{target}`, the mouse verbs with `modifiers?` and `network{to?}` add 107
 /// (measured 12 009). Saying that `browsers` lists the person's logged-in browsers took 1 more (12 010). The capture
 /// verbs add about 50 to the short text (estimated, not measured).
-const SCHEMA_CEILING: usize = 12_130;
+/// Spelling out the keys of an `edit` change and of a file entry (so that no array of its schema lacks `items`)
+/// added 282 to the characters of `edit` (1042 to 1324, counted by hand): 12 412 allowed.
+const SCHEMA_CEILING: usize = 12_412;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
 const TASK_WITH_OWN_KINDS: usize = 1_915;
