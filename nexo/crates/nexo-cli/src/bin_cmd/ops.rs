@@ -337,6 +337,24 @@ pub enum BinOp {
         /// Show memory after the run: --show ADDR:LEN (repeat).
         #[arg(long, value_name = "ADDR:LEN")]
         show: Vec<String>,
+        /// Stop when execution reaches ADDR (a number or a name) and report registers, flags and the stack top (repeat).
+        #[arg(long = "break", value_name = "ADDR")]
+        breaks: Vec<String>,
+        /// Act at ADDR and go on: --hook ADDR=print, ADDR=dump:REG:LEN (LEN at most 4096) or ADDR=set:REG=VALUE (repeat).
+        #[arg(long = "hook", value_name = "ADDR=ACTION")]
+        hooks: Vec<String>,
+        /// What read(0) gives to system calls: a file, hex:DE AD, or the text itself (default: no bytes).
+        #[arg(long, value_name = "FILE|TEXT")]
+        stdin: Option<String>,
+        /// The clock the time system calls answer, in seconds since 1970 (default 1700000000).
+        #[arg(long, default_value_t = 1_700_000_000, value_name = "SECONDS")]
+        clock: u64,
+        /// The seed of the bytes getrandom gives.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        seed: u64,
+        /// Most library and system calls listed; the count of the rest is said.
+        #[arg(long = "max-calls", default_value_t = nexo_bin::emu_limits::DEFAULT_CALLS, value_name = "N")]
+        max_calls: usize,
         #[command(flatten)]
         common: Common,
     },

@@ -1,7 +1,7 @@
 //! The VEX forms (AVX and AVX2) compilers emit with -mavx2 for vector loops: moves, broadcasts, the integer
 //! and bit operations on xmm and ymm, lane extraction and insertion, and vzeroupper. The lane arithmetic is
 //! the SSE code in sse.rs run once per 128-bit half, which is how the in-lane AVX2 instructions are defined.
-//! An EVEX (AVX-512) instruction, or a VEX one not listed here, stops the run by name.
+//! FMA3 goes on to fma.rs. An EVEX (AVX-512) instruction, or a VEX one neither file knows, stops the run by name.
 
 use iced_x86::{EncodingKind, Instruction, Mnemonic as M, OpKind};
 
@@ -312,7 +312,7 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
             let hi = if bytes == 32 { half(s.hi) } else { 0 };
             wr(cpu, mem, ins, 0, V { lo: half(s.lo), hi }, true)?;
         }
-        _ => return Ok(false),
+        _ => return super::fma::exec(cpu, mem, ins),
     }
     Ok(true)
 }

@@ -45,11 +45,13 @@ fn text_runs(b: &[u8]) -> Vec<(usize, String)> {
     out
 }
 
-fn hexdump(m: &Machine, start: u64, len: usize, rows: &mut Rows) {
+/// `len` bytes at `start` as hex and ASCII, 16 to a line; a last line says where the memory ends.
+pub(super) fn hex_lines(mem: &Mem, start: u64, len: usize) -> Vec<String> {
+    let mut out = Vec::new();
     let mut buf = vec![0u8; len];
     let mut ok = 0;
     for (k, b) in buf.iter_mut().enumerate() {
-        match m.mem.read_u(start + k as u64, 1) {
+        match mem.read_u(start + k as u64, 1) {
             Ok(v) => {
                 *b = v as u8;
                 ok = k + 1;
@@ -60,11 +62,33 @@ fn hexdump(m: &Machine, start: u64, len: usize, rows: &mut Rows) {
     for (k, chunk) in buf[..ok].chunks(16).enumerate() {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
         let asc: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
-        rows.push(format!("    {:#x}  {:<47}  |{asc}|", start + 16 * k as u64, hex.join(" ")));
+        out.push(format!("    {:#x}  {:<47}  |{asc}|", start + 16 * k as u64, hex.join(" ")));
     }
     if ok < len {
-        rows.push(format!("    {:#x}  (not mapped)", start + ok as u64));
+        out.push(format!("    {:#x}  (not mapped)", start + ok as u64));
     }
+    out
+}
+
+fn hexdump(m: &Machine, start: u64, len: usize, rows: &mut Rows) {
+    for l in hex_lines(&m.mem, start, len) {
+        rows.push(l);
+    }
+}
+
+/// The flags that are set, as names.
+fn flags_text(f: u64) -> String {
+    let names = [
+        (cpu::CF, "CF"),
+        (cpu::PF, "PF"),
+        (cpu::AF, "AF"),
+        (cpu::ZF, "ZF"),
+        (cpu::SF, "SF"),
+        (cpu::DF, "DF"),
+        (cpu::OF, "OF"),
+    ];
+    let set: Vec<&str> = names.iter().filter(|(b, _)| f & b != 0).map(|(_, n)| *n).collect();
+    format!("{f:#x} {}", if set.is_empty() { "(none set)".to_string() } else { set.join(" ") })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -134,7 +158,12 @@ pub(super) fn report(
         Stop::Fault(f) => fault_text(m, f, &at(rip), &cur(&mut fmt)),
         Stop::Divide => format!("divide error (by zero or overflow) at {} {}", at(rip), cur(&mut fmt)),
         Stop::Trap(t) => format!("{t} at {}: the program traps here", at(rip)),
-        Stop::Syscall(n) => format!("system call {n} at {}: emu does not make system calls", at(rip)),
+        Stop::Syscall(n) => format!(
+            "system call {n} ({}) at {}: emu does not emulate it (it does read, write, exit, exit_group, brk, mmap, munmap, mprotect, getpid, gettid, time, clock_gettime, gettimeofday, getrandom, arch_prctl)",
+            sys::name_of(*n),
+            at(rip)
+        ),
+        Stop::Break(a) => format!("reached --break {}", at(*a)),
         Stop::Exit(c) => format!("the program called exit({c})"),
         Stop::Abort(why) => why.clone(),
         Stop::LibFault { call, fault } => format!(
@@ -180,14 +209,57 @@ pub(super) fn report(
         let head = if *stop == Stop::Returned { "regs out " } else { "regs     " };
         rows.push(format!("{head} {}", changed.join(" ")));
     }
-    // library calls
+    if matches!(stop, Stop::Break(_)) {
+        rows.push(format!("flags     {}", flags_text(m.cpu.flags)));
+        let sp = m.cpu.gpr[RSP];
+        rows.push(format!("stack top rsp={sp:#x} (8 qwords)"));
+        for k in 0..8u64 {
+            match m.mem.read_u(sp.wrapping_add(8 * k), 8) {
+                Ok(v) => rows.push(format!("  rsp+{:#04x}  {v:#018x}", 8 * k)),
+                Err(_) => {
+                    rows.push(format!("  rsp+{:#04x}  (not mapped)", 8 * k));
+                    break;
+                }
+            }
+        }
+    }
+    // library and system calls
     if m.calls_total > 0 {
-        rows.push(format!("calls     {} library call(s)", m.calls_total));
+        rows.push(format!(
+            "calls     {} call(s): {} library, {} system",
+            m.calls_total,
+            m.calls_total - m.sys_total,
+            m.sys_total
+        ));
         for c in &m.calls {
             rows.push(format!("  {:#x}  {}", c.site, c.text));
         }
-        if m.calls_total > m.calls.len() {
-            rows.push(format!("  ... {} more calls not listed", m.calls_total - m.calls.len()));
+        if m.unlogged > 0 {
+            rows.push(format!(
+                "  ... {} more call(s) not listed ({} of them system calls): --max-calls {} lists them",
+                m.unlogged,
+                m.unlogged_sys,
+                m.calls_total.min(MAX_CALLS)
+            ));
+        }
+    }
+    if m.hooks.total > 0 {
+        rows.push(format!("hooks     {} hit(s)", m.hooks.total));
+        for h in &m.hooks.log {
+            let mut it = h.lines.iter();
+            if let Some(first) = it.next() {
+                rows.push(format!("  {:#x}  {first}", h.addr));
+            }
+            for l in it {
+                rows.push(l.clone());
+            }
+        }
+        if m.hooks.total > m.hooks.log.len() {
+            rows.push(format!(
+                "  ... {} more hit(s) not listed: --max-calls {} lists them",
+                m.hooks.total - m.hooks.log.len(),
+                m.hooks.total.min(MAX_CALLS)
+            ));
         }
     }
     for (name, buf) in [("stdout", &m.stdout), ("stderr", &m.stderr)] {
@@ -291,6 +363,10 @@ pub(super) fn report(
             rows.push(line);
         }
     }
+    let exit_code = match stop {
+        Stop::Exit(c) => Some(*c),
+        _ => None,
+    };
     let meta = json!({
         "file": img.path.display().to_string(),
         "start": start,
@@ -298,10 +374,16 @@ pub(super) fn report(
         "steps": steps,
         "stop": {"kind": stop.kind(), "text": stop_text, "rip": rip, "place": img.label(rip)},
         "return": (*stop == Stop::Returned).then_some(rax),
+        "exit": exit_code,
+        "flags": m.cpu.flags,
+        "calls_total": m.calls_total,
+        "calls_not_listed": m.unlogged,
+        "hooks_total": m.hooks.total,
         "regs": (0..16).map(|r| (GPR_NAMES[r].to_string(), json!(m.cpu.gpr[r]))).collect::<serde_json::Map<_, _>>(),
         "stdout": String::from_utf8_lossy(&m.stdout),
         "stderr": String::from_utf8_lossy(&m.stderr),
         "calls": m.calls.iter().map(|c| json!({"site": c.site, "call": c.text})).collect::<Vec<_>>(),
+        "hooks": m.hooks.log.iter().map(|h| json!({"addr": h.addr, "lines": h.lines})).collect::<Vec<_>>(),
     });
     let rows = rows.0;
     let mut words = vec![shell_word(&spec.target)];

@@ -16,6 +16,12 @@ impl<'a> Machine<'a> {
             dropped_output: 0,
             calls: Vec::new(),
             calls_total: 0,
+            sys_total: 0,
+            unlogged: 0,
+            unlogged_sys: 0,
+            max_calls: DEFAULT_CALLS,
+            sys: sys::Sys::new(),
+            hooks: hook::Hooks::default(),
             regions: Vec::new(),
             imports: Vec::new(),
             overrides: HashMap::new(),
@@ -232,10 +238,23 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn log_call(&mut self, site: u64, text: String) {
+    pub(super) fn log_call(&mut self, site: u64, text: String) {
+        self.log_kind(site, text, false);
+    }
+
+    /// Log a call; past `--max-calls` it is counted, not kept.
+    pub(super) fn log_kind(&mut self, site: u64, text: String, is_sys: bool) {
         self.calls_total += 1;
-        if self.calls.len() < MAX_CALLS {
+        if is_sys {
+            self.sys_total += 1;
+        }
+        if self.calls.len() < self.max_calls {
             self.calls.push(CallRec { site, text });
+        } else {
+            self.unlogged += 1;
+            if is_sys {
+                self.unlogged_sys += 1;
+            }
         }
     }
 
