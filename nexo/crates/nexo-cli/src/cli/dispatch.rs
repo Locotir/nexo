@@ -6,6 +6,21 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
     // These commands never read the configuration, so a file that cannot be parsed must not stop them:
     // they are what a person runs to find the file (`config path`), start over (`config init`) or
     // read what is stored beside it.
+    if matches!(
+        &args.cmd,
+        Some(
+            Cmd::Config { .. }
+                | Cmd::Guide
+                | Cmd::Auth { what: AuthCmd::List }
+                | Cmd::Worktree { .. }
+                | Cmd::Export(_)
+                | Cmd::Sessions { .. }
+        )
+    ) {
+        // an administrator policy that cannot be read stops nexo before anything else runs (see
+        // docs/MANAGED-POLICY.md): these commands skip the rest of the configuration, not that check
+        nexo_core::managed::load()?;
+    }
     match &args.cmd {
         Some(Cmd::Config { what }) => return setup::config_cmd(&cwd, what.as_ref()),
         Some(Cmd::Guide) => {
@@ -35,7 +50,7 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         // `doctor` is the tool for this: it names the file and the fix instead of stopping
         Err(e) if matches!(args.cmd, Some(Cmd::Doctor { .. })) => {
             println!("FIX  config            {e:#}");
-            println!("     fix the file named above, or move it aside and run `nexo config init`");
+            println!("     {}", way_out(&e));
             return Ok(1);
         }
         Err(e) => return Err(point_to_the_files(e)),
@@ -171,6 +186,10 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Review { .. }) => {}
         None => {}
         // handled before the configuration is read
+        Some(Cmd::Config { .. } | Cmd::Guide | Cmd::Auth { what: AuthCmd::List } | Cmd::Worktree { .. }) => {
+            return Ok(0)
+        }
+        Some(Cmd::Export(_) | Cmd::Sessions { .. }) => return Ok(0),
         Some(Cmd::Supervise { .. }) => return Ok(0),
         Some(Cmd::Bin(_)) => return Ok(0),
         Some(Cmd::Dbg(_)) => return Ok(0),

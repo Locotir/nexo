@@ -14,8 +14,8 @@ mod dispatch;
 mod modes;
 
 pub use args::*;
-pub(crate) use config::load_config_for;
-use config::{load_config, point_to_the_files, trust_asked};
+use config::{load_config, trust_asked, way_out};
+pub(crate) use config::{load_config_for, point_to_the_files};
 use dispatch::run_in;
 use modes::{headless_collect, interactive};
 

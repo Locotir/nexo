@@ -23,7 +23,11 @@ pub fn enter(args: &crate::cli::Args, cwd: &Path) -> anyhow::Result<Option<wt::W
     if args.cmd.as_ref().is_some_and(|c| !matches!(c, crate::cli::Cmd::Review { .. })) {
         return Ok(None);
     }
-    let setup = nexo_core::Config::load(cwd)?.agent.worktree_setup;
+    let setup = nexo_core::Config::load(cwd)
+        .map_err(anyhow::Error::from)
+        .map_err(crate::cli::point_to_the_files)?
+        .agent
+        .worktree_setup;
     let name = Some(name.as_str()).filter(|n| !n.is_empty());
     let made = wt::create(cwd, name, &setup).map_err(|e| anyhow::anyhow!("--worktree: {e}"))?;
     eprintln!("nexo: working in worktree {} (branch {})", made.path.display(), made.branch);

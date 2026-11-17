@@ -4,12 +4,33 @@ use super::*;
 
 /// A file that cannot be parsed already names itself and the line; this adds where to look next, on
 /// the same line, so a person who sees only this message still has a command to run.
-pub(super) fn point_to_the_files(e: anyhow::Error) -> anyhow::Error {
+pub(crate) fn point_to_the_files(e: anyhow::Error) -> anyhow::Error {
     match e.downcast_ref::<nexo_core::config::ConfigError>() {
         Some(nexo_core::config::ConfigError::Parse(..)) => {
             anyhow::anyhow!("{e:#}; run `nexo doctor` or `nexo config path` to see the files")
         }
         _ => e,
+    }
+}
+
+/// What `nexo doctor` prints under the file it could not load: the way out that fits that file. The
+/// user file can be moved aside and started over with `config init`; the project file needs
+/// `--project` for that; an administrator policy is not the person's to move or bypass; a file that
+/// exists but cannot be read is a matter of permissions, not of its content.
+pub(super) fn way_out(e: &anyhow::Error) -> String {
+    use nexo_core::config::ConfigError;
+    match e.downcast_ref::<ConfigError>() {
+        Some(ConfigError::Managed(_)) => {
+            "this is the administrator policy: ask whoever manages it for a file that nexo can read".into()
+        }
+        Some(ConfigError::Io(..)) => "check that the file named above exists and that you may read it".into(),
+        Some(ConfigError::Parse(file, _)) if *file == nexo_core::paths::user_config_file() => {
+            "fix the file named above, or move it aside and run `nexo config init`".into()
+        }
+        Some(ConfigError::Parse(..)) => {
+            "fix the file named above, or move it aside and run `nexo config init --project`".into()
+        }
+        None => "fix the problem named above".into(),
     }
 }
 

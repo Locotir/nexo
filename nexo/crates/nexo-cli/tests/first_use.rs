@@ -7,6 +7,10 @@ const MOCK: &str =
     "provider = \"mock\"\nmodel = \"mock\"\n[providers.mock]\nprotocol = \"mock\"\nmodels = [\"mock\"]\n[context]\npolicy = \"plain\"\n";
 
 fn nexo(dir: &Path, config: &str, args: &[&str]) -> Output {
+    nexo_with(dir, config, args, &[])
+}
+
+fn nexo_with(dir: &Path, config: &str, args: &[&str], env: &[(&str, &Path)]) -> Output {
     std::fs::write(dir.join("config.toml"), config).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nexo"));
     cmd.args(args).current_dir(dir).env_clear();
@@ -23,6 +27,7 @@ fn nexo(dir: &Path, config: &str, args: &[&str]) -> Output {
         .env("NEXO_DATA_DIR", dir.join("data"))
         .env("NEXO_CACHE_DIR", dir.join("cache"))
         .env("NEXO_NO_UPDATE_CHECK", "1")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
         .expect("nexo runs")
@@ -204,4 +209,45 @@ fn a_command_that_needs_the_config_says_where_to_look_when_it_cannot_be_parsed()
     let e = err(&o);
     assert!(e.contains("cannot parse") && e.contains("nexo doctor") && e.contains("nexo config path"), "{e}");
     assert_eq!(e.trim().lines().count(), 1, "{e}");
+}
+
+#[test]
+fn doctor_points_a_broken_project_file_to_the_project_way_out() {
+    let d = tempfile::tempdir().unwrap();
+    let proj = d.path().join("proj");
+    std::fs::create_dir_all(proj.join(".nexo")).unwrap();
+    std::fs::write(proj.join(".nexo").join("config.toml"), BROKEN).unwrap();
+    let o = nexo(d.path(), MOCK, &["--cwd", proj.to_str().unwrap(), "doctor", "--offline"]);
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    let s = out(&o);
+    assert!(s.contains("FIX  config") && s.contains(".nexo"), "{s}");
+    assert!(s.contains("nexo config init --project"), "{s}");
+}
+
+#[test]
+fn an_unreadable_administrator_policy_is_not_offered_a_way_around_it() {
+    let d = tempfile::tempdir().unwrap();
+    let policy = d.path().join("managed.toml");
+    std::fs::write(&policy, "this is = = not toml\n").unwrap();
+    let env = [("NEXO_MANAGED_FILE", policy.as_path())];
+    let o = nexo_with(d.path(), MOCK, &["doctor", "--offline"], &env);
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    let s = out(&o);
+    assert!(s.contains("FIX  config") && s.contains("managed.toml") && s.contains("administrator policy"), "{s}");
+    assert!(!s.contains("config init"), "{s}");
+    // the commands that skip the configuration still stop on a policy that cannot be read
+    for args in [&["sessions"][..], &["guide"], &["config", "path"], &["auth", "list"]] {
+        let o = nexo_with(d.path(), MOCK, args, &env);
+        assert_eq!(o.status.code(), Some(1), "nexo {args:?}: {}", out(&o));
+        assert!(err(&o).contains("managed.toml"), "nexo {args:?}: {}", err(&o));
+    }
+}
+
+#[test]
+fn a_session_in_a_worktree_says_where_to_look_when_the_config_cannot_be_parsed() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), BROKEN, &["--worktree", "-p", "hi"]);
+    assert_eq!(o.status.code(), Some(1), "{}", out(&o));
+    let e = err(&o);
+    assert!(e.contains("cannot parse") && e.contains("nexo doctor") && e.contains("nexo config path"), "{e}");
 }
