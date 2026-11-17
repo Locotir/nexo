@@ -77,3 +77,18 @@ fn install_print_shows_the_hooks_and_writes_nothing() {
     }
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0, "nothing was written");
 }
+
+#[test]
+fn install_prints_the_hooks_without_the_print_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_nexo"))
+        .args(["supervise", "install"])
+        .env("HOME", home.path())
+        .env("NEXO_CONFIG_DIR", home.path().join("cfg"))
+        .env("NEXO_DATA_DIR", home.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["hooks"]["Stop"].is_array(), "{v}");
+}

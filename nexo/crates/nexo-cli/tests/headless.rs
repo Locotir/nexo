@@ -683,3 +683,33 @@ fn the_init_event_lists_the_tools_the_model_is_offered() {
     assert!(has(&big, "todo") && has(&big, "web_search") && has(&big, "read"));
     assert!(has(&tiny, "read") && has(&tiny, "bash"));
 }
+
+/// A review whose provider is off says why, as `-p` does, before the line that the review did not finish; the
+/// exit stays 2 because 1 means "a high finding exists" for a review.
+#[test]
+fn a_review_with_the_provider_off_prints_the_card_before_the_unfinished_line() {
+    let d = tempfile::tempdir().unwrap();
+    git(d.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(d.path().join(".gitignore"), "config.toml\ndata/\ncache/\n.gitignore\n").unwrap();
+    std::fs::write(d.path().join("a.txt"), "x\n").unwrap();
+    git(d.path(), &["add", "a.txt"]);
+    let out = off_server(d.path(), &["review", "--staged"]);
+    assert_eq!(out.status.code(), Some(2), "{}", err(&out));
+    let s = err(&out);
+    let card = s.find("Nothing answers at http://127.0.0.1:").expect("the card title");
+    let last = s.find("nexo review: the model did not finish the review").expect("the closing line");
+    assert!(card < last, "{s:?}");
+    for secret in ["hunter2", "zzz9"] {
+        assert!(!s.contains(secret), "{secret}");
+    }
+}
+
+#[test]
+fn a_missing_cwd_names_the_path_and_a_missing_session_names_the_id() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["--cwd", "/nonexistent/dir", "providers"]);
+    assert!(!out.status.success());
+    assert!(err(&out).contains("cannot use --cwd /nonexistent/dir:"), "{}", err(&out));
+    let out = nexo(d.path(), &["-p", "hi", "--resume", "nosuchid"]);
+    assert!(err(&out).contains("no session with id nosuchid; `nexo sessions` lists them"), "{}", err(&out));
+}

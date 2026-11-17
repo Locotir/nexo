@@ -289,8 +289,9 @@ pub enum SuperviseCmd {
     },
     /// Print the hook settings to add to the sessions' settings file. Nothing is written.
     Install {
-        /// Print the snippet (the only mode).
+        /// Accepted for compatibility; the snippet is always printed.
         #[arg(long)]
+        #[allow(dead_code)] // read by nobody now; kept so a script that passes it keeps working
         print: bool,
     },
 }

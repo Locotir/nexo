@@ -39,7 +39,7 @@ pub fn print_startup_error(fmt: Fmt, msg: &str) {
 }
 
 /// What a failed connection adds: the address tried, and for Ollama the likely cause.
-pub(super) fn unreachable_note(provider: &str, base_url: &str) -> String {
+pub fn unreachable_note(provider: &str, base_url: &str) -> String {
     let ollama = provider == "ollama" || base_url.contains(":11434");
     if ollama {
         format!(" at {base_url}. Ollama does not seem to be running; start it with `ollama serve`")
@@ -48,9 +48,25 @@ pub(super) fn unreachable_note(provider: &str, base_url: &str) -> String {
     }
 }
 
+/// The text of a provider-unreachable notice with the address tried added (see `unreachable_note`); any other
+/// notice is returned as it is. Shared by the `-p` run and the collected run of `nexo review`, so both say the same.
+pub fn with_reach_note(reach: Option<&str>, level: Level, text: &str, card: bool) -> String {
+    match (reach, text.strip_prefix("Could not reach the provider")) {
+        (Some(note), Some(rest)) if level == Level::Error && !card => {
+            // the note names the address; for Ollama it replaces the raw transport detail
+            if note.contains("Ollama") {
+                format!("Could not reach the provider{note}")
+            } else {
+                format!("Could not reach the provider{note}{rest}")
+            }
+        }
+        _ => text.to_string(),
+    }
+}
+
 /// A notice as printed on stderr. A failure card (`card`) is its plain form, the title first and in red when
 /// `color`; any other notice is `level: text`.
-pub(super) fn notice_line(level: Level, text: &str, card: bool, color: bool) -> String {
+pub fn notice_line(level: Level, text: &str, card: bool, color: bool) -> String {
     // what a provider or a tool said never reaches the terminal with its escape sequences or control bytes
     let text = &nexo_core::problem::tidy(text);
     if !card {
@@ -64,7 +80,7 @@ pub(super) fn notice_line(level: Level, text: &str, card: bool, color: bool) -> 
 }
 
 /// Stderr is a terminal that takes colours.
-pub(super) fn color_ok() -> bool {
+pub fn color_ok() -> bool {
     let tty = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     #[cfg(windows)]
     let tty = tty && crossterm::ansi_support::supports_ansi();

@@ -137,6 +137,7 @@ pub(super) async fn interactive(
 }
 
 /// Runs one request without the interface and returns the reply text and the exit code (0 done, 2 not done, 1 agent failure).
+/// Error notices are printed on stderr as they come.
 pub(super) async fn headless_collect(
     config: nexo_core::Config,
     cwd: PathBuf,
@@ -149,9 +150,33 @@ pub(super) async fn headless_collect(
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, None, Some(gate), None).await?;
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
     let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();
+    // the address a failed connection adds to its notice, as `-p` says it
+    let reach = config
+        .providers
+        .get(&picked.provider)
+        .map(|p| crate::headless::unreachable_note(&picked.provider, &p.base_url));
     let (mut text, mut code) = (String::new(), 0);
     while let Some(ev) = handle.events.recv().await {
         match &ev {
+            // the cause of a failed run (a provider that is off, a bad key) reaches stderr as it does for `-p`,
+            // not only the generic line of the caller
+            AgentEvent::Notice { level: nexo_core::agent::Level::Error, text: t, problem } => {
+                let t = crate::headless::with_reach_note(
+                    reach.as_deref(),
+                    nexo_core::agent::Level::Error,
+                    t,
+                    problem.is_some(),
+                );
+                eprintln!(
+                    "{}",
+                    crate::headless::notice_line(
+                        nexo_core::agent::Level::Error,
+                        &t,
+                        problem.is_some(),
+                        crate::headless::color_ok()
+                    )
+                );
+            }
             AgentEvent::TextDelta { text: t } => text.push_str(t),
             AgentEvent::AssistantStart if !text.is_empty() => text.clear(),
             AgentEvent::TurnEnd { reason } => {

@@ -329,9 +329,15 @@ fn open_session(
     Ok(match resume {
         Some(id) => {
             // taken before anything is spent: a session another nexo writes is not resumed here
-            let s = Session::open(id)
-                .and_then(|mut s| s.claim().map(|_| s))
-                .map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
+            let s = Session::open(id).and_then(|mut s| s.claim().map(|_| s)).map_err(|e| {
+                match e.downcast_ref::<std::io::Error>() {
+                    // the file is not there: the id is wrong, the session is not damaged
+                    Some(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                        anyhow::anyhow!("no session with id {id}; `nexo sessions` lists them")
+                    }
+                    _ => anyhow::anyhow!("cannot resume session {id}: {e}"),
+                }
+            })?;
             skipped_note(events, id, s.skipped_lines());
             let h = s.messages().to_vec();
             (s, h, true)

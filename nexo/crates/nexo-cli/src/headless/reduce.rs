@@ -187,22 +187,11 @@ impl Run {
                 self.t.cost = *cost_usd;
             }
             AgentEvent::Notice { level, text, problem } => {
-                let hinted;
-                let text = match (&self.reach, text.strip_prefix("Could not reach the provider")) {
-                    (Some(note), Some(rest)) if *level == Level::Error && problem.is_none() => {
-                        // the note names the address; for Ollama it replaces the raw transport detail
-                        hinted = if note.contains("Ollama") {
-                            format!("Could not reach the provider{note}")
-                        } else {
-                            format!("Could not reach the provider{note}{rest}")
-                        };
-                        &hinted
-                    }
-                    _ => text,
-                };
+                let hinted = with_reach_note(self.reach.as_deref(), *level, text, problem.is_some());
+                let text = hinted.as_str();
                 // a failure card has several lines; the result's `error` and the stream's `text` stay the one
                 // line a script reads (the card itself is the `problem` of the stream, and stderr's text)
-                let said = problem.as_ref().map_or_else(|| text.clone(), |p| p.one_line());
+                let said = problem.as_ref().map_or_else(|| text.to_string(), |p| p.one_line());
                 if *level == Level::Error {
                     self.r.error = Some(said.clone());
                 }
