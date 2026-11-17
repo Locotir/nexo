@@ -1,5 +1,6 @@
 //! FEATURES.md is proof by test name; a renamed test must not leave a dead reference behind.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -19,9 +20,64 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The backticked names in the last cell of every table row.
-fn proof_names(features: &str) -> Vec<String> {
-    let mut names = Vec::new();
+/// The name of a function declared on this line, if any.
+fn declared_fn(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start();
+    rest = rest.strip_prefix("pub(crate) ").or_else(|| rest.strip_prefix("pub ")).unwrap_or(rest);
+    rest = rest.strip_prefix("async ").unwrap_or(rest);
+    let name = rest.strip_prefix("fn ")?.split('(').next()?;
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(name)
+}
+
+/// What one source file proves: the functions that are real tests, keyed by the file stem.
+/// A file built with `harness = false` has no `#[test]`; its tests are the plain functions it
+/// reports itself as `test <name> ... ok`.
+#[derive(Default)]
+struct Proven {
+    by_stem: HashMap<String, HashSet<String>>,
+}
+
+impl Proven {
+    fn read(&mut self, file: &Path) {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            return;
+        };
+        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+        let (mut tests, mut plain, mut reported) = (HashSet::new(), HashSet::new(), HashSet::new());
+        let mut test_attribute = false;
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with("#[") {
+                test_attribute |= trimmed.starts_with("#[test") || trimmed.starts_with("#[tokio::test");
+                continue;
+            }
+            if let Some(name) = declared_fn(trimmed) {
+                let into = if test_attribute { &mut tests } else { &mut plain };
+                into.insert(name.to_string());
+            }
+            test_attribute = false;
+            if let Some(name) = trimmed.split("\"test ").nth(1).and_then(|r| r.split(" ... ok").next()) {
+                reported.insert(name.to_string());
+            }
+        }
+        tests.extend(plain.intersection(&reported).cloned());
+        self.by_stem.entry(stem).or_default().extend(tests);
+    }
+
+    fn has(&self, module: Option<&str>, name: &str) -> bool {
+        match module {
+            Some(stem) => self.by_stem.get(stem).is_some_and(|t| t.contains(name)),
+            None => self.by_stem.values().any(|t| t.contains(name)),
+        }
+    }
+}
+
+/// The backticked references in the last cell of every table row.
+fn proof_cells(features: &str) -> Vec<String> {
+    let mut cells = Vec::new();
     for line in features.lines() {
         let Some(row) = line.strip_prefix("| ").and_then(|l| l.trim_end().strip_suffix(" |")) else {
             continue;
@@ -29,25 +85,45 @@ fn proof_names(features: &str) -> Vec<String> {
         let Some((_, proof)) = row.rsplit_once(" | ") else {
             continue;
         };
-        for (i, part) in proof.split('`').enumerate() {
-            let is_name = !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-            if i % 2 == 1 && is_name {
-                names.push(part.to_string());
-            }
-        }
+        cells.extend(proof.split('`').skip(1).step_by(2).map(str::to_string));
     }
-    names
+    cells
+}
+
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[test]
 fn every_test_named_in_features_md_still_exists() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let features = std::fs::read_to_string(crates.join("../FEATURES.md")).expect("FEATURES.md");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let features = std::fs::read_to_string(workspace.join("FEATURES.md")).expect("FEATURES.md");
     let mut files = Vec::new();
-    rust_files(&crates, &mut files);
-    let source: String = files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).collect();
-    let names = proof_names(&features);
-    assert!(names.len() > 100, "the table parser found only {} names", names.len());
-    let missing: Vec<_> = names.iter().filter(|n| !source.contains(&format!("fn {n}("))).collect();
-    assert!(missing.is_empty(), "FEATURES.md names tests that do not exist: {missing:?}");
+    rust_files(&workspace.join("crates"), &mut files);
+    let mut proven = Proven::default();
+    for file in &files {
+        proven.read(file);
+    }
+    let (mut checked, mut missing) = (0, Vec::new());
+    for cell in proof_cells(&features) {
+        // A module-qualified name must live in a file of that name; a source path must exist.
+        let reference = match cell.rsplit_once("::") {
+            Some((module, name)) if is_identifier(module) && is_identifier(name) => Some((Some(module), name)),
+            _ if is_identifier(&cell) => Some((None, cell.as_str())),
+            _ => None,
+        };
+        if let Some((module, name)) = reference {
+            checked += 1;
+            if !proven.has(module, name) {
+                missing.push(cell.clone());
+            }
+        } else if cell.starts_with("crates/") || cell.ends_with(".rs") {
+            checked += 1;
+            if !workspace.join(&cell).exists() {
+                missing.push(cell.clone());
+            }
+        }
+    }
+    assert!(checked > 100, "the table parser found only {checked} references");
+    assert!(missing.is_empty(), "FEATURES.md names tests or files that do not exist: {missing:?}");
 }
