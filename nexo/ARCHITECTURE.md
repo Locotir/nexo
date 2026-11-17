@@ -51,7 +51,7 @@ pub fn registry() -> Registry;                       // the protocols by id
 impl Registry { pub fn get(&self, id: &str) -> Option<Arc<dyn Protocol>>; pub fn ids(&self) -> Vec<&'static str>; pub fn register(&mut self, p: Arc<dyn Protocol>); }
 pub fn presets() -> BTreeMap<String, ProviderConfig>; // openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter, together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, ollama, lmstudio, vllm, llamacpp, copilot, codex (with models, pricing, context windows where known)
 pub struct Client;                                     // retry/backoff around a Protocol
-pub mod catalogue;                                     // the models.dev dataset: `lookup(preset, model) -> (pricing, context, output)`, `cached()`, `refresh()`, `refresh_if_stale(done)` (7-day cache at `~/.nexo/cache/models.json`, never blocks a request)
+pub mod catalogue;                                     // the models.dev dataset: `lookup(preset, model) -> (pricing, context, output)`, `cached()`, `refresh()`, `refresh_if_stale(done)` (24-hour cache at `~/.nexo/cache/models.json`, never blocks a request)
 pub mod hints;                                         // what an error message says about the model: `context_window(msg)`, `max_output(msg)`, `unknown_model(err)`, `closest(wanted, names, n)`, `wait_hint(err)`
 impl Client { pub fn new(registry: Registry) -> Client; pub async fn stream(&self, cfg: &ProviderConfig, req: &ModelRequest, retries: u32) -> Result<EventStream, ProviderError>; pub async fn list_models(&self, cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError>; pub fn registry(&self) -> &Registry; }
 pub mod sse;                                           // `parse(bytes stream) -> Stream<SseEvent{event, data}>`

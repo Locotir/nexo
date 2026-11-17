@@ -1,6 +1,6 @@
 //! The models.dev catalogue: an open dataset of providers and models with
 //! prices per million tokens and context/output limits (the one OpenCode
-//! reads). Fetched once, cached on disk for a week, refreshed in the
+//! reads). Fetched once, cached on disk for a day, refreshed in the
 //! background when stale; a request is never held for it.
 //!
 //! The file is `{ "<provider>": { "name", "models": { "<model>": { "name",
@@ -724,6 +724,12 @@ mod tests {
         let p = e.pricing.unwrap();
         assert_eq!((p.input, p.output), (5.0, 4.0));
         assert_eq!((e.context, e.vision, e.reasoning), (Some(2000), Some(true), Some(true)));
+    }
+
+    #[test]
+    fn the_cache_is_a_day_old_at_most_as_the_docs_say() {
+        // the module doc and ARCHITECTURE.md both say 24 hours; change them together with this value
+        assert_eq!(MAX_AGE, Duration::from_secs(24 * 3600));
     }
 
     #[test]
