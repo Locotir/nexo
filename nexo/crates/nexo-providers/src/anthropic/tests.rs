@@ -781,3 +781,21 @@ fn the_levels_above_high_reach_the_request_as_the_effort_or_the_larger_budget() 
         assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": want}), "{e:?}");
     }
 }
+
+#[test]
+fn xhigh_goes_only_to_the_models_that_take_it_and_the_older_adaptive_ones_get_high() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    for (model, want) in [
+        ("claude-opus-5-5", "xhigh"),
+        ("claude-sonnet-5-5", "xhigh"),
+        ("claude-opus-4-7", "xhigh"),
+        ("claude-opus-4-8", "xhigh"),
+        ("claude-opus-4-6", "high"),
+        ("claude-sonnet-4-6", "high"),
+    ] {
+        let b = Anthropic::body(&cfg, &adaptive_req(model, Some(ReasoningConfig::Effort(Effort::Xhigh))));
+        assert_eq!(b["output_config"]["effort"], want, "{model}");
+    }
+    let b = Anthropic::body(&cfg, &adaptive_req("claude-opus-4-6", Some(ReasoningConfig::Effort(Effort::Max))));
+    assert_eq!(b["output_config"]["effort"], "max");
+}
