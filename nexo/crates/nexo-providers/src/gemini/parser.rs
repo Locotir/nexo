@@ -32,7 +32,10 @@ impl Feed for GeminiParser {
         let mut out = Vec::new();
         let v: Value = match serde_json::from_str(data.trim()) {
             Ok(v) => v,
-            Err(_) => return out,
+            Err(_) => {
+                crate::parse::note_dropped(data);
+                return out;
+            }
         };
         if !v.is_object() {
             return out;

@@ -21,7 +21,10 @@ impl Feed for MessagesParser {
         let mut out = Vec::new();
         let v: Value = match serde_json::from_str(data.trim()) {
             Ok(v) => v,
-            Err(_) => return out,
+            Err(_) => {
+                crate::parse::note_dropped(data);
+                return out;
+            }
         };
         if v["type"].is_string() {
             self.prog.started = true;
@@ -182,7 +185,7 @@ impl Feed for MessagesParser {
         // calls still open without a stop: their arguments may be cut
         let open = self.blocks.iter().any(|b| b.1 == "tool_use");
         self.blocks.clear();
-        out.extend(self.prog.at_end_with_calls(open));
+        out.extend(self.prog.at_end_strict(open));
         out
     }
 }

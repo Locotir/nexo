@@ -82,6 +82,14 @@ fn parses_thoughts_text_whole_calls_and_usage() {
 }
 
 #[test]
+fn a_garbled_line_is_skipped_and_the_next_event_still_parses() {
+    let mut p = GeminiParser::default();
+    assert!(p.feed("<<not json>>").is_empty());
+    let evs = p.feed(r#"{"candidates":[{"content":{"parts":[{"text":"Hello "}],"role":"model"}}]}"#);
+    assert!(evs.contains(&StreamEvent::TextDelta("Hello ".into())), "{evs:?}");
+}
+
+#[test]
 fn errors_in_the_stream_are_classified_and_a_cut_prompt_is_not_a_reply() {
     let mut p = GeminiParser::default();
     let evs = p.feed(r#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#);

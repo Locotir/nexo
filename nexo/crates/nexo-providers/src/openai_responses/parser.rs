@@ -23,7 +23,10 @@ impl Feed for ResponsesParser {
         let mut out = Vec::new();
         let v: Value = match serde_json::from_str(data.trim()) {
             Ok(v) => v,
-            Err(_) => return out,
+            Err(_) => {
+                crate::parse::note_dropped(data);
+                return out;
+            }
         };
         let t = v["type"].as_str().unwrap_or("");
         if !t.is_empty() {
@@ -183,7 +186,7 @@ impl Feed for ResponsesParser {
         // calls still open without a completed response: their arguments may be cut
         let open = !self.calls.is_empty();
         self.calls.clear();
-        self.prog.at_end_with_calls(open).into_iter().collect()
+        self.prog.at_end_strict(open).into_iter().collect()
     }
 }
 

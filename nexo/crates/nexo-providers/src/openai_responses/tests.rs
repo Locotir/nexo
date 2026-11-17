@@ -50,7 +50,22 @@ fn a_failed_response_and_a_cut_stream_are_errors() {
     let mut p = ResponsesParser::default();
     p.feed(r#"{"type":"response.created","response":{"id":"r"}}"#);
     p.feed(r#"{"type":"response.output_text.delta","delta":"hi"}"#);
-    assert_eq!(p.finish(), vec![StreamEvent::Finish(FinishReason::Stop)]);
+    // text with no `response.completed` is a connection that closed early, not a finished reply
+    assert!(matches!(&p.finish()[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network), "truncated");
+    let mut p = ResponsesParser::default();
+    p.feed(r#"{"type":"response.created","response":{"id":"r"}}"#);
+    p.feed(r#"{"type":"response.output_text.delta","delta":"hi"}"#);
+    p.feed(r#"{"type":"response.completed","response":{"id":"r","status":"completed"}}"#);
+    assert!(p.finish().is_empty(), "a completed response ends cleanly");
+}
+
+#[test]
+fn a_garbled_line_is_skipped_and_the_next_event_still_parses() {
+    let mut p = ResponsesParser::default();
+    assert!(p.feed("<<not json>>").is_empty());
+    assert!(p.feed(": keep-alive").is_empty());
+    let evs = p.feed(r#"{"type":"response.output_text.delta","delta":"hi"}"#);
+    assert!(evs.contains(&StreamEvent::TextDelta("hi".into())), "{evs:?}");
 }
 
 #[test]

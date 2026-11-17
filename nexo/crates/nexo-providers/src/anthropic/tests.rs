@@ -18,6 +18,37 @@ fn a_stream_cut_after_message_start_is_an_error_not_an_empty_reply() {
     assert!(p.finish().is_empty(), "nothing more after an error");
 }
 
+#[test]
+fn a_stream_that_closes_after_text_without_a_stop_is_a_truncation_error() {
+    let mut p = MessagesParser::default();
+    p.feed(r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":5}}}"#);
+    p.feed(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#);
+    p.feed(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#);
+    let end = p.finish();
+    assert!(
+        end.iter().any(
+            |e| matches!(e, StreamEvent::Error(e) if e.kind == ErrorKind::Network && e.message.contains("truncated"))
+        ),
+        "{end:?}"
+    );
+    assert!(!end.iter().any(|e| matches!(e, StreamEvent::Finish(_))), "{end:?}");
+    // the stop reason of message_delta is a finish: nothing is missing when it came
+    let mut p = MessagesParser::default();
+    p.feed(r#"{"type":"message_start","message":{"id":"m"}}"#);
+    p.feed(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#);
+    p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#);
+    assert!(p.finish().is_empty());
+}
+
+#[test]
+fn a_garbled_line_is_skipped_and_the_next_event_still_parses() {
+    let mut p = MessagesParser::default();
+    assert!(p.feed("<<not json>>").is_empty());
+    assert!(p.feed("").is_empty());
+    let evs = p.feed(r#"{"type":"message_start","message":{"id":"m"}}"#);
+    assert!(matches!(&evs[0], StreamEvent::Start { .. }), "{evs:?}");
+}
+
 const CALL_OPEN: [&str; 3] = [
     r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":5}}}"#,
     r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"read","input":{}}}"#,
