@@ -541,7 +541,8 @@ specification): `openai-chat`, `openai-responses`, `anthropic`, `gemini`.
 Presets exist for openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter,
 together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, copilot, codex,
 and the local servers ollama, lmstudio, vllm and llamacpp. Beyond them, a
-built-in directory of 200+ providers works with only the key set.
+built-in directory of 218 providers (a snapshot of [models.dev](https://models.dev),
+compiled in) works offline with only the key set.
 
 | Command | What it does |
 |---|---|
