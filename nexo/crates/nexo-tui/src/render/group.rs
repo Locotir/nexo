@@ -304,13 +304,7 @@ pub fn header_with(
     let all_failed = failed > 0 && failed == total;
     let long = |f: usize, d: usize| {
         (
-            if f == 0 {
-                String::new()
-            } else if all_failed {
-                format!(" · {f} failed")
-            } else {
-                format!(" · {f} of {total} failed")
-            },
+            if f == 0 { String::new() } else { format!(" · {f} failed") },
             if d > 0 { format!(" · {d} denied") } else { String::new() },
         )
     };
@@ -319,8 +313,7 @@ pub fn header_with(
     if w < 2 + width(&fails) + width(&denies) + width(chevron) + 4 {
         fails = match failed {
             0 => String::new(),
-            _ if all_failed => format!(" ✗{failed}"),
-            _ => format!(" ✗{failed}/{total}"),
+            _ => format!(" ✗{failed}"),
         };
         denies = if denied > 0 { format!(" ⊘{denied}") } else { String::new() };
     }
@@ -465,14 +458,14 @@ mod tests {
         let h = header(&m, true, 0, 80, &theme);
         let t = text(&h);
         assert!(t.starts_with("✓ Read 1 file, ran 2 shell commands, made 1 edit"), "{t}");
-        assert!(t.contains(" · 1 of 4 failed") && t.contains(" · 1 denied") && t.ends_with('▸'), "{t}");
-        let amber = h.spans.iter().find(|s| s.content.contains("1 of 4 failed")).unwrap();
+        assert!(t.contains(" · 1 failed") && t.contains(" · 1 denied") && t.ends_with('▸'), "{t}");
+        let amber = h.spans.iter().find(|s| s.content.contains("1 failed")).unwrap();
         assert_eq!(amber.style.fg, Some(theme.warn), "some failed is a note, not an error");
         for w in [30usize, 40, 50] {
             let t = text(&header(&m, true, 0, w, &theme));
             assert!(width(&t) <= w, "{w}: {t:?} is {}", width(&t));
             assert!(
-                (t.contains("failed") || t.contains("✗1/4")) && (t.contains("1 denied") || t.contains("⊘1")),
+                (t.contains("failed") || t.contains("✗1")) && (t.contains("1 denied") || t.contains("⊘1")),
                 "{w}: {t}"
             );
         }
@@ -485,12 +478,12 @@ mod tests {
         m.push(call("bash", ToolStatus::Failed));
         let h = header(&m, true, 0, 80, &theme);
         let t = text(&h);
-        assert!(t.starts_with("✓ ") && t.contains(" · 1 of 12 failed") && t.ends_with('▸'), "{t}");
+        assert!(t.starts_with("✓ ") && t.contains(" · 1 failed") && t.ends_with('▸'), "{t}");
         assert_eq!(h.spans[0].style.fg, Some(theme.success));
-        let amber = h.spans.iter().find(|s| s.content.contains("1 of 12 failed")).unwrap();
+        let amber = h.spans.iter().find(|s| s.content.contains("1 failed")).unwrap();
         assert_eq!(amber.style.fg, Some(theme.warn));
         let t = text(&header(&m, true, 0, 24, &theme));
-        assert!(t.contains(" ✗1/12") && width(&t) <= 24, "{t}");
+        assert!((t.contains(" · 1 failed") || t.contains(" ✗1")) && width(&t) <= 24, "{t}");
     }
 
     #[test]
@@ -537,7 +530,7 @@ mod tests {
         for w in [22usize, 24, 26] {
             let t = text(&header(&m, true, 0, w, &theme));
             assert!(width(&t) <= w, "{w}: {t:?}");
-            assert!(t.contains("✗1/3") && t.contains("⊘1") && t.ends_with('▸'), "{w}: {t}");
+            assert!(t.contains("✗1") && t.contains("⊘1") && t.ends_with('▸'), "{w}: {t}");
         }
     }
 
