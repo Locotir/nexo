@@ -45,8 +45,9 @@ fn copies(exe: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .is_some_and(|f| f.to_string_lossy().starts_with(&format!(".{name}.nexo-dbg-{}", std::process::id())))
+            p.file_name().is_some_and(|f| {
+                f.to_string_lossy().starts_with(&format!(".{name}.nexo-dbg-{:010}-", std::process::id()))
+            })
         })
         .collect()
 }

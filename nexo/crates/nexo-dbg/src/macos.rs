@@ -41,6 +41,11 @@ const TAG_HEAP: [u32; 11] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12];
 /// What macOS allows, said where an attach is refused.
 const ATTACH_RULE: &str = "macOS lets nexo open only programs that allow debugging: start it with `nexo dbg run` (nexo signs a copy with get-task-allow), or turn on Developer Mode once with `DevToolsSecurity -enable` (admin password) and attach from a desktop Terminal";
 
+/// Said at a start with randomisation off. macOS puts its random start values (`stack_guard=0x...`,
+/// `malloc_entropy=0x...` among the strings after the environment) above the stack written without leading zeros,
+/// so their length, and with it where the stack starts, can change from run to run; the debugger cannot fix them.
+const STACK_SHIFT: &str = "; address randomisation is off: code and global addresses repeat from run to run; stack addresses can still differ by 16 bytes between some runs, because macOS writes random values of varying length (stack_guard, malloc_entropy) above the stack at each start";
+
 /// A thread's exception message, waiting for our reply.
 #[derive(Debug, Clone, Copy)]
 struct Pend {
@@ -162,10 +167,12 @@ fn prepare(exe: &Path) -> Result<Prepared> {
     }
     let data = std::fs::read(exe).map_err(|e| os_err(&format!("cannot read {}", exe.display()), e))?;
     let name = exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "program".into());
-    // one name per session: several sessions in one process may run the same program at once
+    // one name per session: several sessions in one process may run the same program at once. The numbers have a
+    // fixed width because the kernel copies the path the program is started from onto the top of its stack: a name
+    // one digit longer would move the stack, and with randomisation off a run must find it where the last one did.
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let copy_name = format!(".{name}.nexo-dbg-{}-{n}", std::process::id());
+    let copy_name = format!(".{name}.nexo-dbg-{:010}-{n:010}", std::process::id());
     let beside = exe.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let signed = nexo_bin::adhoc_sign(&data, &name, &[nexo_bin::GET_TASK_ALLOW]);
     let bytes = signed.as_deref().unwrap_or(&data);
@@ -286,7 +293,11 @@ impl Mac {
         }
         let mut me = r?;
         me.exe = l.exe.display().to_string();
-        me.note = Some(prog.note);
+        let mut note = prog.note;
+        if !l.aslr {
+            note.push_str(STACK_SHIFT);
+        }
+        me.note = Some(note);
         if let Some(c) = prog.copy {
             let real = std::fs::canonicalize(&c).unwrap_or_else(|_| c.clone());
             me.copy = Some((c, real));

@@ -1,7 +1,7 @@
 #![cfg(all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"))]
 //! How a program starts: `run --env K=V --unset K --cwd DIR --aslr --argv0 NAME`, and the gdb forms `set environment`,
 //! `unset environment`, `set cwd`, `set disable-randomization`. The program prints one environment variable, its
-//! folder, `argv[0]` and the address of a local. Skipped without `cc`.
+//! folder, `argv[0]`, the address of a local and those of a global and of `main`. Skipped without `cc`.
 
 use nexo_dbg::{execute, gdb_plan, parse, script_units, split_words, Host};
 
@@ -9,6 +9,7 @@ const SRC: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+int global = 1;
 int main(int argc, char **argv) {
     int local = 0;
     char cwd[1024];
@@ -20,6 +21,7 @@ int main(int argc, char **argv) {
     printf("cwd=%s\n", cwd);
     printf("argv0=%s argc=%d\n", argv[0], argc);
     printf("local=%p\n", (void *)&local);
+    printf("global=%p code=%p\n", (void *)&global, (void *)&main);
     return 0;
 }
 "#;
@@ -117,12 +119,28 @@ fn a_relative_program_path_still_starts_when_the_folder_changes() {
 fn addresses_repeat_with_randomisation_off_and_change_with_it_on() {
     let work = tempfile::tempdir().unwrap();
     let Some(exe) = build(work.path()) else { return };
-    let off: Vec<String> = (0..2).map(|_| line(&printed(&exe, &[]).1, "local=").to_string()).collect();
-    assert_eq!(off[0], off[1], "the default start repeats addresses");
+    let off: Vec<(String, String, String)> = (0..2)
+        .map(|_| {
+            let (first, out) = printed(&exe, &[]);
+            (first, line(&out, "global=").to_string(), line(&out, "local=").to_string())
+        })
+        .collect();
+    assert_eq!(off[0].1, off[1].1, "the default start repeats code and global addresses");
+    let stack = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
+    let apart = stack(&off[0].2).abs_diff(stack(&off[1].2));
+    if cfg!(target_os = "macos") {
+        // macOS writes random values of varying length above the stack at each start: now and then the stack moves
+        // by 16 bytes, and the start answer says so
+        assert!(apart <= 0x20 && apart % 16 == 0, "the stack moved by {apart:#x}: {off:?}");
+        assert!(off[0].0.contains("stack addresses can still differ by 16 bytes"), "{}", off[0].0);
+    } else {
+        assert_eq!(apart, 0, "the default start repeats stack addresses: {off:?}");
+    }
     let on: Vec<String> = (0..4).map(|_| line(&printed(&exe, &["--aslr"]).1, "local=").to_string()).collect();
     assert!(on.iter().any(|a| *a != on[0]), "four randomised runs gave one address: {on:?}");
     let (first, _) = printed(&exe, &["--aslr"]);
     assert!(first.contains("address randomisation on"), "{first}");
+    assert!(!first.contains("differ by 16 bytes"), "said only with randomisation off: {first}");
 }
 
 #[test]
