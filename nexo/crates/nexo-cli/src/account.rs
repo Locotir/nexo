@@ -82,7 +82,7 @@ pub async fn login_cmd(
             println!("  {f:<9} {what}");
         }
         println!("\nany other provider takes a key: `nexo providers --all` lists every one nexo knows");
-        return Ok(1);
+        return Ok(0);
     };
     if !adopt(cfg, name) && flow.is_none() && key.is_none() {
         anyhow::bail!("unknown provider {name:?}; `nexo providers --all` lists them, or give --key to keep one anyway");
@@ -460,6 +460,12 @@ pub fn add_directory(cfg: &mut Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn login_without_a_provider_lists_the_logins_and_succeeds() {
+        let mut cfg = Config::default();
+        assert_eq!(login_cmd(&mut cfg, None, None, None).await.unwrap(), 0);
+    }
 
     #[test]
     fn a_hidden_key_is_what_was_typed_or_pasted_up_to_enter() {

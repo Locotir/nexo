@@ -104,6 +104,11 @@ pub fn config_cmd(cwd: &Path, what: Option<&crate::cli::ConfigCmd>) -> anyhow::R
         }
         Some(ConfigCmd::Trust { dir }) => {
             let at = dir.as_deref().map(|d| cwd.join(d)).unwrap_or_else(|| cwd.to_path_buf());
+            // The project lookup walks up through parents without checking that the start exists, so a
+            // typo inside a repo would silently trust the whole enclosing repo, a wider grant than named.
+            if !at.is_dir() {
+                anyhow::bail!("no such directory: {}", at.display());
+            }
             let Some(file) = nexo_core::paths::project_config_file(&at) else {
                 println!("no .nexo or .git directory above {}: nothing to trust", at.display());
                 return Ok(1);
@@ -243,6 +248,15 @@ search = "auto"                     # auto | duckduckgo | tavily | brave | exa |
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusting_a_missing_directory_inside_a_repo_is_an_error_and_trusts_nothing() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let typo = std::path::PathBuf::from("./typo");
+        let err = config_cmd(repo.path(), Some(&crate::cli::ConfigCmd::Trust { dir: Some(typo) })).unwrap_err();
+        assert!(err.to_string().starts_with("no such directory: "), "{err}");
+    }
 
     #[test]
     fn the_starter_file_names_no_provider() {

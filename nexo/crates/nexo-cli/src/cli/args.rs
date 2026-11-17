@@ -182,7 +182,7 @@ pub enum Cmd {
         #[arg(long, value_name = "KEY=VALUE", num_args = 1.., value_delimiter = ',')]
         set: Vec<String>,
     },
-    /// Show the configuration paths, or write a starter file.
+    /// Show the configuration paths, write a starter file, or trust a project.
     Config {
         #[command(subcommand)]
         what: Option<ConfigCmd>,
