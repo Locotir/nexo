@@ -230,7 +230,7 @@ pub fn pretty_error(text: &str) -> String {
         }
     }
     if looks_like_html(text) {
-        return "the server answered with a web page, not an API reply (check the base URL, and that the server is up and serves the OpenAI-compatible API)".into();
+        return "the server answered with a web page, not an API reply (check the base URL, and that the server is up and serves this API)".into();
     }
     text.to_string()
 }
