@@ -14,8 +14,9 @@ use nexo_core::config::HookConfig;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
-/// Ends the process tree of a running hook when it is dropped before the hook ended (a timeout, or
-/// the turn cancelled): `kill_on_drop` alone stops the shell, not what the shell started.
+/// Ends the shell of a running hook and all it started when it is dropped before the hook ended (a
+/// timeout, or the turn cancelled). The hook child has no `kill_on_drop`: it would be dropped first and
+/// end the shell before the tree under it could be found.
 struct HookTree(Option<u32>);
 
 impl Drop for HookTree {
@@ -161,8 +162,8 @@ pub async fn run(
             .env("NEXO_CWD", cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
+        // no `kill_on_drop`: on Windows it would end the shell before `HookTree` walks the tree under it.
         // its own process group, so the whole tree can be ended at once
         #[cfg(unix)]
         cmd.process_group(0);
@@ -181,8 +182,7 @@ pub async fn run(
                 let _ = stdin.write_all(text.as_bytes()).await;
             });
         }
-        // on a timeout or a cancelled turn the future is dropped: `kill_on_drop` stops the shell and `tree`
-        // what it started
+        // on a timeout or a cancelled turn the future is dropped and `tree` ends the shell with all it started
         let mut tree = HookTree(child.id());
         let waited = tokio::time::timeout(limit, child.wait_with_output()).await;
         // the hook ended by itself: its pid may be given to another process now, so it is left alone
@@ -422,7 +422,8 @@ mod tests {
         assert!(seen.contains("echo safe") && !seen.contains("rm x"), "{seen}");
     }
 
-    #[cfg(unix)]
+    // it reads /proc, which only Linux has: elsewhere `gone` would pass without the fix
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn what_a_timed_out_hook_started_is_ended_with_it() {
         let d = tempfile::tempdir().unwrap();

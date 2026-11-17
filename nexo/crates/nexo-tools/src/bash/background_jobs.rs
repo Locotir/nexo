@@ -107,7 +107,7 @@ pub(super) fn detached(command: &str, ctx: &ToolContext, sandbox: &nexo_core::sa
 /// The command that ends a detached process and what it started, spelled for the shell the model
 /// types it in. Git Bash (MSYS) turns an argument that starts with `/` into a path, so the
 /// switches of `taskkill` are doubled there; PowerShell takes them as they are.
-fn stop_hint(windows: bool, shell_kind: &str, pid: u32) -> String {
+pub(super) fn stop_hint(windows: bool, shell_kind: &str, pid: u32) -> String {
     match (windows, shell_kind) {
         (true, "bash") => format!("taskkill //T //F //PID {pid}"),
         (true, _) => format!("taskkill /T /F /PID {pid}"),

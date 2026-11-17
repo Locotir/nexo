@@ -32,7 +32,8 @@ async fn a_line_without_end_is_cut_off_at_the_cap() {
     assert!(e.contains("over 16 MiB"), "{e}");
 }
 
-#[cfg(unix)]
+// it reads /proc, which only Linux has: elsewhere `gone` would pass without the fix
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_server_that_fails_to_start_takes_what_it_started_with_it() {
     // the launcher leaves a grandchild behind and ends at once, as `npx` would with a worker that ignores EOF
