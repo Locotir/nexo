@@ -47,10 +47,7 @@ impl App {
         let earlier = self.session_usage.cache_read.saturating_sub(self.last_call_cached) > 0;
         // what the cache could have served: the previous call's input, as far as this call still carries it. A big
         // new tool output on a small cached prefix is new content, not a lost cache
-        let before = match self.call_inputs.len().checked_sub(2).and_then(|i| self.call_inputs.get(i)) {
-            Some(p) => (*p).min(input),
-            None => return None,
-        };
+        let before = (*self.call_inputs.len().checked_sub(2).and_then(|i| self.call_inputs.get(i))?).min(input);
         (earlier && cached * 2 < before && cached * 2 < input && fresh >= CACHE_MISS_FRESH).then_some(fresh)
     }
 
