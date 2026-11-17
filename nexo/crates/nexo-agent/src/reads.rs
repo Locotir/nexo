@@ -21,9 +21,29 @@ pub(crate) use nexo_core::agent::{headed_file, ATTACHED, INCLUDED};
 const UNCHANGED: &str = ": unchanged since shown above";
 const ASK_AGAIN: &str = "If that is no longer in the conversation, ask again and you get it in full.";
 
-/// Whether `text` is the note a repeated read gets: it points at lines shown earlier, holds none.
+/// Whether `text` is only the note a repeated read gets (or several, one per line, with the `[hook]` lines the
+/// session adds): it points at lines shown earlier, holds none. A chained shell command puts notes among output
+/// that is not a note (grep matches, git output), and that result is real content the curator must keep.
 pub(crate) fn is_unchanged_note(text: &str) -> bool {
-    text.contains(UNCHANGED) && text.contains(ASK_AGAIN)
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("[hook] ")).peekable();
+    lines.peek().is_some() && lines.all(|l| l.contains(UNCHANGED) && l.contains(ASK_AGAIN))
+}
+
+/// The largest file whose lines are matched against what the model already has; a bigger one, or anything that
+/// is not a regular file (a device, a pipe), is never read here.
+const MAX_FILE: u64 = 8 << 20;
+
+/// The bytes of the regular file at `path`, None for anything else or a file over `MAX_FILE`. The type is
+/// looked at before the file is opened, so a pipe cannot block it, and the read itself is capped.
+fn read_regular(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_FILE {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    std::fs::File::open(path).ok()?.take(MAX_FILE + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_FILE).then_some(bytes)
 }
 
 /// The line that heads a file the person attached whole to a request with `@path`.
@@ -202,23 +222,25 @@ impl Reads {
         call_id: &str,
         printed: usize,
     ) -> Option<String> {
-        self.lines_gated(path, shown, span, call_id, printed, None)
+        let bytes = read_regular(path)?;
+        self.lines_gated(path, &bytes, shown, span, call_id, printed, None)
     }
 
     /// `after_lines`, where `gate` (when given) says whether the last ask for lines of this file was answered
     /// with a note, in place of what the file remembers: the prints of one chained command are all one ask.
+    #[allow(clippy::too_many_arguments)]
     fn lines_gated(
         &mut self,
         path: &Path,
+        bytes: &[u8],
         shown: &str,
         span: Span,
         call_id: &str,
         printed: usize,
         gate: Option<bool>,
     ) -> Option<String> {
-        let bytes = std::fs::read(path).ok()?;
-        let hash = digest(&bytes);
-        let text = String::from_utf8_lossy(&bytes);
+        let hash = digest(bytes);
+        let text = String::from_utf8_lossy(bytes);
         let total = text.lines().count();
         let (start, end) = bounds(span, total);
         if start > end {
@@ -275,24 +297,48 @@ impl Reads {
     /// After a `bash` call that was not one print but several commands chained with `;` or `&&`, with
     /// `output` as the model would get it: `output` with a note in place of each print that repeats lines
     /// the model has already (see `after_lines`), None when no piece was repeated. A print counts only when
-    /// the bytes it prints from the file as it is now are found, whole lines, in the output after the previous
-    /// one; any other print is left as it is. The pieces not repeated are registered like a single print.
+    /// the bytes it prints from the file as it is now stand in the output as whole lines exactly as many
+    /// times as the command has prints of those bytes (any other command that writes the same lines, or a
+    /// print that did not run, would make the place a guess), and in the order of the prints; any other
+    /// print is left as it is. The pieces not repeated are registered like a single print.
     pub fn after_chain(&mut self, cwd: &Path, cmd: &str, output: &str, call_id: &str) -> Option<String> {
-        let prints = shell_chain(cmd)?;
-        // whether the last ask for each file was answered with a note, as of before this command
-        let mut gates: HashMap<PathBuf, bool> = HashMap::new();
-        let mut at = 0;
-        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        let prints = shell_chain(cmd).filter(|p| p.len() <= 16)?;
+        // what each print writes from the file as it is now; the files are read once, each capped
+        let mut items: Vec<(Print, PathBuf, Vec<u8>, String)> = Vec::new();
         for p in prints {
             let abs = if p.path.is_absolute() { p.path.clone() } else { cwd.join(&p.path) };
-            let Ok(bytes) = std::fs::read(&abs) else { continue };
+            let Some(bytes) = read_regular(&abs) else { continue };
             let Some(want) = print_bytes(&bytes, &p) else { continue };
-            let Some((from, to)) = find_lines(output, at, &want) else { continue };
+            items.push((p, abs, bytes, want));
+        }
+        let mut places: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        for (_, _, _, want) in &items {
+            places.entry(want).or_insert_with(|| all_lines(output, want));
+        }
+        // whether the last ask for each file was answered with a note, as of before this command
+        let mut gates: HashMap<PathBuf, bool> = HashMap::new();
+        let mut nth: HashMap<&str, usize> = HashMap::new();
+        let mut at = 0;
+        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        for (p, abs, bytes, want) in &items {
+            let n = nth.entry(want).or_insert(0);
+            let i = *n;
+            *n += 1;
+            let found = &places[want.as_str()];
+            let prints_of_it = items.iter().filter(|it| it.3 == *want).count();
+            if found.len() != prints_of_it {
+                continue;
+            }
+            let (from, to) = found[i];
+            if from < at {
+                continue;
+            }
             at = to;
-            let k = key(&abs);
+            let k = key(abs);
             let gate = *gates.entry(k.clone()).or_insert_with(|| self.seen.get(&k).is_some_and(|s| s.noted));
             let shown = p.path.to_string_lossy();
-            if let Some(note) = self.lines_gated(&abs, &shown, p.span, call_id, want.chars().count(), Some(gate)) {
+            if let Some(note) = self.lines_gated(abs, bytes, &shown, p.span, call_id, want.chars().count(), Some(gate))
+            {
                 edits.push((from, to, note));
             }
         }
@@ -398,6 +444,17 @@ pub fn shell_chain(cmd: &str) -> Option<Vec<Print>> {
         return None;
     }
     parts.push(cur);
+    // a part under a loop, a branch or a comment may never run: its prints cannot be told from the others
+    const FLOW: [&str; 15] = [
+        "for", "while", "until", "if", "then", "elif", "else", "fi", "do", "done", "case", "esac", "select",
+        "function", "!",
+    ];
+    if parts.iter().any(|p| {
+        let first = p.split_whitespace().next();
+        first.is_some_and(|w| FLOW.contains(&w) || w.starts_with('#')) || p.contains(" #")
+    }) {
+        return None;
+    }
     // the directory later parts run in; None once a `cd` the scan cannot follow was met
     let mut dir = Some(PathBuf::new());
     let mut prints = Vec::new();
@@ -444,20 +501,23 @@ fn print_bytes(file: &[u8], print: &Print) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Where `want` stands in `output` at or after `from`, as whole lines: the first place that starts a line and
-/// is followed by a line end or the end of the output.
-fn find_lines(output: &str, from: usize, want: &str) -> Option<(usize, usize)> {
-    let mut i = from;
-    while let Some(off) = output.get(i..)?.find(want) {
+/// Every place `want` stands in `output` as whole lines (it starts a line and a line end or the end of the
+/// output follows), one after the other without overlap.
+fn all_lines(output: &str, want: &str) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut i = 0;
+    while let Some(off) = output.get(i..).and_then(|rest| rest.find(want)) {
         let (s, e) = (i + off, i + off + want.len());
         let starts = s == 0 || output.as_bytes()[s - 1] == b'\n';
         let ends = e == output.len() || output[e..].starts_with(['\n', '\r']);
         if starts && ends {
-            return Some((s, e));
+            found.push((s, e));
+            i = e;
+        } else {
+            i = s + output[s..].chars().next().map_or(1, char::len_utf8);
         }
-        i = s + output[s..].chars().next()?.len_utf8();
     }
-    None
+    found
 }
 
 /// The file and the lines a shell command prints, when printing them is all it does: `cat [-n] F`,
@@ -892,5 +952,69 @@ mod tests {
         // a file with no final newline, whose last line runs into the next output
         std::fs::write(d.path().join("c.txt"), "x\ny").unwrap();
         assert!(r.after_chain(d.path(), "cat c.txt; echo end", "x\nyend\n", "c3").is_none());
+    }
+
+    #[test]
+    fn a_print_whose_lines_another_command_wrote_too_is_not_guessed_at() {
+        let (d, a, _) = two_files();
+        // plain grep on one file writes the same line `sed -n 2p` does, and comes first
+        let cmd = "grep alpha a.txt; sed -n 2p a.txt";
+        let out = format!("{a}alpha 2\n");
+        let mut r = Reads::default();
+        assert!(r.after_lines(&d.path().join("a.txt"), "a.txt", Span::From(2, Some(2)), "c1", 8).is_none());
+        r.note_view(&[result("c1", "alpha 2\n")]);
+        assert!(r.after_chain(d.path(), cmd, &out, "c2").is_none(), "two places, one print: no note anywhere");
+        // the same print twice finds its two places in order, and a third copy from an echo spoils both
+        let twice = "sed -n 2p a.txt; echo x; sed -n 2p a.txt";
+        let sent = r.after_chain(d.path(), twice, "alpha 2\nx\nalpha 2\n", "c3").unwrap();
+        assert_eq!(sent.matches("not repeated").count(), 2, "each of the two prints finds its own place: {sent}");
+        assert!(r.after_chain(d.path(), twice, "alpha 2\nx\nalpha 2\nalpha 2\n", "c4").is_none());
+    }
+
+    #[test]
+    fn a_print_under_a_loop_a_branch_or_a_comment_is_not_followed() {
+        for cmd in [
+            "for i in 1 2; do sed -n 2p a.txt; done; cat b.txt",
+            "if grep -q alpha a.txt; then sed -n 2p a.txt; fi; cat b.txt",
+            "while false; do cat a.txt; done; cat b.txt",
+            "cat b.txt; # sed -n 2p a.txt",
+            "cat b.txt; cat a.txt # kept out",
+        ] {
+            assert!(shell_chain(cmd).is_none(), "{cmd}");
+        }
+        assert!(shell_chain("cat b.txt; sed -n 2p a.txt").is_some());
+    }
+
+    #[test]
+    fn a_device_a_directory_or_a_huge_file_is_never_read_for_a_print() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(read_regular(Path::new("/dev/zero")).is_none());
+        assert!(read_regular(d.path()).is_none());
+        let big = d.path().join("big.bin");
+        std::fs::write(&big, vec![b'x'; (MAX_FILE + 1) as usize]).unwrap();
+        assert!(read_regular(&big).is_none());
+        std::fs::write(d.path().join("ok.txt"), "one\n").unwrap();
+        assert_eq!(read_regular(&d.path().join("ok.txt")).unwrap(), b"one\n");
+        // the chain skips the device and goes on with the rest
+        let mut r = Reads::default();
+        assert!(r.after_chain(d.path(), "head -n 3 /dev/zero; cat ok.txt", "\0\0\none\n", "c1").is_none());
+        assert!(r.after_lines(Path::new("/dev/zero"), "/dev/zero", Span::From(1, Some(3)), "c2", 3).is_none());
+    }
+
+    #[test]
+    fn a_result_with_a_note_among_other_output_is_not_a_read_stub() {
+        let (d, a, _) = two_files();
+        let cmd = "cat a.txt; grep -n beta b.txt";
+        let out = format!("{a}1:beta 1\n");
+        let mut r = Reads::default();
+        assert!(r.after_chain(d.path(), cmd, &out, "c1").is_none());
+        r.note_view(&[result("c1", &out)]);
+        let sent = r.after_chain(d.path(), cmd, &out, "c2").unwrap();
+        assert!(sent.contains("not repeated") && sent.ends_with("1:beta 1\n"), "{sent}");
+        assert!(!is_unchanged_note(&sent), "the grep lines are content the curator must keep");
+        // a note alone, or notes alone one per line, are stubs
+        let (first, second) = sent.split_once('\n').unwrap();
+        assert!(is_unchanged_note(first) && is_unchanged_note(&format!("{first}\n{first}\n")));
+        assert!(!is_unchanged_note(second) && !is_unchanged_note(""));
     }
 }
