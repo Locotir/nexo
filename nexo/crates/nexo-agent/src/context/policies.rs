@@ -196,8 +196,10 @@ impl ContextPolicy for BuiltIn {
         self.cur.window(tokens);
     }
 
-    fn prices(&mut self, input: f64, cache_read: f64) {
-        self.cur.prices(input, cache_read);
+    fn prices(&mut self, p: &nexo_core::pricing::Pricing) {
+        // after a pause the host writes for an hour only where that pays, else the short cache again
+        let long = if p.long_cache_pays() { p.write_1h() } else { p.write_5m() };
+        self.cur.prices(p.input, p.cache_read, p.write_5m(), long);
     }
 
     fn usage(&mut self, read: u64, input: u64) {

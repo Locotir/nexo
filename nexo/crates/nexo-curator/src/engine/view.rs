@@ -475,6 +475,7 @@ impl Engine {
             return false;
         }
         let r = self.p.ratio.clamp(0.0, 1.0);
+        let w = self.write_now();
         // the view as the whole conversation would send it
         let held = std::mem::replace(&mut self.split, false);
         let v = self.sizes_now().iter().sum::<i64>() as f64;
@@ -498,7 +499,7 @@ impl Engine {
         // the first message goes too when its topic is not the one the person is on: a card instead (F2)
         let card0 =
             if self.m0_card(true) { (self.sizes[0] - crate::json::est_str(&self.cards_line(0))).max(0) } else { 0 };
-        let mut gain = r * hz * (x + card0) as f64 - self.p.margin * (1.0 - r) * rewrite;
+        let mut gain = r * hz * (x + card0) as f64 - self.p.margin * (w - r) * rewrite;
         // the topic the person was on a moment ago may be asked for again: with its pocket gone from the cache
         // (or none kept) coming back reads it without the cache, and the whole view would have kept it
         if let Some(&(back, xb)) = others.first() {
@@ -507,7 +508,7 @@ impl Engine {
             // and the return has to come while the horizon lasts: one return per so many steps so far
             let within = (hz * (returns as f64 + 1.0) / k.max(1) as f64).min(1.0);
             if !self.pocket_lives(back, hz) {
-                gain -= within * p_back * (1.0 - r) * xb as f64;
+                gain -= within * p_back * (w - r) * xb as f64;
             }
         }
         if gain <= 0.0 {
@@ -526,7 +527,7 @@ impl Engine {
         }
         for (k, xk) in others {
             let mut need = self.goal.joint.get(k).copied().unwrap_or(0.0);
-            let cost = (1.0 - r) * xk as f64 + r * v;
+            let cost = (w - r) * xk as f64 + r * v;
             for &i in &by_topic[k] {
                 need = need.max(self.step_need(i, hz));
                 // the need only grows: once it takes the whole gain, the rest of the steps change nothing

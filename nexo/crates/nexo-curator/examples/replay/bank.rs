@@ -8,17 +8,22 @@ use super::*;
 /// not with its square: each request is applied to what the one before left, as the file gives it.
 /// With `oracle`, a fourth way: the offline floor of `belady`, at the tokens the curator's view spent.
 /// How `bank` replays: `--recall`, `--oracle`, `--dump`, `--window` (0: none) and `--rounds` (the most requests
-/// the session may make, told to the curator as the calls left; `None`: not told).
+/// the session may make, told to the curator as the calls left; `None`: not told), `--prices` (`Sheet`) and
+/// `--blind-writes` (the curator is told the sheet without its write prices, as before it knew them, while the
+/// bank still prices the writes: the run to compare against).
+#[derive(Clone, Copy)]
 pub(super) struct Bank<'a> {
     pub(super) recall: bool,
     pub(super) oracle: bool,
     pub(super) dump: Option<&'a str>,
     pub(super) window: u64,
     pub(super) rounds: Option<usize>,
+    pub(super) prices: Option<Sheet>,
+    pub(super) blind_writes: bool,
 }
 
 pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
-    let Bank { recall, oracle, dump, window, rounds } = how;
+    let Bank { recall, oracle, dump, window, rounds, prices, blind_writes } = how;
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file = std::path::Path::new(path);
     let sent_text = file
@@ -68,6 +73,7 @@ pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
     let (mut records, mut said_at, mut budgets) =
         (Vec::<(usize, Vec<Value>)>::new(), Vec::<Option<Vec<String>>>::new(), Vec::<i64>::new());
     let started = std::time::Instant::now();
+    let mut last_now = None::<f64>;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (base, new, rec) = parse(line)?;
         if oracle {
@@ -135,15 +141,27 @@ pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
                 }
             }
         }
+        let now = rec["now"].as_f64().unwrap_or(0.0);
+        let long = last_now.is_some_and(|t| now - t > 300.0);
+        last_now = Some(now);
         let hit = whole.extend(base, new);
         plain.count(whole.total() + system_tokens, hit + head);
+        if let Some(s) = &prices {
+            plain.price(whole.total() + system_tokens, hit + head, s, long);
+        }
         if let Some(line) = sent_lines.as_mut().and_then(Iterator::next) {
             let (base, new, _) = parse(line)?;
             agent.rewrites += usize::from(base < sent.msgs.len());
             let hit = sent.extend(base, new);
             agent.count(sent.total() + system_tokens, hit + head);
+            if let Some(s) = &prices {
+                agent.price(sent.total() + system_tokens, hit + head, s, long);
+            }
         }
-        let now = rec["now"].as_f64().unwrap_or(0.0);
+        if let Some(s) = &prices {
+            let (write, write_long) = if blind_writes { (0.0, 0.0) } else { (s.write, s.write_long) };
+            cur.prices(s.input, s.read, write, write_long);
+        }
         cur.calls_left(rounds.map(|n| n.saturating_sub(requests) as u64));
         let reply = cur.view(system_tokens as u64, &whole.msgs, now).map_err(|e| format!("view: {e}"))?;
         cells = reply.memory.cells.iter().map(|c| c.state.as_str().to_string()).collect();
@@ -152,6 +170,9 @@ pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
         curated.rewrites += usize::from(rewrote);
         keys.after(&view, &cells);
         curated.count(view.total() + system_tokens, hit + head);
+        if let Some(s) = &prices {
+            curated.price(view.total() + system_tokens, hit + head, s, long);
+        }
         said_at.push(None);
         budgets.push(view.total());
         requests += 1;

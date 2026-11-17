@@ -77,9 +77,9 @@ pub trait ContextPolicy: Send {
     /// The tokens the model takes in one call, less its reply, before each view (the curator keeps
     /// the view under it).
     fn window(&mut self, _tokens: u64) {}
-    /// The model's prices per million input tokens, uncached and read from the cache, before each view
-    /// (the curator weighs what a cut saves against what it costs the cache at their ratio).
-    fn prices(&mut self, _input: f64, _cache_read: f64) {}
+    /// The model's prices, before each view (the curator weighs what a cut saves against what reading and
+    /// rewriting the cache costs).
+    fn prices(&mut self, _prices: &nexo_core::pricing::Pricing) {}
     /// What the provider said of the call made with the last view: the input tokens it read from its
     /// cache, and all of them, from which the curator learns how long the cache keeps a view.
     fn usage(&mut self, _read: u64, _input: u64) {}

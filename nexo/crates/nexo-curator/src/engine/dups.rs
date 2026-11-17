@@ -282,7 +282,8 @@ impl Engine {
         let before = self.message(mi).1;
         self.fresh_wait.remove(&mi);
         let r = self.p.ratio;
-        r * self.calls_ahead(self.tr.steps.len()) * (before - after) as f64 > self.p.margin * (1.0 - r) * after as f64
+        let w = self.write_now();
+        r * self.calls_ahead(self.tr.steps.len()) * (before - after) as f64 > self.p.margin * (w - r) * after as f64
     }
 
     /// Where each run of message `mi` points now, as (tool result, line): to its earlier output while that

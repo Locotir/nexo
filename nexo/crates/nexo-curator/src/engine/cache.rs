@@ -33,6 +33,25 @@ const LIFE_GAP: f64 = 0.1;
 /// views at least this long, and a miss sooner is the provider's own load.
 const LIFE_LEAST: f64 = 60.0;
 
+/// Seconds the short cache lasts: after a longer pause the host writes the view for an hour.
+const SHORT_CACHE: f64 = 300.0;
+
+/// What writing a token to the cache costs against an uncached input token (`Engine::write_now`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Writes {
+    /// The short (5-minute) cache.
+    pub short: f64,
+    /// The 1-hour cache.
+    pub long: f64,
+}
+
+/// A provider without prices, or without a premium on writes, writes at the input price.
+impl Default for Writes {
+    fn default() -> Writes {
+        Writes { short: 1.0, long: 1.0 }
+    }
+}
+
 /// A hash of a message as sent, never 0 (0 marks a message sent as it came).
 pub(super) fn fingerprint(v: &Value) -> u64 {
     use std::hash::Hasher;
@@ -190,14 +209,27 @@ impl Engine {
         }
     }
 
-    /// What the provider said of the call made with the view last decided (`Curator::cached`): the input
-    /// tokens it read from its cache, and all of them. The share it read tells which pockets it still kept,
-    /// so how long it keeps a view: a pocket it gave sets the least lifetime, one it did not give the most,
-    /// unless that age is too young to tell (`LIFE_LEAST`) or below one it gave. A provider that never says
-    /// it read from its cache teaches nothing.
     /// What a cached input token costs against an uncached one, from the provider's prices.
     pub fn set_ratio(&mut self, ratio: f64) {
         self.p.ratio = ratio;
+    }
+
+    /// What writing a token to the cache costs against an uncached input token, from the provider's prices:
+    /// for the short cache and for the 1-hour one (the short price where the host never writes for an hour).
+    pub fn set_writes(&mut self, writes: Writes) {
+        self.writes = writes;
+    }
+
+    /// What rewriting a token of the view costs now, against an uncached input token: a break in the cache
+    /// writes the rest of the view again, at the 1-hour price after a pause longer than the short cache
+    /// lasts (the host then writes for an hour), else at the short one.
+    pub(super) fn write_now(&self) -> f64 {
+        let paused = self.prev_now > 0.0 && self.now - self.prev_now > SHORT_CACHE;
+        if paused {
+            self.writes.long
+        } else {
+            self.writes.short
+        }
     }
 
     #[cfg(test)]
@@ -205,6 +237,11 @@ impl Engine {
         self.p.ratio
     }
 
+    /// What the provider said of the call made with the view last decided (`Curator::cached`): the input
+    /// tokens it read from its cache, and all of them. The share it read tells which pockets it still kept,
+    /// so how long it keeps a view: a pocket it gave sets the least lifetime, one it did not give the most,
+    /// unless that age is too young to tell (`LIFE_LEAST`) or below one it gave. A provider that never says
+    /// it read from its cache teaches nothing.
     pub fn learn(&mut self, sys: u64, read: u64, input: u64) {
         let Some(probe) = self.probe.take() else { return };
         self.read_seen |= read > 0;
@@ -282,5 +319,21 @@ mod tests {
         e.evict_pocket(0);
         assert!(e.pockets.contains_key(&0));
         assert!(!e.pockets.contains_key(&1));
+    }
+
+    /// A cut is priced at the write price of what it rewrites: the 1-hour price after a pause longer than the
+    /// short cache, and the input price where the provider charges nothing extra.
+    #[test]
+    fn a_cut_that_pays_at_the_input_price_waits_when_writes_cost_more() {
+        let mut e = Engine::new(crate::params("").unwrap());
+        let resent = 1_000_000;
+        let first = (1..100 * resent).find(|&d| e.lands(d, resent)).expect("a large enough drop lands");
+        assert_eq!(e.write_now(), 1.0, "no premium: a write costs the input price");
+        e.set_writes(Writes { short: 1.25, long: 2.0 });
+        e.now = 100.0;
+        assert_eq!(e.write_now(), 1.25);
+        assert!(!e.lands(first, resent), "the same cut does not pay back a dearer write");
+        (e.prev_now, e.now) = (100.0, 100.0 + SHORT_CACHE + 1.0);
+        assert_eq!(e.write_now(), 2.0, "after a pause the host writes for an hour");
     }
 }

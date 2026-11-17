@@ -142,6 +142,10 @@ impl Engine {
         }
         let g = self.raw_tokens as f64 / k.max(1) as f64;
         let cap_of = |e: f64| {
+            // the size of the cap stays priced at the input price, not the write price: a cap sized at the
+            // write price lets every view grow larger, and on the 679 recorded sessions at Anthropic prices that
+            // cost more (962.33 $) than it saved in writes (954.52 $ before); each cut is still priced at the
+            // write price where it is decided
             let eoq = e + if r < 1.0 { (2.0 * (1.0 - r) * e * g / r).sqrt() } else { 0.0 };
             match self.left {
                 Some(calls) if r < 1.0 => eoq.max(e + (1.0 - r) * e / (r * calls)),
@@ -548,7 +552,7 @@ impl Engine {
                 continue;
             }
             let rest = (cum[(*f).max(warm).min(sent)] - cum[(*f).min(sent)] - saved).max(0);
-            let price = self.p.margin * (1.0 - self.p.ratio) * rest as f64;
+            let price = self.p.margin * (self.write_now() - self.p.ratio) * rest as f64;
             let need = price;
             if paid >= need && paid - bought.0 >= need - bought.1 {
                 best_at = Some(n);

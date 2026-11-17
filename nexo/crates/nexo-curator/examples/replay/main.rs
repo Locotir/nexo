@@ -116,7 +116,7 @@ fn main() {
         let mut spec = String::new();
         let mut files = Vec::new();
         let (mut recall, mut oracle, mut dump) = (false, false, None);
-        let (mut window, mut rounds) = (0u64, None);
+        let (mut window, mut rounds, mut prices, mut blind_writes) = (0u64, None, None, false);
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -127,12 +127,20 @@ fn main() {
                 "--spec" => spec = it.next().cloned().unwrap_or_default(),
                 "--window" => window = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
                 "--rounds" => rounds = it.next().and_then(|n| n.parse().ok()),
+                "--blind-writes" => blind_writes = true,
+                "--prices" => {
+                    prices = Some(it.next().and_then(|s| Sheet::parse(s)).unwrap_or_else(|| {
+                        eprintln!("--prices wants input,read,write,write_long in $ per million tokens");
+                        std::process::exit(2);
+                    }))
+                }
                 _ => files.push(a.clone()),
             }
         }
         for f in files {
-            let line = bank(&f, &spec, Bank { recall, oracle, dump: dump.as_deref(), window, rounds })
-                .unwrap_or_else(|e| json!({"file": f, "error": e}));
+            let line =
+                bank(&f, &spec, Bank { recall, oracle, dump: dump.as_deref(), window, rounds, prices, blind_writes })
+                    .unwrap_or_else(|e| json!({"file": f, "error": e}));
             println!("{line}");
         }
         return;
