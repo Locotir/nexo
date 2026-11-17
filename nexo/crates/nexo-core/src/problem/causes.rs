@@ -322,6 +322,21 @@ pub(super) fn network(m: &str, ctx: &ProblemCtx, who: &str, host: &str, url: &st
         };
     }
     if has(m, &["stream cut", "stream ended", "truncated", "connection reset", "broken pipe", "closed"]) {
+        // The same words come from a connection that dropped after part of the reply was shown and from one
+        // that ended before any of it arrived (a server down or restarting, a proxy reset). Only the caller
+        // knows which, so the card claims a kept partial answer only when there is one.
+        if !ctx.shown {
+            let p = Problem::new(
+                format!("{who} closed the connection before answering"),
+                "The connection ended before any of the reply arrived.",
+            )
+            .step("Send your message again.");
+            return if ctx.is_local() {
+                p.step("If it keeps happening, check that the server is running, or pick another model with `/model`.")
+            } else {
+                p.step("If it keeps happening, the server may be down or restarting: check it, or pick another provider with `/model`.")
+            };
+        }
         return Problem::new("The reply was cut off", format!("The connection to {who} dropped mid-answer."))
             .step("Send your message again. What was already shown is kept.")
             .step("If it keeps happening, check your connection or pick another provider with `/model`.");

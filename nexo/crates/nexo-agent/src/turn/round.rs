@@ -166,7 +166,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     if compact_now(&state, &events, Some(()), &cancel).await {
                         continue;
                     }
-                    let p = problem_of(&state, &e).await.after_compaction_failed();
+                    let p = problem_of(&state, &e, false).await.after_compaction_failed();
                     notice_problem(&events, p);
                     return TurnEnd::Error;
                 }
@@ -175,7 +175,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     continue;
                 }
                 _ => {
-                    notice_problem(&events, problem_of(&state, &e).await);
+                    notice_problem(&events, problem_of(&state, &e, false).await);
                     return TurnEnd::Error;
                 }
             },
@@ -363,7 +363,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let calls: Vec<(String, String, Value)> =
             msg.tool_calls().map(|(i, n, a)| (i.to_string(), n.to_string(), a.clone())).collect();
         if let Some(e) = c.error {
-            notice_problem(&events, problem_of(&state, &e).await);
+            notice_problem(&events, problem_of(&state, &e, !msg.content.is_empty()).await);
             if !calls.is_empty() {
                 push_results(&state, cancelled_results(&calls, "the model call failed before the tools ran")).await;
             }

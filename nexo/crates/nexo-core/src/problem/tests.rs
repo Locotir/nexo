@@ -8,6 +8,7 @@ fn ctx(provider: &str, model: &str, base: &str) -> ProblemCtx {
         key_env: Some(format!("{}_API_KEY", provider.to_ascii_uppercase())),
         login: false,
         window: None,
+        shown: false,
     }
 }
 
@@ -301,16 +302,29 @@ fn network_causes_are_told_apart() {
     let slow = net("error sending request: operation timed out", &c);
     sane(&slow);
     assert_eq!(slow.title, "openai took too long to answer");
-    let cut = net("stream cut: error decoding response body: connection reset", &c);
+    let shown = ProblemCtx { shown: true, ..c.clone() };
+    let cut = net("stream cut: error decoding response body: connection reset", &shown);
     sane(&cut);
     assert_eq!(cut.title, "The reply was cut off");
+    assert!(cut.plain().contains("What was already shown is kept."), "{cut:?}");
+    // nothing arrived: no partial answer to point at, and the server is what to check
+    let early = net("stream cut: error decoding response body: connection reset", &c);
+    sane(&early);
+    assert_eq!(early.title, "openai closed the connection before answering");
+    let said = early.plain();
+    assert!(!said.contains("already shown") && !said.contains("mid-answer"), "{said}");
     let cut = net("the stream ended before the reply began", &c);
-    assert_eq!(cut.title, "The reply was cut off");
+    sane(&cut);
+    assert_eq!(cut.title, "openai closed the connection before answering");
+    let local = ctx("ollama", "m", "http://localhost:11434/v1");
+    let early_local = net("connection reset by peer", &local);
+    sane(&early_local);
+    assert!(early_local.plain().contains("check that the server is running"), "{early_local:?}");
     let other = net("something odd", &c);
     sane(&other);
     assert_eq!(other.title, "Could not reach openai");
     // every one keeps the raw text
-    for p in [dns, tls, proxy, slow, cut, other] {
+    for p in [dns, tls, proxy, slow, cut, early, other] {
         assert!(p.detail.is_some(), "{p:?}");
     }
 }

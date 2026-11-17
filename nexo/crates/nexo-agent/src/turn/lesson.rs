@@ -89,11 +89,13 @@ pub(super) fn remember(st: &mut State, provider: &str, cfg: &mut ProviderConfig,
 }
 
 /// The error as a card: what failed, the likely cause and what to do, made concrete with the provider,
-/// model, address and key source of the call, and the window the session knows.
-pub(super) async fn problem_of(state: &Shared, e: &ProviderError) -> Problem {
+/// model, address and key source of the call, and the window the session knows. `shown` tells whether part of
+/// the reply had already arrived, so a dropped connection is not described as a cut answer when nothing came.
+pub(super) async fn problem_of(state: &Shared, e: &ProviderError, shown: bool) -> Problem {
     let st = state.lock().await;
     let (provider, cfg, model) = st.target.get();
     let mut ctx = ProblemCtx::from_config(&provider, &model, &cfg);
+    ctx.shown = shown;
     ctx.window = st.limits.context_window.or_else(|| hints::context_window(&e.message)).or(ctx.window);
     let mut p = Problem::of(e, &ctx);
     if hints::unknown_model(e) {
