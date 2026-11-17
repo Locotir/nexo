@@ -532,6 +532,7 @@ int main(int argc, char **argv) {
         let exe = dir.join("prog");
         let ok = ["cc", "gcc", "clang"].iter().any(|cc| {
             Command::new(cc)
+                .args(crate::tests_map::x86_args())
                 .args(["-g", "-O0", "-fno-pie", "-no-pie", "-o"])
                 .arg(&exe)
                 .arg(&src)

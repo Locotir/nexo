@@ -431,8 +431,9 @@ async fn drives_the_page_and_keeps_to_its_own_tabs() {
     assert!(b.network_detail(99_999).await.is_err());
 
     // Mouse at a point: double and right clicks with modifiers, hover, wheel, a mouse-only drag.
-    b.eval("window.ev = []; for (const t of ['dblclick', 'contextmenu', 'mousemove', 'mouseup', 'wheel']) document.addEventListener(t, (e) => window.ev.push(t + ':' + e.clientX + ':' + e.clientY + ':' + e.ctrlKey)); 0").await.unwrap();
-    let ctrl = nexo_browser::Modifiers::parse("ctrl").unwrap();
+    b.eval("window.ev = []; for (const t of ['dblclick', 'contextmenu', 'mousemove', 'mouseup', 'wheel']) document.addEventListener(t, (e) => window.ev.push(t + ':' + e.clientX + ':' + e.clientY + ':' + e.altKey)); 0").await.unwrap();
+    // Alt, not Ctrl: Chrome on a Mac turns Ctrl+click into a right click.
+    let ctrl = nexo_browser::Modifiers::parse("alt").unwrap();
     b.double_click(5.0, 6.0, ctrl).await.unwrap();
     b.right_click(7.0, 8.0, nexo_browser::Modifiers::default()).await.unwrap();
     b.hover_xy(9.0, 10.0).await.unwrap();

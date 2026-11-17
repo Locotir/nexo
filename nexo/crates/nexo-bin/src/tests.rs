@@ -363,11 +363,22 @@ pub(crate) fn this_binary() -> Option<Image> {
     }
 }
 
+/// The test binary when it is x86-64, for the tests that walk its code with the x86 decoder; an arm64 test binary
+/// (an Apple-silicon Mac) prints why the test is skipped.
+pub(crate) fn this_x86_binary() -> Option<Image> {
+    let img = this_binary()?;
+    if img.arch_name() != "x86-64" {
+        eprintln!("skipped: the test binary is {}, and this test walks x86-64 code", img.arch_name());
+        return None;
+    }
+    Some(img)
+}
+
 const MARKER: &str = "nexo-bin-smoke-marker-7f3a9c41";
 
 #[test]
 fn smoke_on_the_test_binary() {
-    let Some(img) = this_binary() else { return };
+    let Some(img) = this_x86_binary() else { return };
     let marker = std::hint::black_box(MARKER);
     assert_eq!(img.arch_name(), "x86-64");
     let o = info(&img);

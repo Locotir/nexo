@@ -22,7 +22,13 @@ fn cxx_image(dir: &Path) -> Option<Image> {
     )
     .ok()?;
     let exe = dir.join(if cfg!(windows) { "p_cxx.exe" } else { "p_cxx" });
-    if !run_ok(Command::new("g++").args(["-O0", "-fno-pie", "-no-pie", "-o"]).arg(&exe).arg(&src)) {
+    if !run_ok(
+        Command::new("g++")
+            .args(crate::tests_map::x86_args())
+            .args(["-O0", "-fno-pie", "-no-pie", "-o"])
+            .arg(&exe)
+            .arg(&src),
+    ) {
         eprintln!("skipped: no g++");
         return None;
     }

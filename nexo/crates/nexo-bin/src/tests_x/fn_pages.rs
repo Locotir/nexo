@@ -21,7 +21,7 @@ fn long_function(img: &Image, n: usize) -> (u64, u64, usize) {
 
 #[test]
 fn fn_at_an_address_opens_eight_instructions_before_and_marks_it() {
-    let Some(img) = this_binary() else { return };
+    let Some(img) = this_x86_binary() else { return };
     let (start, _, count) = long_function(&img, 2000);
     let mut starts = Vec::new();
     crate::disasm::walk(img.read_at(start, 40_000).unwrap(), start, |ins, _| starts.push(ins.ip()));
@@ -72,7 +72,7 @@ fn fn_at_an_address_opens_eight_instructions_before_and_marks_it() {
 
 #[test]
 fn the_earlier_lines_command_shows_the_lines_and_the_pages_after_the_cut_join_up() {
-    let Some(img) = this_binary() else { return };
+    let Some(img) = this_x86_binary() else { return };
     let (start, _, _) = long_function(&img, 2000);
     let mut starts = Vec::new();
     crate::disasm::walk(img.read_at(start, 40_000).unwrap(), start, |ins, _| starts.push(ins.ip()));
@@ -258,7 +258,7 @@ fn fn_to_shows_the_bytes_between_functions_of_a_real_binary() {
 
 #[test]
 fn fn_to_over_two_thousand_instructions_joins_and_stays_inside_the_budget() {
-    let Some(img) = this_binary() else { return };
+    let Some(img) = this_x86_binary() else { return };
     let (start, end, count) = long_function(&img, 2000);
     let to = hex(end);
     let q = |from: Option<u64>, budget: usize| {

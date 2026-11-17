@@ -566,6 +566,7 @@ int main(void) { return 0; }
         let exe = dir.join("d");
         let ok = ["cc", "gcc", "clang"].iter().any(|cc| {
             std::process::Command::new(cc)
+                .args(crate::tests_map::x86_args())
                 .args(["-O2", "-fno-pie", "-no-pie", "-o"])
                 .arg(&exe)
                 .arg(&src)

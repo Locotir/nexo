@@ -24,6 +24,11 @@ fn fixture(dir: &std::path::Path) -> String {
     std::fs::write(&c, "#include <stdio.h>\nint add(int a, int b) { return a + b; }\nint main(int n, char **v) { printf(\"%d\\n\", add(n, 2)); return 0; }\n").unwrap();
     let exe = dir.join("p.out");
     let built = std::process::Command::new("cc")
+        .args(if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            ["-arch", "x86_64"].as_slice()
+        } else {
+            [].as_slice()
+        })
         .args(["-O0", "-fno-pie", "-no-pie", "-o"])
         .arg(&exe)
         .arg(&c)

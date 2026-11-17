@@ -12,7 +12,7 @@ mod xref;
 use std::path::{Path, PathBuf};
 
 use crate::fixtures::{self, Fixture, STRING};
-use crate::tests::this_binary;
+use crate::tests::{this_binary, this_x86_binary};
 use crate::*;
 
 fn open(f: &Fixture) -> Image {

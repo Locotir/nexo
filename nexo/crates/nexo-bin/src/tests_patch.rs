@@ -128,7 +128,13 @@ fn compiled_c_function_offset_patch_round_trip() {
     let source = dir.path().join("tiny.c");
     let exe = dir.path().join("tiny");
     fs::write(&source, "int tiny(int x) { return x + 3; }\nint main(void) { return tiny(4); }\n").unwrap();
-    let built = Command::new("cc").args(["-O0", "-o"]).arg(&exe).arg(&source).output().unwrap();
+    let built = Command::new("cc")
+        .args(crate::tests_map::x86_args())
+        .args(["-O0", "-o"])
+        .arg(&exe)
+        .arg(&source)
+        .output()
+        .unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let img = Image::open(&exe).unwrap();
     let original = fs::read(&exe).unwrap();

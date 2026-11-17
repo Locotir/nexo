@@ -42,7 +42,7 @@ mod vector;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 mod mach;
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 mod macos;

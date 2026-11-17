@@ -238,6 +238,7 @@ fn an_unoptimised_clang_table_switch_with_a_spilled_index_comes_back_as_cases() 
     std::fs::write(&c, exported_sw_source()).unwrap();
     let exe = dir.path().join("clang_o0.exe");
     let built = std::process::Command::new("clang")
+        .args(crate::tests_map::x86_args())
         .args(["-O0", "-fno-pie", "-no-pie", "-o"])
         .arg(&exe)
         .arg(&c)

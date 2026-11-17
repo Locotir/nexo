@@ -63,6 +63,7 @@ fn build(dir: &Path, name: &str, files: &[(&str, &str)], flags: &[&str]) -> Opti
     let exe = dir.join(name);
     let ok = ["cc", "gcc", "clang"].iter().any(|cc| {
         Command::new(cc)
+            .args(crate::tests_map::x86_args())
             .args(flags)
             .arg("-o")
             .arg(&exe)

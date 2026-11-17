@@ -28,6 +28,25 @@ int main(int argc, char **argv) {
 }
 "#;
 
+/// Extra compiler arguments so the samples are x86-64 code, the only code the decompiler reads: Apple clang on an
+/// arm64 Mac builds arm64 unless told otherwise, and it builds x86-64 Mach-O files when asked.
+pub(crate) fn x86_args() -> &'static [&'static str] {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        &["-arch", "x86_64"]
+    } else {
+        &[]
+    }
+}
+
+/// The rustc target flag that makes an x86-64 program on an arm64 Mac (the std of that target must be installed).
+fn rust_target() -> &'static [&'static str] {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        &["--target", "x86_64-apple-darwin"]
+    } else {
+        &[]
+    }
+}
+
 /// Compile `src` with the given flags into `dir`; None (and a message) when no compiler builds it.
 pub(crate) fn compile(dir: &Path, src: &str, flags: &[&str]) -> Option<PathBuf> {
     let c = dir.join("prog.c");
@@ -35,7 +54,15 @@ pub(crate) fn compile(dir: &Path, src: &str, flags: &[&str]) -> Option<PathBuf> 
     let exe = dir.join(format!("prog{}", flags.join("").replace(['-', '=', ' '], "")));
     let exe = exe.with_extension("exe");
     let ok = ["cc", "gcc", "clang"].iter().any(|cc| {
-        Command::new(cc).args(flags).arg("-o").arg(&exe).arg(&c).output().map(|o| o.status.success()).unwrap_or(false)
+        Command::new(cc)
+            .args(x86_args())
+            .args(flags)
+            .arg("-o")
+            .arg(&exe)
+            .arg(&c)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     });
     if !ok || !exe.is_file() {
         eprintln!("skipped: no C compiler that builds the sample");
@@ -121,6 +148,7 @@ fn overview_follows_a_rust_program_to_its_own_main() {
     std::fs::write(&src, "fn greet(n: u32) -> u32 { println!(\"rust says hi {n}\"); n + 1 }\nfn main() { let a = std::env::args().count() as u32; println!(\"{}\", greet(a)); }\n").unwrap();
     let exe = dir.path().join("hello");
     let ok = Command::new("rustc")
+        .args(rust_target())
         .args(["-C", "opt-level=0", "-o"])
         .arg(&exe)
         .arg(&src)
@@ -128,7 +156,7 @@ fn overview_follows_a_rust_program_to_its_own_main() {
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("skipped: no rustc");
+        eprintln!("skipped: rustc does not build an x86-64 program here");
         return;
     }
     let img = Image::open(&exe).unwrap();
