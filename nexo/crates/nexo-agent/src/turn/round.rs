@@ -682,10 +682,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     }
 }
 
-/// What follows a guard's stop: an answer from what was gathered (`agent.guard_answer`), or the person's word.
-/// What the model reads, after the outputs of the round a guard stopped, before the call that may only answer
-/// (`agent.guard_answer`).
-/// Where a request stands after a guard's stop (`agent.guard_answer`).
+/// Where a request stands after a guard's stop (`agent.guard_answer`): an answer from what was gathered, or the
+/// person's word.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Answer {
     /// No guard stopped the tool rounds.
@@ -811,6 +809,8 @@ pub(super) const MUTE_NOTE_AGAIN: &str =
      planning: make a tool call now that builds the simplest version that could work (write the file, run the \
      command), then test it and improve it step by step.</system-reminder>";
 
+/// What the model reads, after the outputs of the round a guard stopped, before the call that may only answer
+/// (`agent.guard_answer`).
 pub(super) const ANSWER_NOW: &str =
     "Tool calls are off until you answer: they will not run. Give your answer now, from what you have already seen. \
      They are on again after your answer, or when the person writes.";

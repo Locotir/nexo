@@ -64,7 +64,7 @@ impl Tool for Bash {
             description: "Run a shell command in the working directory; returns output and exit code. `background: true` makes it a job (see `jobs`).",
             params: &[
                 ("timeout", "Seconds, default 120, max 600"),
-                                ("wait_until", "Shell condition polled before running"),
+                ("wait_until", "Shell condition polled before running"),
                 ("detach", "With `background`: outlives nexo"),
                 ("unsandboxed", "Rerun outside the sandbox"),
             ],
@@ -130,31 +130,23 @@ impl Tool for Bash {
         let log_dir = tmp.join(".bash-logs");
         let log_path = log_dir.join(format!("bash-{}.log", uuid::Uuid::new_v4()));
         // Only save logs where we can explicitly guarantee private file permissions.
+        // The session keeps at most `LOG_BUDGET_BYTES` of logs; each log being written is counted at its full
+        // size, so concurrent commands keep their room. Existing logs stay available.
         #[cfg(unix)]
-        let log_result = {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Reserve a full 8 MiB slot for each log, including concurrent commands.
-            // Existing logs remain available; once the session budget is exhausted, skip logging.
-            static LOG_CREATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let _lock = LOG_CREATION.lock().unwrap_or_else(|e| e.into_inner());
-            std::fs::create_dir_all(&log_dir).and_then(|()| {
-                if std::fs::read_dir(&log_dir)?.take(8).count() >= 8 {
-                    return Err(std::io::Error::other("session log budget exhausted (64 MiB)"));
-                }
-                std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&log_path)
-            })
-        };
+        let log_result = open_log(&log_dir, &log_path);
         #[cfg(not(unix))]
-        let log_result: std::io::Result<std::fs::File> = Err(std::io::Error::new(
+        let log_result: std::io::Result<(std::fs::File, ())> = Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "private log permissions unavailable on this platform",
         ));
-        let (log, log_error) = match log_result {
-            Ok(file) => (
+        // the slot lives to the end of the call: the log is counted at its real size once the command is over
+        let (log, log_error, _slot) = match log_result {
+            Ok((file, slot)) => (
                 Some(std::sync::Arc::new(std::sync::Mutex::new(Ok(LogFile { file, written: 0, truncated: false })))),
                 None,
+                Some(slot),
             ),
-            Err(e) => (None, Some(e.to_string())),
+            Err(e) => (None, Some(e.to_string()), None),
         };
         let end = run_command_logged(
             command,

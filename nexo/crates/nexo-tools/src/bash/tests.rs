@@ -887,3 +887,70 @@ fn the_mac_wait_loop_ends_at_once_when_ready_and_fails_after_the_cap() {
     assert_eq!(run(&format!("[ -e {} ]", f.display()), 3), Some(0));
     assert_eq!(run("[ -e /no/such/file/anywhere ]", 1), Some(1));
 }
+
+#[test]
+fn capture_keeps_fifteen_thousand_characters_of_the_head_of_non_ascii_output() {
+    let mut capture = Capture::new();
+    let line = "é".repeat(100);
+    for _ in 0..400 {
+        capture.push(&line);
+    }
+    let text = capture.text();
+    let head = text.split("\n… [").next().unwrap();
+    // 2 bytes a character: counting bytes ended the head at 7,500 characters
+    assert!(head.chars().count() >= 14_900, "head holds {} characters", head.chars().count());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nine_small_truncated_outputs_in_a_session_each_keep_their_log() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = format!("log-count-{}", uuid::Uuid::new_v4());
+    for i in 0..9 {
+        // a little over 30,000 characters: truncated, so its log is kept, but far under 8 MiB
+        let out = Bash.run(json!({"command": "seq 1 8000"}), &ctx).await;
+        assert!(out.content.contains("[full captured output: "), "call {i}: {}", out.content);
+    }
+    wipe_tmp(&ctx.session_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn full_log_folder_refuses_a_log_and_says_the_bytes_it_holds() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = format!("log-budget-{}", uuid::Uuid::new_v4());
+    let dir = tmp_dir(&ctx.session_id).join(".bash-logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..8 {
+        // sparse files: 60 MiB in all, so less than one full log (8 MiB) is left of 64 MiB
+        let f = std::fs::File::create(dir.join(format!("old-{i}.log"))).unwrap();
+        f.set_len(7 * 1024 * 1024 + 512 * 1024).unwrap();
+    }
+    let out = Bash.run(json!({"command": "seq 1 8000"}), &ctx).await;
+    assert!(
+        out.content.contains(
+            "[full output log unavailable: session log budget exhausted (60.0 MiB kept or reserved of 64 MiB)]"
+        ),
+        "{}",
+        out.content
+    );
+    wipe_tmp(&ctx.session_id);
+}
+
+#[cfg(unix)]
+#[test]
+fn logs_being_written_hold_their_full_size_until_the_command_ends() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join(".bash-logs");
+    let mut open = Vec::new();
+    // empty on disk, but each may grow to 8 MiB: eight of them fill the 64 MiB
+    for i in 0..8 {
+        open.push(open_log(&dir, &dir.join(format!("{i}.log"))).unwrap_or_else(|e| panic!("log {i}: {e}")));
+    }
+    let refused = open_log(&dir, &dir.join("9.log")).unwrap_err();
+    assert!(refused.to_string().contains("64.0 MiB kept or reserved of 64 MiB"), "{refused}");
+    open.pop();
+    assert!(open_log(&dir, &dir.join("9.log")).is_ok(), "a finished command gives its room back");
+}

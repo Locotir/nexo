@@ -18,6 +18,7 @@ pub(super) struct Outcome {
 /// between (a build log of a gigabyte costs no memory).
 pub(super) struct Capture {
     head: String,
+    head_chars: usize,
     tail: VecDeque<String>,
     tail_chars: usize,
     omitted: usize,
@@ -33,6 +34,7 @@ impl Capture {
     pub(super) fn new() -> Capture {
         Capture {
             head: String::new(),
+            head_chars: 0,
             tail: VecDeque::new(),
             tail_chars: 0,
             omitted: 0,
@@ -68,9 +70,11 @@ impl Capture {
             self.context_left -= 1;
         }
         let n = line.chars().count() + 1;
-        if self.head.len() < Self::HALF {
+        // `HALF` counts characters, like the tail: a byte count would hand non-ASCII output to the tail early
+        if self.head_chars < Self::HALF {
             self.head.push_str(line);
             self.head.push('\n');
+            self.head_chars += n;
             return;
         }
         self.tail.push_back(line.to_string());
