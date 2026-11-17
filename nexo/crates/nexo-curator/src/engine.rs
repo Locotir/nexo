@@ -289,6 +289,11 @@ pub struct Engine {
     /// most of them names nothing in particular.
     requests: Vec<FxHashSet<Sym>>,
     requests_df: FxHashMap<Sym, usize>,
+    /// The parts of the files each closed request names, with the message the request starts at (`Engine::named_keep`):
+    /// a request's text never changes once the next one has begun, so each is split once, not again at every decision.
+    /// Not in a snapshot: the next decision rebuilds it.
+    #[serde(skip)]
+    turn_names: Vec<(usize, Arc<FxHashSet<String>>)>,
     step_df: FxHashMap<Sym, usize>,
     /// The step each message of the answered requests belongs to (an index into `steps`).
     step_at: FxHashMap<usize, usize>,
@@ -459,6 +464,7 @@ impl Engine {
             steps: Vec::new(),
             requests: Vec::new(),
             requests_df: FxHashMap::default(),
+            turn_names: Vec::new(),
             step_df: FxHashMap::default(),
             step_at: FxHashMap::default(),
             reads_made: FxHashMap::default(),
