@@ -63,14 +63,14 @@ mod tests {
     #[test]
     fn a_line_copied_from_a_result_the_view_lacks_is_lost() {
         let file = "alpha line one\nbeta line two\ngamma line three\ndelta line four\nepsilon line five";
-        let history = vec![
+        let history = [
             json!({"role": "user", "content": "fix the file"}),
             json!({"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "read", "input": {"p": "f"}}]}),
             json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": file}]}),
         ];
         let reply = json!({"role": "assistant", "content": [{"type": "tool_use", "id": "b", "name": "edit",
             "input": {"old": "alpha line one\nbeta line two\ngamma line three", "new": "x"}}]});
-        let view = vec![
+        let view = [
             history[0].clone(),
             json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "beta line two"}]}),
         ];

@@ -307,7 +307,7 @@ impl Engine {
             units += 1;
             for &j in self.dropped.get(&i).into_iter().flat_map(|d| d.iter()) {
                 left = left
-                    .wrapping_add(((i as u64) << 20 ^ j as u64).wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                    .wrapping_add((((i as u64) << 20) ^ j as u64).wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
             }
         }
         h.write_usize(units);
