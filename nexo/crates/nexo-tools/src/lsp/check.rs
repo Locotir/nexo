@@ -67,7 +67,8 @@ impl Tool for Diagnostics {
         ToolSpec {
             name: "diagnostics".into(),
             description: "What the language server says of a file: compile errors, type errors, warnings, with \
-                line and column. Call it after editing a file to check the edit as an editor would. Works for \
+                line and column. Edit and write results already carry the compiler errors of the file they \
+                changed; this is for other files, for warnings, or when that check was missing. Works for \
                 Rust, Python, TypeScript/JavaScript, Go and C/C++ when their language server is installed; the \
                 first call in a project may take a while as the server indexes it."
                 .into(),
@@ -80,7 +81,12 @@ impl Tool for Diagnostics {
     }
 
     fn compact(&self) -> Option<Compact<'_>> {
-        Some(Compact { description: "Language-server errors and warnings of a file; call after editing.", params: &[] })
+        Some(Compact {
+            description: "Language-server errors and warnings of a file. Edit and write results already carry the \
+                compiler errors of the file they changed; use this for other files, for warnings, or when that \
+                check was missing.",
+            params: &[],
+        })
     }
 
     fn rare(&self) -> bool {
