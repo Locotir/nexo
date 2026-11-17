@@ -143,7 +143,7 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
     let mut st = state.lock().await;
     match opened {
         Ok(s) => {
-            skipped_note(&st.events, id, s.skipped_lines());
+            skipped_note(&st.events, id, &s);
             install_session(&mut st, s);
             if !st.history.is_empty() {
                 super::saved_state::load(&mut st);

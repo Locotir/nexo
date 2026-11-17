@@ -194,6 +194,11 @@ pub struct Session {
     touched: std::time::Instant,
     /// The file ends inside a line (a process died mid-write): closed once the lock is held.
     open_tail: bool,
+    /// Where the cut last line starts, when the file ended in one at open (not just a line missing its end): the
+    /// claim removes it if nobody has written since.
+    cut_tail: Option<u64>,
+    /// The cut last line was removed by the claim, so the file holds no more of it.
+    tail_removed: bool,
     /// The pid of the nexo that took the lock over, once one has: nothing more is saved by this
     /// session, even after that nexo lets the lock go (its history and this one have parted).
     lost: Option<String>,

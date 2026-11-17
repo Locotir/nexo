@@ -62,6 +62,8 @@ impl Session {
             locked: true,
             touched: std::time::Instant::now(),
             open_tail: false,
+            cut_tail: None,
+            tail_removed: false,
             lost: None,
             closed: false,
             size,
@@ -103,6 +105,8 @@ impl Session {
             locked: false,
             touched: std::time::Instant::now(),
             open_tail: false,
+            cut_tail: None,
+            tail_removed: false,
             lost: None,
             closed: false,
             size: 0,
@@ -222,6 +226,8 @@ impl Session {
             touched: std::time::Instant::now(),
             // a process killed mid-write leaves a last line without its end
             open_tail: bytes.last().is_some_and(|b| *b != b'\n'),
+            cut_tail: cut_tail_start(&bytes),
+            tail_removed: false,
             lost: None,
             closed: false,
             size: bytes.len() as u64,
@@ -283,9 +289,18 @@ impl Session {
             }
         }
         if self.open_tail {
+            // a cut line is removed only while the file is as it was read: if anybody wrote since, what follows
+            // the cut is theirs and the line stays, closed
+            let cut = self.cut_tail.take().filter(|_| !self.file_changed());
             if let Some(f) = &mut self.file {
-                // so that the next line starts on a line of its own
-                f.write_all(b"\n")?;
+                if cut.is_some_and(|at| f.set_len(at).is_ok()) {
+                    // the crash's leftover would be skipped and warned about at every later open
+                    self.skipped = self.skipped.saturating_sub(1);
+                    self.tail_removed = true;
+                } else {
+                    // so that the next line starts on a line of its own
+                    f.write_all(b"\n")?;
+                }
             }
             self.open_tail = false;
             self.mark();
@@ -322,4 +337,17 @@ fn fill_bare(
             out.content = (*text).to_string();
         }
     }
+}
+
+/// Where the last line of `bytes` starts when it is a line cut by a crash: it has no end and is not even a whole
+/// JSON value. A last line that only lacks its end, or that is whole but of a type this nexo does not know (a
+/// newer one wrote it), is not cut and is never removed.
+fn cut_tail_start(bytes: &[u8]) -> Option<u64> {
+    if bytes.last().is_none_or(|b| *b == b'\n') {
+        return None;
+    }
+    let start = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let tail = String::from_utf8_lossy(&bytes[start..]);
+    let tail = tail.trim();
+    (!tail.is_empty() && serde_json::from_str::<serde_json::Value>(tail).is_err()).then_some(start as u64)
 }

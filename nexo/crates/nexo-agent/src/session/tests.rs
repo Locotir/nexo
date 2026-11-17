@@ -1095,6 +1095,66 @@ fn a_line_cut_by_a_full_disk_does_not_swallow_the_next_good_line() {
     assert_eq!(back.skipped_lines(), 1);
 }
 
+/// What a process killed in the middle of a line leaves at the end of `p`.
+fn cut_the_last_line(p: &Path) -> Vec<u8> {
+    let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
+    f.write_all(br#"{"type":"message","index":9,"ts":"2026"#).unwrap();
+    std::fs::read(p).unwrap()
+}
+
+#[test]
+fn a_last_line_cut_by_a_crash_is_removed_at_the_claim_so_no_later_open_warns_about_it() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let whole = std::fs::read(&p).unwrap();
+    cut_the_last_line(&p);
+    let mut s = Session::open_path(&p).unwrap();
+    assert_eq!(s.skipped_lines(), 1);
+    s.claim().unwrap();
+    assert!(s.cut_tail_removed());
+    assert_eq!(s.skipped_lines(), 0);
+    assert_eq!(std::fs::read(&p).unwrap(), whole, "only the cut line went");
+    s.append(&Message::assistant("after")).unwrap();
+    drop(s);
+    let back = Session::open_path(&p).unwrap();
+    assert_eq!(back.skipped_lines(), 0);
+    assert!(!back.cut_tail_removed());
+    assert_eq!(back.messages().last().unwrap().text(), "after");
+}
+
+#[test]
+fn a_cut_last_line_stays_and_is_closed_when_somebody_wrote_after_the_file_was_read() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let cut = cut_the_last_line(&p);
+    let mut s = Session::open_path(&p).unwrap();
+    // another writer got in between the read and the claim: what follows the cut is theirs
+    std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"x\n").unwrap();
+    s.claim().unwrap();
+    assert!(!s.cut_tail_removed());
+    assert_eq!(s.skipped_lines(), 1);
+    assert!(std::fs::read(&p).unwrap().starts_with(&cut));
+    s.append(&Message::assistant("after")).unwrap();
+    drop(s);
+    let back = Session::open_path(&p).unwrap();
+    assert_eq!(back.messages().last().unwrap().text(), "after");
+    assert_eq!(back.skipped_lines(), 1);
+}
+
+#[test]
+fn a_whole_last_line_of_a_newer_type_that_only_lacks_its_end_is_kept_at_the_claim() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let whole = std::fs::read(&p).unwrap();
+    let future = br#"{"type":"from_the_future","x":[1,2,3]}"#;
+    std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(future).unwrap();
+    let mut s = Session::open_path(&p).unwrap();
+    s.claim().unwrap();
+    assert!(!s.cut_tail_removed());
+    let now = std::fs::read(&p).unwrap();
+    assert_eq!(now, [&whole[..], &future[..], &b"\n"[..]].concat(), "closed, not cut off");
+}
+
 #[test]
 fn a_file_removed_or_replaced_by_a_folder_is_a_failure_to_save_not_a_silent_success() {
     let d = tempfile::tempdir().unwrap();

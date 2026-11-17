@@ -334,7 +334,7 @@ fn open_session(
             // an open error already names the session file, so the id is said once; only a claim needs it
             let mut s = Session::open(id).map_err(|e| anyhow::anyhow!("cannot resume: {e}"))?;
             s.claim().map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
-            skipped_note(events, id, s.skipped_lines());
+            skipped_note(events, id, &s);
             let h = s.messages().to_vec();
             (s, h, true)
         }

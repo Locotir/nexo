@@ -77,7 +77,11 @@ pub(super) fn saving(st: &mut State) {
 
 /// Tells the person a session was opened without some lines of its file (a cut or garbled line): the
 /// rest is loaded.
-pub(super) fn skipped_note(events: &EventTx, id: &str, skipped: usize) {
+pub(super) fn skipped_note(events: &EventTx, id: &str, session: &crate::session::Session) {
+    if session.cut_tail_removed() {
+        notice(events, Level::Info, format!("session {id}: its last line was cut by a crash and was removed"));
+    }
+    let skipped = session.skipped_lines();
     if skipped > 0 {
         let lines = if skipped == 1 { "1 line".to_string() } else { format!("{skipped} lines") };
         notice(

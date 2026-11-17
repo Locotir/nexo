@@ -137,6 +137,12 @@ impl Session {
         self.skipped
     }
 
+    /// Whether the last line of the file, cut by a crash, was removed when the session was claimed (it is then
+    /// not counted in [`Session::skipped_lines`]).
+    pub fn cut_tail_removed(&self) -> bool {
+        self.tail_removed
+    }
+
     pub fn append(&mut self, m: &Message) -> anyhow::Result<()> {
         self.append_at(m, now())
     }
