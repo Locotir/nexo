@@ -115,8 +115,9 @@ impl Policy {
         // rm -rf /` and `bash -lc 'rm -rf ~'` weigh the same as the bare command. Best effort: a script written
         // to a file and run later, or `python -c`, is out of its sight; the OS sandbox is the wall there.
         if kind == ToolKind::Exec {
-            let why = target_of(kind, args)
-                .and_then(|c| bash::floor_forms(&c).iter().find_map(|f| nexo_supervise::policy::catastrophic(f)));
+            let why = target_of(kind, args).and_then(|c| {
+                bash::floor_forms(&c).iter().find_map(|f| nexo_supervise::policy::catastrophic_from(f, cwd))
+            });
             if let Some(why) = why {
                 return Decision::Deny(format!("never run: {why}"));
             }

@@ -589,7 +589,8 @@ fn the_floor_sees_a_destroyer_behind_wrappers_shells_and_loops_in_yolo() {
         "if true; then rm -rf ~; fi",
         "{ rm -rf ~; }",
         "find ~ -delete",
-        "sudo -u root find / -name x -delete",
+        "sudo -u root find / -type f -delete",
+        "cd / && rm -rf *",
     ] {
         assert!(matches!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Deny(_)), "{cmd}");
     }
