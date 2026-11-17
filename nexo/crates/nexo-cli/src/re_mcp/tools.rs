@@ -61,7 +61,11 @@ pub(super) fn bin_tools() -> Vec<Tool> {
             }
             let about = c.get_about().map(|a| a.to_string()).unwrap_or_default();
             let name = c.get_name();
-            let gate = if SAVING_OPS.contains(&name) { " Saves data: needs --allow-changes." } else { "" };
+            let gate = if crate::bin_cmd::effect_by_name(name).is_some_and(|e| e.saves()) {
+                " Saves data: needs --allow-changes."
+            } else {
+                ""
+            };
             Tool {
                 name: format!("bin_{name}"),
                 description: format!("nexo bin {name}: {about}{gate}"),
@@ -126,9 +130,14 @@ pub(super) fn bin_argv(op: &str, args: &Value) -> Result<Vec<String>, String> {
 
 /// `bin_batch`: the ops of one call in a string, as the agent tool takes them.
 pub(super) fn batch_tool() -> Tool {
+    let (all, flagged) = crate::bin_cmd::saving_names();
+    let names: Vec<String> = all
+        .iter()
+        .map(|n| if flagged.contains(n) { format!("{n} with a saving flag") } else { n.to_string() })
+        .collect();
     Tool {
         name: "bin_batch".into(),
-        description: "nexo bin: several ops in one call, `op1; op2; ...` (or one per line, `#` lines are comments), each answer under a `== op ==` line. A failing op is reported in its place and the rest run. Ops that save data (name, note, proto, struct, var, sigs, patch, crypto --save) need --allow-changes, as in their own tools.".into(),
+        description: format!("nexo bin: several ops in one call, `op1; op2; ...` (or one per line, `#` lines are comments), each answer under a `== op ==` line. A failing op is reported in its place and the rest run. Ops that save data ({}) need --allow-changes, as in their own tools.", names.join(", ")),
         schema: json!({"type": "object", "properties": {
             "ops": {"type": "string", "description": "the ops, each as after `nexo bin`: `info ./p; funcs ./p --grep main; fn ./p main`"}
         }, "required": ["ops"]}),
@@ -136,23 +145,29 @@ pub(super) fn batch_tool() -> Tool {
     }
 }
 
-/// The flags `dbg_command` forwards before the command: (tool argument, `nexo dbg` flag, schema). A new flag is
-/// added here only; the schema and the call both read this list.
-pub(super) fn dbg_flags() -> Vec<(&'static str, &'static str, Value)> {
-    vec![
-        ("lines", "--lines", json!({"type": ["integer", "string"], "description": "most lines in the answer, or all"})),
-        (
-            "from",
-            "--from",
-            json!({"type": "string", "description": "continue a cut answer at this address or position"}),
-        ),
-        (
-            "grep",
-            "--grep",
-            json!({"type": "string", "description": "keep only the rows that match this regular expression, then page them"}),
-        ),
-        ("json", "--json", json!({"type": "boolean"})),
-    ]
+/// The output flags `nexo dbg` takes before the command, by their name in `Common`. These are the same flags
+/// `nexo bin` has, so their flag, type and help come from there; only the choice of names is made here.
+const DBG_FLAG_NAMES: [&str; 4] = ["lines", "from", "grep", "json"];
+
+/// The clap arguments every `nexo bin` op takes.
+pub(super) fn common_args() -> Vec<Arg> {
+    <crate::bin_cmd::Common as clap::Args>::augment_args(clap::Command::new("common"))
+        .get_arguments()
+        .cloned()
+        .collect()
+}
+
+/// The flags `dbg_command` forwards before the command: (tool argument, `nexo dbg` flag, schema), read from
+/// `Common`. A new flag is added to `DBG_FLAG_NAMES` only; the schema and the call both read this list.
+pub(super) fn dbg_flags() -> Vec<(String, String, Value)> {
+    let common = common_args();
+    DBG_FLAG_NAMES
+        .iter()
+        .filter_map(|name| {
+            let a = common.iter().find(|a| a.get_id().as_str() == *name)?;
+            Some((name.to_string(), format!("--{}", a.get_long()?), arg_schema(a)))
+        })
+        .collect()
 }
 
 // ---- the three debugger tools ----
@@ -163,7 +178,7 @@ pub(super) fn dbg_tools() -> Vec<Tool> {
     command_props
         .insert("session".into(), json!({"type": "string", "description": "session id, when more than one is live"}));
     for (arg, _, schema) in dbg_flags() {
-        command_props.insert(arg.into(), schema);
+        command_props.insert(arg, schema);
     }
     vec![
         Tool {

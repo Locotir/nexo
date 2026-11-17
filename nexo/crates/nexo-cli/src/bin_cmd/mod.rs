@@ -10,6 +10,7 @@ use wasm::wasm_in;
 
 mod args;
 pub(crate) mod bridge;
+mod effect;
 mod live;
 mod ops;
 pub(crate) mod script;
@@ -21,6 +22,7 @@ mod tests_json;
 mod wasm;
 
 pub use args::{BinArgs, Common};
+pub(crate) use effect::{argv_effect, effect_by_name, saving_names};
 pub use ops::BinOp;
 
 fn parse_addr(s: &str) -> Result<u64, String> {
