@@ -338,11 +338,11 @@ impl Server {
         }
         for (arg, flag, schema) in dbg_flags() {
             if schema["type"] == "boolean" {
-                if args.get(arg).and_then(Value::as_bool) == Some(true) {
-                    prefix.push(flag.to_string());
+                if args.get(&arg).and_then(Value::as_bool) == Some(true) {
+                    prefix.push(flag);
                 }
-            } else if let Some(v) = scalar(args.get(arg)) {
-                prefix.extend([flag.to_string(), v]);
+            } else if let Some(v) = scalar(args.get(&arg)) {
+                prefix.extend([flag, v]);
             }
         }
         prefix.append(&mut words);

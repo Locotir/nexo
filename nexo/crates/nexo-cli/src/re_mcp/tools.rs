@@ -145,23 +145,29 @@ pub(super) fn batch_tool() -> Tool {
     }
 }
 
-/// The flags `dbg_command` forwards before the command: (tool argument, `nexo dbg` flag, schema). A new flag is
-/// added here only; the schema and the call both read this list.
-pub(super) fn dbg_flags() -> Vec<(&'static str, &'static str, Value)> {
-    vec![
-        ("lines", "--lines", json!({"type": ["integer", "string"], "description": "most lines in the answer, or all"})),
-        (
-            "from",
-            "--from",
-            json!({"type": "string", "description": "continue a cut answer at this address or position"}),
-        ),
-        (
-            "grep",
-            "--grep",
-            json!({"type": "string", "description": "keep only the rows that match this regular expression, then page them"}),
-        ),
-        ("json", "--json", json!({"type": "boolean"})),
-    ]
+/// The output flags `nexo dbg` takes before the command, by their name in `Common`. These are the same flags
+/// `nexo bin` has, so their flag, type and help come from there; only the choice of names is made here.
+const DBG_FLAG_NAMES: [&str; 4] = ["lines", "from", "grep", "json"];
+
+/// The clap arguments every `nexo bin` op takes.
+pub(super) fn common_args() -> Vec<Arg> {
+    <crate::bin_cmd::Common as clap::Args>::augment_args(clap::Command::new("common"))
+        .get_arguments()
+        .cloned()
+        .collect()
+}
+
+/// The flags `dbg_command` forwards before the command: (tool argument, `nexo dbg` flag, schema), read from
+/// `Common`. A new flag is added to `DBG_FLAG_NAMES` only; the schema and the call both read this list.
+pub(super) fn dbg_flags() -> Vec<(String, String, Value)> {
+    let common = common_args();
+    DBG_FLAG_NAMES
+        .iter()
+        .filter_map(|name| {
+            let a = common.iter().find(|a| a.get_id().as_str() == *name)?;
+            Some((name.to_string(), format!("--{}", a.get_long()?), arg_schema(a)))
+        })
+        .collect()
 }
 
 // ---- the three debugger tools ----
@@ -172,7 +178,7 @@ pub(super) fn dbg_tools() -> Vec<Tool> {
     command_props
         .insert("session".into(), json!({"type": "string", "description": "session id, when more than one is live"}));
     for (arg, _, schema) in dbg_flags() {
-        command_props.insert(arg.into(), schema);
+        command_props.insert(arg, schema);
     }
     vec![
         Tool {

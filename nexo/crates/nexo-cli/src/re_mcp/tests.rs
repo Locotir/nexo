@@ -339,7 +339,7 @@ fn bin_batch_takes_ops_and_dbg_command_takes_grep() {
     assert_eq!(batch["inputSchema"]["properties"]["ops"]["type"], "string");
     let dbg = tools.iter().find(|t| t["name"] == "dbg_command").unwrap();
     for (arg, _, _) in dbg_flags() {
-        assert!(dbg["inputSchema"]["properties"].get(arg).is_some(), "{arg} missing from dbg_command");
+        assert!(dbg["inputSchema"]["properties"].get(&arg).is_some(), "{arg} missing from dbg_command");
     }
     assert_eq!(dbg["inputSchema"]["properties"]["grep"]["type"], "string");
     // --timing is a tool input now
@@ -369,4 +369,26 @@ fn bin_batch_runs_each_op_and_keeps_the_write_gate() {
     let a = talk(false, &[call(4, "bin_batch", json!({})), call(5, "bin_batch", json!({"ops": " ; # x"}))]);
     assert_eq!(a[0]["result"]["isError"], true);
     assert_eq!(a[1]["result"]["isError"], true);
+}
+
+#[test]
+fn dbg_flags_are_the_clap_flags_of_common_with_their_help() {
+    let flags = dbg_flags();
+    assert_eq!(flags.len(), 4, "every dbg flag name must exist in Common: {flags:?}");
+    let common = tools::common_args();
+    let tool = tools::dbg_tools().into_iter().find(|t| t.name == "dbg_command").unwrap();
+    for (arg, flag, _) in &flags {
+        let a = common.iter().find(|a| a.get_id().as_str() == arg).unwrap_or_else(|| panic!("{arg} not in Common"));
+        assert_eq!(flag, &format!("--{}", a.get_long().unwrap_or_default()));
+        let p = &tool.schema["properties"][arg.as_str()];
+        assert_eq!(p, &tools::arg_schema(a), "{arg} differs from its clap definition");
+        let help = a.get_help().map(|h| h.to_string()).unwrap_or_default();
+        assert_eq!(p["description"].as_str().unwrap_or_default(), help, "{arg} help");
+    }
+    // the same flags are in the schema of a bin op, which takes Common too
+    let bin = tools::bin_command();
+    let info = bin.find_subcommand("info").unwrap();
+    for (arg, _, _) in &flags {
+        assert!(info.get_arguments().any(|a| a.get_id().as_str() == arg), "{arg} is not a bin flag");
+    }
 }
