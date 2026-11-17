@@ -254,3 +254,64 @@ fn patch_nop_writes_aarch64_nops_and_refuses_what_is_wrong() {
     assert!(err(f.c, PatchData::Asm("nop")).contains("does not assemble AArch64"));
     assert!(!dir.path().join("never").exists());
 }
+
+/// The fixture with `helper` returning another number, a function G added and the data (so the string and
+/// the global) moved 0x40 bytes: only the first two are changes.
+fn second_build() -> Arm {
+    fixture::elf_edit(true, &[fixture::mov_w(0, 5), fixture::RET, fixture::NOP], 0x40, &[(0x28, fixture::mov_w(0, 99))])
+}
+
+#[test]
+fn diff_reports_the_changed_the_added_and_ignores_what_only_moved() {
+    let (fa, fb) = (fixture::elf(true), second_build());
+    assert_ne!(fa.string, fb.string, "the data moved");
+    let (a, b) = (open(&fa), open(&fb));
+    let o = diff_window(&a, &b, None, None, false, None, DEFAULT_LINES).unwrap();
+    let t = whole(&o);
+    assert_eq!(o.meta["changed"], 1, "{t}");
+    assert_eq!(o.meta["added"], 1, "{t}");
+    assert_eq!(o.meta["removed"], 0, "{t}");
+    assert_eq!(o.meta["same"], 5, "{t}");
+    let line =
+        |word: &str| t.lines().find(|l| l.starts_with(word)).unwrap_or_else(|| panic!("a {word} row\n{t}")).to_string();
+    let changed = line("changed");
+    assert!(changed.contains("helper") && changed.contains(&pad(fa.b)), "{changed}\n{t}");
+    let added = line("added");
+    assert!(added.contains(&pad(fb.g)), "{added}\n{t}");
+    assert!(t.contains("next: nexo bin diff "), "{t}");
+    // the changed function side by side: the instruction that changed, with the address the pair reaches
+    let d = whole(&diff_window(&a, &b, Some("helper"), None, false, None, DEFAULT_LINES).unwrap());
+    assert!(d.contains("mov w0"), "{d}");
+    assert!(d.contains("adrp"), "{d}");
+}
+
+#[test]
+fn diff_calls_a_build_that_only_moved_its_data_the_same() {
+    let (a, b) = (open(&fixture::elf(true)), open(&fixture::elf_edit(true, &[], 0x40, &[])));
+    let o = diff_window(&a, &b, None, None, false, None, DEFAULT_LINES).unwrap();
+    let t = whole(&o);
+    assert_eq!(
+        (o.meta["changed"].as_u64(), o.meta["added"].as_u64(), o.meta["removed"].as_u64()),
+        (Some(0), Some(0), Some(0)),
+        "{t}"
+    );
+    assert_eq!(o.meta["same"], 6, "{t}");
+    assert!(t.contains("no function differs"), "{t}");
+}
+
+#[test]
+fn diff_sees_a_changed_call_target_and_refuses_mixed_architectures() {
+    let f = fixture::elf(true);
+    // main calls C where it called B
+    let g = fixture::elf_edit(true, &[], 0, &[(0x8, fixture::bl(f.a + 8, f.c))]);
+    let (a, b) = (open(&f), open(&g));
+    let o = diff_window(&a, &b, None, None, false, None, DEFAULT_LINES).unwrap();
+    assert_eq!(o.meta["changed"], 1, "{}", whole(&o));
+    assert!(whole(&o).lines().any(|l| l.starts_with("changed") && l.contains("main")), "{}", whole(&o));
+    let x = Image::from_bytes(crate::fixtures::elf64_xref().bytes, PathBuf::from("/fx/x86"))
+        .expect("the x86 fixture opens");
+    let e = diff_window(&a, &x, None, None, false, None, DEFAULT_LINES).unwrap_err();
+    assert!(e.to_string().contains("same architecture"), "{e}");
+    let e = diff_window(&x, &a, None, None, false, None, DEFAULT_LINES).unwrap_err();
+    assert!(e.to_string().contains("same architecture"), "{e}");
+}

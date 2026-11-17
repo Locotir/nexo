@@ -81,7 +81,13 @@ pub fn elf(eh_frame: bool) -> Arm {
 
 /// The same file with one more function G of `extra` words after F (listed in `.eh_frame`, no symbol).
 pub fn elf_with(eh_frame: bool, extra: &[u32]) -> Arm {
-    let (text_off, eh_off, data_off, sym_off) = (0x100usize, 0x200usize, 0x1000usize, 0x1100usize);
+    elf_edit(eh_frame, extra, 0, &[])
+}
+
+/// [`elf_with`] with the data section `shift` bytes further on (so the string and the global change
+/// address, in the same page) and the words at the given byte offsets of `.text` replaced.
+pub fn elf_edit(eh_frame: bool, extra: &[u32], shift: usize, edits: &[(usize, u32)]) -> Arm {
+    let (text_off, eh_off, data_off, sym_off) = (0x100usize, 0x200usize, 0x1000usize + shift, 0x1100usize);
     let a = BASE + text_off as u64;
     let (b, c, d, e, f) = (a + 0x20, a + 0x40, a + 0x50, a + 0x60, a + 0x80);
     let data_addr = BASE + data_off as u64;
@@ -120,6 +126,11 @@ pub fn elf_with(eh_frame: bool, extra: &[u32]) -> Arm {
     let g = a + 0xa0;
     if !extra.is_empty() {
         put(&mut text, 0xa0, &words(extra));
+    }
+    for &(at, w) in edits {
+        if let Some(slot) = text.get_mut(at..at + 4) {
+            slot.copy_from_slice(&w.to_le_bytes());
+        }
     }
     let text_end = a + text.len() as u64;
 
