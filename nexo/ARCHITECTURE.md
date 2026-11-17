@@ -413,8 +413,8 @@ so nexo looks the same whatever the terminal's palette; on a terminal
 without 24-bit colour (`COLORTERM` not `truecolor`/`24bit` and `TERM`
 without `256color`, or `NEXO_COLORS=256`/`16`) each value is mapped to the
 nearest of the 256-colour cube, or to the standard colour of the same hue on
-16 colours, and `/theme` says so. `dark` (default: vivid pastels, every text
-colour at WCAG AA 4.5:1 on every ground), `nexo`, `light`,
+16 colours, and `/theme` says so. `nexo` (default), `dark` (vivid pastels, every text
+colour at WCAG AA 4.5:1 on every ground), `light`,
 `catppuccin-mocha`, `gruvbox`, `nord`, `dracula`, `solarized-dark`,
 `tokyo-night`; `mono` is the one theme that leaves the terminal's colours
 alone (also under `NO_COLOR`). Code highlighting through syntect sets

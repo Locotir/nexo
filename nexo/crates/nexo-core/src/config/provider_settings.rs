@@ -39,7 +39,7 @@ pub struct ProviderConfig {
     pub efforts: BTreeMap<String, Vec<String>>,
     /// The reasoning level chosen per model (`/effort`); it wins over `agent.reasoning`.
     pub effort: BTreeMap<String, String>,
-    /// Settings a protocol may read (`api_version`, `region`, ...).
+    /// Settings a protocol may read (`api_version`, `bearer`, `cache`, ...), the `[providers.name.extra]` table; the README lists them.
     pub extra: BTreeMap<String, toml::Value>,
 }
 

@@ -73,7 +73,7 @@ setup, and `nexo guide` prints the step-by-step guide
 ([`docs/SETUP-FOR-AGENTS.md`](docs/SETUP-FOR-AGENTS.md)), which an assistant
 can follow to set nexo up for you.
 
-More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo/<name>`, kept if it changed), `--theme NAME`, `--no-mouse`, `--no-alt-screen` (keep the session in the scrollback), `--inline` (finished turns go to the terminal's scrollback), `--context POLICY` (`NEXO_CONTEXT`), `--log FILE`. Other commands:
+More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo/<name>`, kept if it changed), `--theme NAME`, `--no-mouse`, `--no-alt-screen` (`NEXO_NO_ALT_SCREEN`; keep the session in the scrollback), `--inline` (`NEXO_INLINE`; finished turns go to the terminal's scrollback), `--context POLICY` (`NEXO_CONTEXT`), `--log FILE`. Other commands:
 
 | Command | What it does |
 |---|---|
@@ -405,8 +405,8 @@ own; `Esc` dismisses. In a run nobody watches the tool is not offered.
 Code blocks, files and diffs are coloured for every language `bat` knows, by name, alias, extension or
 first line; a shell command in a `bash` card too. Every theme is a complete set of RGB values with its own
 background, so it looks the same in any terminal (without 24-bit colour: the nearest of the 256-colour cube).
-`/theme` previews each as you move and remembers the choice (`[ui] theme`). `dark` is the default; the others:
-`nexo`, `light`, `mono` (no colour; also when `NO_COLOR` is set), `catppuccin-mocha`, `gruvbox`, `nord`,
+`/theme` previews each as you move and remembers the choice (`[ui] theme`). `nexo` is the default (`[ui] theme = "auto"` picks `light` on a light terminal background and `nexo` otherwise); the others:
+`dark`, `light`, `mono` (no colour; also when `NO_COLOR` is set), `catppuccin-mocha`, `gruvbox`, `nord`,
 `dracula`, `solarized-dark`, `tokyo-night`.
 
 ## Configuration
@@ -511,6 +511,28 @@ nexo mcp remove linear
 `url` and `headers`), only once the project is trusted (`nexo config trust`); a server of the same name in
 your configuration wins.
 
+### Environment variables
+
+These are read at start. Where a variable matches a flag, the flag wins.
+
+| Variable | Effect |
+|---|---|
+| `NEXO_CONFIG_DIR`, `NEXO_DATA_DIR` | move the settings (`config.toml`, `prompt.md`, `commands/`, `agents/`) and what nexo writes as it works (`sessions/`, `keys/`, `spend.json`); both default to `~/.nexo` |
+| `NEXO_CACHE_DIR` | what can be thrown away; default `~/.nexo/cache` |
+| `NEXO_AUTH_FILE` | the credential store; default `auth.json` in the data folder |
+| `NEXO_COMPAT_HOME` | where the other tools' home folders are looked up (empty: off) |
+| `NEXO_NO_ALT_SCREEN`, `NEXO_INLINE` | `1` is `--no-alt-screen` and `--inline` |
+| `NEXO_ASCII` | `1` forces the plain-ASCII symbols, `0` forbids them; by default they are on for the Linux console, a locale that is not UTF-8 and the legacy Windows console |
+| `NEXO_COLORS` | `truecolor` (or `24bit`), `256`, `16` (or `ansi`): the colour depth, instead of what `COLORTERM` and `TERM` say |
+| `NEXO_PROVIDER`, `NEXO_MODEL` | the same as `--provider` and `--model` |
+| `NEXO_PERMISSION_MODE`, `NEXO_SANDBOX` | the same as `--permission-mode` and `--sandbox` |
+| `NEXO_CONTEXT`, `NEXO_CURATOR_SPEC` | the same as `--context` and `--curator-spec` |
+| `NEXO_BROWSER` | the browser executable the `browser` tool uses, ahead of the search for an installed one |
+| `NEXO_SHARED_MEMORY` | the file of the shared memory notes; default `~/.nexo/shared-memory.md` |
+| `NEXO_NO_UPDATE_CHECK` | any value turns the update check off, like `[ui] update_check = false` |
+| `NEXO_TRACE` | a file to which one line per terminal event, command and agent event is appended, to find why a key went nowhere; never what was typed or a key |
+| `NEXO_TMP` | set by nexo for every `bash` command: a folder the command may use for its own files |
+
 ### Providers
 
 Four wire protocols cover every provider ([`docs/providers-base.md`](../docs/providers-base.md) is the
@@ -535,6 +557,37 @@ The guide is [`docs/SETUP-FOR-AGENTS.md`](docs/SETUP-FOR-AGENTS.md): hand it to
 any assistant and it can set nexo up for you without writing a key to a file.
 A new vendor is a `[providers.name]` block; a new protocol is one adapter in
 `crates/nexo-providers`.
+
+#### Provider settings in `extra`
+
+The `[providers.name.extra]` table holds settings that the protocol serving the provider reads. A key
+the protocol does not know has no effect and is not reported.
+
+| Protocol | Key | Type, default | Effect |
+|---|---|---|---|
+| `anthropic` | `api_version` | string, `2023-06-01` | the `anthropic-version` header |
+| `anthropic` | `bearer` | bool, `false` | send the key as `Authorization: Bearer` instead of `x-api-key` |
+| `anthropic` | `cache` | bool, `true` | mark the prompt for caching |
+| `anthropic` | `cache_ttl_1h` | bool, `true` | ask for the one-hour cache lifetime where the context policy wants it |
+| `anthropic` | `block_binding` | bool, `true` | let the API drop a thinking block whose history changed, instead of failing the call |
+| `gemini` | `bearer` | bool, `false` | send the key as `Authorization: Bearer` instead of `x-goog-api-key` |
+| `openai-chat` | `system_role` | string, `system` | the role of the system message (`developer` where a server wants it) |
+| `openai-chat` | `send_reasoning` | bool, `false` | send the model's earlier reasoning back with the history |
+| `openai-chat` | `max_tokens_key` | string, by model | the name of the reply limit field (`max_tokens` or `max_completion_tokens`) |
+| `openai-responses` | `omit_max_tokens` | bool, `false` | no reply limit in the request, as a ChatGPT subscription backend wants (`nexo auth login codex` sets it) |
+| `openai-responses` | `store` | bool, `false` | ask the server to keep the response |
+| `openai-responses` | `include_reasoning` | bool, `false` | ask for the encrypted reasoning back |
+| `openai-responses` | `prompt_cache_key` | bool, on for OpenAI and a ChatGPT login only | send a cache key with each request |
+| `openai-chat`, `openai-responses` | `versionless` | bool, `false` | use `base_url/path` as it is, for a server that has no `/v1` segment |
+
+```toml
+[providers.myserver]
+protocol = "openai-chat"
+base_url = "http://localhost:8000/v1"
+
+[providers.myserver.extra]
+send_reasoning = true
+```
 
 ### Setting up a model: `/model`
 
