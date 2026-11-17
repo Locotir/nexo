@@ -37,6 +37,7 @@ async fn a_context_error_with_a_number_records_the_window() {
             ErrorKind::ContextLength,
             "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens.",
         )),
+        Reply::Events(text("SUMMARY")),
         Reply::Events(text("after")),
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
@@ -78,6 +79,66 @@ async fn a_window_learned_when_only_the_reply_went_over_shortens_the_reply_inste
     assert_eq!(reqs.len(), 2, "no summariser call between the two requests");
     assert!(!is_summary(&reqs[1]) && reqs[1].messages == reqs[0].messages);
     assert!(reqs[1].max_tokens < reqs[0].max_tokens && reqs[1].max_tokens <= 8192, "{}", reqs[1].max_tokens);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_spend_limit_on_a_model_with_no_price_says_once_that_it_cannot_count_it() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("first")), Reply::Events(text("second"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_cost = Some(1000.0);
+    cfg.providers.get_mut("mock").unwrap().pricing.clear();
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    let mut all = Vec::new();
+    for t in ["one", "two"] {
+        r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        all.extend(r.turn().await);
+    }
+    r.stop().await;
+    let said: Vec<_> = ck_notices(&all).into_iter().filter(|(_, t)| t.contains("has no price")).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0].0, Level::Warn);
+    assert!(said[0].1.contains("spend limit") && said[0].1.contains("/pricing"), "{said:?}");
+}
+
+#[tokio::test]
+async fn a_model_with_no_price_and_no_spend_limit_says_nothing_about_prices() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("first"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.providers.get_mut("mock").unwrap().pricing.clear();
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    r.stop().await;
+    assert!(!has_notice(&evs, "has no price"));
+}
+
+#[tokio::test]
+async fn a_window_learned_when_the_estimate_has_the_whole_reply_fitting_compacts_the_history() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    // the estimate puts the request and the 16384-token reply well under 131072, so a shorter reply would send the
+    // same request again; the error said the history is what went over
+    let client = Scripted::new(vec![
+        Reply::Err(ProviderError::new(
+            ErrorKind::ContextLength,
+            "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens.",
+        )),
+        Reply::Events(text("SUMMARY")),
+        Reply::Events(text("after")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "after");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(is_summary(&reqs[1]), "the second call is the summariser's");
     r.stop().await;
 }
 

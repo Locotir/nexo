@@ -24,12 +24,14 @@ fn fit_ratio(learned: Option<f64>, window: u64) -> Option<f64> {
     learned.or_else(|| prompt::is_compact(Some(window)).then_some(FIRST_RATIO))
 }
 
-/// Whether the request the session last built leaves a useful reply under `window` (at least `limits::REPLY_FLOOR`).
-/// A window learned from the provider's error says so when it was the reply's room that went over, not the history:
-/// [`fit`] then shortens the reply on the next pass and no compaction is needed.
-pub(super) fn room_left(st: &State, window: u64) -> bool {
+/// Whether a shorter reply is what the next pass can change under `window`: the request the session last built leaves a
+/// useful reply (at least `limits::REPLY_FLOOR`) but not the `wanted` one, so [`fit`] shortens it. A window learned
+/// from the provider's error says it was the reply's room that went over, not the history, and no compaction is
+/// needed then. When the estimate has the whole `wanted` reply fitting, [`fit`] would send the same request again, so
+/// this says no and the history is compacted.
+pub(super) fn room_left(st: &State, window: u64, wanted: u32) -> bool {
     let used = provider_tokens(st.est_sent, fit_ratio(st.tok_ratio, window));
-    used + u64::from(limits::REPLY_FLOOR) <= window
+    used + u64::from(limits::REPLY_FLOOR) <= window && used + u64::from(wanted) > window
 }
 
 /// Fits `req`, built from the session's view, to the model's window when it and its reply would pass it. In order:

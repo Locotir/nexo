@@ -17,8 +17,9 @@ pub(super) enum Lesson {
 }
 
 /// Reads the error for what it says about the model and remembers it:
-/// the context window, the largest reply, or that the model does not exist.
-pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Lesson {
+/// the context window, the largest reply, or that the model does not exist. `wanted` is the reply room the failed
+/// request asked for.
+pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str, wanted: u32) -> Lesson {
     let mut guard = state.lock().await;
     let st = &mut *guard;
     let (provider, mut cfg, _) = st.target.get();
@@ -34,7 +35,8 @@ pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Les
         // A policy that does not keep its view under the window can still retry once: when the request itself is
         // well under the window, it was the reply's room (prompt plus max_tokens) that went over, which a summary
         // does not fix and the next pass shortens.
-        if before.is_none_or(|b| n < b) && (st.policy.fits_window() || window_fit::room_left(st, u64::from(n))) {
+        if before.is_none_or(|b| n < b) && (st.policy.fits_window() || window_fit::room_left(st, u64::from(n), wanted))
+        {
             return Lesson::Refit;
         }
         return Lesson::Context;

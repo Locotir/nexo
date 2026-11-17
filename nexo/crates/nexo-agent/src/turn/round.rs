@@ -156,7 +156,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         };
         let mut stream = match started {
             Ok(s) => s,
-            Err(e) => match learn(&state, &e, &req.model).await {
+            Err(e) => match learn(&state, &e, &req.model, req.max_tokens).await {
                 Lesson::Refit if !refitted => {
                     refitted = true;
                     continue;
@@ -280,7 +280,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         }
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
-                match learn(&state, e, &req.model).await {
+                match learn(&state, e, &req.model, req.max_tokens).await {
                     Lesson::Refit if !refitted => {
                         bill_attempt(&state, &events, &req.model, usage, call).await;
                         refitted = true;
