@@ -120,6 +120,11 @@ pub struct Record {
     pub transcript: String,
     /// The graded parts of a task of several objectives, in the task's order (empty otherwise).
     pub parts: Vec<Part>,
+    /// Test runs of the exercise that ran out of time (Polyglot), and test runs something else killed with
+    /// SIGKILL (the OOM killer, a stray `kill -9`), so the report can tell a slow solution from a failure of
+    /// the machine. Zero in records of other tasks and of older benchmarks.
+    pub tests_timed_out: u32,
+    pub tests_killed: u32,
     /// Recall calls, re-reads and duplicate lines read from the transcript.
     pub counters: crate::counters::Counters,
     /// The agent's tool calls reached absolute paths outside the run's folders: the run could have
@@ -364,6 +369,8 @@ pub fn record(
         errors: d.stats.errors.iter().take(5).cloned().collect(),
         transcript: d.transcript.clone(),
         parts: Vec::new(),
+        tests_timed_out: 0,
+        tests_killed: 0,
         counters: crate::counters::from_file(&bench.out.join(&d.transcript)),
         contaminated: !outside.is_empty(),
         outside,
@@ -591,6 +598,8 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         errors: vec![],
         transcript: String::new(),
         parts: Vec::new(),
+        tests_timed_out: 0,
+        tests_killed: 0,
         counters: Default::default(),
         contaminated: false,
         outside: Vec::new(),

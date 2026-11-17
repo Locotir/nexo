@@ -37,6 +37,9 @@ pub struct Outcome {
     /// Exit status 0 within the time.
     pub pass: bool,
     pub timed_out: bool,
+    /// Something other than the time limit killed the tests with SIGKILL (the OOM killer, a stray `kill -9`).
+    /// It is a plain failure whose output the model is shown, never told that its solution was too slow.
+    pub killed: bool,
     /// The output as the model is shown it: cleaned and capped. `Tests timed out!` on a time-out.
     pub output: String,
     /// One line on what ran, read from the output (`12 passed, 3 failed`, `did not compile`).
@@ -48,20 +51,22 @@ pub struct Outcome {
 pub fn run_tests(lang: Lang, wd: &Path, seal: &Seal) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
     let line = format!("{} 2>&1", seal.wrap(command(lang)));
-    let (code, raw, timed_out) = run_line(&line, TIMEOUT_S)?;
+    let (code, raw, ending) = run_line(&line, TIMEOUT_S)?;
     let seconds = started.elapsed().as_secs_f64();
-    if timed_out {
+    if ending == Ending::TimedOut {
         return Ok(Outcome {
             pass: false,
             timed_out: true,
+            killed: false,
             output: prompts::TIMED_OUT.into(),
             summary: "timed out".into(),
             seconds,
         });
     }
-    let summary = with_crash(summarize(lang, &raw), &raw);
+    let killed = ending == Ending::Killed;
+    let summary = if killed { "killed (signal 9)".into() } else { with_crash(summarize(lang, &raw), &raw) };
     let output = prompts::cap_output(&prompts::cleanup_output(&raw, wd));
-    Ok(Outcome { pass: code == Some(0), timed_out: false, output, summary, seconds })
+    Ok(Outcome { pass: code == Some(0), timed_out: false, killed, output, summary, seconds })
 }
 
 /// The GNU `timeout` program: `timeout` on Linux, `gtimeout` where Homebrew coreutils is installed (a stock Mac
@@ -73,19 +78,46 @@ fn gnu_timeout() -> Option<&'static str> {
     Command::new("gtimeout").arg("--version").output().is_ok_and(|o| o.status.success()).then_some("gtimeout")
 }
 
+/// How a test line ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    /// It ended by itself, passing or failing.
+    Exited,
+    /// The time ran out.
+    TimedOut,
+    /// SIGKILL reached it before the time was up, so something else killed it.
+    Killed,
+}
+
+/// Tells how a line ended from `timeout`'s exit `code` and how long it ran. `timeout` exits 124 when the time ran
+/// out and 137 (128 + SIGKILL) when it had to escalate with `-k`, but `sh -c` also exits 137 when a child of the
+/// line was killed from outside (an out-of-memory kill of cargo or node). Only a 137 after the deadline is the
+/// escalation; an earlier one says nothing about the solution's speed.
+fn ending_of(code: Option<i32>, elapsed: std::time::Duration, secs: u64) -> Ending {
+    match code {
+        Some(124) => Ending::TimedOut,
+        Some(137) if elapsed >= std::time::Duration::from_secs(secs) => Ending::TimedOut,
+        Some(137) => Ending::Killed,
+        _ => Ending::Exited,
+    }
+}
+
 /// Runs the shell line for at most `secs` seconds. Gives the exit code, the output (standard error included by
-/// the line itself) and whether the time ran out.
-fn run_line(line: &str, secs: u64) -> Result<(Option<i32>, String, bool), String> {
-    let Some(program) = gnu_timeout() else { return run_with_deadline(line, secs) };
+/// the line itself) and how it ended.
+fn run_line(line: &str, secs: u64) -> Result<(Option<i32>, String, Ending), String> {
+    let Some(program) = gnu_timeout() else {
+        let (code, out, timed_out) = run_with_deadline(line, secs)?;
+        return Ok((code, out, if timed_out { Ending::TimedOut } else { Ending::Exited }));
+    };
+    let started = std::time::Instant::now();
     let out = Command::new(program)
         .args(["-k", "5", &secs.to_string(), "sh", "-c", line])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("{program}: {e}"))?;
     let code = out.status.code();
-    // timeout(1) exits 124 when the command ran out of time, 137 when it had to be killed
-    let timed_out = matches!(code, Some(124) | Some(137));
-    Ok((code, String::from_utf8_lossy(&out.stdout).into_owned(), timed_out))
+    let ending = ending_of(code, started.elapsed(), secs);
+    Ok((code, String::from_utf8_lossy(&out.stdout).into_owned(), ending))
 }
 
 /// The same without a `timeout` program: the line leads its own process group, and when the time is up the
@@ -257,6 +289,32 @@ mod tests {
         let (_, _, timed_out) = run_with_deadline("sleep 5", 1).unwrap();
         assert!(timed_out);
         assert!(t.elapsed() < std::time::Duration::from_secs(4), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_137_after_the_deadline_is_the_timeout_escalation_and_an_earlier_one_an_outside_kill() {
+        use std::time::Duration;
+        let s = Duration::from_secs;
+        assert_eq!(ending_of(Some(124), s(180), 180), Ending::TimedOut);
+        assert_eq!(ending_of(Some(137), s(185), 180), Ending::TimedOut);
+        assert_eq!(ending_of(Some(137), s(12), 180), Ending::Killed);
+        assert_eq!(ending_of(Some(1), s(12), 180), Ending::Exited);
+        assert_eq!(ending_of(None, s(12), 180), Ending::Exited);
+    }
+
+    // Needs the GNU `timeout` program, which Linux has: without it the fallback gives no exit code of 137.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_test_line_killed_from_outside_is_not_called_a_timeout() {
+        let (code, _, ending) = run_line("kill -9 $$", 30).unwrap();
+        assert_eq!((code, ending), (Some(137), Ending::Killed));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_test_line_that_outlives_the_deadline_is_a_timeout() {
+        let (_, _, ending) = run_line("sleep 10", 1).unwrap();
+        assert_eq!(ending, Ending::TimedOut);
     }
 
     #[cfg(unix)]

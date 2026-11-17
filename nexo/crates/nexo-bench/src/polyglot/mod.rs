@@ -517,12 +517,15 @@ async fn attempt(
         bench,
         &driven.transcript,
         &json!({"task": name, "pass_at_1": p1, "pass_at_2": p2, "attempts": t.attempts.iter().map(|a| json!({
-            "pass": a.pass, "timed_out": a.timed_out, "summary": a.summary, "seconds": a.seconds, "output": a.output,
+            "pass": a.pass, "timed_out": a.timed_out, "killed": a.killed, "summary": a.summary, "seconds": a.seconds, "output": a.output,
         })).collect::<Vec<_>>()}),
     );
     let mut rec = run::record(bench, arm, rep, name, &driven, if p2 { 1.0 } else { 0.0 }, p2, detail);
     rec.parts =
         vec![Part { id: "pass@1".into(), ok: Some(p1) }, Part { id: "pass@2".into(), ok: second_known.then_some(p2) }];
+    // counted from the attempts, so the report never has to read the free text of `detail`
+    rec.tests_timed_out = t.attempts.iter().filter(|a| a.timed_out).count() as u32;
+    rec.tests_killed = t.attempts.iter().filter(|a| a.killed).count() as u32;
     Ok(rec)
 }
 
@@ -536,7 +539,14 @@ mod tests {
     use super::*;
 
     fn outcome(pass: bool) -> Outcome {
-        Outcome { pass, timed_out: false, output: "E  assert 1 == 2\n".into(), summary: "x".into(), seconds: 1.0 }
+        Outcome {
+            pass,
+            timed_out: false,
+            killed: false,
+            output: "E  assert 1 == 2\n".into(),
+            summary: "x".into(),
+            seconds: 1.0,
+        }
     }
 
     fn benchmark(langs: &[(&str, &[&str])]) -> tempfile::TempDir {
