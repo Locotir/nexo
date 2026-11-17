@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use futures::{Stream, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use nexo_core::{ErrorKind, ProviderConfig, ProviderError};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use serde_json::Value;
@@ -13,8 +13,8 @@ use crate::sse::{ByteResult, SseStream};
 
 pub const USER_AGENT: &str = concat!("nexo/", env!("CARGO_PKG_VERSION"));
 
-/// Read timeout between two chunks of a stream; a model that says nothing
-/// for this long has gone.
+/// Read timeout of every request but a streamed reply: a server that says nothing for this long has gone.
+/// A streamed reply is held to the provider's own limit instead (`ProviderConfig::idle_timeout`).
 const IDLE: Duration = Duration::from_secs(300);
 
 /// The client of the running tokio runtime, or why TLS could not be set up (see [`crate::tls`]).
@@ -23,14 +23,25 @@ const IDLE: Duration = Duration::from_secs(300);
 /// the connection is dead and a request handed to it fails with "error sending request" and no
 /// answer. Each runtime gets a client of its own; a process with one runtime has one client.
 pub fn client() -> Result<reqwest::Client, ProviderError> {
+    client_of(&CLIENTS, Some(IDLE))
+}
+
+/// The client a streamed reply is asked with: the same as [`client`] but with no read timeout of its own, so
+/// the limit the provider set (longer or shorter than the default) is the only one; see [`post_stream`].
+fn stream_client() -> Result<reqwest::Client, ProviderError> {
+    client_of(&STREAM_CLIENTS, None)
+}
+
+fn client_of(kept: &Mutex<Kept>, read: Option<Duration>) -> Result<reqwest::Client, ProviderError> {
     let id = tokio::runtime::Handle::try_current().ok().map(|h| h.id());
-    let mut all = CLIENTS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut all = kept.lock().unwrap_or_else(|p| p.into_inner());
     let built = kept_or_new(&mut all, id, || {
         crate::tls::build_client(|| {
-            reqwest::Client::builder()
-                .user_agent(USER_AGENT)
-                .connect_timeout(Duration::from_secs(30))
-                .read_timeout(IDLE)
+            let b = reqwest::Client::builder().user_agent(USER_AGENT).connect_timeout(Duration::from_secs(30));
+            match read {
+                Some(d) => b.read_timeout(d),
+                None => b,
+            }
         })
     });
     built.map_err(|e| ProviderError::new(ErrorKind::Other, e))
@@ -39,6 +50,7 @@ pub fn client() -> Result<reqwest::Client, ProviderError> {
 type Built = Result<reqwest::Client, String>;
 type Kept = Vec<(Option<tokio::runtime::Id>, Built)>;
 static CLIENTS: Mutex<Kept> = Mutex::new(Vec::new());
+static STREAM_CLIENTS: Mutex<Kept> = Mutex::new(Vec::new());
 
 /// The client kept for this runtime, or a new one; runtimes that ended are not told apart from live
 /// ones, so the oldest goes when the list is full.
@@ -112,9 +124,21 @@ pub fn headers(cfg: &ProviderConfig, own: &[(&str, String)]) -> HeaderMap {
 /// A byte stream of a response body, errors as text.
 pub type BodyStream = std::pin::Pin<Box<dyn Stream<Item = ByteResult> + Send>>;
 
-/// POSTs `body` and returns the response's byte stream, or the classified error.
-pub async fn post_stream(url: &str, headers: HeaderMap, body: &Value) -> Result<BodyStream, ProviderError> {
-    let resp = client()?.post(url).headers(headers).json(body).send().await.map_err(net_error)?;
+/// POSTs `body` and returns the response's byte stream, or the classified error. The answer to the request,
+/// and each chunk after it, must come within `idle` (none: no limit); a server that goes quiet ends in a
+/// network error, which the client retries like a dropped connection.
+pub async fn post_stream(
+    url: &str,
+    headers: HeaderMap,
+    body: &Value,
+    idle: Option<Duration>,
+) -> Result<BodyStream, ProviderError> {
+    let sending = stream_client()?.post(url).headers(headers).json(body).send();
+    let resp = match idle {
+        Some(limit) => tokio::time::timeout(limit, sending).await.map_err(|_| quiet(limit, "no answer"))?,
+        None => sending.await,
+    }
+    .map_err(net_error)?;
     // the plan figures ride on every response, an error one (the limit reached) included
     crate::usage::record_headers(url, resp.headers());
     let status = resp.status().as_u16();
@@ -125,7 +149,27 @@ pub async fn post_stream(url: &str, headers: HeaderMap, body: &Value) -> Result<
         e.retry_after = retry_after;
         return Err(e);
     }
-    Ok(Box::pin(resp.bytes_stream().map_err(|e| e.to_string())))
+    let body: BodyStream = Box::pin(resp.bytes_stream().map_err(|e| e.to_string()));
+    Ok(match idle {
+        Some(limit) => within(body, limit),
+        None => body,
+    })
+}
+
+fn quiet(limit: Duration, what: &str) -> ProviderError {
+    ProviderError::new(ErrorKind::Network, format!("{what} for {} s", limit.as_secs()))
+}
+
+/// `body`, but a chunk that takes longer than `idle` to come ends it with an error instead of waiting on.
+fn within(body: BodyStream, idle: Duration) -> BodyStream {
+    Box::pin(futures::stream::unfold(Some(body), move |state| async move {
+        let mut body = state?;
+        match tokio::time::timeout(idle, body.next()).await {
+            Ok(Some(chunk)) => Some((chunk, Some(body))),
+            Ok(None) => None,
+            Err(_) => Some((Err(format!("no data for {} s", idle.as_secs())), None)),
+        }
+    }))
 }
 
 /// GETs `url` and parses the JSON.

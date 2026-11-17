@@ -1,5 +1,8 @@
 use super::*;
 
+/// How long a reply may go quiet when the provider names no limit (see [`ProviderConfig::idle_timeout`]).
+pub const IDLE_TIMEOUT_SECS: u64 = 300;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -131,6 +134,17 @@ impl ProviderConfig {
             base_url: base_url.trim_end_matches('/').into(),
             api_key_env: api_key_env.map(String::from),
             ..Default::default()
+        }
+    }
+
+    /// How long a reply may go without a byte before the request counts as failed: `extra.idle_timeout`, in
+    /// seconds, 0 for never. A server that loads a large model before it answers needs more than a hosted
+    /// one, so the limit is the provider's to set; unset (or not a whole number of seconds) it is 300 s.
+    pub fn idle_timeout(&self) -> Option<std::time::Duration> {
+        let secs = self.extra.get("idle_timeout").and_then(|v| v.as_integer()).and_then(|n| u64::try_from(n).ok());
+        match secs.unwrap_or(IDLE_TIMEOUT_SECS) {
+            0 => None,
+            n => Some(std::time::Duration::from_secs(n)),
         }
     }
 

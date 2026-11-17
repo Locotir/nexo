@@ -39,7 +39,9 @@ impl Protocol for OpenAiChat {
         key: Option<&str>,
         req: &ModelRequest,
     ) -> Result<EventStream, ProviderError> {
-        let body = http::post_stream(&Self::url(cfg), Self::headers(cfg, key), &Self::body(cfg, req)).await?;
+        let body =
+            http::post_stream(&Self::url(cfg), Self::headers(cfg, key), &Self::body(cfg, req), cfg.idle_timeout())
+                .await?;
         Ok(Self::parse(http::sse(body)))
     }
 

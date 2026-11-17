@@ -336,6 +336,49 @@ async fn a_stream_that_goes_silent_ends_in_an_error_not_a_hang() {
     assert!(e.human().starts_with("Could not reach the provider"), "{}", e.human());
 }
 
+/// A config whose provider gives a reply `secs` seconds of quiet before the request counts as failed.
+fn quiet_after(base: &str, secs: i64) -> ProviderConfig {
+    let mut c = cfg(base);
+    c.extra.insert("idle_timeout".into(), toml::Value::Integer(secs));
+    c
+}
+
+#[tokio::test]
+async fn a_stream_quiet_for_longer_than_the_providers_limit_ends_at_that_limit() {
+    let word = "data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n";
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n";
+    let base = silent(Some(Box::leak(format!("{head}{word}").into_boxed_str()))).await;
+    let started = std::time::Instant::now();
+    let run = async {
+        let mut s = quick().stream(&quiet_after(&base, 1), &req(), 0).await.unwrap();
+        let mut c = Collector::new();
+        while let Some(ev) = s.next().await {
+            c.push(ev);
+        }
+        c
+    };
+    // the default limit is 300 s: ending within seconds is the provider's own setting at work
+    let c = tokio::time::timeout(Duration::from_secs(30), run).await.expect("the stream ended");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert_eq!(c.message().text(), "hi", "what came before the silence is kept");
+    let e = c.error.expect("the person is told");
+    assert!(e.is_retryable() && e.message.contains("no data for 1 s"), "{e:?}");
+}
+
+#[tokio::test]
+async fn a_server_that_never_answers_is_given_up_on_at_the_providers_limit() {
+    let base = silent(None).await;
+    let started = std::time::Instant::now();
+    let e = tokio::time::timeout(Duration::from_secs(30), async {
+        quick().stream(&quiet_after(&base, 1), &req(), 0).await.err().expect("an error")
+    })
+    .await
+    .expect("the call ended");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert_eq!(e.kind, ErrorKind::Network);
+    assert!(e.message.contains("no answer for 1 s"), "{}", e.message);
+}
+
 // ---- 8: the error stays short ----
 
 #[tokio::test]

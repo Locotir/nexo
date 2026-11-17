@@ -398,3 +398,22 @@ fn the_time_a_key_command_may_take_is_a_setting() {
     p.extra.insert("api_key_cmd_secs".into(), toml::Value::Integer(-1));
     assert_eq!(p.key_cmd_limit(), default);
 }
+
+#[test]
+fn a_provider_sets_how_long_a_reply_may_go_quiet_and_zero_means_never() {
+    let idle = |set: Option<toml::Value>| {
+        let mut p = ProviderConfig::new("openai-chat", "http://x", None);
+        if let Some(v) = set {
+            p.extra.insert("idle_timeout".into(), v);
+        }
+        p.idle_timeout()
+    };
+    let int = |n| Some(toml::Value::Integer(n));
+    let secs = |n| Some(std::time::Duration::from_secs(n));
+    assert_eq!(idle(None), secs(300), "unset: five minutes");
+    assert_eq!(idle(int(900)), secs(900), "a local server loading a model may need more");
+    assert_eq!(idle(int(20)), secs(20));
+    assert_eq!(idle(int(0)), None, "0 turns the limit off");
+    assert_eq!(idle(int(-5)), secs(300), "a value that is no number of seconds is not read");
+    assert_eq!(idle(Some(toml::Value::String("soon".into()))), secs(300));
+}
