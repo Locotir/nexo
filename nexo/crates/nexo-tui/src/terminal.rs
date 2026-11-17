@@ -62,13 +62,13 @@ pub fn noted_session() -> Option<String> {
 /// `NEXO_NO_ALT_SCREEN=1`: draw on the normal screen, so what the session showed stays in the
 /// terminal's scrollback after quitting (the inline way of the other terminal agents).
 pub fn alt_screen() -> bool {
-    !inline() && !std::env::var("NEXO_NO_ALT_SCREEN").is_ok_and(|v| !v.is_empty() && v != "0")
+    !inline() && !nexo_core::env::env_flag("NEXO_NO_ALT_SCREEN")
 }
 
 /// `NEXO_INLINE=1` (`--inline`, `[ui] screen = "inline"`): the terminal's own screen and scrollback;
 /// each finished turn is written above a small live zone (the draft and the turn in progress).
 pub fn inline() -> bool {
-    std::env::var("NEXO_INLINE").is_ok_and(|v| !v.is_empty() && v != "0")
+    nexo_core::env::env_flag("NEXO_INLINE")
 }
 
 /// Rows of the live zone of the inline mode for a terminal of `rows` rows: half of it, at least 8

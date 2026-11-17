@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tool::{ToolDisplay, ToolKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     /// Ask before writes and commands.
@@ -14,7 +14,7 @@ pub enum PermissionMode {
     /// Writes go through; ask before commands.
     AcceptEdits,
     /// Never ask (rules in `deny` still hold). Called `yolo`; `auto` is an old name that still parses.
-    #[serde(rename = "yolo", alias = "auto")]
+    #[serde(rename = "yolo")]
     Auto,
     /// Only reads and searches.
     ReadOnly,
@@ -48,6 +48,20 @@ impl PermissionMode {
             "plan" | "planning" => Some(PermissionMode::Plan),
             _ => None,
         }
+    }
+}
+
+/// Every spelling `parse` takes also works in a config file, not only on the command line and in
+/// `NEXO_PERMISSION_MODE`: the derived impl took the canonical names and `auto` alone, and any
+/// other name (`bypass`, `accept_edits`, `Plan`) failed the whole config load.
+impl<'de> Deserialize<'de> for PermissionMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        PermissionMode::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unknown permission mode {s:?}; use ask, accept-edits, yolo, read-only or plan"
+            ))
+        })
     }
 }
 
@@ -131,5 +145,52 @@ mod yolo_name_tests {
             assert_eq!(t.mode, PermissionMode::Auto, "{s}");
         }
         assert_eq!(serde_json::to_string(&PermissionMode::Auto).unwrap(), "\"yolo\"");
+    }
+
+    #[test]
+    fn every_name_the_command_line_takes_works_in_a_config_file() {
+        let names = [
+            ("ask", PermissionMode::Ask),
+            ("default", PermissionMode::Ask),
+            ("accept-edits", PermissionMode::AcceptEdits),
+            ("accept_edits", PermissionMode::AcceptEdits),
+            ("edits", PermissionMode::AcceptEdits),
+            ("yolo", PermissionMode::Auto),
+            ("auto", PermissionMode::Auto),
+            ("bypass", PermissionMode::Auto),
+            ("read-only", PermissionMode::ReadOnly),
+            ("readonly", PermissionMode::ReadOnly),
+            ("plan", PermissionMode::Plan),
+            ("planning", PermissionMode::Plan),
+            ("Plan", PermissionMode::Plan),
+        ];
+        for (name, want) in names {
+            let c: crate::config::PermissionsConfig = toml::from_str(&format!("mode = '{name}'")).unwrap();
+            assert_eq!(c.mode, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_canonical_names_survive_a_round_trip_through_toml() {
+        for m in [
+            PermissionMode::Ask,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Auto,
+            PermissionMode::ReadOnly,
+            PermissionMode::Plan,
+        ] {
+            let text = toml::to_string(&crate::config::PermissionsConfig { mode: m, ..Default::default() }).unwrap();
+            let back: crate::config::PermissionsConfig = toml::from_str(&text).unwrap();
+            assert_eq!(back.mode, m, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_mode_in_a_config_file_names_the_valid_ones() {
+        let e = toml::from_str::<crate::config::PermissionsConfig>("mode = 'bogus'").unwrap_err().to_string();
+        assert!(
+            e.contains("unknown permission mode \"bogus\"") && e.contains("accept-edits, yolo, read-only or plan"),
+            "{e}"
+        );
     }
 }

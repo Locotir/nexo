@@ -115,7 +115,7 @@ impl Theme {
     /// `nexo` when unknown), unless `NO_COLOR` is set;
     /// mapped to the 256-colour cube when the terminal has no 24-bit colour.
     pub fn pick(name: &str) -> Theme {
-        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        if nexo_core::env::no_color() {
             return Theme::mono();
         }
         let t = if name.trim().eq_ignore_ascii_case("auto") {

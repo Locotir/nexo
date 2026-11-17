@@ -30,10 +30,8 @@ impl Ui {
     pub(super) fn detect() -> Self {
         use std::io::IsTerminal;
         let dumb = std::env::var("TERM").is_ok_and(|t| t == "dumb");
-        let tty = std::io::stderr().is_terminal()
-            && std::io::stdout().is_terminal()
-            && std::env::var_os("NO_COLOR").is_none()
-            && !dumb;
+        let tty =
+            std::io::stderr().is_terminal() && std::io::stdout().is_terminal() && !nexo_core::env::no_color() && !dumb;
         #[cfg(windows)]
         let tty = tty && crossterm::ansi_support::supports_ansi();
         Self::new(tty)

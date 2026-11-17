@@ -84,7 +84,7 @@ pub fn notice_line(level: Level, text: &str, card: bool, color: bool) -> String 
 
 /// Stderr is a terminal that takes colours.
 pub fn color_ok() -> bool {
-    let tty = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let tty = std::io::stderr().is_terminal() && !nexo_core::env::no_color();
     #[cfg(windows)]
     let tty = tty && crossterm::ansi_support::supports_ansi();
     tty
