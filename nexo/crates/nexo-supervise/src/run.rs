@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::audit::Audit;
@@ -722,7 +722,8 @@ impl Core {
 /// A supervisor polling in the background for as long as this handle lives.
 pub struct Panel {
     core: Arc<Core>,
-    stop: Arc<AtomicBool>,
+    /// Dropped with the panel: the polling thread sees the channel close and ends.
+    _stop: std::sync::mpsc::Sender<()>,
     remote: Option<PathBuf>,
     _server: Option<super::socket::Server>,
 }
@@ -753,19 +754,18 @@ impl Panel {
                 Err(e) => return Err(e),
             }
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let (c, st, every) = (core.clone(), stop.clone(), setup.poll_every_ms.max(100));
+        // The thread sleeps once per period inside `recv_timeout`, not in short steps that check a flag, so an
+        // idle panel wakes once a period instead of twenty times a second; dropping the panel closes the
+        // channel and wakes the thread at once.
+        let (stop, gone) = std::sync::mpsc::channel::<()>();
+        let (c, every) = (core.clone(), std::time::Duration::from_millis(setup.poll_every_ms.max(100)));
         std::thread::spawn(move || {
-            while !st.load(Ordering::Relaxed) {
+            c.round(now_secs());
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = gone.recv_timeout(every) {
                 c.round(now_secs());
-                let mut waited = 0;
-                while waited < every && !st.load(Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    waited += 50;
-                }
             }
         });
-        Ok(Panel { core, stop, remote, _server: server })
+        Ok(Panel { core, _stop: stop, remote, _server: server })
     }
 
     pub fn version(&self) -> u64 {
@@ -878,12 +878,6 @@ impl Panel {
     /// True when another process owns the hook socket and this panel forwards to it.
     pub fn is_remote(&self) -> bool {
         self.remote.is_some()
-    }
-}
-
-impl Drop for Panel {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
     }
 }
 

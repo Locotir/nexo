@@ -210,6 +210,40 @@ fn the_socket_is_private_and_goes_when_the_panel_does() {
     wait_for("socket removed", || !sock.exists());
 }
 
+/// A source that only counts how often the panel polls it.
+struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl nexo_supervise::Source for Counting {
+    fn id(&self) -> &str {
+        "counting"
+    }
+
+    fn kind(&self) -> nexo_supervise::SourceKind {
+        nexo_supervise::SourceKind::External
+    }
+
+    fn poll(&mut self, _now: nexo_supervise::Secs) -> Vec<nexo_supervise::Observation> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    }
+}
+
+#[test]
+fn a_panel_polls_its_sources_each_period_and_stops_polling_when_dropped() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let setup = Setup { poll_every_ms: 100, ..Setup::none() };
+    let panel = Panel::start_with(&setup, Policy::default(), NexoSource::default(), &Options::default()).unwrap();
+    panel.add_source(Box::new(Counting(polls.clone())));
+    wait_for("a poll", || polls.load(SeqCst) >= 3);
+    drop(panel);
+    // the thread may be inside one round when the panel goes; after that it must not come back
+    std::thread::sleep(Duration::from_millis(150));
+    let after = polls.load(SeqCst);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(polls.load(SeqCst), after, "no poll after the panel is dropped");
+}
+
 /// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
 fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new()

@@ -252,7 +252,7 @@ fn names_resolve_by_id_prefix_name_and_name_with_ref() {
 fn the_inbound_policy_holds_refuses_and_expires() {
     let rig = Rig::new();
     let api = rig.session("aaaa1111", "api", true, Inbound::Auto);
-    let web = rig.session("bbbb2222", "web", false, Inbound::Auto);
+    let _web = rig.session("bbbb2222", "web", false, Inbound::Auto);
     // a bypass sender to an asking receiver: held
     let m = api.send("web", "run the migration", None, FromKind::Agent).unwrap();
     let t = web.tick();
@@ -442,4 +442,79 @@ fn a_heartbeat_of_an_older_nexo_is_live_with_no_state() {
     fs::write(dir.join("session.json"), old).unwrap();
     let live = live_sessions(&rig.root, now);
     assert_eq!((live.len(), live[0].busy, live[0].jobs.len()), (1, None, 0));
+}
+
+/// A heartbeat file's text for `id`, padded with spaces to `width` bytes so two of them can share a size.
+fn beat_text(id: &str, pid: u32, beat: i64, width: usize) -> String {
+    let t = format!(
+        r#"{{"v":{MAIL_VERSION},"id":"{id}","name":"n","cwd":"/w","pid":{pid},"started":{beat},"beat":{beat},"bypass":false}}"#
+    );
+    format!("{t:<width$}")
+}
+
+/// Puts a file's modification time `secs` seconds in the past.
+fn age_file(path: &Path, secs: u64) {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+}
+
+#[test]
+fn a_heartbeat_found_dead_is_not_read_again_until_it_is_written_again() {
+    let rig = Rig::new();
+    let now = rig.now.load(Ordering::SeqCst);
+    let dir = rig.root.join("eeee5555");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.json");
+    // a process that is gone, as a session that never closed leaves it
+    fs::write(&file, beat_text("eeee5555", 0, now, 200)).unwrap();
+    age_file(&file, 30);
+    let mut scan = LiveScan::default();
+    assert!(scan.scan(&rig.root, now).is_empty());
+    assert_eq!(scan.skipped(), 1);
+    // the same size and time with live text in it: only a read would see it, and none happens
+    let stamp = fs::metadata(&file).unwrap().modified().unwrap();
+    fs::write(&file, beat_text("eeee5555", std::process::id(), now, 200)).unwrap();
+    fs::File::options().write(true).open(&file).unwrap().set_modified(stamp).unwrap();
+    assert!(scan.scan(&rig.root, now).is_empty(), "an unchanged stamp is not read again");
+    // written again, as a session that resumes does: it is live at once and no longer remembered as dead
+    age_file(&file, 0);
+    assert_eq!(scan.scan(&rig.root, now).len(), 1);
+    assert_eq!(scan.skipped(), 0);
+}
+
+#[test]
+fn a_heartbeat_written_a_moment_ago_is_read_again_even_when_it_was_dead() {
+    let rig = Rig::new();
+    let now = rig.now.load(Ordering::SeqCst);
+    let dir = rig.root.join("ffff6666");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("session.json"), beat_text("ffff6666", 0, now, 200)).unwrap();
+    let mut scan = LiveScan::default();
+    assert!(scan.scan(&rig.root, now).is_empty());
+    assert_eq!(scan.skipped(), 0, "a file this new could be rewritten under the same stamp");
+}
+
+#[test]
+fn a_dead_heartbeat_older_than_a_day_is_removed_and_nothing_else_is() {
+    let rig = Rig::new();
+    let me = rig.session("aaaa1111", "api", false, Inbound::Auto);
+    let web = rig.session("bbbb2222", "web", false, Inbound::Auto);
+    let now = rig.now.load(Ordering::SeqCst);
+    let beat = |sid: &str| rig.root.join(sid).join("session.json");
+    let make = |sid: &str, pid: u32, age_secs: u64| {
+        fs::create_dir_all(rig.root.join(sid).join("inbox")).unwrap();
+        fs::write(beat(sid), beat_text(sid, pid, now, 0)).unwrap();
+        fs::write(rig.root.join(sid).join("inbox/m.json"), "{}").unwrap();
+        age_file(&beat(sid), age_secs);
+    };
+    let day = 24 * 3600;
+    make("dead-old", 0, day + 600);
+    make("dead-new", 0, 600);
+    make("alive-old", std::process::id(), day + 600);
+    me.purge(now);
+    assert!(!beat("dead-old").exists(), "a dead heartbeat a day old goes");
+    assert!(beat("dead-new").exists(), "a recent one stays");
+    assert!(beat("alive-old").exists(), "one whose process still exists stays");
+    assert!(beat("bbbb2222").exists(), "a live session keeps its heartbeat");
+    assert!(rig.root.join("dead-old/inbox/m.json").exists(), "the mail is not touched");
 }
