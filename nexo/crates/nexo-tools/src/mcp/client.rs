@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest line a server may send; past it the connection ends.
 const MAX_LINE: usize = 16 << 20;
+/// How many replies to the server's requests may wait for the pipe at once. A server that stops reading
+/// its input while it floods requests gets no more answers beyond this, instead of a task for each.
+const MAX_REPLIES_WAITING: usize = 256;
 /// The most characters of one tool result that go back to the model (the same as `bash`).
 pub const MAX_RESULT_CHARS: usize = crate::bash::MAX_OUTPUT_CHARS;
 /// The variables of nexo's environment a server gets (with its own `env`): what a process needs
@@ -78,6 +81,8 @@ struct Inner {
     lists: Mutex<Lists>,
     /// Counts every change of the lists; the hub and the interface wait on it.
     changes: tokio::sync::watch::Sender<u64>,
+    /// Replies to the server's own requests that are still waiting to be written.
+    replies_waiting: AtomicUsize,
 }
 
 impl McpClient {
@@ -409,6 +414,7 @@ impl Inner {
             gone: std::sync::OnceLock::new(),
             lists: Mutex::new(Lists::default()),
             changes: tokio::sync::watch::channel(0).0,
+            replies_waiting: AtomicUsize::new(0),
         })
     }
 
@@ -568,9 +574,15 @@ impl Inner {
                 };
                 // Answered from its own task: the reader must go on draining the server's output while a
                 // write waits for the stdin lock or a full pipe, or both sides block on each other.
+                if self.replies_waiting.fetch_add(1, Ordering::SeqCst) >= MAX_REPLIES_WAITING {
+                    self.replies_waiting.fetch_sub(1, Ordering::SeqCst);
+                    tracing::debug!(server = %self.name, "mcp: {MAX_REPLIES_WAITING} replies are waiting to be written; one was dropped");
+                    return;
+                }
                 let me = self.clone();
                 tokio::spawn(async move {
                     let _ = me.send(reply).await;
+                    me.replies_waiting.fetch_sub(1, Ordering::SeqCst);
                 });
                 return;
             }
@@ -765,6 +777,9 @@ mod tests {
             assert!(r.is_err(), "the server never answers {method}");
             assert_eq!(inner.pending.lock().unwrap().len(), 0, "{method}");
         }
+        // The cancels are written by tasks that run once this one yields: wait for both to be due
+        // before looking, or the check for `initialize` would run before its cancel could exist.
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let mut seen = String::new();
         for _ in 0..100 {
             seen = std::fs::read_to_string(&log).unwrap_or_default();
@@ -780,5 +795,25 @@ mod tests {
             .collect();
         assert_eq!(cancels.len(), 1, "only the tool call is cancelled: {seen}");
         assert_eq!(cancels[0]["params"]["requestId"], 1);
+    }
+
+    /// A server that floods requests and never reads its input gets a bounded number of replies waiting,
+    /// not a parked task for each.
+    #[tokio::test]
+    async fn a_flood_of_requests_to_a_server_that_does_not_read_keeps_the_replies_bounded() {
+        let mut child =
+            tokio::process::Command::new("sleep").arg("60").stdin(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+        let inner = Inner::new("deaf", false, Link::Stdio(AsyncMutex::new(child.stdin.take().unwrap())));
+        let ping = json!({"jsonrpc": "2.0", "id": 7, "method": "ping"});
+        // more replies than the pipe holds, so the writes really block
+        for i in 0..6000 {
+            inner.dispatch(ping.clone()).await;
+            if i % 100 == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let waiting = inner.replies_waiting.load(Ordering::SeqCst);
+        assert!(waiting > 0 && waiting <= MAX_REPLIES_WAITING, "{waiting} replies are waiting");
     }
 }

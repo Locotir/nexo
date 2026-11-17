@@ -16,6 +16,8 @@ const SETTLE: Duration = Duration::from_millis(1500);
 const MAX_MESSAGE: usize = 64 << 20;
 /// The longest header line a server may send.
 const MAX_HEADER: u64 = 8 << 10;
+/// How many answers to the server's own requests may wait to be written; past it they are dropped.
+const REPLY_QUEUE: usize = 256;
 
 mod check;
 mod quick;
