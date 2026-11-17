@@ -72,6 +72,8 @@ pub struct Mods {
     main: Image,
     main_idx: usize,
     others: HashMap<String, Option<Image>>,
+    /// How far the code of each library read from memory reaches (0 when none could be read there), by path.
+    from_memory: HashMap<String, u64>,
     lines: HashMap<usize, Option<crate::lines::Lines>>,
     /// The program's variables and types, built on first use.
     vars: Option<Option<crate::vars::Vars>>,
@@ -136,7 +138,15 @@ pub(crate) fn loads(maps: &[crate::platform::Map]) -> Vec<crate::platform::Modul
 
 impl Mods {
     pub fn new(main: Image) -> Mods {
-        Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new(), lines: HashMap::new(), vars: None }
+        Mods {
+            list: Vec::new(),
+            main,
+            main_idx: 0,
+            others: HashMap::new(),
+            from_memory: HashMap::new(),
+            lines: HashMap::new(),
+            vars: None,
+        }
     }
 
     /// The program's image, with the names and notes kept for it.
@@ -190,7 +200,31 @@ impl Mods {
                 Module { path: m.path.clone(), base: m.base, end }
             })
             .collect();
+        if t.os() == crate::platform::Os::MacOS {
+            self.read_cached(t);
+        }
         self.main_idx = self.list.iter().position(|m| canon(&m.path) == me).unwrap_or(0);
+    }
+
+    /// macOS keeps its system libraries in the dyld shared cache, with no file of their own on disk and with no
+    /// mapping named after them: such a library is read once from memory, for its exports and for how far its code
+    /// reaches.
+    fn read_cached(&mut self, t: &mut dyn Target) {
+        for m in self.list.iter_mut().filter(|m| m.end == m.base) {
+            let span = match self.from_memory.get(&m.path) {
+                Some(&n) => n,
+                None if Path::new(&m.path).exists() => continue,
+                None => {
+                    let mut rd = |a: u64, b: &mut [u8]| t.read(a, b);
+                    let read = crate::memimage::read(&mut rd, m.base, &m.path);
+                    let n = read.as_ref().map_or(0, |r| r.1);
+                    self.others.insert(m.path.clone(), read.map(|r| r.0));
+                    self.from_memory.insert(m.path.clone(), n);
+                    n
+                }
+            };
+            m.end = m.base.saturating_add(span);
+        }
     }
 
     pub fn main_base(&self) -> u64 {

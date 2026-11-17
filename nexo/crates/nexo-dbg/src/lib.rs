@@ -18,6 +18,7 @@ mod hooks;
 mod knowledge;
 mod libs;
 mod lines;
+mod memimage;
 mod minidump;
 mod modules;
 mod pe_unwind;
