@@ -234,6 +234,18 @@ fn a_git_project_lists_its_dotfiles_but_not_ignored_secrets_or_vcs_data() {
 }
 
 #[test]
+fn the_git_pointer_file_of_a_worktree_or_submodule_is_not_listed() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    std::fs::create_dir_all(p.join("sub")).unwrap();
+    std::fs::write(p.join(".git"), "gitdir: ../elsewhere").unwrap();
+    std::fs::write(p.join("sub/.git"), "gitdir: ../../elsewhere").unwrap();
+    std::fs::write(p.join("sub/lib.rs"), "x").unwrap();
+    std::fs::write(p.join("main.rs"), "x").unwrap();
+    assert_eq!(project_files(p, 100), vec!["main.rs", "sub/lib.rs"]);
+}
+
+#[test]
 fn a_folder_that_is_not_a_repository_keeps_hiding_dotfiles() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(d.path().join(".ssh")).unwrap();

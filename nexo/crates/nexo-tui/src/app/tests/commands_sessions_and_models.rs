@@ -27,9 +27,8 @@ fn a_file_the_agent_creates_shows_in_the_at_picker_after_the_turn_ends() {
     a.input.set_text("@fresh");
     a.refresh_palette();
     assert!(a.palette.as_ref().and_then(|p| p.current()).is_none(), "the cached scan predates the file");
+    // the picker stays open across the turn end and must pick the new file up without another keystroke
     a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
-    a.input.set_text("@fresh");
-    a.refresh_palette();
     assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("fresh.rs"));
 }
 

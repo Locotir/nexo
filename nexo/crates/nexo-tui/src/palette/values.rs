@@ -145,9 +145,8 @@ pub fn project_files(root: &Path, max: usize) -> Vec<String> {
         .hidden(!in_repo)
         .git_ignore(true)
         .git_global(true)
-        .filter_entry(|e| {
-            !(e.file_type().is_some_and(|t| t.is_dir()) && SKIPPED_DIRS.iter().any(|d| e.file_name() == *d))
-        })
+        // matched by name alone: in a git worktree or a submodule `.git` is a file that points at the real folder
+        .filter_entry(|e| !SKIPPED_DIRS.iter().any(|d| e.file_name() == *d))
         .build();
     for entry in walker.flatten() {
         if out.len() >= max {

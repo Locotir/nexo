@@ -219,6 +219,11 @@ impl App {
         self.turns_ended += 1;
         // the agent writes files only during a turn: the next `@` walks the project again so they show up
         self.files = None;
+        // an `@` list already open holds the old scan: build it again from the same draft
+        if self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::Files) {
+            self.palette = None;
+            self.refresh_palette();
+        }
         let elapsed_ms = self.turn_started.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
         // a long turn rings when it ends: the person may be in another window
         if self.opts.notify_after > 0 && elapsed_ms >= self.opts.notify_after * 1000 {
