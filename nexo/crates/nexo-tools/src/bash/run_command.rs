@@ -155,7 +155,7 @@ pub(crate) async fn prove(
 /// Kills the whole process group the command started (its children too). Windows has no groups:
 /// there the tree under the process goes (`taskkill /T`), as ending the shell alone leaves what it
 /// started running. Called while the process is still alive, so the tree can still be found.
-pub(crate) fn kill_group(pid: Option<u32>) {
+pub fn kill_group(pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pid) = pid {
         // SAFETY: a plain signal to a process group this process created.
@@ -165,11 +165,16 @@ pub(crate) fn kill_group(pid: Option<u32>) {
     }
     #[cfg(windows)]
     if let Some(pid) = pid {
+        use std::os::windows::process::CommandExt;
+        // no window for the helper: a nexo started without a console would flash one. It is waited
+        // for on purpose, as the tree must be walked before the shell under it is killed.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .status();
     }
     #[cfg(not(any(unix, windows)))]

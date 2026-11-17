@@ -95,11 +95,22 @@ pub(super) fn detached(command: &str, ctx: &ToolContext, sandbox: &nexo_core::sa
         return ToolOutput::error("bash: the detached command ended before it could be followed");
     };
     drop(child);
-    let stop = if cfg!(windows) { format!("taskkill /T /F /PID {pid}") } else { format!("kill -- -{pid}") };
+    let stop = stop_hint(cfg!(windows), nexo_core::shell::shell().kind, pid);
     ToolOutput::ok(format!(
         "Started detached process {pid}: `{}`. It outlives nexo and is not a job (the `jobs` tool does not \
          list it). Its output is in {}. Stop it by pid when it is no longer needed: `{stop}`.",
         one_line(command, 100),
         log.display()
     ))
+}
+
+/// The command that ends a detached process and what it started, spelled for the shell the model
+/// types it in. Git Bash (MSYS) turns an argument that starts with `/` into a path, so the
+/// switches of `taskkill` are doubled there; PowerShell takes them as they are.
+fn stop_hint(windows: bool, shell_kind: &str, pid: u32) -> String {
+    match (windows, shell_kind) {
+        (true, "bash") => format!("taskkill //T //F //PID {pid}"),
+        (true, _) => format!("taskkill /T /F /PID {pid}"),
+        (false, _) => format!("kill -- -{pid}"),
+    }
 }

@@ -1066,3 +1066,12 @@ fn logs_being_written_hold_their_full_size_until_the_command_ends() {
     open.pop();
     assert!(open_log(&dir, &dir.join("9.log")).is_ok(), "a finished command gives its room back");
 }
+
+#[test]
+fn the_stop_hint_for_a_detached_process_is_spelled_for_the_shell_that_runs_it() {
+    // Git Bash would read `/T` as a path, so its switches are doubled
+    assert_eq!(stop_hint(true, "bash", 42), "taskkill //T //F //PID 42");
+    assert_eq!(stop_hint(true, "powershell", 42), "taskkill /T /F /PID 42");
+    assert_eq!(stop_hint(false, "bash", 42), "kill -- -42");
+    assert_eq!(stop_hint(false, "sh", 42), "kill -- -42");
+}

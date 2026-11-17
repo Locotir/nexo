@@ -286,6 +286,8 @@ pub use output_lines::*;
 mod process_group;
 pub use process_group::*;
 mod run_command;
+/// Ends the process tree of a command (hooks and servers outside this crate use it too).
+pub use run_command::kill_group;
 pub(crate) use run_command::*;
 mod read_only_words;
 pub use read_only_words::*;

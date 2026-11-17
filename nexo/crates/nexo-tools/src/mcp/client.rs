@@ -49,12 +49,23 @@ pub(super) fn passed_env(name: &str) -> bool {
         || (cfg!(windows) && WINDOWS.contains(&up.as_str()))
 }
 
+/// A stdio server's process. When it is dropped its whole process tree goes with it: a launcher such as
+/// `npx` or `uvx` stands in front of the real server, and `kill_on_drop` ends only the launcher.
+struct ServerProcess(Child);
+
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        // `id` is `None` once the process was waited for, when its pid may belong to someone else
+        crate::bash::kill_group(self.0.id());
+    }
+}
+
 /// A connected server.
 pub struct McpClient {
     name: String,
     inner: Arc<Inner>,
     /// The server's process (stdio servers only).
-    child: AsyncMutex<Option<Child>>,
+    child: AsyncMutex<Option<ServerProcess>>,
     /// What the server said it is.
     pub server_info: Value,
     pub protocol_version: String,
@@ -130,6 +141,10 @@ impl McpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        // its own process group on unix (Windows ends the tree by pid), so the terminal's ^C does not reach it and
+        // the group can be ended at once
+        #[cfg(unix)]
+        cmd.process_group(0);
         if let Some(d) = &cfg.cwd {
             cmd.current_dir(d);
         }
@@ -166,11 +181,11 @@ impl McpClient {
                 let _ = tx.send(Err(why.clone()));
             }
         });
-        McpClient::handshake(name, inner, Some(child)).await
+        McpClient::handshake(name, inner, Some(ServerProcess(child))).await
     }
 
     /// The `initialize` exchange and the tool listing.
-    async fn handshake(name: &str, inner: Arc<Inner>, child: Option<Child>) -> anyhow::Result<McpClient> {
+    async fn handshake(name: &str, inner: Arc<Inner>, child: Option<ServerProcess>) -> anyhow::Result<McpClient> {
         let mut init = Err(anyhow!("no protocol version accepted"));
         for v in PROTOCOL_VERSIONS {
             let params = json!({
@@ -327,7 +342,9 @@ impl McpClient {
 
     /// Stops the server.
     pub async fn close(&self) {
-        if let Some(c) = self.child.lock().await.as_mut() {
+        if let Some(ServerProcess(c)) = self.child.lock().await.as_mut() {
+            // the tree first, then the launcher itself (which is waited for, so it cannot be hit twice)
+            crate::bash::kill_group(c.id());
             let _ = c.kill().await;
         }
         if let Link::Http(h) = &self.inner.link {
