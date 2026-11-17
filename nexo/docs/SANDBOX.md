@@ -73,8 +73,12 @@ the command harmless.
   `[sandbox: this command changed .git/hooks/pre-commit, which runs outside the sandbox later]` and you get a
   warning. In a git worktree the hooks and config of the real git directory count too, where the sandbox can
   write them. Where the sandbox can write your whole home folder (you started nexo in `~` or in a folder
-  above it), these count too, with their full path: `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.zshrc`,
-  `~/.zshenv`, `~/.zprofile`, `~/.ssh`, `~/.config/autostart`, `~/.config/systemd/user` and `~/.local/bin`.
+  above it), these count too, with their full path: the shell and session start files (`~/.bashrc`, `~/.bash_profile`,
+  `~/.bash_login`, `~/.profile`, `~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.xprofile`, fish `config.fish` and `conf.d`, `~/.config/environment.d`),
+  `~/.gitconfig`, `~/.ssh`, `~/.config/autostart`, `~/.config/systemd/user`, `~/.local/bin` and the settings of the
+  agents (`~/.nexo/config.toml`, `prompt.md`, `commands` and `agents`, `~/.claude/settings.json`, `commands` and
+  `agents`, `~/.codex/config.toml`). A guarded path that is a symlink (dotfile managers make them) is followed, so an
+  edit through the link counts, and so does pointing the link elsewhere.
   A background job gets the same line in its output when it ends, but no warning.
   A command that runs for a while and also touches those paths may be a false alarm if you edited them yourself.
 - Unix sockets on disk (for example the Docker socket) stay reachable even with the network off: Landlock does

