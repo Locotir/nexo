@@ -199,9 +199,12 @@ impl App {
         if let Some(rest) = trimmed.strip_prefix('/') {
             let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             let name = name.to_ascii_lowercase();
+            // a file written or edited since the palette last opened is what runs, and it comes before a skill or
+            // a prompt of the same name
+            self.reload_file_commands();
             // a skill: its folder and instructions are the request (read now, so edits count)
             if let Some(s) = self.skills.iter().find(|s| s.name.eq_ignore_ascii_case(&name)).cloned() {
-                if self.custom_commands.iter().any(|c| c.name == name && c.path == s.file()) {
+                if self.command_entry(&name).is_some_and(|c| c.origin == "skill" && c.path == s.file()) {
                     match s.instructions(args) {
                         Ok(text) => {
                             self.input.push_history(trimmed);
@@ -215,15 +218,14 @@ impl App {
                 }
             }
             // a prompt of an MCP server: the agent asks the server and sends the result as the request
-            if let Some((server, prompt)) = self.mcp_prompt_of(&name) {
+            let mcp = self.mcp_prompt_of(&name).filter(|_| self.command_entry(&name).is_none_or(|c| c.origin == "mcp"));
+            if let Some((server, prompt)) = mcp {
                 self.input.push_history(trimmed);
                 self.input.clear();
                 self.send(AgentCommand::McpPrompt { server, prompt, args: args.trim().to_string() });
                 self.scroll_to_end();
                 return;
             }
-            // a file written or edited since the palette last opened is what runs
-            self.reload_file_commands();
             if let Some(c) = self.custom_commands.iter().find(|c| c.name == name).cloned() {
                 self.input.push_history(trimmed);
                 return self.submit_expanded(&c.expand(args), false);
@@ -516,7 +518,7 @@ impl App {
         for s in &servers {
             for p in &s.prompts {
                 let name = format!("mcp__{}__{}", s.name, p.name).to_ascii_lowercase();
-                if crate::commands::lookup(&name).is_some() || self.custom_commands.iter().any(|c| c.name == name) {
+                if crate::commands::lookup(&name).is_some() || self.pushed_name_taken(&name) {
                     continue;
                 }
                 let hint = p

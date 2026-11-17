@@ -7,15 +7,27 @@ impl App {
 
     /// Re-reads the command files of `.nexo/commands`, so a command written or edited during the session
     /// completes and runs at once. Only file entries are replaced: skills and MCP prompts are pushed by their
-    /// own events and would be lost, and one that now clashes with a file command gives way to it.
+    /// own events and would be lost, so they all stay. File entries come first, so a file command wins a name it
+    /// shares with one of them, and the skill or prompt is back as soon as the file goes.
     pub(super) fn reload_file_commands(&mut self) {
         let mut commands = (self.command_loader)(&self.opts.cwd);
         for c in std::mem::take(&mut self.custom_commands) {
-            if (c.origin == "skill" || c.origin == "mcp") && !commands.iter().any(|f| f.name == c.name) {
+            if c.origin == "skill" || c.origin == "mcp" {
                 commands.push(c);
             }
         }
         self.custom_commands = commands;
+    }
+
+    /// A skill or an MCP prompt already holds this name. A file command with it does not count: it only shadows
+    /// the entry while the file exists.
+    pub(super) fn pushed_name_taken(&self, name: &str) -> bool {
+        self.custom_commands.iter().any(|c| c.name == name && (c.origin == "skill" || c.origin == "mcp"))
+    }
+
+    /// The entry a typed name runs: a file command comes before a skill or a prompt of the same name.
+    pub(super) fn command_entry(&self, name: &str) -> Option<&crate::custom::CustomCommand> {
+        self.custom_commands.iter().find(|c| c.name == name)
     }
 
     /// After the draft changed: open, update or close the palette.
@@ -40,11 +52,14 @@ impl App {
                     self.palette = Some(match kind {
                         PaletteKind::Commands => {
                             self.reload_file_commands();
+                            // a name held by a file and a skill is offered once: the file, which is what runs
+                            let mut seen = std::collections::HashSet::new();
                             Palette::commands_full(
                                 &query,
                                 start,
                                 self.custom_commands
                                     .iter()
+                                    .filter(|c| seen.insert(c.name.clone()))
                                     .map(|c| {
                                         let d = if c.hint.is_empty() {
                                             c.description.clone()

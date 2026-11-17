@@ -8,7 +8,7 @@ impl App {
     pub(super) fn set_skills(&mut self, skills: Vec<nexo_core::skills::Skill>) {
         for s in &skills {
             let name = s.name.to_ascii_lowercase();
-            if crate::commands::lookup(&name).is_some() || self.custom_commands.iter().any(|c| c.name == name) {
+            if crate::commands::lookup(&name).is_some() || self.pushed_name_taken(&name) {
                 continue;
             }
             // the text is read when the command runs, so an edited skill is used as it is then

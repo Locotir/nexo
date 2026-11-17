@@ -287,18 +287,57 @@ fn a_command_file_written_mid_session_is_offered_and_run_while_skills_and_mcp_st
     let dir = proj.path().join(".nexo/commands");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("fresh.md"), "Do the fresh thing: $ARGUMENTS").unwrap();
-    // a skill with the name of a new file gives way to the file
+    // a skill with the name of a new file is shadowed by the file, and stays behind it
     std::fs::write(dir.join("lint-fix.md"), "File version").unwrap();
     a.input.set_text("/");
     a.refresh_palette();
     let (rows, _) = a.palette.as_ref().expect("the palette").rows(40);
     assert!(rows.iter().any(|r| r.label == "fresh"), "the new file is offered");
     let names: Vec<&str> = a.custom_commands.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["fresh", "lint-fix", "mcp__srv__ask"], "{names:?}");
+    assert_eq!(names, ["fresh", "lint-fix", "lint-fix", "mcp__srv__ask"], "{names:?}");
     assert_eq!(a.custom_commands[1].origin, "project .nexo/commands");
     // an edit is what runs, without opening the palette
     std::fs::write(dir.join("fresh.md"), "Edited: $ARGUMENTS").unwrap();
     a.input.set_text("/fresh now");
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "Edited: now"));
+}
+
+#[test]
+fn a_skill_shadowed_by_a_command_file_comes_back_when_the_file_is_deleted() {
+    let (mut a, mut rx) = app();
+    let (cfg, proj) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::create_dir_all(proj.path().join(".git")).unwrap();
+    let trust = cfg.path().join("trusted-projects");
+    nexo_core::config::trust_project(proj.path(), &trust).unwrap();
+    let (cfg_dir, proj_dir) = (cfg.path().to_path_buf(), proj.path().to_path_buf());
+    a.command_loader = Box::new(move |_| crate::custom::load_from(&proj_dir, &cfg_dir, &trust, None));
+    let skill_dir = proj.path().join("skills/lint-fix");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "---\nname: lint-fix\ndescription: fix lint\n---\nRun the linter.\n")
+        .unwrap();
+    a.set_skills(vec![nexo_core::skills::Skill {
+        name: "lint-fix".into(),
+        description: "fix lint".into(),
+        dir: skill_dir,
+        allowed_tools: vec![],
+        source: ".claude/skills".into(),
+    }]);
+    let cmds = proj.path().join(".nexo/commands");
+    std::fs::create_dir_all(&cmds).unwrap();
+    std::fs::write(cmds.join("lint-fix.md"), "File version $ARGUMENTS").unwrap();
+    a.input.set_text("/lint-fix src");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "File version src"));
+    // the palette offers the name once
+    a.input.set_text("/");
+    a.refresh_palette();
+    let (rows, _) = a.palette.as_ref().expect("the palette").rows(40);
+    assert_eq!(rows.iter().filter(|r| r.label == "lint-fix").count(), 1);
+    // the file goes: the skill is what runs again
+    std::fs::remove_file(cmds.join("lint-fix.md")).unwrap();
+    a.input.set_text("/lint-fix src");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. })
+        if text.contains("Run the linter.") && text.ends_with("Arguments: src")));
 }
