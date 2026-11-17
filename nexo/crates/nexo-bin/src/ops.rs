@@ -475,7 +475,7 @@ fn place(img: &Image, addr: u64) -> (String, String) {
     (sec, f)
 }
 
-fn hit_row(img: &Image, addr: u64, what: &str, kind: &str) -> Row {
+pub(crate) fn hit_row(img: &Image, addr: u64, what: &str, kind: &str) -> Row {
     let (sec, f) = place(img, addr);
     Row {
         key: addr,
@@ -512,7 +512,7 @@ fn finish_hits(
 }
 
 /// The part of a section's bytes inside `within` (all of it without one), and the address it starts at.
-fn clipped(sec_addr: u64, data: &[u8], within: Option<(u64, u64)>) -> (u64, &[u8]) {
+pub(crate) fn clipped(sec_addr: u64, data: &[u8], within: Option<(u64, u64)>) -> (u64, &[u8]) {
     let Some((lo, hi)) = within else { return (sec_addr, data) };
     let from = lo.saturating_sub(sec_addr).min(data.len() as u64) as usize;
     let to = hi.saturating_sub(sec_addr).min(data.len() as u64) as usize;
@@ -520,7 +520,7 @@ fn clipped(sec_addr: u64, data: &[u8], within: Option<(u64, u64)>) -> (u64, &[u8
 }
 
 /// What `--in RANGE` adds to the command that asked.
-fn in_text(within: Option<&str>) -> String {
+pub(crate) fn in_text(within: Option<&str>) -> String {
     within.map_or(String::new(), |w| format!(" --in {}", shell_word(w)))
 }
 
@@ -560,6 +560,21 @@ pub fn find_bytes_in(img: &Image, pattern: &str, within: Option<&str>) -> Result
     Ok(finish_hits(img, "find", rows, rest, meta, capped))
 }
 
+/// Every function found, plus the part of each code section before its first function (or all of it when no
+/// function was found there): the pieces of code that are read from their first byte.
+pub(crate) fn code_ranges(img: &Image) -> Vec<(u64, u64)> {
+    let funcs = img.funcs();
+    let mut ranges: Vec<(u64, u64)> = funcs.iter().map(|f| (f.start, f.end)).collect();
+    for sec in img.code_sections() {
+        let first = funcs.iter().map(|f| f.start).filter(|&a| sec.contains(a)).min();
+        let head_end = first.unwrap_or(sec.addr.saturating_add(sec.backed_len()));
+        if head_end > sec.addr {
+            ranges.push((sec.addr, head_end));
+        }
+    }
+    ranges
+}
+
 fn imm_matches(ins: &Instruction, v: i128) -> bool {
     (0..ins.op_count()).any(|i| {
         let bits = match ins.op_kind(i) {
@@ -597,17 +612,7 @@ pub fn find_imm_in(img: &Image, value: i128, within: Option<&str>) -> Result<Out
     let mut capped = false;
     let mut fmt = formatter();
     let mut line = String::new();
-    // every function found, plus the part of each code section before its first function
-    // (or all of it when no function was found there)
-    let funcs = img.funcs();
-    let mut ranges: Vec<(u64, u64)> = funcs.iter().map(|f| (f.start, f.end)).collect();
-    for sec in img.code_sections() {
-        let first = funcs.iter().map(|f| f.start).filter(|&a| sec.contains(a)).min();
-        let head_end = first.unwrap_or(sec.addr.saturating_add(sec.backed_len()));
-        if head_end > sec.addr {
-            ranges.push((sec.addr, head_end));
-        }
-    }
+    let ranges = code_ranges(img);
     'code: for (start, end) in ranges {
         let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut full = false;

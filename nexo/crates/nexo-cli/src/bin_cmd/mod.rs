@@ -88,8 +88,8 @@ impl BinOp {
     pub fn files_mut(&mut self) -> Vec<&mut std::path::PathBuf> {
         match self {
             BinOp::Diff { file, other, .. } => vec![file, other],
-            BinOp::Patch { file, .. }
-            | BinOp::Info { file, .. }
+            BinOp::Patch { file, patches, .. } => std::iter::once(file).chain(patches.as_mut()).collect(),
+            BinOp::Info { file, .. }
             | BinOp::Syms { file, .. }
             | BinOp::Overview { file, .. }
             | BinOp::Path { file, .. }
@@ -121,9 +121,21 @@ impl BinOp {
     /// The file the op writes, to be made absolute against a session's folder: a patched copy, or a signature file.
     pub fn out_mut(&mut self) -> Option<&mut std::path::PathBuf> {
         match self {
-            BinOp::Patch { out, .. } => Some(out),
+            BinOp::Patch { out, .. } => out.as_mut(),
             BinOp::Sigs { out, .. } => out.as_mut(),
             _ => None,
+        }
+    }
+
+    /// The file an `--in-place` patch changes, and the backup it makes beside it: both are writes.
+    pub fn changed_in_place(&self) -> Vec<std::path::PathBuf> {
+        match self {
+            BinOp::Patch { file, in_place: true, .. } => {
+                let mut backup = file.clone().into_os_string();
+                backup.push(".orig");
+                vec![file.clone(), backup.into()]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -204,7 +216,13 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let (from, lines) = ask.window();
     let out: Output = match op {
         BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
-        BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
+        BinOp::Patch { out, in_place, at, function, bytes, asm, nop, old, verify, patches, .. } => {
+            let opts = nexo_bin::PatchOpts { old: old.as_deref(), verify: *verify, in_place: *in_place };
+            if let Some(list) = patches {
+                let text = std::fs::read_to_string(list)
+                    .map_err(|e| Error::Usage(format!("cannot read the patch file {}: {e}", list.display())))?;
+                return render_copy_op(&nexo_bin::patch_file(&img, out.as_deref(), &text, opts)?, c.json);
+            }
             let target = match (at, function) {
                 (Some(at), None) => nexo_bin::PatchTarget::Address(nexo_bin::any_addr_in(&img, at)?),
                 (None, Some(name)) => nexo_bin::PatchTarget::Function(name),
@@ -216,7 +234,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
                 (None, None, Some(n)) => nexo_bin::PatchData::Nop(*n),
                 _ => return Err(Error::Usage("give exactly one of --bytes, --asm or --nop".into())),
             };
-            return render_copy_op(&nexo_bin::patch(&img, out, target, data)?, c.json);
+            return render_copy_op(&nexo_bin::patch_with(&img, out.as_deref(), target, data, opts)?, c.json);
         }
         BinOp::Info { .. } => nexo_bin::info(&img),
         BinOp::Syms { kind, .. } => nexo_bin::syms_window(&img, kind, from, lines)?,
@@ -321,10 +339,20 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             )?
         }
         BinOp::Managed { .. } => unreachable!("answered by bin_managed before the image is opened"),
-        BinOp::Find { pattern, imm, within, .. } => match imm {
-            Some(n) => nexo_bin::find_imm_in(&img, nexo_bin::parse_number(n)?, within.as_deref())?,
-            None => nexo_bin::find_bytes_in(&img, &pattern.join(" "), within.as_deref())?,
-        },
+        BinOp::Find { pattern, imm, text, wide, asm, seq, within, limit, .. } => {
+            let within = within.as_deref();
+            if let Some(t) = text {
+                nexo_bin::find_str_in(&img, t, *wide, within, *limit)?
+            } else if let Some(re) = asm {
+                nexo_bin::find_asm_in(&img, re, within, *limit)?
+            } else if let Some(s) = seq {
+                nexo_bin::find_seq_in(&img, s, within, *limit)?
+            } else if let Some(n) = imm {
+                nexo_bin::find_imm_in(&img, nexo_bin::parse_number(n)?, within)?
+            } else {
+                nexo_bin::find_bytes_in(&img, &pattern.join(" "), within)?
+            }
+        }
         BinOp::Diff { target, all, .. } => match &other {
             Some(b) => nexo_bin::diff_window(&img, b, target.as_deref(), op_grep.as_deref(), *all, from, lines)?,
             None => unreachable!("the second build is opened with the first"),

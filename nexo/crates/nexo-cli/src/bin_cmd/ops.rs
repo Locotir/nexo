@@ -17,24 +17,37 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
-    /// Patch generic bytes into a new copy; never modifies the input or overwrites an existing output. A Mach-O copy that was signed (or is arm64) is signed ad hoc again, and the answer says so.
-    #[command(group(clap::ArgGroup::new("location").required(true).args(["at", "function"])),
-              group(clap::ArgGroup::new("replacement").required(true).args(["bytes", "asm", "nop"])))]
+    /// Patch bytes into a new copy (--out) or, with --in-place, into the file itself after a backup `<file>.orig` that is never overwritten. One patch (--at or --fn with --bytes, --asm or --nop) or many (--patches FILE, all checked first, all applied or none). A Mach-O copy that was signed (or is arm64) is signed ad hoc again, and the answer says so.
+    #[command(group(clap::ArgGroup::new("location").args(["at", "function"])),
+              group(clap::ArgGroup::new("replacement").args(["bytes", "asm", "nop"])))]
     Patch {
         file: PathBuf,
+        /// The new file; it must not exist.
+        #[arg(long, required_unless_present = "in_place", conflicts_with = "in_place")]
+        out: Option<PathBuf>,
+        /// Change FILE itself; the original is first copied to FILE.orig (refused when that exists).
         #[arg(long)]
-        out: PathBuf,
+        in_place: bool,
         /// An address: 0x401000, a name, name+0x10.
-        #[arg(long, value_name = "ADDR")]
+        #[arg(long, value_name = "ADDR", required_unless_present_any = ["function", "patches"])]
         at: Option<String>,
-        #[arg(long = "fn", value_name = "NAME+OFF")]
+        #[arg(long = "fn", value_name = "NAME+OFF", required_unless_present_any = ["at", "patches"])]
         function: Option<String>,
-        #[arg(long, value_name = "HEX")]
+        #[arg(long, value_name = "HEX", required_unless_present_any = ["asm", "nop", "patches"])]
         bytes: Option<String>,
-        #[arg(long, value_name = "INTEL")]
+        #[arg(long, value_name = "INTEL", required_unless_present_any = ["bytes", "nop", "patches"])]
         asm: Option<String>,
-        #[arg(long, value_name = "N")]
+        #[arg(long, value_name = "N", required_unless_present_any = ["bytes", "asm", "patches"])]
         nop: Option<usize>,
+        /// The bytes that must be there now (hex); the patch is refused when they differ.
+        #[arg(long, value_name = "HEX", conflicts_with = "patches")]
+        old: Option<String>,
+        /// Refuse unless the old bytes are given and match (--old, or OLD_HEX on every line of --patches).
+        #[arg(long)]
+        verify: bool,
+        /// A file of patches, one per line: `ADDR OLD_HEX NEW_HEX`, `ADDR NEW_HEX` or `ADDR nop N`; `#` starts a comment.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["at", "function", "bytes", "asm", "nop"])]
+        patches: Option<PathBuf>,
         #[command(flatten)]
         common: Common,
     },
@@ -364,18 +377,33 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
-    /// Find hex bytes (?? matches any byte) or, with --imm, a number used as an immediate or stored as data.
+    /// Find hex bytes (?? matches any byte); or with --imm a number used as an immediate or stored as data; with --str text; with --asm a regex over the disassembly; with --seq consecutive instructions.
     Find {
         file: PathBuf,
         /// Hex bytes, like 48 8d 05.
-        #[arg(required_unless_present = "imm", conflicts_with = "imm")]
+        #[arg(required_unless_present_any = ["imm", "str", "asm", "seq"], conflicts_with_all = ["imm", "str", "asm", "seq"])]
         pattern: Vec<String>,
         /// A number (0x1f4 or 500) instead of bytes.
-        #[arg(long, allow_hyphen_values = true, value_name = "NUMBER")]
+        #[arg(long, allow_hyphen_values = true, value_name = "NUMBER", conflicts_with_all = ["str", "asm", "seq"])]
         imm: Option<String>,
+        /// Text (UTF-8 bytes) in any mapped section, with the section and the function that holds it.
+        #[arg(long = "str", id = "str", value_name = "TEXT", conflicts_with_all = ["asm", "seq"])]
+        text: Option<String>,
+        /// With --str: also look for the text as UTF-16LE.
+        #[arg(long, requires = "str")]
+        wide: bool,
+        /// A regular expression over the disassembly (`mov eax, 0x539`) of executable code, one row per instruction.
+        #[arg(long, value_name = "REGEX", conflicts_with = "seq")]
+        asm: Option<String>,
+        /// Consecutive instructions, `;` between them, `*` for any operand text: "mov eax, *; call *".
+        #[arg(long, value_name = "PATTERNS")]
+        seq: Option<String>,
         /// Look only in this range (A..B, A+LEN, a function or section name).
         #[arg(long = "in", value_name = "RANGE")]
         within: Option<String>,
+        /// With --str, --asm or --seq: show at most N matches; the answer says how many more there are.
+        #[arg(long, default_value_t = nexo_bin::FIND_LIMIT, value_name = "N")]
+        limit: usize,
         #[command(flatten)]
         common: Common,
     },

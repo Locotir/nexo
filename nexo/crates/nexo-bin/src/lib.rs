@@ -19,6 +19,7 @@ mod decomp;
 mod disasm;
 mod dwarf;
 mod emu;
+mod findx;
 mod fnview;
 mod funcs;
 mod graph;
@@ -60,6 +61,8 @@ mod tests_debuglink;
 #[cfg(test)]
 mod tests_diff;
 #[cfg(test)]
+mod tests_find;
+#[cfg(test)]
 mod tests_fmt;
 #[cfg(test)]
 mod tests_harden;
@@ -94,6 +97,7 @@ pub use cfg::cfg_op;
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use emu::{emulate, limits as emu_limits, EmuSpec};
+pub use findx::{find_asm_in, find_seq_in, find_str_in, DEFAULT_LIMIT as FIND_LIMIT};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use graph::{path_window, tree_window};
 pub use hookinfo::{
@@ -122,7 +126,7 @@ pub use ops::{
 };
 pub use overview::{overview, overview_window};
 pub use page::{shell_word, Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
-pub use patch::{patch, PatchData, PatchTarget};
+pub use patch::{patch, patch_file, patch_with, PatchData, PatchOpts, PatchTarget};
 pub use place::{addr_in, any_addr_in, close_names, is_span, range_in, AddrExpr, RangeExpr, ADDR_FORMS, RANGE_FORMS};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
 pub use sigs::{

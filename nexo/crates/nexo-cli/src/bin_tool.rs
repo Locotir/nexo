@@ -36,11 +36,11 @@ decomp <file> <name|addr>...  pseudo-C
 xref <file> <name|addr> [--to ADDR|FN], xref <file> --str TEXT  who calls, reads, writes or points at it
 calls <file> <name>, tree <file> <name> [--up], path <file> <from> <to>  callers, callees, call chains
 cfg <file> <name|addr>  control-flow graph of one function: blocks, edges, loops, dominators (x86-64)
-strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len> [--as u32|char[16]|ptr|str|item[4]|a named or DWARF struct], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
+strings <file> [--grep RE], find <file> <hex|--imm N|--str TEXT [--wide]|--asm REGEX|--seq PATTERNS> [--limit N], bytes <file> <addr> <len> [--as u32|char[16]|ptr|str|item[4]|a named or DWARF struct], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
 --lines N|all, --from K, --grep RE, --json after any op; `<op> --help` for its flags
 --raw --base ADDR [--arch x86-64|x86-32|arm64] after any op: the file is bare code (a memory dump, shellcode, JIT output, an unpacked stub), one section loaded at ADDR, its first byte the entry
 a; b  several ops in one call, each answer under its own `> op` line; an error stops the rest
-Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch --out and sigs --out write a file: the person is asked";
+Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch (--out, --in-place, --patches FILE) and sigs --out write a file: the person is asked";
 
 /// The tool. Every call parses its own line; it holds only whether the session has the `debug` tool beside it, the
 /// one its short text and its answers name for running the file. `debug` is not registered on Linux arm64, nor by
@@ -196,6 +196,15 @@ async fn one(unit: &str, ctx: &ToolContext, debug: bool) -> ToolOutput {
             *f = ctx.cwd.join(&*f);
         }
         if let Some(check) = &ctx.check {
+            let path = f.to_string_lossy().to_string();
+            if check("edit", ToolKind::Write, &json!({ "path": path })) == Check::Deny {
+                return ToolOutput::error(format!("bin: a permission rule denies writing {path}"));
+            }
+        }
+    }
+    // `--in-place` changes the file itself and writes a backup beside it: the same rule for each
+    if let Some(check) = &ctx.check {
+        for f in op.changed_in_place() {
             let path = f.to_string_lossy().to_string();
             if check("edit", ToolKind::Write, &json!({ "path": path })) == Check::Deny {
                 return ToolOutput::error(format!("bin: a permission rule denies writing {path}"));
