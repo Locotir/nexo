@@ -740,6 +740,7 @@ async fn a_detached_command_names_its_log_and_pid_and_outlives_the_registry() {
 /// A command that reads its input must meet an end of file at once, never wait for a person who is not there. Comparing
 /// stdin with /dev/null is what tells the closed stdin apart: `cat` and `read` alone also return when the test harness
 /// itself runs with an empty stdin.
+#[cfg(unix)]
 const STDIN_PROBE: &str = "test /dev/null -ef /dev/stdin && echo stdin-null; cat; echo cat-$?; read x; echo read-$?";
 
 /// Runs `body` in a copy of this test binary whose stdin is an open pipe that never carries a byte and never closes.
