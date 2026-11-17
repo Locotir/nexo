@@ -229,7 +229,9 @@ fn move_to_trash_in(dir: &Path, plan: &Prune, out: &mut impl Write) -> std::io::
 }
 
 /// The files in the trash that belong to a session not written for the age, deleted for good. The age of a
-/// file in the trash counts from the session's last write, as moving it there does not touch it.
+/// file in the trash counts from the day it was moved there (`trash_in` sets that time), so a session that was
+/// deleted yesterday is not lost by a prune of what is older than 90 days. Files trashed by an older nexo still
+/// carry the time of their last write.
 fn empty_trash_in(dir: &Path, plan: &Prune, out: &mut impl Write) -> std::io::Result<i32> {
     let bin = session::trash_dir_in(dir);
     let files = files_of(&bin);
@@ -384,6 +386,20 @@ mod tests {
         other.wait().unwrap();
         assert!(d.path().join("20260101-000001-aaaa.jsonl").is_file(), "{text}");
         assert!(text.contains("left in place") && text.contains("0 sessions moved"), "{text}");
+    }
+
+    #[test]
+    fn a_session_deleted_today_is_not_lost_to_a_prune_of_what_is_old_in_the_trash() {
+        let d = tempfile::tempdir().unwrap();
+        session_file(d.path(), "20260101-000001-aaaa", 200 * DAY, false, None, 100);
+        session::trash_in(d.path(), "20260101-000001-aaaa").unwrap();
+        let said = run(d.path(), &Prune { empty_trash: true, yes: true, ..plan(90) });
+        let bin = session::trash_dir_in(d.path());
+        assert!(said.contains("nothing in the trash is that old"), "{said}");
+        assert!(
+            bin.join("20260101-000001-aaaa.jsonl").is_file()
+                && bin.join("20260101-000001-aaaa.jsonl.curator").is_file()
+        );
     }
 
     #[test]

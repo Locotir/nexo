@@ -20,10 +20,20 @@ pub fn trash_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&bin)?;
     let to = bin.join(format!("{id}.jsonl"));
     std::fs::rename(&from, &to)?;
+    mark_trashed(&to);
     // the context state saved with it (`context::saved`) goes with it, or it is dropped
     move_saved_state(&from, &to);
     move_todo(dir, &trash_dir_in(dir), id);
     Ok(to)
+}
+
+/// A file moved by `rename` keeps the time of its last write, so a session left alone for months would look as
+/// old in the trash as it did outside and `nexo sessions prune --trash` would delete it the day it was trashed.
+/// Its time becomes the day it was trashed (what `trashed` lists newest first by), which also gives a session
+/// that is restored a day before the sweep looks at it again. Best effort: where the time cannot be set, the
+/// session stays what it was.
+fn mark_trashed(path: &Path) {
+    let _ = std::fs::File::options().write(true).open(path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
 }
 
 /// Brings session `id` back from the trash.

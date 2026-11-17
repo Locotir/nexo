@@ -343,7 +343,7 @@ pub enum SessionsCmd {
     ///
     /// Nothing changes until `--yes`: without it the sessions that would go are listed. `nexo sessions restore`
     /// brings a session back from the trash. A session another nexo holds is never moved. The age counts from the
-    /// session's last write, also in the trash.
+    /// session's last write; in the trash it counts from the day the session was moved there.
     Prune {
         /// A number of days or hours: `90d`, `36h`.
         #[arg(long, value_name = "AGE")]

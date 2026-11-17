@@ -89,8 +89,24 @@ fn left_by_a_dead_process(path: &Path, pid: u32) -> bool {
     pid != std::process::id() && (no_such_process(pid) || idle(path).is_some_and(|a| a > YOUNG))
 }
 
+/// A rewrite cut by a process that is gone. When the lock beside the session names another host or pid
+/// namespace (a folder shared by containers), the pid says nothing here: a live writer's copy would look
+/// dead, so only a copy untouched for an hour goes, as it does where a process cannot be asked for.
 fn cut_rewrite_gone(tmp: &Path, pid: u32) -> bool {
-    left_by_a_dead_process(tmp, pid) && std::fs::remove_file(tmp).is_ok()
+    let gone = if written_from_elsewhere(tmp, pid) {
+        pid != std::process::id() && idle(tmp).is_some_and(|a| a > YOUNG)
+    } else {
+        left_by_a_dead_process(tmp, pid)
+    };
+    gone && std::fs::remove_file(tmp).is_ok()
+}
+
+/// Whether the lock of the session that `<id>.jsonl.<pid>.tmp` belongs to was written on another host or in
+/// another pid namespace. No lock, or one of this machine, is not.
+fn written_from_elsewhere(tmp: &Path, pid: u32) -> bool {
+    let name = tmp.file_name().and_then(|n| n.to_str());
+    let Some(session) = name.and_then(|n| n.strip_suffix(&format!(".{pid}.tmp"))) else { return false };
+    std::fs::read_to_string(lock_path(&tmp.with_file_name(session))).is_ok_and(|text| foreign(&text))
 }
 
 /// A lock moved aside by a takeover that did not finish. It holds the text of the lock it replaced, so one
@@ -123,10 +139,20 @@ fn empty_session_trashed(dir: &Path, path: &Path, id: &str) -> bool {
         return false;
     }
     // any holder, this process included: a nexo left open and quiet for a day still owns its session
-    if holder(&lock_path(path)).is_some() {
+    let lock = lock_path(path);
+    if holder(&lock).is_some() {
         return false;
     }
-    trash_in(dir, id).is_ok()
+    // This sweep starts while the session that was asked for is being opened, so the lock is taken as a writer
+    // takes it: a nexo that resumes this session meanwhile is told it is in use, and never finds it gone. What
+    // was judged is judged again under the lock, as the session may have been opened and written since.
+    if take_lock(&lock).is_err() {
+        return false;
+    }
+    let moved =
+        idle(path).is_some_and(|a| a > EMPTY_AFTER) && holds_only_its_first_line(path) && trash_in(dir, id).is_ok();
+    let _ = std::fs::remove_file(&lock);
+    moved
 }
 
 fn orphan_state_gone(dir: &Path, state: &Path, name: &str) -> bool {
@@ -168,6 +194,36 @@ mod tests {
         assert!(!dead.exists(), "the copy of a dead process goes");
         assert!(ours.exists() && session.exists(), "a rewrite that may be running and a session stay");
         assert!(curator.exists(), "the curator's own temporary files are swept by `context::saved`");
+    }
+
+    #[test]
+    fn a_rewrite_whose_lock_comes_from_another_host_goes_only_when_an_hour_old() {
+        let d = tempfile::tempdir().unwrap();
+        // a pid that does not exist here says nothing about a writer in another container
+        std::fs::write(d.path().join("20261101-000000-abcd.jsonl.lock"), "999999 1 - another-host-xyz -").unwrap();
+        let young = d.path().join(format!("20261101-000000-abcd.jsonl.{}.tmp", dead_pid()));
+        write_aged(&young, "x", std::time::Duration::from_secs(60));
+        assert_eq!(sweep_orphans(d.path()), 0);
+        assert!(young.exists(), "the copy of a writer on another host may be in use");
+        write_aged(&young, "x", YOUNG + std::time::Duration::from_secs(60));
+        assert_eq!(sweep_orphans(d.path()), 1);
+        assert!(!young.exists());
+    }
+
+    #[test]
+    fn a_session_brought_back_from_the_trash_is_not_trashed_again_at_the_next_start() {
+        let d = tempfile::tempdir().unwrap();
+        // a session opened and left without a word removes itself, so its first line is written back by hand
+        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        let (path, first_line) = (s.path().to_path_buf(), std::fs::read_to_string(s.path()).unwrap());
+        drop(s);
+        write_aged(&path, &first_line, 3 * DAY);
+        assert_eq!(sweep_orphans(d.path()), 1);
+        let id = path.file_stem().unwrap().to_string_lossy().to_string();
+        restore_in(d.path(), &id).unwrap();
+        assert_eq!(sweep_orphans(d.path()), 0);
+        assert!(path.is_file(), "restored, it has a day before the sweep looks at it again");
+        assert!(!lock_path(&path).exists(), "the sweep leaves no lock behind");
     }
 
     #[test]

@@ -62,7 +62,7 @@ fn pid_ns() -> Option<&'static str> {
 
 /// The lock text was written on another host or in another pid namespace (where both say so): its
 /// pid names no process here. A lock that does not say (an older one) is taken as written here.
-fn foreign(text: &str) -> bool {
+pub(super) fn foreign(text: &str) -> bool {
     let mut words = text.split_whitespace().skip(3).map(|w| Some(w).filter(|w| *w != "-"));
     let differs = |was: Option<&str>, now: Option<&str>| matches!((was, now), (Some(a), Some(b)) if a != b);
     differs(words.next().flatten(), host_name()) || differs(words.next().flatten(), pid_ns())
