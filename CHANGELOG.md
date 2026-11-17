@@ -4,10 +4,50 @@ nexo has no numbered releases. CI builds a release on every push to `main` and n
 `build-<commit>` (the last five are kept). `nexo --version` prints the same commit. The workspace
 version in `nexo/Cargo.toml` is 0.2.0 (0.1.0 until 2026-11-17). Dates are commit dates; newest first.
 
-## 2026-11-16
+## 2026-11-17 · 0.2.0
 
 ### Added
 - Ready-built releases for macOS (Apple silicon and Intel): `install.sh`, `nexo update` and the GitHub Action download them, checked against their SHA-256.
+- macOS support across the tools: browsers found as app bundles, Option+arrow word jumps, clipboard, notifications, and permission rules that fold case and know the macOS wrappers.
+- `nexo dbg` and the `debug` tool: run a program, break, step, watch, read variables from DWARF, trace system calls and library calls, and hook a function with typed arguments, on Linux, Windows and macOS (Intel).
+- The debugger also reads core files and Windows minidumps, debugs 32-bit programs, follows forked children, loads libraries later, and calls a function in the live program.
+- More debugger commands: launch options (env, cwd, aslr, argv0), `dump` to a file, frame selection with `up` and `down`, block coverage with named snapshots, and the gdb commands you already type.
+- A GDB remote protocol server and client, so `nexo dbg` can drive or be driven by other gdb tools.
+- `nexo bin` reads more files: Mach-O, AArch64, 32-bit x86, WebAssembly, .NET, JVM classes, PDB symbols and separate debug files.
+- `nexo bin` can decompile to C, emulate a function, show control flow, diff two builds, slice data flow, assemble and patch bytes, and match library signatures.
+- `nexo re --mcp` serves the reverse-engineering kit to other tools over MCP; without `--allow-changes` it is read-only.
+- The `browser` tool and `/chrome`: nexo drives your own logged-in Chrome through an extension, or a session browser, reads pages as a tree, and records the page to an animated GIF.
+- `nexo team` and the `/team` window: lanes that run a routine on a clock in the background, with `team add` and `team start --now`.
+- `/panel` shows this session, its sub-agents, team lanes and other sessions as one tree; `nexo sessions live` lists them as text or JSON.
+- You can type a message into another live session on this machine and open a sub-agent's conversation from `/jobs`.
+- Status bar: a cache miss chip, the cache share in `/context`, the active session, and how much of a subscription plan is left (also in `/usage`).
+- Calm motion in the screen: the logo ignites when a session opens, a breathing line while the agent works, and a welcome galaxy.
+- Windows and sub-windows share one width rule, a dimmed backdrop and a filterable help, plus a settings window.
+- `/goal` subcommands (pause, resume, clear, done) are understood by their first letters, and a goal pauses when its work changes nothing.
+- Workflows: a file of phases and steps runs its sub-agents in order, reports each step, and can be stopped.
+- `ultracode` agent plans can be approved and run, and past costs are shown.
+- Shared memory between sessions, and `note` can replace or forget one saved rule.
+- Apache-2.0 license; every build ships LICENSE and the third-party notices.
+
+### Changed
+- Pressing Esc stops a request, tells the model so, and keeps what you typed meanwhile: messages queue and run as one request on the next turn, and show at once in the transcript.
+- A model with a small window gets a shorter prompt, shorter tool text and a fitted request; MCP tool text and replies are held to what the window leaves.
+- The curator keeps its state next to each session, so a resume replays only what came after, and it reads more kinds of text.
+- The 1-hour prompt cache is written when your pauses make it pay, and every call carries about 640 fewer fixed tokens.
+- Startup is faster: the first screen does not wait for MCP servers, and only what the session list shows is read.
+- On a subscription, cost reads as API value, and the model picker lists every chat model a ready provider serves.
+- A file the model wrote or read, unchanged since, is not attached again at the next request.
+- A bash call outside the sandbox or detached always asks, and the permission dialog for an MCP call shows every argument.
+- The default screen is quieter: a finished turn leaves time and cost, and the rest opens on demand.
+
+### Fixed
+- AltGr characters type correctly on Windows consoles.
+- A shell command that ran to completion is never shown as failed.
+- A reply that only reasons no longer ends the turn in silence, and a request cut inside its reasoning is sent again.
+- A long draft stays in place, pastes go to the search bar, and the text above a streaming reply no longer slides down.
+- The status bar keeps whole parts by priority, shows local time and fresh token numbers.
+- Resume reports no replayed calls as new in `nexo -p --resume`.
+- The debug build starts on Windows, and Windows waits that merely time out no longer fail.
 
 ## 2026-11-10
 
