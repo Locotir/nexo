@@ -35,6 +35,16 @@ mod fake {
 
     thread_local! {
         static COPIED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static PRIMARY: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// What a selection made the PRIMARY selection (the latest one stands, as on a real display).
+    pub fn record_primary(text: &str) {
+        PRIMARY.with(|p| *p.borrow_mut() = Some(text.to_string()));
+    }
+
+    pub fn primary() -> Result<String, String> {
+        PRIMARY.with(|p| p.borrow().clone()).ok_or_else(|| "the primary selection is empty".to_string())
     }
 
     pub fn record(text: &str) -> Result<&'static str, String> {
@@ -104,6 +114,77 @@ pub fn copy_with(text: &str, system: bool, tools: &[Tool]) -> Result<&'static st
             Err(format!("{why}. {}", failure_hint(cfg!(target_os = "macos"))))
         }
     }
+}
+
+/// Tools that set the PRIMARY selection (the text a middle click pastes on X11 and Wayland), in the order tried.
+/// Many Wayland compositors lack the primary-selection protocol, so a failure here is never reported.
+#[cfg(all(unix, not(target_os = "macos")))]
+const PRIMARY_COPY_TOOLS: &[Tool] = &[
+    ("wl-copy", &["--primary"], "WAYLAND_DISPLAY"),
+    ("xclip", &["-selection", "primary"], "DISPLAY"),
+    ("xsel", &["--primary", "--input"], "DISPLAY"),
+];
+
+/// Tools that print the PRIMARY selection: `(name, args, needs)`.
+#[cfg(all(unix, not(target_os = "macos")))]
+const PRIMARY_PASTE_TOOLS: &[Tool] = &[
+    ("wl-paste", &["--primary", "--no-newline"], "WAYLAND_DISPLAY"),
+    ("xclip", &["-selection", "primary", "-o"], "DISPLAY"),
+    ("xsel", &["--primary", "--output"], "DISPLAY"),
+];
+
+/// Makes `text` the PRIMARY selection, as terminals do for what is selected with the mouse, so a middle click
+/// pastes it elsewhere. Only selections do this; an explicit copy stays on the clipboard alone (the X convention).
+/// macOS and Windows have no PRIMARY, and a failure is ignored: the clipboard copy already reported.
+pub fn copy_primary(text: &str) {
+    #[cfg(test)]
+    fake::record_primary(text);
+    #[cfg(all(not(test), unix, not(target_os = "macos")))]
+    copy_primary_with(text, PRIMARY_COPY_TOOLS);
+    #[cfg(not(any(test, all(unix, not(target_os = "macos")))))]
+    let _ = text;
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg_attr(test, allow(dead_code))]
+fn copy_primary_with(text: &str, tools: &[Tool]) {
+    for (name, args, needs) in tools {
+        if !needs.is_empty() && std::env::var_os(needs).is_none_or(|v| v.is_empty()) {
+            continue;
+        }
+        if run_tool(name, args, text).is_ok() {
+            return;
+        }
+    }
+}
+
+/// The PRIMARY selection's text, for a middle click. Empty or unreachable is an error.
+pub fn paste_primary() -> Result<String, String> {
+    #[cfg(test)]
+    return fake::primary();
+    #[cfg(all(not(test), unix, not(target_os = "macos")))]
+    return paste_primary_with(PRIMARY_PASTE_TOOLS);
+    #[cfg(all(not(test), not(all(unix, not(target_os = "macos")))))]
+    return Err("this system has no primary selection".into());
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg_attr(test, allow(dead_code))]
+fn paste_primary_with(tools: &[Tool]) -> Result<String, String> {
+    for (name, args, needs) in tools {
+        if !needs.is_empty() && std::env::var_os(needs).is_none_or(|v| v.is_empty()) {
+            continue;
+        }
+        if let Ok(out) = Command::new(name).args(*args).stdin(Stdio::null()).stderr(Stdio::null()).output() {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                if !text.is_empty() {
+                    return Ok(text);
+                }
+            }
+        }
+    }
+    Err("the primary selection is empty or unreachable".into())
 }
 
 /// What to try when no clipboard could be reached. macOS has neither wl-clipboard nor xclip, and its terminals
@@ -336,6 +417,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A tool on PATH that records what it was given (`name.out`) or prints `reply`, for the PRIMARY selection.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn fake_primary_tool(dir: &std::path::Path, name: &str, reply: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let f = dir.join(name);
+        let out = dir.join(format!("{name}.out"));
+        let body = format!(
+            "#!/bin/sh\necho \"$*\" > '{o}.args'\nPATH=/usr/bin:/bin cat > '{o}' 2>/dev/null </dev/stdin\nprintf %s '{reply}'\n",
+            o = out.display()
+        );
+        std::fs::write(&f, body).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_selection_is_written_to_primary_with_the_tool_that_has_its_display() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        fake_primary_tool(dir.path(), "wl-copy", "");
+        fake_primary_tool(dir.path(), "xclip", "");
+        let back = EnvBack::save();
+        std::env::set_var("PATH", dir.path());
+        // wl-copy has no Wayland display here, so xclip takes it
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        copy_primary_with("picked words", PRIMARY_COPY_TOOLS);
+        drop(back);
+        assert!(!dir.path().join("wl-copy.out").exists(), "wl-copy must not run without Wayland");
+        assert_eq!(std::fs::read_to_string(dir.path().join("xclip.out")).unwrap(), "picked words");
+        assert_eq!(std::fs::read_to_string(dir.path().join("xclip.out.args")).unwrap().trim(), "-selection primary");
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_middle_click_reads_primary_and_an_empty_one_is_an_error() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        fake_primary_tool(dir.path(), "xclip", "from primary");
+        let back = EnvBack::save();
+        std::env::set_var("PATH", dir.path());
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        let got = paste_primary_with(PRIMARY_PASTE_TOOLS);
+        std::env::remove_var("DISPLAY");
+        let none = paste_primary_with(PRIMARY_PASTE_TOOLS);
+        drop(back);
+        assert_eq!(got, Ok("from primary".to_string()));
+        assert!(none.is_err(), "without a display nothing is read");
     }
 
     /// `copy` in a test run records the text and starts no process: a tool on PATH that would

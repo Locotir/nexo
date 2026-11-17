@@ -765,6 +765,8 @@ impl App {
         let Some(sel) = self.selection.clone() else { return };
         let text = self.selection_text().unwrap_or_default();
         let n = sel.lines();
+        // a selection is also the PRIMARY one, which a middle click pastes
+        crate::clipboard::copy_primary(&text);
         match crate::clipboard::copy(&text) {
             Ok(how) => self.flash_toast(&format!("copied {n} line{} ({how})", if n == 1 { "" } else { "s" })),
             Err(e) => self.notice(Level::Warn, format!("copy failed: {e}")),
@@ -817,11 +819,43 @@ impl App {
         self.editor_drag = false;
         if let Some(text) = self.input.release_selection() {
             let n = text.lines().count().max(1);
+            crate::clipboard::copy_primary(&text);
             match crate::clipboard::copy(&text) {
                 Ok(how) => self.flash_toast(&format!("copied {n} line{} ({how})", if n == 1 { "" } else { "s" })),
                 Err(e) => self.notice(Level::Warn, format!("copy failed: {e}")),
             }
         }
+        self.dirty = true;
+    }
+
+    /// Text pasted into the draft: typed fast, `/help` arrives as a paste, so a command is still a command while
+    /// the model setup is locked. Long text becomes a chip. Both a terminal paste and a middle click come here.
+    pub fn paste_text(&mut self, s: &str) {
+        let command = self.input.full_text().starts_with('/') || s.trim_start().starts_with('/');
+        if self.locked && !command {
+            return self.open_setup();
+        }
+        self.input.insert_paste(s);
+        self.refresh_palette();
+    }
+
+    /// A middle click in the editor: the cursor goes to the cell, as a terminal does, and the PRIMARY selection is
+    /// pasted there. An empty or unreachable selection leaves the draft as it was.
+    pub fn paste_primary_at(&mut self, x: u16, y: u16) {
+        let Ok(text) = crate::clipboard::paste_primary() else { return };
+        let a = self.editor_area;
+        if !self.input.is_empty() {
+            let pos = crate::input::cell_at(
+                &self.input,
+                a.width as usize,
+                self.editor_top + (y - a.y) as usize,
+                (x - a.x) as usize,
+            );
+            // a press that selects nothing: only the cursor moves
+            self.input.press_at(pos);
+            let _ = self.input.release_selection();
+        }
+        self.paste_text(&text);
         self.dirty = true;
     }
 }

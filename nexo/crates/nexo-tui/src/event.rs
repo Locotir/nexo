@@ -116,13 +116,7 @@ pub fn handle(app: &mut App, ev: Event) {
                         app.search_first();
                         return;
                     }
-                    // typed fast, `/help` arrives as a paste: a command is still a command here
-                    let command = app.input.full_text().starts_with('/') || s.trim_start().starts_with('/');
-                    if app.locked && !command {
-                        return app.open_setup();
-                    }
-                    app.input.insert_paste(&s);
-                    app.refresh_palette();
+                    app.paste_text(&s);
                 }
                 // a key or an address pasted into the model setup
                 Some(crate::modal::Modal::Setup(st)) => {
@@ -598,6 +592,13 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             // a fold toggles when the button comes up without a drag (`release_at`)
             app.press_free = m.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
             app.press_at(m.column, m.row);
+        }
+        // a middle click in the editor pastes the PRIMARY selection (what a terminal does on its own when the mouse
+        // is not captured); over a window or the command list it does nothing
+        MouseEventKind::Down(MouseButton::Middle) => {
+            if app.modal.is_none() && app.palette.is_none() && contains(app.editor_area, m.column, m.row) {
+                app.paste_primary_at(m.column, m.row);
+            }
         }
         MouseEventKind::Moved => {
             if let Some(md) = &mut app.modal {
