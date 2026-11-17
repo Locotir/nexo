@@ -93,38 +93,11 @@ pub fn tidy(s: &str) -> String {
     out
 }
 
-/// What a text carries beyond the core redaction: the credentials of an address (`user:pass@host`), the
-/// value of a `key=` style query parameter, and the key formats of the providers.
-pub(super) fn extra_rules() -> &'static [(regex::Regex, &'static str)] {
-    use std::sync::OnceLock;
-    static RULES: OnceLock<Vec<(regex::Regex, &'static str)>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let table: &[(&str, &str)] = &[
-            // scheme://user:pass@host
-            (r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#]*@", "${1}[redacted]@"),
-            // ?key=..., &api_key=..., &access_token=...
-            (
-                r#"(?i)([?&;]\s*[a-z0-9_.-]*(?:key|token|secret|password|passwd|signature|sig|auth)=)[^&\s)"'<>#,]+"#,
-                "${1}[redacted]",
-            ),
-            // Google and Groq keys
-            (r"\bAIza[0-9A-Za-z_-]{20,}", crate::redact::MASK),
-            (r"\bgsk_[0-9A-Za-z]{16,}", crate::redact::MASK),
-        ];
-        table.iter().map(|(p, w)| (regex::Regex::new(p).expect("a fixed pattern"), *w)).collect()
-    })
-}
-
 /// `s` for a card: [`tidy`], then the secrets taken out. Done when the card is built, so nothing downstream
-/// (the transcript, a saved session, headless output, a log) ever holds them.
+/// (the transcript, a saved session, headless output, a log) ever holds them. The one rule table is
+/// [`crate::redact::redact`], which also covers address credentials and `key=` query parameters.
 pub(super) fn safe(s: &str) -> String {
-    let mut out = crate::redact::redact(&tidy(s)).into_owned();
-    for (re, with) in extra_rules() {
-        if let std::borrow::Cow::Owned(t) = re.replace_all(&out, *with) {
-            out = t;
-        }
-    }
-    out
+    crate::redact::redact(&tidy(s)).into_owned()
 }
 
 /// `m` without the `for url (...)` part reqwest puts in its message: the address is not a cause.

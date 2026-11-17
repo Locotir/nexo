@@ -32,6 +32,22 @@ fn rules() -> &'static [Rule] {
             (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}", MASK),
             // Authorization headers.
             (r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", "$1 [redacted]"),
+            // The Basic scheme only with its header prefix: a bare `basic <word>` would eat ordinary prose.
+            (r"(?i)\b(authorization:\s*basic)\s+[A-Za-z0-9+/]{8,}={0,2}", "$1 [redacted]"),
+            // Provider key formats that the `sk-` family does not cover.
+            (r"\bAIza[0-9A-Za-z_-]{20,}", MASK),
+            (r"\bgsk_[0-9A-Za-z]{16,}", MASK),
+            (r"\bhf_[A-Za-z0-9]{30,}", MASK),
+            (r"\bnpm_[A-Za-z0-9]{36}", MASK),
+            (r"\bxai-[A-Za-z0-9]{20,}", MASK),
+            (r"\b[\x73r]k_(?:live|test)_[A-Za-z0-9]{16,}", MASK),
+            // scheme://user:pass@host: an address carries its credentials before the `@`. HTTP client errors embed the URL.
+            (r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#]*@", "${1}[redacted]@"),
+            // ?key=..., &sig=..., ;auth=...: query parameters named like a secret (`api_key=` and `token=` are also caught by the assignment rule below).
+            (
+                r#"(?i)([?&;]\s*[a-z0-9_.-]*(?:key|token|secret|password|passwd|signature|sig|auth)=)[^&\s)"'<>#,]+"#,
+                "${1}[redacted]",
+            ),
             // Lines of an env file: NAME=value.
             (r"(?m)^([ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*[ \t]*=[ \t]*)[^\r\n]+$", "${1}[redacted]"),
             // password=..., "token": "...", api_key: ...
@@ -133,6 +149,49 @@ mod tests {
         ] {
             hides(text, secret);
         }
+    }
+
+    #[test]
+    fn address_credentials_and_secret_query_parameters() {
+        hides("GET https://user:hunter2pw@host.example/x failed", "hunter2pw");
+        hides("error for url (https://api.example/v1?key=zzz9abc&x=1)", "zzz9abc");
+        hides("https://cdn.example/f?sig=q1w2e3r4t5&n=1", "q1w2e3r4t5");
+        hides("https://h.example/f?X-Auth=a1b2c3d4", "a1b2c3d4");
+        let kept = redact("https://example.org/path?page=2&sort=name");
+        assert_eq!(kept, "https://example.org/path?page=2&sort=name");
+    }
+
+    #[test]
+    fn google_and_groq_keys() {
+        let g = key("AI", "zaSyabcdefghijklmnopqrstuvwxyz0123");
+        hides(&format!("maps {g}"), &g);
+        let q = key("gs", "k_abcdefghijklmnopqrstuvwx");
+        hides(&format!("groq {q}"), &q);
+    }
+
+    #[test]
+    fn hugging_face_npm_and_xai_tokens() {
+        let h = key("hf", "_abcdefghijklmnopqrstuvwxyzABCDEFGH");
+        hides(&format!("hub {h}"), &h);
+        let n = key("npm", "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ");
+        hides(&format!("registry {n}"), &n);
+        let x = key("xa", "i-abcdefghijklmnopqrstuvwx");
+        hides(&format!("grok {x}"), &x);
+    }
+
+    #[test]
+    fn stripe_live_and_test_keys() {
+        let s = key("s", "k_live_abcdefghijklmnop1234");
+        hides(&format!("charge with {s}"), &s);
+        let r = key("r", "k_test_abcdefghijklmnop1234");
+        hides(&format!("restricted {r}"), &r);
+    }
+
+    #[test]
+    fn basic_authorization_header_only_with_its_prefix() {
+        hides("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA");
+        let prose = "set the basic configuration before the first run";
+        assert_eq!(redact(prose), prose);
     }
 
     #[test]
