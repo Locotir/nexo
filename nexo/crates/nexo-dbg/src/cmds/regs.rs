@@ -24,6 +24,7 @@ impl Session {
             let name = self.mods.label(r.rip, false).unwrap_or_default();
             l.push(format!("thread {} at {:#x} {name}", self.cur, r.rip));
         }
+        l.extend(self.tape.status_line());
         if let Some(o) = self.new_output_line() {
             l.push(o);
         }

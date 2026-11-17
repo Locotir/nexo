@@ -85,6 +85,8 @@ const CONTROL: &[&str] = &[
     "modules",
     "find",
     "history",
+    "record",
+    "back",
     "out",
     "log",
     "dis",
@@ -242,6 +244,8 @@ const READ_ALLOWED: &[&str] = &[
     "modules",
     "find",
     "history",
+    "record",
+    "back",
     "out",
     "log",
     "dis",
@@ -1016,6 +1020,11 @@ mod tests {
         assert_eq!(dbg_class(&crate::split_words("set $v = $rsp + 8")), DbgClass::Control);
         assert_eq!(dbg_class(&crate::split_words("set pagination off")), DbgClass::Control);
         assert_eq!(dbg_class(&crate::split_words("backtrace 3")), DbgClass::Control);
+        // the record only keeps what ran and `back` only reads it: neither writes into the program
+        for c in ["record", "record 500", "record stop", "back 3", "back --reg rax", "back --mem 0x1000"] {
+            assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Control, "{c}");
+        }
+        assert!(READ_ALLOWED.contains(&"record") && READ_ALLOWED.contains(&"back"));
         // writing into the program is a change, however it is spelled
         for c in
             ["set $rax = 1", "set var $rip = main", "set var x = 5", "set {int}0x1000 = 5", "set *(int*)0x1000 = 5"]

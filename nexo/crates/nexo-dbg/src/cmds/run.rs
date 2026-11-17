@@ -167,7 +167,7 @@ impl Session {
 
     /// Several commands in one call: `do "break f; cont; args; bt"`, or a whole gdb script (one command per line,
     /// `commands ... end` blocks). It stops at the first command that fails, and when the program ends only the
-    /// commands that read what is left (`out`, `log`, `history`, `status`, `info`, `echo`, `printf`) still run;
+    /// commands that read what is left (`out`, `log`, `history`, `back`, `status`, `info`, `echo`, `printf`) still run;
     /// `--keep-going` goes on after a failure.
     pub(super) fn cmd_do(&mut self, words: &[String]) -> Result<Output> {
         let a = Args::new(words)?;
@@ -229,4 +229,5 @@ impl Session {
 }
 
 /// What a script may still run after the program ended: the commands that read what was kept.
-const AFTER_EXIT: [&str; 10] = ["out", "log", "history", "status", "info", "echo", "printf", "breaks", "help", "show"];
+const AFTER_EXIT: [&str; 11] =
+    ["out", "log", "history", "back", "status", "info", "echo", "printf", "breaks", "help", "show"];

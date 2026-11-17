@@ -25,6 +25,7 @@ mod pe_unwind;
 mod places;
 mod platform;
 mod rebuild;
+mod record;
 mod regs;
 mod remote;
 mod rsp;

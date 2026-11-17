@@ -186,9 +186,9 @@ impl Session {
             && self.guards.iter().any(|g| g.armed && a >= g.start && a < g.start + g.len)
     }
 
-    /// The thread a step watch runs one instruction at a time: the current one while it lives.
+    /// The thread a step watch (or a record) runs one instruction at a time: the current one while it lives.
     pub(crate) fn step_watch_thread(&self) -> Option<Tid> {
-        if !self.wps.iter().any(|w| w.how == WatchHow::Steps) {
+        if !self.tape.on && !self.wps.iter().any(|w| w.how == WatchHow::Steps) {
             return None;
         }
         let threads = self.t.threads();

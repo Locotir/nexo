@@ -51,6 +51,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("out", "what the program printed [--all]"),
     ("log", "what hooks and calls logged"),
     ("history", "the last stops [N]"),
+    ("record", "keep the last N instructions as they run (Linux; cont then single-steps, slow): record [N] | record stop"),
+    ("back", "look at the last N recorded instructions [N] | --reg REG | --mem ADDR; it looks back, it does not undo"),
     ("stdin", "send text to the program's input"),
     ("setreg", "change a register; setreg xmm0 <lanes> [--as f32] (asks)"),
     ("call", "run a function of the stopped program and give its value: call f(1, \"abc\"); print f(x) + 1 too; registers back after (asks)"),

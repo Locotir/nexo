@@ -54,6 +54,7 @@ pub fn help() -> Output {
     let l = [
         "run: nexo dbg run <exe> [args]   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
         "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach | kill call | follow parent|child|both (a forked child kept as a session of its own, breakpoints copied)",
+        "record: record [N] | record stop keeps the last N instructions (default 10000, most 1000000: pc, changed registers, memory writes up to 64 bytes) while you `step` and `cont` (cont then goes one instruction at a time: slow, Linux only) | back [N] | back --reg REG | back --mem ADDR read it, newest first; it looks back, it does not undo (`status` shows the record)",
         "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
         "trace: strace [names|file|net|process|memory] | strace show [filter] | strace off | catch syscall <names|groups> | catch syscall off; ltrace [names] (printf/scanf `...` read off the format string; a library loaded later adds its import calls) | ltrace show [names] | ltrace off | hook <addr|name> [bt N] [stop] [set argN V] [ret V] (a float for a float argument or result; a name no loaded file has waits for a library that has it) | hook show [name] | hooks | hook del <id>|all; cover [funcs] | cover show [func] | cover save <A> | cover diff <A> <B>|now | cover off",
         "break: break <addr|*addr|name|file:line|name+off|import> (a function stops after its prologue) [if <expr>] [after N] [log <text with {expr}>] [once] (a name no loaded file has is pending until a library that has it loads) | catch load|unload [NAME|off] (a stop when a library whose file name holds NAME comes or goes) | breaks | delete <id>|all | enable/disable <id>",
@@ -71,7 +72,15 @@ pub fn help() -> Output {
 
 #[cfg(test)]
 mod tests {
-    use super::split_words;
+    use super::{help, split_words};
+
+    #[test]
+    fn the_help_names_the_record_and_says_it_does_not_undo() {
+        let text = help().text_all();
+        for w in ["record [N]", "record stop", "back [N]", "back --reg REG", "back --mem ADDR", "does not undo"] {
+            assert!(text.contains(w), "help lacks {w:?}");
+        }
+    }
 
     #[test]
     fn the_text_arguments_of_a_call_keep_their_quotes_and_other_quotes_go() {

@@ -103,6 +103,7 @@ impl Session {
                 l.push(o);
             }
             l.extend(self.fresh_log());
+            l.extend(self.tape.take_notes());
             l.extend(self.trace_note());
             self.last_stop = Some(StopInfo { n: self.nstop, event: event.into(), place: "-".into(), addr: 0 });
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });
@@ -117,6 +118,7 @@ impl Session {
         }
         l.extend(self.call_note());
         if let Ok(r) = self.t.regs(tid) {
+            self.rec_observe(tid, &r, matches!(why, Why::Step), None);
             let name = self.mods.label(r.rip, false).unwrap_or_default();
             let at = self.mods.source(r.rip).map(|s| format!("  ({s})")).unwrap_or_default();
             l.push(format!("pc {:#x} {name}{at}", r.rip));
@@ -194,6 +196,7 @@ impl Session {
         }
         l.extend(self.fresh_log());
         l.extend(self.display_lines());
+        l.extend(self.tape.take_notes());
         l.extend(self.trace_note());
         rows("stop", l, json!({"state": "stopped", "thread": tid}))
     }

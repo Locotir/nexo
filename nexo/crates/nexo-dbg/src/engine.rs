@@ -160,6 +160,8 @@ pub struct Session {
     pub out_dropped: u64,
     pub log: VecDeque<String>,
     pub history: VecDeque<Rec>,
+    /// `record`: the instructions that ran, bounded.
+    pub tape: crate::record::Tape,
     pub nstop: u64,
     /// Where the last stop was, for the header of the answer.
     pub last_stop: Option<StopInfo>,
@@ -491,6 +493,7 @@ impl Session {
             out_dropped: 0,
             log: VecDeque::new(),
             history: VecDeque::new(),
+            tape: Default::default(),
             nstop: 0,
             last_stop: None,
             bridged: String::new(),
@@ -683,6 +686,8 @@ impl Session {
         self.frame = 0;
         self.run = run;
         self.watch_lines.clear();
+        // a record single-steps whatever is not already one step: slow, and said in the answer
+        self.tape.begin_run(self.tape.on && run.step.is_none());
         let r = self.resume_now();
         if r.is_err() {
             // the program did not start: it is where it was, with none of our breakpoints in it
@@ -781,6 +786,12 @@ impl Session {
         for ev in &events {
             if let Event::Stopped { tid, stop } = *ev {
                 let stepped = self.step_from.is_some_and(|(t, _)| t == tid) && matches!(stop, Stop::Step);
+                if stepped && self.tape.on {
+                    let from = self.step_from.map(|(_, pc)| pc);
+                    if let Ok(r) = self.t.regs(tid) {
+                        self.rec_observe(tid, &r, true, from);
+                    }
+                }
                 if stepped || matches!(stop, Stop::Watch(_)) || matches!(stop, Stop::Fault(f) if self.guard_fault(&f)) {
                     watch_evs.push((tid, stop));
                 }

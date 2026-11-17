@@ -21,6 +21,7 @@ mod gdb;
 mod help;
 mod io;
 mod memory;
+mod record;
 mod regs;
 mod run;
 mod stack;
@@ -85,10 +86,10 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 33] = [
+pub const READ_ONLY: [&str; 34] = [
     "status", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
-    "name", "note", "ptype", "whatis", "frame", "up", "down",
+    "name", "note", "ptype", "whatis", "frame", "up", "down", "back",
 ];
 
 impl Session {
@@ -250,6 +251,8 @@ impl Session {
                 Ok(rows("log", self.log.iter().cloned().collect(), json!({})))
             }
             "history" => Ok(self.cmd_history(&a)),
+            "record" => self.cmd_record(&a),
+            "back" => self.cmd_back(&a),
             "stdin" => crate::stdin::exec(self, words),
             "catch" if a.pos.first().is_some_and(|w| w == "syscall") => self.cmd_catch_syscall(&a.pos[1..]),
             "catch" if a.pos.first().is_some_and(|w| w == "load" || w == "unload") => self.cmd_catch_load(&a),
