@@ -239,6 +239,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_theme_syntax_name_is_in_the_bundled_theme_sets() {
+        // syntect loses its bundled themes when a feature is dropped; a missing name would silently turn code plain.
+        let all = [
+            Theme::nexo(),
+            Theme::dark(),
+            Theme::light(),
+            Theme::catppuccin_mocha(),
+            Theme::gruvbox(),
+            Theme::nord(),
+            Theme::dracula(),
+            Theme::solarized_dark(),
+            Theme::tokyo_night(),
+        ];
+        for t in all {
+            if let Some(name) = t.syntax {
+                assert!(themes().themes.contains_key(name), "syntax theme {name:?} of {} is missing", t.name);
+            }
+        }
+    }
+
+    #[test]
     fn highlights_known_languages_and_leaves_others_plain() {
         let t = Theme::dark();
         let lines = highlight("fn main() {}\nlet x = 1;", "rust", &t);
