@@ -193,3 +193,60 @@ fn the_help_on_a_mac_names_the_gestures_of_its_terminals_and_other_systems_keep_
     assert!(other.contains("Ctrl+Click") && other.contains("Shift+Drag") && !other.contains("Fn+Drag"));
     assert_eq!(help_rows(false).len(), HELP.len());
 }
+
+fn texts(lines: &[Line<'static>]) -> Vec<String> {
+    lines.iter().map(crate::render::markdown::text_of).collect()
+}
+
+#[test]
+fn a_long_changed_line_in_a_diff_permission_wraps_and_keeps_its_tail() {
+    let mut r = req();
+    let tail = "TAIL-OF-THE-LINE";
+    let new = format!("{} {tail}\n", "word ".repeat(40));
+    r.detail = ToolDisplay::Diff { path: "src/a.rs".into(), old: "a\n".into(), new, start_line: 1 };
+    let text = texts(&Modal::permission_lines(&r, 40, &Theme::dark()));
+    assert!(text.iter().all(|l| crate::render::wrap::width(l) <= 40), "{text:?}");
+    assert!(text.iter().any(|l| l.contains(tail)), "{text:?}");
+    // a continuation hangs under the text, not under the line number
+    assert!(text.iter().any(|l| l.starts_with("    word")), "{text:?}");
+}
+
+#[test]
+fn a_diff_permission_drops_escapes_and_bidi_marks_from_the_text_and_the_path() {
+    let mut r = req();
+    r.detail = ToolDisplay::Diff {
+        path: "src/\x1b]0;owned\x07a\u{202e}.rs".into(),
+        old: "a\n".into(),
+        new: "x\x1b[31mred\u{202e}ev\u{200b}il\n".into(),
+        start_line: 1,
+    };
+    let text = texts(&Modal::permission_lines(&r, 60, &Theme::dark())).join("\n");
+    assert!(!text.chars().any(|c| matches!(c, '\x1b' | '\x07' | '\u{202e}' | '\u{200b}')), "{text:?}");
+    assert!(text.contains("src/a.rs") && text.contains("xredevil"), "{text:?}");
+    // the path of a file shown whole is cleaned the same way
+    r.detail = ToolDisplay::File { path: "a\x1b[2Jb.txt".into(), text: "hi".into(), start_line: 1 };
+    let text = texts(&Modal::permission_lines(&r, 60, &Theme::dark())).join("\n");
+    assert!(!text.contains('\x1b') && text.contains("ab.txt"), "{text:?}");
+}
+
+#[test]
+fn a_permission_body_is_laid_out_once_per_width_and_again_when_the_width_changes() {
+    let mut r = req();
+    r.detail = ToolDisplay::Diff {
+        path: "src/a.rs".into(),
+        old: "a\nb\n".into(),
+        new: format!("a\n{}\n", "c ".repeat(30)),
+        start_line: 1,
+    };
+    let Modal::Permission(mut p) = Modal::permission(r) else { unreachable!() };
+    let theme = Theme::dark();
+    let first = p.body(40, &theme, false);
+    assert_eq!(first, p.body(40, &theme, false));
+    // the compact layout has a slot of its own and does not evict the roomy one
+    let _ = p.body(40, &theme, true);
+    // a hit comes from the cache: the request is not read again
+    p.req.detail = ToolDisplay::Plain;
+    assert_eq!(first, p.body(40, &theme, false));
+    // another width is built again, from the request as it is now
+    assert_ne!(first, p.body(30, &theme, false));
+}

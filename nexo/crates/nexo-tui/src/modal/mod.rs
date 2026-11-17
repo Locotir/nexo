@@ -152,6 +152,17 @@ pub struct Permission {
     pub rules_gated: bool,
     /// The first `a` was pressed and the list shows.
     pub rules_open: bool,
+    /// The body at the last width and theme, one slot per layout (roomy, compact): a big diff is laid out once,
+    /// not on every frame, and the compact retry of a draw does not evict the roomy layout.
+    body_cache: [Option<BodyCache>; 2],
+}
+
+/// The lines of a permission body for the width and theme they were built at.
+#[derive(Debug, Clone)]
+struct BodyCache {
+    width: usize,
+    theme: Theme,
+    lines: Vec<Line<'static>>,
 }
 
 /// A question from the model (`ask_user`), or a plan waiting for approval (`exit_plan`):
@@ -563,6 +574,7 @@ impl Modal {
             rules_shown: usize::MAX,
             rules_gated: false,
             rules_open: false,
+            body_cache: [None, None],
         })
     }
 

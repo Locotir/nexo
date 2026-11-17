@@ -39,13 +39,31 @@ impl Modal {
             ToolDisplay::Diff { path, old, new, start_line } => {
                 let (added, removed) = diff::stats(old, new);
                 lines.push(Line::from(vec![
-                    Span::styled(truncate(path, w.saturating_sub(12)), theme.style(theme.accent)),
+                    // the path comes from the model: no escape or bidi character reaches the dialog
+                    Span::styled(
+                        truncate(&crate::render::wrap::one_line(path), w.saturating_sub(12)),
+                        theme.style(theme.accent),
+                    ),
                     Span::raw("  "),
                     Span::styled(format!("+{added}"), theme.style(theme.success)),
                     Span::raw(" "),
                     Span::styled(format!("-{removed}"), theme.style(theme.error)),
                 ]));
-                lines.extend(diff::unified(old, new, *start_line, theme));
+                // Wrapped under the gutter, not cut at the edge: the part of a long line that changed is the part
+                // being approved. `wrap_runs` also cleans, so file content cannot send escapes or bidi marks.
+                for row in diff::unified(old, new, *start_line, theme) {
+                    if let [gutter, text] = row.spans.as_slice() {
+                        let indent = Span::raw(" ".repeat(crate::render::wrap::width(&gutter.content) + 2));
+                        lines.extend(crate::render::wrap::wrap_runs(
+                            &[(text.content.to_string(), text.style)],
+                            w,
+                            std::slice::from_ref(gutter),
+                            &[indent],
+                        ));
+                    } else {
+                        lines.push(row);
+                    }
+                }
             }
             ToolDisplay::Shell { command, .. } => {
                 // All of it, wrapped: what is being allowed must be seen whole.
@@ -61,7 +79,7 @@ impl Modal {
                 }
             }
             ToolDisplay::File { path, text, .. } => {
-                lines.push(Line::from(Span::styled(path.clone(), theme.style(theme.accent))));
+                lines.extend(wrap_plain(&crate::render::wrap::one_line(path), w, theme.style(theme.accent), &[]));
                 if is_markdown_path(path) {
                     lines.extend(crate::render::markdown::md_lines(text, w, theme, Style::default(), false, &[]));
                 } else {
@@ -172,6 +190,20 @@ impl Modal {
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(format!("nothing matches \"{}\"", query.trim()), theme.dim())));
         }
+        lines
+    }
+}
+
+impl Permission {
+    /// The body lines without the rules, from the cache when the width, layout and theme are those of the last
+    /// draw. The request never changes while the dialog is open, so those three are all the lines depend on.
+    pub fn body(&mut self, w: usize, theme: &Theme, compact: bool) -> Vec<Line<'static>> {
+        let slot = &mut self.body_cache[usize::from(compact)];
+        if let Some(c) = slot.as_ref().filter(|c| c.width == w && c.theme == *theme) {
+            return c.lines.clone();
+        }
+        let lines = Modal::permission_lines_with(&self.req, w, theme, compact, false);
+        *slot = Some(BodyCache { width: w, theme: theme.clone(), lines: lines.clone() });
         lines
     }
 }
