@@ -131,8 +131,11 @@ async fn refuses_what_it_cannot_read() {
     assert!(!out.is_error && out.content.contains("empty file"));
     std::fs::write(d.path().join("l.txt"), "x".repeat(3000)).unwrap();
     let out = Read.run(json!({"path": "l.txt"}), &c).await;
-    assert!(out.content.ends_with("…\n"));
-    assert!(out.content.chars().count() < 2100);
+    // The numbered line itself is cut with an ellipsis; one trailing fact line then names the cut.
+    let first = out.content.lines().next().unwrap();
+    assert!(first.ends_with('…') && first.chars().count() < 2100, "{first}");
+    assert!(out.content.lines().last().unwrap().starts_with("(line 1 cut at 2000 of 3000 chars;"), "{}", out.content);
+    assert!(out.content.chars().count() < 2300);
     let out = Read.run(json!({"path": "l.txt", "offset": 9}), &c).await;
     assert!(out.is_error && out.content.contains("past the end"));
     let big = std::fs::File::create(d.path().join("big.log")).unwrap();
