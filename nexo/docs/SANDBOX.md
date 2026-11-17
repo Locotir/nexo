@@ -72,7 +72,10 @@ the command harmless.
   or a new size or time; only `stat` is used, no file is read), the result ends with a line such as
   `[sandbox: this command changed .git/hooks/pre-commit, which runs outside the sandbox later]` and you get a
   warning. In a git worktree the hooks and config of the real git directory count too, where the sandbox can
-  write them. A background job gets the same line in its output when it ends, but no warning.
+  write them. Where the sandbox can write your whole home folder (you started nexo in `~` or in a folder
+  above it), these count too, with their full path: `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.zshrc`,
+  `~/.zshenv`, `~/.zprofile`, `~/.ssh`, `~/.config/autostart`, `~/.config/systemd/user` and `~/.local/bin`.
+  A background job gets the same line in its output when it ends, but no warning.
   A command that runs for a while and also touches those paths may be a false alarm if you edited them yourself.
 - Unix sockets on disk (for example the Docker socket) stay reachable even with the network off: Landlock does
   not govern `connect` to a path, and the macOS profile allows them. A command that can reach one can ask
