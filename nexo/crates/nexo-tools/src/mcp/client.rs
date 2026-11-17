@@ -427,7 +427,7 @@ impl Inner {
     }
 
     /// `resources/list` and `resources/templates/list`. A server may not do the second.
-    async fn list_resources(&self) -> Result<(Vec<ResourceDef>, Vec<TemplateDef>), String> {
+    async fn list_resources(self: &Arc<Self>) -> Result<(Vec<ResourceDef>, Vec<TemplateDef>), String> {
         let resources = paged(self, "resources/list", "resources")
             .await?
             .iter()
