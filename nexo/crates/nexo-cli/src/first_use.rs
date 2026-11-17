@@ -51,10 +51,10 @@ pub fn mistyped_command(word: &str, commands: &[String]) -> Option<String> {
         return None;
     }
     let best = commands.iter().filter(|c| c.as_str() != "help").min_by_key(|c| distance(&w, c))?;
-    // One edit is a slip of the finger. Two edits only count in a longer word that starts the same: `test` is two
+    // Zero edits is a capitalised command (`Doctor`), which clap does not match. One edit is a slip of the finger. Two edits only count in a longer word that starts the same: `test` is two
     // edits from `team` and `lint` from `bin`, and those are requests, not typos.
     let d = distance(&w, best);
-    let close = d == 1 || (d == 2 && w.chars().count() >= 6 && w.chars().next() == best.chars().next());
+    let close = d <= 1 || (d == 2 && w.chars().count() >= 6 && w.chars().next() == best.chars().next());
     close.then(|| {
         format!("{word:?} is not a command; did you mean `nexo {best}`? (to send it as a request: `nexo -p {word}`)")
     })
@@ -270,6 +270,10 @@ mod tests {
         let cmds: Vec<String> = ["sessions", "doctor", "use", "review", "team", "bin"].map(String::from).to_vec();
         assert!(mistyped_command("sesions", &cmds).unwrap().contains("`nexo sessions`"));
         assert!(mistyped_command("Docter", &cmds).is_some());
+        assert!(
+            mistyped_command("Doctor", &cmds).unwrap().contains("`nexo doctor`"),
+            "a capitalised command is not matched by clap"
+        );
         assert!(mistyped_command("ls", &cmds).is_none(), "too short to judge");
         assert!(mistyped_command("test", &cmds).is_none(), "two edits from team in a four-letter word is a request");
         assert!(mistyped_command("lint", &cmds).is_none(), "two edits from bin in a four-letter word is a request");

@@ -55,7 +55,7 @@ pub enum InputFormat {
 /// The flags that only mean something with `--print`.
 #[derive(Args, Debug, Default)]
 pub struct Flags {
-    /// With --print: text | json | stream-json (see docs/HEADLESS.md).
+    /// With --print: text | json | stream-json (see https://github.com/Locotir/nexo/blob/main/nexo/docs/HEADLESS.md).
     #[arg(long, value_enum, value_name = "FORMAT", conflicts_with = "json")]
     pub output_format: Option<OutputFormat>,
     /// With --print: text | stream-json (user messages as JSON lines on stdin).
