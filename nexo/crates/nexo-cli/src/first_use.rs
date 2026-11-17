@@ -104,6 +104,19 @@ fn raw_value(cwd: &Path, table: &str, key: &str) -> Option<(PathBuf, String)> {
     value.map(|v| (path, v))
 }
 
+/// The first of `files` whose `[agent] key` is a number that limits nothing (0, negative or nan). An untrusted
+/// project's higher limit is replaced by the person's own while the files load, so the value that now
+/// reads as no limit can sit in the person's file while the project file also sets the key.
+fn file_with_empty_limit(files: &[PathBuf], key: &str) -> Option<PathBuf> {
+    files.iter().find_map(|p| {
+        let text = std::fs::read_to_string(p).ok()?;
+        let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+        let item = doc.get("agent")?.get(key)?;
+        let v = item.as_float().or_else(|| item.as_integer().map(|i| i as f64))?;
+        (v.is_nan() || v <= 0.0).then(|| p.clone())
+    })
+}
+
 /// One line for each setting that cannot work or that reads as something else than it says: a word outside
 /// its list (theme, context policy, mail inbound, screen, status pieces, brief engine, on_limit, detail, figure),
 /// an unknown web search backend, and a spend limit that limits nothing.
@@ -174,11 +187,14 @@ pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
         ));
     }
     // A limit at or under zero, or nan, is no limit at all: `max_cost = 0` does not mean "spend nothing".
+    let files: Vec<PathBuf> =
+        nexo_core::paths::project_config_file(cwd).into_iter().chain([nexo_core::paths::user_config_file()]).collect();
     for (key, v) in [("max_cost", cfg.agent.max_cost), ("max_cost_day", cfg.agent.max_cost_day)] {
         if let Some(v) = v.filter(|v| v.is_nan() || *v <= 0.0) {
+            let file = file_with_empty_limit(&files, key).unwrap_or_else(|| source_of(cwd, Some("agent"), key));
             out.push(format!(
                 "{}: [agent] {key} = {v} does not stop anything: a limit that is 0, negative or nan means no limit; use a positive dollar amount, or remove the key",
-                source_of(cwd, Some("agent"), key).display()
+                file.display()
             ));
         }
     }
@@ -341,6 +357,21 @@ mod tests {
             }
             assert!(warnings_for(&cfg, key).is_empty(), "{key} = 1.5");
         }
+    }
+
+    #[test]
+    fn an_empty_spend_limit_is_pinned_on_the_file_that_holds_it_not_on_one_that_was_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        let user = dir.path().join("user.toml");
+        std::fs::write(&project, "[agent]\nmax_cost = 5\nmax_cost_day = 0\n").unwrap();
+        std::fs::write(&user, "[agent]\nmax_cost = 0.0\nmax_cost_day = nan\n").unwrap();
+        let files = [project.clone(), user.clone()];
+        assert_eq!(file_with_empty_limit(&files, "max_cost"), Some(user.clone()), "the project's 5 is a real limit");
+        assert_eq!(file_with_empty_limit(&files, "max_cost_day"), Some(project.clone()), "both are empty: the first");
+        std::fs::write(&user, "[agent]\nmax_cost = 2\n").unwrap();
+        assert_eq!(file_with_empty_limit(&files, "max_cost"), None);
+        assert_eq!(file_with_empty_limit(&files, "other"), None);
     }
 
     #[test]
