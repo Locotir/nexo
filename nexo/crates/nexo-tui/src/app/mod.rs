@@ -380,6 +380,8 @@ pub struct App {
     pub status_cmd: Option<crate::status_cmd::StatusCommand>,
     /// The sessions read for the usage window's insights.
     pub insights: crate::insights::Scanner,
+    /// `/doctor` while it runs on its thread: the answer, when it comes.
+    pub doctor: Option<std::sync::mpsc::Receiver<(bool, String)>>,
     /// Turns ended this run: the bar's script runs again after each.
     pub turns_ended: u64,
     /// When the palette and the dialog on top opened: they pop in.
@@ -580,6 +582,7 @@ impl App {
             status_hits: Vec::new(),
             status_cmd: crate::status_cmd::StatusCommand::new(&opts.status_command, &opts.cwd),
             insights: crate::insights::Scanner::default(),
+            doctor: None,
             turns_ended: 0,
             palette_at: None,
             modal_at: None,

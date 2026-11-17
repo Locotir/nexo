@@ -127,6 +127,22 @@ impl App {
         }
     }
 
+    /// Shows the answer of `/doctor` when its thread has one, or says why there is none.
+    pub fn poll_doctor(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.doctor else { return };
+        let (level, text) = match rx.try_recv() {
+            Ok((ok, text)) => (if ok { Level::Info } else { Level::Warn }, text),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                (Level::Warn, "/doctor: no answer, run `nexo doctor` in a shell".to_string())
+            }
+        };
+        self.doctor = None;
+        self.notice(level, text);
+        self.dirty = true;
+    }
+
     /// Runs the bar's script (`[ui] status_command`) when a turn ended or the model changed,
     /// at most once a second, and takes its line when it comes.
     pub fn poll_status_cmd(&mut self) {
@@ -309,6 +325,7 @@ impl App {
         self.poll_fleet();
         self.poll_diffview();
         self.poll_insights();
+        self.poll_doctor();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {
             self.read_branch();
         }

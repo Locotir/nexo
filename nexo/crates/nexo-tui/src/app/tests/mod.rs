@@ -216,6 +216,7 @@ mod commands_and_mcp_window;
 mod commands_sessions_and_models;
 mod condense;
 mod custom_commands_history_and_cost;
+mod doctor_answer;
 mod effort_fx;
 mod frame_cost;
 mod goal_window_and_additions;

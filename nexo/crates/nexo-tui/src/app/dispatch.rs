@@ -386,22 +386,25 @@ impl App {
     }
 
     /// `/doctor`: the checks of `nexo doctor --offline`, run by this same program and shown here.
-    /// The live call to the provider stays with the shell command.
+    /// The live call to the provider stays with the shell command. The checks run on a thread: a key
+    /// command that waits for a passphrase must not stop the screen from drawing or the keys from being read.
     pub(super) fn run_doctor(&mut self) {
+        if self.doctor.is_some() {
+            return self.notice(Level::Info, "/doctor: still checking");
+        }
         let exe = std::env::current_exe().ok().filter(|e| {
             e.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s == "nexo" || s.starts_with("nexo-cli"))
         });
-        let out = exe.and_then(|e| {
-            std::process::Command::new(e).args(["doctor", "--offline"]).current_dir(&self.cwd).output().ok()
+        let Some(exe) = exe else {
+            return self.notice(Level::Warn, "/doctor: run `nexo doctor` in a shell");
+        };
+        let cwd = self.cwd.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(doctor_probe(&exe, &cwd, DOCTOR_WAIT));
         });
-        match out {
-            Some(o) => {
-                let mut text = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
-                text.push_str("\n(`nexo doctor` in a shell also calls the provider)");
-                self.notice(if o.status.success() { Level::Info } else { Level::Warn }, text);
-            }
-            None => self.notice(Level::Warn, "/doctor: run `nexo doctor` in a shell"),
-        }
+        self.doctor = Some(rx);
+        self.notice(Level::Info, "/doctor: checking...");
     }
 
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
@@ -592,4 +595,55 @@ impl App {
             }
         }
     }
+}
+
+/// How long `/doctor` waits for `nexo doctor --offline` before it gives up on it.
+const DOCTOR_WAIT: Duration = Duration::from_secs(15);
+
+/// Runs `exe doctor --offline` in `cwd` and returns whether it succeeded and what to show. A child that
+/// outlives `wait` is killed: the only thing the offline checks can wait on is a key command or a
+/// credential helper that is itself stuck, and a stuck one must not leave a process behind.
+pub(super) fn doctor_probe(exe: &std::path::Path, cwd: &std::path::Path, wait: Duration) -> (bool, String) {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let shell_hint = "/doctor: no answer, run `nexo doctor` in a shell".to_string();
+    let Ok(mut child) = Command::new(exe)
+        .args(["doctor", "--offline"])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return (false, shell_hint);
+    };
+    // read aside, so a child that fills the pipe cannot stall in write while this loop waits for its exit
+    let Some(mut out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return (false, shell_hint);
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let deadline = Instant::now() + wait;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return (false, format!("/doctor: no answer in {} s; run `nexo doctor` in a shell", wait.as_secs()));
+            }
+        }
+    };
+    // the child has exited, so its end of the pipe is closed unless a grandchild kept it: do not wait on that
+    let bytes = rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
+    let mut text = String::from_utf8_lossy(&bytes).trim_end().to_string();
+    text.push_str("\n(`nexo doctor` in a shell also calls the provider)");
+    (status.success(), text)
 }
