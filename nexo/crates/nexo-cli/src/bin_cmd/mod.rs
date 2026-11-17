@@ -300,26 +300,51 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Strings { sort, .. } => {
             nexo_bin::strings_window(&img, op_grep.as_deref(), StrSort::parse(sort)?, from, lines)?
         }
-        BinOp::Emu { target, args, to, regs, mems, stubs, abi, steps, secs, trace, dump, stack, show, .. } => {
-            nexo_bin::emulate(
-                &img,
-                &nexo_bin::EmuSpec {
-                    args: args.clone(),
-                    to: to.as_deref().map(|t| nexo_bin::any_addr_in(&img, t)).transpose()?,
-                    regs: regs.clone(),
-                    mem: mems.clone(),
-                    stubs: stubs.clone(),
-                    abi: abi.clone(),
-                    steps: *steps,
-                    secs: *secs,
-                    trace: *trace,
-                    dump: *dump,
-                    stack: *stack,
-                    show: show.clone(),
-                    ..nexo_bin::EmuSpec::new(target)
-                },
-            )?
-        }
+        BinOp::Emu {
+            target,
+            args,
+            to,
+            regs,
+            mems,
+            stubs,
+            abi,
+            steps,
+            secs,
+            trace,
+            dump,
+            stack,
+            show,
+            breaks,
+            hooks,
+            stdin,
+            clock,
+            seed,
+            max_calls,
+            ..
+        } => nexo_bin::emulate(
+            &img,
+            &nexo_bin::EmuSpec {
+                args: args.clone(),
+                to: to.as_deref().map(|t| nexo_bin::any_addr_in(&img, t)).transpose()?,
+                regs: regs.clone(),
+                mem: mems.clone(),
+                stubs: stubs.clone(),
+                abi: abi.clone(),
+                steps: *steps,
+                secs: *secs,
+                trace: *trace,
+                dump: *dump,
+                stack: *stack,
+                show: show.clone(),
+                breaks: breaks.clone(),
+                hooks: hooks.clone(),
+                stdin: stdin.clone(),
+                clock: *clock,
+                seed: *seed,
+                max_calls: *max_calls,
+                ..nexo_bin::EmuSpec::new(target)
+            },
+        )?,
         BinOp::Managed { .. } => unreachable!("answered by bin_managed before the image is opened"),
         BinOp::Find { pattern, imm, within, .. } => match imm {
             Some(n) => nexo_bin::find_imm_in(&img, nexo_bin::parse_number(n)?, within.as_deref())?,
