@@ -72,7 +72,7 @@ pub fn lowest_level(levels: &[String], off_less: bool) -> Option<ReasoningConfig
     if off_less && (has("off") || has("none")) {
         return Some(ReasoningConfig::Off);
     }
-    LEVEL_ORDER.iter().skip(1).find(|l| has(l)).and_then(|l| Effort::parse(l)).map(ReasoningConfig::Effort)
+    LEVEL_ORDER.iter().skip(1).copied().find(|&l| has(l)).and_then(Effort::parse).map(ReasoningConfig::Effort)
 }
 
 impl Effort {
