@@ -171,8 +171,14 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
             ui.end(Kind::Warn, &t);
         }
     }
+    // The release the status check reports, so the build is of it and not of a branch head that may be ahead.
+    // Asked only now: the download above has already failed, and a lookup that fails too leaves the build unpinned.
+    let tag = match probe(30) {
+        Some(p) => tag_via_web(&p, &Sources::live()).await,
+        None => None,
+    };
     ui.begin("building nexo from source", true);
-    let built = build(&ui, &stage);
+    let built = build(&ui, &stage, tag.as_deref());
     let ok = matches!(built, Ok((ref s, _)) if s.success());
     let placed = ok.then(|| place(&stage.join("bin").join(exe.file_name().unwrap_or_default()), &exe));
     let _ = std::fs::remove_dir_all(&stage);

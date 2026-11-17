@@ -486,3 +486,18 @@ fn macos_lines_of_the_sums_list_are_found_by_their_exact_names() {
     assert_ne!(expected_sum(&sums, "nexo-macos-x86_64"), Some(hex.as_str()));
     assert_eq!(expected_sum(&sums, "nexo-macos"), None);
 }
+
+#[test]
+fn the_source_build_is_pinned_to_the_reported_release_tag() {
+    let pinned = install_args(Some("build-abc1234"));
+    assert!(pinned.contains(&"--tag=build-abc1234".to_string()));
+    assert_eq!(pinned.last().map(String::as_str), Some("--root"));
+    assert!(pinned.contains(&"--locked".to_string()));
+}
+
+#[test]
+fn the_source_build_is_not_pinned_without_a_tag_or_with_an_odd_one() {
+    for tag in [None, Some(""), Some("a/b"), Some(".."), Some("x y")] {
+        assert!(!install_args(tag).iter().any(|a| a.starts_with("--tag")), "{tag:?}");
+    }
+}
