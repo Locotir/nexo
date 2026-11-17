@@ -438,7 +438,7 @@ pub fn describe(config_dir: &Path, requested: &BTreeMap<String, String>) -> Stri
     let (all, problems) = installed(config_dir);
     let mut lines = Vec::new();
     if all.is_empty() {
-        lines.push("no plugins installed · `nexo plugin install <git-url|path>` adds one (see docs/PLUGINS.md)".into());
+        lines.push("no plugins installed · `nexo plugin install <git-url|path>` adds one (see https://github.com/Locotir/nexo/blob/main/nexo/docs/PLUGINS.md)".into());
     } else {
         lines.push(format!("{}:", crate::count(all.len(), "plugin")));
     }

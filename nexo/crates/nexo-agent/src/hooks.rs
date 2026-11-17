@@ -261,7 +261,7 @@ pub fn tool_fields(name: &str, args: &Value) -> Value {
 /// `/hooks`: the loaded hooks, one line each, with where they come from.
 pub fn describe(hooks: &[HookConfig]) -> String {
     if hooks.is_empty() {
-        return "no hooks loaded (see docs/HOOKS.md; set them in [[hooks]] of config.toml or in a trusted \
+        return "no hooks loaded (see https://github.com/Locotir/nexo/blob/main/nexo/docs/HOOKS.md; set them in [[hooks]] of config.toml or in a trusted \
                 project's .claude/settings.json)"
             .into();
     }

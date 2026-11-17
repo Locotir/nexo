@@ -43,7 +43,7 @@ pub fn run(config: &Config, what: &AuditCmd) -> anyhow::Result<i32> {
         None => files(&config.audit),
     };
     if logs.is_empty() && !*json {
-        println!("no audit log yet; turn it on with [audit] enabled = true (docs/AUDIT.md)");
+        println!("no audit log yet; turn it on with [audit] enabled = true (see https://github.com/Locotir/nexo/blob/main/nexo/docs/AUDIT.md)");
     }
     let rows = report(&logs, since.as_deref(), by);
     if *json {

@@ -230,7 +230,7 @@ pub enum Cmd {
     },
     /// Write a session as a shareable file: HTML (one self-contained file), markdown or JSON, with keys and tokens taken out.
     Export(crate::export_cmd::ExportArgs),
-    /// The local audit log of tool calls and model requests (`[audit]` in the configuration, see docs/AUDIT.md).
+    /// The local audit log of tool calls and model requests (`[audit]` in the configuration, see https://github.com/Locotir/nexo/blob/main/nexo/docs/AUDIT.md).
     Audit {
         #[command(subcommand)]
         what: crate::audit_cmd::AuditCmd,
@@ -251,7 +251,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: Option<SuperviseCmd>,
     },
-    /// List, remove or prune the git worktrees nexo made (see docs/WORKTREES.md).
+    /// List, remove or prune the git worktrees nexo made (see https://github.com/Locotir/nexo/blob/main/nexo/docs/WORKTREES.md).
     Worktree {
         #[command(subcommand)]
         what: crate::worktree::WorktreeCmd,
@@ -266,7 +266,7 @@ pub enum Cmd {
     Re(crate::re_cmd::ReArgs),
     /// Turn the traffic of a website (a HAR file) into the API behind it: endpoints, shapes, auth, paging, OpenAPI; no secret is kept.
     Api(crate::api_cmd::ApiArgs),
-    /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
+    /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see https://github.com/Locotir/nexo/blob/main/nexo/docs/ACP.md).
     Acp,
     /// Lanes that run on their own in the background (`<config dir>/team.toml`): start, status, stop, pause, hold, open.
     Team {
