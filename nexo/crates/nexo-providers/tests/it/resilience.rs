@@ -159,6 +159,20 @@ async fn server_statuses_are_retried_and_client_statuses_are_not() {
     );
 }
 
+#[tokio::test]
+async fn a_429_that_says_the_balance_is_empty_is_sent_once_not_retried() {
+    let body = r#"{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}"#;
+    let (base, hits) = answering(429, &[], body.into()).await;
+    let e = first_error(&quick(), &base, 2).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "waiting does not refill a balance");
+    assert!(!e.is_retryable());
+    assert_eq!(e.status, Some(429));
+    // a plain rate limit still uses its retries
+    let (base, hits) = answering(429, &[], "slow down".into()).await;
+    first_error(&quick(), &base, 2).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+}
+
 // ---- 4: dead connections ----
 
 #[tokio::test]

@@ -130,19 +130,28 @@ impl Problem {
     }
 }
 
+/// The words that can only mean an empty balance, never a per-minute limit. They are what the HTTP layer may
+/// use on a 429 to stop retrying (waiting never refills a balance); the soft words below are not safe there,
+/// because "exceeded your current quota" is also how Gemini words a per-minute limit.
+pub(crate) fn says_no_credit(m: &str) -> bool {
+    has(
+        &m.to_ascii_lowercase(),
+        &[
+            "insufficient_quota",
+            "insufficient balance",
+            "insufficient credit",
+            "credit balance",
+            "out of credits",
+            "any credits",
+            "payment required",
+            "no credits",
+        ],
+    )
+}
+
 /// The words of an empty balance. The soft ones ("exceeded your current quota") are also how a per-minute
 /// limit is worded, so on a rate limit they count only when nothing says the wait will end it.
 pub(super) fn no_credit(e: &ProviderError, m: &str) -> bool {
-    let hard = &[
-        "insufficient_quota",
-        "insufficient balance",
-        "insufficient credit",
-        "credit balance",
-        "out of credits",
-        "any credits",
-        "payment required",
-        "no credits",
-    ];
     let soft = &["exceeded your current quota", "plan and billing", "billing details"];
     let comes_back = e.retry_after.is_some()
         || has(
@@ -161,7 +170,7 @@ pub(super) fn no_credit(e: &ProviderError, m: &str) -> bool {
                 "tokens per",
             ],
         );
-    has(m, hard) || (has(m, soft) && !((e.kind == ErrorKind::RateLimit || e.status == Some(429)) && comes_back))
+    says_no_credit(m) || (has(m, soft) && !((e.kind == ErrorKind::RateLimit || e.status == Some(429)) && comes_back))
 }
 
 pub(super) fn model_or(ctx: &ProblemCtx) -> String {
