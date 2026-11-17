@@ -385,3 +385,16 @@ async fn a_binary_file_is_refused_and_left_byte_identical() {
     assert_eq!(out.content, "edit: x.bin is a binary file");
     assert_eq!(std::fs::read(d.path().join("x.bin")).unwrap(), [1u8, 0, 2]);
 }
+
+#[test]
+fn the_schema_names_the_keys_of_a_change_and_of_a_file_entry() {
+    let p = Edit.spec().parameters;
+    let change = &p["properties"]["edits"]["items"];
+    assert_eq!(change["required"], json!(["old_string", "new_string"]));
+    assert_eq!(change["properties"]["replace_all"]["type"], "boolean");
+    let file = &p["properties"]["files"]["items"];
+    assert_eq!(file["required"], json!(["path"]), "a file entry may carry one pair instead of `edits`");
+    assert_eq!(file["properties"]["edits"]["items"], *change, "a file's edits are the same entries");
+    assert_eq!(file["properties"]["old_string"]["type"], "string");
+    assert!(p.get("required").is_none(), "`path` is not required when `files` is used");
+}

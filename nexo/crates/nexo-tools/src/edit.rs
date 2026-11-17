@@ -22,13 +22,25 @@ impl Tool for Edit {
     }
 
     fn spec(&self) -> ToolSpec {
+        // One change as `changes()` reads it. Spelled out because a bare object or an array without
+        // `items` tells the model nothing about the keys and strict validators refuse it.
+        let pair = json!({
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string", "description": "Empty to delete."},
+            "replace_all": {"type": "boolean"}
+        });
+        let change = json!({"type": "object", "properties": pair, "required": ["old_string", "new_string"]});
+        // A file entry takes `edits`, or a single pair like the top level; only `path` is required.
+        let mut file_props = pair.as_object().cloned().unwrap_or_default();
+        file_props.insert("path".into(), json!({"type": "string"}));
+        file_props.insert("edits".into(), json!({"type": "array", "items": change}));
+        let file = json!({"type": "object", "properties": file_props, "required": ["path"]});
         ToolSpec {
             name: "edit".into(),
             description: "Replace `old_string` in a file with `new_string`. It must match \
                           exactly (indentation included) and occur once; add surrounding lines to make it \
                           unique, or set `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
-                          `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
-                          nothing is written. Several files: `files`. `check` runs a test or build after."
+                          `edits`, applied in order; if one fails nothing is written. Several files: `files`. `check` runs a test or build after."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -37,11 +49,10 @@ impl Tool for Edit {
                     "old_string": {"type": "string"},
                     "new_string": {"type": "string", "description": "Empty to delete."},
                     "replace_all": {"type": "boolean"},
-                    "edits": {"type": "array", "items": {"type": "object"}},
-                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array"}}}},
+                    "edits": {"type": "array", "items": change},
+                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": file},
                     "check": {"type": "string", "description": "Short command to run after; exit and tail come back."}
-                },
-                "required": []
+                }
             }),
         }
     }
