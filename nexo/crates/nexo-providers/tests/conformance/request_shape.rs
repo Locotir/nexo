@@ -425,7 +425,7 @@ fn effort_levels_reach_the_wire_in_the_shape_each_vendor_documents() {
             "claude-sonnet-4-5",
             E(Effort::Max),
             "/thinking/budget_tokens",
-            Some(json!(32767)),
+            Some(json!(8191)),
         ),
         // gemini: a budget on 2.5 (Pro cannot go below 128), a level on 3
         (
