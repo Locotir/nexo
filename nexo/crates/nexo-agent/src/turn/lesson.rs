@@ -31,7 +31,10 @@ pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Les
             return Lesson::Context;
         }
         remember(st, &provider, &mut cfg, model, "context_window", n);
-        if before.is_none_or(|b| n < b) && st.policy.fits_window() {
+        // A policy that does not keep its view under the window can still retry once: when the request itself is
+        // well under the window, it was the reply's room (prompt plus max_tokens) that went over, which a summary
+        // does not fix and the next pass shortens.
+        if before.is_none_or(|b| n < b) && (st.policy.fits_window() || window_fit::room_left(st, u64::from(n))) {
             return Lesson::Refit;
         }
         return Lesson::Context;

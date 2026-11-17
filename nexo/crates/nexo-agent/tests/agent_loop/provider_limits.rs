@@ -37,7 +37,6 @@ async fn a_context_error_with_a_number_records_the_window() {
             ErrorKind::ContextLength,
             "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens.",
         )),
-        Reply::Events(text("SUMMARY")),
         Reply::Events(text("after")),
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
@@ -54,6 +53,31 @@ async fn a_context_error_with_a_number_records_the_window() {
         .iter()
         .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("context window of m1"))));
     assert_eq!(user_config().providers["mock"].context_window["m1"], 131_072);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_window_learned_when_only_the_reply_went_over_shortens_the_reply_instead_of_compacting() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Err(ProviderError::new(
+            ErrorKind::BadRequest,
+            "This model's maximum context length is 8192 tokens. However, you requested 16500 tokens (130 in the \
+             messages, 16370 in the completion). Please reduce the length of the messages or completion.",
+        )),
+        Reply::Events(text("short reply")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "short reply");
+    assert!(!notices(&evs).iter().any(|n| n.contains("compact")), "{evs:?}");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "no summariser call between the two requests");
+    assert!(!is_summary(&reqs[1]) && reqs[1].messages == reqs[0].messages);
+    assert!(reqs[1].max_tokens < reqs[0].max_tokens && reqs[1].max_tokens <= 8192, "{}", reqs[1].max_tokens);
     r.stop().await;
 }
 

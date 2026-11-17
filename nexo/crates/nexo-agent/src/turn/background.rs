@@ -260,6 +260,18 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
     });
 }
 
+/// Whether the model reasons before every reply and cannot be asked not to. The levels the setup probed say it: a
+/// model that lists no `off` or `none` level (Gemini Pro, the gpt-5 family) always thinks, one that lists it can be
+/// asked for the least. An empty list says nothing (a non-reasoning model and a fixed-reasoning host both probe to
+/// no levels), so the names of the known fixed-reasoning models decide then.
+fn always_thinks(levels: &[String], model: &str) -> bool {
+    if !levels.is_empty() {
+        return !levels.iter().any(|l| l == "off" || l == "none");
+    }
+    model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "r1" | "o1" | "o3" | "o4"))
+        || ["grok-4", "gpt-5", "codex"].iter().any(|m| model.contains(m))
+}
+
 pub(super) fn spawn_suggest(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {
@@ -278,8 +290,7 @@ pub(super) fn spawn_suggest(state: &Shared) {
             };
             let (_, cfg, model) = st.target.get();
             // a model that always reasons first would spend the whole cap thinking and say nothing
-            let thinks = model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "r1" | "o1" | "o3" | "o4"))
-                || ["grok-4", "gpt-5", "codex"].iter().any(|m| model.contains(m));
+            let thinks = always_thinks(cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]), &model);
             if last.model != model || !st.inbox.is_empty() || thinks {
                 return;
             }
@@ -452,6 +463,18 @@ mod suggest_tests {
         assert_eq!(r, Some(ReasoningConfig::Off));
         // and the last request itself is left as it was sent
         assert_eq!(last.reasoning, Some(ReasoningConfig::Effort(Effort::High)));
+    }
+
+    #[test]
+    fn a_model_that_lists_no_off_level_always_thinks_and_the_names_decide_only_without_levels() {
+        let lv = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(always_thinks(&lv(&["low", "medium", "high"]), "gemini-3-pro"));
+        assert!(always_thinks(&lv(&["minimal", "low", "medium", "high"]), "gpt-5"));
+        assert!(!always_thinks(&lv(&["off", "low", "high"]), "claude-opus"));
+        assert!(!always_thinks(&lv(&["none", "low"]), "gpt-5.1"), "a listed none level can be asked for");
+        assert!(always_thinks(&[], "deepseek-reasoner"));
+        assert!(always_thinks(&[], "openai/o3-mini"));
+        assert!(!always_thinks(&[], "llama3"));
     }
 
     #[test]
