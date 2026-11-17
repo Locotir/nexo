@@ -171,7 +171,7 @@ pub(super) async fn run_tools(
 
 /// A plain `bash` call that only looks or runs a build, test or lint (the classifier of `verify`): it changes
 /// nothing a neighbour call depends on, so it may overlap with other calls of its kind.
-fn is_pure_check(name: &str, args: &Value) -> bool {
+pub(crate) fn is_pure_check(name: &str, args: &Value) -> bool {
     let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     name == "bash"
         && !flag("background")

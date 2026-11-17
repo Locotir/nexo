@@ -54,6 +54,12 @@ pub(super) fn stopped(messages: &[Message]) -> String {
     format!("stopped{}", progress(messages, usize::MAX, 0))
 }
 
+/// The answer to a call the person's stop came before: the text the main turn gives such a call, so the call
+/// and its result still pair up.
+fn interrupted() -> ToolOutput {
+    ToolOutput::error("The call did not run: interrupted by the person.")
+}
+
 /// What a sub-agent that ends without a report had done: what its tool log shows of its calls (their effects
 /// stay on disk) and its last words, so whoever started it goes on from there instead of doing it all again.
 /// Empty when it had done nothing.
@@ -394,18 +400,54 @@ impl Run {
             if !text.is_empty() {
                 asked.push(Part::text(text));
             }
-            let mut results = vec![];
-            for (id, name, a) in calls {
-                asked.push(Part::tool_call(&id, &name, a.clone()));
+            // every call is asked for and shown first: the calls of a run that overlaps start together, so
+            // their lines come before any of their results
+            for (id, name, a) in &calls {
+                asked.push(Part::tool_call(id, name, a.clone()));
                 if let Some(s) = &self.sub {
-                    let summary = self.tools.get(&name).map_or_else(|| name.clone(), |t| t.summary(&a));
+                    let summary = self.tools.get(name).map_or_else(|| name.clone(), |t| t.summary(a));
                     s.item(SubItem::Call { id: id.clone(), name: name.clone(), summary, args: a.to_string() });
                 }
-                let out = if name == "recall" {
-                    crate::recall::answer(&messages, &a)
+            }
+            // as the main turn does: reads, searches, page fetches and pure checks overlap; any other call
+            // (and `recall`, which reads this run's own messages) runs alone, in its place in the order
+            let overlaps: Vec<bool> = calls
+                .iter()
+                .map(|(_, name, a)| {
+                    name != "recall"
+                        && self.tools.get(name).is_some_and(|t| {
+                            matches!(t.call_kind(a), ToolKind::Read | ToolKind::Search | ToolKind::Network)
+                                || crate::turn::is_pure_check(name, a)
+                        })
+                })
+                .collect();
+            let mut outs: Vec<Option<ToolOutput>> = calls.iter().map(|_| None).collect();
+            let mut i = 0;
+            while i < calls.len() {
+                let end = if overlaps[i] { i + overlaps[i..].iter().take_while(|o| **o).count() } else { i + 1 };
+                // once the person has stopped it, the calls left are not run (a write would land after the stop)
+                if ctx.cancel.is_cancelled() {
+                    for out in &mut outs[i..end] {
+                        *out = Some(interrupted());
+                    }
                 } else {
-                    self.call(&id, &name, &a, ctx, say).await
-                };
+                    let seen = &messages;
+                    let runs = calls[i..end].iter().map(|(id, name, a)| async move {
+                        if name == "recall" {
+                            crate::recall::answer(seen, a)
+                        } else {
+                            self.call(id, name, a, ctx, say).await
+                        }
+                    });
+                    for (k, out) in futures::future::join_all(runs).await.into_iter().enumerate() {
+                        outs[i + k] = Some(out);
+                    }
+                }
+                i = end;
+            }
+            let mut results = vec![];
+            for ((id, name, _), out) in calls.into_iter().zip(outs) {
+                let out = out.unwrap_or_else(interrupted);
                 let out = match self.tools.get(&name) {
                     Some(t) if out.is_error => nexo_core::tool::with_schema(t.as_ref(), &short, out),
                     _ => out,
@@ -427,6 +469,10 @@ impl Run {
             }
             messages.push(Message::new(Role::Assistant, asked));
             messages.push(Message::tool_results(results));
+            // stopped during the round: no request of the next one is opened (it would be billed)
+            if ctx.cancel.is_cancelled() {
+                return Err(stopped(&messages));
+            }
         }
         unreachable!("the last round always returns")
     }
@@ -592,6 +638,11 @@ impl Run {
                 let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { ctx.cwd.join(p) };
                 h.before_write(path).await;
             }
+        }
+        // the stop can come while the hooks or the permission were waited for; the tools that watch the token
+        // end on their own, the others (a write, an edit) would still land after it
+        if ctx.cancel.is_cancelled() {
+            return Done { out: interrupted(), args: args.clone(), summary, why, denied: false };
         }
         say(format!("→ {summary}"));
         let started = std::time::Instant::now();

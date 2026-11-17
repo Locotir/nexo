@@ -22,6 +22,7 @@ use nexo_core::subs::{SubChange, SubInfo, SubItem, SubState};
 use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
 
+mod call_rounds;
 mod golden_requests;
 mod lagging_views_and_mail;
 mod messages_to_sub_agents;
