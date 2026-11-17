@@ -390,46 +390,104 @@ mod raw {
         }
     }
 
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    pub struct Provider {
-        pub models: Obj<BTreeMap<String, Obj<Model>>>,
+    /// A struct read from a JSON object by hand: a key it does not know is skipped and a repeated key
+    /// keeps its last value, as the old `Value` walk did (a derived `Deserialize` fails the whole file on
+    /// a repeated key, with `duplicate field`). The key is matched without allocating.
+    macro_rules! lenient_struct {
+        ($(#[$meta:meta])* pub struct $name:ident { $(pub $field:ident: $ty:ty),* $(,)? }) => {
+            $(#[$meta])*
+            #[derive(Default)]
+            pub struct $name {
+                $(pub $field: $ty),*
+            }
+
+            impl<'de> Deserialize<'de> for $name {
+                fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                    /// The name of a known key, or "" for any other.
+                    struct Key(&'static str);
+                    impl<'de> Deserialize<'de> for Key {
+                        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                            struct KV;
+                            impl<'de> Visitor<'de> for KV {
+                                type Value = Key;
+                                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                                    f.write_str("a key")
+                                }
+                                fn visit_str<E>(self, v: &str) -> Result<Key, E> {
+                                    $(if v == stringify!($field) {
+                                        return Ok(Key(stringify!($field)));
+                                    })*
+                                    Ok(Key(""))
+                                }
+                            }
+                            d.deserialize_identifier(KV)
+                        }
+                    }
+
+                    struct V;
+                    impl<'de> Visitor<'de> for V {
+                        type Value = $name;
+                        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                            f.write_str("an object")
+                        }
+                        fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<$name, A::Error> {
+                            let mut out = $name::default();
+                            while let Some(Key(k)) = m.next_key()? {
+                                $(if k == stringify!($field) {
+                                    out.$field = m.next_value()?;
+                                    continue;
+                                })*
+                                m.next_value::<IgnoredAny>()?;
+                            }
+                            Ok(out)
+                        }
+                    }
+                    d.deserialize_map(V)
+                }
+            }
+        };
     }
 
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    pub struct Model {
-        pub name: Scalar,
-        pub cost: Obj<Cost>,
-        pub limit: Obj<Limit>,
-        pub reasoning: Scalar,
-        pub tool_call: Scalar,
-        pub modalities: Obj<Modalities>,
-        pub release_date: Scalar,
-        pub status: Scalar,
+    lenient_struct! {
+        pub struct Provider {
+            pub models: Obj<BTreeMap<String, Obj<Model>>>,
+        }
     }
 
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    pub struct Cost {
-        pub input: Scalar,
-        pub output: Scalar,
-        pub cache_read: Scalar,
-        pub cache_write: Scalar,
+    lenient_struct! {
+        pub struct Model {
+            pub name: Scalar,
+            pub cost: Obj<Cost>,
+            pub limit: Obj<Limit>,
+            pub reasoning: Scalar,
+            pub tool_call: Scalar,
+            pub modalities: Obj<Modalities>,
+            pub release_date: Scalar,
+            pub status: Scalar,
+        }
     }
 
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    pub struct Limit {
-        pub context: Scalar,
-        pub output: Scalar,
+    lenient_struct! {
+        pub struct Cost {
+            pub input: Scalar,
+            pub output: Scalar,
+            pub cache_read: Scalar,
+            pub cache_write: Scalar,
+        }
     }
 
-    #[derive(Default, Deserialize)]
-    #[serde(default)]
-    pub struct Modalities {
-        pub input: List,
-        pub output: List,
+    lenient_struct! {
+        pub struct Limit {
+            pub context: Scalar,
+            pub output: Scalar,
+        }
+    }
+
+    lenient_struct! {
+        pub struct Modalities {
+            pub input: List,
+            pub output: List,
+        }
     }
 }
 
@@ -644,6 +702,29 @@ mod tests {
         assert_eq!((e.vision, e.text_out, e.retired), (Some(true), None, true));
     }
 
+    #[test]
+    fn a_repeated_key_keeps_its_last_value_and_never_fails_the_file() {
+        let text = r#"{
+            "p": { "models": { "m": {
+                "cost": { "input": 1, "output": 2 },
+                "cost": { "input": 3, "output": 4, "input": 5 },
+                "limit": { "context": 1000, "context": 2000 },
+                "modalities": { "input": ["text"], "input": ["image"] },
+                "reasoning": false, "reasoning": true
+            } } },
+            "p": { "models": { "a": {}, "a": { "tool_call": true } } }
+        }"#;
+        let c = Catalogue::parse(text).unwrap();
+        // the last provider wins whole, as the old value walk did
+        assert_eq!(c.providers["p"].len(), 1);
+        assert_eq!(c.providers["p"]["a"].tools, Some(true));
+        let text = text.replace(r#""p": { "models": { "a": {}, "a": { "tool_call": true } } }"#, r#""q": {}"#);
+        let c = Catalogue::parse(&text).unwrap();
+        let e = &c.providers["p"]["m"];
+        let p = e.pricing.unwrap();
+        assert_eq!((p.input, p.output), (5.0, 4.0));
+        assert_eq!((e.context, e.vision, e.reasoning), (Some(2000), Some(true), Some(true)));
+    }
     #[test]
     fn names_map_both_ways() {
         assert_eq!(preset_name("google"), "gemini");
