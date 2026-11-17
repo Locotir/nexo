@@ -116,7 +116,7 @@ fn an_asked_file_printed_among_other_commands_is_pinned() {
     e.sync(&msgs);
     e.harvest(0, msgs.len());
     let pinned: Vec<&str> = e.pins.values().map(|p| p.1.as_str()).collect();
-    assert_eq!(pinned, vec!["brief.md"]);
+    assert_eq!(pinned, ["brief.md"]);
     // a file nobody asked about is not pinned, nor is a line that edits in place
     let mut msgs = vec![json!({"role": "user", "content": "Follow the brief in brief.md."})];
     msgs.extend(step(1, "cat other.md; git log -3", &source(0, 10)));

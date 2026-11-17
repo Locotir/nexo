@@ -105,7 +105,7 @@ fn pages_kept(budget: i64) -> usize {
     }
     msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
     msgs.push(json!({"role": "user", "content": "Now sort report.txt by date, please."}));
-    let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1").unwrap());
+    let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=64000").unwrap());
     if budget > 0 {
         e.set_budget(budget);
     }
@@ -122,10 +122,10 @@ fn named_default_keeps_a_file_read_in_ten_pages_whole_without_a_window() {
 #[test]
 fn named_takes_at_most_half_of_a_small_window() {
     let kept = pages_kept(32_000);
-    assert!(kept >= 1 && kept < 10, "kept {kept} pages of 10 with a 32k budget");
+    assert!((1..10).contains(&kept), "kept {kept} pages of 10 with a 32k budget");
 }
 
 #[test]
 fn named_default_is_64000() {
-    assert_eq!(params("nudge=0").unwrap().named, 64000);
+    assert_eq!(crate::params("nudge=0").unwrap().named, 64000);
 }
