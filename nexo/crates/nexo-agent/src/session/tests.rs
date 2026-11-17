@@ -1329,15 +1329,27 @@ fn a_rewind_keeps_the_time_each_kept_message_was_said() {
 }
 
 #[test]
-fn a_reset_keeps_the_time_of_a_message_that_stays_in_place_and_stamps_a_new_one_now() {
+fn a_compaction_keeps_the_time_of_each_message_it_keeps_and_stamps_the_summary_now() {
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
-    s.append_at(&Message::user("first"), "2026-01-01T10:00:00Z".into()).unwrap();
-    s.append_at(&Message::assistant("second"), "2026-01-01T11:00:00Z".into()).unwrap();
-    s.reset_with(&[Message::user("first"), Message::assistant("a summary of the rest")]).unwrap();
+    for (i, text) in ["one", "two", "three", "four"].iter().enumerate() {
+        let m = if i % 2 == 0 { Message::user(text) } else { Message::assistant(text) };
+        s.append_at(&m, format!("2026-01-01T1{i}:00:00Z")).unwrap();
+    }
+    // the summary is inserted in front of the kept tail
+    s.reset_with(&[Message::user("a summary of one and two"), Message::user("three"), Message::assistant("four")])
+        .unwrap();
     let stamps = message_stamps(s.path());
-    assert_eq!(stamps[0], "2026-01-01T10:00:00Z");
-    assert_ne!(stamps[1], "2026-01-01T11:00:00Z");
+    assert_ne!(stamps[0], "2026-01-01T10:00:00Z", "the summary is new");
+    assert_eq!(stamps[1..], ["2026-01-01T12:00:00Z", "2026-01-01T13:00:00Z"]);
+    // the summary is spliced into the first kept message: that one changed, the ones after it did not
+    s.reset_with(&[Message::user("a summary of three"), Message::assistant("four")]).unwrap();
+    let again = message_stamps(s.path());
+    assert_ne!(again[0], "2026-01-01T12:00:00Z");
+    assert_eq!(again[1], "2026-01-01T13:00:00Z");
+    // nothing changed: every time stays
+    s.reset_with(&[Message::user("a summary of three"), Message::assistant("four")]).unwrap();
+    assert_eq!(message_stamps(s.path()), again);
 }
 
 #[test]

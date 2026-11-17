@@ -248,13 +248,18 @@ impl Session {
     /// The history was rewritten (compaction): what follows replaces it.
     pub fn reset_with(&mut self, messages: &[Message]) -> anyhow::Result<()> {
         // one atomic rewrite: a crash leaves the old file or the new one, never a half history
-        // a message that stays where it was keeps the time it was said; a new one is stamped now
-        let stamps = messages
-            .iter()
-            .enumerate()
-            .map(|(i, m)| match (self.messages.get(i), self.stamps.get(i)) {
-                (Some(old), Some(ts)) if old == m => ts.clone(),
-                _ => now(),
+        // compaction puts its summary at the front and keeps the tail of the old history, so a message that
+        // survives sits at a different index but at the same distance from the end: those keep the time
+        // they were said, the summary and anything else new is stamped now
+        let kept = messages.iter().rev().zip(self.messages.iter().rev()).take_while(|(new, old)| new == old).count();
+        let (len, old_len) = (messages.len(), self.messages.len());
+        let stamps = (0..len)
+            .map(|i| {
+                if len - i <= kept {
+                    self.stamps.get(old_len - (len - i)).cloned().unwrap_or_else(now)
+                } else {
+                    now()
+                }
             })
             .collect();
         let (old, outputs) = (std::mem::replace(&mut self.messages, messages.to_vec()), self.outputs.clone());
