@@ -136,8 +136,16 @@ impl Config {
             Ok(Some((cfg, said)))
         };
         let mut cfg = Config::default();
+        // a layer that does not combine with the one before it is said, naming the file: its values would
+        // otherwise vanish with nothing to tell the person why the file seems not to count
+        let skipped = |f: &Path, why: Option<String>, notices: &mut Vec<String>| {
+            if let Some(why) = why {
+                notices.push(format!("{}: its settings could not be applied and are ignored ({why})", f.display()));
+            }
+        };
         if let Some((part, said)) = read(user)? {
-            cfg.merge(part, &said);
+            let why = cfg.merge(part, &said);
+            skipped(user, why, &mut cfg.notices);
         }
         if let Some(f) = project {
             if let Some((mut part, said)) = read(f)? {
@@ -157,7 +165,8 @@ impl Config {
                         ));
                     }
                 }
-                cfg.merge(part, &said);
+                let why = cfg.merge(part, &said);
+                skipped(f, why, &mut cfg.notices);
             }
         }
         cfg.notices.extend(unread);
@@ -310,33 +319,45 @@ impl Config {
     /// user's `curator_spec`, a project's price for one model keeps the user's other prices, a provider
     /// that sets only `default_model` keeps the user's protocol, address and key source. An MCP server
     /// counts whole; rules and hooks add up.
-    pub fn merge(&mut self, other: Config, said: &toml::Table) {
+    ///
+    /// Returns why the values of `other` could not be applied (they do not combine into a valid `Config`),
+    /// in which case `self` keeps the values it had; its rules, hooks and notices are added all the same.
+    pub fn merge(&mut self, other: Config, said: &toml::Table) -> Option<String> {
         let table = |c: &Config| match toml::Value::try_from(c) {
-            Ok(toml::Value::Table(t)) => Some(t),
-            _ => None,
+            Ok(toml::Value::Table(t)) => Ok(t),
+            Ok(_) => Err("the settings are not a table".to_string()),
+            Err(e) => Err(e.to_string()),
         };
-        if let (Some(mut base), Some(over)) = (table(self), table(&other)) {
-            // Only the servers `other` still holds replace the user's: one a strip took out leaves it.
-            if let (Some(toml::Value::Table(names)), Some(toml::Value::Table(b))) =
-                (over.get("mcp"), base.get_mut("mcp"))
-            {
-                for n in names.keys() {
-                    b.remove(n);
+        let mut skipped = None;
+        match (table(self), table(&other)) {
+            (Err(e), _) | (_, Err(e)) => skipped = Some(e),
+            (Ok(mut base), Ok(over)) => {
+                // Only the servers `other` still holds replace the user's: one a strip took out leaves it.
+                if let (Some(toml::Value::Table(names)), Some(toml::Value::Table(b))) =
+                    (over.get("mcp"), base.get_mut("mcp"))
+                {
+                    for n in names.keys() {
+                        b.remove(n);
+                    }
                 }
-            }
-            overlay(&mut base, &over, said);
-            if let Ok(mut merged) = toml::Value::Table(base).try_into::<Config>() {
-                merged.permissions.allow = std::mem::take(&mut self.permissions.allow);
-                merged.permissions.deny = std::mem::take(&mut self.permissions.deny);
-                merged.hooks = std::mem::take(&mut self.hooks);
-                merged.notices = std::mem::take(&mut self.notices);
-                *self = merged;
+                overlay(&mut base, &over, said);
+                match toml::Value::Table(base).try_into::<Config>() {
+                    Ok(mut merged) => {
+                        merged.permissions.allow = std::mem::take(&mut self.permissions.allow);
+                        merged.permissions.deny = std::mem::take(&mut self.permissions.deny);
+                        merged.hooks = std::mem::take(&mut self.hooks);
+                        merged.notices = std::mem::take(&mut self.notices);
+                        *self = merged;
+                    }
+                    Err(e) => skipped = Some(e.message().to_string()),
+                }
             }
         }
         self.permissions.allow.extend(other.permissions.allow);
         self.permissions.deny.extend(other.permissions.deny);
         self.hooks.extend(other.hooks);
         self.notices.extend(other.notices);
+        skipped
     }
 
     pub fn apply_env(&mut self) {

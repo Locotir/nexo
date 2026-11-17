@@ -353,3 +353,14 @@ fn a_key_command_that_prints_a_key_in_time_gives_it_and_one_that_fails_gives_non
     assert_eq!(provider_settings::run_key_cmd("echo sk-test; exit 1", limit), None);
     assert_eq!(provider_settings::run_key_cmd("true", limit), None);
 }
+
+#[test]
+fn a_layer_that_does_not_combine_is_reported_and_the_earlier_settings_stay() {
+    let mut user = Config::parse("model = 'a'\n").unwrap();
+    // not what a file can say: a value the settings cannot be written out with
+    let mut over = Config::default();
+    over.context.reader_at = u64::MAX;
+    let why = user.merge(over, &toml::Table::new());
+    assert!(why.is_some(), "the skipped layer is returned, not swallowed");
+    assert_eq!(user.model.as_deref(), Some("a"), "the earlier settings stay");
+}
