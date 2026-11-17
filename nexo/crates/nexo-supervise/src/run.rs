@@ -1,6 +1,7 @@
-//! The supervisor's read-only loop: poll the sources, fold what they saw into one track per session, classify
-//! each track and keep the rows the panel draws. In this stage it only marks (the state of a session); it
-//! sends nothing to any session.
+//! The supervisor's loop: poll the sources, fold what they saw into one track per session, classify each track
+//! and keep the rows the panel draws. Each round then runs `act` (act.rs), which queues nudges in the per-session
+//! ledger for the session's own stop hook to pick up (nothing is ever typed into a window), writes the audit log
+//! and sends alerts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
