@@ -45,6 +45,25 @@ fn bytes(text: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
+/// `n` bytes of no-ops: `0x90` each on x86; on AArch64 `n` must be a multiple of 4 at a 4-aligned address, and the
+/// bytes are `nop` (`0xd503201f`) in little-endian order.
+fn nop_bytes(img: &Image, at: u64, n: usize) -> Result<Vec<u8>> {
+    if n == 0 || n > MAX_PATCH {
+        return Err(Error::Bad("nop length must be 1 to 262144".into()));
+    }
+    if !img.arm64 {
+        img.require_x86("nop patch")?;
+        return Ok(vec![0x90; n]);
+    }
+    if !at.is_multiple_of(4) {
+        return Err(Error::Bad(format!("{at:#x} is not 4-aligned: AArch64 instructions start on multiples of 4")));
+    }
+    if !n.is_multiple_of(4) {
+        return Err(Error::Bad(format!("nop length {n} is not a multiple of 4: AArch64 instructions are 4 bytes")));
+    }
+    Ok(0xd503_201f_u32.to_le_bytes().repeat(n / 4))
+}
+
 fn address(img: &Image, target: PatchTarget<'_>) -> Result<u64> {
     match target {
         PatchTarget::Address(a) => Ok(a),
@@ -181,16 +200,17 @@ pub fn patch_with(
     let new = match data {
         PatchData::Bytes(s) => bytes(s)?,
         PatchData::Asm(s) => {
+            if img.arm64 {
+                return Err(Error::Bad(
+                    "--asm does not assemble AArch64 (there is no assembler for it); give the encoded words as hex, \
+                     or use --nop N"
+                        .into(),
+                ));
+            }
             img.require_x86("asm patch")?;
             crate::assemble(s, at, img.bits)?
         }
-        PatchData::Nop(n) => {
-            img.require_x86("nop patch")?;
-            if n == 0 || n > MAX_PATCH {
-                return Err(Error::Bad("nop length must be 1 to 262144".into()));
-            }
-            vec![0x90; n]
-        }
+        PatchData::Nop(n) => nop_bytes(img, at, n)?,
     };
     let old = opts.old.map(bytes).transpose()?;
     let edit = Edit { at, new, old };
@@ -283,13 +303,12 @@ fn parse_patches(img: &Image, text: &str, verify: bool) -> Result<Vec<Edit>> {
         let edit = match words[1..] {
             [new] => Edit { at, new: bytes(new).map_err(|e| bad(&e.to_string()))?, old: None },
             [word, count] if word.eq_ignore_ascii_case("nop") => {
-                img.require_x86("nop patch").map_err(|e| bad(&e.to_string()))?;
                 let k = crate::parse_number(count)
                     .ok()
                     .and_then(|k| usize::try_from(k).ok())
                     .filter(|k| (1..=MAX_PATCH).contains(k))
                     .ok_or_else(|| bad("nop length must be 1 to 262144"))?;
-                Edit { at, new: vec![0x90; k], old: None }
+                Edit { at, new: nop_bytes(img, at, k).map_err(|e| bad(&e.to_string()))?, old: None }
             }
             [old, new] => {
                 let old = bytes(old).map_err(|e| bad(&e.to_string()))?;

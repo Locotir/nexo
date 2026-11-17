@@ -602,9 +602,6 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
 /// Like [`find_imm`], within a range written in any form of [`crate::place::RangeExpr`].
 pub fn find_imm_in(img: &Image, value: i128, within: Option<&str>) -> Result<Output> {
     let span = within.map(|w| crate::place::range_in(img, w)).transpose()?;
-    if img.arm64 {
-        img.require_x86("find-imm")?;
-    }
     if value < i128::from(i64::MIN) || value > i128::from(u64::MAX) {
         return Err(Error::Bad("the number does not fit in 64 bits".into()));
     }
@@ -616,23 +613,34 @@ pub fn find_imm_in(img: &Image, value: i128, within: Option<&str>) -> Result<Out
     'code: for (start, end) in ranges {
         let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut full = false;
-        walk_bits(img.bits, code, start, |ins, _| {
-            if full || span.is_some_and(|(lo, hi)| ins.ip() < lo || ins.ip() >= hi) {
-                return;
-            }
-            let what = if imm_matches(ins, value) {
-                "imm"
-            } else if u64::try_from(value).is_ok_and(|v| crate::refs::written_address(ins).is_some_and(|(a, _)| a == v))
-            {
-                "disp"
-            } else {
-                return;
-            };
-            line.clear();
-            fmt.format(ins, &mut line);
-            rows.push(hit_row(img, ins.ip(), &line, what));
-            full = rows.len() >= MAX_HITS;
-        });
+        if img.arm64 {
+            crate::a64::view::walk(code, start, |ins, _, _| {
+                if full || span.is_some_and(|(lo, hi)| ins.pc < lo || ins.pc >= hi) || !ins.has_imm(value) {
+                    return;
+                }
+                rows.push(hit_row(img, ins.pc, &ins.text(), "imm"));
+                full = rows.len() >= MAX_HITS;
+            });
+        } else {
+            walk_bits(img.bits, code, start, |ins, _| {
+                if full || span.is_some_and(|(lo, hi)| ins.ip() < lo || ins.ip() >= hi) {
+                    return;
+                }
+                let what = if imm_matches(ins, value) {
+                    "imm"
+                } else if u64::try_from(value)
+                    .is_ok_and(|v| crate::refs::written_address(ins).is_some_and(|(a, _)| a == v))
+                {
+                    "disp"
+                } else {
+                    return;
+                };
+                line.clear();
+                fmt.format(ins, &mut line);
+                rows.push(hit_row(img, ins.ip(), &line, what));
+                full = rows.len() >= MAX_HITS;
+            });
+        }
         if full {
             capped = true;
             break 'code;

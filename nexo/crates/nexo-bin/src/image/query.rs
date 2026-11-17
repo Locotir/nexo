@@ -235,8 +235,8 @@ impl Image {
     pub fn require_x86(&self, what: &str) -> Result<()> {
         if self.arm64 {
             return Err(Error::Bad(format!(
-                "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, xref, calls, tree, path, strings, bytes \
-                 and find without --imm do); no output is better than a wrong one"
+                "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, xref, calls, tree, path, strings, bytes, \
+                 find, cfg and patch --nop do); no output is better than a wrong one"
             )));
         }
         if self.bits == 32 {
