@@ -123,3 +123,29 @@ fn context_has_one_line_with_the_cache_share_and_the_last_call() {
     let all = rows(&mut a, 100).join("\n");
     assert!(all.contains("95% of session · last call 41k cached, 2k full price"), "{all}");
 }
+
+#[test]
+fn new_content_on_a_small_cached_prefix_is_not_a_lost_cache() {
+    let mut a = app();
+    call(&mut a, 1_000, 7_000);
+    // the cache served all the previous call sent; the 25k file read is new
+    call(&mut a, 26_000, 7_000);
+    let b = bar(&mut a, 200);
+    assert!(!b.contains("cache miss"), "{b}");
+}
+
+#[test]
+fn a_miss_shows_its_chip_at_common_widths_and_the_count_returns_when_it_fits() {
+    let mut a = app();
+    call(&mut a, 2_000, 40_000);
+    call(&mut a, 31_000, 3_000);
+    let b = bar(&mut a, 120);
+    assert!(b.contains("cache miss · 31k full price"), "the chip is on at 120 columns: {b}");
+    let wide = bar(&mut a, 200);
+    assert!(wide.contains("cache miss · 31k full price · 2 calls"), "{wide}");
+    // the count is its own piece: where only it fits, a session with no miss still shows it
+    let mut ok = app();
+    call(&mut ok, 2_000, 40_000);
+    call(&mut ok, 2_000, 41_000);
+    assert!(bar(&mut ok, 120).contains("2 calls"));
+}

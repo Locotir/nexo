@@ -145,16 +145,16 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         }
     });
     // the model calls so far, and a chip only when the cache let the last call down (the share itself is in /context)
-    let extra = {
+    let extra = |k: &Keep| {
         let mut g = Vec::new();
-        if let Some(fresh) = app.cache_miss() {
+        if let Some(fresh) = app.cache_miss().filter(|_| k.chip) {
             g.push(Seg {
                 text: format!("cache miss · {} full price", fmt_k(fresh).replace(".0k", "k")),
                 style: base.fg(theme.warn),
             });
         }
         let calls = app.call_inputs.len();
-        if calls > 0 {
+        if calls > 0 && k.extra {
             let sep = if g.is_empty() { "" } else { " · " };
             let word = if calls == 1 { "call" } else { "calls" };
             g.push(Seg { text: format!("{sep}{calls} {word}"), style: base.fg(theme.dim) });
@@ -170,6 +170,8 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         branch: bool,
         mem: bool,
         extra: bool,
+        // the cache miss chip: a warning, so it outlasts the call count and goes only with the curator label
+        chip: bool,
         counts: bool,
         // the curator's label: it outlives the counts
         label: bool,
@@ -263,8 +265,8 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                         out.push(vec![Seg { text: m.text.clone(), style: m.style }]);
                     }
                 }
-                "cache" if k.extra && !extra.is_empty() => {
-                    let g: Vec<Seg> = extra.iter().map(|e| Seg { text: e.text.clone(), style: e.style }).collect();
+                "cache" => {
+                    let g: Vec<Seg> = extra(k).iter().map(|e| Seg { text: e.text.clone(), style: e.style }).collect();
                     if !g.is_empty() {
                         out.push(g);
                     }
@@ -280,6 +282,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         branch: true,
         mem: true,
         extra: true,
+        chip: true,
         counts: true,
         label: true,
         goal: true,
@@ -306,6 +309,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             extra: false,
             counts: false,
             label: false,
+            chip: false,
             ..all
         },
         Keep {
@@ -317,6 +321,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             extra: false,
             counts: false,
             label: false,
+            chip: false,
             short_model: true,
             ..all
         },
@@ -329,6 +334,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             extra: false,
             counts: false,
             label: false,
+            chip: false,
             short_model: true,
             goal: false,
             ..all
@@ -342,6 +348,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             extra: false,
             counts: false,
             label: false,
+            chip: false,
             short_model: true,
             goal: false,
             gauge: false,
@@ -356,6 +363,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             extra: false,
             counts: false,
             label: false,
+            chip: false,
             short_model: true,
             goal: false,
             gauge: false,
@@ -372,8 +380,9 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 return c;
             }
             let mut keep = *k;
-            let back: [fn(&mut Keep); 8] = [
+            let back: [fn(&mut Keep); 9] = [
                 |k| k.label = true,
+                |k| k.chip = true,
                 |k| k.counts = true,
                 |k| k.todo = true,
                 |k| k.mem = true,

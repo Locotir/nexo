@@ -37,14 +37,21 @@ impl App {
     }
 
     /// Tokens the last call paid full price for when the cache let it down: an earlier call of the session was
-    /// served from the cache, this one got under half of its input from it, and at least 8k went at full price.
+    /// served from the cache, this one got under half of what the previous call sent from it (and of its own input), and
+    /// at least 8k went at full price.
     /// None otherwise, so a provider that never reports caching never raises it.
     pub fn cache_miss(&self) -> Option<u64> {
         let input = self.last_call_input;
         let cached = self.last_call_cached.min(input);
         let fresh = input - cached;
         let earlier = self.session_usage.cache_read.saturating_sub(self.last_call_cached) > 0;
-        (earlier && cached * 2 < input && fresh >= CACHE_MISS_FRESH).then_some(fresh)
+        // what the cache could have served: the previous call's input, as far as this call still carries it. A big
+        // new tool output on a small cached prefix is new content, not a lost cache
+        let before = match self.call_inputs.len().checked_sub(2).and_then(|i| self.call_inputs.get(i)) {
+            Some(p) => (*p).min(input),
+            None => return None,
+        };
+        (earlier && cached * 2 < before && cached * 2 < input && fresh >= CACHE_MISS_FRESH).then_some(fresh)
     }
 
     /// Tokens the next call sends, for the bar when no window is known.
