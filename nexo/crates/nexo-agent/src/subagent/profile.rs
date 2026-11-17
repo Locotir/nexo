@@ -1,6 +1,6 @@
 use super::*;
 
-pub const DEFAULT: &str = "explore";
+pub const DEFAULT: &str = "general";
 
 pub(super) const BASE: &str =
     "You are a sub-agent of a coding assistant. You get one task; do it with the tools you have and \
@@ -63,9 +63,9 @@ pub(super) fn short_text(profiles: &[Profile]) -> String {
     let mut text = String::from(SHORT);
     // a built-in kind the person replaced is listed with theirs, by what their file says of it
     match (kept("explore"), kept("general")) {
-        (true, true) => text.push_str(" `explore` (default) is read-only; `general` can edit."),
-        (true, false) => text.push_str(" `explore` (default) is read-only."),
-        (false, true) => text.push_str(" `general` can edit."),
+        (true, true) => text.push_str(" `explore` is read-only; `general` (default) can edit."),
+        (true, false) => text.push_str(" `explore` is read-only."),
+        (false, true) => text.push_str(" `general` (default) can edit."),
         (false, false) => {}
     }
     let own: Vec<&Profile> = profiles.iter().filter(|p| !stock.contains(p)).collect();

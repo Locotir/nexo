@@ -212,8 +212,8 @@ one message. Two kinds come built in:
 
 | Kind | Can do | For |
 |---|---|---|
-| `explore` (default) | read, grep, glob, ls, web search; nothing outside the project | "where is X handled?", "what calls Y?" |
-| `general` | every tool but `task`; writes and commands ask the same permission as the main agent | a self-contained change or check |
+| `explore` | read, grep, glob, ls, web search; nothing outside the project | "where is X handled?", "what calls Y?" |
+| `general` (default) | every tool but `task`; writes and commands ask the same permission as the main agent | a self-contained change or check |
 
 Several `task` calls in one message run at once, also `general` ones that change files: a file one of
 them is changing is closed to the others until it ends, and the one turned away says so in its report

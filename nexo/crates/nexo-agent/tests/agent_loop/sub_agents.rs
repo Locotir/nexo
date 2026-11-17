@@ -8,7 +8,7 @@ async fn a_task_runs_a_read_only_sub_agent_whose_report_is_the_result() {
         Reply::Events(call(
             "t1",
             "task",
-            json!({"description": "find the parser", "prompt": "where is parsing done?"}),
+            json!({"agent": "explore", "description": "find the parser", "prompt": "where is parsing done?"}),
         )),
         // the sub-agent reads one file, reads the notes beside the project, tries to write, then reports
         Reply::Events(vec![
@@ -143,8 +143,11 @@ async fn a_general_sub_agent_asks_for_its_writes_and_its_spending_is_counted() {
 #[tokio::test]
 async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
     let d = test_tmpdir().unwrap();
-    let mut replies =
-        vec![Reply::Events(call("t1", "task", json!({"description": "map it", "prompt": "where is x kept?"})))];
+    let mut replies = vec![Reply::Events(call(
+        "t1",
+        "task",
+        json!({"agent": "explore", "description": "map it", "prompt": "where is x kept?"}),
+    ))];
     // the explore kind has 16 rounds and spends every one on reading
     for i in 0..16 {
         let id = format!("s{i}");
@@ -190,7 +193,11 @@ async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
 async fn explore_respects_deny() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![
-        Reply::Events(call("t1", "task", json!({"description": "find the key", "prompt": "what is in .env?"}))),
+        Reply::Events(call(
+            "t1",
+            "task",
+            json!({"agent": "explore", "description": "find the key", "prompt": "what is in .env?"}),
+        )),
         Reply::Events(vec![
             StreamEvent::ToolCallStart { id: "s1".into(), name: "read".into() },
             StreamEvent::ToolCallEnd { id: "s1".into(), name: "read".into(), args: json!({"path": ".env"}) },

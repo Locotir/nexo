@@ -279,11 +279,11 @@ async fn a_sub_agent_whose_task_names_a_compiled_program_starts_with_the_line_it
             user_texts(&reqs[1]).join("\n")
         }
     };
-    let explore = first(None, kit()).await;
+    let explore = first(Some("explore"), kit()).await;
     assert!(explore.contains(head) && explore.contains("bin {\"command\": \"overview c-lcrypt\"}"), "{explore}");
     assert!(!explore.contains("debug {"), "a read-only kind's debug runs nothing: {explore}");
     // no `bin` and no shell to call `nexo bin` in
-    let bare = first(None, tools()).await;
+    let bare = first(Some("explore"), tools()).await;
     assert!(!bare.contains(head), "{bare}");
     let general = first(Some("general"), kit()).await;
     assert!(general.contains("debug {\"command\": \"run c-lcrypt; cont\"}"), "{general}");

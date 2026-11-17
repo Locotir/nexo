@@ -141,7 +141,7 @@ fn a_description_is_cut_to_its_first_clause_and_a_long_one_at_a_comma_or_a_word(
 
 #[test]
 fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_few_words() {
-    let stock = format!("{SHORT} `explore` (default) is read-only; `general` can edit.");
+    let stock = format!("{SHORT} `explore` is read-only; `general` (default) can edit.");
     assert_eq!(short_text(&builtin()), stock);
     let mut kinds = builtin();
     kinds.extend([kind("docs", "Writes the manual. Use after a change."), kind("bare", "")]);
@@ -152,7 +152,7 @@ fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_fe
     kinds.push(kind("explore", "reads the wiki too"));
     assert_eq!(
         short_text(&kinds),
-        format!("{SHORT} `general` can edit. More kinds for `agent`: `explore` (default): reads the wiki too.")
+        format!("{SHORT} `general` (default) can edit. More kinds for `agent`: `explore`: reads the wiki too.")
     );
 }
 
