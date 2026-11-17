@@ -128,7 +128,8 @@ mod add_dir_tests {
         std::fs::create_dir(d.path().join("other")).unwrap();
         let mut config = nexo_core::Config::default();
         let roots = add_dirs(&mut config, d.path(), &[PathBuf::from("other")]).unwrap();
-        let real = d.path().join("other").canonicalize().unwrap();
+        // The folder is reported as the person writes it, so on Windows the expected form has no verbatim prefix either.
+        let real = nexo_core::paths::canonical(&d.path().join("other")).unwrap();
         assert_eq!(roots, vec![real.display().to_string()]);
         let p = nexo_core::config::rule_path(&real);
         for tool in ["read", "write", "edit"] {
