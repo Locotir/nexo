@@ -411,6 +411,7 @@ fn the_banner_shows_on_an_empty_session_and_the_model_card_after_a_question() {
             cache_read: 0.028,
             cache_write: 0.0,
             cache_write_1h: 0.0,
+            long: None,
         }),
         context_window: Some(128_000),
         max_output: Some(8192),
@@ -428,6 +429,7 @@ fn the_banner_shows_on_an_empty_session_and_the_model_card_after_a_question() {
             cache_read: 0.028,
             cache_write: 0.0,
             cache_write_1h: 0.0,
+            long: None,
         }),
         context_window: Some(128_000),
         max_output: Some(8192),
@@ -809,7 +811,7 @@ fn a_tool_card_adds_the_price_of_its_output_only_with_full_prices_and_room() {
         calls: vec![("c1".into(), CallMark::Cached), ("c2".into(), CallMark::Sent)],
         call_tokens: vec![("c1".into(), 5000), ("c2".into(), 1000)],
     };
-    let full = Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 0.0, cache_write_1h: 0.0 };
+    let full = Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 0.0, cache_write_1h: 0.0, long: None };
     let text = |a: &mut App, w| draw(a, w, 30).join("\n");
     let mut a = app();
     fill(&mut a);

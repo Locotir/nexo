@@ -170,6 +170,7 @@ async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_i
             cache_read: 0.0,
             cache_write: 0.0,
             cache_write_1h: 0.0,
+            long: None,
         },
     );
     let mut r = start(client.clone(), cfg, d.path()).await;

@@ -719,7 +719,8 @@ mod tests {
             None,
             "no budget: unknown costs are fine"
         );
-        let p = Pricing { input: 0.1, output: 0.2, cache_read: 0.01, cache_write: 0.0, cache_write_1h: 0.0 };
+        let p =
+            Pricing { input: 0.1, output: 0.2, cache_read: 0.01, cache_write: 0.0, cache_write_1h: 0.0, long: None };
         assert_eq!(prices(&opts("no-such-model", Some(1.0), Some(p), out.clone())).unwrap(), Some(p));
         assert_eq!(prices(&opts("deepseek-chat", Some(1.0), Some(p), out.clone())).unwrap(), Some(p), "--price wins");
         assert!(prices(&opts("deepseek-chat", Some(1.0), None, out.clone())).unwrap().is_some());

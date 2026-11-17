@@ -768,6 +768,7 @@ mod tests {
             cache_read: 0.0028,
             cache_write: 0.0,
             cache_write_1h: 0.0,
+            long: None,
         }));
         let s = summary(&h, &grid(1, 1));
         assert!(s.contains("Prices given with --price: $0.14 input on a cache miss, $0.0028 on a cache hit, $0.28 output, per million tokens."), "{s}");

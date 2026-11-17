@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use nexo_core::{ErrorKind, Pricing, ProviderError};
+use nexo_core::{ErrorKind, LongTier, Pricing, ProviderError};
 
 pub const URL: &str = "https://models.dev/api.json";
 /// A cached file older than this is refreshed (in the background).
@@ -84,20 +84,24 @@ impl Catalogue {
     /// ids are tried, then every provider, exact id first, then the longest
     /// id that is a prefix of the model or that the model is a prefix of:
     /// `gpt-5-2026-01-01` finds `gpt-5`, `deepseek-chat` finds
-    /// `deepseek-chat-v3` only when nothing better exists).
-    pub fn lookup(&self, preset: &str, model: &str) -> Option<&Entry> {
+    /// `deepseek-chat-v3` only when nothing better exists). A prefix that
+    /// several longer ids share (`gemini-2.5` for `-flash` and `-pro`) gives
+    /// an entry only when they all agree on the price; a reseller's price for
+    /// the same model is kept only when the other vendors agree with it. The
+    /// entry is a copy because the price may be taken off it.
+    pub fn lookup(&self, preset: &str, model: &str) -> Option<Entry> {
         let model = model.trim();
         for id in catalogue_ids(preset) {
             if let Some(models) = self.providers.get(&id) {
                 if let Some(e) = models.get(model) {
-                    return Some(e);
+                    return Some(e.clone());
                 }
             }
         }
         for id in catalogue_ids(preset) {
             if let Some(models) = self.providers.get(&id) {
                 if let Some(e) = fuzzy(models, model) {
-                    return Some(e);
+                    return Some(e.clone());
                 }
             }
         }
@@ -108,21 +112,29 @@ impl Catalogue {
     /// The model under the other providers: the preset's parent API first
     /// (`codex` -> `openai`), else the entry with the smallest window (the safe
     /// one; an entry with a window beats one without), ties by provider id.
-    fn elsewhere(&self, preset: &str, model: &str) -> Option<&Entry> {
+    /// The window is that entry's, but its price is kept only when every other
+    /// vendor that lists the id has the same one: resellers price the same
+    /// model differently, and a wrong price counts against the spend limit.
+    fn elsewhere(&self, preset: &str, model: &str) -> Option<Entry> {
         let bare = model.rsplit('/').next().unwrap_or(model);
         fn pick<'a>(m: &'a BTreeMap<String, Entry>, model: &str, bare: &str) -> Option<&'a Entry> {
             m.get(model).or_else(|| m.get(bare))
         }
         if let Some(parent) = PARENTS.iter().find(|(p, _)| *p == preset).map(|(_, a)| *a) {
             if let Some(e) = self.providers.get(parent).and_then(|m| pick(m, model, bare)) {
-                return Some(e);
+                return Some(e.clone());
             }
         }
         let smallest = |id: &str| {
-            self.providers
-                .values()
-                .filter_map(|m| m.get(id))
+            let holders: Vec<&Entry> = self.providers.values().filter_map(|m| m.get(id)).collect();
+            let mut e = holders
+                .iter()
                 .min_by_key(|e| (e.context.is_none(), e.context.unwrap_or(u32::MAX)))
+                .map(|e| (*e).clone())?;
+            if holders.iter().any(|h| h.pricing.is_some() && h.pricing != e.pricing) {
+                e.pricing = None;
+            }
+            Some(e)
         };
         smallest(model).or_else(|| smallest(bare))
     }
@@ -171,7 +183,11 @@ impl Catalogue {
 
 fn fuzzy<'a>(models: &'a BTreeMap<String, Entry>, model: &str) -> Option<&'a Entry> {
     let m = model.to_ascii_lowercase();
-    let mut best: Option<(usize, &Entry)> = None;
+    // Every id tied at the best length: a query that is a bare prefix scores all
+    // the longer ids alike, and taking the alphabetically first would hand the
+    // price of `-flash` to a model that may be `-pro`.
+    let mut best = 0;
+    let mut tied: Vec<&Entry> = Vec::new();
     for (id, e) in models {
         let i = id.to_ascii_lowercase();
         let len = if m.starts_with(&i) && m[i.len()..].starts_with(['-', ':', '@', '.']) {
@@ -181,11 +197,16 @@ fn fuzzy<'a>(models: &'a BTreeMap<String, Entry>, model: &str) -> Option<&'a Ent
         } else {
             continue;
         };
-        if best.map(|(l, _)| len > l).unwrap_or(true) {
-            best = Some((len, e));
+        if len > best {
+            best = len;
+            tied.clear();
+        }
+        if len == best {
+            tied.push(e);
         }
     }
-    best.map(|(_, e)| e)
+    let first = *tied.first()?;
+    tied.iter().all(|e| e.pricing == first.pricing).then_some(first)
 }
 
 /// The wire shape of the dataset, read straight into small structs. Every leaf tolerates a wrong type
@@ -473,6 +494,16 @@ mod raw {
             pub output: Scalar,
             pub cache_read: Scalar,
             pub cache_write: Scalar,
+            pub context_over_200k: Obj<Tier>,
+        }
+    }
+
+    lenient_struct! {
+        pub struct Tier {
+            pub input: Scalar,
+            pub output: Scalar,
+            pub cache_read: Scalar,
+            pub cache_write: Scalar,
         }
     }
 
@@ -501,6 +532,11 @@ fn entry_of(m: raw::Model) -> Entry {
             cache_read: num(&c.cache_read).unwrap_or(0.0),
             cache_write: num(&c.cache_write).unwrap_or(0.0),
             cache_write_1h: 0.0,
+            long: c
+                .context_over_200k
+                .0
+                .as_ref()
+                .and_then(|t| long_tier(t, num(&c.cache_read), num(&c.cache_write))),
         };
         // a free model is a price too: input and output present, both 0
         (p.is_known() || (c.input.present() && c.output.present())).then_some(p)
@@ -519,6 +555,19 @@ fn entry_of(m: raw::Model) -> Entry {
         released: m.release_date.as_str().map(String::from),
         retired: m.status.as_str() == Some("deprecated"),
     }
+}
+
+/// The rates models.dev gives for a prompt over 200K tokens (`cost.context_over_200k`): its input and output must be
+/// there, and a cache rate it leaves out stays the base one rather than becoming free.
+fn long_tier(t: &raw::Tier, base_read: Option<f64>, base_write: Option<f64>) -> Option<LongTier> {
+    let num = |s: &raw::Scalar| s.as_f64().filter(|x| x.is_finite() && *x >= 0.0);
+    Some(LongTier {
+        above: 200_000,
+        input: num(&t.input)?,
+        output: num(&t.output)?,
+        cache_read: num(&t.cache_read).or(base_read).unwrap_or(0.0),
+        cache_write: num(&t.cache_write).or(base_write).unwrap_or(0.0),
+    })
 }
 
 /// Whether an id names something that is not a chat model (images, video, speech, embeddings...).
@@ -667,6 +716,18 @@ mod tests {
     }
 
     #[test]
+    fn a_model_with_a_long_prompt_tier_keeps_it() {
+        let c = Catalogue::parse(SAMPLE).unwrap();
+        let p = c.lookup("gemini", "gemini-2.5-pro").unwrap().pricing.unwrap();
+        let t = p.long.expect("the fixture gives gemini-2.5-pro a tier over 200K");
+        assert_eq!((t.above, t.input, t.output), (200_000, 2.5, 15.0));
+        // the tier leaves out the cache rate, so the base one stays
+        assert_eq!(t.cache_read, p.cache_read);
+        // a model without the field has no tier
+        assert_eq!(c.lookup("openai", "gpt-5").unwrap().pricing.unwrap().long, None);
+    }
+
+    #[test]
     fn a_free_model_has_a_zero_price_and_a_priceless_one_none() {
         let c = Catalogue::parse(SAMPLE).unwrap();
         let free = c.lookup("openrouter", "free/model").unwrap();
@@ -773,6 +834,58 @@ mod fallback_tests {
             cat(&[("a", "x/m", Some(900_000)), ("b", "m", Some(500_000)), ("c", "m", None), ("d", "m", Some(700_000))]);
         assert_eq!(c.lookup("nobody", "m").unwrap().context, Some(500_000));
         assert_eq!(c.lookup("nobody", "x/m").unwrap().context, Some(900_000));
+    }
+
+    fn priced(rows: &[(&str, &str, Option<u32>, f64)]) -> Catalogue {
+        let mut c = Catalogue::default();
+        for (p, m, w, price) in rows {
+            let pricing = Pricing { input: *price, output: *price * 4.0, ..Default::default() };
+            c.providers
+                .entry(p.to_string())
+                .or_default()
+                .insert(m.to_string(), Entry { context: *w, pricing: Some(pricing), ..Default::default() });
+        }
+        c
+    }
+
+    #[test]
+    fn a_bare_prefix_of_dearer_and_cheaper_ids_gets_no_price() {
+        let c = priced(&[
+            ("gemini", "gemini-2.5-flash", Some(1_000_000), 0.3),
+            ("gemini", "gemini-2.5-pro", Some(1_000_000), 1.25),
+        ]);
+        assert_eq!(c.lookup("gemini", "gemini-2.5"), None);
+        // a longer query still finds the id it extends
+        assert_eq!(c.lookup("gemini", "gemini-2.5-pro-preview").unwrap().pricing.unwrap().input, 1.25);
+    }
+
+    #[test]
+    fn a_bare_prefix_of_ids_that_cost_the_same_keeps_the_price() {
+        let c = priced(&[
+            ("gemini", "gemini-2.5-flash", Some(1_000_000), 0.3),
+            ("gemini", "gemini-2.5-flash-lite", Some(1_000_000), 0.3),
+        ]);
+        assert_eq!(c.lookup("gemini", "gemini-2.5").unwrap().pricing.unwrap().input, 0.3);
+    }
+
+    #[test]
+    fn two_vendors_that_price_the_same_id_apart_give_the_window_but_no_price() {
+        let c = priced(&[("a", "m", Some(500_000), 1.0), ("b", "m", Some(700_000), 3.0)]);
+        let e = c.lookup("nobody", "m").unwrap();
+        assert_eq!(e.context, Some(500_000));
+        assert_eq!(e.pricing, None);
+    }
+
+    #[test]
+    fn two_vendors_that_agree_on_the_price_keep_it() {
+        let c = priced(&[("a", "m", Some(500_000), 1.0), ("b", "m", Some(700_000), 1.0)]);
+        assert_eq!(c.lookup("nobody", "m").unwrap().pricing.unwrap().input, 1.0);
+    }
+
+    #[test]
+    fn the_parent_api_price_stays_authoritative_over_a_reseller() {
+        let c = priced(&[("openai", "m", Some(1_050_000), 2.0), ("zed", "m", Some(5_000), 9.0)]);
+        assert_eq!(c.lookup("codex", "m").unwrap().pricing.unwrap().input, 2.0);
     }
 
     #[test]

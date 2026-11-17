@@ -563,8 +563,14 @@ fn usage_counts_cache_writes_and_reads_and_prices_them() {
     evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#));
     let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
     assert_eq!((u.input, u.output, u.cache_read, u.cache_write), (10, 40, 500, 2000));
-    let price =
-        nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
+    let price = nexo_core::Pricing {
+        input: 2.0,
+        output: 10.0,
+        cache_read: 0.10,
+        cache_write: 2.50,
+        cache_write_1h: 0.0,
+        long: None,
+    };
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 2000.0 * 2.50) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
 }
@@ -714,8 +720,14 @@ fn usage_reads_the_one_hour_part_of_the_writes_and_prices_it() {
     evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#));
     let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
     assert_eq!((u.cache_write, u.cache_write_1h), (2000, 1500));
-    let price =
-        nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
+    let price = nexo_core::Pricing {
+        input: 2.0,
+        output: 10.0,
+        cache_read: 0.10,
+        cache_write: 2.50,
+        cache_write_1h: 0.0,
+        long: None,
+    };
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 500.0 * 2.50 + 1500.0 * 4.0) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
 }

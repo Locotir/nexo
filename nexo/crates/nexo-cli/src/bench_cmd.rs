@@ -146,7 +146,7 @@ fn price_arg(s: &str) -> Result<nexo_core::Pricing, String> {
         s.split(',').map(|p| p.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
     match n[..] {
         [input, cache_read, output] if n.iter().all(|x| x.is_finite() && *x >= 0.0) && input + output > 0.0 => {
-            Ok(nexo_core::Pricing { input, output, cache_read, cache_write: 0.0, cache_write_1h: 0.0 })
+            Ok(nexo_core::Pricing { input, output, cache_read, cache_write: 0.0, cache_write_1h: 0.0, long: None })
         }
         _ => Err("three prices, not all zero: MISS,HIT,OUT in dollars per million tokens, e.g. 0.28,0.028,0.42".into()),
     }

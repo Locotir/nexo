@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
             permission_mode: PermissionMode::Ask,
         });
         let mut pricing =
-            Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 };
+            Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0, long: None };
         let limits = |pricing: Pricing, source: &str| AgentEvent::ModelLimits {
             provider: "mock".into(),
             model: "scripted".into(),

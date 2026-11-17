@@ -31,7 +31,7 @@ pub async fn check(
 ) -> ModelCheck {
     let (mut info, mut sources) = probe::model_details(probe, model).await;
     // the catalogue and the preset fill what the server did not say
-    if let Some(e) = catalogue::cached().and_then(|c| c.lookup(name, model).cloned()) {
+    if let Some(e) = catalogue::cached().and_then(|c| c.lookup(name, model)) {
         let mut took = Vec::new();
         if info.context_window.is_none() && e.context.is_some() {
             info.context_window = e.context;
@@ -74,6 +74,7 @@ pub async fn check(
             cache_read: 0.0,
             cache_write: 0.0,
             cache_write_1h: 0.0,
+            long: None,
         });
         sources.push(format!("prices 0 from {}: it runs on your own hardware", probe::kind_label(&probe.kind)));
     }
@@ -664,7 +665,7 @@ mod tests {
         cfg.context_window.insert("qwen3:8b".into(), 8192);
         cfg.pricing.insert(
             "qwen3:8b".into(),
-            Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0 },
+            Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, cache_write_1h: 0.0, long: None },
         );
         cfg.efforts.insert("qwen3:8b".into(), vec!["off".into(), "on".into()]);
         cfg.effort.insert("qwen3:8b".into(), "on".into());

@@ -42,7 +42,7 @@ mod tests {
     use super::*;
 
     fn claude_like() -> Pricing {
-        Pricing { input: 2.0, output: 10.0, cache_read: 0.2, cache_write: 2.5, cache_write_1h: 0.0 }
+        Pricing { input: 2.0, output: 10.0, cache_read: 0.2, cache_write: 2.5, cache_write_1h: 0.0, long: None }
     }
 
     #[test]
@@ -89,7 +89,8 @@ mod tests {
         let dear = Pricing { cache_write_1h: 4.9, ..claude_like() };
         assert!(!wants_long(true, 200_000, 50_000, Some(&dear)));
         // a vendor that charges nothing for writing has no premium to save
-        let free = Pricing { input: 1.0, output: 4.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 };
+        let free =
+            Pricing { input: 1.0, output: 4.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0, long: None };
         assert!(!wants_long(true, 200_000, 50_000, Some(&free)));
         assert!(!wants_long(true, 200_000, 50_000, None));
     }
