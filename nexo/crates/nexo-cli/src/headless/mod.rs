@@ -430,7 +430,7 @@ mod tests {
     fn a_tool_flag_entry_is_unmatched_unless_it_names_a_tool_of_the_set_or_a_late_one() {
         let names = vec!["bash".to_string(), "read".to_string()];
         let w = super::unmatched_tools("--allowed-tools", &["shell".to_string()], &names).unwrap();
-        assert!(w.contains("no tool matches 'shell'") && w.contains("bash, goal_brief, read"), "{w}");
+        assert!(w.contains("no tool matches 'shell'") && w.contains("bash, exit_plan, goal_brief, read"), "{w}");
         assert!(super::unmatched_tools("--allowed-tools", &["bash".into(), "task".into()], &names).is_none());
     }
 }

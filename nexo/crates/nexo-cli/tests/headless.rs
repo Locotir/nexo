@@ -500,12 +500,15 @@ fn an_unasked_permission_exits_5_and_a_flag_without_print_is_a_usage_error() {
 fn a_tool_flag_entry_that_matches_no_tool_is_warned_about_and_a_late_tool_is_not() {
     let d = tempfile::tempdir().unwrap();
     let out = nexo(d.path(), &["-p", "hi", "--allowed-tools", "nosuch"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
     assert!(err(&out).contains("--allowed-tools: no tool matches 'nosuch' (tools: "), "{}", err(&out));
     let out = nexo(d.path(), &["-p", "hi", "--disallowed-tools", "nosuch,bash"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
     assert!(err(&out).contains("--disallowed-tools: no tool matches 'nosuch' (tools: "), "{}", err(&out));
     assert!(!err(&out).contains("'bash'"), "{}", err(&out));
     // the sub-agent tool is registered after the setup, and a pattern entry names its tool before the bracket
     let out = nexo(d.path(), &["-p", "hi", "--allowed-tools", "Bash(git:*),task"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
     assert!(!err(&out).contains("no tool matches"), "{}", err(&out));
 }
 
