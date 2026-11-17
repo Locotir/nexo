@@ -19,7 +19,7 @@ Headless runs are saved as sessions but marked, so they stay out of `/resume`.
 | `--json` | Older flag, kept as it was: every internal agent event as a JSON line (`{"event":"ready",...}`). New scripts should use `--output-format stream-json`. Cannot be combined with `--output-format`. |
 | `--input-format text\|stream-json` | `stream-json`: user messages as JSON lines on stdin. |
 | `--max-turns N` | Stop after N tool rounds and exit 4 (the model is not asked to go on). |
-| `--allowed-tools a,b` | Offer only these tools. An entry with a pattern, such as `bash(git *)`, also allows those calls without asking. Alias `--allowedTools`. |
+| `--allowed-tools a,b` | Offer only these tools. An entry with a pattern, such as `bash(git *)`, also allows those calls without asking. An entry that matches no tool is named in a warning on stderr (the run goes on). Alias `--allowedTools`. |
 | `--disallowed-tools a,b` | Take these tools away; `bash(rm *)` adds a deny rule. Alias `--disallowedTools`. |
 | `--append-system-prompt TEXT` | Added to the end of the system prompt. |
 | `--add-dir PATH` | One more folder the file tools may read and write without asking. Repeatable; it also works without `-p`, for the interactive screen; `/add-dir PATH` adds one mid-session. |
@@ -41,7 +41,7 @@ Nobody can be asked in a headless run: a tool call that needs permission is refu
 | 2 | Bad usage: unknown flag or value, unreadable schema or `--add-dir`, no prompt, a line of the input stream that is not a user message. |
 | 3 | The final answer does not match `--json-schema` after one retry. |
 | 4 | The turn limit (`--max-turns`, or `agent.max_turns` in the configuration) was reached. |
-| 5 | A tool call was refused by the permission policy, a deny rule or `--allowed-tools`, and the run otherwise finished. |
+| 5 | A tool call was refused by the permission policy, a deny rule or `--allowed-tools`, and the run otherwise finished. Text mode prints the first refusal on stderr. |
 | 130 | Interrupted (Ctrl-C). A second Ctrl-C leaves at once. |
 
 Before this contract a turn that did not finish exited 2; it now exits with the specific code above. With several messages on the input stream, the exit code is the first non-zero one.
@@ -69,7 +69,7 @@ One object at the end, on one line:
 - `stop_reason`: `end_turn`, `max_turns`, `interrupted` or `error`.
 - `num_turns`: model calls made. `usage` and `cost_usd` are the session totals.
 - `structured_output`: the parsed answer, when `--json-schema` is given and it validated.
-- `error`: the reason, when `is_error` is true and a reason is known.
+- `error`: the reason, when `is_error` is true and a reason is known. For exit 5 it is the first refusal, naming the call and the allow rule or mode that would permit it.
 - `plan_usage`: when the request ran on a subscription login and the backend reported the plan, an array of `{"plan": "codex", "tier": "plus", "meters": [{"label": "wk", "used_percent": 1.0, "resets_in_seconds": 569444}]}` (`used` and `limit` too for a plan that counts requests). Absent for a provider on a key. See [PLAN-USAGE.md](PLAN-USAGE.md).
 - A run that cannot start (no provider, an unknown provider or a configuration that does not parse) prints the same object with `subtype` `error`, `exit_code` 1, empty `result`, `error` set and no session, on stdout with `json` and `stream-json` (with `--json`: one `{"event":"error","message":...}` line). The one-line message goes to stderr too, and the exit code is 1.
 

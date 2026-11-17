@@ -106,6 +106,25 @@ fn schema_retry(errors: &str) -> String {
     )
 }
 
+/// Tools the agent registers after the setup's tool set is built, so `--allowed-tools` and `--disallowed-tools`
+/// can name them although the set they are matched against does not hold them yet.
+const LATE_TOOLS: &[&str] =
+    &["task", "workflow", "shared_memory_read", "shared_memory_write", "exit_plan", "goal_brief", "ultracode_execute"];
+
+/// The warning for entries of a tool flag that name no tool, so a typo or another program's tool name does not
+/// silently empty the tool set (an allow list) or change nothing (a deny list).
+fn unmatched_tools(flag: &str, entries: &[String], names: &[String]) -> Option<String> {
+    let known = |e: &str| names.iter().any(|n| n.to_lowercase() == e) || LATE_TOOLS.contains(&e);
+    let missing: Vec<String> = entries.iter().filter(|e| !known(e.as_str())).map(|e| format!("'{e}'")).collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let mut all: Vec<&str> = names.iter().map(String::as_str).chain(LATE_TOOLS.iter().copied()).collect();
+    all.sort_unstable();
+    all.dedup();
+    Some(format!("nexo: {flag}: no tool matches {} (tools: {})", missing.join(", "), all.join(", ")))
+}
+
 fn usage(msg: &str) -> anyhow::Result<i32> {
     eprintln!("nexo: {msg}");
     Ok(EXIT_USAGE)
@@ -216,6 +235,17 @@ pub async fn run(
             agent_setup.tools.remove(n);
         }
     }
+    // a warning, not an error: a script that already passes a name this build lacks keeps running
+    let allowed = keep.clone().unwrap_or_default();
+    for w in [
+        unmatched_tools("--allowed-tools", &allowed, &names),
+        unmatched_tools("--disallowed-tools", &drop_tools, &names),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        eprintln!("{w}");
+    }
     let tools: Vec<String> = agent_setup.tools.names().map(String::from).collect();
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
 
@@ -282,6 +312,10 @@ pub async fn run(
                 let text = run.r.text.clone();
                 let mut structured = None;
                 let mut problem = run.r.error.clone();
+                if code == EXIT_DENIED {
+                    // the refusal names the tool and what would allow it; a fixed text would hide both
+                    problem = run.r.denied.clone().filter(|d| !d.is_empty());
+                }
                 if let (0, Some(s)) = (code, &schema) {
                     let checked = crate::schema::extract(&text).and_then(|v| {
                         let errs = crate::schema::validate(s, &v);
@@ -311,7 +345,9 @@ pub async fn run(
                             let why = match code {
                                 EXIT_SCHEMA => problem.clone().unwrap_or_default(),
                                 EXIT_MAX_TURNS => "stopped at the turn limit".to_string(),
-                                _ => "a tool call was refused: nobody can be asked in a non-interactive run".to_string(),
+                                _ => problem.clone().unwrap_or_else(|| {
+                                    "a tool call was refused: nobody can be asked in a non-interactive run".to_string()
+                                }),
                             };
                             eprintln!("nexo: {why}");
                         }
@@ -388,5 +424,13 @@ mod tests {
         assert!(t.starts_with("Automatic check by nexo, not a message from the person:"), "{t}");
         assert!(t.contains("/name: missing") && t.ends_with("Reply again with only the corrected JSON value."), "{t}");
         assert!(!t.contains('\n'), "{t}");
+    }
+
+    #[test]
+    fn a_tool_flag_entry_is_unmatched_unless_it_names_a_tool_of_the_set_or_a_late_one() {
+        let names = vec!["bash".to_string(), "read".to_string()];
+        let w = super::unmatched_tools("--allowed-tools", &["shell".to_string()], &names).unwrap();
+        assert!(w.contains("no tool matches 'shell'") && w.contains("bash, goal_brief, read"), "{w}");
+        assert!(super::unmatched_tools("--allowed-tools", &["bash".into(), "task".into()], &names).is_none());
     }
 }

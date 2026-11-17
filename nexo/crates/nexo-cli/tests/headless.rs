@@ -497,6 +497,35 @@ fn an_unasked_permission_exits_5_and_a_flag_without_print_is_a_usage_error() {
 }
 
 #[test]
+fn a_tool_flag_entry_that_matches_no_tool_is_warned_about_and_a_late_tool_is_not() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["-p", "hi", "--allowed-tools", "nosuch"]);
+    assert!(err(&out).contains("--allowed-tools: no tool matches 'nosuch' (tools: "), "{}", err(&out));
+    let out = nexo(d.path(), &["-p", "hi", "--disallowed-tools", "nosuch,bash"]);
+    assert!(err(&out).contains("--disallowed-tools: no tool matches 'nosuch' (tools: "), "{}", err(&out));
+    assert!(!err(&out).contains("'bash'"), "{}", err(&out));
+    // the sub-agent tool is registered after the setup, and a pattern entry names its tool before the bracket
+    let out = nexo(d.path(), &["-p", "hi", "--allowed-tools", "Bash(git:*),task"]);
+    assert!(!err(&out).contains("no tool matches"), "{}", err(&out));
+}
+
+#[test]
+fn a_denied_call_ends_a_text_run_with_the_refusal_the_model_saw() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["-p", "tool:bash {\"command\":\"touch x\"}", "--permission-mode", "ask"]);
+    assert_eq!(out.status.code(), Some(5), "{}", err(&out));
+    assert!(err(&out).contains("nexo: Permission denied: "), "{}", err(&out));
+    assert!(err(&out).contains("non-interactive run"), "{}", err(&out));
+    let out = nexo(
+        d.path(),
+        &["-p", "tool:bash {\"command\":\"touch x\"}", "--permission-mode", "ask", "--output-format", "json"],
+    );
+    let r = &lines(&out)[0];
+    assert_eq!(r["subtype"], "error_permission_denied");
+    assert!(r["error"].as_str().unwrap().starts_with("Permission denied: "), "{r}");
+}
+
+#[test]
 fn stream_json_input_runs_two_turns_in_one_session() {
     let d = tempfile::tempdir().unwrap();
     let input = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"one\"}}\n\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n";
