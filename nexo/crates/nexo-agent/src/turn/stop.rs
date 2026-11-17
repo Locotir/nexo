@@ -9,9 +9,10 @@ use super::*;
 /// The most calls one stop line names.
 const NAMED: usize = 3;
 
-/// Whether a tool result says its call was cut by the person.
-fn cut(content: &[Part]) -> bool {
-    content.iter().any(|p| p.as_text().is_some_and(|t| t.contains("interrupted by the person")))
+/// Whether a tool result says its call was cut by the person. Every genuine cut is an error result, so a successful
+/// result that only quotes the words (a `read` of this very file) is a call that finished.
+fn cut(content: &[Part], is_error: bool) -> bool {
+    is_error && content.iter().any(|p| p.as_text().is_some_and(|t| t.contains("interrupted by the person")))
 }
 
 /// The calls in `names`, at most [`NAMED`] of them, each on one line and short: a summary can hold a whole question
@@ -48,9 +49,9 @@ pub(super) fn what_ran(turn: &[Message], tools: &ToolSet) -> String {
     let mut before = Vec::new();
     let mut done = Vec::new();
     for p in &last.content {
-        let Part::ToolResult { call_id, content, .. } = p else { continue };
+        let Part::ToolResult { call_id, content, is_error, .. } = p else { continue };
         let Some(s) = summary(call_id) else { continue };
-        if !cut(content) {
+        if !cut(content, *is_error) {
             done.push(s);
         } else if content.iter().any(|c| c.as_text().is_some_and(|t| t.starts_with("The call did not run"))) {
             before.push(s);
@@ -147,6 +148,18 @@ mod tests {
             )]),
         ];
         assert!(what_ran(&turn, &ToolSet::default()).starts_with("before read "));
+    }
+
+    #[test]
+    fn a_finished_call_whose_text_quotes_the_stop_words_still_counts_as_done() {
+        // a `read` of nexo's own source returns the phrase as plain text; only an error result is a cut call
+        let turn = [
+            Message::user("look at the stop code"),
+            call("c1", "stop.rs"),
+            Message::tool_results(vec![Part::tool_result("c1", "the call was interrupted by the person", false)]),
+        ];
+        let what = what_ran(&turn, &ToolSet::default());
+        assert!(what.starts_with("while you waited for your reply after read "), "{what}");
     }
 
     #[test]
