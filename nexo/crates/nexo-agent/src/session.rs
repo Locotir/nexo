@@ -11,6 +11,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+// Sessions hold tool outputs, which can hold secrets: their folder and files are the user's alone (on unix).
+use nexo_core::fsmode::{create_private_dir, private_file};
 use nexo_core::message::{Message, Part, Role};
 use nexo_core::paths;
 use nexo_core::stream::Usage;
@@ -304,30 +306,6 @@ fn checked_id(id: &str) -> anyhow::Result<&str> {
     } else {
         anyhow::bail!("{id:?} is not a session id")
     }
-}
-
-/// Sessions hold tool outputs, which can hold secrets: the folder is the user's alone (on unix).
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    let mut b = std::fs::DirBuilder::new();
-    b.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        b.mode(0o700);
-    }
-    b.create(dir)
-}
-
-/// Options for a session file only the user can read (on unix).
-fn private_file() -> OpenOptions {
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut o = OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
-    o
 }
 
 /// A rewrite replaced the file but could not open it again.

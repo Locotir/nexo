@@ -51,6 +51,27 @@ pub fn default_dir() -> PathBuf {
     nexo_core::paths::data_dir().join("audit")
 }
 
+/// Opens the log for appending, making its folder. The audit log holds the commands and arguments of every tool call,
+/// so when it lives in the data folder (`private`) the folder is `0700` and the file `0600`, an existing one included:
+/// logs written before this had the umask rights. A file the admin pointed `path` at keeps whatever rights its owner
+/// gave it; only a file made new gets the private mode.
+fn open_log(path: &Path, private: bool) -> std::io::Result<std::fs::File> {
+    use nexo_core::fsmode::{create_private_dir, private_file, tighten_dir, tighten_file};
+    if let Some(dir) = path.parent() {
+        if private {
+            create_private_dir(dir)?;
+            tighten_dir(dir)?;
+        } else {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let file = private_file().create(true).append(true).open(path)?;
+    if private {
+        tighten_file(path)?;
+    }
+    Ok(file)
+}
+
 fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
         Some(rest) => dirs_home().join(rest),
@@ -159,6 +180,8 @@ impl Audit {
             .spawn(move || {
                 let mut open: Option<(PathBuf, std::fs::File)> = None;
                 let mut warned = false;
+                // a log in the data folder is the user's alone; one the admin pointed somewhere else is left as set
+                let own_folder = cfg.path.as_deref().is_none_or(|p| p.trim().is_empty());
                 for line in rx {
                     let ts = serde_json::from_str::<Value>(&line)
                         .ok()
@@ -166,11 +189,7 @@ impl Audit {
                         .unwrap_or_default();
                     let path = target(&cfg, &ts);
                     if open.as_ref().map(|(p, _)| p != &path).unwrap_or(true) {
-                        let file = path
-                            .parent()
-                            .map(std::fs::create_dir_all)
-                            .unwrap_or(Ok(()))
-                            .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(&path));
+                        let file = open_log(&path, own_folder);
                         match file {
                             Ok(f) => open = Some((path.clone(), f)),
                             Err(e) => {
@@ -376,6 +395,52 @@ pub fn files(cfg: &AuditConfig) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_audit_log_and_its_folder_are_the_users_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("audit/2026-11.jsonl");
+        drop(open_log(&path, true).unwrap());
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_audit_log_made_with_the_umask_is_tightened_when_it_is_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("audit");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("2026-11.jsonl");
+        std::fs::write(&path, b"{}\n").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(open_log(&path, true).unwrap());
+        assert_eq!((mode(&dir), mode(&path)), (0o700, 0o600));
+        // the lines already in it stay
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_log_the_admin_pointed_elsewhere_keeps_the_rights_its_owner_set() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = d.path().join("shared.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        drop(open_log(&path, false).unwrap());
+        assert_eq!((mode(d.path()), mode(&path)), (0o755, 0o640));
+    }
 
     #[test]
     fn close_all_writes_the_queued_lines_of_a_writer_still_held() {
