@@ -252,7 +252,7 @@ fn names_resolve_by_id_prefix_name_and_name_with_ref() {
 fn the_inbound_policy_holds_refuses_and_expires() {
     let rig = Rig::new();
     let api = rig.session("aaaa1111", "api", true, Inbound::Auto);
-    let _web = rig.session("bbbb2222", "web", false, Inbound::Auto);
+    let web = rig.session("bbbb2222", "web", false, Inbound::Auto);
     // a bypass sender to an asking receiver: held
     let m = api.send("web", "run the migration", None, FromKind::Agent).unwrap();
     let t = web.tick();
@@ -498,23 +498,27 @@ fn a_heartbeat_written_a_moment_ago_is_read_again_even_when_it_was_dead() {
 fn a_dead_heartbeat_older_than_a_day_is_removed_and_nothing_else_is() {
     let rig = Rig::new();
     let me = rig.session("aaaa1111", "api", false, Inbound::Auto);
-    let web = rig.session("bbbb2222", "web", false, Inbound::Auto);
+    let _web = rig.session("bbbb2222", "web", false, Inbound::Auto);
     let now = rig.now.load(Ordering::SeqCst);
     let beat = |sid: &str| rig.root.join(sid).join("session.json");
-    let make = |sid: &str, pid: u32, age_secs: u64| {
+    let make = |sid: &str, text: String, age_secs: u64| {
         fs::create_dir_all(rig.root.join(sid).join("inbox")).unwrap();
-        fs::write(beat(sid), beat_text(sid, pid, now, 0)).unwrap();
+        fs::write(beat(sid), text).unwrap();
         fs::write(rig.root.join(sid).join("inbox/m.json"), "{}").unwrap();
         age_file(&beat(sid), age_secs);
     };
     let day = 24 * 3600;
-    make("dead-old", 0, day + 600);
-    make("dead-new", 0, 600);
-    make("alive-old", std::process::id(), day + 600);
+    // an old beat with a live process: not a live peer, so only the process check keeps the file
+    let stale = now - 2 * LIVE_MS;
+    make("dead-old", beat_text("dead-old", 0, now, 0), day + 600);
+    make("dead-new", beat_text("dead-new", 0, now, 0), 600);
+    make("alive-old", beat_text("alive-old", std::process::id(), stale, 0), day + 600);
+    make("garbage-old", "not a heartbeat".to_string(), day + 600);
     me.purge(now);
     assert!(!beat("dead-old").exists(), "a dead heartbeat a day old goes");
     assert!(beat("dead-new").exists(), "a recent one stays");
     assert!(beat("alive-old").exists(), "one whose process still exists stays");
+    assert!(!beat("garbage-old").exists(), "text that is not a heartbeat names no process and goes");
     assert!(beat("bbbb2222").exists(), "a live session keeps its heartbeat");
     assert!(rig.root.join("dead-old/inbox/m.json").exists(), "the mail is not touched");
 }
