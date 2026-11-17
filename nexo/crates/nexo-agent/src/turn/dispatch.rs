@@ -82,16 +82,17 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         AgentCommand::Resume { id } => on_resume(rt, id).await,
         AgentCommand::Fork { index } => on_fork(rt, index).await,
         AgentCommand::ShowTree => {
-            // the scan reads every session file: it runs apart from the loop and takes no lock, so a turn's
-            // rounds and the commands after this one do not wait for it
-            let events = rt.events.clone();
-            tokio::task::spawn_blocking(move || {
-                let entries = crate::session::tree(&crate::session::list())
-                    .into_iter()
-                    .map(|(d, m)| (d, m.id, m.title))
-                    .collect();
-                emit(&events, AgentEvent::SessionTree { entries });
-            });
+            // the scan reads every session file: it runs on a blocking thread and takes no lock, so a turn's
+            // rounds do not wait for it. It is awaited here so its event comes before those of later commands
+            // and a panic in it is reported
+            let scan = tokio::task::spawn_blocking(|| {
+                crate::session::tree(&crate::session::list()).into_iter().map(|(d, m)| (d, m.id, m.title)).collect()
+            })
+            .await;
+            match scan {
+                Ok(entries) => emit(&rt.events, AgentEvent::SessionTree { entries }),
+                Err(e) => notice(&rt.events, Level::Error, format!("cannot read the session tree: {e}")),
+            }
         }
         AgentCommand::DeleteSession { id } => delete_session(&rt.state, &id).await,
         AgentCommand::ShareMemory { id, focus } => share_memory(&rt.state, id, focus).await,
@@ -99,12 +100,15 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         AgentCommand::ReadSharedMemory { since } => read_shared_memory(&rt.state, since).await,
         AgentCommand::WriteSharedMemory { text } => append_shared_memory(&rt.state, &text).await,
         AgentCommand::ListTrash => {
-            // read apart from the loop and without the lock, as the tree is
-            let events = rt.events.clone();
-            tokio::task::spawn_blocking(move || {
-                let sessions = crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect();
-                emit(&events, AgentEvent::Trash { sessions });
-            });
+            // read on a blocking thread without the lock and awaited, as the tree is
+            let read = tokio::task::spawn_blocking(|| {
+                crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect()
+            })
+            .await;
+            match read {
+                Ok(sessions) => emit(&rt.events, AgentEvent::Trash { sessions }),
+                Err(e) => notice(&rt.events, Level::Error, format!("cannot read the trash: {e}")),
+            }
         }
         AgentCommand::RestoreSession { id } => on_restore_session(rt, id).await,
         AgentCommand::Rewind { index } => {
