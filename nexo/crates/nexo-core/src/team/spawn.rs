@@ -36,15 +36,16 @@ pub fn runner_of(exe: &Path, name: &str) -> std::io::Result<u32> {
 
 /// Opens a lane's log for appending, after it is rotated. What a lane prints is its transcript: commands and tool
 /// output, which can hold secrets read from a file. So the team folder is `0700` (this also closes the older logs and
-/// state files inside it) and the log `0600`, an existing one included.
+/// state files inside it) and the log `0600`, an existing one included. Closing what exists is hardening, not a
+/// condition of starting: a folder or log this user cannot chmod (another owner, a read-only mount) is used as it is.
 fn open_log(log: &Path) -> std::io::Result<std::fs::File> {
     use crate::fsmode::{create_private_dir, private_file, tighten_dir, tighten_file};
     let dir = log.parent().unwrap_or(Path::new("."));
     create_private_dir(dir)?;
-    tighten_dir(dir)?;
+    let _ = tighten_dir(dir);
     rotate(log, LOG_MAX);
     let out = private_file().create(true).append(true).open(log)?;
-    tighten_file(log)?;
+    let _ = tighten_file(log);
     Ok(out)
 }
 
