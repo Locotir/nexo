@@ -29,7 +29,7 @@ pub fn bool_arg(args: &Value, key: &str) -> bool {
 /// `p` against `cwd`: absolute paths as they are, `~` expanded, the rest joined to `cwd`.
 pub fn resolve(cwd: &Path, p: &str) -> PathBuf {
     let p = p.trim();
-    if let Some(rest) = p.strip_prefix("~/") {
+    if let Some(rest) = home_prefix_rest(p, cfg!(windows)) {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
@@ -210,6 +210,39 @@ impl Cuts {
     }
 }
 
+/// What follows the home prefix of `p`: `~/` everywhere, and `~\` on Windows only, where a
+/// backslash separates directories (on Linux it is a legal file-name character).
+fn home_prefix_rest(p: &str, windows: bool) -> Option<&str> {
+    p.strip_prefix("~/").or_else(|| if windows { p.strip_prefix("~\\") } else { None })
+}
+
+/// Whether a failed rename looks like Windows holding the target open for a moment: access denied
+/// (5), a sharing violation (32) or a lock violation (33). An editor, an indexer or an antivirus
+/// scan releases it soon after.
+pub fn rename_busy(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// `tmp` renamed over `target`. On Windows a target another process has open (without delete
+/// sharing) refuses the rename, so a busy one is retried a few times with short waits; when it
+/// stays busy the error keeps its kind and says the file may be open in another program.
+async fn rename_over(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    let tries: u64 = if cfg!(windows) { 5 } else { 1 };
+    let mut attempt = 1;
+    loop {
+        match tokio::fs::rename(tmp, target).await {
+            Err(e) if cfg!(windows) && rename_busy(&e) => {
+                if attempt >= tries {
+                    return Err(std::io::Error::new(e.kind(), format!("{e}; the file may be open in another program")));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20 * attempt)).await;
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Writes `data` to `path` whole or not at all: into a new file beside it, then renamed over it
 /// (`rename` replaces an existing file on Windows too). A link is followed, so the file it points
 /// to is the one replaced; an existing file keeps its permissions, and a read-only one is refused.
@@ -245,7 +278,7 @@ pub async fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
         if let Some(p) = perms {
             tokio::fs::set_permissions(&tmp, p).await?;
         }
-        tokio::fs::rename(&tmp, &target).await
+        rename_over(&tmp, &target).await
     }
     .await;
     if written.is_err() {
@@ -303,6 +336,26 @@ mod tests {
         assert_eq!(from_git_bash("/etc/hosts", temp), None);
         assert_eq!(from_git_bash("src/a.rs", temp), None);
         assert_eq!(from_git_bash("C:/x", temp), None);
+    }
+
+    #[test]
+    fn a_backslash_home_prefix_is_home_only_on_windows() {
+        assert_eq!(home_prefix_rest("~\\notes.txt", true), Some("notes.txt"));
+        assert_eq!(home_prefix_rest("~/notes.txt", true), Some("notes.txt"));
+        assert_eq!(home_prefix_rest("~/notes.txt", false), Some("notes.txt"));
+        assert_eq!(home_prefix_rest("~\\notes.txt", false), None, "a backslash is a file-name character on Linux");
+        assert_eq!(home_prefix_rest("~", true), None);
+    }
+
+    #[test]
+    fn a_busy_target_is_told_from_a_missing_one() {
+        use std::io::{Error, ErrorKind};
+        assert!(rename_busy(&Error::from_raw_os_error(32)));
+        assert!(rename_busy(&Error::from_raw_os_error(5)));
+        assert!(rename_busy(&Error::from_raw_os_error(33)));
+        assert!(rename_busy(&Error::new(ErrorKind::PermissionDenied, "denied")));
+        assert!(!rename_busy(&Error::new(ErrorKind::NotFound, "gone")));
+        assert!(!rename_busy(&Error::from_raw_os_error(2)));
     }
 
     #[cfg(unix)]

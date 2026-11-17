@@ -16,6 +16,29 @@ async fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// What the new content changes about the line ends and the byte order mark of the file it
+/// replaces, as a fact, or `None` when both stay as they were. Nothing is kept or rewritten: a
+/// write is the model's text as given.
+fn format_change(old: &[u8], content: &str) -> Option<String> {
+    let (old_crlf, old_bom) = (old.windows(2).any(|w| w == b"\r\n"), old.starts_with(&[0xEF, 0xBB, 0xBF]));
+    let (new_crlf, new_bom) = (content.contains("\r\n"), content.starts_with('\u{FEFF}'));
+    let ends = |crlf: bool| if crlf { "CRLF line ends" } else { "LF line ends" };
+    let mark = |bom: bool| if bom { "a UTF-8 BOM" } else { "no BOM" };
+    let (mut was, mut now) = (Vec::new(), Vec::new());
+    if old_crlf != new_crlf {
+        was.push(ends(old_crlf));
+        now.push(ends(new_crlf));
+    }
+    if old_bom != new_bom {
+        was.push(mark(old_bom));
+        now.push(mark(new_bom));
+    }
+    if was.is_empty() {
+        return None;
+    }
+    Some(format!("the file it replaced used {}; the new content has {}", was.join(" and "), now.join(" and ")))
+}
+
 #[async_trait]
 impl Tool for Write {
     fn name(&self) -> &str {
@@ -77,6 +100,7 @@ impl Tool for Write {
         let huge = tokio::fs::metadata(&path).await.map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false);
         let read = if huge { read_head(&path).await } else { tokio::fs::read(&path).await };
         let mut same = false;
+        let mut format_note = String::new();
         let old = match read {
             // UTF-16 text looks binary (a NUL in every other byte); the fact is what the file is
             Ok(b) if is_binary(&b) && utf16_text(&b).is_some() => {
@@ -91,6 +115,7 @@ impl Tool for Write {
             Ok(b) => {
                 // compared as bytes: a lossy text would call a file with invalid bytes the same as its U+FFFD form
                 same = b == content.as_bytes();
+                format_note = format_change(&b, content).map(|n| format!("; {n}")).unwrap_or_default();
                 Some(String::from_utf8_lossy(&b).into_owned())
             }
             Err(_) => None,
@@ -131,7 +156,7 @@ impl Tool for Write {
             None => String::new(),
         };
         ToolOutput::ok(format!(
-            "{what} {shown}: file now has {} ({} bytes), {}{now}{diag}{proof}",
+            "{what} {shown}: file now has {} ({} bytes), {}{format_note}{now}{diag}{proof}",
             nexo_core::count(lines, "line"),
             content.len(),
             crate::edit::VERIFIED
@@ -277,5 +302,44 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new\n");
         assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o751);
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    async fn replace(old: &[u8], content: &str) -> String {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::write(d.path().join("f.txt"), old).unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "f.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "f.txt", "content": content}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        out.content
+    }
+
+    #[tokio::test]
+    async fn a_crlf_file_rewritten_with_lf_says_so() {
+        let out = replace(b"a\r\nb\r\n", "a\nc\n").await;
+        assert!(out.contains("; the file it replaced used CRLF line ends; the new content has LF line ends"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_bom_file_rewritten_without_one_says_so() {
+        let out = replace(b"\xEF\xBB\xBFa\r\n", "b\r\n").await;
+        assert!(out.contains("; the file it replaced used a UTF-8 BOM; the new content has no BOM"), "{out}");
+        let out = replace(b"\xEF\xBB\xBFa\r\n", "b\n").await;
+        assert!(
+            out.contains("used CRLF line ends and a UTF-8 BOM; the new content has LF line ends and no BOM"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_note_is_added_when_line_ends_and_bom_stay_the_same() {
+        assert!(!replace(b"a\r\n", "b\r\n").await.contains("the file it replaced"));
+        assert!(!replace(b"a\n", "b\n").await.contains("the file it replaced"));
+        assert!(!replace(b"\xEF\xBB\xBFa\n", "\u{FEFF}b\n").await.contains("the file it replaced"));
     }
 }
