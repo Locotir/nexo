@@ -146,6 +146,19 @@ pub fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|b| *b == 0)
 }
 
+/// The UTF-16 flavour of a file that starts with a byte order mark, which is what Windows tools
+/// (PowerShell, `.reg` exports, Excel CSVs) write. Such a file is full of NULs, so `is_binary` calls
+/// it binary; naming the encoding tells the model it is text it can convert, not a blob.
+pub fn text_encoding(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        // FF FE 00 00 is the UTF-32 LE mark, not UTF-16 LE followed by a NUL character
+        [0xFF, 0xFE, 0, 0, ..] => None,
+        [0xFF, 0xFE, ..] => Some("UTF-16 LE"),
+        [0xFE, 0xFF, ..] => Some("UTF-16 BE"),
+        _ => None,
+    }
+}
+
 /// Writes `data` to `path` whole or not at all: into a new file beside it, then renamed over it
 /// (`rename` replaces an existing file on Windows too). A link is followed, so the file it points
 /// to is the one replaced; an existing file keeps its permissions, and a read-only one is refused.
@@ -265,6 +278,15 @@ mod tests {
         assert_eq!(cap_text("short", 20), "short");
         assert_eq!(cut_line("abcdef", 4), "abc…");
         assert_eq!(one_line("ls -la\ncd x", 80), "ls -la …");
+    }
+
+    #[test]
+    fn a_byte_order_mark_names_the_utf16_encoding_and_utf32_is_not_taken_for_it() {
+        assert_eq!(text_encoding(&[0xFF, 0xFE, b'a', 0]), Some("UTF-16 LE"));
+        assert_eq!(text_encoding(&[0xFE, 0xFF, 0, b'a']), Some("UTF-16 BE"));
+        assert_eq!(text_encoding(&[0xFF, 0xFE, 0, 0, b'a', 0, 0, 0]), None);
+        assert_eq!(text_encoding(b"plain"), None);
+        assert_eq!(text_encoding(&[0xFF]), None);
     }
 
     #[test]

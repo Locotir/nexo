@@ -5,7 +5,9 @@ use super::apply::{apply, changes};
 use super::miss::elsewhere;
 use super::show::{now_text, unified};
 use super::VERIFIED;
-use crate::util::{display_path, is_binary, outside_note, resolve, str_arg, write_atomic, MAX_FILE_BYTES};
+use crate::util::{
+    display_path, is_binary, outside_note, resolve, str_arg, text_encoding, write_atomic, MAX_FILE_BYTES,
+};
 
 /// One file's change, written: what to tell the model and what to show.
 pub(super) struct Done {
@@ -41,6 +43,11 @@ pub(super) async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Resul
         Err(e) => return Err(format!("edit: cannot read {shown}: {e}")),
     };
     if is_binary(&bytes) {
+        if let Some(enc) = text_encoding(&bytes) {
+            return Err(format!(
+                "edit: {shown} is {enc} text with a BOM, not UTF-8; edit it with `bash` in its own encoding"
+            ));
+        }
         return Err(format!("edit: {shown} is a binary file"));
     }
     if ctx.seen.changed(&path) {

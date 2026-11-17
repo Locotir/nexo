@@ -7,7 +7,7 @@ use super::symbol::read_symbol;
 use super::{DEFAULT_LIMIT, FILE_CAP, LINE_CHARS};
 use crate::picture;
 use crate::program::{about, bin_offered};
-use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, MAX_FILE_BYTES};
+use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, text_encoding, MAX_FILE_BYTES};
 
 /// A compiled program shows nothing as text: the answer is what it is and the call that reads it.
 fn not_text(
@@ -74,6 +74,14 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
     if is_binary(&bytes) {
         if let Some(kind) = nexo_binmagic::kind_of(&bytes) {
             return not_text(ctx, &shown, &path, &kind, bytes.len() as u64);
+        }
+        if let Some(enc) = text_encoding(&bytes) {
+            return ToolOutput::error(format!(
+                "read: {shown} is {enc} text with a BOM ({} bytes), not UTF-8; read it with `bash` \
+                 (`iconv -f {} -t UTF-8 {shown}`)",
+                bytes.len(),
+                enc.replace(' ', "")
+            ));
         }
         return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
     }

@@ -444,3 +444,33 @@ async fn a_compiled_program_is_answered_with_what_it_is_and_the_call_that_reads_
     let out = Read.run(json!({"path": "data.bin"}), &c).await;
     assert_eq!(out.content, "read: data.bin is a binary file (4 bytes)");
 }
+
+/// What PowerShell and `regedit` write: a byte order mark, then two bytes per character.
+fn utf16(text: &str, little: bool) -> Vec<u8> {
+    let mut out = if little { vec![0xFF, 0xFE] } else { vec![0xFE, 0xFF] };
+    for u in text.encode_utf16() {
+        out.extend(if little { u.to_le_bytes() } else { u.to_be_bytes() });
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_utf16_file_with_a_bom_is_named_by_its_encoding_not_called_a_binary() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.reg"), utf16("Windows Registry Editor\r\n", true)).unwrap();
+    std::fs::write(d.path().join("b.csv"), utf16("a;b\r\n", false)).unwrap();
+    std::fs::write(d.path().join("c.bin"), [0xFF, 0xFE, 0, 0, 1, 0, 0, 0]).unwrap();
+    let c = ctx(d.path());
+    let out = Read.run(json!({"path": "a.reg"}), &c).await;
+    assert!(out.is_error);
+    assert_eq!(
+        out.content,
+        "read: a.reg is UTF-16 LE text with a BOM (52 bytes), not UTF-8; read it with `bash` \
+         (`iconv -f UTF-16LE -t UTF-8 a.reg`)"
+    );
+    let out = Read.run(json!({"path": "b.csv"}), &c).await;
+    assert!(out.content.starts_with("read: b.csv is UTF-16 BE text with a BOM (12 bytes)"), "{}", out.content);
+    // the UTF-32 LE mark starts the same two bytes: it stays a plain binary
+    let out = Read.run(json!({"path": "c.bin"}), &c).await;
+    assert_eq!(out.content, "read: c.bin is a binary file (8 bytes)");
+}
