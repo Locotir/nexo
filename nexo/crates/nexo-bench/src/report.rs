@@ -130,6 +130,21 @@ fn mixed(records: &[Record]) -> Option<String> {
     ))
 }
 
+/// A note when some runs ran sealed and others open. A machine without unprivileged user namespaces runs the tasks
+/// that are not marked sealed open (network on, host files visible), so one results file can mix both and the
+/// open runs are checked only by the contamination scan. Files from before the field existed read as all open,
+/// so nothing is said unless at least one run was sealed.
+fn isolation(records: &[Record]) -> Option<String> {
+    let sealed = records.iter().filter(|r| r.sealed).count();
+    let open = records.len() - sealed;
+    if sealed == 0 || open == 0 {
+        return None;
+    }
+    Some(format!(
+        "**Mixed isolation**: {sealed} run(s) ran sealed and {open} ran open (network on, host files visible); the open ones are checked only by the contamination scan."
+    ))
+}
+
 /// `x` dollars, or `unknown` when the model has no known price.
 fn usd(unknown: bool, x: f64, places: usize) -> String {
     if unknown {
@@ -180,6 +195,9 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
         s.push_str(&format!("\nArm order: {order}.\n"));
     }
     if let Some(m) = mixed(records) {
+        s.push_str(&format!("\n{m}\n"));
+    }
+    if let Some(m) = isolation(records) {
         s.push_str(&format!("\n{m}\n"));
     }
     if let Some(why) = &h.stopped {
@@ -829,6 +847,19 @@ mod tests {
         assert!(arm_row("plain").starts_with("| plain | plain | 2 | 0 | 0 |"), "{s}");
         assert!(arm_row("cur").starts_with("| cur | cur | 2 | 0 | 1 |"), "{s}");
         assert!(s.contains("not in the paired table"), "{s}");
+    }
+
+    #[test]
+    fn a_file_that_mixes_sealed_and_open_runs_says_so_in_the_header() {
+        let mut recs = grid(2, 1);
+        assert!(!summary(&head(1), &recs).contains("Mixed isolation"), "all open: older files read this way");
+        for r in &mut recs {
+            r.sealed = true;
+        }
+        assert!(!summary(&head(1), &recs).contains("Mixed isolation"), "all sealed");
+        recs[1].sealed = false;
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("**Mixed isolation**: 3 run(s) ran sealed and 1 ran open"), "{s}");
     }
 
     #[test]
