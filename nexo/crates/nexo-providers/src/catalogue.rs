@@ -725,6 +725,7 @@ mod tests {
         assert_eq!((p.input, p.output), (5.0, 4.0));
         assert_eq!((e.context, e.vision, e.reasoning), (Some(2000), Some(true), Some(true)));
     }
+
     #[test]
     fn names_map_both_ways() {
         assert_eq!(preset_name("google"), "gemini");
