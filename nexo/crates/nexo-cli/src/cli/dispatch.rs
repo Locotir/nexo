@@ -40,6 +40,10 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }) }) => {
             return Ok(setup::trash_sessions(ids, true))
         }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Size) }) => return Ok(setup::size_sessions()),
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Prune { older_than, headless, trash, yes }) }) => {
+            return Ok(setup::prune_sessions(older_than, *headless, *trash, *yes));
+        }
         Some(Cmd::Sessions { what: Some(SessionsCmd::Live { json }) }) => {
             return Ok(crate::sessions_live::run(*json));
         }

@@ -337,6 +337,27 @@ pub enum SessionsCmd {
     Delete { ids: Vec<String> },
     /// Bring sessions back from the trash.
     Restore { ids: Vec<String> },
+    /// Show how much room the sessions, the curator state saved beside them and the trash take, and which sessions take most.
+    Size,
+    /// Move the sessions not written for AGE to the trash, or with `--trash` delete what is that old in the trash.
+    ///
+    /// Nothing changes until `--yes`: without it the sessions that would go are listed. `nexo sessions restore`
+    /// brings a session back from the trash. A session another nexo holds is never moved. The age counts from the
+    /// session's last write, also in the trash.
+    Prune {
+        /// A number of days or hours: `90d`, `36h`.
+        #[arg(long, value_name = "AGE")]
+        older_than: String,
+        /// Only the sessions started by `nexo -p` (a script or another program).
+        #[arg(long, conflicts_with = "trash")]
+        headless: bool,
+        /// Delete for good the files in the trash of that age, instead of moving sessions there.
+        #[arg(long)]
+        trash: bool,
+        /// Do it, instead of listing what would be done.
+        #[arg(long)]
+        yes: bool,
+    },
     /// List the sessions that are live now, with their running jobs (a session is live while its heartbeat is fresh).
     ///
     /// `--json` prints an array with one object per live session and the keys `id`, `title`, `provider`,

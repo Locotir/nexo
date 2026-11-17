@@ -15,6 +15,7 @@ mod config_cmd;
 mod listing;
 mod pick;
 mod pricing;
+mod sessions_clean;
 mod sessions_cmd;
 
 pub use agent::*;
@@ -22,4 +23,5 @@ pub use config_cmd::*;
 pub use listing::*;
 pub use pick::*;
 pub use pricing::*;
+pub use sessions_clean::{prune_sessions, size_sessions};
 pub use sessions_cmd::*;
