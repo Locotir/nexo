@@ -456,3 +456,39 @@ fn resume_sends_a_word_shaped_like_an_id_even_when_the_list_lacks_it() {
     a.run_command(Command::Resume("20261117-101500-ab12".into()));
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Resume { id }) if id == "20261117-101500-ab12"));
 }
+
+#[test]
+fn a_late_session_list_does_not_replace_a_window_opened_in_the_meantime() {
+    let (mut a, _rx) = app();
+    a.run_command(Command::Sessions);
+    assert!(a.sessions_asked, "nothing known yet: the picker waits for the list");
+    a.run_command(Command::Settings);
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Settings));
+    a.handle_agent(AgentEvent::SessionList { sessions: vec![row("s1", "first")] });
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Settings), "the settings window stays");
+    assert!(!a.sessions_asked, "the ask is spent with the list");
+    assert_eq!(a.opts.sessions.len(), 1, "the list is still kept");
+    // a later list from nowhere opens nothing
+    a.modal = None;
+    a.handle_agent(AgentEvent::SessionList { sessions: vec![row("s1", "first")] });
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn a_deleted_row_that_a_list_brought_back_leaves_the_open_picker() {
+    let (mut a, mut rx) = app();
+    a.opts.sessions = vec![row("s1", "first"), row("s2", "second")];
+    a.run_command(Command::Sessions);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListSessions)));
+    press(&mut a, KeyCode::Delete);
+    press(&mut a, KeyCode::Delete);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::DeleteSession { id }) if id == "s1"));
+    // the list was read before the delete and lands before its confirmation
+    a.handle_agent(AgentEvent::SessionList { sessions: vec![row("s1", "first"), row("s2", "second")] });
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays open") };
+    assert_eq!(p.items.len(), 2, "the stale row is back for a moment");
+    a.handle_agent(AgentEvent::SessionDeleted { id: "s1".into(), title: "first".into() });
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays open") };
+    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.current().map(|i| i.value.as_str()), Some("s2"));
+}

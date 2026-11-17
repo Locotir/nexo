@@ -111,6 +111,9 @@ impl Picker {
         let at = self.selected;
         self.items.retain(|i| i.value != value);
         self.ticked.retain(|t| t != value);
+        if self.armed.as_deref() == Some(value) {
+            self.armed = None;
+        }
         let labels: Vec<String> = self.items.iter().map(|i| format!("{} {}", i.label, i.hint)).collect();
         self.ranked = fuzzy::rank(&self.query, &labels);
         self.selected = at.min(self.ranked.len().saturating_sub(1));

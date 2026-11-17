@@ -285,9 +285,8 @@ impl App {
                 // Read again from disk: the list from the start lacks the sessions made since. The picker opens at
                 // once on what is known and takes the fresh list when it comes; with nothing known it waits for it.
                 self.send(AgentCommand::ListSessions);
-                if self.opts.sessions.is_empty() {
-                    self.sessions_asked = true;
-                } else {
+                self.sessions_asked = self.opts.sessions.is_empty();
+                if !self.sessions_asked {
                     self.open_sessions();
                 }
             }

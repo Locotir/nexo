@@ -53,6 +53,12 @@ impl App {
 
     pub(super) fn on_session_deleted(&mut self, id: String, title: String) {
         self.opts.sessions.retain(|r| r.id != id);
+        // a list read before the delete may have put the row back into an open picker
+        if let Some(Modal::Picker(p)) = &mut self.modal {
+            if p.kind == PickKind::Session {
+                p.remove(&id);
+            }
+        }
         let name = if title.is_empty() { id.clone() } else { title };
         self.flash(&format!("deleted {name} · /resume undelete brings it back"));
         self.trashed.push(id);
@@ -94,14 +100,17 @@ impl App {
     pub(super) fn on_session_list(&mut self, mut sessions: Vec<SessionRow>) {
         sessions.retain(|r| !self.trashed.contains(&r.id));
         self.opts.sessions = sessions;
+        let asked = std::mem::take(&mut self.sessions_asked);
         let items = self.session_items();
         if let Some(Modal::Picker(p)) = &mut self.modal {
             if p.kind == PickKind::Session {
                 p.replace_items(items);
-                return;
             }
+            return;
         }
-        if std::mem::take(&mut self.sessions_asked) {
+        // the picker opens only where nothing else is on show: the read takes a while, and a window the person
+        // opened since (a model switch, a permission prompt) keeps the screen
+        if asked && self.modal.is_none() {
             self.open_sessions();
         }
     }
