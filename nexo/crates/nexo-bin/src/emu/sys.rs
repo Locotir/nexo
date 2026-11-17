@@ -333,7 +333,7 @@ impl Machine<'_> {
     }
 
     fn sys_brk(&mut self, want: u64) -> u64 {
-        if want < BRK_BASE || want > BRK_BASE + BRK_MAX {
+        if !(BRK_BASE..=BRK_BASE + BRK_MAX).contains(&want) {
             return self.sys.brk;
         }
         let end = page_up(want);

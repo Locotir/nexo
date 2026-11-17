@@ -178,7 +178,7 @@ impl Tape {
     ) {
         let pend = self.pending.remove(&tid).unwrap_or_default();
         match self.last.get(&tid).copied() {
-            Some(p) if stepped && from.map_or(true, |f| f == p.rip) => {
+            Some(p) if stepped && from.is_none_or(|f| f == p.rip) => {
                 let mem = pend
                     .into_iter()
                     .filter_map(|(addr, before)| {
@@ -319,8 +319,7 @@ mod tests {
     fn a_step_makes_one_entry_with_the_changed_registers_and_the_bytes_written() {
         let mut t = Tape::default();
         t.start(10);
-        let mut a = Regs::default();
-        a.rip = 0x400000;
+        let a = Regs { rip: 0x400000, ..Regs::default() };
         let mut b = a;
         b.rip = 0x400004;
         b.gp[0] = 7;

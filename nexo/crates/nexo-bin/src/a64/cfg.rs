@@ -40,7 +40,7 @@ pub(crate) fn model(img: &Image, func: &Func) -> Result<Model> {
         return Err(Error::Bad(format!("{name} {start:#x}: no code to read there")));
     }
     let stop = start + 4 * n as u64;
-    let in_code = |a: u64| a >= start && a < stop && (a - start).is_multiple_of(4);
+    let in_code = |a: u64| (start..stop).contains(&a) && (a - start).is_multiple_of(4);
     let at = |a: u64| ((a - start) / 4) as usize;
     let named = |t: u64| plain_name(img, t).unwrap_or_else(|| format!("{t:#x}"));
     let callee = |i: &Ins| i.target.map_or_else(|| "indirect".to_string(), named);

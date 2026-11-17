@@ -91,7 +91,7 @@ impl Session {
         }
         let keep = match words.first() {
             Some(n) => match parse_addr(n) {
-                Ok(v) if v >= 1 && v <= MAX_KEEP as u64 => v as usize,
+                Ok(v) if (1..=MAX_KEEP as u64).contains(&v) => v as usize,
                 _ => return usage(format!("record N keeps the last N instructions: 1 to {MAX_KEEP}")),
             },
             None => DEFAULT_KEEP,
@@ -175,7 +175,7 @@ impl Session {
                     row.push_str(&format!(" (+{more} more)"));
                 }
             }
-            for m in e.mem.iter().filter(|m| want_mem.map_or(true, |a| m.covers(a))) {
+            for m in e.mem.iter().filter(|m| want_mem.is_none_or(|a| m.covers(a))) {
                 row.push_str(&format!(" | mem {:#x}: {} -> {}", m.addr, hex(&m.before), hex(&m.after)));
             }
             l.push(row);
