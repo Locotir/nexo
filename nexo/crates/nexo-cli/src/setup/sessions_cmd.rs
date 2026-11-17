@@ -9,10 +9,21 @@ pub fn print_sessions() -> i32 {
     println!("{:<22} {:<9} {:<28} title", "id", "messages", "directory");
     for m in list {
         let dir = m.cwd.to_string_lossy();
-        let dir = if dir.len() > 28 { format!("…{}", &dir[dir.len() - 27..]) } else { dir.to_string() };
+        let dir = short_dir(&dir);
         println!("{:<22} {:<9} {:<28} {}", m.id, m.messages, dir, m.title);
     }
     0
+}
+
+/// Keeps the last 27 chars of a long directory behind an ellipsis. It cuts by chars, not bytes,
+/// because a byte offset can fall inside a multibyte char (ñ, CJK) and panic.
+fn short_dir(dir: &str) -> String {
+    let n = dir.chars().count();
+    if n > 28 {
+        format!("…{}", dir.chars().skip(n - 27).collect::<String>())
+    } else {
+        dir.to_string()
+    }
 }
 
 /// `nexo sessions rename <id> <title>`: the title line is appended to the session file.
@@ -46,4 +57,28 @@ pub fn trash_sessions(ids: &[String], restore: bool) -> i32 {
         }
     }
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_dir;
+
+    #[test]
+    fn a_long_directory_of_multibyte_chars_is_shortened_without_panicking() {
+        let dir = "ñ".repeat(40);
+        assert_eq!(short_dir(&dir), format!("…{}", "ñ".repeat(27)));
+    }
+
+    #[test]
+    fn a_long_cjk_directory_keeps_its_last_27_chars() {
+        let dir = format!("/home/用户/{}", "文".repeat(30));
+        let out = short_dir(&dir);
+        assert_eq!(out.chars().count(), 28);
+        assert!(out.ends_with(&"文".repeat(27)));
+    }
+
+    #[test]
+    fn a_short_ascii_directory_is_left_unchanged() {
+        assert_eq!(short_dir("/home/user/project"), "/home/user/project");
+    }
 }

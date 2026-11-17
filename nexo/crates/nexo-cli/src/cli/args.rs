@@ -154,7 +154,7 @@ pub enum Cmd {
     },
     /// Print the setup guide (written so an assistant can follow it for you).
     Guide,
-    /// List the recorded sessions, or rename one.
+    /// List the recorded sessions, rename them, move them to the trash and back, or show the live ones.
     Sessions {
         #[command(subcommand)]
         what: Option<SessionsCmd>,
