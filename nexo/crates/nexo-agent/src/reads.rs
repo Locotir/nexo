@@ -202,14 +202,25 @@ impl Reads {
         call_id: &str,
         printed: usize,
     ) -> Option<String> {
+        self.lines_gated(path, shown, span, call_id, printed, None)
+    }
+
+    /// `after_lines`, where `gate` (when given) says whether the last ask for lines of this file was answered
+    /// with a note, in place of what the file remembers: the prints of one chained command are all one ask.
+    fn lines_gated(
+        &mut self,
+        path: &Path,
+        shown: &str,
+        span: Span,
+        call_id: &str,
+        printed: usize,
+        gate: Option<bool>,
+    ) -> Option<String> {
         let bytes = std::fs::read(path).ok()?;
         let hash = digest(&bytes);
         let text = String::from_utf8_lossy(&bytes);
         let total = text.lines().count();
-        let (start, end) = match span {
-            Span::From(a, b) => (a.max(1), b.unwrap_or(total).min(total)),
-            Span::Last(n) => (total.saturating_sub(n) + 1, total),
-        };
+        let (start, end) = bounds(span, total);
         if start > end {
             return None;
         }
@@ -235,7 +246,7 @@ impl Reads {
                 None => break,
             }
         }
-        if at > end && !seen.noted {
+        if at > end && !gate.unwrap_or(seen.noted) {
             let whence = if used.iter().any(|p| p.anchor.ends_with(ATTACHED)) {
                 "it was attached in full to a message above".to_string()
             } else if used.iter().any(|p| p.anchor.ends_with(INCLUDED)) {
@@ -260,6 +271,44 @@ impl Reads {
         seen.pieces.push(Piece { start, end, anchor: call_id.to_string() });
         None
     }
+
+    /// After a `bash` call that was not one print but several commands chained with `;` or `&&`, with
+    /// `output` as the model would get it: `output` with a note in place of each print that repeats lines
+    /// the model has already (see `after_lines`), None when no piece was repeated. A print counts only when
+    /// the bytes it prints from the file as it is now are found, whole lines, in the output after the previous
+    /// one; any other print is left as it is. The pieces not repeated are registered like a single print.
+    pub fn after_chain(&mut self, cwd: &Path, cmd: &str, output: &str, call_id: &str) -> Option<String> {
+        let prints = shell_chain(cmd)?;
+        // whether the last ask for each file was answered with a note, as of before this command
+        let mut gates: HashMap<PathBuf, bool> = HashMap::new();
+        let mut at = 0;
+        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        for p in prints {
+            let abs = if p.path.is_absolute() { p.path.clone() } else { cwd.join(&p.path) };
+            let Ok(bytes) = std::fs::read(&abs) else { continue };
+            let Some(want) = print_bytes(&bytes, &p) else { continue };
+            let Some((from, to)) = find_lines(output, at, &want) else { continue };
+            at = to;
+            let k = key(&abs);
+            let gate = *gates.entry(k.clone()).or_insert_with(|| self.seen.get(&k).is_some_and(|s| s.noted));
+            let shown = p.path.to_string_lossy();
+            if let Some(note) = self.lines_gated(&abs, &shown, p.span, call_id, want.chars().count(), Some(gate)) {
+                edits.push((from, to, note));
+            }
+        }
+        if edits.is_empty() {
+            return None;
+        }
+        let mut out = String::with_capacity(output.len());
+        let mut last = 0;
+        for (from, to, note) in edits {
+            out.push_str(&output[last..from]);
+            out.push_str(&note);
+            last = to;
+        }
+        out.push_str(&output[last..]);
+        Some(out)
+    }
 }
 
 /// How many characters of the lines asked for `out` holds: a `read` counts the lines it shows,
@@ -273,11 +322,149 @@ pub fn printed(out: &ToolOutput) -> usize {
     }
 }
 
+/// The first and last line (1-based) of a file of `total` lines that `span` asks for; start > end when none.
+fn bounds(span: Span, total: usize) -> (usize, usize) {
+    match span {
+        Span::From(a, b) => (a.max(1), b.unwrap_or(total).min(total)),
+        Span::Last(n) => (total.saturating_sub(n) + 1, total),
+    }
+}
+
+/// One print among the commands of a chained shell command: the file (the directory of the `cd` before it
+/// included), the lines, and whether they come numbered (`cat -n`).
+#[derive(Debug, PartialEq)]
+pub struct Print {
+    pub path: PathBuf,
+    pub span: Span,
+    pub numbered: bool,
+}
+
+/// The prints in a command of several parts chained with `;` or `&&`, in order. The command is cut only where
+/// those stand outside quotes; anything the scan cannot follow (a newline, a heredoc, a backtick, `$(`,
+/// parentheses, braces, `||`, a lone `&`, a backslash outside quotes) gives None, and so does a command with no
+/// print in it. The other parts may be anything; only a part that is a plain print (see `shell_print`) counts.
+pub fn shell_chain(cmd: &str) -> Option<Vec<Print>> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut it = cmd.chars().peekable();
+    while let Some(c) = it.next() {
+        match quote {
+            Some('\'') => {
+                if c == '\n' {
+                    return None;
+                }
+                if c == '\'' {
+                    quote = None;
+                }
+                cur.push(c);
+            }
+            Some(_) => {
+                match c {
+                    '"' => quote = None,
+                    '\n' | '`' => return None,
+                    '$' if it.peek() == Some(&'(') => return None,
+                    '\\' => {
+                        cur.push(c);
+                        match it.next() {
+                            Some('\n') | None => return None,
+                            Some(n) => cur.push(n),
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                cur.push(c);
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    cur.push(c);
+                }
+                '\n' | '`' | '(' | ')' | '{' | '}' | '\\' => return None,
+                '<' if it.peek() == Some(&'<') => return None,
+                '|' if it.peek() == Some(&'|') => return None,
+                '&' if it.peek() == Some(&'&') => {
+                    it.next();
+                    parts.push(std::mem::take(&mut cur));
+                }
+                '&' => return None,
+                ';' => parts.push(std::mem::take(&mut cur)),
+                _ => cur.push(c),
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    parts.push(cur);
+    // the directory later parts run in; None once a `cd` the scan cannot follow was met
+    let mut dir = Some(PathBuf::new());
+    let mut prints = Vec::new();
+    for part in parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        let w = words(part);
+        if w.first().is_some_and(|c| c == "cd") {
+            dir = match (w.as_slice(), dir) {
+                ([_, d], Some(mut base)) if !d.starts_with(['-', '~']) && !d.contains(['$', '*', '?']) => {
+                    base.push(d);
+                    Some(base)
+                }
+                _ => None,
+            };
+            continue;
+        }
+        if part.contains(PLAIN_NOT) {
+            continue;
+        }
+        let (Some(dir), Some((file, span, numbered))) = (&dir, print_of(&w)) else { continue };
+        prints.push(Print { path: dir.join(file), span, numbered });
+    }
+    (!prints.is_empty()).then_some(prints)
+}
+
+/// The bytes `print` writes from `file` as it is now, as text, without the newline that ends them; None when
+/// it prints nothing.
+fn print_bytes(file: &[u8], print: &Print) -> Option<String> {
+    let text = String::from_utf8_lossy(file);
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let (start, end) = bounds(print.span, lines.len());
+    if start > end {
+        return None;
+    }
+    let mut s = String::new();
+    for (i, line) in lines[start - 1..end].iter().enumerate() {
+        if print.numbered {
+            s.push_str(&format!("{:>6}\t", start + i));
+        }
+        s.push_str(line);
+    }
+    if s.ends_with('\n') {
+        s.pop();
+    }
+    (!s.is_empty()).then_some(s)
+}
+
+/// Where `want` stands in `output` at or after `from`, as whole lines: the first place that starts a line and
+/// is followed by a line end or the end of the output.
+fn find_lines(output: &str, from: usize, want: &str) -> Option<(usize, usize)> {
+    let mut i = from;
+    while let Some(off) = output.get(i..)?.find(want) {
+        let (s, e) = (i + off, i + off + want.len());
+        let starts = s == 0 || output.as_bytes()[s - 1] == b'\n';
+        let ends = e == output.len() || output[e..].starts_with(['\n', '\r']);
+        if starts && ends {
+            return Some((s, e));
+        }
+        i = s + output[s..].chars().next()?.len_utf8();
+    }
+    None
+}
+
 /// The file and the lines a shell command prints, when printing them is all it does: `cat [-n] F`,
 /// `sed -n 'A,Bp' F` (or `Ap`), `head [-n N | -N] F`, `tail [-n N | -n +N | -N] F`, after
 /// `cd D;` or `cd D &&` if any. Pipes, redirections, globs, expansions and other commands: None.
 pub fn shell_print(cmd: &str) -> Option<(PathBuf, Span)> {
-    if cmd.contains(['|', '>', '<', '$', '`', '*', '?', '(', ')', '{', '}', '\n', '\\']) {
+    if cmd.contains(PLAIN_NOT) {
         return None;
     }
     let flat = cmd.replace("&&", ";");
@@ -295,32 +482,43 @@ pub fn shell_print(cmd: &str) -> Option<(PathBuf, Span)> {
         }
     }
     let words = words(last);
+    let (file, span, _) = print_of(&words)?;
+    Some((dir.join(file), span))
+}
+
+/// What a command may not hold to be a plain print: pipes, redirections, expansions, globs, groups, escapes.
+const PLAIN_NOT: [char; 13] = ['|', '>', '<', '$', '`', '*', '?', '(', ')', '{', '}', '\n', '\\'];
+
+/// The file, the lines and whether they come numbered, of the plain print the `words` of a command make: `cat [-n] F`,
+/// `sed -n 'A,Bp' F` (or `Ap`), `head [-n N | -N] F`, `tail [-n N | -n +N | -N] F`.
+fn print_of(words: &[String]) -> Option<(&str, Span, bool)> {
     let count = |s: &str| s.parse::<usize>().ok();
-    let (file, span) = match words.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["cat", f] | ["cat", "-n", f] => (*f, Span::From(1, None)),
+    let (file, span, numbered) = match words.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["cat", f] => (*f, Span::From(1, None), false),
+        ["cat", "-n", f] => (*f, Span::From(1, None), true),
         ["sed", "-n", script, f] => {
             let range = script.strip_suffix('p')?;
             let (a, b) = match range.split_once(',') {
                 Some((a, b)) => (count(a)?, count(b)?),
                 None => (count(range)?, count(range)?),
             };
-            (*f, Span::From(a, Some(b)))
+            (*f, Span::From(a, Some(b)), false)
         }
-        ["head", f] => (*f, Span::From(1, Some(10))),
-        ["head", "-n", n, f] => (*f, Span::From(1, Some(count(n)?))),
-        ["head", n, f] if n.starts_with('-') => (*f, Span::From(1, Some(count(&n[1..])?))),
-        ["tail", f] => (*f, Span::Last(10)),
+        ["head", f] => (*f, Span::From(1, Some(10)), false),
+        ["head", "-n", n, f] => (*f, Span::From(1, Some(count(n)?)), false),
+        ["head", n, f] if n.starts_with('-') => (*f, Span::From(1, Some(count(&n[1..])?)), false),
+        ["tail", f] => (*f, Span::Last(10), false),
         ["tail", "-n", n, f] => match n.strip_prefix('+') {
-            Some(a) => (*f, Span::From(count(a)?, None)),
-            None => (*f, Span::Last(count(n)?)),
+            Some(a) => (*f, Span::From(count(a)?, None), false),
+            None => (*f, Span::Last(count(n)?), false),
         },
-        ["tail", n, f] if n.starts_with('-') => (*f, Span::Last(count(&n[1..])?)),
+        ["tail", n, f] if n.starts_with('-') => (*f, Span::Last(count(&n[1..])?), false),
         _ => return None,
     };
     if file.starts_with('-') {
         return None;
     }
-    Some((dir.join(file), span))
+    Some((file, span, numbered))
 }
 
 /// The words of a simple command, quotes taken off (a quoted word with a space in it: no words).
@@ -535,5 +733,164 @@ mod tests {
         ] {
             assert_eq!(p(cmd), None, "{cmd}");
         }
+    }
+
+    /// Two files in a temp dir: `a.txt` with five lines, `b.txt` with four.
+    fn two_files() -> (tempfile::TempDir, String, String) {
+        let d = tempfile::tempdir().unwrap();
+        let a: String = (1..=5).map(|i| format!("alpha {i}\n")).collect();
+        let b: String = (1..=4).map(|i| format!("beta {i}\n")).collect();
+        std::fs::write(d.path().join("a.txt"), &a).unwrap();
+        std::fs::write(d.path().join("b.txt"), &b).unwrap();
+        (d, a, b)
+    }
+
+    #[test]
+    fn two_repeated_prints_chained_with_an_echo_each_get_a_note_and_the_echo_stays() {
+        let (d, a, b) = two_files();
+        let cmd = "cat a.txt; echo ----; cat b.txt";
+        let out = format!("{a}----\n{b}");
+        let mut r = Reads::default();
+        assert!(r.after_chain(d.path(), cmd, &out, "c1").is_none(), "first time: nothing is repeated");
+        r.note_view(&[result("c1", &out)]);
+        let sent = r.after_chain(d.path(), cmd, &out, "c2").unwrap();
+        assert_eq!(sent.matches("not repeated").count(), 2, "{sent}");
+        assert!(sent.contains("a.txt: unchanged since shown above (5 lines)"), "{sent}");
+        assert!(sent.contains("b.txt: unchanged since shown above (4 lines)"), "{sent}");
+        assert!(sent.contains("\n----\n") && !sent.contains("alpha") && !sent.contains("beta"), "{sent}");
+    }
+
+    #[test]
+    fn a_print_chained_with_a_grep_gets_a_note_and_the_grep_output_is_untouched() {
+        let (d, a, _) = two_files();
+        let cmd = "sed -n 2,4p a.txt && grep -n beta b.txt";
+        let out = "alpha 2\nalpha 3\nalpha 4\n1:beta 1\n2:beta 2\n[exit code 0]";
+        let mut r = Reads::default();
+        assert!(r.after_lines(&d.path().join("a.txt"), "a.txt", Span::From(1, None), "c1", a.len()).is_none());
+        r.note_view(&[result("c1", &a)]);
+        let sent = r.after_chain(d.path(), cmd, out, "c2").unwrap();
+        assert!(sent.starts_with("a.txt: unchanged since shown above (3 lines)"), "{sent}");
+        assert!(sent.ends_with("\n1:beta 1\n2:beta 2\n[exit code 0]"), "{sent}");
+        // a grep that found nothing ends the command with an error; the print is still what it is
+        let failed = "alpha 2\nalpha 3\nalpha 4\n[exit code 1]";
+        let mut r = Reads::default();
+        assert!(r.after_lines(&d.path().join("a.txt"), "a.txt", Span::From(1, None), "c1", a.len()).is_none());
+        r.note_view(&[result("c1", &a)]);
+        let cmd = "sed -n 2,4p a.txt; grep nope b.txt";
+        let sent = r.after_chain(d.path(), cmd, failed, "c3").unwrap();
+        assert!(sent.contains("not repeated") && sent.ends_with("\n[exit code 1]"), "{sent}");
+    }
+
+    #[test]
+    fn a_print_after_a_sed_in_place_of_the_same_file_in_the_command_gets_no_note() {
+        let (d, a, _) = two_files();
+        let p = d.path().join("a.txt");
+        let mut r = Reads::default();
+        assert!(r.after_lines(&p, "a.txt", Span::From(1, None), "c1", a.len()).is_none());
+        r.note_view(&[result("c1", &a)]);
+        // what `sed -i s/alpha/gamma/ a.txt; cat a.txt` leaves behind
+        let after = a.replace("alpha", "gamma");
+        std::fs::write(&p, &after).unwrap();
+        assert!(r.after_chain(d.path(), "sed -i s/alpha/gamma/ a.txt; cat a.txt", &after, "c2").is_none());
+        // a print before the change shows what the file held then, which is not what it holds now
+        let now = after.replace("gamma", "delta");
+        std::fs::write(&p, &now).unwrap();
+        assert!(r.after_chain(d.path(), "cat a.txt; sed -i s/gamma/delta/ a.txt", &after, "c3").is_none());
+    }
+
+    #[test]
+    fn a_semicolon_inside_quotes_is_not_a_split_point() {
+        let one = |cmd: &str| shell_chain(cmd).unwrap();
+        assert_eq!(
+            one("echo 'x; cat a.txt'; cat b.txt"),
+            vec![Print { path: "b.txt".into(), span: Span::From(1, None), numbered: false }]
+        );
+        assert_eq!(one("echo \"cat a.txt && cat c.txt\" ; sed -n 3,4p b.txt").len(), 1);
+        // the quoted text alone holds no print
+        assert!(shell_chain("echo 'cat a.txt; cat b.txt'").is_none());
+        // `cd` carries to the prints after it, and only to those
+        assert_eq!(
+            one("cat top.txt; cd sub && head -n 3 x.log"),
+            vec![
+                Print { path: "top.txt".into(), span: Span::From(1, None), numbered: false },
+                Print { path: "sub/x.log".into(), span: Span::From(1, Some(3)), numbered: false },
+            ]
+        );
+    }
+
+    #[test]
+    fn what_the_scan_cannot_follow_is_left_as_it_is_today() {
+        for cmd in [
+            "cat a.txt; echo $(date)",
+            "cat a.txt; echo `date`",
+            "cat a.txt; cat <<EOF\nx\nEOF",
+            "cat a.txt; cat <<EOF",
+            "cat a.txt\ncat b.txt",
+            "cat a.txt || echo none",
+            "cat a.txt; (cd x; ls)",
+            "cat a.txt; { ls; }",
+            "sleep 1 & cat a.txt",
+            "cat a.txt; echo \"$(date)\"",
+            "cat a.txt; echo 'open",
+        ] {
+            assert!(shell_chain(cmd).is_none(), "{cmd}");
+        }
+        let (d, a, b) = two_files();
+        let cmd = "cat a.txt; echo $(date); cat b.txt";
+        let out = format!("{a}now\n{b}");
+        let mut r = Reads::default();
+        assert!(r.after_chain(d.path(), cmd, &out, "c1").is_none());
+        r.note_view(&[result("c1", &out)]);
+        assert!(r.after_chain(d.path(), cmd, &out, "c2").is_none());
+    }
+
+    #[test]
+    fn one_repeated_and_one_new_print_give_one_note_and_the_new_lines_are_remembered() {
+        let (d, a, b) = two_files();
+        let mut r = Reads::default();
+        let first = format!("{a}[exit code 0]");
+        assert!(r.after_chain(d.path(), "cat a.txt; true", &first, "c1").is_none());
+        r.note_view(&[result("c1", &first)]);
+        let cmd = "cat a.txt; echo ----; cat b.txt";
+        let out = format!("{a}----\n{b}");
+        let sent = r.after_chain(d.path(), cmd, &out, "c2").unwrap();
+        assert_eq!(sent.matches("not repeated").count(), 1, "{sent}");
+        assert!(sent.contains("a.txt: unchanged") && sent.ends_with(&format!("----\n{b}")), "{sent}");
+        // the lines of b.txt went to the model, so a later single print of them gets the note
+        r.note_view(&[result("c1", &first), result("c2", &sent)]);
+        let note = r.after_lines(&d.path().join("b.txt"), "b.txt", Span::From(2, Some(3)), "c3", 100).unwrap();
+        assert!(note.contains("b.txt: unchanged since shown above (2 lines)"), "{note}");
+    }
+
+    #[test]
+    fn a_numbered_print_inside_a_chain_is_matched_with_its_numbers() {
+        let (d, a, _) = two_files();
+        let numbered: String = a.lines().enumerate().map(|(i, l)| format!("{:>6}\t{l}\n", i + 1)).collect();
+        let cmd = "cat -n a.txt; git status --short";
+        let out = format!("{numbered}?? new.rs\n");
+        let mut r = Reads::default();
+        assert!(r.after_chain(d.path(), cmd, &out, "c1").is_none());
+        r.note_view(&[result("c1", &out)]);
+        let sent = r.after_chain(d.path(), cmd, &out, "c2").unwrap();
+        assert!(sent.starts_with("a.txt: unchanged since shown above (5 lines)"), "{sent}");
+        assert!(sent.ends_with("\n?? new.rs\n") && !sent.contains("alpha"), "{sent}");
+        // the same lines without numbers are not what `cat -n` printed
+        assert!(r.after_chain(d.path(), cmd, &format!("{a}?? new.rs\n"), "c3").is_none());
+    }
+
+    #[test]
+    fn a_print_cut_short_or_followed_by_other_text_on_its_last_line_is_left_as_it_is() {
+        let (d, a, _) = two_files();
+        let cmd = "cat a.txt; echo end";
+        let mut r = Reads::default();
+        let out = format!("{a}end\n");
+        assert!(r.after_chain(d.path(), cmd, &out, "c1").is_none());
+        r.note_view(&[result("c1", &out)]);
+        // the output lost its middle: no piece of it is found whole
+        let cut = "alpha 1\nalpha 2\n… [30 characters omitted] …\n\nalpha 5\nend\n";
+        assert!(r.after_chain(d.path(), cmd, cut, "c2").is_none());
+        // a file with no final newline, whose last line runs into the next output
+        std::fs::write(d.path().join("c.txt"), "x\ny").unwrap();
+        assert!(r.after_chain(d.path(), "cat c.txt; echo end", "x\nyend\n", "c3").is_none());
     }
 }

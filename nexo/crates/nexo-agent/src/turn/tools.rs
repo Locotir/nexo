@@ -630,6 +630,7 @@ pub(super) async fn run_call(
                     ),
                     _ => None,
                 };
+            let mut chained: Option<String> = None;
             let seen = {
                 let mut st = state.lock().await;
                 let _ = st.session.record_output(id, &out);
@@ -650,6 +651,13 @@ pub(super) async fn run_call(
                         for p in changed_paths(args) {
                             let path = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { cwd.join(&p) };
                             st.reads.after_change(&path, id, name == "write");
+                        }
+                        None
+                    }
+                    ("bash", None) => {
+                        // several commands chained: the prints among them are checked one by one
+                        if let Some(cmd) = args.get("command").and_then(Value::as_str) {
+                            chained = st.reads.after_chain(cwd, cmd, &out.content, id);
                         }
                         None
                     }
@@ -675,6 +683,10 @@ pub(super) async fn run_call(
                 hook_notes.extend(o.blocked);
             }
             // the person sees the lines; the model, which has them, a note
+            let out = match chained {
+                Some(content) => ToolOutput { content, ..out },
+                None => out,
+            };
             let mut sent = match seen {
                 Some(note) => ToolOutput::ok(note),
                 None if !out.is_error => match digest(state, events, name, args, file, &out, cancel).await {
