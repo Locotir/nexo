@@ -347,3 +347,43 @@ fn a_request_the_provider_fails_shows_the_retry_on_the_work_line_and_the_wait_on
     a.handle_agent(AgentEvent::TextDelta { text: "on it".into() });
     assert!(work_line(&mut a).contains("Writing…"));
 }
+
+#[test]
+fn a_retry_told_after_the_turn_ended_shows_nothing() {
+    let (mut a, mut rx) = app();
+    a.input.set_text("hello");
+    a.submit();
+    drain(&mut rx);
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    a.handle_agent(AgentEvent::Idle { running_jobs: 0 });
+    a.handle_agent(AgentEvent::Retrying {
+        attempt: 1,
+        retries: 4,
+        wait_secs: 1,
+        rate_limit: false,
+        reason: "network error".into(),
+    });
+    assert!(a.prep.is_none() && !a.busy, "nothing is waiting any more");
+    assert!(a.toasts.iter().all(|t| !t.text.contains("trying again")));
+}
+
+#[test]
+fn the_work_line_stops_claiming_a_failure_once_the_request_is_taken_again() {
+    let (mut a, mut rx) = app();
+    a.input.set_text("hello");
+    a.submit();
+    drain(&mut rx);
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    a.handle_agent(AgentEvent::Retrying {
+        attempt: 1,
+        retries: 4,
+        wait_secs: 1,
+        rate_limit: false,
+        reason: "network error".into(),
+    });
+    assert!(work_line(&mut a).contains("retry 1 of 4"));
+    // the agent says the model is the wait again; a model that thinks silently now reads as thinking, not failing
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    let line = work_line(&mut a);
+    assert!(line.contains("Waiting for the model") && !line.contains("retry"), "{line}");
+}

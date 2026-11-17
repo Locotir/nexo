@@ -15,6 +15,10 @@ impl App {
     /// provider is not mistaken for a slow model. The seconds are not in the label (nothing would update it
     /// when the wait ends); the first retry says them once in a toast, which takes no row.
     pub(super) fn on_retrying(&mut self, attempt: u8, retries: u8, wait_secs: u32, reason: String) {
+        // a late word about a request nobody waits for any more (the turn ended or was stopped) is not shown
+        if !self.busy {
+            return;
+        }
         let why = if reason.is_empty() { String::new() } else { format!(" ({reason})") };
         self.prep = Some(format!("waiting for the model: retry {attempt} of {retries}{why}"));
         if attempt == 1 {

@@ -143,16 +143,24 @@ impl Client {
         let (shaped, key) = crate::login::prepare(cfg).await.map_err(|e| self.explain(cfg, true, e))?;
         let cfg = &shaped;
         let mut attempt = 0u32;
+        let mut told: Option<Retry> = None;
         let inner = loop {
             match protocol.stream(cfg, key.as_deref(), req).await {
-                Ok(s) => break s,
+                Ok(s) => {
+                    if let (Some(on), Some(r)) = (&on_retry, &told) {
+                        on(r.taken());
+                    }
+                    break s;
+                }
                 Err(e) if self.worth_retrying(&e) && attempt < retries => {
                     attempt += 1;
                     let wait = self.backoff(attempt, &e);
                     tracing::warn!(attempt, ?wait, "{e}; retrying");
+                    let r = Retry::after(&e, attempt, retries, wait);
                     if let Some(on) = &on_retry {
-                        on(Retry::after(&e, attempt, retries, wait));
+                        on(r.clone());
                     }
+                    told = Some(r);
                     tokio::time::sleep(wait).await;
                 }
                 Err(e) => return Err(self.explain(cfg, key.is_some(), e)),
@@ -208,8 +216,13 @@ impl Client {
                                 attempt += 1;
                                 let wait = this.backoff(attempt, &last);
                                 tracing::warn!(attempt, ?wait, "{last}; retrying");
+                                // a caller that left is told nothing: the wait of a request nobody reads is not news
+                                if tx.is_closed() {
+                                    return;
+                                }
+                                let told = Retry::after(&last, attempt, retries, wait);
                                 if let Some(on) = &on_retry {
-                                    on(Retry::after(&last, attempt, retries, wait));
+                                    on(told.clone());
                                 }
                                 tokio::select! {
                                     _ = tokio::time::sleep(wait) => {}
@@ -217,6 +230,9 @@ impl Client {
                                 }
                                 match protocol.stream(&cfg, key.as_deref(), &req).await {
                                     Ok(s) => {
+                                        if let (Some(on), false) = (&on_retry, tx.is_closed()) {
+                                            on(told.taken());
+                                        }
                                         inner = s;
                                         continue 'attempts;
                                     }
@@ -365,8 +381,9 @@ mod tests {
     }
 
     /// What `on_retry` was told while a request that fails `failures` times at the start, then streams a
-    /// reply that breaks `broken` times before its first word, is answered.
-    async fn retries_seen(failures: usize, broken: usize, retries: u32) -> Vec<Retry> {
+    /// reply that breaks `broken` times before its first word, is answered: the waits and the word that the
+    /// request was taken.
+    async fn told_during(failures: usize, broken: usize, retries: u32) -> Vec<Retry> {
         let mut overloaded = ProviderError::new(ErrorKind::Overloaded, "Overloaded").with_status(529);
         overloaded.retry_after = Some(Duration::ZERO);
         let cut = || Ok(vec![StreamEvent::Error(overloaded.clone()), StreamEvent::Done]);
@@ -388,6 +405,11 @@ mod tests {
         told.clone()
     }
 
+    /// The retries alone, without the words that a request was taken.
+    async fn retries_seen(failures: usize, broken: usize, retries: u32) -> Vec<Retry> {
+        told_during(failures, broken, retries).await.into_iter().filter(|r| !r.resumed).collect()
+    }
+
     #[tokio::test]
     async fn a_request_that_fails_before_any_stream_exists_is_told_to_the_observer_before_each_retry() {
         let told = retries_seen(2, 0, 4).await;
@@ -407,6 +429,37 @@ mod tests {
         assert_eq!(told.iter().map(|r| r.attempt).collect::<Vec<_>>(), [1, 2], "{told:?}");
     }
 
+    #[tokio::test]
+    async fn the_observer_is_told_when_a_retried_request_is_taken_and_not_before() {
+        // two failures at the start, then a stream that breaks once, then a good one
+        let told = told_during(2, 1, 4).await;
+        let seen: Vec<_> = told.iter().map(|r| (r.attempt, r.resumed)).collect();
+        assert_eq!(seen, [(1, false), (2, false), (2, true), (3, false), (3, true)], "{told:?}");
+        assert!(told_during(0, 0, 4).await.is_empty(), "a request that needs no retry says nothing");
+    }
+
+    #[tokio::test]
+    async fn a_retry_is_not_told_once_the_caller_has_left() {
+        let mut overloaded = ProviderError::new(ErrorKind::Overloaded, "Overloaded").with_status(529);
+        overloaded.retry_after = Some(Duration::ZERO);
+        let script = vec![
+            Ok(vec![StreamEvent::Error(overloaded), StreamEvent::Done]),
+            Ok(vec![StreamEvent::TextDelta("hi".into()), StreamEvent::Done]),
+        ];
+        let mut registry = Registry::new();
+        registry.register(Arc::new(Scripted(Mutex::new(script))));
+        let seen: Arc<Mutex<Vec<Retry>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_retry: RetryObserver = Arc::new(move |r: Retry| sink.lock().unwrap().push(r));
+        let cfg = ProviderConfig::new("scripted", "http://127.0.0.1:9", None);
+        let req = ModelRequest::new("m", "", vec![Message::user("hi")]);
+        let stream = Client::new(registry).stream_with(&cfg, &req, 4, Some(on_retry)).await.unwrap();
+        // the turn is stopped while the first reply is on its way; the task that watches it only runs now
+        drop(stream);
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(seen.lock().unwrap().is_empty(), "{:?}", seen.lock().unwrap());
+    }
     #[test]
     fn a_rate_limit_is_marked_as_one_for_the_observer() {
         let e = ProviderError::new(ErrorKind::RateLimit, "slow down").with_status(429);

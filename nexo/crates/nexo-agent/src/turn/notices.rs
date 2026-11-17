@@ -89,10 +89,16 @@ pub(super) fn skipped_note(events: &EventTx, id: &str, skipped: usize) {
 }
 
 /// What the client tells of each retry of a request, as an event: the person sees the wait is the provider
-/// failing, not a slow model. The wait is rounded up, so a short one never reads as none.
+/// failing, not a slow model. The wait is rounded up, so a short one never reads as none. Once the request
+/// is taken again, the wait is the model's again.
 pub(super) fn retry_observer(events: &EventTx) -> nexo_core::model_client::RetryObserver {
     let events = events.clone();
     std::sync::Arc::new(move |r: nexo_core::model_client::Retry| {
+        // the request was taken: what follows is the model's own wait, not a failure, and the screen says so
+        if r.resumed {
+            preparing(&events, PREP_MODEL);
+            return;
+        }
         emit(
             &events,
             AgentEvent::Retrying {

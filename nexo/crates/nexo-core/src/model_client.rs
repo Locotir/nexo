@@ -21,6 +21,9 @@ pub struct Retry {
     pub rate_limit: bool,
     /// What went wrong, in the few words a status line has room for.
     pub reason: String,
+    /// The request went out again and was taken (the wait is over; the reply is still to come). The other
+    /// fields are those of the retry it ends.
+    pub resumed: bool,
 }
 
 impl Retry {
@@ -30,11 +33,17 @@ impl Retry {
             Some(s) => format!("{}, HTTP {s}", e.kind.phrase()),
             None => e.kind.phrase().to_string(),
         };
-        Retry { attempt, retries, wait, rate_limit: e.kind == ErrorKind::RateLimit, reason }
+        Retry { attempt, retries, wait, rate_limit: e.kind == ErrorKind::RateLimit, reason, resumed: false }
+    }
+
+    /// This retry again, as told once its request was taken by the provider.
+    pub fn taken(&self) -> Retry {
+        Retry { resumed: true, ..self.clone() }
     }
 }
 
-/// Told of each retry as it is about to wait; called from the client's own task, so it must not block.
+/// Told of each retry as it is about to wait, and again (see [`Retry::taken`]) when its request is taken.
+/// Called from the client's own task, so it must not block.
 pub type RetryObserver = Arc<dyn Fn(Retry) + Send + Sync>;
 
 /// One call to a provider, with the client's own retries.

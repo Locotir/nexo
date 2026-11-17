@@ -379,6 +379,21 @@ async fn a_server_that_never_answers_is_given_up_on_at_the_providers_limit() {
     assert!(e.message.contains("no answer for 1 s"), "{}", e.message);
 }
 
+#[tokio::test]
+async fn an_error_whose_body_never_comes_is_still_told_by_its_status_at_the_providers_limit() {
+    let head = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\n\r\n";
+    let base = silent(Some(head)).await;
+    let started = std::time::Instant::now();
+    let e = tokio::time::timeout(Duration::from_secs(30), async {
+        quick().stream(&quiet_after(&base, 1), &req(), 0).await.err().expect("an error")
+    })
+    .await
+    .expect("the call ended");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert_eq!(e.status, Some(502), "{e:?}");
+    assert!(e.is_retryable(), "a stalled gateway is tried again like a failed one: {e:?}");
+}
+
 // ---- 8: the error stays short ----
 
 #[tokio::test]

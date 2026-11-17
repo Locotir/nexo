@@ -144,7 +144,13 @@ pub async fn post_stream(
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
         let retry_after = retry_after(resp.headers());
-        let text = resp.text().await.unwrap_or_default();
+        // a gateway that sends the status and then stalls the body is still told by its status, and the
+        // call ends at the provider's limit like any other quiet one
+        let text = match idle {
+            Some(limit) => tokio::time::timeout(limit, resp.text()).await.ok().and_then(Result::ok),
+            None => resp.text().await.ok(),
+        }
+        .unwrap_or_default();
         let mut e = ProviderError::from_http(status, &pretty_error(&text));
         e.retry_after = retry_after;
         return Err(e);
