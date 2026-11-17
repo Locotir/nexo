@@ -212,7 +212,7 @@ fn a_long_changed_line_in_a_diff_permission_wraps_and_keeps_its_tail() {
 }
 
 #[test]
-fn a_diff_permission_drops_escapes_and_bidi_marks_from_the_text_and_the_path() {
+fn a_diff_permission_shows_escapes_and_bidi_marks_as_markers_in_the_text_and_the_path() {
     let mut r = req();
     r.detail = ToolDisplay::Diff {
         path: "src/\x1b]0;owned\x07a\u{202e}.rs".into(),
@@ -220,13 +220,33 @@ fn a_diff_permission_drops_escapes_and_bidi_marks_from_the_text_and_the_path() {
         new: "x\x1b[31mred\u{202e}ev\u{200b}il\n".into(),
         start_line: 1,
     };
-    let text = texts(&Modal::permission_lines(&r, 60, &Theme::dark())).join("\n");
+    let text = texts(&Modal::permission_lines(&r, 80, &Theme::dark())).join("\n");
     assert!(!text.chars().any(|c| matches!(c, '\x1b' | '\x07' | '\u{202e}' | '\u{200b}')), "{text:?}");
-    assert!(text.contains("src/a.rs") && text.contains("xredevil"), "{text:?}");
-    // the path of a file shown whole is cleaned the same way
+    assert!(text.contains("src/␛]0;owned␇a<U+202E>.rs"), "{text:?}");
+    assert!(text.contains("x␛[31mred<U+202E>ev<U+200B>il"), "{text:?}");
+    // the path of a file shown whole is shown the same way
     r.detail = ToolDisplay::File { path: "a\x1b[2Jb.txt".into(), text: "hi".into(), start_line: 1 };
     let text = texts(&Modal::permission_lines(&r, 60, &Theme::dark())).join("\n");
-    assert!(!text.contains('\x1b') && text.contains("ab.txt"), "{text:?}");
+    assert!(!text.contains('\x1b') && text.contains("a␛[2Jb.txt"), "{text:?}");
+}
+
+#[test]
+fn a_carriage_return_inside_a_path_or_a_diff_line_does_not_hide_what_comes_before_it() {
+    let mut r = req();
+    r.detail = ToolDisplay::Diff {
+        path: "/etc/passwd\r/tmp/x".into(),
+        old: "a\n".into(),
+        new: "evil()\rok\nfine\r\n".into(),
+        start_line: 1,
+    };
+    let text = texts(&Modal::permission_lines(&r, 80, &Theme::dark())).join("\n");
+    assert!(text.contains("/etc/passwd␍/tmp/x"), "{text:?}");
+    assert!(text.contains("evil()␍ok"), "{text:?}");
+    // a line ending written as CRLF is not marked
+    assert!(text.contains("+ fine") && !text.contains("fine␍"), "{text:?}");
+    r.detail = ToolDisplay::File { path: "/etc/passwd\r/tmp/x".into(), text: "hi".into(), start_line: 1 };
+    let text = texts(&Modal::permission_lines(&r, 80, &Theme::dark())).join("\n");
+    assert!(text.contains("/etc/passwd␍/tmp/x"), "{text:?}");
 }
 
 #[test]

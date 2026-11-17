@@ -39,9 +39,9 @@ impl Modal {
             ToolDisplay::Diff { path, old, new, start_line } => {
                 let (added, removed) = diff::stats(old, new);
                 lines.push(Line::from(vec![
-                    // the path comes from the model: no escape or bidi character reaches the dialog
+                    // the path comes from the model: escape and bidi characters show as markers, never as themselves or as nothing
                     Span::styled(
-                        truncate(&crate::render::wrap::one_line(path), w.saturating_sub(12)),
+                        truncate(&crate::render::wrap::one_line(&reveal(path)), w.saturating_sub(12)),
                         theme.style(theme.accent),
                     ),
                     Span::raw("  "),
@@ -50,12 +50,12 @@ impl Modal {
                     Span::styled(format!("-{removed}"), theme.style(theme.error)),
                 ]));
                 // Wrapped under the gutter, not cut at the edge: the part of a long line that changed is the part
-                // being approved. `wrap_runs` also cleans, so file content cannot send escapes or bidi marks.
+                // being approved. `reveal` shows hidden characters as markers first, so file content cannot hide in the row.
                 for row in diff::unified(old, new, *start_line, theme) {
                     if let [gutter, text] = row.spans.as_slice() {
                         let indent = Span::raw(" ".repeat(crate::render::wrap::width(&gutter.content) + 2));
                         lines.extend(crate::render::wrap::wrap_runs(
-                            &[(text.content.to_string(), text.style)],
+                            &[(reveal(&text.content), text.style)],
                             w,
                             std::slice::from_ref(gutter),
                             &[indent],
@@ -79,7 +79,12 @@ impl Modal {
                 }
             }
             ToolDisplay::File { path, text, .. } => {
-                lines.extend(wrap_plain(&crate::render::wrap::one_line(path), w, theme.style(theme.accent), &[]));
+                lines.extend(wrap_plain(
+                    &crate::render::wrap::one_line(&reveal(path)),
+                    w,
+                    theme.style(theme.accent),
+                    &[],
+                ));
                 if is_markdown_path(path) {
                     lines.extend(crate::render::markdown::md_lines(text, w, theme, Style::default(), false, &[]));
                 } else {
@@ -206,4 +211,29 @@ impl Permission {
         *slot = Some(BodyCache { width: w, theme: theme.clone(), lines: lines.clone() });
         lines
     }
+}
+
+/// `s` with what a terminal would act on or hide made visible, for text the model supplies and the owner approves: a
+/// carriage return in the middle of a line (it would write over what comes before it), the other control characters and
+/// the bidirectional and zero-width characters that make text read differently from how it is stored. Each shows as its
+/// control picture or as `<U+XXXX>`, so the dialog never shows less than what is written. A carriage return at the
+/// end of a line (CRLF) is the line ending and stays as it is.
+fn reveal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\n' | '\t' => out.push(c),
+            '\r' if it.peek().is_none() => out.push(c),
+            '\0'..='\u{1f}' => out.push(char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}')),
+            '\u{7f}' => out.push('\u{2421}'),
+            c if c.is_control()
+                || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{E0020}'..='\u{E007F}') =>
+            {
+                out.push_str(&format!("<U+{:04X}>", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
