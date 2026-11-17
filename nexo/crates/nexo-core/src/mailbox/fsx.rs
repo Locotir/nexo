@@ -28,7 +28,8 @@ pub(super) fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        pid != 0
+        // Windows asks the process; where the system cannot tell, any pid but 0 counts
+        crate::proc::pid_alive(pid).unwrap_or(pid != 0)
     }
 }
 
@@ -72,4 +73,11 @@ pub(super) fn text_hash(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn a_peer_whose_process_has_exited_is_not_alive_on_windows() {
+    assert!(!pid_alive(crate::proc::exited_pid()));
+    assert!(pid_alive(std::process::id()));
 }

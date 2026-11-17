@@ -354,7 +354,8 @@ fn alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        pid != 0
+        // Windows asks the process; where the system cannot tell, any pid but 0 counts
+        crate::proc::pid_alive(pid).unwrap_or(pid != 0)
     }
 }
 

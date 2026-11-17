@@ -33,6 +33,7 @@ pub mod permission;
 pub mod plugins;
 pub mod pricing;
 pub mod problem;
+pub mod proc;
 pub mod provider;
 pub mod reach;
 pub mod redact;

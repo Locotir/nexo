@@ -440,8 +440,8 @@ fn a_second_writer_is_refused_and_a_stale_lock_taken_over() {
     assert!(lock.is_file());
     drop(s);
     assert!(!lock.exists(), "the lock goes with its session");
-    // another live writer (pid 1 always runs) holds it
-    std::fs::write(&lock, "1").unwrap();
+    // another live writer holds it
+    std::fs::write(&lock, other_live_pid().to_string()).unwrap();
     let mut s = Session::open_path(&p).unwrap();
     let e = s.append(&Message::user("x")).unwrap_err().to_string();
     assert!(e.contains("in use"), "{e}");
@@ -533,29 +533,41 @@ fn a_live_writer_keeps_its_lock_however_old() {
         let f = File::options().write(true).open(&lock).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600)).unwrap();
     };
-    // pid 1 always runs; its lock, with when it started, is two days old
-    two_days_old(&pid1_stamp());
+    // another process that always runs; its lock, with when it started, is two days old
+    two_days_old(&live_pid_stamp());
     let mut s = Session::open_path(&p).unwrap();
     let r = s.append(&Message::user("x"));
-    // Linux and macOS tell when a process started (`/proc`, `ps`)
-    if cfg!(any(target_os = "linux", target_os = "macos")) {
+    // Linux, macOS and Windows tell when a process started (`/proc`, `ps`, the process times)
+    if proc_start(other_live_pid()).is_some() {
         assert!(r.unwrap_err().to_string().contains("in use"));
     } else {
         r.unwrap(); // no start time here: a pid in use may be another process, the age decides
     }
     drop(s);
     // without its start time, a live pid may have been taken by another process since: the age decides
-    two_days_old("1");
+    two_days_old(&other_live_pid().to_string());
     let mut s = Session::open_path(&p).unwrap();
     s.append(&Message::user("y")).unwrap();
     assert_eq!(lock_pid(&lock), Some(std::process::id()));
 }
 
-/// The lock pid 1 would write: its pid and, where the system tells, when it started and the boot.
-fn pid1_stamp() -> String {
-    match (proc_start(1), boot_id()) {
-        (Some(start), Some(boot)) => format!("1 {start} {boot}"),
-        _ => "1".into(),
+/// A process other than the test that always runs: init on Unix, the System process on Windows (its pids are
+/// multiples of 4, so pid 1 names nothing there).
+fn other_live_pid() -> u32 {
+    if cfg!(windows) {
+        4
+    } else {
+        1
+    }
+}
+
+/// The lock that process would write: its pid and, where the system tells, when it started and the boot.
+fn live_pid_stamp() -> String {
+    let pid = other_live_pid();
+    match (proc_start(pid), boot_id()) {
+        (Some(start), Some(boot)) => format!("{pid} {start} {boot}"),
+        (Some(start), None) => format!("{pid} {start}"),
+        _ => pid.to_string(),
     }
 }
 
@@ -650,7 +662,7 @@ fn a_held_session_is_read_but_not_claimed_nor_touched() {
     // the other writer is in the middle of a line
     OpenOptions::new().append(true).open(&p).unwrap().write_all(b"{\"type\":\"ti").unwrap();
     let before = std::fs::read(&p).unwrap();
-    std::fs::write(lock_path(&p), "1").unwrap(); // pid 1 always runs
+    std::fs::write(lock_path(&p), other_live_pid().to_string()).unwrap();
     let mut s = Session::open_path(&p).unwrap();
     assert_eq!(s.messages().len(), 1);
     assert!(s.claim().unwrap_err().to_string().contains("in use"));
@@ -765,7 +777,7 @@ fn a_session_in_use_elsewhere_is_not_trashed() {
     let id = s.id().to_string();
     let lock = lock_path(s.path());
     drop(s);
-    std::fs::write(&lock, "1").unwrap(); // pid 1 always runs
+    std::fs::write(&lock, other_live_pid().to_string()).unwrap();
     let e = trash_in(d.path(), &id).unwrap_err().to_string();
     assert!(e.contains("in use"), "{e}");
     std::fs::remove_file(&lock).unwrap();
@@ -1468,4 +1480,22 @@ fn a_session_that_cannot_be_opened_names_its_file_and_the_cause() {
     std::fs::create_dir(&dir_as_file).unwrap();
     let e = Session::open_path(&dir_as_file).err().expect("an unreadable file").to_string();
     assert!(e.contains(&dir_as_file.display().to_string()) && e.contains("cannot be read"), "{e}");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_fresh_lock_of_a_process_that_has_exited_is_stale_on_windows() {
+    let d = tempfile::tempdir().unwrap();
+    let lock = d.path().join("x.jsonl.lock");
+    let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    drop(child);
+    // just written, so only the pid can tell that nobody holds it
+    std::fs::write(&lock, pid.to_string()).unwrap();
+    assert_eq!(holder(&lock), None);
+    // this process runs, and its own stamp (with the start time) names it
+    std::fs::write(&lock, stamp()).unwrap();
+    assert_eq!(holder(&lock), Some(Some(std::process::id())));
+    assert!(proc_start(std::process::id()).is_some(), "Windows tells when a process started");
 }

@@ -181,3 +181,10 @@ fn the_lsof_fallback_finds_the_working_folder_of_this_process() {
     let got = lsof_cwd_of(std::process::id()).map(|p| std::path::PathBuf::from(p).canonicalize().unwrap());
     assert_eq!(got, Some(here));
 }
+
+#[cfg(windows)]
+#[test]
+fn an_inbox_whose_process_has_exited_is_not_alive_on_windows() {
+    assert!(!super::alive(crate::proc::exited_pid()));
+    assert!(super::alive(std::process::id()));
+}
