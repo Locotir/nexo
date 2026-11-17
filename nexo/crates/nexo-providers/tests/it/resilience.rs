@@ -25,6 +25,7 @@ fn req() -> ModelRequest {
 fn quick() -> Client {
     let mut c = Client::new(registry());
     c.max_backoff = Duration::ZERO;
+    c.retry_ceiling = Duration::ZERO;
     c
 }
 
@@ -108,7 +109,7 @@ async fn wait_for(value: &'static str) -> Option<Duration> {
 }
 
 #[tokio::test]
-async fn retry_after_in_every_shape_and_the_cap_on_the_wait() {
+async fn retry_after_in_every_shape_and_the_ceiling_on_the_wait() {
     assert_eq!(wait_for("0").await, Some(Duration::ZERO));
     assert_eq!(wait_for("-5").await, None, "a negative value is ignored: the usual backoff applies");
     assert_eq!(wait_for("soon").await, None);
@@ -117,15 +118,30 @@ async fn retry_after_in_every_shape_and_the_cap_on_the_wait() {
     assert_eq!(past, Some(Duration::ZERO), "a date in the past");
     let future = wait_for("Wed, 21 Oct 2099 07:28:00 GMT").await.unwrap();
     assert!(future > Duration::from_secs(3600));
-    // whatever the server asks, one wait is never longer than max_backoff
+    // what the server asks is waited as asked, even past the ladder's 30 s; only the ceiling stops it
     let client = Client::new(registry());
     let mut e = ProviderError::new(ErrorKind::RateLimit, "slow");
+    e.retry_after = Some(Duration::from_secs(90));
+    assert_eq!(client.backoff(1, &e), Duration::from_secs(90));
     e.retry_after = Some(Duration::from_secs(86_400));
-    assert_eq!(client.backoff(1, &e), Duration::from_secs(30));
-    // without a hint: 1, 2, 4, 8, 16, 30 (capped), 30
+    assert_eq!(client.backoff(1, &e), client.retry_ceiling);
+    // without a hint: 1, 2, 4, 8, 16, 30 (capped), 30, each with up to a quarter more
     e.retry_after = None;
-    let waits: Vec<u64> = (1..=7).map(|n| client.backoff(n, &e).as_secs()).collect();
-    assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
+    for (n, base) in [(1u32, 1.0f64), (2, 2.0), (3, 4.0), (4, 8.0), (5, 16.0), (6, 30.0), (7, 30.0)] {
+        let wait = client.backoff(n, &e).as_secs_f64();
+        assert!(wait >= base && wait <= base * 1.25 + 1e-9, "attempt {n}: {wait}");
+    }
+}
+
+#[tokio::test]
+async fn a_retry_after_past_the_ceiling_is_returned_at_once_not_waited_for() {
+    let (base, hits) = answering(429, &[("Retry-After", "3600")], "{\"error\":\"slow\"}".into()).await;
+    let started = std::time::Instant::now();
+    let e = first_error(&Client::new(registry()), &base, 2).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "an hour is not waited for with the turn open");
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    assert_eq!(e.retry_after, Some(Duration::from_secs(3600)));
+    assert!(e.human().contains("Rate limited"), "{}", e.human());
 }
 
 // ---- 3: which statuses retry ----

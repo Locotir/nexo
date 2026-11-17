@@ -51,6 +51,13 @@ pub fn registry() -> Registry {
     r
 }
 
+/// A share between 0 and a quarter, from the clock's nanoseconds: enough to spread retries, with no
+/// random-number dependency.
+fn jitter_share() -> f64 {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    f64::from(nanos % 1000) / 4000.0
+}
+
 /// One request and what re-issuing it takes.
 struct Call {
     protocol: Arc<dyn Protocol>,
@@ -66,13 +73,17 @@ struct Call {
 #[derive(Clone)]
 pub struct Client {
     registry: Registry,
-    /// Longest wait between two attempts.
+    /// Longest wait of the 1, 2, 4, 8, 16, 30 s ladder used when the server named no wait (the jitter of up
+    /// to a quarter comes on top).
     pub max_backoff: Duration,
+    /// Longest wait the server may ask for with `Retry-After` and still be waited for. A longer one is
+    /// returned to the caller at once: it says how long to wait, and the screen shows that.
+    pub retry_ceiling: Duration,
 }
 
 impl Client {
     pub fn new(registry: Registry) -> Client {
-        Client { registry, max_backoff: Duration::from_secs(30) }
+        Client { registry, max_backoff: Duration::from_secs(30), retry_ceiling: Duration::from_secs(120) }
     }
 
     pub fn registry(&self) -> &Registry {
@@ -88,10 +99,23 @@ impl Client {
         })
     }
 
-    /// The wait before attempt `n` (1-based), honouring what the server asked.
+    /// The wait before attempt `n` (1-based): what the server asked, as it asked (up to the ceiling), else
+    /// the ladder 1, 2, 4, 8, 16, 30 s with up to a quarter more, so clients that failed together do not all
+    /// come back at the same moment.
     pub fn backoff(&self, n: u32, e: &ProviderError) -> Duration {
-        let wanted = e.retry_after.unwrap_or_else(|| Duration::from_secs(1u64 << (n.saturating_sub(1)).min(5)));
-        wanted.min(self.max_backoff)
+        match e.retry_after {
+            Some(asked) => asked.min(self.retry_ceiling),
+            None => {
+                let step = Duration::from_secs(1u64 << (n.saturating_sub(1)).min(5)).min(self.max_backoff);
+                step + step.mul_f64(jitter_share())
+            }
+        }
+    }
+
+    /// Whether `e` is worth another request: it can be retried, and the server did not ask for a wait
+    /// longer than the ceiling (a quota that resets in an hour is not waited for with the turn open).
+    fn worth_retrying(&self, e: &ProviderError) -> bool {
+        e.is_retryable() && e.retry_after.is_none_or(|asked| asked <= self.retry_ceiling)
     }
 
     pub async fn stream(
@@ -107,7 +131,7 @@ impl Client {
         let inner = loop {
             match protocol.stream(cfg, key.as_deref(), req).await {
                 Ok(s) => break s,
-                Err(e) if e.is_retryable() && attempt < retries => {
+                Err(e) if self.worth_retrying(&e) && attempt < retries => {
                     attempt += 1;
                     let wait = self.backoff(attempt, &e);
                     tracing::warn!(attempt, ?wait, "{e}; retrying");
@@ -150,7 +174,7 @@ impl Client {
                         StreamEvent::TextDelta(_)
                         | StreamEvent::ReasoningDelta(_)
                         | StreamEvent::ToolCallStart { .. } => content = true,
-                        StreamEvent::Error(e) if !content && e.is_retryable() && attempt < retries => {
+                        StreamEvent::Error(e) if !content && this.worth_retrying(e) && attempt < retries => {
                             let mut last = e.clone();
                             // spend, not the size of the request that will answer
                             held = held
@@ -175,7 +199,7 @@ impl Client {
                                         inner = s;
                                         continue 'attempts;
                                     }
-                                    Err(e) if e.is_retryable() && attempt < retries => last = e,
+                                    Err(e) if this.worth_retrying(&e) && attempt < retries => last = e,
                                     Err(e) => {
                                         for h in held.drain(..) {
                                             let _ = tx.send(h);
