@@ -331,6 +331,27 @@ async fn streams_lines_and_kills_on_timeout_and_cancel() {
     assert!(out.content.contains("[cancelled]"), "{}", out.content);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_foreground_command_runs_in_its_own_session_without_a_controlling_terminal() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    // Opening the terminal of the user (as a TIOCSTI injection must) fails: ENXIO.
+    let out = Bash.run(json!({"command": "(echo x > /dev/tty) 2>&1; echo status $?"}), &c).await;
+    assert!(out.content.contains("status 1"), "{}", out.content);
+    // The shell leads its session (its session id is its pid), so no terminal is attached to it.
+    #[cfg(target_os = "linux")]
+    {
+        let out = Bash.run(json!({"command": "ps -o sid= -p $$ | tr -d ' '; echo $$"}), &c).await;
+        let mut ids = out.content.lines().map(str::trim);
+        let (sid, pid) = (ids.next().unwrap_or(""), ids.next().unwrap_or(""));
+        assert!(!sid.is_empty() && sid == pid, "{}", out.content);
+    }
+}
+
 fn posix() -> bool {
     if nexo_core::shell::shell().kind == "powershell" {
         eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");

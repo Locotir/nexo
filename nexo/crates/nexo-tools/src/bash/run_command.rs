@@ -35,8 +35,18 @@ pub(super) async fn run_command_logged(
         let _ = std::fs::create_dir_all(tmp);
         cmd.env("NEXO_TMP", tmp);
     }
+    // A session of its own (which is also a group of its own, so `kill_group` still reaches every
+    // descendant): the command has no controlling terminal, so it cannot open /dev/tty and inject
+    // keystrokes (TIOCSTI) into the one the user types in. `process_group` must not be set as well:
+    // std runs setpgid first, and setsid then fails with EPERM for a group leader.
     #[cfg(unix)]
-    cmd.process_group(0);
+    // SAFETY: runs in the forked child before exec and only calls `setsid`, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return End::Failed(e.to_string()),
