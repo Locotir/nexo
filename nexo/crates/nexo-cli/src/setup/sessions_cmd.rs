@@ -81,4 +81,22 @@ mod tests {
     fn a_short_ascii_directory_is_left_unchanged() {
         assert_eq!(short_dir("/home/user/project"), "/home/user/project");
     }
+
+    #[test]
+    fn a_long_cwd_of_multibyte_characters_is_shortened_without_a_panic() {
+        let wide = "目".repeat(30);
+        let short = short_dir(&wide);
+        assert_eq!(short.chars().count(), 28);
+        assert!(short.starts_with('…'));
+        let accented = format!("/home/é/{}", "é".repeat(30));
+        assert_eq!(short_dir(&accented).chars().count(), 28);
+    }
+
+    #[test]
+    fn a_short_or_ascii_cwd_is_kept_as_it_is_or_cut_to_its_tail() {
+        assert_eq!(short_dir("/home/me/project"), "/home/me/project");
+        assert_eq!(short_dir(&"é".repeat(28)), "é".repeat(28));
+        let long = format!("/{}", "a".repeat(40));
+        assert_eq!(short_dir(&long), format!("…{}", "a".repeat(27)));
+    }
 }
