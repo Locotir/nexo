@@ -607,20 +607,21 @@ pub(super) fn doctor_probe(exe: &std::path::Path, cwd: &std::path::Path, wait: D
     use std::io::Read;
     use std::process::{Command, Stdio};
     let shell_hint = "/doctor: no answer, run `nexo doctor` in a shell".to_string();
-    let Ok(mut child) = Command::new(exe)
-        .args(["doctor", "--offline"])
+    let mut cmd = Command::new(exe);
+    cmd.args(["doctor", "--offline"])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+        .stderr(Stdio::null());
+    // its own process group, so ending the probe can end what the key command started too
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let Ok(mut child) = cmd.spawn() else {
         return (false, shell_hint);
     };
     // read aside, so a child that fills the pipe cannot stall in write while this loop waits for its exit
     let Some(mut out) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_tree(&mut child);
         return (false, shell_hint);
     };
     let (tx, rx) = std::sync::mpsc::channel();
@@ -635,8 +636,7 @@ pub(super) fn doctor_probe(exe: &std::path::Path, cwd: &std::path::Path, wait: D
             Ok(Some(s)) => break s,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_tree(&mut child);
                 return (false, format!("/doctor: no answer in {} s; run `nexo doctor` in a shell", wait.as_secs()));
             }
         }
@@ -646,4 +646,28 @@ pub(super) fn doctor_probe(exe: &std::path::Path, cwd: &std::path::Path, wait: D
     let mut text = String::from_utf8_lossy(&bytes).trim_end().to_string();
     text.push_str("\n(`nexo doctor` in a shell also calls the provider)");
     (status.success(), text)
+}
+
+/// Ends the probe and everything it started. A key command is a grandchild of this process and keeps
+/// the output pipe open, so killing only the probe would leave it running and the reader waiting on it.
+/// Unix: the probe leads its own process group and the whole group is signalled. Windows has no groups,
+/// so the tree under it goes (`taskkill /T`), called while the probe is still alive.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: a plain signal to the process group the probe created for itself.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }

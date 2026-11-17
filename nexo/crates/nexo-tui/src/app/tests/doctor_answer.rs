@@ -80,3 +80,38 @@ fn a_doctor_child_that_never_answers_is_killed_at_the_deadline() {
     assert!(text.contains("no answer"), "{text}");
     assert!(t.elapsed() < Duration::from_secs(5));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_key_command_the_doctor_started_is_killed_with_it_at_the_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("nexo-doctor-group-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pid_file = dir.join("grandchild.pid");
+    let script = dir.join("hang.sh");
+    // the sleeper is a grandchild of the probe and holds the output pipe, as a stuck key command does
+    let body = format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display());
+    std::fs::write(&script, body).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let t = Instant::now();
+    let (ok, text) = super::super::dispatch::doctor_probe(&script, &dir, Duration::from_millis(500));
+    assert!(!ok);
+    assert!(text.contains("no answer"), "{text}");
+    assert!(t.elapsed() < Duration::from_secs(5));
+    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    // init reaps the killed grandchild a moment after the signal
+    let gone = (0..100).any(|_| {
+        // SAFETY: signal 0 only checks that the process exists.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        if alive {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        !alive
+    });
+    if !gone {
+        // SAFETY: cleanup of the sleeper this test started, so a failure leaves nothing behind.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(gone, "the grandchild outlived the probe");
+}
