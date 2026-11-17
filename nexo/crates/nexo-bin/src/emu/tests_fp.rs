@@ -48,13 +48,18 @@ int main(int argc, char **argv) {
 }
 "#;
 
-/// Compile the fixture with `flags`; None (with a message) when the compiler is missing or refuses a flag.
+/// Compile the fixture with `flags` for the x86-64 baseline; None (with a message) when the compiler is missing
+/// or refuses a flag.
 fn build(dir: &Path, tag: &str, flags: &[&str]) -> Option<PathBuf> {
     let src = dir.join("fp.c");
     std::fs::write(&src, SOURCE).ok()?;
     let exe = dir.join(format!("fp{tag}"));
     let ok = ["cc", "gcc"].iter().any(|cc| {
         Command::new(cc)
+            // A compiler whose default target is x86-64-v3 fuses a * b + c into FMA3 (vfmadd, vfmsub) and gives
+            // -O3 VEX forms instead of mulps; these tests are about SSE and AVX2, so the baseline comes first
+            // and `-mavx2` adds AVX2 alone on top of it.
+            .arg("-march=x86-64")
             .args(flags)
             .args(["-fcf-protection=full", "-fno-math-errno", "-o"])
             .arg(&exe)
