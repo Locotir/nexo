@@ -92,9 +92,13 @@ pub(super) fn compiling(line: &str) -> Option<&str> {
 }
 
 /// The short commit in a cargo line that names the repository (`... (https://github.com/Locotir/nexo#4b4f255a)`).
+/// A pinned build prints the source id with a query, `nexo?tag=build-abc1234#4b4f255a`, so a `?...` part before the `#` is skipped.
 pub(super) fn git_rev(line: &str) -> Option<&str> {
     let rest = &line[line.find(REPO)? + REPO.len()..];
-    let hex = rest.strip_prefix('#')?;
+    let hex = match rest.strip_prefix('?') {
+        Some(query) => query.split_once('#')?.1,
+        None => rest.strip_prefix('#')?,
+    };
     let end = hex.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(hex.len());
     (end >= 7).then(|| &hex[..7])
 }

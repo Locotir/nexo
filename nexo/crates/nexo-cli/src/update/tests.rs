@@ -137,6 +137,11 @@ fn cargo_lines_name_the_crate_and_the_commit() {
     assert_eq!(compiling("Compiling nexo-cli v0.1.0 (https://github.com/Locotir/nexo#4b4f255a)"), Some("nexo-cli"));
     assert_eq!(compiling("Downloaded tokio v1.54.0"), None);
     assert_eq!(git_rev("Installing nexo-cli v0.1.0 (https://github.com/Locotir/nexo#4b4f255a1c2d)"), Some("4b4f255"));
+    assert_eq!(
+        git_rev("Installing nexo-cli v0.1.0 (https://github.com/Locotir/nexo?tag=build-abc1234#4b4f255a1c2d)"),
+        Some("4b4f255")
+    );
+    assert_eq!(git_rev("Updating git repository `https://github.com/Locotir/nexo?tag=build-abc1234`"), None);
     assert_eq!(git_rev("Updating git repository `https://github.com/Locotir/nexo`"), None);
 }
 
