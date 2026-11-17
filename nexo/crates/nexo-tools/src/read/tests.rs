@@ -445,32 +445,106 @@ async fn a_compiled_program_is_answered_with_what_it_is_and_the_call_that_reads_
     assert_eq!(out.content, "read: data.bin is a binary file (4 bytes)");
 }
 
-/// What PowerShell and `regedit` write: a byte order mark, then two bytes per character.
-fn utf16(text: &str, little: bool) -> Vec<u8> {
-    let mut out = if little { vec![0xFF, 0xFE] } else { vec![0xFE, 0xFF] };
+fn utf16_bytes(text: &str, le: bool, bom: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    if bom {
+        out.extend(if le { [0xFF, 0xFE] } else { [0xFE, 0xFF] });
+    }
     for u in text.encode_utf16() {
-        out.extend(if little { u.to_le_bytes() } else { u.to_be_bytes() });
+        out.extend(if le { u.to_le_bytes() } else { u.to_be_bytes() });
     }
     out
 }
 
 #[tokio::test]
-async fn a_utf16_file_with_a_bom_is_named_by_its_encoding_not_called_a_binary() {
+async fn a_utf16_file_with_a_mark_is_read_as_text_and_the_note_names_the_encoding() {
     let d = tempfile::tempdir().unwrap();
-    std::fs::write(d.path().join("a.reg"), utf16("Windows Registry Editor\r\n", true)).unwrap();
-    std::fs::write(d.path().join("b.csv"), utf16("a;b\r\n", false)).unwrap();
-    std::fs::write(d.path().join("c.bin"), [0xFF, 0xFE, 0, 0, 1, 0, 0, 0]).unwrap();
+    std::fs::write(d.path().join("app.rc"), utf16_bytes("IDI_ICON ICON \"a.ico\"\r\nNAME\r\n", true, true)).unwrap();
+    let out = Read.run(json!({"path": "app.rc"}), &ctx(d.path())).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.starts_with("(decoded from UTF-16LE; edit and write refuse this file"), "{}", out.content);
+    assert!(out.content.contains("     1│ IDI_ICON ICON \"a.ico\"\n     2│ NAME\n"), "{}", out.content);
+    assert!(!out.content.contains('\u{feff}') && !out.content.contains('\0'), "{:?}", out.content);
+}
+
+#[tokio::test]
+async fn a_utf16_file_without_a_mark_is_read_big_endian_and_a_binary_with_nuls_is_still_refused() {
+    let d = tempfile::tempdir().unwrap();
     let c = ctx(d.path());
-    let out = Read.run(json!({"path": "a.reg"}), &c).await;
-    assert!(out.is_error);
-    assert_eq!(
-        out.content,
-        "read: a.reg is UTF-16 LE text with a BOM (52 bytes), not UTF-8; read it with `bash` \
-         (`iconv -f UTF-16LE -t UTF-8 a.reg`)"
+    std::fs::write(d.path().join("a.txt"), utf16_bytes("one\ntwo\n", false, false)).unwrap();
+    let out = Read.run(json!({"path": "a.txt"}), &c).await;
+    assert!(out.content.starts_with("(decoded from UTF-16BE;"), "{}", out.content);
+    assert!(out.content.contains("     2│ two\n"), "{}", out.content);
+    std::fs::write(d.path().join("b.dat"), b"\x01\x02\x00\x03\x00\x00\x04\x05").unwrap();
+    let out = Read.run(json!({"path": "b.dat"}), &c).await;
+    assert_eq!(out.content, "read: b.dat is a binary file (8 bytes)");
+    // an odd length is a truncated or a different file, not text
+    let mut odd = utf16_bytes("abc", true, true);
+    odd.push(b'x');
+    std::fs::write(d.path().join("odd.txt"), odd).unwrap();
+    let out = Read.run(json!({"path": "odd.txt"}), &c).await;
+    assert!(out.is_error && out.content.contains("is a binary file"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn edit_write_and_grep_say_a_utf16_file_is_text_in_another_encoding() {
+    use crate::{edit::Edit, grep::Grep, write::Write};
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    std::fs::write(d.path().join("app.rc"), utf16_bytes("alpha\r\n", true, true)).unwrap();
+    std::fs::write(d.path().join("real.bin"), b"alpha\x00\x01").unwrap();
+    let out = Edit.run(json!({"path": "app.rc", "old_string": "alpha", "new_string": "beta"}), &c).await;
+    assert!(out.is_error && out.content.contains("app.rc is UTF-16 text, not UTF-8"), "{}", out.content);
+    let out = Edit.run(json!({"path": "real.bin", "old_string": "alpha", "new_string": "beta"}), &c).await;
+    assert!(out.is_error && out.content.contains("edit: real.bin is a binary file"), "{}", out.content);
+    let out = Write.run(json!({"path": "app.rc", "content": "x"}), &c).await;
+    assert!(
+        out.is_error && out.content.contains("app.rc is UTF-16 text, not UTF-8; not overwriting it"),
+        "{}",
+        out.content
     );
-    let out = Read.run(json!({"path": "b.csv"}), &c).await;
-    assert!(out.content.starts_with("read: b.csv is UTF-16 BE text with a BOM (12 bytes)"), "{}", out.content);
-    // the UTF-32 LE mark starts the same two bytes: it stays a plain binary
-    let out = Read.run(json!({"path": "c.bin"}), &c).await;
-    assert_eq!(out.content, "read: c.bin is a binary file (8 bytes)");
+    let out = Write.run(json!({"path": "real.bin", "content": "x"}), &c).await;
+    assert!(out.content.contains("is a binary file; not overwriting it"), "{}", out.content);
+    let out = Grep.run(json!({"pattern": "alpha"}), &c).await;
+    assert!(out.content.contains("[UTF-16 text not searched, grep reads UTF-8: app.rc]"), "{}", out.content);
+    assert!(!out.content.contains("real.bin"), "{}", out.content);
+    assert_eq!(std::fs::read(d.path().join("app.rc")).unwrap(), utf16_bytes("alpha\r\n", true, true));
+}
+
+#[tokio::test]
+async fn a_latin1_file_read_says_where_the_first_bad_byte_is_and_a_real_replacement_char_does_not() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    std::fs::write(d.path().join("menu.txt"), b"caf\xe9\n").unwrap();
+    let out = Read.run(json!({"path": "menu.txt"}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.starts_with("(not valid UTF-8: invalid byte at offset 3; bad bytes are shown as U+FFFD"),
+        "{}",
+        out.content
+    );
+    assert!(out.content.contains("     1│ caf\u{fffd}\n"), "{}", out.content);
+    std::fs::write(d.path().join("ok.txt"), "a \u{fffd} b\n").unwrap();
+    let out = Read.run(json!({"path": "ok.txt"}), &c).await;
+    assert_eq!(out.content, "     1│ a \u{fffd} b\n");
+}
+
+#[tokio::test]
+async fn a_line_cut_at_the_limit_is_named_with_its_length_and_the_count() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let text = format!("short\n{}\nmid\n{}\n", "a".repeat(5000), "b".repeat(2001));
+    std::fs::write(d.path().join("min.js"), &text).unwrap();
+    let out = Read.run(json!({"path": "min.js"}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    let last = out.content.lines().last().unwrap();
+    assert!(last.starts_with("(line 2 cut at 2000 of 5000 chars (2 lines cut in all);"), "{last}");
+    // a line past the window of the call is not counted: only lines that were shown
+    let out = Read.run(json!({"path": "min.js", "limit": 1}), &c).await;
+    assert!(!out.content.contains("cut at"), "{}", out.content);
+    // the same in a Rust symbol
+    let long = "x".repeat(3000);
+    std::fs::write(d.path().join("a.rs"), format!("fn target() {{\n    let s = \"{long}\";\n}}\n")).unwrap();
+    let out = Read.run(json!({"path": "a.rs", "symbol": "target"}), &c).await;
+    assert!(out.content.lines().last().unwrap().starts_with("(line 2 cut at 2000 of 3015 chars;"), "{}", out.content);
 }

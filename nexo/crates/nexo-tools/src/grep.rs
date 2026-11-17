@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::glob::{walker, Links};
 use crate::program::{bin_call, bin_offered, callable, quoted, slash};
-use crate::util::{bool_arg, cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg};
+use crate::util::{bool_arg, cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg, utf16_text};
 
 /// Files larger than this are not searched (logs, bundles, data).
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -287,7 +287,17 @@ impl Tool for Grep {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
         let Merge {
-            items, total, left, left_files, hit_files, too_big, unreadable, counting_stopped, programs, ..
+            items,
+            total,
+            left,
+            left_files,
+            hit_files,
+            too_big,
+            unreadable,
+            counting_stopped,
+            programs,
+            wide,
+            ..
         } = m;
         let mut content = if total == 0 {
             let mut s = format!("grep: no match for `{pattern}` in {shown_root}");
@@ -332,6 +342,12 @@ impl Tool for Grep {
             content.push('\n');
             content.push_str(&line);
         }
+        // a UTF-16 file is not binary to its owner, and a silent skip would read as "no match there"
+        if wide.1 > 0 {
+            let more = wide.1 - wide.0.len();
+            let rest = if more > 0 { format!(" and {more} more") } else { String::new() };
+            content.push_str(&format!("\n[UTF-16 text not searched, grep reads UTF-8: {}{rest}]", wide.0.join(", ")));
+        }
         if too_big > 0 {
             content.push_str(&format!(
                 "\n[{} over {} MiB not searched; use `bash` with grep for those]",
@@ -374,6 +390,8 @@ enum FileOut {
     Skip,
     /// A compiled program whose bytes hold a match.
     Program(String, nexo_binmagic::Compiled),
+    /// UTF-16 text, which a search for UTF-8 patterns does not read.
+    Wide(String),
     TooBig,
     Unreadable,
     Hits {
@@ -395,6 +413,9 @@ impl Search {
             return FileOut::Unreadable;
         };
         if is_binary(&bytes) {
+            if utf16_text(&bytes).is_some() {
+                return FileOut::Wide(display_path(&self.cwd, f));
+            }
             let held = |re: &regex::bytes::Regex| re.is_match(&bytes);
             return match nexo_binmagic::kind_of(&bytes) {
                 Some(kind) if self.in_programs.as_ref().is_some_and(held) => {
@@ -491,6 +512,8 @@ struct Merge {
     hit_files: usize,
     too_big: usize,
     unreadable: usize,
+    /// The UTF-16 text files passed over: the first few, and how many in all.
+    wide: (Vec<String>, usize),
     /// Files searched and files in all, when the counting was stopped early.
     counting_stopped: Option<(usize, usize)>,
     /// The compiled programs that hold a match: the first few, and how many in all.
@@ -506,6 +529,12 @@ impl Merge {
                     self.programs.0.push((shown, kind));
                 }
                 self.programs.1 += 1;
+            }
+            FileOut::Wide(shown) => {
+                if self.wide.0.len() < PROGRAMS_NAMED {
+                    self.wide.0.push(shown);
+                }
+                self.wide.1 += 1;
             }
             FileOut::TooBig => self.too_big += 1,
             FileOut::Unreadable => self.unreadable += 1,

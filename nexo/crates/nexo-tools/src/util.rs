@@ -159,6 +159,70 @@ pub fn text_encoding(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Text saved as UTF-16, which `is_binary` takes for a binary file because every other byte is a NUL
+/// (Windows `.rc` and `.reg` files, PowerShell output, some `.csv`). Returns the decoded text, whether
+/// the units are little-endian, and whether the file began with a byte order mark (not part of the text).
+/// A file without a mark counts only when the first 8 KiB have a NUL in every high byte, so Latin-1
+/// range text in UTF-16 is found and a real binary is not. Anything with a control character other than
+/// whitespace in the first 8 KiB, an odd length or an unpaired surrogate is not text, and is None.
+pub fn utf16_text(bytes: &[u8]) -> Option<(String, bool, bool)> {
+    let (le, bom) = match bytes {
+        [0xFF, 0xFE, ..] => (true, true),
+        [0xFE, 0xFF, ..] => (false, true),
+        _ => {
+            let head = &bytes[..bytes.len().min(8192) & !1];
+            let high = |k: usize| head.iter().skip(k).step_by(2).all(|b| *b == 0);
+            match (head.len() >= 2, high(1), high(0)) {
+                (true, true, false) => (true, false),
+                (true, false, true) => (false, false),
+                _ => return None,
+            }
+        }
+    };
+    let body = &bytes[if bom { 2 } else { 0 }..];
+    if !body.len().is_multiple_of(2) {
+        return None;
+    }
+    let unit = |c: &[u8]| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) };
+    // a NUL or another control byte means a binary that happens to start like UTF-16 (UTF-32 does)
+    let control = |u: u16| u < 0x20 && !matches!(u, 9 | 10 | 12 | 13);
+    if body.chunks_exact(2).take(4096).map(unit).any(control) {
+        return None;
+    }
+    let text: String = char::decode_utf16(body.chunks_exact(2).map(unit)).collect::<Result<_, _>>().ok()?;
+    Some((text, le, bom))
+}
+
+/// The lines of a file that were cut to a line length: the first, and how many in all.
+#[derive(Default)]
+pub struct Cuts {
+    /// Line number and length in characters of the first line cut.
+    first: Option<(usize, usize)>,
+    count: usize,
+}
+
+impl Cuts {
+    /// Notes that line `number` (1-based) was shown through `cut_line(line, max)`; call it only for
+    /// lines that were put in the answer.
+    pub fn seen(&mut self, number: usize, line: &str, max: usize) {
+        // `nth` stops after `max + 1` characters, so a long line is counted in full only the first time
+        if line.chars().nth(max).is_none() {
+            return;
+        }
+        self.count += 1;
+        self.first.get_or_insert_with(|| (number, line.chars().count()));
+    }
+
+    /// The fact for the end of the answer, when a line was cut.
+    pub fn note(&self, max: usize) -> Option<String> {
+        let (number, len) = self.first?;
+        let all = if self.count > 1 { format!(" ({} lines cut in all)", self.count) } else { String::new() };
+        Some(format!(
+            "line {number} cut at {max} of {len} chars{all}; `bash` with `grep -o`, `cut -c` or `sed -n` shows the rest"
+        ))
+    }
+}
+
 /// Writes `data` to `path` whole or not at all: into a new file beside it, then renamed over it
 /// (`rename` replaces an existing file on Windows too). A link is followed, so the file it points
 /// to is the one replaced; an existing file keeps its permissions, and a read-only one is refused.
@@ -307,5 +371,55 @@ mod tests {
         write_atomic(&d.path().join("link"), b"hi").await.unwrap();
         assert!(std::fs::symlink_metadata(d.path().join("link")).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(d.path().join("real.txt")).unwrap(), "hi");
+    }
+
+    fn utf16(text: &str, le: bool, bom: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        if bom {
+            out.extend(if le { [0xFF, 0xFE] } else { [0xFE, 0xFF] });
+        }
+        for u in text.encode_utf16() {
+            out.extend(if le { u.to_le_bytes() } else { u.to_be_bytes() });
+        }
+        out
+    }
+
+    #[test]
+    fn utf16_text_is_found_with_or_without_a_mark_in_either_order() {
+        let text = "[Section]\r\nname=caf\u{e9}\r\n";
+        assert_eq!(utf16_text(&utf16(text, true, true)), Some((text.into(), true, true)));
+        assert_eq!(utf16_text(&utf16(text, false, true)), Some((text.into(), false, true)));
+        assert_eq!(utf16_text(&utf16(text, false, false)), Some((text.into(), false, false)));
+        assert_eq!(utf16_text(&utf16(text, true, false)), Some((text.into(), true, false)));
+        // a pair of surrogates is one character
+        assert_eq!(utf16_text(&utf16("a\u{1F600}", true, true)).map(|t| t.0), Some("a\u{1F600}".into()));
+    }
+
+    #[test]
+    fn utf16_text_refuses_what_is_not_text() {
+        // a real binary with NULs, an odd length, an unpaired surrogate and UTF-32 are not UTF-16 text
+        assert_eq!(utf16_text(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00"), None);
+        assert_eq!(utf16_text(&[0; 64]), None);
+        let mut odd = utf16("abc", true, true);
+        odd.push(b'x');
+        assert_eq!(utf16_text(&odd), None);
+        assert_eq!(utf16_text(&[0xFF, 0xFE, 0x00, 0xD8, b'a', 0x00]), None);
+        assert_eq!(utf16_text(&[0xFF, 0xFE, 0x00, 0x00, b'a', 0x00, 0x00, 0x00]), None);
+        // a NUL inside the text of a file with a mark is a binary, not a line
+        assert_eq!(utf16_text(&utf16("ab\0cd", true, true)), None);
+        assert_eq!(utf16_text(b""), None);
+        assert_eq!(utf16_text(b"plain text"), None);
+    }
+
+    #[test]
+    fn cuts_count_the_long_lines_and_say_where_the_first_is() {
+        let mut cuts = Cuts::default();
+        assert_eq!(cuts.note(10), None);
+        cuts.seen(1, &"x".repeat(10), 10);
+        assert_eq!(cuts.note(10), None, "a line of exactly the limit is not cut");
+        cuts.seen(4, &"x".repeat(11), 10);
+        cuts.seen(9, &"x".repeat(50), 10);
+        let note = cuts.note(10).unwrap();
+        assert!(note.starts_with("line 4 cut at 10 of 11 chars (2 lines cut in all);"), "{note}");
     }
 }

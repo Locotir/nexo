@@ -5,7 +5,7 @@ use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, T
 use serde_json::{json, Value};
 
 use crate::util::{
-    display_path, is_binary, outside_note, resolve, str_arg, text_encoding, write_atomic, MAX_FILE_BYTES,
+    display_path, is_binary, outside_note, resolve, str_arg, text_encoding, utf16_text, write_atomic, MAX_FILE_BYTES,
 };
 
 pub struct Write;
@@ -80,6 +80,12 @@ impl Tool for Write {
         let read = if huge { read_head(&path).await } else { tokio::fs::read(&path).await };
         let mut same = false;
         let old = match read {
+            // UTF-16 text looks binary (a NUL in every other byte); the fact is what the file is
+            Ok(b) if is_binary(&b) && utf16_text(&b).is_some() => {
+                return ToolOutput::error(format!(
+                    "write: {shown} is UTF-16 text, not UTF-8; not overwriting it, change it with `bash` in its own encoding"
+                ));
+            }
             Ok(b) if is_binary(&b) => {
                 return ToolOutput::error(match text_encoding(&b) {
                     Some(enc) => format!(
