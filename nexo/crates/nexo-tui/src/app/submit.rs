@@ -222,6 +222,8 @@ impl App {
                 self.scroll_to_end();
                 return;
             }
+            // a file written or edited since the palette last opened is what runs
+            self.reload_file_commands();
             if let Some(c) = self.custom_commands.iter().find(|c| c.name == name).cloned() {
                 self.input.push_history(trimmed);
                 return self.submit_expanded(&c.expand(args), false);

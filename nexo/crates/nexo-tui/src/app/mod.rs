@@ -328,6 +328,8 @@ pub struct App {
     pub draft_edit_request: bool,
     /// Commands of one's own (`.nexo/commands/*.md`).
     pub custom_commands: Vec<crate::custom::CustomCommand>,
+    /// Where the command files are read from; a test points it at a temporary project.
+    pub(crate) command_loader: Box<dyn Fn(&std::path::Path) -> Vec<crate::custom::CustomCommand> + Send>,
     /// The Agent Skills found at start (`SKILL.md` folders); each also answers to `/name` as a command.
     pub skills: Vec<nexo_core::skills::Skill>,
     /// A notification for the terminal (the bell), when a long turn ended.
@@ -555,6 +557,7 @@ impl App {
             edit_request: None,
             draft_edit_request: false,
             custom_commands: crate::custom::load(&opts.cwd),
+            command_loader: Box::new(crate::custom::load),
             skills: Vec::new(),
             bell_request: None,
             mouse_on: opts.mouse,

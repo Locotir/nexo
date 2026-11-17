@@ -5,6 +5,19 @@ use super::*;
 impl App {
     // ------------------------------------------------------------ palette
 
+    /// Re-reads the command files of `.nexo/commands`, so a command written or edited during the session
+    /// completes and runs at once. Only file entries are replaced: skills and MCP prompts are pushed by their
+    /// own events and would be lost, and one that now clashes with a file command gives way to it.
+    pub(super) fn reload_file_commands(&mut self) {
+        let mut commands = (self.command_loader)(&self.opts.cwd);
+        for c in std::mem::take(&mut self.custom_commands) {
+            if (c.origin == "skill" || c.origin == "mcp") && !commands.iter().any(|f| f.name == c.name) {
+                commands.push(c);
+            }
+        }
+        self.custom_commands = commands;
+    }
+
     /// After the draft changed: open, update or close the palette.
     pub fn refresh_palette(&mut self) {
         // no commands from a sub-agent's conversation
@@ -25,22 +38,25 @@ impl App {
                     }
                 } else {
                     self.palette = Some(match kind {
-                        PaletteKind::Commands => Palette::commands_full(
-                            &query,
-                            start,
-                            self.custom_commands
-                                .iter()
-                                .map(|c| {
-                                    let d = if c.hint.is_empty() {
-                                        c.description.clone()
-                                    } else {
-                                        format!("{} {}", c.hint, c.description)
-                                    };
-                                    (c.name.clone(), format!("{d}  · {}", custom_origin(&c.origin)))
-                                })
-                                .collect(),
-                            palette::recent_commands(self.input.history()),
-                        ),
+                        PaletteKind::Commands => {
+                            self.reload_file_commands();
+                            Palette::commands_full(
+                                &query,
+                                start,
+                                self.custom_commands
+                                    .iter()
+                                    .map(|c| {
+                                        let d = if c.hint.is_empty() {
+                                            c.description.clone()
+                                        } else {
+                                            format!("{} {}", c.hint, c.description)
+                                        };
+                                        (c.name.clone(), format!("{d}  · {}", custom_origin(&c.origin)))
+                                    })
+                                    .collect(),
+                                palette::recent_commands(self.input.history()),
+                            )
+                        }
                         PaletteKind::Files => {
                             let files = self.files().to_vec();
                             let mut files = files;
