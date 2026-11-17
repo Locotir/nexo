@@ -91,12 +91,14 @@ pub fn set(lane: &mut Lane, field: Field, answer: &str) {
 /// one just answered, is held to the rules: the ones not asked yet stand in with something that passes.
 pub fn problem(existing: &TeamConfig, lane: &Lane, field: Field) -> Option<String> {
     let mut l = lane.clone();
+    let mut stand_in = None;
     if field != Field::Name {
-        let mut stand_in = String::from("_");
-        while existing.get(&stand_in).is_some() {
-            stand_in.push('_');
+        let mut name = String::from("_");
+        while existing.get(&name).is_some() {
+            name.push('_');
         }
-        l.name = stand_in;
+        l.name = name.clone();
+        stand_in = Some(name);
     }
     if field != Field::Dir && l.dir.trim().is_empty() {
         l.dir = ".".into();
@@ -109,7 +111,12 @@ pub fn problem(existing: &TeamConfig, lane: &Lane, field: Field) -> Option<Strin
     }
     let mut all = existing.clone();
     all.lane.push(l);
-    toml::to_string(&all).map_err(|e| e.to_string()).and_then(|t| TeamConfig::parse(&t)).err()
+    let parsed = toml::to_string(&all).map_err(|e| e.to_string()).and_then(|t| TeamConfig::parse(&t));
+    // The stand-in name is ours, not the person's: a message about it would name a lane they never typed.
+    parsed.err().map(|e| match &stand_in {
+        Some(name) => e.replace(&format!("lane {name}: "), ""),
+        None => e,
+    })
 }
 
 /// Adds `lane` to `<config_dir>/team.toml`, creating the file when there is none. What was in the file stays as
@@ -198,11 +205,13 @@ mod tests {
         set(&mut l, Field::Name, "B");
         assert_eq!(problem(&existing, &l, Field::Name), None, "no folder or routine asked yet");
         set(&mut l, Field::Every, "soon");
-        assert!(problem(&existing, &l, Field::Every).is_some_and(|e| e.contains("every")));
+        let every = problem(&existing, &l, Field::Every).unwrap_or_default();
+        assert!(every.contains("every") && !every.contains("lane _"), "{every}");
         set(&mut l, Field::Every, "");
         assert_eq!((l.every.as_deref(), problem(&existing, &l, Field::Every)), (None, None));
         set(&mut l, Field::Mode, "wild");
-        assert!(problem(&existing, &l, Field::Mode).is_some_and(|e| e.contains("unknown mode")));
+        let mode = problem(&existing, &l, Field::Mode).unwrap_or_default();
+        assert!(mode.contains("unknown mode") && !mode.contains("lane _"), "{mode}");
         set(&mut l, Field::Mode, "");
         assert_eq!(l.mode.as_deref(), Some("accept-edits"), "an empty answer is the default");
         set(&mut l, Field::Routine, " ");

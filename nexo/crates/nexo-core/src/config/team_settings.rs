@@ -100,8 +100,8 @@ impl TeamConfig {
                     ));
                 }
             }
-            if l.max_spend_day.is_some_and(|d| d.is_nan() || d <= 0.0) {
-                return Err(format!("lane {n}: max_spend_day must be more than 0"));
+            if l.max_spend_day.is_some_and(|d| !d.is_finite() || d <= 0.0) {
+                return Err(format!("lane {n}: max_spend_day must be a number more than 0"));
             }
         }
         // every key a lane can have, so a slip in one it left out is named with the key it was meant to be
@@ -240,6 +240,15 @@ routine_section = "IOS"
         assert!(TeamConfig::parse(bad_mode).unwrap_err().contains("unknown mode"));
         let bad_name = "[[lane]]\nname = \"a b\"\ndir = \"/w\"\nroutine = \"x\"\n";
         assert!(TeamConfig::parse(bad_name).unwrap_err().contains("letters, digits"));
+    }
+
+    #[test]
+    fn a_daily_cap_that_is_not_a_finite_number_above_zero_is_refused() {
+        for bad in ["inf", "-inf", "nan", "0.0", "-1.0"] {
+            let t = format!("[[lane]]\nname = \"a\"\ndir = \"/w\"\nroutine = \"x\"\nmax_spend_day = {bad}\n");
+            let e = TeamConfig::parse(&t).unwrap_err();
+            assert!(e.contains("max_spend_day must be a number more than 0"), "{bad}: {e}");
+        }
     }
 
     #[test]

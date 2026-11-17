@@ -331,7 +331,10 @@ fn add_with_flags_creates_team_toml_then_appends_and_keeps_the_comments() {
     let out = add(&["DOCS", "--dir", &work_s, "--routine", "Tidy the docs.", "--every", "1h"]);
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{said} {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(said.trim(), "added DOCS; start it with: nexo team start DOCS");
+    assert_eq!(
+        said.trim(),
+        "added DOCS; no daily cap (--max-spend-day, or max_spend_day in team.toml); start it with: nexo team start DOCS"
+    );
     let file = std::fs::read_to_string(dir.join("team.toml")).unwrap();
     assert!(
         file.contains("name = \"DOCS\"") && file.contains("every = \"1h\"") && file.contains("mode = \"accept-edits\""),
@@ -354,6 +357,12 @@ fn add_with_flags_creates_team_toml_then_appends_and_keeps_the_comments() {
         "--model",
         "mock/mock",
     ]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        said.trim(),
+        "added API; start it with: nexo team start API",
+        "a lane with a cap does not say it has none"
+    );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let after = std::fs::read_to_string(dir.join("team.toml")).unwrap();
     assert!(after.starts_with(&mine), "what was there stays as it was:\n{after}");
@@ -368,6 +377,9 @@ fn add_with_flags_creates_team_toml_then_appends_and_keeps_the_comments() {
         assert_eq!(out.status.code(), Some(2), "{bad:?}");
         assert!(!out.stderr.is_empty());
     }
+    let out = add(&["NEW", "--routine", "x", "--every", "soon"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("every") && !err.contains("lane _"), "the stand-in lane name stays out of the message: {err}");
     assert_eq!(std::fs::read_to_string(dir.join("team.toml")).unwrap(), after);
 }
 

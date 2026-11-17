@@ -123,4 +123,4 @@ pub mod saved;
 
 pub use describe::{describe, describe_since, saving};
 pub use directives::{CURATOR_DIRECTIVES, CURATOR_DIRECTIVES_SAID};
-pub use policies::{from_config, working_set_spec, BuiltIn, Compact, Plain};
+pub use policies::{from_config, working_set_spec, BuiltIn, Compact, Plain, POLICY_NAMES};

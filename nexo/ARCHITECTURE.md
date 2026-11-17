@@ -432,7 +432,7 @@ pricing parser, and `TestBackend` snapshots of the layout.
 `nexo` (TUI in the current directory), `nexo -p "prompt"` (headless: prints
 the reply; `--json` prints every AgentEvent as a JSON line), `--provider`,
 `--model`, `--cwd`, `--resume <id>` / `--continue`, `--permission-mode`,
-`--context plain|curator|compact`, `--yolo`; subcommands `bench` (run the
+`--context auto|plain|curator|compact`, `--yolo`; subcommands `bench` (run the
 benchmark: `--upstream`, `--model`, `--key`, `--tasks`, `--arms`, `--repeats`,
 `--max-steps`, `--budget`, `--out`; see the README), `providers` (list
 presets and configured ones, which have a key), `models [provider]

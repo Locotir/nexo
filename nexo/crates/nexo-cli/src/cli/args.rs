@@ -41,7 +41,7 @@ pub struct Args {
     #[arg(long, value_name = "MODE", env = "NEXO_SANDBOX", value_parser = sandbox_mode_arg)]
     pub sandbox: Option<String>,
     /// Context policy: auto | plain | curator | compact (auto is the curator, built in)
-    #[arg(long, value_name = "POLICY", env = "NEXO_CONTEXT")]
+    #[arg(long, value_name = "POLICY", env = "NEXO_CONTEXT", value_parser = context_policy_arg)]
     pub context: Option<String>,
     /// Curator settings for this run, over [context] curator_spec (`eoq=32000;dedup=0`)
     #[arg(long, value_name = "SPEC", env = "NEXO_CURATOR_SPEC")]
@@ -94,6 +94,17 @@ fn permission_mode_arg(s: &str) -> Result<String, String> {
     match PermissionMode::parse(s) {
         Some(_) => Ok(s.to_string()),
         None => Err(format!("unknown permission mode {s:?}; use one of: ask, accept-edits, plan, yolo, read-only")),
+    }
+}
+
+/// `--context`: refused at once, with the names that work. An empty value stays (the config reads it as the
+/// curator, and an empty NEXO_CONTEXT can reach this far); a bad one in the config file is only a warning.
+fn context_policy_arg(s: &str) -> Result<String, String> {
+    let name = s.trim();
+    if name.is_empty() || nexo_agent::context::POLICY_NAMES.contains(&name) {
+        Ok(s.to_string())
+    } else {
+        Err(format!("unknown context policy {s:?}; use one of: {}", nexo_agent::context::POLICY_NAMES.join(", ")))
     }
 }
 
@@ -389,6 +400,18 @@ mod tests {
         assert!(super::Args::try_parse_from(["nexo", "--name", "   "]).is_err());
         assert!(super::Args::try_parse_from(["nexo", "--name"]).is_err());
     }
+
+    #[test]
+    fn a_context_policy_that_does_not_exist_is_refused_before_the_run_starts() {
+        use clap::Parser;
+        let e = super::Args::try_parse_from(["nexo", "--context", "bogus"]).unwrap_err().to_string();
+        assert!(e.contains("unknown context policy \"bogus\"") && e.contains("auto, plain, curator, compact"), "{e}");
+        for ok in ["plain", "auto", "curator", "compact", " plain ", ""] {
+            let a = super::Args::try_parse_from(["nexo", "--context", ok]).unwrap();
+            assert_eq!(a.context.as_deref(), Some(ok));
+        }
+    }
+
     #[test]
     fn bench_subcommand_follows_the_feature() {
         use clap::Parser;

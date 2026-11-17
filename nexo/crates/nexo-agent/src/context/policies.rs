@@ -376,6 +376,9 @@ pub fn working_set_spec(spec: &str, working_set: &str) -> Result<String, String>
     Ok(if spec.trim().is_empty() { given } else { format!("{};{given}", spec.trim()) })
 }
 
+/// The names a context policy is asked for by, in the order they are listed to the person.
+pub const POLICY_NAMES: [&str; 4] = ["auto", "plain", "curator", "compact"];
+
 /// The policy `cfg.policy` names (`auto`, `plain`, `compact`, `curator`;
 /// anything else: plain). `auto` and `curator` are the curator.
 pub fn from_config(cfg: &ContextConfig) -> Box<dyn ContextPolicy> {
@@ -395,7 +398,8 @@ pub fn from_config(cfg: &ContextConfig) -> Box<dyn ContextPolicy> {
             }
         },
         other => Box::new(Plain::because(format!(
-            "context: plain, since [context] policy = {other:?} is not one of auto, plain, curator, compact"
+            "context: plain, since [context] policy = {other:?} is not one of {}",
+            POLICY_NAMES.join(", ")
         ))),
     }
 }
