@@ -1,6 +1,7 @@
 //! Headless and network-free: the page is a local file.
 
 use super::*;
+use crate::record::Shots;
 
 const PAGE: &str = r##"<!doctype html><html><body>
 <h1>Nexo test page</h1>
@@ -589,7 +590,7 @@ async fn a_browser_that_sends_no_screencast_frames_is_recorded_with_screenshots(
     browser.record_clear().await.unwrap();
 
     // When the screenshots fail too, the export says so and why, and claims nothing about the page.
-    let broken = RecordOptions { screencast: false, screenshots: false, ..RecordOptions::default() };
+    let broken = RecordOptions { screencast: false, screenshots: Shots::Fail, ..RecordOptions::default() };
     browser.record_start(broken).await.unwrap();
     browser.record_after_action().await;
     assert_eq!(browser.record_info().unwrap().frames, 0);
@@ -601,6 +602,20 @@ async fn a_browser_that_sends_no_screencast_frames_is_recorded_with_screenshots(
             && !reason.contains("did not change"),
         "{reason}"
     );
+    browser.record_clear().await.unwrap();
+
+    // A screenshot the browser leaves unanswered is the last one tried, so it holds up one action, not each one.
+    let hung = RecordOptions { screencast: false, screenshots: Shots::Hang, ..RecordOptions::default() };
+    browser.record_start(hung).await.unwrap();
+    let begun = std::time::Instant::now();
+    browser.record_after_action().await;
+    browser.record_after_action().await;
+    assert!(begun.elapsed() < Duration::from_millis(250), "{:?}", begun.elapsed());
+    browser.record_stop().await.unwrap();
+    assert_eq!(held_frames(&browser), (Vec::new(), 1));
+    let err = browser.record_export(dir.path().join("hung.gif"), &ExportOptions::plain()).await.unwrap_err();
+    let Error::Unusable { reason, .. } = err else { panic!("{err}") };
+    assert!(reason.contains("did not answer one within 0.3 s, so no more were taken"), "{reason}");
 
     browser.close().await.unwrap();
 }

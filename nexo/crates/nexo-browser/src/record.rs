@@ -11,10 +11,10 @@ use crate::export::{decode_png, png_size};
 use crate::{lock, Error, Result};
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::page::{
-    CaptureScreenshotFormat, CaptureScreenshotParams, EventScreencastFrame, ScreencastFrameAckParams,
-    StartScreencastFormat, StartScreencastParams, StopScreencastParams,
+    CaptureScreenshotFormat, EventScreencastFrame, ScreencastFrameAckParams, StartScreencastFormat,
+    StartScreencastParams, StopScreencastParams,
 };
-use chromiumoxide::page::Page;
+use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -28,7 +28,8 @@ const MAX_EVENTS: usize = 500;
 /// working screencast sends one at once, whether or not the page moves; the margin is for a loaded machine, where a
 /// screenshot taken too early would only add a second copy of that first frame.
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(1);
-/// Longest one screenshot is waited for, so a page that cannot paint does not hold up the action that follows.
+/// Longest one screenshot is waited for, so a page that cannot paint does not hold up the action that follows. After
+/// one goes unanswered the recording takes no more, so a browser that never answers them holds up one action only.
 const SHOT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a recording is captured.
@@ -49,9 +50,21 @@ pub struct RecordOptions {
     /// Tests only: `false` never starts the screencast, as on a system whose browser sends no screencast frames.
     #[cfg(test)]
     pub(crate) screencast: bool,
-    /// Tests only: `false` makes every screenshot taken in place of the screencast fail.
+    /// Tests only: how the screenshots taken in place of the screencast behave.
     #[cfg(test)]
-    pub(crate) screenshots: bool,
+    pub(crate) screenshots: Shots,
+}
+
+/// Tests only: how the screenshots taken in place of the screencast behave.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shots {
+    /// Taken from the browser.
+    Taken,
+    /// Each one fails at once.
+    Fail,
+    /// None is ever answered; each is waited for only a moment.
+    Hang,
 }
 
 impl Default for RecordOptions {
@@ -66,7 +79,7 @@ impl Default for RecordOptions {
             #[cfg(test)]
             screencast: true,
             #[cfg(test)]
-            screenshots: true,
+            screenshots: Shots::Taken,
         }
     }
 }
@@ -163,6 +176,8 @@ pub(crate) struct Shared {
     pub truncated: bool,
     /// Why the last screenshot taken in place of the screencast failed, for the export to say when no frame came.
     pub shot_error: Option<String>,
+    /// Set once a screenshot went unanswered; no more are taken.
+    shots_stopped: bool,
     /// Screenshots taken in place of the screencast, for the tests.
     #[cfg(test)]
     pub shots: usize,
@@ -179,6 +194,7 @@ impl Shared {
             bytes: 0,
             truncated: false,
             shot_error: None,
+            shots_stopped: false,
             #[cfg(test)]
             shots: 0,
             max_frames: opts.max_frames.max(1),
@@ -222,17 +238,18 @@ pub(crate) struct Fallback {
     /// Frames are scaled down to fit this box, as the screencast scales its own.
     max: (u32, u32),
     #[cfg(test)]
-    screenshots: bool,
+    screenshots: Shots,
 }
 
 impl Fallback {
     /// Makes sure the recording shows the page as it is now. While the screencast has sent nothing, this waits out
-    /// what is left of its first-frame time and then, if still nothing came, adds a screenshot in its place.
+    /// what is left of its first-frame time and then, if still nothing came, adds a screenshot in its place (unless
+    /// an earlier one went unanswered).
     pub(crate) async fn fill_in(&self) {
         let mut cast = self.cast.clone();
         let left = self.grace_until.saturating_duration_since(Instant::now());
         let _ = tokio::time::timeout(left, cast.wait_for(|seen| *seen)).await;
-        if *cast.borrow() {
+        if *cast.borrow() || lock(&self.shared).shots_stopped {
             return;
         }
         #[cfg(test)]
@@ -240,29 +257,46 @@ impl Fallback {
             lock(&self.shared).shots += 1;
         }
         let at = now();
-        let shot = match tokio::time::timeout(SHOT_TIMEOUT, self.shoot()).await {
-            Ok(shot) => shot,
-            Err(_) => Err(format!("the browser did not answer within {} s", SHOT_TIMEOUT.as_secs())),
+        let limit = self.shot_timeout();
+        let (shot, unanswered) = match tokio::time::timeout(limit, self.shoot()).await {
+            Ok(shot) => (shot, false),
+            Err(_) => {
+                let e =
+                    format!("the browser did not answer one within {} s, so no more were taken", limit.as_secs_f32());
+                (Err(e), true)
+            }
         };
         let mut s = lock(&self.shared);
+        // A browser that left one screenshot unanswered would hold up every later action as long again.
+        s.shots_stopped |= unanswered;
         match shot {
             Ok((png, page_width)) => s.push(Frame { png, at, page_width }),
             Err(e) => s.shot_error = Some(e),
         }
     }
 
+    /// How long one screenshot is waited for.
+    fn shot_timeout(&self) -> Duration {
+        #[cfg(test)]
+        if self.screenshots == Shots::Hang {
+            return Duration::from_millis(300);
+        }
+        SHOT_TIMEOUT
+    }
+
     /// The page as it is now, as a PNG of the size the screencast would give it, and the page's width in CSS pixels.
     /// The error is the text the export gives when no frame was captured at all.
     async fn shoot(&self) -> std::result::Result<(Vec<u8>, f64), String> {
         #[cfg(test)]
-        if !self.screenshots {
-            return Err("screenshots are switched off by the test".to_string());
+        match self.screenshots {
+            Shots::Taken => {}
+            Shots::Fail => return Err("screenshots are switched off by the test".to_string()),
+            Shots::Hang => std::future::pending::<()>().await,
         }
-        let params = CaptureScreenshotParams::builder().format(CaptureScreenshotFormat::Png).build();
-        let shot = self.page.execute(params).await.map_err(|e| Error::from(e).to_string())?;
-        let png = base64::engine::general_purpose::STANDARD
-            .decode(AsRef::<str>::as_ref(&shot.result.data))
-            .map_err(|e| format!("unreadable screenshot: {e}"))?;
+        // Taken as `Browser::screenshot` takes them (`Page::screenshot` activates the tab first), so a recording asks
+        // the browser for nothing the plain screenshot does not.
+        let params = ScreenshotParams::builder().format(CaptureScreenshotFormat::Png).build();
+        let png = self.page.screenshot(params).await.map_err(|e| Error::from(e).to_string())?;
         let png = fit_png(png, self.max).map_err(|e| e.to_string())?;
         // The page's width places the action marks on the frame; without it they are drawn unscaled.
         let page_width = match self.page.evaluate("innerWidth").await {

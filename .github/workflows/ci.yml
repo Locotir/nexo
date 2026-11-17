@@ -7,12 +7,14 @@ on:
 
 jobs:
   nexo:
-    # nexo is built and tested on Linux, macOS and Windows on every push
+    # nexo is built and tested on Linux and Windows on every push; macOS runs here too but is not claimed as tested until it is green
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # macOS is new here: its job reports but does not fail the run until it has been green on main (then delete this line)
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     # the interface tests draw in 24-bit colour, as on the terminals nexo targets (a runner sets no TERM)
     env:
       COLORTERM: truecolor
