@@ -113,10 +113,12 @@ pub(super) fn decode<'a>(content_type: &str, body: &'a [u8], html: bool) -> (Cow
             let meta = META.get_or_init(|| {
                 regex::bytes::Regex::new(r#"(?i)<meta[^>]*?charset\s*=\s*["']?\s*([^"'>;\s/]+)"#).unwrap()
             });
-            let by_header = header.captures(content_type.as_bytes()).and_then(|c| Encoding::for_label(&c[1]));
+            // the replacement encoding would turn a whole page into one U+FFFD, so a label that maps to it is read as no label
+            let known = |label: &[u8]| Encoding::for_label(label).filter(|e| *e != encoding_rs::REPLACEMENT);
+            let by_header = header.captures(content_type.as_bytes()).and_then(|c| known(&c[1]));
             let by_meta = || {
                 let head = &body[..body.len().min(1024)];
-                meta.captures(head).and_then(|c| Encoding::for_label(&c[1])).map(|enc| {
+                meta.captures(head).and_then(|c| known(&c[1])).map(|enc| {
                     // a page that is readable as ASCII here cannot really be UTF-16, so the label is wrong
                     if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
                         encoding_rs::UTF_8
@@ -381,7 +383,9 @@ impl Tool for WebFetch {
                         let (text, charset) = decode(&ct, &body, false);
                         (text.into_owned(), charset)
                     }
-                    Kind::Refused(what) => return ToolOutput::error(refused_text(&final_url, &what, None)),
+                    Kind::Refused(what) => {
+                        return ToolOutput::error(format!("web_fetch: {}", refused_text(&final_url, &what, None)));
+                    }
                 };
                 (final_url, text, cut, charset, None, true)
             }
@@ -412,15 +416,15 @@ impl Tool for WebFetch {
     }
 }
 
-/// The error for a type `web_fetch` cannot read. A PDF gets what is known about reaching its text.
+/// Why a type `web_fetch` cannot read is refused, without the tool prefix its callers add. A PDF also gets what is known of the file.
 fn refused_text(final_url: &Url, what: &str, size: Option<u64>) -> String {
-    let mut say = format!("web_fetch: {final_url} is {what}, not text; web_fetch reads HTML, text, Markdown and JSON");
+    let mut say = format!("{final_url} is {what}, not text; web_fetch reads HTML, text, Markdown and JSON");
     if what == "application/pdf" {
         match size {
             Some(n) => say.push_str(&format!(". The file is a PDF ({n} bytes)")),
             None => say.push_str(". The file is a PDF"),
         }
-        say.push_str("; bash can download it (curl -o) and pdftotext reads it if installed.");
+        say.push('.');
     }
     say
 }

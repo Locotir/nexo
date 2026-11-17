@@ -703,6 +703,11 @@ fn decode_prefers_a_byte_order_mark_then_the_header_then_the_meta_and_falls_back
     // a label nobody knows is ignored: the UTF-8 default reads the body
     let (text, name) = decode("text/plain; charset=made-up-9", "café".as_bytes(), false);
     assert_eq!((&*text, name), ("café", None));
+    // a label that means the replacement encoding is ignored too: it would turn the page into one U+FFFD
+    let (text, name) = decode("text/plain; charset=iso-2022-kr", b"hello", false);
+    assert_eq!((&*text, name), ("hello", None));
+    let (text, name) = decode("text/html", b"<meta charset=\"hz-gb-2312\">hello", true);
+    assert!(text.ends_with("hello") && name.is_none(), "{text}");
     // a page that says utf-8 stays on the borrowed fast path
     assert!(matches!(decode("text/html; charset=\"UTF-8\"", b"<p>ok</p>", true).0, std::borrow::Cow::Borrowed(_)));
 }
@@ -780,14 +785,53 @@ async fn a_pdf_fetch_says_what_the_file_is() {
     let out = t.run(json!({"url": s.url("/paper.pdf")}), &ctx()).await;
     m.assert_async().await;
     assert!(out.is_error, "{}", out.content);
+    assert_eq!(
+        out.content,
+        format!(
+            "web_fetch: {} is application/pdf, not text; web_fetch reads HTML, text, Markdown and JSON. The file is a PDF (12 bytes).",
+            s.url("/paper.pdf")
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_file_refused_by_its_headers_is_not_downloaded() {
+    // a server that promises a large PDF and never sends it: reading the body would wait for the timeout
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/pdf\r\ncontent-length: 50000000\r\n\r\n%PDF";
+        sock.write_all(head.as_bytes()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    });
+    let t = WebFetch::new(&WebConfig::default());
+    let run = t.run(json!({"url": format!("http://{addr}/big.pdf")}), &ctx());
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), run).await.expect("the body was waited for");
+    assert!(out.is_error && out.content.contains("The file is a PDF (50000000 bytes)."), "{}", out.content);
     assert!(
-        out.content.ends_with(
-            "is application/pdf, not text; web_fetch reads HTML, text, Markdown and JSON. \
-             The file is a PDF (12 bytes); bash can download it (curl -o) and pdftotext reads it if installed."
-        ),
+        out.content.starts_with("web_fetch: http://") && !out.content.contains("web_fetch: web_fetch"),
         "{}",
         out.content
     );
+}
+
+#[tokio::test]
+async fn an_error_page_cut_inside_an_unclosed_script_shows_no_script_text() {
+    let s = MockServer::start_async().await;
+    let page = format!("<html><body><p>Access denied</p><script>var secret = \"{}\";", "x".repeat(20_000));
+    s.mock_async(move |when, then| {
+        when.method(GET).path("/cut");
+        then.status(403).header("content-type", "text/html").body(page);
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/cut")}), &ctx()).await;
+    assert!(out.content.contains("Access denied"), "{}", out.content);
+    assert!(!out.content.contains("secret") && !out.content.contains("xxxx"), "{}", out.content);
 }
 
 #[tokio::test]
