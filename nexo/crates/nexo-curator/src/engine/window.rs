@@ -164,12 +164,11 @@ impl Engine {
             return 2 * land;
         }
         let (r, l) = (self.p.ratio, land as f64);
-        let w = self.write_now();
         let calls = self.calls_ahead(self.tr.steps.len());
         if r <= 0.0 {
             return i64::MAX;
         }
-        let rewrite = self.p.margin * l * (w - r).max(0.01);
+        let rewrite = self.p.margin * l * (1.0 - r).max(0.01);
         let (knee, loss) = (LONG_KNEE as f64, LONG_LOSS);
         let at = l + rewrite / (r * calls);
         let fire = if at <= knee.max(l) {
@@ -370,9 +369,8 @@ impl Engine {
         let resent = (tokens(&p1[a1..], &s1) - tokens(&p0[a0..], &s0)).max(0) as f64;
         let long = ((t0 - LONG_KNEE).max(0) - (t1 - LONG_KNEE).max(0)) as f64;
         let r = self.p.ratio;
-        let w = self.write_now();
         let saved = (r * (t0 - t1) as f64 + LONG_LOSS * long) * calls;
-        saved > margin * (w - r).max(0.01) * resent
+        saved > margin * (1.0 - r).max(0.01) * resent
     }
 
     /// The calls until the view has grown to where its size makes an epoch due (`epoch_due`), at the pace the history
@@ -395,8 +393,7 @@ impl Engine {
     /// saving `ratio` of itself per call, and `resent` tokens that stay are read once without the cache.
     pub(super) fn lands(&self, drop: i64, resent: i64) -> bool {
         let r = self.p.ratio;
-        let w = self.write_now();
-        r * drop.max(0) as f64 * self.calls_left() > self.p.lmargin * (w - r) * resent.max(0) as f64
+        r * drop.max(0) as f64 * self.calls_left() > self.p.lmargin * (1.0 - r) * resent.max(0) as f64
     }
 
     /// The window cut of this epoch before it is made (`Params.kept`): the first message it would change and
@@ -509,9 +506,8 @@ impl Engine {
                 let upto = rewritten.map_or(sizes.len(), |w| w.clamp(at, sizes.len()));
                 let resent = (sizes[at..upto].iter().sum::<i64>() - cut).max(0) as f64;
                 let r = self.p.ratio;
-                let w = self.write_now();
-                let pays =
-                    r * cut as f64 * self.calls_ahead(self.tr.steps.len()) > self.p.margin * (w - r).max(0.01) * resent;
+                let pays = r * cut as f64 * self.calls_ahead(self.tr.steps.len())
+                    > self.p.margin * (1.0 - r).max(0.01) * resent;
                 if !pays && total - cut > start {
                     self.bump("window_waits", 1);
                     return None;

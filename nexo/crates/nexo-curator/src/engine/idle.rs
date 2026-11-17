@@ -157,14 +157,13 @@ impl Engine {
         // 1.2 % more input cost and 2 more forgotten words of 112.
         let hz = self.horizon(now, after[0]);
         let r = self.p.ratio;
-        let w = self.write_now();
         let (mut best, mut cut, mut paid, mut saved) = (0.0f64, None, 0.0f64, 0i64);
         for k in (0..idle.len()).rev() {
             let (mi, i, size) = idle[k];
             self.live_since.entry(i).or_insert(now);
             paid += r * size as f64 * hz;
             saved += size;
-            let gain = paid - self.p.margin * (w - r) * (after[mi] - saved).max(0) as f64;
+            let gain = paid - self.p.margin * (1.0 - r) * (after[mi] - saved).max(0) as f64;
             if gain > best {
                 (best, cut) = (gain, Some(k));
             }
@@ -308,7 +307,6 @@ impl Engine {
         let now = self.tr.steps.len();
         let hz = self.horizon(now, sizes.iter().sum());
         let r = self.p.ratio;
-        let w = self.write_now();
         let going: FxHashSet<usize> = idle.iter().flat_map(|&i| self.steps[i].msgs.iter().copied()).collect();
         let moved = self.moved(|m| !going.contains(&m));
         // a step is worth the chance a reply still copies its output (`step_need`) times the price of the call
@@ -359,13 +357,13 @@ impl Engine {
             }
             first = first.min(s.place()).min(s.a);
             let rest = (after[first] - after[first.max(warm).min(sizes.len())] - saved).max(0);
-            let mut gain = paid - self.p.margin * (w - r) * rest as f64;
+            let mut gain = paid - self.p.margin * (1.0 - r) * rest as f64;
             let mut at = first;
             if let Some((cut_at, cut_takes)) = joint {
                 let takes = cut_takes.min((total - saved - land).max(0));
                 let start = first.min(cut_at);
                 let both = paid + r * takes as f64 * self.calls_left()
-                    - self.p.lmargin * (w - r) * (after[start] - saved - takes).max(0) as f64;
+                    - self.p.lmargin * (1.0 - r) * (after[start] - saved - takes).max(0) as f64;
                 if both > gain {
                     (gain, at) = (both, start);
                 }

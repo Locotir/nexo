@@ -28,7 +28,6 @@ use self::window::Sticky;
 mod added;
 mod anchor;
 mod cache;
-pub use cache::Writes;
 mod cap;
 mod cells;
 mod decide;
@@ -305,13 +304,8 @@ pub struct Engine {
     dbg_looks: FxHashMap<usize, String>,
     /// The reads that left the view while a later edit had made them out of date: (path, message of the edit).
     stale_gone: FxHashMap<usize, (String, usize)>,
-    /// Seconds, as the host gives them with each view (`Params.pockets`), and at the view before.
+    /// Seconds, as the host gives them with each view (`Params.pockets`).
     pub now: f64,
-    #[serde(default)]
-    pub prev_now: f64,
-    /// What writing to the cache costs (`set_writes`). Not saved: the host sets it with the prices.
-    #[serde(skip)]
-    writes: cache::Writes,
     /// The last view sent on each topic, message by message as [`Engine::prints`] gives it, and when.
     pockets: FxHashMap<usize, Pocket>,
     /// The first message of the view the cache no longer holds, while `decide` weighs it (`usize::MAX`: all
@@ -465,8 +459,6 @@ impl Engine {
             dbg_looks: Default::default(),
             stale_gone: FxHashMap::default(),
             now: 0.0,
-            prev_now: 0.0,
-            writes: Default::default(),
             pockets: FxHashMap::default(),
             warm: usize::MAX,
             life_lo: 0.0,

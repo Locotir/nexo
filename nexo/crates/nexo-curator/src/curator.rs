@@ -3,7 +3,7 @@
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
 
-use crate::engine::{Added, Engine, Writes};
+use crate::engine::{Added, Engine};
 use crate::mechanical::MARK;
 use crate::params::params;
 use crate::{json, msg, Memory, State};
@@ -110,10 +110,7 @@ impl Curator {
     pub fn view(&mut self, system_tokens: u64, messages: &[Value], now: f64) -> Result<Reply, String> {
         self.head_tokens = system_tokens;
         self.eng.head = system_tokens as i64;
-        if now != self.eng.now {
-            self.eng.prev_now = self.eng.now;
-            self.eng.now = now;
-        }
+        self.eng.now = now;
         // the view takes what the window leaves after the system prompt and tools: a floor above that would
         // only move the overflow to the provider (a small local window under many tools); 0 means no limit,
         // so the least is one token
@@ -161,14 +158,7 @@ impl Curator {
     /// cost and 21 % fewer forgotten words than weighing it at 0.1. A dearer cache (0.25), or none, keeps the
     /// spec's ratio: weighed at its price it cut 2.8 % (13 % with none) of the cost but forgot 6 % (20 %)
     /// more words. No prices (a local model) keep it too.
-    ///
-    /// `write` and `write_long` are what writing the cache costs, for the short cache and for the one the
-    /// host writes after a pause longer than the short cache lasts (the same price where it never writes
-    /// for longer); 0 where the provider charges nothing extra, so a write costs `input`. A cut that breaks
-    /// the cache rewrites the rest of the view at that price, which it must save back.
-    pub fn prices(&mut self, input: f64, cache_read: f64, write: f64, write_long: f64) {
-        let of = |w: f64| if input > 0.0 && w > 0.0 { w / input } else { 1.0 };
-        self.eng.set_writes(Writes { short: of(write), long: of(if write_long > 0.0 { write_long } else { write }) });
+    pub fn prices(&mut self, input: f64, cache_read: f64) {
         let Ok(p) = params(&self.spec) else { return };
         let set = self.spec.split(';').any(|kv| kv.split('=').next().is_some_and(|k| k.trim() == "ratio"));
         let cheap =

@@ -84,7 +84,7 @@ async fn curator_view(
         cur.window(view_window(window - reply, ratio));
     }
     if let Some(p) = prices {
-        cur.prices(&p);
+        cur.prices(p.input, p.cache_read);
     }
     cur.history_version(st.history.version());
     let view = match cur.view(fixed_tokens(&st.system, &req.tools) + extra, &st.history).await {

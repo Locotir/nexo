@@ -283,7 +283,7 @@ impl Run {
                 policy.window(crate::turn::view_window(w - reply, tok_ratio));
             }
             if let Some(p) = prices {
-                policy.prices(&p);
+                policy.prices(p.input, p.cache_read);
             }
             policy.calls_left(Some((rounds - round + 1) as u64));
             let view = match policy.view(system_tokens, &messages).await {

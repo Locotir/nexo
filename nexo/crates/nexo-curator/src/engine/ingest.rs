@@ -385,7 +385,6 @@ impl Engine {
             // learned of the provider: it survives the restart
             let (budget, note_tool, recall_tool) = (self.budget, self.note_tool, self.recall_tool);
             let (now, life, read_seen) = (self.now, (self.life_lo, self.life_hi), self.read_seen);
-            let (prev_now, writes) = (self.prev_now, self.writes);
             // the units of the history so far are complete: what they were used by is written out
             self.dump_uses();
             let dump = self.dump.take();
@@ -397,7 +396,6 @@ impl Engine {
             self.note_tool = note_tool;
             self.recall_tool = recall_tool;
             (self.now, (self.life_lo, self.life_hi), self.read_seen) = (now, life, read_seen);
-            (self.prev_now, self.writes) = (prev_now, writes);
         }
         // a rewritten history is read anew: the rules found in it are the carried ones, where they were;
         // what the person wrote after the last reply comes with the rewrite and is new; with no reply at all

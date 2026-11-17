@@ -96,24 +96,24 @@ fn the_map_kept_between_requests_is_the_map_made_from_nothing() {
 #[test]
 fn a_cache_cheaper_than_the_specs_ratio_is_weighed_at_its_price() {
     let mut c = Curator::new("").unwrap();
-    c.prices(0.28, 0.028, 0.0, 0.0);
+    c.prices(0.28, 0.028);
     assert!((c.eng.ratio() - 0.1).abs() < 1e-9);
-    c.prices(0.3, 0.006, 0.0, 0.0);
+    c.prices(0.3, 0.006);
     assert!((c.eng.ratio() - 0.02).abs() < 1e-9);
     c.reset();
     assert!((c.eng.ratio() - 0.02).abs() < 1e-9, "a reset keeps the prices");
     // a dearer cache, or none, after a switch of model: back to the spec's ratio
-    c.prices(0.2, 0.05, 0.0, 0.0);
+    c.prices(0.2, 0.05);
     assert!((c.eng.ratio() - 0.1).abs() < 1e-9);
-    c.prices(0.3, 0.006, 0.0, 0.0);
-    c.prices(1.0, 0.0, 0.0, 0.0);
+    c.prices(0.3, 0.006);
+    c.prices(1.0, 0.0);
     assert!((c.eng.ratio() - 0.1).abs() < 1e-9);
     // a local model or unknown prices: the spec's ratio
     let mut c = Curator::new("").unwrap();
-    c.prices(0.0, 0.0, 0.0, 0.0);
+    c.prices(0.0, 0.0);
     assert!((c.eng.ratio() - 0.1).abs() < 1e-9);
     let mut c = Curator::new("ratio=0.3").unwrap();
-    c.prices(0.3, 0.006, 0.0, 0.0);
+    c.prices(0.3, 0.006);
     assert!((c.eng.ratio() - 0.3).abs() < 1e-9);
 }
 
