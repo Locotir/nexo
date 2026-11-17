@@ -27,6 +27,8 @@ fn rules() -> &'static [Rule] {
             (r"\bgh[pousr]_[A-Za-z0-9]{20,}", MASK),
             (r"\bgithub_pat_[A-Za-z0-9_]{20,}", MASK),
             (r"\bxox[abeprs]-[A-Za-z0-9-]{10,}", MASK),
+            // Cerebras keys.
+            (r"\bcsk-[A-Za-z0-9]{20,}", MASK),
             (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", MASK),
             // JSON web tokens.
             (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}", MASK),
@@ -99,6 +101,32 @@ mod tests {
     fn openai_style_key() {
         let k = key("s", "k-abcdefghijklmnopqrstuv1234");
         hides(&format!("use {k} for it"), &k);
+    }
+
+    #[test]
+    fn groq_google_cerebras_xai_and_stripe_live_keys() {
+        for k in [
+            key("gs", "k_abcdefghijklmnop1234"),
+            key("AI", "zaSyabcdefghijklmnopqrstuvwxyz_-12345"),
+            key("cs", "k-abcdefghijklmnopqrst1234"),
+            key("xa", "i-abcdefghijklmnopqrst1234"),
+            key("s", "k_live_abcdefghijklmnop1234"),
+            key("r", "k_live_abcdefghijklmnop1234"),
+        ] {
+            hides(&format!("key {k} in use"), &k);
+        }
+    }
+
+    #[test]
+    fn publishable_stripe_key_is_kept() {
+        let k = key("p", "k_live_abcdefghijklmnop1234");
+        assert!(matches!(redact(&format!("use {k} in the page")), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn provider_prefix_words_in_prose_are_borrowed() {
+        let t = "a task-driven flow, xai-driven design, gsk_short, csk-x and AIza are plain words";
+        assert!(matches!(redact(t), Cow::Borrowed(_)));
     }
 
     #[test]
