@@ -1,15 +1,42 @@
 use super::*;
+use encoding_rs::Encoding;
+use std::borrow::Cow;
+use std::collections::VecDeque;
+use std::time::Instant;
 
 // ------------------------------------------------------------------ fetch
 
+/// How many converted pages `web_fetch` keeps for continuation calls.
+const PAGE_COPIES: usize = 4;
+/// How long a kept copy answers a continuation call.
+const PAGE_COPY_TTL: Duration = Duration::from_secs(60);
+/// How much of an error response body is read, enough for a JSON error or the head of a challenge page.
+const ERROR_BODY_READ: usize = 8 * 1024;
+/// How many characters of that body the model is shown.
+const ERROR_BODY_SHOWN: usize = 500;
+
+/// A page as `web_fetch` converted it, kept so that reading on does not download it again.
+#[derive(Clone)]
+pub(super) struct PageCopy {
+    /// The URL as requested (redirects are resolved inside one fetch, so the final URL is not the key).
+    pub(super) key: String,
+    pub(super) at: Instant,
+    pub(super) final_url: Url,
+    pub(super) text: String,
+    pub(super) cut: bool,
+    pub(super) charset: Option<&'static str>,
+}
+
 pub struct WebFetch {
     http: Result<reqwest::Client, String>,
+    pub(super) copies: Mutex<VecDeque<PageCopy>>,
 }
 
 impl WebFetch {
     pub fn new(cfg: &WebConfig) -> WebFetch {
         // redirects are followed by hand, each one checked (`hop`)
         WebFetch {
+            copies: Mutex::new(VecDeque::new()),
             http: nexo_http::build_client(|| {
                 builder(cfg).redirect(reqwest::redirect::Policy::none()).dns_resolver(Arc::new(PublicResolver))
             }),
@@ -18,6 +45,22 @@ impl WebFetch {
 
     fn http(&self) -> Result<&reqwest::Client, String> {
         self.http.as_ref().map_err(Clone::clone)
+    }
+
+    /// The kept copy of `key` while it is under a minute old.
+    pub(super) fn copy_of(&self, key: &str) -> Option<PageCopy> {
+        let copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
+        copies.iter().find(|c| c.key == key && c.at.elapsed() < PAGE_COPY_TTL).cloned()
+    }
+
+    /// Keeps the converted page of `copy.key`, replacing an older copy of it; the oldest copy goes when full.
+    pub(super) fn keep(&self, copy: PageCopy) {
+        let mut copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
+        copies.retain(|c| c.key != copy.key);
+        if copies.len() >= PAGE_COPIES {
+            copies.pop_front();
+        }
+        copies.push_back(copy);
     }
 }
 
@@ -54,6 +97,63 @@ pub(super) fn kind_of(content_type: &str, body: &[u8]) -> Kind {
         }
     }
     Kind::Refused(if ct.is_empty() { "binary content".into() } else { ct })
+}
+
+/// The page text in the charset the page declares: a byte order mark first, then the `charset` of the Content-Type,
+/// then (for HTML) a `<meta>` in the first KiB, as browsers do; UTF-8 when none names a charset this knows.
+/// The second value is the charset name when it was not UTF-8, so the model can be told.
+pub(super) fn decode<'a>(content_type: &str, body: &'a [u8], html: bool) -> (Cow<'a, str>, Option<&'static str>) {
+    static HEADER: OnceLock<regex::bytes::Regex> = OnceLock::new();
+    static META: OnceLock<regex::bytes::Regex> = OnceLock::new();
+    let (found, text) = match Encoding::for_bom(body) {
+        Some((enc, skip)) => (Some(enc), &body[skip..]),
+        None => {
+            let header =
+                HEADER.get_or_init(|| regex::bytes::Regex::new(r#"(?i)charset\s*=\s*["']?\s*([^"'>;\s/]+)"#).unwrap());
+            let meta = META.get_or_init(|| {
+                regex::bytes::Regex::new(r#"(?i)<meta[^>]*?charset\s*=\s*["']?\s*([^"'>;\s/]+)"#).unwrap()
+            });
+            let by_header = header.captures(content_type.as_bytes()).and_then(|c| Encoding::for_label(&c[1]));
+            let by_meta = || {
+                let head = &body[..body.len().min(1024)];
+                meta.captures(head).and_then(|c| Encoding::for_label(&c[1])).map(|enc| {
+                    // a page that is readable as ASCII here cannot really be UTF-16, so the label is wrong
+                    if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+                        encoding_rs::UTF_8
+                    } else {
+                        enc
+                    }
+                })
+            };
+            (by_header.or_else(|| if html { by_meta() } else { None }), body)
+        }
+    };
+    match found {
+        Some(enc) if enc != encoding_rs::UTF_8 => (enc.decode_without_bom_handling(text).0, Some(enc.name())),
+        _ => (String::from_utf8_lossy(text), None),
+    }
+}
+
+/// What an error response said, for the model: the start of its body when it is text, JSON, XML or HTML.
+/// A response without a Content-Type shows nothing, as before.
+fn error_body(content_type: &str, raw: &[u8], base: &Url) -> Option<String> {
+    if content_type.trim().is_empty() || raw.is_empty() {
+        return None;
+    }
+    let (text, _) = decode(content_type, raw, true);
+    let text = match kind_of(content_type, raw) {
+        Kind::Html => html_to_markdown(&text, Some(base)),
+        Kind::Text => text.into_owned(),
+        Kind::Refused(_) => return None,
+    };
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    Some(match text.char_indices().nth(ERROR_BODY_SHOWN) {
+        Some((cut, _)) => format!("Response body (first {ERROR_BODY_SHOWN} characters): {}", &text[..cut]),
+        None => format!("Response body: {text}"),
+    })
 }
 
 /// HTML as Markdown: title first, the noise out, links absolute.
@@ -200,22 +300,53 @@ impl Tool for WebFetch {
             };
             let status = resp.status();
             let final_url = resp.url().clone();
-            if !status.is_success() {
-                let mut say =
-                    format!("HTTP {} {} for {final_url}", status.as_u16(), status.canonical_reason().unwrap_or(""));
-                if matches!(status.as_u16(), 404 | 410) {
-                    say.push_str(
-                        " The page does not exist: do not guess URLs; use one that a search result or a page gave you.",
-                    );
-                }
-                return Err(say);
-            }
             let ct = resp
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+            if !status.is_success() {
+                let mut say =
+                    format!("HTTP {} {} for {final_url}", status.as_u16(), status.canonical_reason().unwrap_or(""));
+                // when to try again is a fact the server gives only here
+                if let Some(wait) = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    say.push_str(&format!(" Retry-After: {wait}."));
+                }
+                if matches!(status.as_u16(), 404 | 410) {
+                    say.push_str(
+                        " The page does not exist: do not guess URLs; use one that a search result or a page gave you.",
+                    );
+                }
+                // why it failed (an API's JSON error, a challenge page) is in the body; a broken read just shows none
+                let mut raw: Vec<u8> = Vec::new();
+                while raw.len() < ERROR_BODY_READ {
+                    match resp.chunk().await {
+                        Ok(Some(chunk)) => raw.extend_from_slice(&chunk),
+                        _ => break,
+                    }
+                }
+                raw.truncate(ERROR_BODY_READ);
+                if let Some(shown) = error_body(&ct, &raw, &final_url) {
+                    say.push_str(&format!("\n\n{shown}"));
+                }
+                return Err(say);
+            }
+            // a type that cannot be read is known from the headers: its body is not downloaded to be refused
+            if let Kind::Refused(what) = kind_of(&ct, &[]) {
+                let size = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok());
+                return Err(refused_text(&final_url, &what, size));
+            }
             let mut body: Vec<u8> = Vec::new();
             let mut cut = false;
             while let Some(chunk) = resp.chunk().await.map_err(|e| net_error(&e))? {
@@ -228,21 +359,31 @@ impl Tool for WebFetch {
             }
             Ok::<_, String>(Ok((final_url, ct, body, cut)))
         };
-        let (final_url, ct, body, cut) = tokio::select! {
-            r = work => match r {
-                Ok(Ok(v)) => v,
-                Ok(Err(say)) => return ToolOutput::ok(format!("URL: {url}\n\n{say}")),
-                Err(e) => return ToolOutput::error(format!("web_fetch: {e}")),
-            },
-            _ = ctx.cancel.cancelled() => return ToolOutput::error("web_fetch: cancelled"),
-        };
-        let text = match kind_of(&ct, &body) {
-            Kind::Html => html_to_markdown(&String::from_utf8_lossy(&body), Some(&final_url)),
-            Kind::Text => String::from_utf8_lossy(&body).into_owned(),
-            Kind::Refused(what) => {
-                return ToolOutput::error(format!(
-                    "web_fetch: {final_url} is {what}, not text; web_fetch reads HTML, text, Markdown and JSON"
-                ))
+        // reading on from `start` uses the copy of the last read of this URL; a read from the start always fetches
+        let kept = if start > 0 { self.copy_of(url.as_str()) } else { None };
+        let (final_url, text, cut, charset, age, fresh) = match kept {
+            Some(c) => (c.final_url, c.text, c.cut, c.charset, Some(c.at.elapsed()), false),
+            None => {
+                let (final_url, ct, body, cut) = tokio::select! {
+                    r = work => match r {
+                        Ok(Ok(v)) => v,
+                        Ok(Err(say)) => return ToolOutput::ok(format!("URL: {url}\n\n{say}")),
+                        Err(e) => return ToolOutput::error(format!("web_fetch: {e}")),
+                    },
+                    _ = ctx.cancel.cancelled() => return ToolOutput::error("web_fetch: cancelled"),
+                };
+                let (text, charset) = match kind_of(&ct, &body) {
+                    Kind::Html => {
+                        let (html, charset) = decode(&ct, &body, true);
+                        (html_to_markdown(&html, Some(&final_url)), charset)
+                    }
+                    Kind::Text => {
+                        let (text, charset) = decode(&ct, &body, false);
+                        (text.into_owned(), charset)
+                    }
+                    Kind::Refused(what) => return ToolOutput::error(refused_text(&final_url, &what, None)),
+                };
+                (final_url, text, cut, charset, None, true)
             }
         };
         let (piece, note) = page(&text, start, max);
@@ -253,11 +394,33 @@ impl Tool for WebFetch {
         if cut {
             out.push_str("(the page is over 5 MB; only its start was read)\n");
         }
+        if let Some(name) = charset {
+            out.push_str(&format!("(decoded as {name})\n"));
+        }
+        if let Some(age) = age {
+            out.push_str(&format!("(read from the copy fetched {} s ago)\n", age.as_secs()));
+        }
         out.push('\n');
         out.push_str(&piece);
         if let Some(n) = note {
             out.push_str(&format!("\n\n{n}"));
         }
+        if fresh {
+            self.keep(PageCopy { key: url.to_string(), at: Instant::now(), final_url, text, cut, charset });
+        }
         ToolOutput::ok(out)
     }
+}
+
+/// The error for a type `web_fetch` cannot read. A PDF gets what is known about reaching its text.
+fn refused_text(final_url: &Url, what: &str, size: Option<u64>) -> String {
+    let mut say = format!("web_fetch: {final_url} is {what}, not text; web_fetch reads HTML, text, Markdown and JSON");
+    if what == "application/pdf" {
+        match size {
+            Some(n) => say.push_str(&format!(". The file is a PDF ({n} bytes)")),
+            None => say.push_str(". The file is a PDF"),
+        }
+        say.push_str("; bash can download it (curl -o) and pdftotext reads it if installed.");
+    }
+    say
 }

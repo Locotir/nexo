@@ -26,6 +26,7 @@ dirs = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true }
 htmd = { workspace = true }
+encoding_rs = { workspace = true }
 nexo-browser = { workspace = true }
 nexo-relay = { workspace = true }
 nexo-http = { workspace = true }
