@@ -2,7 +2,7 @@
 
 ## Build and run
 
-Rust 1.89 or newer, on Linux or Windows.
+Rust 1.89 or newer, on Linux, macOS or Windows.
 
 ```sh
 cd nexo
@@ -24,9 +24,10 @@ policy = "curator"                           # auto | plain | compact | curator
 
 `auto`, the default, is the curator. `plain` sends the whole history; `compact` summarises once a request
 reaches `compact_at` input tokens (**100000** by default, counted as the provider counts them), as often
-as needed, keeping the task statement and the files touched. The status bar shows what the policy is doing
-(`curator −62%`, `curator idle` while the whole history is still cheaper to send than to rewrite,
-`curator off`, `plain`), how many messages each call put in and took out (`+3 in  -12 out`), and `/context` says why. The view never passes the model's window, so a long session does not end in an error from the provider.
+as needed, keeping the task statement and the files touched. The status bar shows what the policy is doing:
+`curator -12k tok` (this call's view is 12k tokens smaller than the one before; `curator +3.0k tok` when old
+messages came back), `curator idle` while the whole history is still cheaper to send than to rewrite,
+`curator off`, or `plain`. The figure is tokens, not a percentage, and `/context` says why. The view never passes the model's window, so a long session does not end in an error from the provider.
 
 ## The benchmark: `nexo bench`
 
@@ -79,15 +80,8 @@ nexo/
   ARCHITECTURE.md           the crates and their contracts
   FEATURES.md, IDEAS.md     what exists, with its tests, and what may come
   crates/
-    nexo-core               types shared by every crate
-    nexo-providers          the protocol adapters
-    nexo-tools              the agent's tools
-    nexo-agent              the agent loop, sessions and context policies
-    nexo-curator            the context curator
-    nexo-bench              the benchmark behind `nexo bench`
-    nexo-tui                the full-screen interface
-    nexo-cli                the `nexo` binary
-.github/workflows/         ci.yml (format, build, test, clippy on Linux, macOS and Windows), install.yml, release.yml
+    the 16 workspace crates, see nexo/docs/CRATES.md
+.github/workflows/         ci.yml (build, test and clippy on Linux, macOS and Windows, macOS not yet blocking; format check on Linux only; an MSRV job), install.yml, release.yml
 ```
 
 ## Replaying the curator on a recorded run
