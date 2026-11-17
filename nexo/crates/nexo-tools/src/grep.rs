@@ -100,11 +100,12 @@ impl Tool for Grep {
         };
         // a bounded compiled size: a pattern like `(a{1000}){1000}` is refused, not built
         let multiline = bool_arg(&args, "multiline");
+        let crlf = multiline && !names_carriage_return(pattern);
         let re = match RegexBuilder::new(pattern)
             .case_insensitive(bool_arg(&args, "case_insensitive"))
             .multi_line(multiline)
             // CRLF files: without this `$` and `^` never see the line break because the `\r` sits before the `\n`
-            .crlf(multiline)
+            .crlf(crlf)
             .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
@@ -117,7 +118,7 @@ impl Tool for Grep {
             .case_insensitive(bool_arg(&args, "case_insensitive"))
             .multi_line(multiline)
             // as above: `$` and `^` must see CRLF line ends in the byte search too
-            .crlf(multiline)
+            .crlf(crlf)
             .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
@@ -520,6 +521,17 @@ impl Merge {
     }
 }
 
+/// True when the pattern names a carriage return itself (`\r`, a hex or unicode escape, or the raw character).
+/// In CRLF mode `$` is false between the `\r` and the `\n`, so a pattern that already spells out the `\r` before its
+/// `$` (like `foo\r$`) would stop matching; those patterns keep the plain line-feed semantics they were written for.
+fn names_carriage_return(pattern: &str) -> bool {
+    pattern.contains('\r')
+        || pattern.contains("\\r")
+        || pattern.contains("\\x")
+        || pattern.contains("\\u")
+        || pattern.contains("\\U")
+}
+
 /// The compiled programs a search names in its line about them.
 const PROGRAMS_NAMED: usize = 3;
 
@@ -663,6 +675,16 @@ mod tests {
         std::fs::write(d.path().join("win.txt"), "alpha\r\nfoo\r\nbar\r\n").unwrap();
         let out = Grep.run(json!({"pattern": "^foo$", "multiline": true, "glob": "win.txt"}), &c).await;
         assert_eq!(out.content, "win.txt:2: foo", "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn patterns_that_spell_out_the_carriage_return_still_match_before_the_line_end() {
+        let (d, c) = fixture();
+        std::fs::write(d.path().join("win.txt"), "alpha\r\nfoo\r\nbar\r\n").unwrap();
+        for pattern in ["foo\\r$", "foo\\x0d$", "foo\\r\\n"] {
+            let out = Grep.run(json!({"pattern": pattern, "multiline": true, "glob": "win.txt"}), &c).await;
+            assert_eq!(out.content, "win.txt:2: foo", "{pattern}: {}", out.content);
+        }
     }
 
     #[tokio::test]
