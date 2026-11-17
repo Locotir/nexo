@@ -145,8 +145,8 @@ fn run(name: &str) -> Vec<String> {
     diffs
 }
 
-#[test]
-fn golden_fixtures() {
+/// The recorded fixtures, by name.
+fn fixture_names() -> Vec<String> {
     let dir = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -154,24 +154,22 @@ fn golden_fixtures() {
         .filter(|n| n.ends_with(".jsonl"))
         .collect();
     names.sort();
-    assert_eq!(names.len(), 23);
-    let only = std::env::var("FIXTURE").unwrap_or_default();
-    names.retain(|n| only.is_empty() || n.contains(&only));
-    // each fixture is its own conversation: they replay side by side, a thread each, longest first
-    names.sort_by_key(|n| {
-        std::cmp::Reverse(
-            std::fs::metadata(format!("{}/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"))).map_or(0, |m| m.len()),
-        )
-    });
+    names
+}
+
+/// Maps ``f`` over the fixtures, a thread each, handing names out in the order given (longest first, so the last
+/// thread does not start the longest replay late). Each fixture is its own conversation, so they replay side by
+/// side. The results come back in name order.
+fn replay_each<T: Send>(names: &[String], f: impl Fn(&str) -> T + Sync) -> Vec<(String, T)> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(names.len().max(1));
-    let mut found: Vec<(String, Vec<String>)> = std::thread::scope(|s| {
+    let mut found: Vec<(String, T)> = std::thread::scope(|s| {
         let workers: Vec<_> = (0..threads)
             .map(|_| {
                 s.spawn(|| {
                     let mut out = Vec::new();
                     while let Some(n) = names.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-                        out.push((n.clone(), run(n)));
+                        out.push((n.clone(), f(n)));
                     }
                     out
                 })
@@ -179,7 +177,23 @@ fn golden_fixtures() {
             .collect();
         workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
     });
-    found.sort();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+#[test]
+fn golden_fixtures() {
+    let mut names = fixture_names();
+    // A floor, not an exact count: a new fixture must not break this, a deleted one must.
+    assert!(names.len() >= 23, "only {} fixtures are left, 23 were recorded", names.len());
+    let only = std::env::var("FIXTURE").unwrap_or_default();
+    names.retain(|n| only.is_empty() || n.contains(&only));
+    names.sort_by_key(|n| {
+        std::cmp::Reverse(
+            std::fs::metadata(format!("{}/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"))).map_or(0, |m| m.len()),
+        )
+    });
+    let found = replay_each(&names, run);
     let mut bad = Vec::new();
     for (n, d) in found {
         eprintln!("{n}: {}", if d.is_empty() { "ok" } else { "DIFF" });
@@ -223,16 +237,14 @@ fn widest(name: &str) -> (i64, i64) {
 /// `target` at most, 10k), so the batch allowed past the working set is 8k plus that.
 #[test]
 fn the_window_holds_on_every_fixture() {
-    let dir = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".jsonl"))
-        .collect();
-    names.sort();
+    let mut names = fixture_names();
+    names.sort_by_key(|n| {
+        std::cmp::Reverse(
+            std::fs::metadata(format!("{}/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"))).map_or(0, |m| m.len()),
+        )
+    });
     let mut bad = Vec::new();
-    for n in &names {
-        let (most, sticky) = widest(n);
+    for (n, (most, sticky)) in replay_each(&names, widest) {
         if most > 40_000 && most > sticky + 32_000 + 8_000 + 10_000 {
             bad.push(format!("{n}: the view reached {most} tokens with a sticky set of {sticky}"));
         }
