@@ -282,7 +282,7 @@ pub async fn run(
         }
         tokio::select! {
             biased;
-            _ = tokio::signal::ctrl_c() => {
+            _ = nexo_core::signals::stop() => {
                 interrupts += 1;
                 if interrupts > 1 {
                     nexo_agent::audit::close_all();

@@ -52,10 +52,16 @@ impl Keys {
 
 /// SIGTERM and SIGHUP (`kill`, the window closed): the run loop ends the normal way, so the
 /// terminal is given back (raw mode, alternate screen, mouse capture, bracketed paste).
-/// Elsewhere it never fires.
+/// On Windows the closed console, logoff and shutdown take their place. Elsewhere it never fires.
 pub(crate) struct Hangup {
     #[cfg(unix)]
     signals: Option<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)>,
+    #[cfg(windows)]
+    signals: Option<(
+        tokio::signal::windows::CtrlClose,
+        tokio::signal::windows::CtrlShutdown,
+        tokio::signal::windows::CtrlLogoff,
+    )>,
 }
 
 impl Hangup {
@@ -65,7 +71,18 @@ impl Hangup {
             use tokio::signal::unix::{signal, SignalKind};
             Hangup { signals: signal(SignalKind::terminate()).ok().zip(signal(SignalKind::hangup()).ok()) }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_close, ctrl_logoff, ctrl_shutdown};
+            Hangup {
+                signals: ctrl_close()
+                    .ok()
+                    .zip(ctrl_shutdown().ok())
+                    .zip(ctrl_logoff().ok())
+                    .map(|((c, s), l)| (c, s, l)),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         Hangup {}
     }
 
@@ -73,6 +90,16 @@ impl Hangup {
         #[cfg(unix)]
         if let Some((term, hup)) = self.signals.as_mut() {
             let got = tokio::select! { t = term.recv() => t, h = hup.recv() => h };
+            if got.is_some() {
+                return;
+            }
+            // the signal driver is gone: nothing more will come
+            self.signals = None;
+        }
+        #[cfg(windows)]
+        if let Some((close, shutdown, logoff)) = self.signals.as_mut() {
+            // Windows ends the process a few seconds after the close event, so the caller must leave at once
+            let got = tokio::select! { c = close.recv() => c, s = shutdown.recv() => s, l = logoff.recv() => l };
             if got.is_some() {
                 return;
             }

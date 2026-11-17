@@ -38,6 +38,7 @@ pub mod redact;
 pub mod sandbox;
 pub mod seen;
 pub mod shell;
+pub mod signals;
 pub mod skills;
 pub mod stream;
 pub mod subs;
