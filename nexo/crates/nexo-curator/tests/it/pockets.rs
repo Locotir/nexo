@@ -114,3 +114,32 @@ fn the_lifetime_is_learned_from_what_the_provider_read() {
     assert_eq!(last(&blind, "life_learned"), 0);
     assert_eq!(last(&blind, "life_reset"), 0);
 }
+
+#[test]
+fn a_provider_that_reads_every_view_whole_leaves_no_call_the_engine_got_wrong() {
+    // the counters are facts about the run and hold at the default spec, where `pockets` is off and `learn` listens to nothing
+    let rs = replay(TOPICS, "apart=0", |_| 30.0, |_, input| Some(input));
+    let calls = rs.len() as i64;
+    assert_eq!(
+        last(&rs, "cal_calls"),
+        calls - 2,
+        "the first call has no view before it to miss, and the last reply is made before its own call is answered"
+    );
+    assert_eq!(last(&rs, "cal_real_miss"), 0);
+    assert_eq!(last(&rs, "cal_off"), 0);
+}
+
+#[test]
+fn a_provider_that_reads_nothing_shows_the_misses_the_engine_did_not_foresee() {
+    let rs = replay(TOPICS, "apart=0", |_| 30.0, |_, _| Some(0));
+    // every call was sent whole, and the engine only expected the part it changed
+    assert!(last(&rs, "cal_real_miss") > last(&rs, "cal_pred_miss"));
+    assert!(last(&rs, "cal_off") > 0);
+    assert!(last(&rs, "cal_off") <= last(&rs, "cal_calls"));
+}
+
+#[test]
+fn a_host_that_never_says_what_the_provider_read_gets_no_calibration_counters() {
+    let rs = replay(TOPICS, "apart=0", |_| 30.0, |_, _| None);
+    assert!(rs.last().unwrap().stats.keys().all(|k| !k.starts_with("cal_")));
+}

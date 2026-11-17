@@ -8,6 +8,10 @@ use crate::mechanical::MARK;
 use crate::params::params;
 use crate::{json, msg, Memory, State};
 
+/// The share of the view by which a call's recorded miss may pass the engine's own estimate of it before the
+/// call counts as one the engine got wrong (`cal_off`).
+const CAL_OFF: f64 = 0.1;
+
 /// What one call of the curator returns.
 #[derive(Debug, Clone)]
 pub struct Reply {
@@ -49,6 +53,10 @@ pub struct Curator {
     pub(crate) tools: Option<Vec<String>>,
     /// For each position of the last view, a hash of the text the window paged there (`None`: not paged).
     pub(crate) paged: Vec<Option<u64>>,
+    /// The engine's `miss` count when the host last said what the provider read (`cached`), so the next
+    /// call's own predicted miss is the difference (`None`: no call has been answered yet).
+    #[serde(default)]
+    pub(crate) cal_miss: Option<i64>,
 }
 
 impl Curator {
@@ -64,6 +72,7 @@ impl Curator {
             last: Vec::new(),
             tools: None,
             paged: Vec::new(),
+            cal_miss: None,
         })
     }
 
@@ -88,6 +97,7 @@ impl Curator {
             }
             self.last.clear();
             self.paged.clear();
+            self.cal_miss = None;
             if let Some(t) = &self.tools {
                 self.eng.tools(t);
             }
@@ -172,7 +182,32 @@ impl Curator {
     /// What the provider said of the call made with the last view: the input tokens it read from its cache
     /// and all the input tokens. With `pockets`, how long the provider keeps a view is learned from it.
     pub fn cached(&mut self, read: u64, input: u64) {
+        self.compare_miss(read, input);
         self.eng.learn(self.head_tokens, read, input);
+    }
+
+    /// Sets what the engine expected the call to miss against what the provider said it missed, as counters
+    /// (`cal_calls`, `cal_pred_miss`, `cal_real_miss`, and `cal_off` for a call the engine under-counted by
+    /// more than `CAL_OFF` of the view), both in the estimated tokens of the view. The first call has no view
+    /// before it to miss, so it is not counted. This holds at every spec, since `learn` only listens when
+    /// `pockets` is on.
+    fn compare_miss(&mut self, read: u64, input: u64) {
+        let seen = self.eng.stats.get("miss").copied().unwrap_or(0);
+        let Some(before) = self.cal_miss.replace(seen) else { return };
+        if input == 0 {
+            return;
+        }
+        // a count that went down is an engine that started over: all of it is this call's
+        let predicted = if seen >= before { seen - before } else { seen };
+        let all = self.head_tokens as i64 + self.eng.tokens();
+        let real = ((input - read.min(input)) as f64 / input as f64 * all as f64).round() as i64;
+        let stats = &mut self.eng.stats;
+        *stats.entry("cal_calls").or_insert(0) += 1;
+        *stats.entry("cal_pred_miss").or_insert(0) += predicted;
+        *stats.entry("cal_real_miss").or_insert(0) += real;
+        if real - predicted > (CAL_OFF * all as f64) as i64 {
+            *stats.entry("cal_off").or_insert(0) += 1;
+        }
     }
 
     /// G0: the rule (and request) that took out the last place message `mi` held `word`, if none sends it.
