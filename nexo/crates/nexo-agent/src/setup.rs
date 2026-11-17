@@ -390,6 +390,23 @@ pub fn effort_of(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -
     cfg.effort.get(model).filter(|e| !e.is_empty()).cloned().or_else(|| fallback.clone())
 }
 
+/// The level a request of `model` really uses: the one set ([`effort_of`]), or the nearest the model lists when it
+/// does not list that one (a default from the config file, a model switched to). What the person sees and what is
+/// sent both come from here.
+pub fn effective_effort(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -> Option<String> {
+    let set = effort_of(cfg, model, fallback)?;
+    let levels = cfg.efforts.get(model).map(Vec::as_slice).unwrap_or(&[]);
+    let wanted = set.trim().to_ascii_lowercase();
+    Some(nexo_core::provider::nearest_level(levels, &wanted).unwrap_or(set))
+}
+
+/// The line that tells a level was lowered or raised to one the model takes, when it was.
+pub fn effort_clamp_note(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -> Option<String> {
+    let set = effort_of(cfg, model, fallback)?;
+    let used = effective_effort(cfg, model, fallback)?;
+    (used != set).then(|| format!("{model} does not take effort `{set}`: using `{used}`"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

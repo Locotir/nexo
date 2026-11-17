@@ -35,6 +35,30 @@ pub enum Effort {
     Low,
     Medium,
     High,
+    Xhigh,
+    Max,
+}
+
+/// Every level a person can name, lowest first; `off` is the floor.
+pub const LEVEL_ORDER: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// The level among `levels` that stands closest to `wanted`, when `wanted` is not listed itself (the lower one on a
+/// tie; `off` only for `off`). None when it is listed, when the list is empty, or when a name is not on the ladder (`on`, a budget).
+pub fn nearest_level(levels: &[String], wanted: &str) -> Option<String> {
+    let rank = |l: &str| LEVEL_ORDER.iter().position(|x| *x == l);
+    let w = rank(wanted)?;
+    if levels.iter().any(|l| l == wanted) {
+        return None;
+    }
+    let mut ranked = Vec::new();
+    for l in levels {
+        let r = rank(l)?;
+        // asking for some reasoning never lands on none
+        if r > 0 || w == 0 {
+            ranked.push((r, l));
+        }
+    }
+    ranked.into_iter().min_by_key(|(r, _)| (r.abs_diff(w), *r)).map(|(_, l)| l.clone())
 }
 
 impl Effort {
@@ -44,6 +68,17 @@ impl Effort {
             Effort::Low => "low",
             Effort::Medium => "medium",
             Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+
+    /// The level that stands for a thinking budget in tokens.
+    pub fn from_budget(b: u32) -> Effort {
+        match b {
+            0..=2048 => Effort::Low,
+            2049..=12_000 => Effort::Medium,
+            _ => Effort::High,
         }
     }
 
@@ -53,6 +88,8 @@ impl Effort {
             "low" => Some(Effort::Low),
             "medium" => Some(Effort::Medium),
             "high" => Some(Effort::High),
+            "xhigh" => Some(Effort::Xhigh),
+            "max" => Some(Effort::Max),
             _ => None,
         }
     }

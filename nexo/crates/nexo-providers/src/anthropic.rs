@@ -9,7 +9,7 @@ mod request;
 #[cfg(test)]
 mod tests;
 
-pub use family::{modern, off_thinks_less};
+pub use family::{effort_levels, modern, off_thinks_less};
 pub use parser::MessagesParser;
 pub use request::MODERN_MAX_OUTPUT;
 

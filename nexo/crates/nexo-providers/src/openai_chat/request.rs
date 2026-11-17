@@ -1,6 +1,6 @@
 //! The request: url, headers, body, and the per-vendor rules for what the body carries.
 
-use nexo_core::{ModelRequest, ProviderConfig, ReasoningConfig};
+use nexo_core::{Effort, ModelRequest, ProviderConfig, ReasoningConfig};
 use serde_json::{json, Value};
 
 use super::messages::convert;
@@ -74,11 +74,8 @@ impl OpenAiChat {
                 body["tool_choice"] = json!("none");
             }
         }
-        match req.reasoning {
-            Some(ReasoningConfig::Effort(e)) => {
-                body["reasoning_effort"] = json!(e.as_str());
-            }
-            Some(ReasoningConfig::Budget(_)) | Some(ReasoningConfig::Off) | None => {}
+        if let Some(r) = req.reasoning {
+            reasoning_fields(cfg, r, &mut body);
         }
         // OpenAI's own endpoint routes its prompt cache by this; other vendors may reject the field
         if let Some(id) = req.session_id.as_deref().filter(|_| is_openai(cfg)) {
@@ -94,6 +91,37 @@ impl OpenAiChat {
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {
         crate::parse::run(events, ChatParser::default())
     }
+}
+
+/// How a reasoning setting goes into the body. A level is `reasoning_effort`, except on OpenRouter, which documents
+/// `reasoning: {effort}`. Off is a field only where the vendor documents one: DeepSeek's `thinking` switch, and
+/// `reasoning_effort: none` on Mistral, Groq and Ollama (the models that take it list `off`); elsewhere nothing
+/// is sent, and the levels a model lists leave `off` out so that it is never offered there.
+fn reasoning_fields(cfg: &ProviderConfig, r: ReasoningConfig, body: &mut Value) {
+    let effort = match r {
+        ReasoningConfig::Effort(e) => e,
+        ReasoningConfig::Budget(b) => Effort::from_budget(b),
+        ReasoningConfig::Off => {
+            if host_is(cfg, "api.deepseek.com") {
+                body["thinking"] = json!({"type": "disabled"});
+            } else if host_is(cfg, "api.mistral.ai") || host_is(cfg, "api.groq.com") || is_ollama(cfg) {
+                body["reasoning_effort"] = json!("none");
+            }
+            return;
+        }
+    };
+    if host_is(cfg, "openrouter.ai") {
+        body["reasoning"] = json!({"effort": effort.as_str()});
+    } else {
+        body["reasoning_effort"] = json!(effort.as_str());
+    }
+}
+
+/// Whether the server is Ollama (its port, or its name in the address).
+fn is_ollama(cfg: &ProviderConfig) -> bool {
+    reqwest::Url::parse(&cfg.base_url)
+        .ok()
+        .is_some_and(|u| u.port() == Some(11434) || u.host_str().is_some_and(|h| h.contains("ollama")))
 }
 
 /// Whether the provider is OpenAI itself (`api.openai.com`).

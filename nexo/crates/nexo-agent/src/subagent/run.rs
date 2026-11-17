@@ -304,6 +304,8 @@ impl Run {
             req.tools = specs.clone();
             req.max_tokens = reply;
             req.session_id = Some(cache_id.clone());
+            // the level set for this model holds for its sub-agents too (their own model's, when it differs)
+            req.reasoning = crate::turn::reasoning_of(&crate::setup::effective_effort(&cfg, &model, &None));
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away
             let mut tries = 0u32;

@@ -627,7 +627,7 @@ pub(super) fn expand_attachments(
     (out, images, whole)
 }
 
-pub(super) fn reasoning_of(s: &Option<String>) -> Option<ReasoningConfig> {
+pub(crate) fn reasoning_of(s: &Option<String>) -> Option<ReasoningConfig> {
     let s = s.as_deref()?.trim().to_ascii_lowercase();
     match s.as_str() {
         "" => None,
@@ -719,7 +719,7 @@ pub(super) async fn prepare(
     let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>());
     let view = view_now(st, extra).await;
     let (_, cfg, model) = st.target.get();
-    let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);
+    let effort = setup::effective_effort(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
     if let Some(block) = &hidden {
         // the person may read what rides on this request only, apart from what they typed

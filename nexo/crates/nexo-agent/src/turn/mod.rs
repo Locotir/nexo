@@ -76,7 +76,7 @@ mod shutdown;
 mod start;
 mod window_fit;
 // what a sub-agent's loop shares with the main turn's to build its view
-pub(crate) use start::{fixed_tokens, learn_ratio, view_window};
+pub(crate) use start::{fixed_tokens, learn_ratio, reasoning_of, view_window};
 mod state;
 mod stop;
 mod tools;
