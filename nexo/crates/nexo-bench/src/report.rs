@@ -546,7 +546,7 @@ fn steps_table(records: &[Record], arms: &[&str]) -> String {
     let mut s = format!(
         "\n## Steps per run\n\nMean over the runs not stopped by the budget, with the 95% bootstrap interval over runs \
          (the mark \"not enough runs\" under {MIN_TASKS} runs).\n\n\
-         | arm | runs | finished | hit step cap | stopped by budget | steps per run |\n|---|---|---|---|---|---|\n"
+         | arm | runs | finished | hit step cap | stopped by budget | broke or timed out | steps per run |\n|---|---|---|---|---|---|---|\n"
     );
     for arm in arms {
         let mine: Vec<&Record> = records.iter().filter(|r| r.arm == *arm).collect();
@@ -555,8 +555,14 @@ fn steps_table(records: &[Record], arms: &[&str]) -> String {
         let d = Delta { mean: spread(&steps).0, ci: bootstrap(&steps, RESAMPLES, 0x6e65_786f) };
         let count = |stop: Stop| mine.iter().filter(|r| r.stop == Some(stop.clone())).count();
         let finished = mine.iter().filter(|r| r.finished).count();
+        // A provider error, a timeout, a cancel or a panic ends a run without the agent finishing it; they stay in the
+        // means, so the reader needs to see how many there were.
+        let broke = mine
+            .iter()
+            .filter(|r| matches!(r.stop, Some(Stop::Error | Stop::Timeout | Stop::Cancelled | Stop::Other(_))))
+            .count();
         s.push_str(&format!(
-            "| {arm} | {} | {finished} | {} | {} | {} |\n",
+            "| {arm} | {} | {finished} | {} | {} | {broke} | {} |\n",
             mine.len(),
             count(Stop::MaxSteps),
             count(Stop::Budget),
@@ -784,7 +790,20 @@ mod tests {
         let s = summary(&head(3), &recs);
         assert!(s.contains("Left out (stopped by the budget): t0 cur #0."), "{s}");
         assert!(s.contains("cur: 1 run(s) of cur and plain hit the step cap"), "{s}");
-        assert!(s.contains("| cur | 18 | 16 | 1 | 1 | 10.0 ["), "{s}");
+        assert!(s.contains("| cur | 18 | 16 | 1 | 1 | 0 | 10.0 ["), "{s}");
+    }
+
+    #[test]
+    fn a_run_that_broke_is_marked_stopped_and_counted_apart() {
+        let mut recs = grid(6, 3);
+        recs[3].stop = Some(Stop::Error);
+        recs[3].finished = false;
+        recs[5].stop = Some(Stop::Timeout);
+        recs[5].finished = false;
+        let s = summary(&head(3), &recs);
+        assert!(s.contains("| t0 #1 (stopped) | cur |"), "{s}");
+        assert!(s.contains("| t0 #2 (stopped) | cur |"), "{s}");
+        assert!(s.contains("| cur | 18 | 16 | 0 | 0 | 2 | "), "{s}");
     }
 
     #[test]

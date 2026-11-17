@@ -106,6 +106,8 @@ async fn a_provider_error_ends_as_error() {
     let e = ProviderError::new(ErrorKind::BadRequest, "no such model");
     let r = run_script(vec![Step::Fail(e)], 30, false).await;
     assert_eq!(r.stop, Some(Stop::Error), "{r:?}");
+    // the bench never set a stop of its own, yet the run did not finish
+    assert!(!r.finished, "{r:?}");
     assert_eq!(written(&r), json!("error"));
 }
 
@@ -114,6 +116,7 @@ async fn a_provider_timeout_ends_as_timeout() {
     let e = ProviderError::new(ErrorKind::Other, "operation timed out");
     let r = run_script(vec![Step::Fail(e)], 30, false).await;
     assert_eq!(r.stop, Some(Stop::Timeout), "{r:?}");
+    assert!(!r.finished, "{r:?}");
     assert_eq!(written(&r), json!("timeout"));
 }
 
@@ -135,6 +138,7 @@ async fn a_check_after_a_change_ends_as_verified() {
 async fn a_panic_in_the_turn_ends_as_other_panic() {
     let r = run_script(vec![Step::Panic], 30, false).await;
     assert_eq!(r.stop, Some(Stop::Other("panic".into())), "{r:?}");
+    assert!(!r.finished, "{r:?}");
     assert_eq!(written(&r), json!("other:panic"));
 }
 

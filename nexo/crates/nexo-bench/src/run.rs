@@ -87,7 +87,7 @@ pub struct Record {
     /// Every check passed.
     pub ok: bool,
     pub detail: String,
-    /// The agent stopped by itself, not at the step limit or the budget.
+    /// The agent stopped by itself (`done` or `verified`), not at the step limit, the budget, a timeout or an error.
     pub finished: bool,
     /// Why the run ended (`Stop::as_str`); null only in records of older benchmarks.
     pub stop: Option<Stop>,
@@ -331,6 +331,9 @@ pub fn record(
     detail: String,
 ) -> Record {
     let t = &d.tally;
+    // The stop is named first because `finished` follows from it: a run the provider broke, the bench interrupted or a
+    // panic cut has no bench-side stop in the tally, yet it did not finish.
+    let stop = d.stats.stop(t.stop.as_ref(), bench.close_on_verified);
     // a sealed run saw only its own folders: the paths it names are inside the box
     let outside = if d.sealed {
         Vec::new()
@@ -355,8 +358,8 @@ pub fn record(
         score,
         ok,
         detail,
-        finished: t.stop.is_none() && !d.stats.hit_max_steps,
-        stop: Some(d.stats.stop(t.stop.as_ref(), bench.close_on_verified)),
+        finished: matches!(stop, Stop::Done | Stop::Verified),
+        stop: Some(stop),
         steps: t.steps,
         requests: t.requests,
         input: t.usage.input,
