@@ -98,7 +98,6 @@ fn commands_that_read_x86_only_say_so_with_the_address() {
     let e = decomp_window(&img, &dir, &["main".to_string()], false, None, usize::MAX).unwrap_err();
     assert!(e.to_string().contains("does not read AArch64"), "{e}");
     assert!(e.to_string().contains(&hex(f.a)), "{e}");
-    assert!(find_imm(&img, 1337).unwrap_err().to_string().contains("AArch64"));
     assert!(import_sites(&img).is_empty());
 }
 
@@ -144,4 +143,114 @@ fn a_clang_built_program_reads_back() {
     let t = whole(&xref(&img, &hex(g)).unwrap());
     assert!(t.contains("read") && t.contains("write") && t.contains("work"), "{t}");
     assert!(whole(&xref_str(&img, "hello arm", false).unwrap()).contains("work"));
+}
+
+/// A function with a loop and an `if` inside it, as words:
+/// ```text
+/// +00 mov w0, #0        +04 mov w1, #42
+/// +08 cmp w0, #10       +0c b.ge +20
+/// +10 tbz w0, #0, +18   +14 add w1, w1, #1
+/// +18 add w0, w0, #1    +1c b +08
+/// +20 ret
+/// ```
+const LOOP_FN: [u32; 9] = [
+    fixture::mov_w_imm(0, 0),
+    fixture::mov_w_imm(1, 42),
+    0x7100_281f,
+    0x5400_00aa,
+    0x3600_0040,
+    0x1100_0421,
+    0x1100_0400,
+    0x17ff_fffb,
+    fixture::RET,
+];
+
+fn loop_image() -> (Image, u64) {
+    let f = fixture::elf_with(true, &LOOP_FN);
+    (open(&f), f.g)
+}
+
+#[test]
+fn cfg_of_a_loop_with_an_if_has_the_blocks_edges_and_loop() {
+    let (img, g) = loop_image();
+    let o = cfg_op(&img, &hex(g)).unwrap();
+    let t = whole(&o);
+    assert!(t.contains("blocks 6, edges 7, loops 1, instructions 9"), "{t}");
+    let block = |lo: u64, hi: u64, n: usize| format!("block {lo:#x}..{hi:#x}  insns {n}");
+    for (lo, hi, n) in [(0, 8, 2), (8, 0x10, 2), (0x10, 0x14, 1), (0x14, 0x18, 1), (0x18, 0x20, 2), (0x20, 0x24, 1)] {
+        assert!(t.contains(&block(g + lo, g + hi, n)), "{lo:#x} {t}");
+    }
+    assert!(
+        t.contains(&format!(
+            "block {:#x}..{:#x}  insns 1  idom {:#x}  in loop {:#x}",
+            g + 0x14,
+            g + 0x18,
+            g + 0x10,
+            g + 8
+        )),
+        "{t}"
+    );
+    for (from, to, kind) in [
+        (0, 8, "fallthrough"),
+        (8, 0x20, "cond-true"),
+        (8, 0x10, "cond-false"),
+        (0x10, 0x18, "cond-true"),
+        (0x10, 0x14, "cond-false"),
+        (0x14, 0x18, "fallthrough"),
+        (0x18, 8, "jump  ; back edge"),
+    ] {
+        assert!(t.contains(&format!("edge {:#x} -> {:#x}  {kind}", g + from, g + to)), "{from:#x} {to:#x} {t}");
+    }
+    assert!(t.contains(&format!("loop header {:#x}  4 blocks:", g + 8)), "{t}");
+    assert!(t.contains("ends: ret"), "{t}");
+    // the JSON rows are the x86 shape
+    let back = o.rows.iter().filter_map(|r| r.json.as_ref()).find(|j| j["row"] == "edge" && j["back"] == true);
+    let back = back.expect("a back edge row");
+    assert_eq!((back["from"].as_u64(), back["to"].as_u64()), (Some(g + 0x18), Some(g + 8)));
+    assert_eq!(back["kind"], "jump");
+    assert_eq!(o.meta["loops"], 1);
+}
+
+#[test]
+fn cfg_shows_calls_and_leaves_through_a_tail_branch() {
+    let f = fixture::elf(true);
+    let img = open(&f);
+    let t = whole(&cfg_op(&img, "main").unwrap());
+    assert!(t.contains("calls helper"), "{t}");
+    assert!(t.contains(&format!("edge {:#x} -> {:#x}  call-return (helper)", f.a + 8, f.a + 12)), "{t}");
+    assert!(t.contains("ends: ret"), "{t}");
+}
+
+#[test]
+fn find_imm_matches_decoded_immediates() {
+    let f = fixture::elf(true);
+    let img = open(&f);
+    let t = whole(&find_imm(&img, 1337).unwrap());
+    assert!(t.contains(&pad(f.b + 8)) && t.contains("mov w0, #0x539"), "{t}");
+    let (img, g) = loop_image();
+    let t = whole(&find_imm(&img, 42).unwrap());
+    assert!(t.contains(&pad(g + 4)) && t.contains("mov w1, #0x2a"), "{t}");
+    // `cmp w0, #10` is a `subs` with an immediate
+    assert!(whole(&find_imm(&img, 10).unwrap()).contains(&pad(g + 8)));
+    assert!(!whole(&find_imm(&img, 43).unwrap()).contains(&pad(g + 4)));
+}
+
+#[test]
+fn patch_nop_writes_aarch64_nops_and_refuses_what_is_wrong() {
+    let f = fixture::elf(true);
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in");
+    std::fs::write(&input, &f.bytes).unwrap();
+    let img = Image::open(&input).unwrap();
+    let out = dir.path().join("out");
+    patch(&img, &out, PatchTarget::Address(f.c), PatchData::Nop(8)).unwrap();
+    let again = Image::open(&out).unwrap();
+    assert_eq!(again.read_at(f.c, 8).unwrap(), [0x1f, 0x20, 0x03, 0xd5, 0x1f, 0x20, 0x03, 0xd5]);
+    let err = |at: u64, data: PatchData| {
+        patch(&img, &dir.path().join("never"), PatchTarget::Address(at), data).unwrap_err().to_string()
+    };
+    assert!(err(f.c + 2, PatchData::Nop(4)).contains("4-aligned"));
+    assert!(err(f.c, PatchData::Nop(6)).contains("multiple of 4"));
+    assert!(err(f.c, PatchData::Asm("nop")).contains("does not assemble AArch64"));
+    assert!(!dir.path().join("never").exists());
 }

@@ -10,6 +10,7 @@ mod fp;
 mod ls;
 mod text;
 
+pub(crate) mod cfg;
 pub(crate) mod scan;
 pub(crate) mod view;
 
@@ -194,6 +195,23 @@ impl Ins {
     /// `nop`, the padding compilers leave between functions (and `udf #0` zero words).
     pub fn is_padding(&self) -> bool {
         self.raw == 0xd503_201f || self.raw == 0
+    }
+
+    /// Whether a typed immediate operand (or a non-zero memory offset) equals `v`. A 32-bit destination also
+    /// matches the number as 32 bits, so `mov w0, #-1` answers to 4294967295.
+    pub fn has_imm(&self, v: i128) -> bool {
+        let wide = !matches!(self.ops[0], Opd::Gpr { x: false, .. });
+        self.ops.iter().any(|o| {
+            let x = match *o {
+                Opd::Imm(x) | Opd::Dec(x) => i128::from(x),
+                Opd::UImm(x) => i128::from(x),
+                Opd::Mem(Mem::Off { off, .. } | Mem::Pre { off, .. } | Mem::Post { off, .. }) if off != 0 => {
+                    i128::from(off)
+                }
+                _ => return false,
+            };
+            x == v || (!wide && (0..1i128 << 32).contains(&v) && i128::from(x as u32) == v)
+        })
     }
 
     /// Whether control never reaches the next instruction from here.
