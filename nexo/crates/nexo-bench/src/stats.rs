@@ -168,8 +168,9 @@ pub struct Paired {
     pub cost: Delta,
     pub steps: Delta,
     pub recalls: Delta,
-    /// Repeated reads and commands counted naively: an upper bound, since a rerun after an edit is
-    /// legitimate. See `needless` for the careful lower bound.
+    /// Repeated reads and shell commands counted naively, so a rerun after an edit is included. It is
+    /// not a bound on `needless`: that one also counts repeated `ls`, `glob` and `grep` calls, which
+    /// this one ignores.
     pub re_reads: Delta,
     /// Repeats that nothing in between could have changed (`Counters::needless`).
     pub needless: Delta,

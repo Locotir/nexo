@@ -240,7 +240,7 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
         s.push_str(&format!(
             "\n## Paired with {base}\n\nPer task (repeats averaged), arm minus {base}; mean and 95% bootstrap \
              interval over tasks. Runs stopped by the budget are left out. With fewer than {MIN_TASKS} tasks or {MIN_REPEATS} runs \
-             per task and arm the interval is not shown: the mark \"not enough runs\" stands in its place.\n\n| arm | tasks | min runs | Δ score (points) | Δ cost $ | Δ steps | Δ recall calls | Δ re-reads (upper bound) | Δ needless | Δ dup lines (points) | Δ wall s |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
+             per task and arm the interval is not shown: the mark \"not enough runs\" stands in its place.\n\n| arm | tasks | min runs | Δ score (points) | Δ cost $ | Δ steps | Δ recall calls | Δ re-reads (naive) | Δ needless | Δ dup lines (points) | Δ wall s |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
         ));
         let unknown = records.iter().any(|r| r.estimated);
         for p in &pairs {
@@ -681,7 +681,8 @@ mod tests {
 
     #[test]
     fn the_paired_table_keeps_a_rerun_after_an_edit_out_of_the_needless_column() {
-        // The baseline reruns its tests after each edit: five naive re-reads, none needless.
+        // The baseline reruns its tests after each edit: five naive re-reads, none needless. The other
+        // arm has fewer re-reads yet one needless repeat, so the needless delta may exceed the re-reads delta.
         let mut recs = vec![record("a", "plain", 1.0, 0.5), record("a", "cur", 1.0, 0.5)];
         recs[0].counters = crate::counters::Counters { re_reads: 5, ..Default::default() };
         recs[1].counters = crate::counters::Counters {
@@ -690,7 +691,7 @@ mod tests {
             ..Default::default()
         };
         let s = summary(&head(1), &recs);
-        assert!(s.contains("| Δ recall calls | Δ re-reads (upper bound) | Δ needless | Δ dup lines (points) |"), "{s}");
+        assert!(s.contains("| Δ recall calls | Δ re-reads (naive) | Δ needless | Δ dup lines (points) |"), "{s}");
         assert!(s.contains("| +0.0 (not enough runs) | -3.0 (not enough runs) | +1.0 (not enough runs) |"), "{s}");
         // Same naive re-reads in both arms but no needless repeat in either: the needless delta is zero.
         recs[1].counters = crate::counters::Counters { re_reads: 0, ..Default::default() };
