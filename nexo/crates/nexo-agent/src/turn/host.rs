@@ -24,6 +24,18 @@ pub(super) fn add_usage_priced(
     let sent_to_other = other.is_some();
     let pricing = other.or_else(|| main_pricing(st, model));
     let cost = pricing.map(|p| p.cost(&usage)).unwrap_or(0.0);
+    // A limit counts dollars, and a model with no price adds none: say so once instead of letting the limit sit
+    // there never firing. A price of 0 is a price (a free or local model), so it does not count as missing.
+    let limited = st.budget.is_some_and(|b| b > 0.0) || st.config.agent.max_cost_day.is_some_and(|d| d > 0.0);
+    let spent_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write > 0;
+    if pricing.is_none() && limited && spent_tokens && !st.unpriced_warned {
+        st.unpriced_warned = true;
+        notice(
+            events,
+            Level::Warn,
+            format!("{model} has no price, so the spend limit cannot count it (set one with /pricing in=.. out=..)"),
+        );
+    }
     st.cost += cost;
     // what the view left out of the history at this call (the conversation's own calls only)
     let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(st.last_view.1));

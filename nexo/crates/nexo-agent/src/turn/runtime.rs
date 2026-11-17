@@ -148,6 +148,7 @@ impl Runtime {
             checkpoints: Vec::new(),
             budget: max_cost,
             budget_warned: false,
+            unpriced_warned: false,
             ck_used: 0,
             ck_stop: None,
             inbox: VecDeque::new(),
