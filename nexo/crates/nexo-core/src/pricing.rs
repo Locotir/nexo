@@ -87,6 +87,12 @@ impl Pricing {
         }
     }
 
+    /// Per million tokens, what a reply costs to a request whose prompt is `prompt` tokens long (the tier's rate when
+    /// the prompt is past its line): the rate to size a reply by before the request is sent.
+    pub fn output_at(&self, prompt: u64) -> f64 {
+        self.at(&Usage { input: prompt, ..Default::default() }).output
+    }
+
     pub fn cost(&self, u: &Usage) -> f64 {
         let p = self.at(u);
         // `cache_write_1h` is the part of `cache_write` that was written for an hour
@@ -154,6 +160,13 @@ mod tests {
         let u = Usage { input: 100_000, output: 1_000_000, cache_read: 100_001, ..Default::default() };
         // 200,001 prompt tokens: everything at the tier, not only the 1 token over
         assert!((tiered().cost(&u) - (0.6 + 22.5 + 0.0600006)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_reply_to_a_long_prompt_is_priced_at_the_tier_before_it_is_sent() {
+        assert_eq!(tiered().output_at(200_000), 15.0);
+        assert_eq!(tiered().output_at(200_001), 22.5);
+        assert_eq!(claude_like().output_at(10_000_000), 10.0);
     }
 
     #[test]

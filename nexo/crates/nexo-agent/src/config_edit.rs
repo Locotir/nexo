@@ -119,7 +119,8 @@ pub fn push_in(doc: &mut DocumentMut, path: &[&str], key: &str, s: &str) {
     }
 }
 
-/// `[providers.<provider>.pricing."<model>"]` with the four prices.
+/// `[providers.<provider>.pricing."<model>"]` with the prices, and the long-prompt tier as its `long` table: what is
+/// saved is what is in effect, so a tier or a 1-hour write price the price does not have is taken out of the file.
 pub fn set_pricing(file: &Path, provider: &str, model: &str, p: Pricing) -> anyhow::Result<()> {
     edit(file, |d| {
         set_pricing_in(d, provider, model, p);
@@ -134,6 +135,22 @@ pub fn set_pricing_in(doc: &mut DocumentMut, provider: &str, model: &str, p: Pri
     t["output"] = value(p.output);
     t["cache_read"] = value(p.cache_read);
     t["cache_write"] = value(p.cache_write);
+    if p.cache_write_1h > 0.0 {
+        t["cache_write_1h"] = value(p.cache_write_1h);
+    } else {
+        t.remove("cache_write_1h");
+    }
+    if p.long.is_none() {
+        t.remove("long");
+    }
+    if let Some(l) = p.long {
+        let t = table_at(doc, &["providers", provider, "pricing", model, "long"]);
+        t["above"] = value(i64::from(l.above));
+        t["input"] = value(l.input);
+        t["output"] = value(l.output);
+        t["cache_read"] = value(l.cache_read);
+        t["cache_write"] = value(l.cache_write);
+    }
 }
 
 /// `[providers.<provider>.<which>]` `"<model>" = n` (`which`: `context_window` or `max_output`).
@@ -190,6 +207,34 @@ mod tests {
         let t = std::fs::read_to_string(&f).unwrap();
         assert_eq!(t.matches("[providers.deepseek.context_window]").count(), 1, "{t}");
         assert!(t.contains("65536"));
+    }
+
+    #[test]
+    fn a_long_prompt_tier_is_saved_and_a_flat_price_takes_it_out() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        let tier = nexo_core::LongTier { above: 100_000, input: 2.0, output: 10.0, cache_read: 0.2, cache_write: 2.5 };
+        let tiered = Pricing {
+            input: 1.0,
+            output: 5.0,
+            cache_read: 0.1,
+            cache_write: 1.25,
+            cache_write_1h: 2.0,
+            long: Some(tier),
+        };
+        set_pricing(&f, "deepseek", "deepseek-chat", tiered).unwrap();
+        let cfg = nexo_core::Config::parse(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        let got = cfg.providers["deepseek"].pricing_for("deepseek-chat").unwrap();
+        assert_eq!(got.long, Some(tier));
+        assert_eq!(got.cache_write_1h, 2.0);
+        // a price set flat later is the price in effect: the tier and the hour price do not linger in the file
+        set_pricing(&f, "deepseek", "deepseek-chat", Pricing { input: 1.0, output: 5.0, ..Default::default() })
+            .unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(!text.contains("long") && !text.contains("cache_write_1h"), "{text}");
+        let cfg = nexo_core::Config::parse(&text).unwrap();
+        let got = cfg.providers["deepseek"].pricing_for("deepseek-chat").unwrap();
+        assert_eq!((got.long, got.cache_write_1h), (None, 0.0));
     }
 
     #[test]

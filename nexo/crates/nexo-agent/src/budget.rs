@@ -210,14 +210,16 @@ fn admit_with(
         .filter_map(|(r, l)| r.filter(|_| l.is_some_and(|l| l > 0.0)))
         .fold(f64::INFINITY, f64::min);
     let input = p.cost(&nexo_core::stream::Usage { input: input_tokens, ..Default::default() });
+    // a prompt past the long-prompt line pays the tier's rate for the reply too, so the reply is sized by that rate
+    let out_rate = p.output_at(input_tokens);
     let mut max = max_tokens;
-    if remaining.is_finite() && p.output > 0.0 {
-        let affordable = ((remaining - input).max(0.0) * 1_000_000.0 / p.output) as u64;
+    if remaining.is_finite() && out_rate > 0.0 {
+        let affordable = ((remaining - input).max(0.0) * 1_000_000.0 / out_rate) as u64;
         if affordable < u64::from(max) {
             max = (affordable as u32).max(MIN_REPLY.min(max_tokens));
         }
     }
-    let cost = input + p.cost(&nexo_core::stream::Usage { output: u64::from(max), ..Default::default() });
+    let cost = p.cost(&nexo_core::stream::Usage { input: input_tokens, output: u64::from(max), ..Default::default() });
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut f) = FLIGHTS.lock() {
         f.push((id, session.to_string(), cost));
@@ -286,6 +288,24 @@ mod tests {
         drop(a);
         assert!(ask().is_ok());
         drop(b);
+    }
+
+    #[test]
+    fn a_reply_after_a_long_prompt_is_sized_by_the_tier_rate_for_the_reply() {
+        let tier = nexo_core::pricing::LongTier {
+            above: 100_000,
+            input: 2.0,
+            output: 50.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+        };
+        let p = nexo_core::pricing::Pricing { long: Some(tier), ..PRICES };
+        // $0.50 left; a 150k prompt costs $0.30 at the tier, and the $0.20 over buys 4k tokens at 50 $/M, not 20k
+        let (cap, _f) = admit_with("sentence-long-tier", 0.5, 0.0, Some(1.0), None, Some(p), 150_000, 64_000).unwrap();
+        assert!((3_999..=4_000).contains(&cap), "{cap}");
+        // under the line the base rate sizes it: $0.50 less $0.05 of input buys 45k tokens at 10 $/M
+        let (cap, _g) = admit_with("sentence-short-tier", 0.5, 0.0, Some(1.0), None, Some(p), 50_000, 64_000).unwrap();
+        assert!((44_999..=45_000).contains(&cap), "{cap}");
     }
 
     #[test]

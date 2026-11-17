@@ -86,8 +86,8 @@ impl Catalogue {
     /// `gpt-5-2026-01-01` finds `gpt-5`, `deepseek-chat` finds
     /// `deepseek-chat-v3` only when nothing better exists). A prefix that
     /// several longer ids share (`gemini-2.5` for `-flash` and `-pro`) gives
-    /// an entry only when they all agree on the price; a reseller's price for
-    /// the same model is kept only when the other vendors agree with it. The
+    /// the smallest window of them and a price only when they all agree on it;
+    /// a reseller's price for the same model is kept only when the other vendors agree with it. The
     /// entry is a copy because the price may be taken off it.
     pub fn lookup(&self, preset: &str, model: &str) -> Option<Entry> {
         let model = model.trim();
@@ -101,7 +101,7 @@ impl Catalogue {
         for id in catalogue_ids(preset) {
             if let Some(models) = self.providers.get(&id) {
                 if let Some(e) = fuzzy(models, model) {
-                    return Some(e.clone());
+                    return Some(e);
                 }
             }
         }
@@ -127,14 +127,7 @@ impl Catalogue {
         }
         let smallest = |id: &str| {
             let holders: Vec<&Entry> = self.providers.values().filter_map(|m| m.get(id)).collect();
-            let mut e = holders
-                .iter()
-                .min_by_key(|e| (e.context.is_none(), e.context.unwrap_or(u32::MAX)))
-                .map(|e| (*e).clone())?;
-            if holders.iter().any(|h| h.pricing.is_some() && h.pricing != e.pricing) {
-                e.pricing = None;
-            }
-            Some(e)
+            (!holders.is_empty()).then(|| narrowest(&holders))
         };
         smallest(model).or_else(|| smallest(bare))
     }
@@ -181,7 +174,7 @@ impl Catalogue {
     }
 }
 
-fn fuzzy<'a>(models: &'a BTreeMap<String, Entry>, model: &str) -> Option<&'a Entry> {
+fn fuzzy(models: &BTreeMap<String, Entry>, model: &str) -> Option<Entry> {
     let m = model.to_ascii_lowercase();
     // Every id tied at the best length: a query that is a bare prefix scores all
     // the longer ids alike, and taking the alphabetically first would hand the
@@ -205,8 +198,66 @@ fn fuzzy<'a>(models: &'a BTreeMap<String, Entry>, model: &str) -> Option<&'a Ent
             tied.push(e);
         }
     }
-    let first = *tied.first()?;
-    tied.iter().all(|e| e.pricing == first.pricing).then_some(first)
+    if tied.is_empty() {
+        return None;
+    }
+    let mut e = narrowest(&tied);
+    // a name that only one of the ids has would put `-flash` on a model that may be `-pro`
+    if tied.iter().any(|t| t.name != e.name) {
+        e.name = None;
+    }
+    Some(e)
+}
+
+/// One entry for several that stand for the same model (the same id at several vendors, or the ids a bare prefix
+/// matches): the one with the smallest window (the safe one; an entry with a window beats one without). Its price
+/// is the one they all agree on, or none: a wrong price counts against the spend limit, and the window and
+/// the flags are still worth having without it.
+fn narrowest(holders: &[&Entry]) -> Entry {
+    let mut e = (*holders
+        .iter()
+        .min_by_key(|e| (e.context.is_none(), e.context.unwrap_or(u32::MAX)))
+        .expect("at least one entry"))
+    .clone();
+    e.pricing = agreed_price(holders.iter().filter_map(|h| h.pricing.as_ref()));
+    e
+}
+
+/// The price several listings agree on: the same input and output rates, and for the rest a rate that a listing
+/// leaves out (0, or no tier) takes the one another gives. None when there is no listing or two of them differ.
+fn agreed_price<'a>(prices: impl Iterator<Item = &'a Pricing>) -> Option<Pricing> {
+    fn rate(a: f64, b: f64) -> Option<f64> {
+        if a == 0.0 || a == b {
+            Some(b)
+        } else if b == 0.0 {
+            Some(a)
+        } else {
+            None
+        }
+    }
+    let mut out: Option<Pricing> = None;
+    for p in prices {
+        let Some(a) = out else {
+            out = Some(*p);
+            continue;
+        };
+        if a.input != p.input || a.output != p.output {
+            return None;
+        }
+        let long = match (a.long, p.long) {
+            (Some(x), Some(y)) if x != y => return None,
+            (x, y) => x.or(y),
+        };
+        out = Some(Pricing {
+            input: a.input,
+            output: a.output,
+            cache_read: rate(a.cache_read, p.cache_read)?,
+            cache_write: rate(a.cache_write, p.cache_write)?,
+            cache_write_1h: rate(a.cache_write_1h, p.cache_write_1h)?,
+            long,
+        });
+    }
+    out
 }
 
 /// The wire shape of the dataset, read straight into small structs. Every leaf tolerates a wrong type
@@ -849,12 +900,13 @@ mod fallback_tests {
     }
 
     #[test]
-    fn a_bare_prefix_of_dearer_and_cheaper_ids_gets_no_price() {
+    fn a_bare_prefix_of_dearer_and_cheaper_ids_gets_the_smallest_window_but_no_price() {
         let c = priced(&[
             ("gemini", "gemini-2.5-flash", Some(1_000_000), 0.3),
-            ("gemini", "gemini-2.5-pro", Some(1_000_000), 1.25),
+            ("gemini", "gemini-2.5-pro", Some(2_000_000), 1.25),
         ]);
-        assert_eq!(c.lookup("gemini", "gemini-2.5"), None);
+        let e = c.lookup("gemini", "gemini-2.5").unwrap();
+        assert_eq!((e.context, e.pricing), (Some(1_000_000), None));
         // a longer query still finds the id it extends
         assert_eq!(c.lookup("gemini", "gemini-2.5-pro-preview").unwrap().pricing.unwrap().input, 1.25);
     }
@@ -886,6 +938,46 @@ mod fallback_tests {
     fn the_parent_api_price_stays_authoritative_over_a_reseller() {
         let c = priced(&[("openai", "m", Some(1_050_000), 2.0), ("zed", "m", Some(5_000), 9.0)]);
         assert_eq!(c.lookup("codex", "m").unwrap().pricing.unwrap().input, 2.0);
+    }
+
+    fn listed(rows: &[(&str, Pricing)]) -> Catalogue {
+        let mut c = Catalogue::default();
+        for (p, pricing) in rows {
+            c.providers
+                .entry(p.to_string())
+                .or_default()
+                .insert("m".into(), Entry { context: Some(100_000), pricing: Some(*pricing), ..Default::default() });
+        }
+        c
+    }
+
+    #[test]
+    fn a_vendor_that_leaves_out_the_long_tier_does_not_make_the_base_price_doubtful() {
+        let tier = LongTier { above: 200_000, input: 6.0, output: 22.5, cache_read: 0.6, cache_write: 7.5 };
+        let base = Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75, ..Default::default() };
+        let c = listed(&[("a", Pricing { long: Some(tier), ..base }), ("b", base)]);
+        let p = c.lookup("nobody", "m").unwrap().pricing.expect("the base rates agree");
+        assert_eq!((p.input, p.output), (3.0, 15.0));
+        assert_eq!(p.long, Some(tier), "the tier one vendor lists is kept: leaving it out is not saying there is none");
+    }
+
+    #[test]
+    fn a_vendor_that_leaves_out_the_cache_rates_does_not_make_the_price_doubtful() {
+        let base = Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75, ..Default::default() };
+        let bare = Pricing { cache_read: 0.0, cache_write: 0.0, ..base };
+        let p = listed(&[("a", bare), ("b", base)]).lookup("nobody", "m").unwrap().pricing.unwrap();
+        assert_eq!(p, base);
+        // two cache rates that are both stated and differ are a real disagreement
+        let dearer = Pricing { cache_read: 0.6, ..base };
+        assert_eq!(listed(&[("a", dearer), ("b", base)]).lookup("nobody", "m").unwrap().pricing, None);
+    }
+
+    #[test]
+    fn two_tiers_that_differ_are_a_disagreement() {
+        let t = |input| LongTier { above: 200_000, input, output: 22.5, cache_read: 0.6, cache_write: 7.5 };
+        let base = Pricing { input: 3.0, output: 15.0, ..Default::default() };
+        let c = listed(&[("a", Pricing { long: Some(t(6.0)), ..base }), ("b", Pricing { long: Some(t(7.0)), ..base })]);
+        assert_eq!(c.lookup("nobody", "m").unwrap().pricing, None);
     }
 
     #[test]
