@@ -646,7 +646,18 @@ impl Run {
         }
         say(format!("→ {summary}"));
         let started = std::time::Instant::now();
-        let mut out = t.run(args.clone(), ctx).await;
+        // as the main turn does: a tool that does not watch the token itself (the browser, a file read) is
+        // left when the person stops, so one slow call does not hold the round and the calls started with it
+        let mut out = if t.handles_cancel() {
+            t.run(args.clone(), ctx).await
+        } else {
+            tokio::select! {
+                o = t.run(args.clone(), ctx) => o,
+                _ = ctx.cancel.cancelled() => {
+                    return Done { out: interrupted(), args: args.clone(), summary, why, denied: false };
+                }
+            }
+        };
         if let Some(h) = &self.host {
             let mut fields = self.fields(name, args);
             fields["output"] = json!(out.content);

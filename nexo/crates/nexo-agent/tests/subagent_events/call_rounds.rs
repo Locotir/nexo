@@ -170,3 +170,56 @@ async fn a_stop_during_a_call_leaves_the_calls_after_it_and_the_next_round_unrun
     assert_eq!(step.ran.load(Ordering::SeqCst), 0, "a call ran after the stop");
     assert_eq!(client.sub_count(), 1, "the next round was asked for after the stop");
 }
+
+/// A reader that never looks at the stop token and would take a long time.
+struct Stubborn;
+
+#[async_trait]
+impl Tool for Stubborn {
+    fn name(&self) -> &str {
+        "stubborn"
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "stubborn".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        ToolKind::Read
+    }
+    fn summary(&self, _: &Value) -> String {
+        "stubborn".into()
+    }
+    async fn run(&self, _: Value, _: &ToolContext) -> ToolOutput {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        ToolOutput::ok("late")
+    }
+}
+
+#[tokio::test]
+async fn a_stop_does_not_wait_for_a_read_that_ignores_it_nor_for_the_reads_started_with_it() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(
+        vec![],
+        vec![
+            Reply::Events(calls_of(&[
+                ("c1", "stubborn", json!({})),
+                ("c2", "step", json!({"hold": true})),
+                ("c3", "stubborn", json!({})),
+            ])),
+            Reply::Events(text("never asked")),
+        ],
+    );
+    let step = Arc::new(Step { probe: client.probe.clone(), ran: AtomicUsize::new(0) });
+    let set = ToolSet::new().with(Arc::new(Stubborn)).with(step);
+    let agent = Arc::new(task_tool_with(&client, &set));
+    let ctx = call_ctx(d.path(), "k3");
+    let cancel = ctx.cancel.clone();
+    let run = {
+        let (agent, ctx) = (agent.clone(), ctx.clone());
+        tokio::spawn(async move { agent.run(task("explore", "three reads"), &ctx).await })
+    };
+    until_tool(&client, 1).await;
+    cancel.cancel();
+    let out = tokio::time::timeout(Duration::from_secs(10), run).await.expect("the stop waited for a read").unwrap();
+    assert!(out.is_error && out.content.contains("interrupted"), "{}", out.content);
+    assert_eq!(client.sub_count(), 1, "the next round was asked for after the stop");
+}
