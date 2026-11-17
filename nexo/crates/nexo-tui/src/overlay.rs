@@ -278,11 +278,16 @@ fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
     if let Some(share) = (app.session_usage.cache_read * 100).checked_div(app.session_usage.total_input()) {
         let cached = app.last_call_cached.min(app.last_call_input);
         let k = |n: u64| fmt_k(n).replace(".0k", "k");
-        let text = format!(
-            "{share}% of session · last call {} cached, {} full price",
-            k(cached),
-            k(app.last_call_input - cached)
-        );
+        // after a resume or a rewind no call of this run has been made yet: the session share alone
+        let text = if app.last_call_input == 0 {
+            format!("{share}% of session")
+        } else {
+            format!(
+                "{share}% of session · last call {} cached, {} full price",
+                k(cached),
+                k(app.last_call_input - cached)
+            )
+        };
         out.push(Line::default());
         let mut lines = crate::render::wrap::wrap_plain(&text, w.max(20), theme.dim(), &[Span::raw("        ")]);
         if let Some(label) = lines.first_mut().and_then(|l| l.spans.first_mut()) {

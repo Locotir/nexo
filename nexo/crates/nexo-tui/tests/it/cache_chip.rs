@@ -117,11 +117,17 @@ fn context_has_one_line_with_the_cache_share_and_the_last_call() {
         a.modal = Some(Modal::Info(Box::new(Info::new(0).still(true))));
         rows(&mut a, 100).join("\n")
     };
-    assert!(!none.contains("of this session"), "no usage, no line: {none}");
+    assert!(!none.contains("of session"), "no usage, no line: {none}");
     call(&mut a, 2_000, 41_000);
     a.modal = Some(Modal::Info(Box::new(Info::new(0).still(true))));
     let all = rows(&mut a, 100).join("\n");
     assert!(all.contains("95% of session · last call 41k cached, 2k full price"), "{all}");
+    // a resume or a rewind clears the last call but keeps the session's usage: no call is described then
+    a.last_call_input = 0;
+    a.last_call_cached = 0;
+    a.modal = Some(Modal::Info(Box::new(Info::new(0).still(true))));
+    let resumed = rows(&mut a, 100).join("\n");
+    assert!(resumed.contains("95% of session") && !resumed.contains("last call"), "{resumed}");
 }
 
 #[test]
