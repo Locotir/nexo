@@ -82,6 +82,26 @@ pub(super) use nexo_core::shell::is_assignment;
 /// (wrappers like `sudo`, `env` and `nice` skipped, `/bin/rm` as `rm`), and the scripts handed to a
 /// shell (`bash -c '..'`, `eval`, `env -S`) taken apart the same way.
 pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) -> bool {
+    forms(cmd, depth, out, false)
+}
+
+/// The forms the hard floor looks at: the line, then each simple command as written and as its program sees it
+/// (wrappers and shell keywords skipped), with the words quoted again so a `;` inside a quoted word does not
+/// split into a second command the line never ran.
+pub(super) fn floor_forms(cmd: &str) -> Vec<String> {
+    let mut out = vec![cmd.to_string()];
+    forms(cmd, 0, &mut out, true);
+    out
+}
+
+/// The words joined back into a line that reads as the same words.
+fn join_quoted(ws: &[String]) -> String {
+    let safe = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_alphanumeric() || "_-./=~:@%+,*?$".contains(c));
+    let one = |w: &String| if safe(w) { w.clone() } else { format!("'{}'", w.replace('\'', r"'\''")) };
+    ws.iter().map(one).collect::<Vec<_>>().join(" ")
+}
+
+fn forms(cmd: &str, depth: usize, out: &mut Vec<String>, quote: bool) -> bool {
     // A word the lexer cannot know (a locale string `$"rm"`, which bash may even translate through a catalog, a
     // `${x@P}` expansion, a quote left open, a broken heredoc) can be any program. The line is reported as
     // unknowable and a deny rule takes it as a match: it denies, it never lets the line through by default.
@@ -93,11 +113,11 @@ pub(super) fn deny_forms(cmd: &str, depth: usize, out: &mut Vec<String>) -> bool
         unknown |= hidden;
         out.push(p);
         if !ws.is_empty() {
-            out.push(ws.join(" "));
+            out.push(if quote { join_quoted(&ws) } else { ws.join(" ") });
         }
         if depth < 4 {
             for s in scripts {
-                unknown |= deny_forms(&s, depth + 1, out);
+                unknown |= forms(&s, depth + 1, out, quote);
             }
         } else {
             unknown |= !scripts.is_empty();
@@ -113,7 +133,7 @@ pub(super) fn unwrap_command(ws: Vec<String>) -> (Vec<String>, Vec<String>, bool
     let mut hidden = false;
     let mut i = 0;
     loop {
-        while ws.get(i).is_some_and(|w| is_assignment(w)) {
+        while ws.get(i).is_some_and(|w| is_assignment(w) || is_shell_keyword(w)) {
             i += 1;
         }
         let Some(w) = ws.get(i) else { break };
@@ -223,4 +243,9 @@ pub(super) fn runs_code(part: &str) -> bool {
         }),
         _ => false,
     }
+}
+
+/// A word that only opens a compound command (`do rm -rf x`, `then ...`, `{ ...`), so the program is the next one.
+fn is_shell_keyword(w: &str) -> bool {
+    matches!(w, "do" | "then" | "else" | "elif" | "if" | "while" | "until" | "!" | "{")
 }

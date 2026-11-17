@@ -568,3 +568,33 @@ fn an_osascript_shell_call_that_cannot_be_read_in_full_is_denied() {
         assert_eq!(decide_bash("bash", "bash(rm *)", cmd), Decision::Allow, "{cmd}");
     }
 }
+
+/// The floor judges each command a line runs, not the line as typed: a wrapper with options, a shell started
+/// with a group of flags, `eval`, a substitution and a loop body all end in the same denied command.
+#[test]
+fn the_floor_sees_a_destroyer_behind_wrappers_shells_and_loops_in_yolo() {
+    let c = cwd();
+    let p = Policy { mode: PermissionMode::Auto, allow: vec![], deny: vec![] };
+    for cmd in [
+        "bash -lc 'rm -rf ~'",
+        "sh -ec 'rm -rf /'",
+        "sudo -u root rm -rf /",
+        "sudo -E rm -rf ~",
+        "env -i rm -rf ~",
+        "eval 'rm -rf ~'",
+        "echo $(rm -rf ~)",
+        "echo `rm -rf ~`",
+        "(rm -rf ~)",
+        "for f in 1; do rm -rf ~; done",
+        "if true; then rm -rf ~; fi",
+        "{ rm -rf ~; }",
+        "find ~ -delete",
+        "sudo -u root find / -name x -delete",
+    ] {
+        assert!(matches!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Deny(_)), "{cmd}");
+    }
+    // a `;` or a destroyer's name inside a quoted word is text, not a second command
+    for cmd in ["echo 'run; rm -rf ~'", "git commit -m 'never rm -rf ~'", "bash -lc 'make test'", "sudo -u me ls"] {
+        assert_eq!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Allow, "{cmd}");
+    }
+}

@@ -1,5 +1,6 @@
 use serde_json::json;
 
+use super::danger::catastrophic_in;
 use super::*;
 
 const CWD: &str = "/work/proj";
@@ -270,6 +271,118 @@ fn the_macos_ways_to_wipe_a_machine_are_catastrophic() {
     for cmd in ["diskutil list", "diskutil info disk2", "diskutil apfs list", "rm -rf /Users/p/build"] {
         assert!(catastrophic(cmd).is_none(), "{cmd}");
     }
+}
+
+/// The floor resolves what a name points at, so the written form does not matter: the home folder is the same
+/// folder as `$HOME/.`, `~/x/..` or `/home/lctr`, and `~/.*` is everything in it.
+#[test]
+fn a_delete_of_the_home_folder_is_catastrophic_however_it_is_written() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "rm -rf /home/lctr",
+        "rm -rf /home/lctr/",
+        "rm -rf $HOME/.",
+        "rm -rf ${HOME}/",
+        "rm -rf ~/.*",
+        "rm -rf ~/*",
+        "rm -rf ~/x/..",
+        "rm -rf -- \"$HOME\"",
+        "rm -r -f /home",
+        "rm -rf /usr",
+        "rm -rf /etc/*",
+        "rm -rf /var",
+        "rm --recursive --force /",
+        "find ~ -delete",
+        "find / -name '*.o' -delete",
+        "find $HOME -type f -exec rm {} +",
+        "find /home/lctr -name x -exec shred -u {} ;",
+        "chmod -R 000 ~",
+        "chown -R root /home/lctr",
+        "chmod -R 777 /",
+        "shred -u ~",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "rm -rf ./build",
+        "rm -rf build",
+        "rm -rf ~/proj/target",
+        "rm -rf /home/lctr/proj",
+        "rm -rf /usr/local/share/x",
+        "rm -rf $TMP",
+        "rm file",
+        "find . -name x -delete",
+        "find ~/proj -name '*.o' -delete",
+        "find ~ -name x",
+        "find / -name x -exec grep y {} +",
+        "chmod -R 755 ./dist",
+        "chown -R me ~/proj",
+        "chmod 600 ~/.ssh/id",
+        "shred -u ~/old.key",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+/// Without a home folder the stand-in still catches the forms that name it.
+#[test]
+fn a_delete_of_the_home_folder_is_catastrophic_when_the_home_folder_is_unknown() {
+    for cmd in ["rm -rf ~", "rm -rf $HOME", "rm -rf ~/*", "rm -rf /"] {
+        assert!(catastrophic_in(cmd, None).is_some(), "{cmd}");
+    }
+    assert!(catastrophic_in("rm -rf ~/build", None).is_none());
+}
+
+#[test]
+fn tools_that_erase_or_repartition_a_disk_are_catastrophic() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "shred -n1 /dev/sda",
+        "wipefs -a /dev/nvme0n1",
+        "wipefs --all /dev/sdb",
+        "blkdiscard /dev/nvme0n1",
+        "sfdisk /dev/sda < layout",
+        "sgdisk -o /dev/sda",
+        "sgdisk --zap-all /dev/sda",
+        "parted -s /dev/sda mklabel gpt",
+        "truncate -s 0 /dev/sda",
+        "cp image.iso /dev/sdb",
+        "cat image.iso > /dev/sdb",
+        "echo x >/dev/nvme0n1p1",
+        "tee /dev/sda",
+        "dd if=/dev/zero of=/dev/nvme0n1",
+        "mkfs.ext4 /dev/sda1",
+        "/sbin/mkfs.ext4 /dev/sda1",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "dd of=/dev/null",
+        "dd if=/dev/zero of=./file bs=1M count=1",
+        "wipefs /dev/sda",
+        "sfdisk -l /dev/sda",
+        "sfdisk --dump /dev/sda",
+        "sgdisk -p /dev/sda",
+        "parted /dev/sda print",
+        "cp /dev/sda image.img",
+        "cat /dev/sda | head -c 512",
+        "echo x > /dev/null",
+        "echo x > /dev/tty",
+        "make 2>/dev/null",
+        "cmd > /dev/stderr",
+        "exec 3>/dev/fd/1",
+        "truncate -s 0 ./log",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+#[test]
+fn a_shell_started_with_a_group_of_flags_hands_its_script_to_the_floor() {
+    let home = Some(Path::new("/home/lctr"));
+    assert!(catastrophic_in("bash -lc 'rm -rf ~'", home).is_some());
+    assert!(catastrophic_in("sh -ec 'rm -rf /'", home).is_some());
+    assert!(catastrophic_in("bash -lc 'make test'", home).is_none());
 }
 
 /// One folder can have two names (on macOS `/tmp` is a link to `/private/tmp`, and the session folder comes back
