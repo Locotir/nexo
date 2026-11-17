@@ -260,6 +260,10 @@ pub async fn run(
     let mut last: Option<Value> = None;
     let mut interrupts = 0;
     let mut agent_gone = false;
+    // One wait for the whole run: a request that lands while the loop handles an event is kept for the next poll, and the
+    // teardown below listens on the same one. A fresh wait each time would hear only what comes after it exists, and
+    // the handlers outlive it, so a `kill` in between would do nothing at all.
+    let mut stop = Box::pin(nexo_core::signals::stop());
     'main: loop {
         if !busy {
             if let Some(mut msg) = inbox.pop_front() {
@@ -282,7 +286,8 @@ pub async fn run(
         }
         tokio::select! {
             biased;
-            _ = nexo_core::signals::stop() => {
+            _ = &mut stop => {
+                stop = Box::pin(nexo_core::signals::stop());
                 interrupts += 1;
                 if interrupts > 1 {
                     nexo_agent::audit::close_all();
@@ -384,7 +389,16 @@ pub async fn run(
     let _ = handle.commands.send(AgentCommand::Shutdown);
     // the agent can stop before any turn (a session that cannot be resumed): that is a failure
     // the wait ends as soon as the agent stops; a slow machine still gets to let its session lock go
-    let failed = match tokio::time::timeout(Duration::from_secs(10), agent).await {
+    let stopped = tokio::select! {
+        r = tokio::time::timeout(Duration::from_secs(10), agent) => Some(r),
+        _ = &mut stop => None,
+    };
+    let Some(stopped) = stopped else {
+        // another request to stop while the agent winds down: the same as the second Ctrl+C, no more waiting
+        nexo_agent::audit::close_all();
+        std::process::exit(EXIT_INTERRUPTED);
+    };
+    let failed = match stopped {
         Ok(Ok(Err(e))) => Some(format!("{e:#}")),
         Ok(Err(e)) => Some(format!("the agent stopped: {e}")),
         _ if !sent_any => Some("the agent stopped before the request".to_string()),
