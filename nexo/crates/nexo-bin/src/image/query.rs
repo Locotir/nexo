@@ -102,6 +102,9 @@ impl Image {
             } else {
                 crate::dwarf::read(&self.data)
             };
+            if self.slid != 0 {
+                d.slide(self.slid);
+            }
             if self.format == Format::MachO && d.protos.is_empty() && d.structs.is_empty() {
                 if let Some(bytes) = self.dsym() {
                     d = crate::dwarf::read(&bytes);

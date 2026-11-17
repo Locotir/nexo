@@ -81,6 +81,8 @@ mod tests_raw;
 #[cfg(test)]
 mod tests_sigs;
 #[cfg(test)]
+mod tests_slide;
+#[cfg(test)]
 mod tests_syms;
 #[cfg(test)]
 mod tests_wasm;
