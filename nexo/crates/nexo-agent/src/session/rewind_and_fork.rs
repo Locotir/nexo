@@ -10,6 +10,8 @@ impl Session {
         let keep = keep.min(self.messages.len());
         let (messages, stamps, outputs, stop) =
             (self.messages.clone(), self.stamps.clone(), self.outputs.clone(), self.stop.clone());
+        // a list set by a call that goes is not the one the kept messages leave
+        let list_dropped = self.messages[keep..].iter().any(|m| m.tool_calls().any(|(_, name, _)| name == "todo"));
         self.stop = self.stop_at(keep);
         self.messages.truncate(keep);
         self.stamps.truncate(keep);
@@ -22,6 +24,12 @@ impl Session {
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
             (self.messages, self.stamps, self.outputs, self.stop) = (messages, stamps, outputs, stop);
             self.meta.messages = self.messages.len();
+        }
+        if list_dropped && (done.is_ok() || done.as_ref().is_err_and(|e| e.is::<NotReopened>())) {
+            // the saved list is the dropped messages'; the tool takes the kept ones', or none, as the session opens
+            if let Some(d) = self.path.parent() {
+                let _ = std::fs::remove_file(nexo_tools::todo::file_in(d, &self.meta.id));
+            }
         }
         done
     }
@@ -177,7 +185,7 @@ impl Session {
             f.record_stop(&line)?; // its next request says the person stopped the one before it
         }
         // the task list goes with a fork of the whole conversation; a shorter one may not match the list that was
-        // saved, so it starts with none, which is the honest fact
+        // saved, so it starts without a file and the tool reads its list from the messages kept, as it opens it
         if keep == self.messages.len() {
             copy_todo(&dir, &self.meta.id, &f.meta.id);
         }

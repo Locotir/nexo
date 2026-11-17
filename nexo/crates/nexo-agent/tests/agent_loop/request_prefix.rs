@@ -302,3 +302,87 @@ async fn a_resumed_session_carries_its_saved_task_list_and_not_the_one_left_behi
     r.stop().await;
     assert!(!last_user_text(&client.requests()[1]).contains("step one"), "{}", last_user_text(&client.requests()[1]));
 }
+
+/// The list the model carries is the one its messages left: a fork cut after the first list has that list and not
+/// the later one, and one cut before any list has none.
+#[tokio::test]
+async fn a_shorter_fork_carries_the_task_list_of_the_messages_it_kept() {
+    let d = test_tmpdir().unwrap();
+    let a = json!({"items": [{"text": "first plan"}]});
+    let b = json!({"items": [{"text": "second plan", "status": "done"}]});
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "todo", a)),
+        Reply::Events(text("two")),
+        Reply::Events(call("c2", "todo", b)),
+        Reply::Events(text("four")),
+        Reply::Events(text("in the first fork")),
+        Reply::Events(text("in the second fork")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.check_at_start = false;
+    let mut r = start_with(client.clone(), cfg, None, d.path(), with_todo(d.path())).await;
+    r.next().await;
+    for t in ["plan", "replan"] {
+        r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        r.turn().await;
+    }
+    // history: plan, call, result, two, replan, call, result, four
+    r.send(AgentCommand::Fork { index: Some(4) });
+    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("forked"))).await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Fork { index: Some(1) });
+    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("forked"))).await;
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let note = last_user_text(&reqs[4]);
+    assert!(note.contains("[ ] first plan") && !note.contains("second plan"), "{note}");
+    assert!(!last_user_text(&reqs[5]).contains("<todo-list>"), "{}", last_user_text(&reqs[5]));
+}
+
+/// A rewind puts the list back to what the kept messages say, as the panel shows it, and the saved one with it.
+#[tokio::test]
+async fn a_rewind_takes_the_task_list_back_to_the_one_the_kept_messages_left() {
+    let d = test_tmpdir().unwrap();
+    let a = json!({"items": [{"text": "first plan"}]});
+    let b = json!({"items": [{"text": "second plan", "status": "done"}]});
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "todo", a)),
+        Reply::Events(text("two")),
+        Reply::Events(call("c2", "todo", b)),
+        Reply::Events(text("four")),
+        Reply::Events(text("after the first rewind")),
+        Reply::Events(text("after the second rewind")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.check_at_start = false;
+    // the list is kept where the session is, as it is outside a test
+    let set = tools().with(Arc::new(nexo_tools::todo::Todo::with_dir(nexo_agent::session::dir())));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    for t in ["plan", "replan"] {
+        r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        r.turn().await;
+    }
+    r.send(AgentCommand::Rewind { index: 4 });
+    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("rewound"))).await;
+    let saved = nexo_tools::todo::file_in(&nexo_agent::session::dir(), &id);
+    assert!(std::fs::read_to_string(&saved).unwrap().contains("first plan"));
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Rewind { index: 0 });
+    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("rewound"))).await;
+    r.send(AgentCommand::Submit { text: "from scratch".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let note = last_user_text(&reqs[4]);
+    assert!(note.contains("[ ] first plan") && !note.contains("second plan"), "{note}");
+    assert!(!last_user_text(&reqs[5]).contains("<todo-list>"), "{}", last_user_text(&reqs[5]));
+    assert!(!saved.exists(), "no list is left saved for a session that has none");
+}

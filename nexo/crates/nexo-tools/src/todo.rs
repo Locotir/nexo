@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use nexo_core::{paths, Compact, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{
+    paths, Compact, Message, Part, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec,
+};
 use serde_json::{json, Value};
 
 /// Items at most.
@@ -75,6 +77,16 @@ impl Todo {
 /// Where the list of session `id` is saved under `dir`.
 pub fn file_in(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.todo.json"))
+}
+
+/// The list the last `todo` call in `history` left, the way the tool reads it: a call whose list was refused
+/// changed nothing, so it is passed over. `None` when the messages hold no such call (a session before the first
+/// one, or one whose calls were summarised away).
+pub fn items_in(history: &[Message]) -> Option<Vec<TodoItem>> {
+    history.iter().rev().flat_map(|m| m.content.iter().rev()).find_map(|p| match p {
+        Part::ToolCall { name, args, .. } if name == "todo" => args.get("items").and_then(|v| parse_items(v).ok()),
+        _ => None,
+    })
 }
 
 /// Reads the `items` argument; an error names what is wrong.
@@ -182,9 +194,20 @@ impl Tool for Todo {
         (!v.is_empty()).then_some(v)
     }
 
-    fn session_opened(&self, session_id: &str) {
-        // the list of the session before must not ride on this one: what was saved for it, or nothing
-        let saved = self.load(session_id).unwrap_or_default();
+    fn session_opened(&self, session_id: &str, history: &[Message]) {
+        // the list of the session before must not ride on this one. The messages say what the list is, the same
+        // as the panel replays it; a save that failed or a file from before the list was kept leaves the file
+        // behind them, so the messages win and the file is brought up to them. With no call in the messages
+        // (they were summarised) the file is all there is.
+        let saved = match items_in(history) {
+            Some(items) => {
+                if self.load(session_id).as_ref() != Some(&items) {
+                    let _ = self.save(session_id, &items);
+                }
+                items
+            }
+            None => self.load(session_id).unwrap_or_default(),
+        };
         if let Ok(mut g) = self.items.lock() {
             *g = saved;
         }
@@ -232,6 +255,8 @@ impl Tool for Todo {
 
 #[cfg(test)]
 mod tests {
+    use nexo_core::Role;
+
     use super::*;
 
     fn ctx(dir: &std::path::Path, session: &str) -> ToolContext {
@@ -302,11 +327,39 @@ mod tests {
         // a new process: the tool starts empty and the session it opens hands it the saved list
         let again = Todo::with_dir(dir.path().to_path_buf());
         assert_eq!(again.todo_items(), None);
-        again.session_opened("s3");
+        again.session_opened("s3", &[]);
         assert_eq!(again.todo_items(), t.todo_items());
         // another session, with nothing saved, must not inherit that list
-        again.session_opened("other");
+        again.session_opened("other", &[]);
         assert_eq!(again.todo_items(), None);
+    }
+
+    fn todo_call(id: &str, items: Value) -> Message {
+        Message::new(Role::Assistant, vec![Part::tool_call(id, "todo", json!({"items": items}))])
+    }
+
+    #[tokio::test]
+    async fn a_session_without_a_saved_list_takes_the_one_its_last_todo_call_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Todo::with_dir(dir.path().to_path_buf());
+        let history = vec![
+            todo_call("c1", json!([{"text": "old"}])),
+            todo_call("c2", json!([{"text": "new", "status": "in_progress"}])),
+            // a refused list changed nothing
+            todo_call("c3", json!([{"text": "x", "status": "later"}])),
+        ];
+        t.session_opened("s6", &history);
+        let items = t.todo_items().expect("the list of the last valid call");
+        assert_eq!((items.len(), items[0].text.as_str(), items[0].status), (1, "new", TodoStatus::InProgress));
+        // it is saved, so a later open without the call finds it
+        let later = Todo::with_dir(dir.path().to_path_buf());
+        later.session_opened("s6", &[]);
+        assert_eq!(later.todo_items(), t.todo_items());
+        // a call that emptied the list leaves it empty even when a file still holds the one before
+        t.session_opened("s6", &[todo_call("c4", json!([]))]);
+        assert_eq!(t.todo_items(), None);
+        later.session_opened("s6", &[]);
+        assert_eq!(later.todo_items(), None, "the file was brought up to the messages");
     }
 
     #[tokio::test]

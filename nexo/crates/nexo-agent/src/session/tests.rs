@@ -1431,3 +1431,22 @@ fn a_fork_of_the_whole_conversation_copies_the_task_list_and_a_shorter_one_does_
         .filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
     assert_eq!(leftovers.count(), 0);
 }
+
+#[test]
+fn a_rewind_past_a_task_list_call_removes_the_list_saved_for_it_and_one_before_the_call_keeps_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append(&Message::user("go")).unwrap();
+    s.append(&Message::new(
+        Role::Assistant,
+        vec![Part::tool_call("c1", "todo", serde_json::json!({"items": [{"text": "a"}]}))],
+    ))
+    .unwrap();
+    let file = nexo_tools::todo::file_in(d.path(), s.id());
+    std::fs::write(&file, r#"[{"text":"a","status":"pending"}]"#).unwrap();
+    // cutting where no list call goes leaves the file
+    s.rewind(2).unwrap();
+    assert!(file.is_file());
+    s.rewind(1).unwrap();
+    assert!(!file.exists(), "the call that made the list is gone");
+}

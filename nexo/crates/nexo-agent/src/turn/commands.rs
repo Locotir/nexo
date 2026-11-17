@@ -36,12 +36,12 @@ pub(super) fn replay_history(events: &EventTx, session: &Session, tools: &ToolSe
 }
 
 /// Tells the tools the session that is now the conversation, so one that keeps a list for it (`todo`) takes up
-/// what was saved for this session and lets go of what it held for the one before.
+/// what its messages and what was saved for it say, and lets go of what it held for the one before.
 pub(super) fn session_opened(st: &State) {
     let id = st.session.id();
     for name in st.tools.names() {
         if let Some(t) = st.tools.get(name) {
-            t.session_opened(id);
+            t.session_opened(id, st.session.messages());
         }
     }
 }
@@ -342,6 +342,8 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     let dropped = st.history.len().saturating_sub(keep);
     st.history.truncate(keep);
     let restored = restore_files(&mut st, keep);
+    // the task list is the one the kept messages left: one set by what was dropped no longer holds
+    session_opened(&st);
     st.policy.reset();
     st.last_prompt = None;
     st.last_call = None;
