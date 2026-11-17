@@ -11,7 +11,7 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex, Notify};
 
 use super::table::uri;
-use super::{FIRST, INIT, SETTLE};
+use super::{FIRST, INIT, MAX_HEADER, MAX_MESSAGE, SETTLE};
 /// uri → (the version the diagnostics are for, the diagnostics).
 pub(super) type Diags = Arc<Mutex<HashMap<String, (Option<i64>, Vec<Value>)>>>;
 
@@ -108,8 +108,10 @@ impl Server {
                 let mut len = 0usize;
                 loop {
                     let mut line = String::new();
-                    match r.read_line(&mut line).await {
+                    // bounded: a stream of garbage with no newline must not grow without limit
+                    match (&mut r).take(MAX_HEADER).read_line(&mut line).await {
                         Ok(0) | Err(_) => return,
+                        Ok(_) if line.len() as u64 >= MAX_HEADER && !line.ends_with('\n') => return,
                         Ok(_) => {}
                     }
                     let line = line.trim_end();
@@ -119,6 +121,11 @@ impl Server {
                     if let Some(v) = line.strip_prefix("Content-Length:") {
                         len = v.trim().parse().unwrap_or(0);
                     }
+                }
+                // the length is the server's word: a huge one would be allocated whole (an abort, not an error)
+                if len > MAX_MESSAGE {
+                    tracing::warn!("lsp: the server announced a {len} byte message; the connection was ended");
+                    return;
                 }
                 let mut buf = vec![0u8; len];
                 if r.read_exact(&mut buf).await.is_err() {

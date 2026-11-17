@@ -231,3 +231,26 @@ async fn no_running_server_means_no_wait_and_no_start() {
     assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
     assert!(servers().lock().await.keys().all(|(_, root)| root != d.path()));
 }
+
+/// A server that announces a 100 GB message must end the connection like an EOF, not make nexo
+/// allocate that much (an abort that would take the session with it).
+#[cfg(unix)]
+#[test]
+fn a_huge_content_length_ends_the_connection_instead_of_allocating() {
+    crate::util::run_bounded(Duration::from_secs(30), "a_huge_content_length", async {
+        let script = r"read l; printf 'Content-Length: 99999999999\r\n\r\n'; sleep 30";
+        let e = Server::start(&["sh", "-c", script], Path::new("/")).await.err().expect("start fails");
+        assert!(e.contains("the language server went away"), "{e}");
+    });
+}
+
+/// A header line that never ends is cut off at its limit, so the reader cannot grow without bound.
+#[cfg(unix)]
+#[test]
+fn a_header_line_without_end_ends_the_connection() {
+    crate::util::run_bounded(Duration::from_secs(30), "a_header_line_without_end", async {
+        let script = "read l; head -c 100000 /dev/zero | tr '\\0' 'x'; sleep 30";
+        let e = Server::start(&["sh", "-c", script], Path::new("/")).await.err().expect("start fails");
+        assert!(e.contains("the language server went away"), "{e}");
+    });
+}
