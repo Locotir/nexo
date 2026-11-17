@@ -51,9 +51,6 @@ fn move_saved_state(from: &Path, to: &Path) {
     // a write cut by a crash leaves its file behind: both places lose theirs
     crate::context::saved::sweep(from);
     crate::context::saved::sweep(to);
-    // a write cut by a crash leaves its file behind: both places lose theirs
-    crate::context::saved::sweep(from);
-    crate::context::saved::sweep(to);
     let (a, b) = (crate::context::saved::path_for(from), crate::context::saved::path_for(to));
     if a.is_file() && std::fs::rename(&a, &b).is_err() {
         crate::context::saved::forget(from);
