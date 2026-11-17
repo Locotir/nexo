@@ -124,13 +124,14 @@ pub(super) async fn interactive(
             }
         });
     }
-    let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
+    let mut agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
+    let commands = handle.commands.clone();
     nexo_tui::set_supervise_options(nexo_supervise::Options::detect());
     if let Some(m) = mailbox {
         nexo_tui::set_mailbox(m);
     }
     let ui = nexo_tui::run(handle, opts).await;
-    agent.abort();
+    finish(&mut agent, &commands, CLOSE_WAIT).await;
     ui?;
     Ok(0)
 }
@@ -172,4 +173,56 @@ pub(super) async fn headless_collect(
         return Ok((text, 1));
     }
     Ok((text, code))
+}
+
+/// How long leaving the interface waits for the agent to close its session. A request in flight has to unwind first
+/// and the `session_end` hook has to run, so this is longer than the headless wait; the terminal is already restored,
+/// so nothing on screen waits with it.
+const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Asks the agent to close its session and waits up to `wait` for it to finish (the `session_end` hook, the last
+/// state write, the scratch wipe), then aborts it so a stuck close cannot keep the process alive. The interface
+/// leaves without a `Shutdown` when the person hangs up or the event stream closes, so the close is asked for here.
+async fn finish<T>(
+    agent: &mut tokio::task::JoinHandle<T>,
+    commands: &tokio::sync::mpsc::UnboundedSender<AgentCommand>,
+    wait: std::time::Duration,
+) {
+    let _ = commands.send(AgentCommand::Shutdown);
+    if tokio::time::timeout(wait, &mut *agent).await.is_err() {
+        agent.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn leaving_waits_for_a_close_that_finishes_in_time() {
+        let (commands, _ends) = tokio::sync::mpsc::unbounded_channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let flag = closed.clone();
+        let mut agent = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        finish(&mut agent, &commands, Duration::from_secs(5)).await;
+        assert!(closed.load(Ordering::SeqCst), "finish returned before the close ended");
+    }
+
+    #[tokio::test]
+    async fn leaving_aborts_a_close_that_never_ends_after_the_wait() {
+        let (commands, mut ends) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = tokio::spawn(std::future::pending::<()>());
+        let started = std::time::Instant::now();
+        finish(&mut agent, &commands, Duration::from_millis(150)).await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(matches!(ends.recv().await, Some(AgentCommand::Shutdown)), "the close was not asked for");
+        let joined = agent.await.expect_err("the stuck task was not aborted");
+        assert!(joined.is_cancelled());
+    }
 }
