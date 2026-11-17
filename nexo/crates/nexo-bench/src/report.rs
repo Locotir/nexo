@@ -130,10 +130,11 @@ fn mixed(records: &[Record]) -> Option<String> {
     ))
 }
 
-/// A note when some runs ran sealed and others open. A machine without unprivileged user namespaces runs the tasks
-/// that are not marked sealed open (network on, host files visible), so one results file can mix both and the
-/// open runs are checked only by the contamination scan. Files from before the field existed read as all open,
-/// so nothing is said unless at least one run was sealed.
+/// A note when some runs are recorded as sealed and others are not. A machine without unprivileged user namespaces runs
+/// the tasks that are not marked sealed open (network on, host files visible), so one results file can mix both and
+/// the open runs are checked only by the contamination scan. Records from before the field existed carry no value
+/// and read as not sealed even when their task ran sealed, so the line says "not recorded as sealed" and is only
+/// shown when at least one run was recorded as sealed.
 fn isolation(records: &[Record]) -> Option<String> {
     let sealed = records.iter().filter(|r| r.sealed).count();
     let open = records.len() - sealed;
@@ -141,7 +142,7 @@ fn isolation(records: &[Record]) -> Option<String> {
         return None;
     }
     Some(format!(
-        "**Mixed isolation**: {sealed} run(s) ran sealed and {open} ran open (network on, host files visible); the open ones are checked only by the contamination scan."
+        "**Mixed isolation**: {sealed} run(s) ran sealed and {open} are not recorded as sealed (older results files carry no value, otherwise network on and host files visible); those are checked only by the contamination scan."
     ))
 }
 
@@ -852,14 +853,17 @@ mod tests {
     #[test]
     fn a_file_that_mixes_sealed_and_open_runs_says_so_in_the_header() {
         let mut recs = grid(2, 1);
-        assert!(!summary(&head(1), &recs).contains("Mixed isolation"), "all open: older files read this way");
+        assert!(
+            !summary(&head(1), &recs).contains("Mixed isolation"),
+            "none recorded as sealed: older files read this way"
+        );
         for r in &mut recs {
             r.sealed = true;
         }
         assert!(!summary(&head(1), &recs).contains("Mixed isolation"), "all sealed");
         recs[1].sealed = false;
         let s = summary(&head(1), &recs);
-        assert!(s.contains("**Mixed isolation**: 3 run(s) ran sealed and 1 ran open"), "{s}");
+        assert!(s.contains("**Mixed isolation**: 3 run(s) ran sealed and 1 are not recorded as sealed"), "{s}");
     }
 
     #[test]
