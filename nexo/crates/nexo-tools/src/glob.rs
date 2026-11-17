@@ -18,6 +18,13 @@ pub const MAX_CANDIDATES: usize = 50_000;
 /// A walk stops after this long and says so.
 pub const TIME_CAP: Duration = Duration::from_secs(20);
 
+/// The two walk limits, a value so a test can use small ones instead of 50,000 files and 20 seconds.
+#[derive(Clone, Copy)]
+struct Limits {
+    max_candidates: usize,
+    time_cap: Duration,
+}
+
 pub struct Glob;
 
 #[async_trait]
@@ -65,6 +72,13 @@ impl Tool for Glob {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        Glob::find(args, ctx, Limits { max_candidates: MAX_CANDIDATES, time_cap: TIME_CAP }).await
+    }
+}
+
+impl Glob {
+    /// The search itself, with the limits as an argument so a test can use small ones.
+    async fn find(args: Value, ctx: &ToolContext, limits: Limits) -> ToolOutput {
         let Some(pattern) = str_arg(&args, "pattern") else {
             return ToolOutput::error("glob: `pattern` is required");
         };
@@ -81,11 +95,12 @@ impl Tool for Glob {
         let cwd = ctx.cwd.clone();
         let root2 = root.clone();
         let joined = tokio::task::spawn_blocking(move || {
-            let deadline = Instant::now() + TIME_CAP;
+            let deadline = Instant::now() + limits.time_cap;
             let mut cut = false;
             let mut found: Vec<(SystemTime, PathBuf, bool)> = Vec::new();
             for entry in walker(&root2).build().flatten() {
-                if found.len() >= MAX_CANDIDATES || Instant::now() > deadline {
+                // `>=` so a zero cap stops at once even on a clock coarse enough to read the same instant twice
+                if Instant::now() >= deadline {
                     cut = true;
                     break;
                 }
@@ -100,6 +115,11 @@ impl Tool for Glob {
                     glob.is_match(rel)
                 };
                 if hit {
+                    // checked here, not per entry: a tree with exactly the cap in matches lost nothing
+                    if found.len() >= limits.max_candidates {
+                        cut = true;
+                        break;
+                    }
                     let meta = entry.metadata().ok();
                     let mtime = meta.as_ref().and_then(|m| m.modified().ok()).unwrap_or(SystemTime::UNIX_EPOCH);
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -181,6 +201,73 @@ mod tests {
         assert!(Glob.run(json!({"pattern": "[", }), &c).await.is_error);
         assert!(Glob.run(json!({"pattern": "*", "path": "c.txt"}), &c).await.is_error);
         assert_eq!(Glob.summary(&json!({"pattern": "*.rs", "path": "src"})), "glob *.rs in src");
+    }
+
+    /// A `Glob` run with small limits, so the caps need a handful of files and no wait.
+    async fn found(dir: &Path, pattern: &str, max_candidates: usize, time_cap: Duration) -> String {
+        let c = ToolContext::new(dir.to_path_buf());
+        Glob::find(json!({"pattern": pattern}), &c, Limits { max_candidates, time_cap }).await.content
+    }
+
+    const STOPPED: &str = "[the walk was stopped early: too many files or too long; narrow the path or the pattern]";
+
+    #[tokio::test]
+    async fn more_than_500_matches_show_500_and_say_how_many_were_left_out() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..=MAX_RESULTS {
+            std::fs::write(d.path().join(format!("f{i:03}.txt")), "").unwrap();
+        }
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Glob.run(json!({"pattern": "*.txt"}), &c).await;
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.len(), MAX_RESULTS + 1, "500 files and the note");
+        assert_eq!(lines[MAX_RESULTS], "… 1 more files (501 match); narrow the pattern");
+        assert!(lines[..MAX_RESULTS].iter().all(|l| l.ends_with(".txt")));
+        // exactly 500 matches is complete: no note
+        std::fs::remove_file(d.path().join("f500.txt")).unwrap();
+        let out = Glob.run(json!({"pattern": "*.txt"}), &c).await;
+        assert_eq!(out.content.lines().count(), MAX_RESULTS);
+        assert!(!out.content.contains("narrow the pattern"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn the_newest_file_comes_first_and_equal_times_fall_back_to_the_path() {
+        let d = tempfile::tempdir().unwrap();
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs);
+        for (name, secs) in [("old.txt", 0), ("new.txt", 200), ("mid.txt", 100), ("b.log", 50), ("a.log", 50)] {
+            let f = std::fs::File::create(d.path().join(name)).unwrap();
+            f.set_modified(at(secs)).unwrap();
+        }
+        let out = found(d.path(), "*.txt", MAX_CANDIDATES, TIME_CAP).await;
+        assert_eq!(out, "new.txt\nmid.txt\nold.txt");
+        let out = found(d.path(), "*.log", MAX_CANDIDATES, TIME_CAP).await;
+        assert_eq!(out, "a.log\nb.log");
+    }
+
+    #[tokio::test]
+    async fn a_walk_over_the_candidate_cap_says_it_stopped_and_one_at_the_cap_does_not() {
+        let d = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(d.path().join(name), "").unwrap();
+        }
+        // a file that does not match, however late the walk reaches it, loses nothing
+        std::fs::write(d.path().join("z.md"), "").unwrap();
+        let out = found(d.path(), "*.txt", 3, TIME_CAP).await;
+        assert_eq!(out.lines().count(), 3, "{out}");
+        assert!(!out.contains("stopped early"), "{out}");
+        // a fourth match is lost, and the note says so
+        std::fs::write(d.path().join("d.txt"), "").unwrap();
+        let out = found(d.path(), "*.txt", 3, TIME_CAP).await;
+        assert_eq!(out.lines().count(), 4, "3 files and the note: {out}");
+        assert!(out.ends_with(&format!("\n{STOPPED}")), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_walk_that_runs_out_of_time_says_it_stopped() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "").unwrap();
+        let out = found(d.path(), "*.txt", MAX_CANDIDATES, Duration::ZERO).await;
+        assert!(out.ends_with(STOPPED), "{out}");
     }
 
     #[tokio::test]
