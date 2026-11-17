@@ -271,3 +271,32 @@ fn previews_the_selected_file_safely() {
     assert!(pv.lines.is_empty() && pv.note.starts_with("binary"), "{pv:?}");
     assert!(Palette::commands("", 1).preview(d.path(), 2).is_none());
 }
+
+#[test]
+fn add_dir_completes_from_the_home_folder_it_is_given() {
+    let d = tempfile::tempdir().unwrap();
+    for p in ["home/work", "home/.cache", "cwd"] {
+        std::fs::create_dir_all(d.path().join(p)).unwrap();
+    }
+    let home = d.path().join("home");
+    let v = |t: &str, h: Option<&std::path::Path>| {
+        values::dir_values_in(&d.path().join("cwd"), t, h).into_iter().map(|(v, _)| v).collect::<Vec<_>>()
+    };
+    assert_eq!(v("~/", Some(&home)), ["~/work/"], "home folders, hidden left out, no folder above");
+    assert!(v("~/", None).is_empty(), "no home folder, nothing to offer");
+}
+
+/// Windows has no `HOME` and its people type `\`; both must still complete.
+#[cfg(windows)]
+#[test]
+fn add_dir_completes_after_a_backslash_with_backslashes() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("home/work")).unwrap();
+    std::fs::create_dir_all(d.path().join("cwd")).unwrap();
+    let home = d.path().join("home");
+    let v = |t: &str| {
+        values::dir_values_in(&d.path().join("cwd"), t, Some(&home)).into_iter().map(|(v, _)| v).collect::<Vec<_>>()
+    };
+    assert_eq!(v("~\\"), ["~\\work\\"]);
+    assert_eq!(v("..\\"), ["..\\cwd\\", "..\\home\\", "..\\..\\"]);
+}

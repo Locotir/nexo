@@ -441,8 +441,7 @@ impl Config {
     /// resolved and the allow rules added, or why it is not a folder.
     pub fn add_dir(&mut self, cwd: &Path, dir: &Path) -> Result<(PathBuf, Vec<String>), String> {
         let joined = if dir.is_absolute() { dir.to_path_buf() } else { cwd.join(dir) };
-        let real = joined
-            .canonicalize()
+        let real = crate::paths::canonical(&joined)
             .ok()
             .filter(|r| r.is_dir())
             .ok_or_else(|| format!("{}: not a folder", dir.display()))?;

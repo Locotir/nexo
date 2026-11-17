@@ -460,4 +460,14 @@ mod tests {
             assert!(!holds_keys(Path::new(p)), "{p}");
         }
     }
+
+    // `--cwd`, team folders and `/add-dir` all go through `canonical`, so the prefix must never reach them.
+    #[cfg(windows)]
+    #[test]
+    fn canonical_drops_the_verbatim_prefix_windows_adds() {
+        let d = std::env::temp_dir();
+        let c = canonical(&d).unwrap();
+        assert!(!c.to_string_lossy().starts_with(r"\\?\"), "{c:?}");
+        assert_eq!(c.canonicalize().unwrap(), d.canonicalize().unwrap());
+    }
 }

@@ -78,18 +78,31 @@ pub fn live_values(
 }
 
 /// The folders `/add-dir` offers for what is typed so far: the folders inside the part before the
-/// last `/` (from `cwd`, or home for `~/`), written the way the person started, each ending in `/`
-/// so picking one lists its own folders next. Hidden folders only once a `.` is typed.
+/// last separator (from `cwd`, or home for `~/`), written the way the person started, each ending in
+/// a separator so picking one lists its own folders next. Hidden folders only once a `.` is typed.
 pub fn dir_values(cwd: &std::path::Path, typed: &str) -> Vec<(String, String)> {
-    let (head, tail) = match typed.rfind('/') {
+    dir_values_in(cwd, typed, nexo_core::paths::user_home().as_deref())
+}
+
+/// The same with the home folder given (tests): `HOME` is not set on Windows, and tests must not change the environment.
+pub(super) fn dir_values_in(
+    cwd: &std::path::Path,
+    typed: &str,
+    home: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
+    // Windows people type `\` as often as `/`; elsewhere a backslash is a letter of a name
+    let is_sep = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let (head, tail) = match typed.rfind(is_sep) {
         Some(i) => typed.split_at(i + 1),
         None => ("", typed),
     };
+    // the separator the person is using goes on each name, so `..\` offers `..\lib\` and not `..\lib/`
+    let sep = if cfg!(windows) && head.ends_with('\\') { '\\' } else { '/' };
     let base = if head.is_empty() {
         cwd.to_path_buf()
-    } else if let Some(rest) = head.strip_prefix("~/") {
-        match std::env::var_os("HOME") {
-            Some(h) => std::path::PathBuf::from(h).join(rest),
+    } else if let Some(rest) = head.strip_prefix("~/").or_else(|| head.strip_prefix("~\\").filter(|_| cfg!(windows))) {
+        match home {
+            Some(h) => h.join(rest),
             None => return Vec::new(),
         }
     } else {
@@ -104,10 +117,11 @@ pub fn dir_values(cwd: &std::path::Path, typed: &str) -> Vec<(String, String)> {
         .collect();
     names.sort();
     names.truncate(200);
-    let mut out: Vec<(String, String)> = names.into_iter().map(|n| (format!("{head}{n}/"), String::new())).collect();
+    let mut out: Vec<(String, String)> =
+        names.into_iter().map(|n| (format!("{head}{n}{sep}"), String::new())).collect();
     // the folder above is one step away when nothing narrows the list yet
-    if tail.is_empty() && !head.starts_with('~') && head.split('/').all(|p| p.is_empty() || p == "..") {
-        out.push((format!("{head}../"), "the folder above".to_string()));
+    if tail.is_empty() && !head.starts_with('~') && head.split(is_sep).all(|p| p.is_empty() || p == "..") {
+        out.push((format!("{head}..{sep}"), "the folder above".to_string()));
     }
     out
 }

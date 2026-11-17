@@ -439,3 +439,14 @@ fn the_readme_agent_table_lists_the_turn_limit_keys_with_their_defaults() {
     }
     assert!(readme.lines().any(|l| l.starts_with("| `max_checkpoints` | unset |")));
 }
+
+/// Windows canonicalizing gives `\\?\C:\...`; the folder `/add-dir` reports is shown and compared
+/// as the person writes it, so the prefix must not survive.
+#[cfg(windows)]
+#[test]
+fn an_added_folder_is_reported_without_the_verbatim_prefix() {
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    let (real, _) = cfg.add_dir(d.path(), d.path()).unwrap();
+    assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{real:?}");
+}

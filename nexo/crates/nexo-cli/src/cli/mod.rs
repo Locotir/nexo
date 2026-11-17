@@ -135,7 +135,7 @@ pub async fn main() -> i32 {
 
 async fn run(args: Args) -> anyhow::Result<i32> {
     let cwd = match &args.cwd {
-        Some(d) => std::fs::canonicalize(d).map_err(|e| anyhow::anyhow!("cannot use --cwd {}: {e}", d.display()))?,
+        Some(d) => nexo_core::paths::canonical(d).map_err(|e| anyhow::anyhow!("cannot use --cwd {}: {e}", d.display()))?,
         None => std::env::current_dir()?,
     };
     let made = crate::worktree::enter(&args, &cwd)?;
