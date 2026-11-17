@@ -424,7 +424,8 @@ a spend limit are ignored, and the session opens with a notice naming them: a pr
 `api_key_*`, `auth`, `login`, `headers`, `protocol`, `extra` and `pricing` (your own for that provider
 stay), a `provider` your file does not define, `[mcp.*]`, `[[hooks]]`, `permissions.allow`,
 `permissions.mode` set to `yolo` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`,
-`web.url` and `web.api_key_env`, and an `agent.max_cost` or `max_cost_day` above yours or not a positive
+`web.url` and `web.api_key_env`, a `[mail] inbound` that lets in more mail than yours (`accept` over
+`auto`, `auto` over `hold`; a project may only be stricter than you), and an `agent.max_cost` or `max_cost_day` above yours or not a positive
 number (0, a negative number or `nan` would mean no limit). Everything else in it applies, and its `deny`
 rules always do.
 The project's `.nexo/commands/` and `.nexo/agents/` are not loaded either until you trust it.

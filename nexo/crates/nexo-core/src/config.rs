@@ -179,7 +179,8 @@ impl Config {
     /// does not define, MCP servers, hooks, allow rules, the `yolo` and `accept-edits` modes, the
     /// status command, the system prompt file, the web backend's address and key, and a `max_cost` or
     /// `max_cost_day` that is not a positive finite number at most the user's, and a `max_checkpoints` above the
-    /// user's (5 if unset); a user's `on_limit = "ask"` stays. Returns their names.
+    /// user's (5 if unset), a `[mail] inbound` that lets in more than the user's and `[mail] enabled = true`
+    /// over the user's false; a user's `on_limit = "ask"` stays. Returns their names.
     pub fn strip_untrusted(&mut self, user: &Config) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(n) = self.provider.take() {
@@ -279,6 +280,23 @@ impl Config {
                     out.push(format!("permissions.sandbox = \"{}\"", self.permissions.sandbox.as_str()));
                 }
                 self.permissions.sandbox = user.permissions.sandbox;
+            }
+        }
+        // A project may hold mail back, never let more in: `accept` drops the `auto` hold that stops a
+        // session running without asking from writing into one that asks. A project's `auto` is put back
+        // silently because the default is `auto` too, so it cannot be told from a key left out.
+        {
+            use crate::mail::Inbound;
+            let (mine, own) = (Inbound::parse(&self.mail.inbound), Inbound::parse(&user.mail.inbound));
+            if mine.strictness() < own.strictness() {
+                if mine == Inbound::Accept {
+                    out.push("mail.inbound = \"accept\"".into());
+                }
+                self.mail.inbound = user.mail.inbound.clone();
+            }
+            // `enabled` defaults to true, so this only bites when the project said so itself.
+            if self.mail.enabled && !user.mail.enabled {
+                self.mail.enabled = false;
             }
         }
         if !self.ui.status_command.is_empty() && self.ui.status_command != user.ui.status_command {
