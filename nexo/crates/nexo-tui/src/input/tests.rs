@@ -464,3 +464,35 @@ fn omega_redoes_on_a_mac_and_is_a_letter_elsewhere() {
     i.key(k(KeyCode::Char('Ω'), KeyModifiers::NONE));
     assert!(i.text().ends_with('Ω'));
 }
+
+#[cfg(unix)]
+#[test]
+fn the_history_file_is_readable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let d = tempfile::tempdir().unwrap();
+    // a file left by an older run is tightened when the history is loaded
+    let old = d.path().join("old.jsonl");
+    std::fs::write(&old, "\"one\"\n").unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut i = Input::new("");
+    i.persist_history(old.clone());
+    i.push_history("two");
+    assert_eq!(mode(&old), 0o600);
+    assert_eq!(i.history(), ["one", "two"]);
+    // a new file is private from the first line
+    let fresh = d.path().join("fresh.jsonl");
+    let mut j = Input::new("");
+    j.persist_history(fresh.clone());
+    j.push_history("secret");
+    assert_eq!(mode(&fresh), 0o600);
+    // trimming a long file rewrites it without widening the mode
+    let long = d.path().join("long.jsonl");
+    let lines: String = (0..2 * MAX_HISTORY + 5).map(|n| format!("\"p{n}\"\n")).collect();
+    std::fs::write(&long, lines).unwrap();
+    let mut k = Input::new("");
+    k.persist_history(long.clone());
+    assert_eq!(k.history().len(), MAX_HISTORY);
+    assert_eq!(std::fs::read_to_string(&long).unwrap().lines().count(), MAX_HISTORY);
+    assert_eq!(mode(&long), 0o600);
+}
