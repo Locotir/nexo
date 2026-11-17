@@ -41,7 +41,7 @@ pub struct Args {
     #[arg(long, value_name = "MODE", env = "NEXO_SANDBOX", value_parser = sandbox_mode_arg)]
     pub sandbox: Option<String>,
     /// Context policy: auto | plain | curator | compact (auto is the curator, built in)
-    #[arg(long, value_name = "POLICY", env = "NEXO_CONTEXT", value_parser = context_policy_arg)]
+    #[arg(long, value_name = "POLICY", value_parser = context_policy_arg)]
     pub context: Option<String>,
     /// Curator settings for this run, over [context] curator_spec (`eoq=32000;dedup=0`)
     #[arg(long, value_name = "SPEC", env = "NEXO_CURATOR_SPEC")]
@@ -97,8 +97,9 @@ fn permission_mode_arg(s: &str) -> Result<String, String> {
     }
 }
 
-/// `--context`: refused at once, with the names that work. An empty value stays (the config reads it as the
-/// curator, and an empty NEXO_CONTEXT can reach this far); a bad one in the config file is only a warning.
+/// `--context`: refused at once, with the names that work. An empty value stays (the config reads it as the curator).
+/// NEXO_CONTEXT is read by the config, not here, so a stale value in the environment (a team lane inherits it) is only a
+/// warning and never stops `nexo team status`; a bad one in the config file is a warning too.
 fn context_policy_arg(s: &str) -> Result<String, String> {
     let name = s.trim();
     if name.is_empty() || nexo_agent::context::POLICY_NAMES.contains(&name) {
@@ -410,6 +411,16 @@ mod tests {
             let a = super::Args::try_parse_from(["nexo", "--context", ok]).unwrap();
             assert_eq!(a.context.as_deref(), Some(ok));
         }
+    }
+
+    #[test]
+    fn a_stale_context_in_the_environment_does_not_stop_a_subcommand() {
+        use clap::CommandFactory;
+        // NEXO_CONTEXT reaches the config through apply_env (a warning); clap must not read it as well, or one
+        // bad value inherited by a team lane would fail every invocation at parse time.
+        let cmd = super::Args::command();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "context").expect("the --context argument");
+        assert!(arg.get_env().is_none(), "--context must not read an environment variable in clap");
     }
 
     #[test]
