@@ -174,6 +174,10 @@ async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
         !done.is_error && done.content.starts_with("x is kept in a.rs:3; b.rs not checked\n\n[tool log] 16 tool calls"),
         "{done:?}"
     );
+    assert!(
+        done.content.contains("the sub-agent used all 16 rounds and was told to report"),
+        "the parent is told the report was forced out by the last round: {done:?}"
+    );
     let reqs = client.requests();
     assert!(reqs[1].system.contains("You have 16 rounds"), "it knows its budget");
     let told = reqs[17]

@@ -18,6 +18,12 @@ pub(super) const LAST_ROUND: &str =
     "[nexo] No rounds left for tools. Answer now with your report: what you found, with \
 path:line, and what you could not settle.";
 
+/// Added to a report the last round forced out, for the model that handed the task over: the report alone cannot
+/// say it was cut, and the live round count is the one fact that sizes the next hand-off.
+pub(super) fn cut_note(rounds: usize) -> String {
+    format!("[nexo: the sub-agent used all {rounds} rounds and was told to report; whatever it had not settled is not in the report]")
+}
+
 pub(super) const EXPLORE: &str =
     "You can only read: read files, search, list, search the web. You cannot change anything.";
 

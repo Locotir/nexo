@@ -384,7 +384,10 @@ impl Run {
                 } else {
                     let said = brief::compact_report(report, brief.map(|b| b.text.as_str()), brief::REPORT_TOKENS);
                     let did = ledger::Effects::of(&messages).block();
-                    Ok(if did.is_empty() { said } else { format!("{said}\n\n{did}") })
+                    let said = if did.is_empty() { said } else { format!("{said}\n\n{did}") };
+                    // A report forced by the last round looks like a finished one; the parent is told, with the
+                    // live round count, so it can tell what was settled from what was cut off.
+                    Ok(if last { format!("{said}\n\n{}", cut_note(rounds)) } else { said })
                 };
             }
             let mut asked = vec![];
