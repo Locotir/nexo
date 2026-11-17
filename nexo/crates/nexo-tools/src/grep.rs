@@ -103,6 +103,8 @@ impl Tool for Grep {
         let re = match RegexBuilder::new(pattern)
             .case_insensitive(bool_arg(&args, "case_insensitive"))
             .multi_line(multiline)
+            // CRLF files: without this `$` and `^` never see the line break because the `\r` sits before the `\n`
+            .crlf(multiline)
             .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
@@ -114,6 +116,8 @@ impl Tool for Grep {
         let in_programs = regex::bytes::RegexBuilder::new(pattern)
             .case_insensitive(bool_arg(&args, "case_insensitive"))
             .multi_line(multiline)
+            // as above: `$` and `^` must see CRLF line ends in the byte search too
+            .crlf(multiline)
             .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
@@ -651,6 +655,14 @@ mod tests {
         assert_eq!(out.content, "src/a.rs:1: fn alpha() {}\nsrc/a.rs:2: let x = 1;\nsrc/a.rs:3: fn beta() {}");
         let out = Grep.run(json!({"pattern": "^let", "multiline": true, "files_only": true}), &c).await;
         assert_eq!(out.content, "1 match in 1 file\nsrc/a.rs");
+    }
+
+    #[tokio::test]
+    async fn multiline_anchors_match_lines_that_end_in_crlf() {
+        let (d, c) = fixture();
+        std::fs::write(d.path().join("win.txt"), "alpha\r\nfoo\r\nbar\r\n").unwrap();
+        let out = Grep.run(json!({"pattern": "^foo$", "multiline": true, "glob": "win.txt"}), &c).await;
+        assert_eq!(out.content, "win.txt:2: foo", "{}", out.content);
     }
 
     #[tokio::test]
