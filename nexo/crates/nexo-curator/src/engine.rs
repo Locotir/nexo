@@ -39,6 +39,7 @@ mod frontier;
 mod idle;
 mod ingest;
 mod named;
+mod need;
 mod notes;
 mod own;
 mod params;
@@ -162,6 +163,8 @@ pub struct Engine {
     fresh_wait: FxHashSet<usize>,
     /// What the frontier trim took (`Params.trim`): the lines that stand for its parts, and their names.
     trimmed: frontier::Trimmed,
+    /// The names-kept rule (`Params.need`): the places that hold each name, and the parts that wait to leave.
+    need: need::Need,
     cap: i64,
     /// Where the cut the cap drives fires (`decide`): the room a view has to grow in is measured to here, not to
     /// the target the cut lands on.
@@ -386,6 +389,7 @@ impl Engine {
             resent_from: usize::MAX,
             fresh_wait: FxHashSet::default(),
             trimmed: frontier::Trimmed::default(),
+            need: need::Need::default(),
             built: FxHashMap::default(),
             born: Vec::new(),
             held: FxHashMap::default(),

@@ -122,6 +122,7 @@ mod frontier;
 mod idle;
 mod ingest;
 mod named;
+mod need;
 mod recall;
 mod stale;
 mod steps;

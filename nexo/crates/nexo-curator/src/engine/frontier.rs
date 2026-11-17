@@ -1,28 +1,25 @@
 //! The frontier trim (`Params.trim`): what the reply to an output did not take up leaves that output on the
 //! next request, while it is still the last message the cache holds.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hindsight::{words, Sym, UKind};
 use crate::json::est_str;
 use crate::msg::key_of;
+use crate::sorted::{FxHashMap, FxHashSet};
 use crate::tools::{prints_files, Kind};
 
 use super::cap::SMALL_RESULT;
 use super::files::command_of;
 use super::Engine;
 
-/// The calls a session still has to come, on average: these many before its first one, and this share
-/// more of the calls it has made (the mean of the calls left, measured on the recorded sessions).
-const TO_COME: f64 = 12.0;
-const TO_COME_PER_CALL: f64 = 0.2;
-
 /// The tokens of the line that says lines were omitted.
-const MARK_TOKENS: i64 = 7;
+pub(super) const MARK_TOKENS: i64 = 7;
 
-/// What the trim remembers of the parts it took.
-#[derive(Default)]
+/// What the trim remembers of the parts it took (and what the names-kept rule of `need.rs` takes by the same
+/// hook: the lines of a part that stay).
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Trimmed {
     /// Of a part that left holding names of its own, the lines of its output that stay: the first that
     /// holds each of them.
@@ -37,7 +34,7 @@ pub(super) struct Trimmed {
 type Take = (usize, usize, Vec<Sym>, Vec<usize>);
 
 /// The file's own name in a path, when it is long enough to be a name by itself.
-fn file_of(w: &str) -> Option<&str> {
+pub(super) fn file_of(w: &str) -> Option<&str> {
     w.rsplit_once('/').map(|(_, t)| t).filter(|t| t.len() >= 4)
 }
 
@@ -138,32 +135,20 @@ impl Engine {
         }
         let mut plan: Vec<Take> = Vec::new();
         for (i, j) in cands {
-            let c = &self.fz.chunks[i][j];
-            let own: Vec<Sym> = c.words.iter().copied().filter(|w| places.get(w).is_none_or(|&h| h <= 1)).collect();
+            let held: Vec<Sym> = self.fz.chunks[i][j].words.clone();
+            let own: Vec<Sym> = held.iter().copied().filter(|w| places.get(w).is_none_or(|&h| h <= 1)).collect();
             let mut stay: Vec<usize> = Vec::new();
             if !own.is_empty() {
                 if level < 2 {
                     continue;
                 }
-                // the first line that holds each of those names stays, between two lines that say the rest left
-                let text = self.tr.unit_text(i);
-                let (mut found, mut size): (FxHashSet<Sym>, i64) = (FxHashSet::default(), 2 * MARK_TOKENS);
-                for (l, line) in text.split('\n').enumerate().take(c.end.max(0) as usize).skip(c.start.max(0) as usize)
-                {
-                    let holds = words(line, &mut self.int);
-                    let new = found.len();
-                    found.extend(own.iter().filter(|w| holds.binary_search(w).is_ok()));
-                    if found.len() > new {
-                        stay.push(l);
-                        size += est_str(line) + 1;
-                    }
-                }
-                if found.len() < own.len() || 2 * size > c.tokens {
-                    continue;
+                match self.stay_lines(i, j, &own) {
+                    Some((lines, _)) => stay = lines,
+                    None => continue,
                 }
             }
             // the names the part shares are held one place less; its own stay held, on those lines
-            for w in c.words.iter().filter(|w| !own.contains(w)) {
+            for w in held.iter().filter(|w| !own.contains(w)) {
                 if let Some(h) = places.get_mut(w) {
                     *h -= 1;
                 }
@@ -197,7 +182,7 @@ impl Engine {
         let agent = |m: &usize| self.tr.msgs[*m].get("role").and_then(Value::as_str) == Some("assistant");
         let reply: i64 = (mi + 1..n).take_while(agent).map(|m| self.sizes[m]).sum();
         let r = self.p.ratio;
-        let to_come = TO_COME + TO_COME_PER_CALL * self.tr.steps.len() as f64;
+        let to_come = self.calls_left();
         let again = ((after - lead).max(0) + reply) as f64;
         let pays = self.p.ahead <= 0.0 || r * to_come * (before - after) as f64 > (1.0 - r) * again;
         if !pays || after >= before {
@@ -218,6 +203,27 @@ impl Engine {
         self.bump("trim_names", names);
         self.bump("trim_tokens", before - after);
         Some(mi)
+    }
+
+    /// Of part `j` of output `i`, the lines that stay when the part leaves holding the names `own` (only it
+    /// holds them): the first line that holds each of them, between two lines that say the rest left. With
+    /// the tokens those lines and the two marks take. None when some name has no line, or when those lines
+    /// are half of the part or more (a listing, all names, stays whole).
+    pub(super) fn stay_lines(&mut self, i: usize, j: usize, own: &[Sym]) -> Option<(Vec<usize>, i64)> {
+        let c = &self.fz.chunks[i][j];
+        let text = self.tr.unit_text(i);
+        let (mut found, mut size): (FxHashSet<Sym>, i64) = (FxHashSet::default(), 2 * MARK_TOKENS);
+        let mut stay: Vec<usize> = Vec::new();
+        for (l, line) in text.split('\n').enumerate().take(c.end.max(0) as usize).skip(c.start.max(0) as usize) {
+            let holds = words(line, &mut self.int);
+            let new = found.len();
+            found.extend(own.iter().filter(|w| holds.binary_search(w).is_ok()));
+            if found.len() > new {
+                stay.push(l);
+                size += est_str(line) + 1;
+            }
+        }
+        (found.len() == own.len() && 2 * size <= c.tokens).then_some((stay, size))
     }
 
     /// Whether output `i` is what a process printed: a command's, and not one that only prints files (that
