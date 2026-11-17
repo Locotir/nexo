@@ -135,7 +135,7 @@ impl Problem {
 /// The words that can only mean an empty balance, never a per-minute limit. They are what the HTTP layer may
 /// use on a 429 to stop retrying (waiting never refills a balance); the soft words below are not safe there,
 /// because "exceeded your current quota" is also how Gemini words a per-minute limit.
-pub(crate) fn says_no_credit(m: &str) -> bool {
+pub fn says_no_credit(m: &str) -> bool {
     has(
         &m.to_ascii_lowercase(),
         &[

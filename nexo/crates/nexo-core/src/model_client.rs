@@ -23,6 +23,13 @@ pub trait ModelClient: Send + Sync {
         Duration::ZERO
     }
 
+    /// Whether the loop should send the request again after `e` cut its reply: it can be retried, and the
+    /// wait the server asked for is one the client would sit through. A client with no waits of its own
+    /// retries whatever can be retried.
+    fn worth_retrying(&self, e: &ProviderError) -> bool {
+        e.is_retryable()
+    }
+
     /// The vendor's model list, where there is one.
     async fn list_models(&self, _cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError> {
         Err(ProviderError::new(ErrorKind::Other, "no model list"))

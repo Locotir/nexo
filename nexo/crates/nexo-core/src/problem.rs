@@ -12,7 +12,7 @@ mod causes;
 mod text;
 
 pub use build::*;
-pub(crate) use causes::says_no_credit;
+pub use causes::says_no_credit;
 pub use text::*;
 
 #[cfg(test)]

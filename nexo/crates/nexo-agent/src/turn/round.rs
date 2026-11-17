@@ -306,7 +306,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         // reasoning is on the screen by then), and ending the turn here loses the request to one bad
         // connection. What was thought is dropped, neither kept nor sent back, and the request goes out again
         // through the checks at the top of the loop; what the attempt was billed stays spent
-        let lost = c.error.as_ref().filter(|e| e.is_retryable() && reasoned && !spoke && !interrupted);
+        let lost = c.error.as_ref().filter(|e| client.worth_retrying(e) && reasoned && !spoke && !interrupted);
         let again = RECUT_RETRIES.min(retries);
         match lost {
             Some(e) if recut < again => {
@@ -314,9 +314,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 bill_attempt(&state, &events, &req.model, usage, call).await;
                 let why =
                     "the stream was cut while the model reasoned; that reasoning is dropped and the request sent again";
-                notice(&events, Level::Warn, format!("{why} ({recut}/{again})"));
+                let wait = client.backoff(recut, e);
+                // a wait the server asked for can be long; the screen says how long, as the client's own
+                // retries only reach the log
+                let after =
+                    if wait >= Duration::from_secs(10) { format!(" in {}s", wait.as_secs()) } else { String::new() };
+                notice(&events, Level::Warn, format!("{why}{after} ({recut}/{again})"));
                 tokio::select! {
-                    _ = tokio::time::sleep(client.backoff(recut, e)) => {}
+                    _ = tokio::time::sleep(wait) => {}
                     _ = cancel.cancelled() => return TurnEnd::Interrupted,
                 }
                 continue;

@@ -125,7 +125,10 @@ impl Progress {
 pub fn stream_error_kind(error_type: &str, message: &str) -> ErrorKind {
     let t = error_type.to_ascii_lowercase();
     let m = message.to_ascii_lowercase();
-    if t.contains("rate_limit") || t.contains("resource_exhausted") || t == "429" || m.contains("rate limit") {
+    // an empty balance is not a limit that lifts: waiting never refills it, so it is not retried
+    if nexo_core::says_no_credit(&t) || nexo_core::says_no_credit(&m) {
+        ErrorKind::BadRequest
+    } else if t.contains("rate_limit") || t.contains("resource_exhausted") || t == "429" || m.contains("rate limit") {
         ErrorKind::RateLimit
     } else if t.contains("overloaded") || t.contains("unavailable") || m.contains("overloaded") {
         ErrorKind::Overloaded
@@ -169,6 +172,16 @@ mod tests {
         assert_eq!(stream_error_kind("", "This model's maximum context length is 8192"), ErrorKind::ContextLength);
         assert_eq!(stream_error_kind("authentication_error", ""), ErrorKind::Auth);
         assert_eq!(stream_error_kind("server_error", "boom"), ErrorKind::Server);
+    }
+
+    #[test]
+    fn an_empty_balance_reported_in_a_stream_is_not_retried_but_a_busy_one_is() {
+        let empty = stream_error_kind("insufficient_quota", "You exceeded your current quota");
+        assert_eq!(empty, ErrorKind::BadRequest);
+        assert!(!ProviderError::new(empty, "x").is_retryable());
+        assert_eq!(stream_error_kind("", "Your credit balance is too low"), ErrorKind::BadRequest);
+        assert_eq!(stream_error_kind("rate_limit_error", "slow down"), ErrorKind::RateLimit);
+        assert_eq!(stream_error_kind("RESOURCE_EXHAUSTED", "You exceeded your current quota"), ErrorKind::RateLimit);
     }
 
     #[test]

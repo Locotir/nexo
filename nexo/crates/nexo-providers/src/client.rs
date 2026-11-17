@@ -114,7 +114,7 @@ impl Client {
 
     /// Whether `e` is worth another request: it can be retried, and the server did not ask for a wait
     /// longer than the ceiling (a quota that resets in an hour is not waited for with the turn open).
-    fn worth_retrying(&self, e: &ProviderError) -> bool {
+    pub fn worth_retrying(&self, e: &ProviderError) -> bool {
         e.is_retryable() && e.retry_after.is_none_or(|asked| asked <= self.retry_ceiling)
     }
 
@@ -269,6 +269,19 @@ mod tests {
     use async_trait::async_trait;
     use nexo_core::{Message, Usage};
     use std::sync::Mutex;
+
+    #[test]
+    fn the_loop_asks_the_client_whether_a_cut_reply_is_worth_sending_again() {
+        use nexo_core::model_client::ModelClient;
+        let client = Client::new(Registry::new());
+        let mut cut = ProviderError::new(ErrorKind::Network, "stream cut");
+        assert!(ModelClient::worth_retrying(&client, &cut));
+        cut.retry_after = Some(Duration::from_secs(30));
+        assert!(ModelClient::worth_retrying(&client, &cut), "a wait inside the ceiling");
+        cut.retry_after = Some(Duration::from_secs(3600));
+        assert!(!ModelClient::worth_retrying(&client, &cut), "an hour is not waited for");
+        assert!(!ModelClient::worth_retrying(&client, &ProviderError::new(ErrorKind::BadRequest, "no")));
+    }
 
     /// A protocol that answers each re-issued request with the next scripted stream.
     struct Scripted(Mutex<Vec<Result<Vec<StreamEvent>, ProviderError>>>);
@@ -429,6 +442,10 @@ impl nexo_core::model_client::ModelClient for Client {
 
     fn backoff(&self, n: u32, e: &nexo_core::error::ProviderError) -> std::time::Duration {
         Client::backoff(self, n, e)
+    }
+
+    fn worth_retrying(&self, e: &nexo_core::error::ProviderError) -> bool {
+        Client::worth_retrying(self, e)
     }
 
     async fn list_models(
