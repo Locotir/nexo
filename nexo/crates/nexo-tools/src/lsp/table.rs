@@ -122,8 +122,10 @@ pub fn available(cwd: &Path) -> bool {
         found = ["a.rs", "a.py", "a.ts", "a.js", "a.go", "a.c"].iter().map(PathBuf::from).collect();
     }
     found.iter().filter_map(|f| servers_for(f)).any(|(language, candidates)| {
-        candidates.iter().any(|c| usable(c))
-            || (language == "rust" && which("cargo"))
+        // The free PATH checks come first: a rustup install ships the rust-analyzer shim with cargo, so
+        // where cargo is found the `--version` spawn is skipped. `usable` still runs lazily before use.
+        (language == "rust" && which("cargo"))
             || (language == "javascript" && which("node"))
+            || candidates.iter().any(|c| usable(c))
     })
 }
