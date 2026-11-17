@@ -27,12 +27,14 @@ mod markdown_export;
 mod open_and_claim;
 mod recording;
 mod rewind_and_fork;
+mod sweep;
 #[cfg(test)]
 mod tests;
 mod trash;
 mod tree_and_titles;
 
 use lock_file::*;
+pub use sweep::{sweep_orphans, sweep_orphans_in_background};
 pub use trash::*;
 pub use tree_and_titles::*;
 

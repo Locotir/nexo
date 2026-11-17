@@ -44,6 +44,8 @@ pub(super) async fn interactive(
     let models = setup::model_choices(&config);
     // The session files are read while the agent is set up, not before it.
     let listing = tokio::task::spawn_blocking(nexo_agent::session::list);
+    // what a crash left next to them goes in the background too, never before the first frame
+    nexo_agent::session::sweep_orphans_in_background();
     // sessions write to each other through the mailbox; it takes its session when the agent has one
     let mailbox = config.mail.enabled.then(|| {
         nexo_core::mailbox::Mailbox::unbound(
@@ -145,6 +147,7 @@ pub(super) async fn headless_collect(
     prompt: String,
 ) -> anyhow::Result<(String, i32)> {
     nexo_agent::session::mark_headless();
+    nexo_agent::session::sweep_orphans_in_background();
     let (mut handle, ends) = channels();
     let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, None, Some(gate), None).await?;

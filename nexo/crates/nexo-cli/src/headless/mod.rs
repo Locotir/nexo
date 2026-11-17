@@ -225,6 +225,7 @@ pub async fn run(
 
     // what a script or another program runs is not one of the person's conversations
     nexo_agent::session::mark_headless();
+    nexo_agent::session::sweep_orphans_in_background();
     let (mut handle, ends) = channels();
     let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
     let mut agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, Some(gate), None).await?;
