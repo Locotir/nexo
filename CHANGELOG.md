@@ -2,7 +2,7 @@
 
 nexo has no numbered releases. CI builds a release on every push to `main` and names it
 `build-<commit>` (the last five are kept). `nexo --version` prints the same commit. The workspace
-version in `nexo/Cargo.toml` is 0.1.0. Dates are commit dates; newest first.
+version in `nexo/Cargo.toml` is 0.2.0 (0.1.0 until 2026-11-17). Dates are commit dates; newest first.
 
 ## 2026-11-16
 

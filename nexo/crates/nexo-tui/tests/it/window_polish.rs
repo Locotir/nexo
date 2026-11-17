@@ -10,6 +10,9 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
+/// The name and version the welcome card shows.
+const SHOWN: &str = concat!("nexo ", env!("CARGO_PKG_VERSION"));
+
 fn app() -> App {
     let (tx, _rx) = mpsc::unbounded_channel();
     let opts = TuiOptions {
@@ -61,7 +64,7 @@ fn help_and_jobs_leave_nothing_of_the_welcome_card_beside_them() {
             let mut a = app();
             a.run_command(cmd.clone());
             let text = draw(&mut a, w, h).join("\n");
-            assert!(!text.contains("nexo 0.1.0") && !text.contains("●─╮"), "{w}x{h} {cmd:?}\n{text}");
+            assert!(!text.contains(SHOWN) && !text.contains("●─╮"), "{w}x{h} {cmd:?}\n{text}");
         }
     }
 }
@@ -86,7 +89,7 @@ fn the_theme_picker_leaves_the_chat_in_sight() {
         let mut a = app();
         a.run_command(cmd.clone());
         let text = draw(&mut a, 140, 40).join("\n");
-        assert!(text.contains("nexo 0.1.0"), "{cmd:?}: the screen behind the picker is not wiped\n{text}");
+        assert!(text.contains(SHOWN), "{cmd:?}: the screen behind the picker is not wiped\n{text}");
     }
 }
 
@@ -97,8 +100,7 @@ fn a_window_over_the_welcome_card_leaves_no_piece_of_its_frame_beside_it() {
         a.run_command(cmd.clone());
         let rows = draw(&mut a, 80, 24);
         let all = rows.join("\n");
-        let top =
-            rows.iter().position(|r| r.contains('╭') && !r.contains("nexo 0.1.0") && !r.starts_with('╭')).expect(&all);
+        let top = rows.iter().position(|r| r.contains('╭') && !r.contains(SHOWN) && !r.starts_with('╭')).expect(&all);
         let bottom = rows.iter().rposition(|r| r.contains('╰') && r.contains('╯')).expect(&all);
         // in the rows of the window, the card's left edge and corners are gone (the card's own rows above and below stay)
         for (y, r) in rows.iter().enumerate().take(bottom + 1).skip(top) {
