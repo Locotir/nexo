@@ -1460,7 +1460,10 @@ fn a_session_that_cannot_be_opened_names_its_file_and_the_cause() {
     let bad = d.path().join("broken.jsonl");
     std::fs::write(&bad, "this is not json\n").unwrap();
     let e = Session::open_path(&bad).err().expect("a damaged file").to_string();
-    assert!(e.contains(&bad.display().to_string()) && e.contains("damaged at line 1") && e.contains("/new"), "{e}");
+    assert!(
+        e.contains(&bad.display().to_string()) && e.contains("damaged at line 1") && !e.contains("/new"),
+        "the next step belongs to the caller: {e}"
+    );
     let dir_as_file = d.path().join("folder.jsonl");
     std::fs::create_dir(&dir_as_file).unwrap();
     let e = Session::open_path(&dir_as_file).err().expect("an unreadable file").to_string();

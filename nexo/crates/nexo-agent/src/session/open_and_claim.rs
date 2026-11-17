@@ -126,12 +126,9 @@ impl Session {
             .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)))
             .filter(|l| !l.is_empty());
         let first = lines.next().ok_or_else(|| anyhow::anyhow!("empty session file {}", path.display()))?;
-        let meta_line = serde_json::from_str(&first).map_err(|e| {
-            anyhow::anyhow!(
-                "session file {} is damaged at line 1: {e}. Start fresh with /new, or move the file away.",
-                path.display()
-            )
-        })?;
+        // No advice here: `/new` means nothing to `/shared-memory` or a headless `--resume`, so the step to take belongs to the caller.
+        let meta_line = serde_json::from_str(&first)
+            .map_err(|e| anyhow::anyhow!("session file {} is damaged at line 1: {e}", path.display()))?;
         let Line::Meta(mut meta) = meta_line else {
             anyhow::bail!("{} does not start with a meta line", path.display());
         };
