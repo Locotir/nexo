@@ -101,6 +101,12 @@ fn build(transport: &str, rest: &[String], headers: &[String], env: &[String]) -
     let mut cfg = McpServerConfig::default();
     if transport == "stdio" {
         let (cmd, args) = rest.split_first().ok_or_else(|| anyhow!("no command"))?;
+        // A pasted url would be saved as a program that can never start, and the failure would only show at launch
+        // as a missing binary. The transport is left as typed: switching it would change what the person asked for.
+        let lower = cmd.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            bail!("{cmd:?} is a url: use `nexo mcp add --transport http <name> <url>`");
+        }
         cfg.command = cmd.clone();
         cfg.args = args.to_vec();
         for e in env {
@@ -390,6 +396,16 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn a_url_given_as_a_stdio_command_is_refused_with_the_http_transport_hint() {
+        for u in ["http://127.0.0.1:1/mcp", "https://x.test/mcp", "HTTPS://x.test/mcp"] {
+            let e = build("stdio", &s(&[u]), &[], &[]).unwrap_err().to_string();
+            assert!(e.contains("is a url") && e.contains("--transport http"), "{e}");
+        }
+        assert!(build("stdio", &s(&["httpd", "--flag"]), &[], &[]).is_ok(), "a command that merely starts with http");
+        assert!(build("http", &s(&["https://x.test/mcp"]), &[], &[]).is_ok());
     }
 
     #[test]
