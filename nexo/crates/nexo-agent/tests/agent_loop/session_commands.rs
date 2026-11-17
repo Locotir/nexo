@@ -329,6 +329,19 @@ async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_t
     let ev = r.until(|e| matches!(e, AgentEvent::SessionDeleted { .. })).await;
     assert!(matches!(ev.last(), Some(AgentEvent::SessionDeleted { id, .. }) if *id == a));
     assert!(!nexo_agent::session::list().iter().any(|m| m.id == a));
+    // the trash and the tree are read apart from the loop and still answer
+    r.send(AgentCommand::ListTrash);
+    let ev = r.until(|e| matches!(e, AgentEvent::Trash { .. })).await;
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::Trash { sessions }) if sessions.iter().any(|(i, _)| *i == a)),
+        "{ev:?}"
+    );
+    r.send(AgentCommand::ShowTree);
+    let ev = r.until(|e| matches!(e, AgentEvent::SessionTree { .. })).await;
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::SessionTree { entries }) if entries.iter().any(|(_, i, _)| *i == b)),
+        "{ev:?}"
+    );
     r.send(AgentCommand::RestoreSession { id: a.clone() });
     let ev = r.until(|e| matches!(e, AgentEvent::SessionRestored { .. })).await;
     assert!(

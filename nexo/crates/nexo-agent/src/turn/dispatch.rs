@@ -82,10 +82,16 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         AgentCommand::Resume { id } => on_resume(rt, id).await,
         AgentCommand::Fork { index } => on_fork(rt, index).await,
         AgentCommand::ShowTree => {
-            let st = rt.state.lock().await;
-            let entries =
-                crate::session::tree(&crate::session::list()).into_iter().map(|(d, m)| (d, m.id, m.title)).collect();
-            emit(&st.events, AgentEvent::SessionTree { entries });
+            // the scan reads every session file: it runs apart from the loop and takes no lock, so a turn's
+            // rounds and the commands after this one do not wait for it
+            let events = rt.events.clone();
+            tokio::task::spawn_blocking(move || {
+                let entries = crate::session::tree(&crate::session::list())
+                    .into_iter()
+                    .map(|(d, m)| (d, m.id, m.title))
+                    .collect();
+                emit(&events, AgentEvent::SessionTree { entries });
+            });
         }
         AgentCommand::DeleteSession { id } => delete_session(&rt.state, &id).await,
         AgentCommand::ShareMemory { id, focus } => share_memory(&rt.state, id, focus).await,
@@ -93,9 +99,12 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         AgentCommand::ReadSharedMemory { since } => read_shared_memory(&rt.state, since).await,
         AgentCommand::WriteSharedMemory { text } => append_shared_memory(&rt.state, &text).await,
         AgentCommand::ListTrash => {
-            let st = rt.state.lock().await;
-            let sessions = crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect();
-            emit(&st.events, AgentEvent::Trash { sessions });
+            // read apart from the loop and without the lock, as the tree is
+            let events = rt.events.clone();
+            tokio::task::spawn_blocking(move || {
+                let sessions = crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect();
+                emit(&events, AgentEvent::Trash { sessions });
+            });
         }
         AgentCommand::RestoreSession { id } => on_restore_session(rt, id).await,
         AgentCommand::Rewind { index } => {
@@ -439,13 +448,18 @@ async fn on_fork(rt: &mut Runtime, index: Option<usize>) {
 
 /// A session taken out of the trash.
 async fn on_restore_session(rt: &mut Runtime, id: String) {
-    let st = rt.state.lock().await;
-    match crate::session::restore(&id) {
-        Ok(p) => {
-            let title = crate::session::Session::open_path(&p).map(|s| s.meta().title.clone()).unwrap_or_default();
-            emit(&st.events, AgentEvent::SessionRestored { id, title });
-        }
-        Err(e) => notice(&st.events, Level::Error, format!("cannot restore: {e}")),
+    // nothing here reads the state, so the lock stays free while the file moves and its title is read (the title
+    // alone, as the list reads it, not the whole conversation)
+    let restoring = id.clone();
+    let done = tokio::task::spawn_blocking(move || {
+        crate::session::restore(&restoring)
+            .map(|_| crate::session::meta_in(&crate::session::dir(), &restoring).map(|m| m.title).unwrap_or_default())
+    })
+    .await;
+    match done {
+        Ok(Ok(title)) => emit(&rt.events, AgentEvent::SessionRestored { id, title }),
+        Ok(Err(e)) => notice(&rt.events, Level::Error, format!("cannot restore: {e}")),
+        Err(e) => notice(&rt.events, Level::Error, format!("cannot restore: {e}")),
     }
 }
 
