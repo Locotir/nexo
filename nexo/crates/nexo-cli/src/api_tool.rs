@@ -1,0 +1,411 @@
+//! `api`: `nexo api` as a tool, so a model that wants the API behind a website asks for it in one call: read a
+//! HAR capture (`analyze`), look at a saved map (`describe`), call an endpoint of it (`call`). The command line is
+//! the one `nexo api` takes, parsed by the same clap definition, and the answer is the text the CLI prints (already
+//! scrubbed of secrets).
+//!
+//! What the model never gets: `watch` (it runs until stopped, the person runs it), `--reveal` (the raw answer with
+//! its secrets), a secret value in the command (it names an environment variable instead: `--auth bearer=MY_TOKEN`,
+//! `-p password=@env:PW`), and a body read from a file.
+//!
+//! The call has a kind decided from the parsed command (`call_kind`), so the permission policy asks as it does for
+//! the tool that does the same thing by hand:
+//!
+//! | call | kind | asked like |
+//! | --- | --- | --- |
+//! | `analyze`, `describe`, `call --dry-run` | read | a file read |
+//! | `analyze --save/--openapi` | write | `edit` and `write` |
+//! | `call` of a GET or HEAD endpoint | network | `web_fetch` |
+//! | `call` of any other method, or with `--login` | exec | a shell command that changes things |
+
+use async_trait::async_trait;
+use clap::error::ErrorKind;
+use clap::Parser;
+use nexo_api::exchange;
+use nexo_core::tool::Check;
+use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+use crate::api_cmd::{ApiArgs, ApiCmd, Target};
+use crate::re_mcp::split_words;
+
+#[cfg(test)]
+mod tests;
+
+/// Most characters one answer carries; the rest is counted.
+const MAX_CHARS: usize = 12_000;
+
+const OPS: &str = "\
+analyze <har> [--save MAP] [--openapi FILE] [--host H] [--budget N] [--json]  read a HAR file (the browser tool's capture is one): one line per endpoint with its path params, JSON shapes, auth and paging; --save keeps the map for the ops below
+describe <map> [endpoint]  the endpoints of a map, or one endpoint's params, body, auth and the environment variables it reads
+call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--dry-run] [--json]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>
+Never write a token, key or password in a command: name an environment variable (--auth bearer=MY_TOKEN, -p password=@env:PW); a value that looks like a secret is refused. Start with --dry-run: it prints the request and sends nothing.
+GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE and --login like a shell command that changes things; --save and --openapi write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
+
+const COMPACT: &str = "The API behind a website: `analyze cap.har --save map.json`, `describe map.json [EP]`, `call map.json EP -p k=v --auth NAME=ENVVAR` (--dry-run first). Secrets by environment variable name only. `--help`";
+
+/// The tool. It holds nothing: every call parses its own line.
+pub struct Api;
+
+/// What a line parses to.
+#[derive(Debug)]
+pub(crate) enum Parsed {
+    Help(String),
+    Cmd(ApiCmd),
+}
+
+/// The command line as `nexo api` reads it. A leading `nexo api` or `api` is allowed.
+pub(crate) fn parse(line: &str) -> Result<Parsed, String> {
+    let mut words = split_words(line)?;
+    if words.first().is_some_and(|w| w == "nexo") {
+        words.remove(0);
+    }
+    if words.first().is_some_and(|w| w == "api") {
+        words.remove(0);
+    }
+    if words.first().is_none_or(|w| w == "help") {
+        return Ok(Parsed::Help(OPS.to_string()));
+    }
+    let argv = ["nexo".to_string(), "api".to_string()].into_iter().chain(words);
+    match crate::cli::Args::try_parse_from(argv) {
+        Ok(a) => match a.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what })) => Ok(Parsed::Cmd(what)),
+            _ => Err("not an api op".to_string()),
+        },
+        Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
+            Ok(Parsed::Help(e.to_string()))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// What the model may not ask for, and a value that looks like a secret. `Ok` means the call may go on.
+pub(crate) fn vet(cmd: &ApiCmd) -> Result<(), String> {
+    match cmd {
+        ApiCmd::Watch { .. } => Err(
+            "watch runs until it is stopped, so the person runs it: `nexo api watch MAP ENDPOINT --every 5m`".into(),
+        ),
+        ApiCmd::Call { reveal: true, .. } => Err(
+            "--reveal prints the raw answer with its secrets, and the model never sees those; the person can run `nexo api call --reveal`"
+                .into(),
+        ),
+        ApiCmd::Call { target, .. } => vet_target(target),
+        ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } => Ok(()),
+    }
+}
+
+fn vet_target(t: &Target) -> Result<(), String> {
+    for p in t.params.iter().map(|p| ("-p", p)).chain(t.login_params.iter().map(|p| ("--login-param", p))) {
+        if let Some(why) = param_problem(p.0, p.1) {
+            return Err(why);
+        }
+    }
+    for (flag, body) in [("--body", &t.body), ("--login-body", &t.login_body)] {
+        if let Some(b) = body {
+            if let Some(why) = body_problem(flag, b) {
+                return Err(why);
+            }
+        }
+    }
+    for a in &t.auth {
+        if let Some(why) = auth_problem(a) {
+            return Err(why);
+        }
+    }
+    Ok(())
+}
+
+const ENV_HINT: &str = "put the value in an environment variable and pass `@env:VAR`";
+
+/// `name=value` where the value looks like a secret, or the name says it is one and the value is not `@env:VAR`.
+fn param_problem(flag: &str, arg: &str) -> Option<String> {
+    let (name, value) = arg.split_once('=')?;
+    let (name, value) = (name.trim(), value.trim());
+    if value.is_empty() || value.starts_with("@env:") {
+        return None;
+    }
+    let last = name.rsplit('.').next().unwrap_or(name);
+    if exchange::secret_param(name) || exchange::secret_param(last) || exchange::opaque(value) {
+        return Some(format!(
+            "{flag} {name}=...: the value looks like a secret; {ENV_HINT}, as in `{flag} {name}=@env:VAR`"
+        ));
+    }
+    None
+}
+
+/// A body that is read from a file, or holds a secret-looking value or a field with a secret name.
+fn body_problem(flag: &str, body: &str) -> Option<String> {
+    if body.trim_start().starts_with('@') {
+        return Some(format!("{flag}: pass the JSON inline, not @file"));
+    }
+    let v: Value = serde_json::from_str(body).ok()?;
+    let at = secret_in(&v, "")?;
+    let at = if at.is_empty() { "the body".to_string() } else { at };
+    Some(format!(
+        "{flag} {at}: the value looks like a secret; leave it out of the body and {ENV_HINT} with `-p NAME=@env:VAR`"
+    ))
+}
+
+/// The path of the first string in `v` that looks like a secret.
+fn secret_in(v: &Value, path: &str) -> Option<String> {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                let here = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let named = matches!(x, Value::String(s) if !s.is_empty() && exchange::secret_name(k));
+                if named {
+                    return Some(here);
+                }
+                if let Some(p) = secret_in(x, &here) {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        Value::Array(a) => a.iter().enumerate().find_map(|(i, x)| secret_in(x, &format!("{path}[{i}]"))),
+        Value::String(s) if exchange::opaque(s) => Some(path.to_string()),
+        _ => None,
+    }
+}
+
+/// `--auth NAME=ENVVAR` must name a variable, not carry the value.
+fn auth_problem(arg: &str) -> Option<String> {
+    let (name, var) = arg.split_once('=')?;
+    let (name, var) = (name.trim(), var.trim());
+    let ident = !var.is_empty()
+        && !var.starts_with(|c: char| c.is_ascii_digit())
+        && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let token = exchange::opaque(var) && var.chars().any(|c| c.is_ascii_lowercase());
+    if !ident || token {
+        return Some(format!(
+            "--auth {name}=...: give the NAME of an environment variable (MY_TOKEN), never the secret itself"
+        ));
+    }
+    None
+}
+
+/// The kind of a parsed call: what the permission policy decides by. A relative map is looked up from `base`.
+pub(crate) fn kind_in(cmd: &ApiCmd, base: &Path) -> ToolKind {
+    match cmd {
+        ApiCmd::Analyze { openapi, save, .. } if openapi.is_some() || save.is_some() => ToolKind::Write,
+        ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } => ToolKind::Read,
+        ApiCmd::Call { dry_run: true, .. } => ToolKind::Read,
+        ApiCmd::Call { target, .. } => {
+            if target.login {
+                return ToolKind::Exec;
+            }
+            let map = if target.map.is_relative() { base.join(&target.map) } else { target.map.clone() };
+            match crate::api_call::target_info(&map, &target.endpoint) {
+                Ok((m, _)) if m.eq_ignore_ascii_case("GET") || m.eq_ignore_ascii_case("HEAD") => ToolKind::Network,
+                // another method, or a map that cannot be read: the stricter kind
+                _ => ToolKind::Exec,
+            }
+        }
+        ApiCmd::Watch { .. } => ToolKind::Exec,
+    }
+}
+
+/// The folder this process runs in: where `call_kind`, which has no session folder, looks a relative map up.
+fn process_dir() -> PathBuf {
+    std::env::current_dir().unwrap_or_default()
+}
+
+fn absolute(cwd: &Path, p: &mut PathBuf) {
+    if p.is_relative() {
+        *p = cwd.join(&*p);
+    }
+}
+
+/// With `--dry-run` nothing is sent, so a `@env:VAR` value is shown as `<VAR>` and the variable is not read: a
+/// dry run needs no approval and must not be a way to read the environment.
+fn hide_env(list: &mut [String]) {
+    for p in list {
+        if let Some((name, value)) = p.split_once('=') {
+            if let Some(var) = value.strip_prefix("@env:") {
+                *p = format!("{name}=<{var}>");
+            }
+        }
+    }
+}
+
+/// The permission rules for a file the call reads: a rule that denies it stops the call, one that would ask is
+/// reported (the call was asked about as a whole, not for each file in it).
+fn may_read(ctx: &ToolContext, path: &Path) -> Result<(), String> {
+    let Some(check) = &ctx.check else { return Ok(()) };
+    let p = path.to_string_lossy().to_string();
+    match check("read", ToolKind::Read, &json!({ "path": p })) {
+        Check::Allow => Ok(()),
+        Check::Deny => Err(format!("api: a permission rule denies reading {p}")),
+        Check::Ask => {
+            Err(format!("api: reading {p} needs the person's OK under the permission rules, so it was not read"))
+        }
+    }
+}
+
+/// A file the call writes: the call was asked about as a write, so only a rule that denies the place stops it.
+fn may_write(ctx: &ToolContext, path: &Path) -> Result<(), String> {
+    let Some(check) = &ctx.check else { return Ok(()) };
+    let p = path.to_string_lossy().to_string();
+    if check("edit", ToolKind::Write, &json!({ "path": p })) == Check::Deny {
+        return Err(format!("api: a permission rule denies writing {p}"));
+    }
+    Ok(())
+}
+
+/// The answer cut to `max` characters, with how many were left out.
+pub(crate) fn capped(text: String, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text;
+    }
+    let head: String = text.chars().take(max).collect();
+    format!(
+        "{head}\n[cut: {} more characters; ask for one endpoint (`describe MAP EP`) or a smaller `--budget`]",
+        n - max
+    )
+}
+
+#[async_trait]
+impl Tool for Api {
+    fn name(&self) -> &str {
+        "api"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "api".into(),
+            description: format!(
+                "Work out the API behind a website from a HAR capture, and call it. One op per call, as `nexo api` takes it. Secrets come only from environment variable names, never from the command.\n{OPS}"
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "One op with its flags, e.g. `analyze cap.har --save map.json`, `describe map.json`, `call map.json \"GET /v1/items\" -p page=2 --dry-run`."}
+                },
+                "required": ["command"]
+            }),
+        }
+    }
+
+    fn compact(&self) -> Option<Compact<'_>> {
+        Some(Compact { description: COMPACT, params: &[] })
+    }
+
+    fn rare(&self) -> bool {
+        true
+    }
+
+    /// The strictest a call can be: a sub-agent that may only read or look things up does not get it.
+    fn kind(&self) -> ToolKind {
+        ToolKind::Exec
+    }
+
+    fn call_kind(&self, args: &Value) -> ToolKind {
+        let Some(line) = args.get("command").and_then(Value::as_str) else { return ToolKind::Read };
+        match parse(line) {
+            Ok(Parsed::Cmd(cmd)) => match vet(&cmd) {
+                Ok(()) => kind_in(&cmd, &process_dir()),
+                // refused in `run`, which sends nothing
+                Err(_) => ToolKind::Read,
+            },
+            _ => ToolKind::Read,
+        }
+    }
+
+    fn summary(&self, args: &Value) -> String {
+        match args.get("command").and_then(Value::as_str) {
+            Some(c) => format!("api: {c}"),
+            None => "api".into(),
+        }
+    }
+
+    async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        let Some(line) = args.get("command").and_then(Value::as_str) else {
+            return ToolOutput::error(
+                "api needs `command`, for example `analyze capture.har --save map.json`; `--help` lists the ops",
+            );
+        };
+        let mut cmd = match parse(line) {
+            Ok(Parsed::Help(h)) => return ToolOutput::ok(h),
+            Ok(Parsed::Cmd(c)) => c,
+            Err(e) => return ToolOutput::error(format!("api: {e}")),
+        };
+        if let Err(e) = vet(&cmd) {
+            return ToolOutput::error(format!("api: {e}"));
+        }
+        // the call was asked about with the kind `call_kind` gave, which looks a relative map up from this
+        // process's folder; if the session's folder gives a stricter kind (another map of that name), stop
+        let real = kind_in(&cmd, &ctx.cwd);
+        if real == ToolKind::Exec && kind_in(&cmd, &process_dir()) != ToolKind::Exec {
+            return ToolOutput::error("api: the map name leads to different files from the session's folder and from the permission check; give its absolute path");
+        }
+        match run_cmd(&mut cmd, ctx).await {
+            Ok(text) => ToolOutput::ok(capped(text, MAX_CHARS)),
+            Err(e) => ToolOutput::error(capped(e, MAX_CHARS)),
+        }
+    }
+}
+
+/// Joins what a run said into one text.
+fn joined(text: String, notes: Vec<String>) -> String {
+    let mut out = text;
+    for n in notes {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&format!("nexo api: {n}\n"));
+    }
+    out
+}
+
+async fn run_cmd(cmd: &mut ApiCmd, ctx: &ToolContext) -> Result<String, String> {
+    match cmd {
+        ApiCmd::Analyze { har, host, openapi, json, budget, save } => {
+            absolute(&ctx.cwd, har);
+            may_read(ctx, har)?;
+            for out in [openapi.as_mut(), save.as_mut()].into_iter().flatten() {
+                absolute(&ctx.cwd, out);
+                may_write(ctx, out)?;
+            }
+            let (har, host, openapi, json, budget, save) =
+                (har.clone(), host.clone(), openapi.clone(), *json, *budget, save.clone());
+            let done = tokio::task::spawn_blocking(move || {
+                crate::api_cmd::analyze_text(&har, &host, openapi.as_deref(), json, budget, save.as_deref())
+            });
+            match done.await {
+                Ok(Ok(text)) => Ok(text),
+                Ok(Err(e)) => Err(format!("api: {e}")),
+                Err(e) => Err(format!("api stopped working: {e}")),
+            }
+        }
+        ApiCmd::Describe { map, endpoint } => {
+            absolute(&ctx.cwd, map);
+            may_read(ctx, map)?;
+            match crate::api_call::describe_out(map, endpoint.as_deref()) {
+                Ok(o) => Ok(joined(o.text, o.notes)),
+                Err((_, e)) => Err(format!("api: {e}")),
+            }
+        }
+        ApiCmd::Call { target, dry_run, json, .. } => {
+            absolute(&ctx.cwd, &mut target.map);
+            may_read(ctx, &target.map)?;
+            if *dry_run {
+                hide_env(&mut target.params);
+                hide_env(&mut target.login_params);
+            } else if let Ok((_, origin)) = crate::api_call::target_info(&target.map, &target.endpoint) {
+                // the rules for a host (`web_fetch`) cover this call too: a rule that denies it stops the call
+                if let Some(check) = &ctx.check {
+                    if check("web_fetch", ToolKind::Network, &json!({ "url": origin })) == Check::Deny {
+                        return Err(format!("api: a permission rule denies {origin}"));
+                    }
+                }
+            }
+            match crate::api_call::call_out(target, *dry_run, *json, false).await {
+                Ok(o) => Ok(joined(o.text, o.notes)),
+                Err((_, e)) => Err(format!("api: {e}")),
+            }
+        }
+        // `vet` refused it before
+        ApiCmd::Watch { .. } => Err("api: watch is not offered to the model".to_string()),
+    }
+}

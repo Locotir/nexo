@@ -1,6 +1,7 @@
 //! `nexo re`: the one entry point of nexo RE, the reverse-engineering kit. With no word it prints a map of
-//! `nexo bin` (read a file) and `nexo dbg` (run it); with a word it runs that op or command. The map is
-//! built from the clap definition of `nexo bin` and the command table of `nexo-dbg`, so it cannot drift.
+//! `nexo bin` (read a file), `nexo dbg` (run it) and `nexo api` (the API behind a website's traffic); with a word it
+//! runs that op or command (`nexo re api <op>` for the API ones). The map is built from the clap definitions of
+//! `nexo bin` and `nexo api` and the command table of `nexo-dbg`, so it cannot drift.
 
 use clap::{Args, CommandFactory, Parser};
 
@@ -23,6 +24,8 @@ pub struct ReArgs {
 enum Route {
     Bin,
     Dbg,
+    /// The word `api`: the rest is an op of `nexo api`.
+    Api,
 }
 
 /// Every op of `nexo bin`: `(name, aliases, one line)`, read from its clap definition.
@@ -34,6 +37,16 @@ pub(crate) fn bin_ops() -> Vec<(String, Vec<String>, String)> {
             let about = c.get_about().map(|a| a.to_string()).unwrap_or_default();
             (c.get_name().to_string(), c.get_all_aliases().map(str::to_string).collect(), first_sentence(&about))
         })
+        .collect()
+}
+
+/// Every op of `nexo api`: `(name, one line)`, read from its clap definition.
+pub(crate) fn api_ops() -> Vec<(String, String)> {
+    let root = crate::cli::Args::command();
+    let Some(api) = root.find_subcommand("api") else { return Vec::new() };
+    api.get_subcommands()
+        .filter(|c| c.get_name() != "help")
+        .map(|c| (c.get_name().to_string(), first_sentence(&c.get_about().map(|a| a.to_string()).unwrap_or_default())))
         .collect()
 }
 
@@ -54,7 +67,9 @@ fn is_bin_op(word: &str, ops: &[(String, Vec<String>, String)]) -> bool {
 
 /// Which command a word names. A word both take goes to `nexo bin`.
 fn route(word: &str) -> Option<Route> {
-    if is_bin_op(word, &bin_ops()) {
+    if word == "api" {
+        Some(Route::Api)
+    } else if is_bin_op(word, &bin_ops()) {
         Some(Route::Bin)
     } else if nexo_dbg::canonical(word).is_some() {
         Some(Route::Dbg)
@@ -71,15 +86,25 @@ fn clashes(ops: &[(String, Vec<String>, String)]) -> Vec<&'static str> {
 /// The map: one line for each `nexo bin` op and each `nexo dbg` command.
 pub fn map() -> String {
     let ops = bin_ops();
-    let width = ops.iter().map(|o| o.0.len()).chain(nexo_dbg::COMMANDS.iter().map(|c| first_name(c.0).len())).max();
+    let api = api_ops();
+    let width = ops
+        .iter()
+        .map(|o| o.0.len())
+        .chain(nexo_dbg::COMMANDS.iter().map(|c| first_name(c.0).len()))
+        .chain(api.iter().map(|o| o.0.len() + 4))
+        .max();
     let width = width.unwrap_or(8);
     let mut out = vec![
-        "nexo RE: read a file with `nexo bin <op> <file>`, run it with `nexo dbg <command>`; `nexo re <word> ...` picks the right one.".to_string(),
+        "nexo RE: read a file with `nexo bin <op> <file>`, run it with `nexo dbg <command>`, site APIs with `nexo api`; `nexo re <word> ...` picks the right one.".to_string(),
         "read a file (nexo bin; the file is never run):".to_string(),
     ];
     out.extend(ops.iter().map(|(n, _, about)| format!("  {n:<width$}  {about}")));
     out.push("run it (nexo dbg; a live program, one bounded call at a time):".to_string());
     out.extend(nexo_dbg::COMMANDS.iter().map(|(n, about)| format!("  {:<width$}  {about}", first_name(n))));
+    if !api.is_empty() {
+        out.push("the API behind a website (nexo api; a HAR capture in, calls out; secrets only from env vars; `nexo re api <op>`):".to_string());
+        out.extend(api.iter().map(|(n, about)| format!("  {:<width$}  {about}", format!("api {n}"))));
+    }
     let both = clashes(&ops);
     if !both.is_empty() {
         out.push(format!(
@@ -88,7 +113,7 @@ pub fn map() -> String {
         ));
     }
     out.push("serve it to another harness: nexo re --mcp [--allow-changes] (MCP over stdio; changes refused without the flag)".to_string());
-    out.push("details: nexo bin <op> --help | nexo dbg help".to_string());
+    out.push("details: nexo bin <op> --help | nexo dbg help | nexo api <op> --help".to_string());
     out.join("\n")
 }
 
@@ -101,12 +126,13 @@ fn unknown(word: &str) -> String {
     let w = word.to_lowercase();
     let mut names: Vec<String> = bin_ops().into_iter().flat_map(|(n, a, _)| std::iter::once(n).chain(a)).collect();
     names.extend(nexo_dbg::COMMANDS.iter().flat_map(|(n, _)| n.split(' ')).map(str::to_string));
+    names.push("api".to_string());
     names.sort();
     names.dedup();
     names.sort_by_key(|n| (!n.starts_with(&w) && !w.starts_with(n.as_str()), crate::first_use::distance(&w, n)));
     names.truncate(3);
     format!(
-        "{word:?} is neither a `nexo bin` op nor a `nexo dbg` command; nearest: {}. `nexo re` lists them all.",
+        "{word:?} is neither a `nexo bin` op, a `nexo dbg` command nor `api`; nearest: {}. `nexo re` lists them all.",
         names.join(", ")
     )
 }
@@ -116,6 +142,8 @@ enum Plan {
     Map,
     Bin(Vec<String>),
     Dbg(Vec<String>),
+    /// The words from `api` on.
+    Api(Vec<String>),
     Unknown(String),
 }
 
@@ -127,11 +155,12 @@ fn plan(words: &[String]) -> Plan {
     match route(first) {
         Some(Route::Bin) => Plan::Bin(words.to_vec()),
         Some(Route::Dbg) => Plan::Dbg(words.to_vec()),
+        Some(Route::Api) => Plan::Api(words.to_vec()),
         None => Plan::Unknown(unknown(first)),
     }
 }
 
-pub fn run(a: &ReArgs) -> i32 {
+pub async fn run(a: &ReArgs) -> i32 {
     if a.mcp {
         return crate::re_mcp::run_stdio(a.allow_changes);
     }
@@ -145,6 +174,16 @@ pub fn run(a: &ReArgs) -> i32 {
             crate::headless::EXIT_USAGE
         }
         Plan::Dbg(words) => crate::dbg_cmd::run(&DbgArgs { words }),
+        Plan::Api(words) => {
+            let argv = ["nexo".to_string()].into_iter().chain(words);
+            match crate::cli::Args::try_parse_from(argv) {
+                Ok(parsed) => match parsed.cmd {
+                    Some(crate::cli::Cmd::Api(a)) => crate::api_cmd::run(&a).await,
+                    _ => crate::headless::EXIT_USAGE,
+                },
+                Err(e) => e.exit(),
+            }
+        }
         Plan::Bin(words) => {
             let argv = ["nexo".to_string(), "bin".to_string()].into_iter().chain(words);
             match crate::cli::Args::try_parse_from(argv) {
@@ -186,13 +225,34 @@ mod tests {
     }
 
     #[test]
+    fn the_map_lists_every_api_op_next_to_bin_and_dbg() {
+        let m = map();
+        let ops = api_ops();
+        for want in ["analyze", "describe", "call", "watch"] {
+            assert!(ops.iter().any(|(n, _)| n == want), "{want} is not an api op: {ops:?}");
+        }
+        for (n, _) in &ops {
+            assert!(m.lines().any(|l| l.trim_start().starts_with(&format!("api {n} "))), "api {n} is missing:\n{m}");
+        }
+        let (bin, dbg, api) =
+            (m.find("read a file (nexo bin"), m.find("run it (nexo dbg"), m.find("the API behind a website"));
+        assert!(bin < dbg && dbg < api && api.is_some(), "{m}");
+    }
+
+    #[test]
+    fn the_word_api_goes_to_nexo_api() {
+        assert_eq!(route("api"), Some(Route::Api));
+        assert!(matches!(plan(&w("api analyze cap.har")), Plan::Api(x) if x == w("api analyze cap.har")));
+    }
+
+    #[test]
     fn the_map_has_a_title_a_group_for_each_and_a_last_line_for_details() {
         let m = map();
         let lines: Vec<&str> = m.lines().collect();
         assert!(lines[0].starts_with("nexo RE:"));
         assert!(m.contains("read a file (nexo bin"));
         assert!(m.contains("run it (nexo dbg"));
-        assert_eq!(lines.last().copied(), Some("details: nexo bin <op> --help | nexo dbg help"));
+        assert_eq!(lines.last().copied(), Some("details: nexo bin <op> --help | nexo dbg help | nexo api <op> --help"));
         assert!(lines.iter().all(|l| l.chars().count() < 160), "a line is too long");
     }
 

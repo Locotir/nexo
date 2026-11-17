@@ -20,6 +20,11 @@ pub(super) fn session_builtins(cfg: &Config) -> ToolSet {
     if debug {
         tools.add(Arc::new(nexo_tools::debug::Debug::new()));
     }
+    // the API behind a website: reads a HAR file and calls the endpoints of its map. It goes with `bin` (the RE kit
+    // switch) and, like the web tools, is not in a hermetic session: a call reaches the network
+    if cfg.tools.bin && !cfg.agent.hermetic {
+        tools.add(Arc::new(crate::api_tool::Api));
+    }
     tools
 }
 

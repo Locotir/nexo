@@ -6,6 +6,7 @@ mod account;
 mod acp;
 mod api_call;
 mod api_cmd;
+mod api_tool;
 mod audit_cmd;
 #[cfg(feature = "bench")]
 mod bench_cmd;

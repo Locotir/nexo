@@ -113,46 +113,50 @@ pub async fn run(a: &ApiArgs) -> i32 {
             crate::api_call::watch(target, every.as_deref(), *times, state.as_deref()).await
         }
         ApiCmd::Analyze { har, host, openapi, json, budget, save } => {
-            let text = match std::fs::read_to_string(har) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("nexo api: cannot read {}: {e}", har.display());
-                    return crate::headless::EXIT_USAGE;
+            match analyze_text(har, host, openapi.as_deref(), *json, *budget, save.as_deref()) {
+                Ok(text) => {
+                    print!("{text}");
+                    0
                 }
-            };
-            let opts = nexo_api::spec::Options { hosts: host.clone() };
-            let api = match nexo_api::analyze_har(&text, &opts) {
-                Ok(api) => api,
                 Err(e) => {
                     eprintln!("nexo api: {e}");
-                    return crate::headless::EXIT_USAGE;
-                }
-            };
-            let doc = if *json || openapi.is_some() {
-                let v = nexo_api::openapi::to_openapi(&api, &title(&api));
-                Some(serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()))
-            } else {
-                None
-            };
-            if let (Some(path), Some(doc)) = (openapi, &doc) {
-                if let Err(e) = std::fs::write(path, format!("{doc}\n")) {
-                    eprintln!("nexo api: cannot write {}: {e}", path.display());
-                    return crate::headless::EXIT_USAGE;
+                    crate::headless::EXIT_USAGE
                 }
             }
-            if let Some(path) = save {
-                if let Err(e) = std::fs::write(path, nexo_api::store::to_text(&api)) {
-                    eprintln!("nexo api: cannot write {}: {e}", path.display());
-                    return crate::headless::EXIT_USAGE;
-                }
-            }
-            match (*json, &doc) {
-                (true, Some(doc)) => println!("{doc}"),
-                _ => print!("{}", nexo_api::summary::render(&api, *budget)),
-            }
-            0
         }
     }
+}
+
+/// What `analyze` prints, after it has written the files it was asked for (`openapi`, `save`). The agent's `api`
+/// tool calls this too, so both print the same text.
+pub fn analyze_text(
+    har: &std::path::Path,
+    host: &[String],
+    openapi: Option<&std::path::Path>,
+    json: bool,
+    budget: usize,
+    save: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let text = std::fs::read_to_string(har).map_err(|e| format!("cannot read {}: {e}", har.display()))?;
+    let opts = nexo_api::spec::Options { hosts: host.to_vec() };
+    let api = nexo_api::analyze_har(&text, &opts)?;
+    let doc = if json || openapi.is_some() {
+        let v = nexo_api::openapi::to_openapi(&api, &title(&api));
+        Some(serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()))
+    } else {
+        None
+    };
+    if let (Some(path), Some(doc)) = (openapi, &doc) {
+        std::fs::write(path, format!("{doc}\n")).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    if let Some(path) = save {
+        std::fs::write(path, nexo_api::store::to_text(&api))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    Ok(match (json, &doc) {
+        (true, Some(doc)) => format!("{doc}\n"),
+        _ => nexo_api::summary::render(&api, budget),
+    })
 }
 
 #[cfg(test)]
@@ -235,7 +239,7 @@ mod tests {
         ])
         .unwrap();
         match parsed.cmd {
-            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Call { target, dry_run, json } })) => {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Call { target, dry_run, json, .. } })) => {
                 assert_eq!(target.map, PathBuf::from("m.json"));
                 assert_eq!(target.endpoint, "get_api_items");
                 assert_eq!(target.params, vec!["id=3".to_string(), "query.q=a b".to_string()]);

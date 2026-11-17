@@ -16,7 +16,7 @@ mod tools;
 mod words;
 
 use dbg_run::{run_dbg, same_user};
-use tools::{bin_argv, bin_tools, dbg_tools};
+use tools::{api_tools, bin_argv, bin_tools, dbg_tools};
 pub(crate) use words::split_words;
 use words::{list_of, scalar};
 
@@ -32,6 +32,7 @@ enum Kind {
     DbgStart,
     DbgCommand,
     DbgStop,
+    Api,
 }
 
 struct Tool {
@@ -89,6 +90,7 @@ impl Server {
     pub fn new(allow_changes: bool) -> Server {
         let mut tools = bin_tools();
         tools.extend(dbg_tools());
+        tools.extend(api_tools());
         Server { allow_changes, tools }
     }
 
@@ -186,6 +188,7 @@ impl Server {
             Kind::DbgStart => self.call_dbg_start(&args),
             Kind::DbgCommand => self.call_dbg_command(&args),
             Kind::DbgStop => self.call_dbg_stop(&args),
+            Kind::Api => self.call_api(&args),
         });
         let (text, is_error) = match std::panic::catch_unwind(run) {
             Ok(Ok(text)) => (text, false),
@@ -214,6 +217,27 @@ impl Server {
         match parsed.cmd {
             Some(crate::cli::Cmd::Bin(b)) => crate::bin_cmd::execute(&b).map_err(|e| format!("nexo bin: {e}")),
             _ => Err("nexo bin: not a bin op".to_string()),
+        }
+    }
+
+    /// The `api` tool: the same line the agent's `api` tool takes. Reading a map and a dry run always work; a
+    /// call that sends a request, a login and anything that writes a file need `--allow-changes`.
+    fn call_api(&self, args: &Value) -> Result<String, String> {
+        let line = scalar(args.get("command")).ok_or("api needs \"command\": for example `describe map.json`")?;
+        let cwd = std::env::current_dir().map_err(|e| format!("api: no working folder: {e}"))?;
+        if let crate::api_tool::Parsed::Cmd(cmd) = crate::api_tool::parse(&line)? {
+            crate::api_tool::vet(&cmd).map_err(|e| format!("api: {e}"))?;
+            if crate::api_tool::kind_in(&cmd, &cwd) != nexo_core::ToolKind::Read && !self.allow_changes {
+                return Err(self.refuse("this `nexo api` line sends a request or writes a file"));
+            }
+        }
+        let ctx = nexo_core::ToolContext::new(cwd);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        let out = rt.block_on(nexo_core::Tool::run(&crate::api_tool::Api, json!({"command": line}), &ctx));
+        if out.is_error {
+            Err(out.content)
+        } else {
+            Ok(out.content)
         }
     }
 

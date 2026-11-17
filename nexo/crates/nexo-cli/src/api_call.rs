@@ -322,19 +322,35 @@ fn render_answer(a: &Answer, as_json: bool, reveal: bool) -> String {
     out
 }
 
-fn print_answer(a: &Answer, as_json: bool, reveal: bool) {
-    if reveal {
-        eprintln!("nexo api: --reveal: secrets in the answer are shown");
-    }
-    print!("{}", render_answer(a, as_json, reveal));
-    if a.cut > 0 {
-        eprintln!("nexo api: {} bytes of the answer were not read (cap {} MiB)", a.cut, READ_CAP >> 20);
-    }
+/// What a run says: the text for stdout, the notes for stderr (each printed as `nexo api: NOTE`), and the exit code.
+/// The CLI prints them; the agent's `api` tool joins them.
+pub struct Out {
+    pub text: String,
+    pub notes: Vec<String>,
+    pub code: i32,
 }
 
-fn exit_of(r: Result<i32, Fail>) -> i32 {
+fn answer_out(a: &Answer, as_json: bool, reveal: bool) -> Out {
+    let mut notes = Vec::new();
+    if reveal {
+        notes.push("--reveal: secrets in the answer are shown".to_string());
+    }
+    if a.cut > 0 {
+        notes.push(format!("{} bytes of the answer were not read (cap {} MiB)", a.cut, READ_CAP >> 20));
+    }
+    Out { text: render_answer(a, as_json, reveal), notes, code: if a.status >= 400 { 1 } else { 0 } }
+}
+
+/// Prints what a run says and gives its exit code (an error prints as a note).
+fn exit_of(r: Result<Out, Fail>) -> i32 {
     match r {
-        Ok(code) => code,
+        Ok(o) => {
+            print!("{}", o.text);
+            for n in &o.notes {
+                eprintln!("nexo api: {n}");
+            }
+            o.code
+        }
         Err((code, msg)) => {
             eprintln!("nexo api: {msg}");
             code
@@ -344,10 +360,19 @@ fn exit_of(r: Result<i32, Fail>) -> i32 {
 
 /// `nexo api call`.
 pub async fn call(t: &Target, dry_run: bool, as_json: bool, reveal: bool) -> i32 {
-    exit_of(call_inner(t, dry_run, as_json, reveal).await)
+    exit_of(call_out(t, dry_run, as_json, reveal).await)
 }
 
-async fn call_inner(t: &Target, dry_run: bool, as_json: bool, reveal: bool) -> Result<i32, Fail> {
+/// The method and the origin (`https://host`, no path, no query, no secret) of the endpoint a call names: what the
+/// agent's `api` tool decides its permission by. Reads the map only.
+pub fn target_info(map: &Path, endpoint: &str) -> Result<(String, String), Fail> {
+    let api = load_map(map)?;
+    let ep = call::find(&api, endpoint).map_err(usage)?;
+    Ok((ep.method.clone(), ep.origin.clone()))
+}
+
+/// `nexo api call`, as text. An error carries its exit code.
+pub async fn call_out(t: &Target, dry_run: bool, as_json: bool, reveal: bool) -> Result<Out, Fail> {
     let p = prepare(t)?;
     let ep = &p.api.endpoints[p.ep];
     if dry_run {
@@ -358,44 +383,45 @@ async fn call_inner(t: &Target, dry_run: bool, as_json: bool, reveal: bool) -> R
             }
         }
         let req = call::build(&p.api, ep, &p.inputs, &vals).map_err(usage)?;
-        print!("{}", req.render());
+        let mut notes = Vec::new();
         if !missing.is_empty() && !t.login {
-            eprintln!("nexo api: not set: {} (a real call needs them)", missing.join(", "));
+            notes.push(format!("not set: {} (a real call needs them)", missing.join(", ")));
         }
         if t.login {
-            eprintln!("nexo api: with --login the token would come from the login call first");
+            notes.push("with --login the token would come from the login call first".to_string());
         }
-        return Ok(0);
+        return Ok(Out { text: req.render(), notes, code: 0 });
     }
     let mut s = session(&p, t)?;
     let ans = s.once(ep, &p.inputs).await?;
-    print_answer(&ans, as_json, reveal);
-    Ok(if ans.status >= 400 { 1 } else { 0 })
+    Ok(answer_out(&ans, as_json, reveal))
 }
 
 /// `nexo api describe`.
 pub fn describe(map: &Path, endpoint: Option<&str>) -> i32 {
-    exit_of(describe_inner(map, endpoint))
+    exit_of(describe_out(map, endpoint))
 }
 
-fn describe_inner(map: &Path, endpoint: Option<&str>) -> Result<i32, Fail> {
+/// `nexo api describe`, as text.
+pub fn describe_out(map: &Path, endpoint: Option<&str>) -> Result<Out, Fail> {
     let api = load_map(map)?;
+    let mut text = String::new();
     match endpoint {
         Some(key) => {
             let ep = call::find(&api, key).map_err(usage)?;
-            print!("{}", call::describe(&api, ep));
+            text.push_str(&call::describe(&api, ep));
         }
         None => {
-            print!("{}", summary::render(&api, 6000));
+            text.push_str(&summary::render(&api, 6000));
             if !api.auth.is_empty() {
-                println!("variables `call` reads (--auth NAME=ENVVAR names another):");
+                text.push_str("variables `call` reads (--auth NAME=ENVVAR names another):\n");
                 for l in call::labels(&api) {
-                    println!("  {l}: ${}", call::env_name(&l));
+                    text.push_str(&format!("  {l}: ${}\n", call::env_name(&l)));
                 }
             }
         }
     }
-    Ok(0)
+    Ok(Out { text, notes: Vec::new(), code: 0 })
 }
 
 // ---------------------------------------------------------------- watch
@@ -454,7 +480,7 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// `nexo api watch`.
 pub async fn watch(t: &Target, every: Option<&str>, times: Option<u32>, state: Option<&Path>) -> i32 {
-    exit_of(watch_inner(t, every, times, state).await)
+    exit_of(watch_inner(t, every, times, state).await.map(|code| Out { text: String::new(), notes: Vec::new(), code }))
 }
 
 async fn watch_inner(t: &Target, every: Option<&str>, times: Option<u32>, state: Option<&Path>) -> Result<i32, Fail> {

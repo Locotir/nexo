@@ -79,7 +79,7 @@ pub async fn main() -> i32 {
         return crate::chrome_setup_cmd::run(c);
     }
     if let Some(Cmd::Re(r)) = &args.cmd {
-        return crate::re_cmd::run(r);
+        return crate::re_cmd::run(r).await;
     }
     if let Some(Cmd::Api(a)) = &args.cmd {
         return crate::api_cmd::run(a).await;
