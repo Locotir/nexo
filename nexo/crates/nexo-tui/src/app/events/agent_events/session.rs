@@ -15,6 +15,10 @@ impl App {
             self.provider = provider;
             self.model = model;
         }
+        // a resume can land in another project: `@` must list that project's files, not the old one's
+        if self.cwd != cwd {
+            self.files = None;
+        }
         self.cwd = cwd;
         self.permission_mode = permission_mode;
         self.read_branch();

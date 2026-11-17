@@ -131,10 +131,24 @@ pub fn recent_commands(history: &[String]) -> Vec<String> {
     out
 }
 
+/// Folders that hold no project files the person would mention: version control data and tool caches.
+const SKIPPED_DIRS: [&str; 6] = [".git", ".hg", ".svn", ".venv", ".cache", ".direnv"];
+
 /// The files of a project, relative paths, gitignore-aware, at most `max`.
+/// Dotfiles such as `.github` or `.env.example` are listed only inside a git
+/// repository, where `.gitignore` keeps the secrets out; anywhere else (a home
+/// folder, say) they would fill the cap with `.ssh` and `.config` names.
 pub fn project_files(root: &Path, max: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = ignore::WalkBuilder::new(root).hidden(true).git_ignore(true).git_global(true).build();
+    let in_repo = root.join(".git").exists();
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(!in_repo)
+        .git_ignore(true)
+        .git_global(true)
+        .filter_entry(|e| {
+            !(e.file_type().is_some_and(|t| t.is_dir()) && SKIPPED_DIRS.iter().any(|d| e.file_name() == *d))
+        })
+        .build();
     for entry in walker.flatten() {
         if out.len() >= max {
             break;

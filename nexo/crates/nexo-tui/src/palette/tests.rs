@@ -215,6 +215,35 @@ fn walks_a_project() {
 }
 
 #[test]
+fn a_git_project_lists_its_dotfiles_but_not_ignored_secrets_or_vcs_data() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    std::fs::create_dir_all(p.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(p.join(".github/workflows")).unwrap();
+    std::fs::create_dir_all(p.join(".venv/lib")).unwrap();
+    std::fs::write(p.join(".git/HEAD"), "ref").unwrap();
+    std::fs::write(p.join(".github/workflows/ci.yml"), "on: push").unwrap();
+    std::fs::write(p.join(".venv/lib/x.py"), "x").unwrap();
+    std::fs::write(p.join(".env.example"), "KEY=").unwrap();
+    std::fs::write(p.join(".env"), "KEY=secret").unwrap();
+    std::fs::write(p.join(".gitignore"), ".env\n").unwrap();
+    let f = project_files(p, 100);
+    assert!(f.contains(&".env.example".to_string()), "{f:?}");
+    assert!(f.contains(&".github/workflows/ci.yml".to_string()), "{f:?}");
+    assert!(!f.iter().any(|x| x == ".env" || x.starts_with(".git/") || x.starts_with(".venv/")), "{f:?}");
+}
+
+#[test]
+fn a_folder_that_is_not_a_repository_keeps_hiding_dotfiles() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join(".ssh")).unwrap();
+    std::fs::write(d.path().join(".ssh/id_ed25519"), "k").unwrap();
+    std::fs::write(d.path().join(".bashrc"), "x").unwrap();
+    std::fs::write(d.path().join("notes.txt"), "x").unwrap();
+    assert_eq!(project_files(d.path(), 100), vec!["notes.txt"]);
+}
+
+#[test]
 fn previews_the_selected_file_safely() {
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("a.rs"), "fn a() {}\n\x1b[31mred\x1b[0m\tx\nthird\n").unwrap();
