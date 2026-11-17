@@ -148,6 +148,17 @@ fn a_pin_says_what_part_of_the_file_it_holds() {
 }
 
 #[test]
+fn a_pin_of_no_characters_pins_nothing() {
+    let mut msgs = vec![json!({"role": "user", "content": "Follow the brief in brief.md."})];
+    msgs.extend(tool(1, "read_file", json!({"path": "brief.md"}), &source(0, 10), false));
+    let mut e = Engine::new(params("pin=1").unwrap());
+    e.sync(&msgs);
+    e.harvest(0, msgs.len());
+    assert!(e.pins.is_empty(), "{:?}", e.pins);
+    assert!(!e.pins_text().contains("brief.md"), "{}", e.pins_text());
+}
+
+#[test]
 fn failed_whole_write_keeps_the_earlier_version() {
     let mut msgs = vec![json!({"role": "user", "content": "Write the rates module."})];
     msgs.extend(tool(1, "write_file", json!({"path": "src/rates.rs", "content": source(0, 10)}), "ok", false));

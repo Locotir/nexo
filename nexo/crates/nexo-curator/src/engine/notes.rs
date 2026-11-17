@@ -149,6 +149,10 @@ impl Engine {
                         // the first n characters, n = 4 * floor(pin / 2); a negative n counts from the end
                         let n = 4 * self.p.pin.div_euclid(2);
                         let n = if n >= 0 { n as usize } else { (textops::len(text) as i64 + n).max(0) as usize };
+                        // nothing of it fits: no pin, not an empty one
+                        if n == 0 {
+                            continue;
+                        }
                         let have = textops::len(text);
                         let (kept, label) = if have > n {
                             let shown =

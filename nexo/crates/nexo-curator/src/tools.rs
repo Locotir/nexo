@@ -436,19 +436,24 @@ fn print_part(words: &[&str]) -> Option<String> {
     let count = |w: &str| w.parse::<u64>().ok();
     match words[0] {
         "head" | "tail" => {
-            let mut n = Some(10);
+            // a count, and whether it is `+N` (tail: from line N)
+            let num = |w: &str| match w.strip_prefix('+') {
+                Some(x) => count(x).map(|n| (n, true)),
+                None => count(w).map(|n| (n, false)),
+            };
+            let mut n = Some((10, false));
             let mut k = 1;
             while k < words.len() {
                 let w = words[k];
                 let v = if w == "-n" {
                     k += 1;
-                    words.get(k).and_then(|x| count(*x))
+                    words.get(k).copied().and_then(num)
                 } else if let Some(x) = w.strip_prefix("-n") {
-                    count(x)
-                } else if w.starts_with("-c") || w.starts_with("+") || w.starts_with("--") {
+                    num(x)
+                } else if w.starts_with("-c") || w.starts_with('+') || w.starts_with("--") {
                     return part();
                 } else if let Some(x) = w.strip_prefix('-').and_then(count) {
-                    Some(x)
+                    Some((x, false))
                 } else {
                     k += 1;
                     continue;
@@ -456,8 +461,13 @@ fn print_part(words: &[&str]) -> Option<String> {
                 n = v;
                 k += 1;
             }
-            let Some(n) = n else { return part() };
-            Some(if words[0] == "head" { format!("lines 1-{n} of a paged read") } else { format!("last {n} lines") })
+            let Some((n, plus)) = n else { return part() };
+            Some(match (words[0], plus) {
+                ("head", false) => format!("first {n} lines"),
+                ("tail", false) => format!("last {n} lines"),
+                ("tail", true) => format!("from line {n}"),
+                _ => return part(),
+            })
         }
         "sed" => {
             let range = words[1..].iter().find_map(|w| {
@@ -466,11 +476,11 @@ fn print_part(words: &[&str]) -> Option<String> {
                 Some((count(a)?, count(b)?))
             });
             match range {
-                Some((a, b)) => Some(format!("lines {a}-{b} of a paged read")),
+                Some((a, b)) => Some(format!("lines {a}-{b}")),
                 None => part(),
             }
         }
-        "grep" | "egrep" | "fgrep" | "rg" => Some("matching lines only".to_string()),
+        "grep" | "egrep" | "fgrep" | "rg" => Some("matching lines".to_string()),
         _ => None,
     }
 }
@@ -833,10 +843,16 @@ mod tests {
     fn what_a_print_holds_of_a_file_is_told() {
         let part = |c: &str, f: &str| shell_part(c, f);
         assert_eq!(part("cat a.rs", "a.rs"), None);
-        assert_eq!(part("head -50 a.rs && cargo build", "a.rs").as_deref(), Some("lines 1-50 of a paged read"));
+        assert_eq!(part("head -50 a.rs && cargo build", "a.rs").as_deref(), Some("first 50 lines"));
+        assert_eq!(part("head -n 7 a.rs", "a.rs").as_deref(), Some("first 7 lines"));
+        assert_eq!(part("head a.rs", "a.rs").as_deref(), Some("first 10 lines"));
+        assert_eq!(part("head -c 100 a.rs", "a.rs").as_deref(), Some("part of the file"));
+        assert_eq!(part("tail -c 100 a.rs", "a.rs").as_deref(), Some("part of the file"));
+        assert_eq!(part("tail -n +30 a.rs", "a.rs").as_deref(), Some("from line 30"));
+        assert_eq!(part("tail a.rs", "a.rs").as_deref(), Some("last 10 lines"));
         assert_eq!(part("tail -n 40 a.rs", "a.rs").as_deref(), Some("last 40 lines"));
-        assert_eq!(part("sed -n 10,90p a.rs", "a.rs").as_deref(), Some("lines 10-90 of a paged read"));
-        assert_eq!(part("grep -n x a.rs", "a.rs").as_deref(), Some("matching lines only"));
+        assert_eq!(part("sed -n 10,90p a.rs", "a.rs").as_deref(), Some("lines 10-90"));
+        assert_eq!(part("grep -n x a.rs", "a.rs").as_deref(), Some("matching lines"));
         assert_eq!(part("cat a.rs | tail -5", "a.rs").as_deref(), Some("part of the file"));
         assert_eq!(read_part("read_file", Some(&json!({"path": "a.rs"}))), None);
         assert_eq!(
