@@ -219,11 +219,12 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?
     };
     let resume = if args.continue_ {
-        // `nexo -p -c` may chain on the last script run; an interactive `-c` wants the person's own conversation
+        // `nexo -p -c` may chain on the last script run; an interactive `-c` prefers the person's own conversation
+        // and falls back to a script's session when that is all the folder has
         let last = if args.prompt.is_some() {
             nexo_agent::session::latest_for(&cwd)
         } else {
-            nexo_agent::session::latest_own_for(&cwd)
+            nexo_agent::session::latest_own_for(&cwd).or_else(|| nexo_agent::session::latest_for(&cwd))
         };
         last.map(|m| m.id)
     } else {
