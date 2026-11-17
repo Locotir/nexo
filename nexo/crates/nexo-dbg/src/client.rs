@@ -554,7 +554,8 @@ fn run_words(words: &[String]) -> Result<RunWords, Error> {
     Ok(RunWords { exe: exe.clone(), args, input, to_main, opts })
 }
 
-fn pick_session(dir: &Path, want: &Option<String>) -> Result<String, Error> {
+/// The session a call without `-s` means: the only one, or the one whose program still runs.
+pub fn pick_session(dir: &Path, want: &Option<String>) -> Result<String, Error> {
     if let Some(s) = want {
         return Ok(s.clone());
     }

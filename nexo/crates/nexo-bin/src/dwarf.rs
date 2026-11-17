@@ -33,6 +33,18 @@ pub struct Dwarf {
     pub slot_types: BTreeMap<u64, BTreeMap<String, String>>,
 }
 
+impl Dwarf {
+    /// Move every address (function starts) by `delta`, wrapping.
+    pub(crate) fn slide(&mut self, delta: u64) {
+        fn moved<V>(m: &mut BTreeMap<u64, V>, d: u64) {
+            *m = std::mem::take(m).into_iter().map(|(k, v)| (k.wrapping_add(d), v)).collect();
+        }
+        moved(&mut self.protos, delta);
+        moved(&mut self.vars, delta);
+        moved(&mut self.slot_types, delta);
+    }
+}
+
 /// Read the DWARF of a whole file image (empty when there is none or it cannot be parsed).
 pub fn read(data: &[u8]) -> Dwarf {
     let Ok(file) = object::File::parse(data) else { return Dwarf::default() };

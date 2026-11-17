@@ -9,6 +9,7 @@ mod open;
 mod probe;
 mod query;
 mod raw;
+mod slide;
 
 pub use debuglink::{crc32, DebugLookup};
 pub(crate) use load::blank;
@@ -165,6 +166,9 @@ pub struct Image {
     pub(crate) rel_ptrs: Vec<(u64, u64)>,
     /// Names and notes the person gave (see `names`).
     pub(crate) user: UserNames,
+    /// How far the file's addresses were moved by [`Image::slide`] (0 when they are as the file has them); the
+    /// DWARF read later is moved by it too.
+    pub(crate) slid: u64,
     funcs: OnceLock<Vec<Func>>,
     strings: OnceLock<Vec<Str>>,
     refs: OnceLock<Refs>,

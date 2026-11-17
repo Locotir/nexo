@@ -10,6 +10,7 @@ use wasm::wasm_in;
 
 mod args;
 pub(crate) mod bridge;
+mod live;
 mod ops;
 pub(crate) mod script;
 mod sigs;
@@ -209,6 +210,9 @@ fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let op =
         a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation, or use --script FILE or --mcp".into()))?;
     let t0 = std::time::Instant::now();
+    if op.common().module.is_some() {
+        live::check(op)?;
+    }
     if let BinOp::Asm { source, at, bits, .. } = op {
         let output = nexo_bin::assembly(source, *at, if bits == "32" { 32 } else { 64 })?;
         return render_copy_op(&output, op.common().json);
@@ -218,9 +222,23 @@ fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     }
     let c = op.common();
     // bare bytes have no signature to tell them from a jar or a wasm module: --raw decides before the sniffing
-    let mut img = if c.raw && !matches!(op, BinOp::Managed { .. }) {
+    let live_base;
+    let scratch;
+    let mut img = if let Some(name) = c.module.as_deref() {
+        let (img, base, s) = live::open(c, name, data_dir)?;
+        live_base = Some(base);
+        scratch = s;
+        img
+    } else if c.live {
+        scratch = None;
+        return Err(Error::Usage("--live reads a module of a running program: add --module NAME".into()));
+    } else if c.raw && !matches!(op, BinOp::Managed { .. }) {
+        live_base = None;
+        scratch = None;
         Image::open_raw(op.file(), c.base.unwrap_or(0), c.arch.as_deref())?
     } else {
+        live_base = None;
+        scratch = None;
         if let Some(r) = crate::bin_managed::try_managed(op) {
             return r;
         }
@@ -229,7 +247,13 @@ fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         }
         Image::open_arch(op.file(), c.arch.as_deref())?
     };
+    // a live image saves nothing under a key of the file on disk: its names and answers go to the private folder
+    let data_dir = scratch.as_ref().map_or(data_dir, |s| s.path());
     let mut warning = nexo_bin::attach_names(&mut img, data_dir);
+    if let Some(base) = live_base {
+        // after the names are read: they are filed by file address, and move with the rest
+        img.slide_to(base)?;
+    }
     let mut other = None;
     if let BinOp::Diff { other: path, .. } = op {
         let mut b =
