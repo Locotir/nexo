@@ -5,6 +5,7 @@
 //! the return value, the reason it stopped, the memory written, the library calls and a short trace.
 
 mod cpu;
+mod fma;
 mod fp;
 mod libc;
 mod mem;
