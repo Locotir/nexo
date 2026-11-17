@@ -253,6 +253,19 @@ fn a_filter_refusal_asks_for_other_words() {
 }
 
 #[test]
+fn a_403_block_page_is_not_blamed_on_the_key() {
+    let c = ctx("openai", "gpt-5", "https://gw.io/v1");
+    let page = "the server answered with a web page, not an API reply (check the base URL, and that the server is up and serves this API)";
+    let p = of(403, page, &c);
+    sane(&p);
+    assert_eq!(p.title, "Could not read the answer from gw.io");
+    assert!(!p.plain().contains("rejected the key"), "{p:?}");
+    // a 403 with words from the provider is still a key that has no access
+    let p = of(403, r#"{"error":{"message":"Project has no access to this model"}}"#, &c);
+    assert_eq!(p.title, "openai rejected the key");
+}
+
+#[test]
 fn a_local_server_that_is_off_says_how_to_start_it() {
     let msg = "error sending request for url (http://localhost:11434/v1/chat/completions): client error (Connect): tcp connect error: Connection refused (os error 111)";
     let p = net(msg, &ctx("ollama", "llama3", "http://localhost:11434/v1"));

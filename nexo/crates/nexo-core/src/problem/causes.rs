@@ -33,6 +33,8 @@ impl Problem {
                     .step("Pick another provider with `/model`.")
                     .step(format!("Check where {who} is offered."))
             }
+            // a firewall's or CDN's HTML block page is a 403 too, but it says nothing about the key
+            ErrorKind::Auth if status == Some(403) && m.contains("web page") => unreadable(&host, &url),
             ErrorKind::Auth => key_rejected(e, ctx, &who),
             ErrorKind::RateLimit => {
                 let (why, first) = match e.retry_after {
