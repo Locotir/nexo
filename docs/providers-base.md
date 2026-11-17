@@ -133,7 +133,9 @@ preset (or the models.dev catalogue). Reasoning tokens are part of output.
   Earlier reasoning is replayed as `reasoning_content` on assistant turns for
   `api.deepseek.com` (thinking mode answers 400 to a tool loop without it) and
   only when `send_reasoning = true` is set in the provider `extra` elsewhere;
-  `send_reasoning = false` turns it off there too.
+  `send_reasoning = false` turns it off there too. A tool-call turn with no
+  reasoning left (non-thinking history, a resume) sends an empty
+  `reasoning_content` so the key is never missing.
 * **Stream**: SSE; each `data:` line is a JSON chunk; `data: [DONE]` ends it.
   Deltas in `choices[0].delta`: `content` → TextDelta; `reasoning_content`
   (DeepSeek, Kimi, Qwen, xAI, OpenRouter) or `reasoning` → ReasoningDelta;

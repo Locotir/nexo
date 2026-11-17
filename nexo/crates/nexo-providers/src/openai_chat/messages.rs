@@ -66,7 +66,10 @@ pub(super) fn convert(m: &Message, send_reasoning: bool) -> Vec<Value> {
             }
             if send_reasoning {
                 let r = m.reasoning();
-                if !r.is_empty() {
+                // A tool-call turn always carries the field: history from a non-thinking model, another
+                // provider, a resume or a curator cut has no reasoning left, and DeepSeek thinking mode
+                // rejects a tool-call turn that lacks the key. An empty string keeps the key present.
+                if !r.is_empty() || msg.get("tool_calls").is_some() {
                     msg["reasoning_content"] = Value::String(r);
                 }
             }

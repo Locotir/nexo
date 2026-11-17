@@ -343,6 +343,22 @@ fn t7_chat_deepseek_tool_loop_sends_reasoning_content_back_on_the_second_request
     assert_eq!(b["messages"][2]["tool_calls"][0]["id"], "call_1");
 }
 
+#[test]
+fn t7_chat_deepseek_tool_call_turns_without_reasoning_still_carry_the_field() {
+    // history from a non-thinking model or a curator cut has no reasoning; the key must still be present
+    let mut r = req("deepseek-reasoner");
+    r.tools = vec![spec("read", json!({"type":"object"}))];
+    r.messages.push(Message::new(Role::Assistant, vec![Part::tool_call("call_1", "read", json!({"path":"a"}))]));
+    r.messages.push(Message::tool_results(vec![Part::tool_result("call_1", "x", false)]));
+    r.messages.push(Message::new(Role::Assistant, vec![Part::text("done")]));
+    let ds = cfg("openai-chat", "https://api.deepseek.com/v1");
+    let b = OpenAiChat::body(&ds, &r);
+    assert_eq!(b["messages"][2]["reasoning_content"], "", "{b}");
+    assert!(b["messages"][4].get("reasoning_content").is_none(), "a text-only turn needs no field: {b}");
+    let other = OpenAiChat::body(&cfg("openai-chat", "https://api.openai.com/v1"), &r);
+    assert!(!other.to_string().contains("reasoning_content"), "other hosts stay unchanged: {other}");
+}
+
 // ================= t8: model list and probe =================
 
 /// provider x level -> the field that carries it (a JSON pointer into the body); `None` is no such field.
