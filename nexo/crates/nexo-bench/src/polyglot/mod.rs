@@ -358,6 +358,10 @@ fn failed(bench: &Bench, arm: &Arm, rep: u32, name: &str, why: &str) -> Record {
         max_steps: bench.max_steps,
         max_tokens: bench.max_tokens,
         temperature: bench.temperature,
+        // the same settings as the graded runs, or a window or a time limit would read as mixed settings
+        window: run::forced_window(bench),
+        close_on_verified: bench.close_on_verified,
+        run_timeout_s: run::run_timeout_s(bench),
         detail: format!("pass@1 no, pass@2 no (not run: {why})"),
         parts: vec![Part { id: "pass@1".into(), ok: Some(false) }, Part { id: "pass@2".into(), ok: Some(false) }],
         ..Default::default()

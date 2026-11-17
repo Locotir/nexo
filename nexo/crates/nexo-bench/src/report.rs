@@ -83,9 +83,23 @@ pub fn header_of(records: &[Record]) -> Header {
     }
 }
 
-/// The settings the records do not agree on, if any.
+/// The settings the records do not agree on, if any. A forced context window, `close_on_verified` (it
+/// changes the recorded stop and the score) and the run time limit count: results made with unlike values
+/// are not comparable. Prices are not recorded, so a price difference cannot be seen here; the cost column
+/// shows it.
 fn mixed(records: &[Record]) -> Option<String> {
-    let key = |r: &Record| (r.model.clone(), r.commit.clone(), r.temperature, r.max_steps, r.max_tokens);
+    let key = |r: &Record| {
+        (
+            r.model.clone(),
+            r.commit.clone(),
+            r.temperature,
+            r.max_steps,
+            r.max_tokens,
+            r.window,
+            r.close_on_verified,
+            r.run_timeout_s,
+        )
+    };
     let mut groups: Vec<_> = Vec::new();
     for r in records {
         if !groups.contains(&key(r)) {
@@ -97,11 +111,14 @@ fn mixed(records: &[Record]) -> Option<String> {
     }
     let list: Vec<String> = groups
         .iter()
-        .map(|(m, c, t, s, k)| {
+        .map(|(m, c, t, s, k, w, v, o)| {
             format!(
-                "{m} @ {c}, temperature {}, max steps {s}, max tokens {}",
+                "{m} @ {c}, temperature {}, max steps {s}, max tokens {}, context window {}, close on verified {}, run time limit {}",
                 t.map_or("default".into(), |t| t.to_string()),
-                k.map_or("default".into(), |n| n.to_string())
+                k.map_or("default".into(), |n| n.to_string()),
+                w.map_or("default".into(), |n| n.to_string()),
+                if *v { "on" } else { "off" },
+                o.map_or("none".into(), |n| format!("{n} s"))
             )
         })
         .collect();
@@ -185,14 +202,15 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     if let Some(p) = crate::polyglot::report::section(h.repro.as_deref(), records) {
         s.push_str(&p);
     }
-    s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals. Runs that reached outside their folders (contaminated) are left out of the numbers and counted apart.\n\n");
-    s.push_str(&header(&["arm", "settings", "runs", "contaminated"]));
+    s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals. Runs that reached outside their folders (contaminated) are left out of the numbers and counted apart. Runs stopped by the budget are in these numbers but not in the paired table, which is why they are counted in their own column.\n\n");
+    s.push_str(&header(&["arm", "settings", "runs", "contaminated", "budget stops"]));
     for arm in &arms {
         let all: Vec<&Record> = records.iter().filter(|r| r.arm == *arm).collect();
         let rows: Vec<&Record> = all.iter().copied().filter(|r| !r.contaminated).collect();
         let bad = all.len() - rows.len();
+        let budget_stops = all.iter().filter(|r| r.stop == Some(Stop::Budget)).count();
         s.push_str(&row(
-            &[arm.to_string(), settings(all[0]), rows.len().to_string(), bad.to_string()],
+            &[arm.to_string(), settings(all[0]), rows.len().to_string(), bad.to_string(), budget_stops.to_string()],
             &numbers(&rows),
         ));
     }
@@ -771,6 +789,48 @@ mod tests {
     }
 
     #[test]
+    fn a_different_window_close_on_verified_or_time_limit_is_mixed_settings() {
+        let base = grid(2, 1);
+        assert!(mixed(&base).is_none());
+        let mut windowed = base.clone();
+        windowed[1].window = Some(64_000);
+        let m = mixed(&windowed).unwrap();
+        assert!(
+            m.contains("2 different setups")
+                && m.contains("context window 64000")
+                && m.contains("context window default"),
+            "{m}"
+        );
+        let mut closed = base.clone();
+        closed[2].close_on_verified = true;
+        let m = mixed(&closed).unwrap();
+        assert!(m.contains("close on verified on") && m.contains("close on verified off"), "{m}");
+        let mut limited = base.clone();
+        limited[3].run_timeout_s = Some(600);
+        let m = mixed(&limited).unwrap();
+        assert!(m.contains("run time limit 600 s") && m.contains("run time limit none"), "{m}");
+    }
+
+    #[test]
+    fn older_results_without_the_new_settings_still_agree() {
+        let old: Record = serde_json::from_str(r#"{"task":"t","arm":"a"}"#).unwrap();
+        assert!(!old.close_on_verified && old.run_timeout_s.is_none());
+        assert!(mixed(&[old.clone(), old]).is_none());
+    }
+
+    #[test]
+    fn the_arms_table_counts_budget_stops_the_paired_table_leaves_out() {
+        let mut recs = grid(2, 1);
+        recs[1].stop = Some(Stop::Budget);
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("| arm | settings | runs | contaminated | budget stops |"), "{s}");
+        let arm_row = |arm: &str| s.lines().find(|l| l.starts_with(&format!("| {arm} | {arm} |"))).unwrap().to_string();
+        assert!(arm_row("plain").starts_with("| plain | plain | 2 | 0 | 0 |"), "{s}");
+        assert!(arm_row("cur").starts_with("| cur | cur | 2 | 0 | 1 |"), "{s}");
+        assert!(s.contains("not in the paired table"), "{s}");
+    }
+
+    #[test]
     fn wall_time_is_compared() {
         let mut recs = grid(1, 1);
         recs[1].wall_s = 30.0;
@@ -798,7 +858,7 @@ mod tests {
         dirty.outside = vec!["/home/x/inventory.rs".into()];
         let recs = [record("a", "plain", 0.0, 0.5), record("a", "cur", 0.5, 0.5), dirty];
         let s = summary(&head(1), &recs);
-        assert!(s.contains("| cur | cur | 1 | 1 | 0/1 | - | - | 50.00% |"), "{s}");
+        assert!(s.contains("| cur | cur | 1 | 1 | 0 | 0/1 | - | - | 50.00% |"), "{s}");
         assert!(s.contains("Left out (contaminated): a cur #0."), "{s}");
         assert!(s.contains("| +50.0 "), "{s}");
         assert!(s.contains("## Contaminated runs") && s.contains("`/home/x/inventory.rs`"), "{s}");
