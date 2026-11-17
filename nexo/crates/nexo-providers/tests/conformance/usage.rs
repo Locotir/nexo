@@ -17,7 +17,7 @@ async fn t4_chat_usage_in_the_last_chunk_after_finish_with_openai_cache_and_reas
             cache_read: 64,
             cache_write: 0,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 20
         }
     );
@@ -103,7 +103,7 @@ async fn t4_anthropic_usage_start_and_delta_with_cache_fields() {
             cache_read: 4,
             cache_write: 2,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 0
         }
     );
@@ -124,7 +124,7 @@ async fn t4_gemini_usage_cached_and_thought_tokens_in_a_chunk_of_their_own() {
             cache_read: 40,
             cache_write: 0,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 20
         }
     );
@@ -148,7 +148,7 @@ async fn t4_responses_usage_with_cached_reasoning_and_float_counts() {
             cache_read: 60,
             cache_write: 0,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 4
         }
     );

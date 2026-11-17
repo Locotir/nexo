@@ -206,7 +206,7 @@ pub fn usage(u: &Value) -> Usage {
         cache_read: cached,
         cache_write: 0,
         cache_write_1h: 0,
-        dropped_blocks: 0,
+        transformations: 0,
         reasoning: count(&u["output_tokens_details"]["reasoning_tokens"]),
     }
 }

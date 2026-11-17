@@ -638,12 +638,12 @@ fn a_session_is_named_by_its_folder_and_the_day_it_was_last_used() {
 }
 
 #[test]
-fn the_blocks_dropped_from_the_history_are_summed_over_the_calls() {
+fn the_history_changes_the_server_lists_are_summed_over_the_calls() {
     let mut a = usage(100, 900, 0, 50, 10, 0.5);
-    a["usage"]["dropped_blocks"] = json!(3);
+    a["usage"]["transformations"] = json!(3);
     let mut b = usage(100, 900, 0, 50, 10, 0.5);
-    b["usage"]["dropped_blocks"] = json!(2);
+    b["usage"]["transformations"] = json!(2);
     // a line from before the field existed counts none
     let d = digest(&[meta("/p", "m", T0), msg(0, T0, "user", text("a")), a, b, usage(1, 1, 0, 1, 0, 0.1)]);
-    assert_eq!(total(&d).dropped_blocks, 5);
+    assert_eq!(total(&d).transformations, 5);
 }

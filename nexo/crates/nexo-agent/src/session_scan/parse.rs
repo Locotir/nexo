@@ -36,7 +36,7 @@ pub(super) struct UsageLite {
     #[serde(default)]
     reasoning: u64,
     #[serde(default)]
-    dropped_blocks: u64,
+    transformations: u64,
 }
 
 #[derive(Deserialize)]
@@ -282,7 +282,7 @@ impl Walk {
         t.cache_write += u.usage.cache_write;
         t.output += u.usage.output;
         t.reasoning += u.usage.reasoning;
-        t.dropped_blocks += u.usage.dropped_blocks;
+        t.transformations += u.usage.transformations;
         t.cost += u.cost_usd;
         if summed {
             t.summed_input += total;

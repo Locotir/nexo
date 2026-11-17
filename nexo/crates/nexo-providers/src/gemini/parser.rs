@@ -98,7 +98,7 @@ impl Feed for GeminiParser {
                 cache_read: cached,
                 cache_write: 0,
                 cache_write_1h: 0,
-                dropped_blocks: 0,
+                transformations: 0,
                 reasoning: thoughts,
             });
         }

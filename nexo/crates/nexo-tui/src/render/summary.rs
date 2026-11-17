@@ -198,7 +198,7 @@ mod tests {
             cache_read: 10_000,
             cache_write: 0,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 0,
         }
     }

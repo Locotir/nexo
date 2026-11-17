@@ -424,6 +424,12 @@ impl Engine {
         self.sizes_now().iter().sum::<i64>() + self.tail_tokens
     }
 
+    /// The tokens of the messages from index `from` on, as the view sends them (the block of recalled lines
+    /// the view ends with is not one of them).
+    pub fn tokens_from(&mut self, from: usize) -> i64 {
+        self.sizes_now().iter().skip(from).sum()
+    }
+
     /// The view: the visible messages, consecutive ones of the same role joined.
     pub fn render(&mut self) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::new();

@@ -57,7 +57,7 @@ async fn openai_chat_fixture() {
                 cache_read: 1024,
                 cache_write: 0,
                 cache_write_1h: 0,
-                dropped_blocks: 0,
+                transformations: 0,
                 reasoning: 9
             }
         );
@@ -78,7 +78,7 @@ async fn openai_responses_fixture() {
                 cache_read: 1024,
                 cache_write: 0,
                 cache_write_1h: 0,
-                dropped_blocks: 0,
+                transformations: 0,
                 reasoning: 12
             }
         );
@@ -104,7 +104,7 @@ async fn anthropic_fixture() {
                 cache_read: 1024,
                 cache_write: 0,
                 cache_write_1h: 0,
-                dropped_blocks: 0,
+                transformations: 0,
                 reasoning: 0
             }
         );
@@ -125,7 +125,7 @@ async fn gemini_fixture() {
                 cache_read: 1024,
                 cache_write: 0,
                 cache_write_1h: 0,
-                dropped_blocks: 0,
+                transformations: 0,
                 reasoning: 12
             }
         );

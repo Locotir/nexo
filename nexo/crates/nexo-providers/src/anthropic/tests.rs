@@ -162,7 +162,7 @@ fn parses_named_events_with_cache_usage() {
             cache_read: 90,
             cache_write: 5,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 0
         })
     );
@@ -668,23 +668,27 @@ fn usage_of(events: &[&str]) -> nexo_core::Usage {
 }
 
 #[test]
-fn usage_counts_the_blocks_the_server_rewrote_in_the_history() {
+fn usage_counts_the_entries_the_server_lists_as_changes_to_the_history() {
     let done = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
     let start = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[{"a":1},{"b":2}]}}"#;
-    assert_eq!(usage_of(&[start, done]).dropped_blocks, 2);
+    assert_eq!(usage_of(&[start, done]).transformations, 2);
     // the count may come with the closing delta instead of the opening message
     let late = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4},"input_transformations":[{"a":1}]}"#;
     let open =
         r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[]}}"#;
-    assert_eq!(usage_of(&[open, late]).dropped_blocks, 1);
+    assert_eq!(usage_of(&[open, late]).transformations, 1);
+    // an empty array after a listed one does not wipe it
+    let list = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[{"a":1}]}}"#;
+    let none = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4},"input_transformations":[]}"#;
+    assert_eq!(usage_of(&[list, none]).transformations, 1);
 }
 
 #[test]
-fn usage_counts_no_dropped_blocks_when_the_array_is_empty_or_missing() {
+fn usage_counts_no_transformations_when_the_array_is_empty_or_missing() {
     let done = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
     let empty =
         r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[]}}"#;
     let none = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10}}}"#;
-    assert_eq!(usage_of(&[empty, done]).dropped_blocks, 0);
-    assert_eq!(usage_of(&[none, done]).dropped_blocks, 0);
+    assert_eq!(usage_of(&[empty, done]).transformations, 0);
+    assert_eq!(usage_of(&[none, done]).transformations, 0);
 }

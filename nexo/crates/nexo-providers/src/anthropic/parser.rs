@@ -212,13 +212,15 @@ impl MessagesParser {
         }
     }
 
-    /// How many blocks the server rewrote in the request history, from the `input_transformations`
-    /// array that sits beside `usage`. With `drop_block` binding this is how many reasoning blocks the
-    /// prefix no longer matched. Only the length is read, since the shape of an entry is not documented;
-    /// a later value replaces an earlier one, and a response that has no such array leaves the count alone.
+    /// How many entries `input_transformations` lists, the changes the server made to the history it was sent.
+    /// With `drop_block` binding (`request.rs`) a reasoning block that no longer matched the prefix is expected
+    /// to be one, but the entries are not documented, so only their number is read. Verified: the key sits
+    /// beside `usage` in the `message` of `message_start` (722 recorded responses, all with `[]`; an entry has
+    /// never been seen). Inferred: it may also come in `message_delta`, so it is read there too. The most of
+    /// the two is kept, so a closing delta with an empty array does not wipe what the opening message listed.
     fn take_transformations(&mut self, holder: &Value) {
         if let Some(a) = holder["input_transformations"].as_array() {
-            self.usage.dropped_blocks = a.len() as u64;
+            self.usage.transformations = self.usage.transformations.max(a.len() as u64);
         }
     }
 

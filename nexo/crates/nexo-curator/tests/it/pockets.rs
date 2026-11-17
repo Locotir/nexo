@@ -126,6 +126,7 @@ fn a_provider_that_reads_every_view_whole_leaves_no_call_the_engine_got_wrong() 
         "the first call has no view before it to miss, and the last reply is made before its own call is answered"
     );
     assert_eq!(last(&rs, "cal_real_miss"), 0);
+    assert!(last(&rs, "cal_pred_miss") > 0, "every request that added messages was expected to miss them");
     assert_eq!(last(&rs, "cal_off"), 0);
 }
 
@@ -141,5 +142,7 @@ fn a_provider_that_reads_nothing_shows_the_misses_the_engine_did_not_foresee() {
 #[test]
 fn a_host_that_never_says_what_the_provider_read_gets_no_calibration_counters() {
     let rs = replay(TOPICS, "apart=0", |_| 30.0, |_, _| None);
+    let told = replay(TOPICS, "apart=0", |_| 30.0, |_, input| Some(input));
+    assert!(last(&told, "cal_calls") > 0, "the same run, told what was read, does count");
     assert!(rs.last().unwrap().stats.keys().all(|k| !k.starts_with("cal_")));
 }

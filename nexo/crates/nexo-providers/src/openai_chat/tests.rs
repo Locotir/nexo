@@ -170,7 +170,7 @@ fn parses_fragmented_tool_calls_reasoning_and_deepseek_usage() {
             cache_read: 64,
             cache_write: 0,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 3
         })
     );

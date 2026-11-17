@@ -70,10 +70,10 @@ pub struct Usage {
     /// Of `cache_write`, the tokens written with the 1-hour lifetime (0 where a vendor has no such split).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cache_write_1h: u64,
-    /// How many blocks of the sent history the server rewrote or dropped (the length of the response's
-    /// `input_transformations`); 0 where a vendor reports none.
+    /// How many entries the response lists in `input_transformations`, the changes the server made to the
+    /// history it was sent (0 where a vendor reports none).
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub dropped_blocks: u64,
+    pub transformations: u64,
     /// Reasoning tokens (already counted in `output` where the vendor does so).
     pub reasoning: u64,
 }
@@ -101,7 +101,7 @@ impl Add for Usage {
             cache_read: self.cache_read + o.cache_read,
             cache_write: self.cache_write + o.cache_write,
             cache_write_1h: self.cache_write_1h + o.cache_write_1h,
-            dropped_blocks: self.dropped_blocks + o.dropped_blocks,
+            transformations: self.transformations + o.transformations,
             reasoning: self.reasoning + o.reasoning,
         }
     }

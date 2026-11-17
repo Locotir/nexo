@@ -57,6 +57,16 @@ pub struct Curator {
     /// call's own predicted miss is the difference (`None`: no call has been answered yet).
     #[serde(default)]
     pub(crate) cal_miss: Option<i64>,
+    /// How many messages the last answered call was made from, so the messages after them are the new tail of
+    /// the next one.
+    #[serde(default)]
+    pub(crate) cal_len: usize,
+    /// How many messages the last view was made from.
+    #[serde(default)]
+    pub(crate) cal_seen: usize,
+    /// Whether the engine started over since the last answered call (the host rewrote the history).
+    #[serde(default)]
+    pub(crate) cal_fresh: bool,
 }
 
 impl Curator {
@@ -73,6 +83,9 @@ impl Curator {
             tools: None,
             paged: Vec::new(),
             cal_miss: None,
+            cal_len: 0,
+            cal_seen: 0,
+            cal_fresh: false,
         })
     }
 
@@ -98,6 +111,9 @@ impl Curator {
             self.last.clear();
             self.paged.clear();
             self.cal_miss = None;
+            self.cal_len = 0;
+            self.cal_seen = 0;
+            self.cal_fresh = false;
             if let Some(t) = &self.tools {
                 self.eng.tools(t);
             }
@@ -131,7 +147,8 @@ impl Curator {
         self.eng.set_budget(budget);
         self.eng.set_left(self.left);
         let missed = self.eng.stats.get("miss").copied().unwrap_or(0);
-        self.eng.sync(messages);
+        self.cal_fresh |= self.eng.sync(messages);
+        self.cal_seen = messages.len();
         let mut view = self.eng.view();
         let mut tokens = self.eng.tokens();
         let mut paged = Vec::new();
@@ -188,18 +205,22 @@ impl Curator {
 
     /// Sets what the engine expected the call to miss against what the provider said it missed, as counters
     /// (`cal_calls`, `cal_pred_miss`, `cal_real_miss`, and `cal_off` for a call the engine under-counted by
-    /// more than `CAL_OFF` of the view), both in the estimated tokens of the view. The first call has no view
-    /// before it to miss, so it is not counted. This holds at every spec, since `learn` only listens when
-    /// `pockets` is on.
+    /// more than `CAL_OFF` of the view), all in the estimated tokens of the view. What the engine expected is
+    /// the larger of its own count of what it changed and the messages that came since the last call, since
+    /// no cache holds a message the provider has not seen. The first call has no view before it to miss, so
+    /// it is not counted. This holds at every spec, since `learn` only listens when `pockets` is on.
     fn compare_miss(&mut self, read: u64, input: u64) {
         let seen = self.eng.stats.get("miss").copied().unwrap_or(0);
+        let (len, fresh) = (self.cal_len, std::mem::take(&mut self.cal_fresh));
+        self.cal_len = self.cal_seen;
         let Some(before) = self.cal_miss.replace(seen) else { return };
         if input == 0 {
             return;
         }
-        // a count that went down is an engine that started over: all of it is this call's
-        let predicted = if seen >= before { seen - before } else { seen };
+        // an engine that started over has read the history anew: all of it is this call's
+        let (changed, from) = if fresh { (seen, 0) } else { ((seen - before).max(0), len) };
         let all = self.head_tokens as i64 + self.eng.tokens();
+        let predicted = changed.max(self.eng.tokens_from(from));
         let real = ((input - read.min(input)) as f64 / input as f64 * all as f64).round() as i64;
         let stats = &mut self.eng.stats;
         *stats.entry("cal_calls").or_insert(0) += 1;

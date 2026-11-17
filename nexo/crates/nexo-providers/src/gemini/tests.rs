@@ -70,7 +70,7 @@ fn parses_thoughts_text_whole_calls_and_usage() {
             cache_read: 40,
             cache_write: 0,
             cache_write_1h: 0,
-            dropped_blocks: 0,
+            transformations: 0,
             reasoning: 6
         })
     );

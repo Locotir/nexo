@@ -392,8 +392,8 @@ impl Engine {
     }
 
     /// Takes in the conversation as the harness sends it: new messages are added; an edited history
-    /// starts the engine over, with the rules of the session carried over.
-    pub fn sync(&mut self, msgs: &[Value]) {
+    /// starts the engine over, with the rules of the session carried over; it returns whether it did.
+    pub fn sync(&mut self, msgs: &[Value]) -> bool {
         let n = self.tr.msgs.len();
         let rewritten = n > 0 && (msgs.len() < n || !py_eq(&strip_cc(&msgs[n - 1]), &self.last_raw));
         if rewritten {
@@ -426,5 +426,6 @@ impl Engine {
             self.add(m);
         }
         self.rules.replay = false;
+        rewritten
     }
 }
