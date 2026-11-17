@@ -1,6 +1,6 @@
 //! `nexo re --mcp`: the nexo RE kit as an MCP server on stdio, so other harnesses can use it. JSON-RPC 2.0, one
 //! message per line, written by hand (no SDK). The tools are generated from the clap definition of `nexo bin`
-//! (one for each op, so the list cannot drift) plus three for `nexo dbg` sessions: start, command, stop. A tool
+//! (one for each op, so the list cannot drift), `bin_batch` (several ops in one call) plus three for `nexo dbg` sessions: start, command, stop. A tool
 //! result is the text `nexo bin` or `nexo dbg` prints. Anything that writes saved state, writes into a program,
 //! attaches to a process or opens a port is refused unless the server started with `--allow-changes`.
 
@@ -16,7 +16,7 @@ mod tools;
 mod words;
 
 use dbg_run::{run_dbg, same_user};
-use tools::{bin_argv, bin_tools, dbg_tools};
+use tools::{batch_tool, bin_argv, bin_tools, dbg_flags, dbg_tools};
 pub(crate) use words::split_words;
 use words::{list_of, scalar};
 
@@ -29,6 +29,7 @@ const SAVING_OPS: &[&str] = &["name", "note", "proto", "struct", "var", "sigs", 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
     Bin(String),
+    BinBatch,
     DbgStart,
     DbgCommand,
     DbgStop,
@@ -88,6 +89,7 @@ fn text_result(text: String, is_error: bool) -> Value {
 impl Server {
     pub fn new(allow_changes: bool) -> Server {
         let mut tools = bin_tools();
+        tools.push(batch_tool());
         tools.extend(dbg_tools());
         Server { allow_changes, tools }
     }
@@ -183,6 +185,7 @@ impl Server {
         };
         let run = std::panic::AssertUnwindSafe(|| match &tool.kind {
             Kind::Bin(op) => self.call_bin(op, &args),
+            Kind::BinBatch => self.call_bin_batch(&args),
             Kind::DbgStart => self.call_dbg_start(&args),
             Kind::DbgCommand => self.call_dbg_command(&args),
             Kind::DbgStop => self.call_dbg_stop(&args),
@@ -203,17 +206,55 @@ impl Server {
         format!("refused: {what}. This server was started without --allow-changes; restart it with `nexo re --mcp --allow-changes` to allow it.")
     }
 
+    /// Whether this op line saves names, notes, types or files: `SAVING_OPS`, and `crypto` with `--save`.
+    fn saves(op: &str, save: bool) -> bool {
+        SAVING_OPS.contains(&op) || (op == "crypto" && save)
+    }
+
     fn call_bin(&self, op: &str, args: &Value) -> Result<String, String> {
-        let saving =
-            SAVING_OPS.contains(&op) || (op == "crypto" && args.get("save").and_then(Value::as_bool) == Some(true));
+        let saving = Self::saves(op, args.get("save").and_then(Value::as_bool) == Some(true));
         if saving && !self.allow_changes {
             return Err(self.refuse(&format!("`nexo bin {op}` saves names, notes, types or files")));
         }
         let argv = bin_argv(op, args)?;
-        let parsed = crate::cli::Args::try_parse_from(argv).map_err(|e| e.to_string())?;
-        match parsed.cmd {
-            Some(crate::cli::Cmd::Bin(b)) => crate::bin_cmd::execute(&b).map_err(|e| format!("nexo bin: {e}")),
-            _ => Err("nexo bin: not a bin op".to_string()),
+        crate::bin_cmd::script::run_argv(argv, crate::bin_cmd::bridge::Reader::Mcp).map_err(|(m, _)| m)
+    }
+
+    /// `bin_batch`: the ops of `ops` in order, each answer under a `== op ==` line. The gate is the one of the
+    /// single-op tools, asked for every op before the first runs, so a refused op stops the whole call. An op that
+    /// fails is reported in its place and the rest still run (as in the agent tool); the call is an error only
+    /// when every op failed.
+    fn call_bin_batch(&self, args: &Value) -> Result<String, String> {
+        let ops = scalar(args.get("ops")).ok_or("bin_batch needs \"ops\": a string like `info ./p; funcs ./p`")?;
+        let units = crate::bin_cmd::script::units(&ops);
+        if units.is_empty() {
+            return Err("bin_batch: \"ops\" has no op in it".to_string());
+        }
+        let mut argvs = Vec::new();
+        for u in &units {
+            let argv = crate::bin_cmd::script::unit_argv(u).map_err(|e| format!("`{u}`: {e}"))?;
+            let op = argv.get(2).map(String::as_str).unwrap_or("");
+            if Self::saves(op, argv.iter().any(|w| w == "--save")) && !self.allow_changes {
+                return Err(self.refuse(&format!("`nexo bin {op}` saves names, notes, types or files (in `{u}`)")));
+            }
+            argvs.push(argv);
+        }
+        let (mut out, mut failed) = (Vec::new(), 0);
+        for (u, argv) in units.iter().zip(argvs) {
+            out.push(format!("== {u} =="));
+            match crate::bin_cmd::script::run_argv(argv, crate::bin_cmd::bridge::Reader::Mcp) {
+                Ok(text) => out.push(text),
+                Err((msg, _)) => {
+                    failed += 1;
+                    out.push(format!("error: {}", msg.strip_prefix("error: ").unwrap_or(&msg)));
+                }
+            }
+        }
+        let text = out.join("\n");
+        if failed == units.len() {
+            Err(text)
+        } else {
+            Ok(text)
         }
     }
 
@@ -299,14 +340,14 @@ impl Server {
         if let Some(s) = scalar(args.get("session")) {
             prefix.extend(["-s".to_string(), s]);
         }
-        if let Some(n) = scalar(args.get("lines")) {
-            prefix.extend(["--lines".to_string(), n]);
-        }
-        if let Some(f) = scalar(args.get("from")) {
-            prefix.extend(["--from".to_string(), f]);
-        }
-        if args.get("json").and_then(Value::as_bool) == Some(true) {
-            prefix.push("--json".to_string());
+        for (arg, flag, schema) in dbg_flags() {
+            if schema["type"] == "boolean" {
+                if args.get(arg).and_then(Value::as_bool) == Some(true) {
+                    prefix.push(flag.to_string());
+                }
+            } else if let Some(v) = scalar(args.get(arg)) {
+                prefix.extend([flag.to_string(), v]);
+            }
         }
         prefix.append(&mut words);
         run_dbg(prefix)

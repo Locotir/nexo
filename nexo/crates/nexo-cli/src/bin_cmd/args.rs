@@ -14,6 +14,13 @@ pub struct BinArgs {
     /// With --mcp: allow tools that write files or saved state.
     #[arg(long, requires = "mcp")]
     pub allow_changes: bool,
+    /// Run the ops in FILE (`-`: stdin), one per line or separated by `;`, `#` lines are comments. Each answer comes
+    /// under a `== op ==` line; the first error stops the rest.
+    #[arg(long, value_name = "FILE", conflicts_with = "mcp")]
+    pub script: Option<String>,
+    /// With --script: go on after an op that fails (the exit code is the worst one).
+    #[arg(long, requires = "script")]
+    pub keep_going: bool,
 }
 
 /// Options every op takes.

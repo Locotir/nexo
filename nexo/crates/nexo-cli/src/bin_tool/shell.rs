@@ -123,21 +123,3 @@ pub(super) fn pipe_fact(op: &str, filter: &str) -> String {
     };
     format!("output is already bounded{ask}")
 }
-
-/// The ops of one call: cut at `;` and at line ends outside double quotes, as `debug` cuts a script. A part with a
-/// quote still open (a note that says `a; b` inside single quotes) is joined to the next, so text stays whole.
-pub(super) fn units(line: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut open = false;
-    for u in nexo_dbg::script_units(line) {
-        match out.last_mut() {
-            Some(last) if open => {
-                last.push_str("; ");
-                last.push_str(&u);
-            }
-            _ => out.push(u),
-        }
-        open = out.last().is_some_and(|l| crate::re_mcp::split_words(l).is_err());
-    }
-    out
-}

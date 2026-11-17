@@ -57,12 +57,12 @@ fn initialize_answers_with_the_tools_capability_and_a_notification_gets_no_answe
 }
 
 #[test]
-fn tools_list_has_one_tool_per_bin_op_plus_the_three_debugger_tools() {
+fn tools_list_has_one_tool_per_bin_op_plus_bin_batch_and_the_three_debugger_tools() {
     let a = talk(false, &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})]);
     let tools = a[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), bin_op_count() + 3);
+    assert_eq!(tools.len(), bin_op_count() + 4);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for n in ["bin_info", "bin_decomp", "bin_emu", "dbg_start", "dbg_command", "dbg_stop"] {
+    for n in ["bin_info", "bin_decomp", "bin_emu", "bin_batch", "dbg_start", "dbg_command", "dbg_stop"] {
         assert!(names.contains(&n), "{n} missing from {names:?}");
     }
     assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));
@@ -328,4 +328,45 @@ fn the_initialize_text_says_what_the_flag_enables() {
     for w in ["running programs", "attaching", "memory and register writes", "patches", "--allow-changes"] {
         assert!(t.contains(w), "{w}: {t}");
     }
+}
+
+#[test]
+fn bin_batch_takes_ops_and_dbg_command_takes_grep() {
+    let a = talk(false, &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})]);
+    let tools = a[0]["result"]["tools"].as_array().unwrap();
+    let batch = tools.iter().find(|t| t["name"] == "bin_batch").unwrap();
+    assert_eq!(batch["inputSchema"]["required"], json!(["ops"]));
+    assert_eq!(batch["inputSchema"]["properties"]["ops"]["type"], "string");
+    let dbg = tools.iter().find(|t| t["name"] == "dbg_command").unwrap();
+    for (arg, _, _) in dbg_flags() {
+        assert!(dbg["inputSchema"]["properties"].get(arg).is_some(), "{arg} missing from dbg_command");
+    }
+    assert_eq!(dbg["inputSchema"]["properties"]["grep"]["type"], "string");
+    // --timing is a tool input now
+    let info = tools.iter().find(|t| t["name"] == "bin_info").unwrap();
+    assert_eq!(info["inputSchema"]["properties"]["timing"]["type"], "boolean");
+}
+
+#[test]
+fn bin_batch_runs_each_op_and_keeps_the_write_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = fixture(dir.path());
+    let ops = format!("# a comment\ninfo {exe}; asm --help; info /nonexistent/none");
+    let a = talk(false, &[call(1, "bin_batch", json!({"ops": ops}))]);
+    assert_eq!(a[0]["result"]["isError"], false, "{a:?}");
+    let t = result_text(&a[0]);
+    assert!(t.contains(&format!("== info {exe} ==")) && t.contains("error: nexo bin:"), "{t}");
+    // one saving op refuses the whole call before anything runs
+    let out = dir.path().join("saved");
+    let ops = format!("info {exe}; note {exe} 0x1000 hi; patch {exe} --out {}", out.display());
+    let a = talk(
+        false,
+        &[call(2, "bin_batch", json!({"ops": ops})), call(3, "bin_batch", json!({"ops": "crypto p --save"}))],
+    );
+    assert!(refused(&a[0]) && refused(&a[1]), "{a:?}");
+    assert!(!result_text(&a[0]).contains("== info"), "nothing runs when one op is refused");
+    assert!(!out.exists());
+    let a = talk(false, &[call(4, "bin_batch", json!({})), call(5, "bin_batch", json!({"ops": " ; # x"}))]);
+    assert_eq!(a[0]["result"]["isError"], true);
+    assert_eq!(a[1]["result"]["isError"], true);
 }

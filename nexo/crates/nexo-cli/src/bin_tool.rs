@@ -3,7 +3,7 @@
 //! `nexo bin` (the file is read as bytes, never run or loaded). Like `debug`, the call has a kind decided from the
 //! parsed op (`call_kind`): everything reads or keeps names, notes and types in nexo's data folder, so it is allowed
 //! as a read; `patch` and `sigs --out` write a file, so they are a write and the permission mode asks. `a; b` runs
-//! several ops in one call, split by the debugger's `script_units`.
+//! several ops in one call, split by `bin_cmd::script::units`, the one splitter the MCP `bin_batch` tool and `nexo bin --script` use too.
 //!
 //! Only the short text rides in every request (the tool is `rare`); `<op> --help` prints the whole of one op.
 
@@ -24,7 +24,9 @@ mod tests;
 
 pub(crate) use clap_facts::bin_error;
 use parse::{parse, Parsed};
-use shell::{scan_shell, units};
+use shell::scan_shell;
+
+use crate::bin_cmd::script::units;
 
 const OPS: &str = "\
 overview <file>  the map in one call: main, imports by capability, top functions and strings, next commands (start here)

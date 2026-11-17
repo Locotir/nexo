@@ -135,9 +135,19 @@ fn elf_program(path: &Path) -> bool {
     }
 }
 
-/// The line for an answer of `op` that gave `text`, or `None`: the op is not about one place, the file cannot be
-/// run here, the answer is JSON, or the person's `--lines` was already filled.
-pub fn line(op: &BinOp, text: &str) -> Option<String> {
+/// Where an answer goes, so the hint names the way that surface runs a program: the `debug` tool, the MCP tools
+/// `dbg_start` and `dbg_command`, or the `nexo dbg` command.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Reader {
+    Tool,
+    Mcp,
+    Cli,
+}
+
+/// Where `debug` can stop for an answer of `op` that gave `text`: the file as the shell would write it and the
+/// `break` target, or `None`: the op is not about one place, the file cannot be run here, the answer is JSON, or
+/// the person's `--lines` was already filled.
+fn stop_for(op: &BinOp, text: &str) -> Option<(String, String)> {
     let c = op.common();
     let file = op.file();
     if c.json || matches!(c.lines, Some(nexo_bin::Lines::Rows(n)) if text.lines().count() >= n.max(nexo_bin::MIN_LINES))
@@ -159,7 +169,27 @@ pub fn line(op: &BinOp, text: &str) -> Option<String> {
     } else {
         format!("\"{path}\"")
     };
-    Some(format!("{HEAD} `run {shown}; break {}; cont`", break_at(&img, addr)))
+    Some((shown, break_at(&img, addr)))
+}
+
+/// The line for the `debug` tool: the call that stops where the answer looked.
+pub fn line(op: &BinOp, text: &str) -> Option<String> {
+    line_for(op, text, Reader::Tool)
+}
+
+/// The same fact for the surface that reads the answer.
+pub fn line_for(op: &BinOp, text: &str, reader: Reader) -> Option<String> {
+    let (shown, at) = stop_for(op, text)?;
+    Some(match reader {
+        Reader::Tool => format!("{HEAD} `run {shown}; break {at}; cont`"),
+        Reader::Mcp => format!(
+            "to see it live: dbg_start (kind run, target {shown}; needs --allow-changes), then dbg_command `break {at}; cont`"
+        ),
+        Reader::Cli => {
+            let at = if at.starts_with('*') { format!("'{at}'") } else { at };
+            format!("to see it live: nexo dbg run {shown}, then nexo dbg break {at}, then nexo dbg cont")
+        }
+    })
 }
 
 /// What `break` takes for `addr`. In a program with line info, the name of the function that starts there (when

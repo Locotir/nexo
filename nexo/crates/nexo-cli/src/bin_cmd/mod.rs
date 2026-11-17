@@ -11,6 +11,7 @@ use wasm::wasm_in;
 mod args;
 pub(crate) mod bridge;
 mod ops;
+pub(crate) mod script;
 mod sigs;
 #[cfg(test)]
 mod tests;
@@ -168,7 +169,8 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
 
 /// Like [`execute`], with the data dir given (tests use a temporary one).
 pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
-    let op = a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation or use --mcp".into()))?;
+    let op =
+        a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation, or use --script FILE or --mcp".into()))?;
     let t0 = std::time::Instant::now();
     if let BinOp::Asm { source, at, bits, .. } = op {
         let output = nexo_bin::assembly(source, *at, if bits == "32" { 32 } else { 64 })?;
@@ -368,9 +370,15 @@ pub fn run(a: &BinArgs) -> i32 {
     if a.mcp {
         return crate::re_mcp::run_stdio(a.allow_changes);
     }
+    if let Some(path) = &a.script {
+        return script::run_script(path, a.keep_going);
+    }
     match execute(a) {
         Ok(text) => {
             println!("{text}");
+            if let Some(l) = a.op.as_ref().and_then(|op| bridge::line_for(op, &text, bridge::Reader::Cli)) {
+                eprintln!("{l}");
+            }
             0
         }
         Err(e) => {

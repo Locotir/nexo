@@ -6,9 +6,9 @@ pub(super) fn bin_command() -> clap::Command {
     crate::cli::Args::command().find_subcommand("bin").expect("bin is a command").clone()
 }
 
-/// Arguments that are not tool inputs: clap's own, and the one that prints on stderr.
+/// Arguments that are not tool inputs: clap's own.
 pub(super) fn hidden_arg(a: &Arg) -> bool {
-    matches!(a.get_id().as_str(), "help" | "version" | "timing")
+    matches!(a.get_id().as_str(), "help" | "version")
 }
 
 pub(super) fn is_flag(a: &Arg) -> bool {
@@ -124,9 +124,47 @@ pub(super) fn bin_argv(op: &str, args: &Value) -> Result<Vec<String>, String> {
     Ok(argv)
 }
 
+/// `bin_batch`: the ops of one call in a string, as the agent tool takes them.
+pub(super) fn batch_tool() -> Tool {
+    Tool {
+        name: "bin_batch".into(),
+        description: "nexo bin: several ops in one call, `op1; op2; ...` (or one per line, `#` lines are comments), each answer under a `== op ==` line. A failing op is reported in its place and the rest run. Ops that save data (name, note, proto, struct, var, sigs, patch, crypto --save) need --allow-changes, as in their own tools.".into(),
+        schema: json!({"type": "object", "properties": {
+            "ops": {"type": "string", "description": "the ops, each as after `nexo bin`: `info ./p; funcs ./p --grep main; fn ./p main`"}
+        }, "required": ["ops"]}),
+        kind: Kind::BinBatch,
+    }
+}
+
+/// The flags `dbg_command` forwards before the command: (tool argument, `nexo dbg` flag, schema). A new flag is
+/// added here only; the schema and the call both read this list.
+pub(super) fn dbg_flags() -> Vec<(&'static str, &'static str, Value)> {
+    vec![
+        ("lines", "--lines", json!({"type": ["integer", "string"], "description": "most lines in the answer, or all"})),
+        (
+            "from",
+            "--from",
+            json!({"type": "string", "description": "continue a cut answer at this address or position"}),
+        ),
+        (
+            "grep",
+            "--grep",
+            json!({"type": "string", "description": "keep only the rows that match this regular expression, then page them"}),
+        ),
+        ("json", "--json", json!({"type": "boolean"})),
+    ]
+}
+
 // ---- the three debugger tools ----
 
 pub(super) fn dbg_tools() -> Vec<Tool> {
+    let mut command_props = serde_json::Map::new();
+    command_props.insert("command".into(), json!({"type": "string"}));
+    command_props
+        .insert("session".into(), json!({"type": "string", "description": "session id, when more than one is live"}));
+    for (arg, _, schema) in dbg_flags() {
+        command_props.insert(arg.into(), schema);
+    }
     vec![
         Tool {
             name: "dbg_start".into(),
@@ -148,13 +186,7 @@ pub(super) fn dbg_tools() -> Vec<Tool> {
         Tool {
             name: "dbg_command".into(),
             description: "nexo dbg: one command on the live session, such as `break main`, `cont`, `bt`, `regs`, `mem <addr> 32`, or `do \"break f; cont; bt\"` (`help` lists them). Without --allow-changes only reading commands run; write, setreg, call (and print of an expression that calls a function), name, note, serve, calls, stdin, watch, hooks that set values and any unknown command need --allow-changes.".into(),
-            schema: json!({"type": "object", "properties": {
-                "command": {"type": "string"},
-                "session": {"type": "string", "description": "session id, when more than one is live"},
-                "lines": {"type": ["integer", "string"], "description": "most lines in the answer, or all"},
-                "from": {"type": "string", "description": "continue a cut answer at this address or position"},
-                "json": {"type": "boolean"}
-            }, "required": ["command"]}),
+            schema: json!({"type": "object", "properties": command_props, "required": ["command"]}),
             kind: Kind::DbgCommand,
         },
         Tool {
