@@ -50,6 +50,7 @@ impl Session {
             meta,
             path,
             messages: Vec::new(),
+            stamps: Vec::new(),
             outputs: BTreeMap::new(),
             usage: Usage::default(),
             cost: 0.0,
@@ -89,6 +90,7 @@ impl Session {
             meta,
             path: PathBuf::new(),
             messages: Vec::new(),
+            stamps: Vec::new(),
             outputs: BTreeMap::new(),
             usage: Usage::default(),
             cost: 0.0,
@@ -126,6 +128,7 @@ impl Session {
             anyhow::bail!("{} does not start with a meta line", path.display());
         };
         let mut messages = Vec::new();
+        let mut stamps: Vec<String> = Vec::new();
         let mut outputs = BTreeMap::new();
         let mut usage = Usage::default();
         let mut cost = 0.0;
@@ -136,11 +139,12 @@ impl Session {
         let mut skipped = 0;
         for l in lines {
             match serde_json::from_str::<Line>(&l) {
-                Ok(Line::Message { message, .. }) => {
+                Ok(Line::Message { message, ts, .. }) => {
                     // the request that carried the stop line took it
                     if stop.as_deref().is_some_and(|l| message.text().starts_with(l)) {
                         stop = None;
                     }
+                    stamps.push(ts);
                     messages.push(message)
                 }
                 Ok(Line::Stop { line, .. }) => stop = Some(line),
@@ -163,6 +167,7 @@ impl Session {
                 Ok(Line::Prefix(p)) => prefix = Some(p),
                 Ok(Line::Reset) => {
                     messages.clear();
+                    stamps.clear();
                     stop = None;
                 }
                 Ok(Line::Meta(_)) => {}
@@ -178,6 +183,7 @@ impl Session {
             meta,
             path: path.to_path_buf(),
             messages,
+            stamps,
             outputs,
             usage,
             cost,

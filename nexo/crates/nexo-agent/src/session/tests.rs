@@ -1298,3 +1298,54 @@ fn the_start_read_from_ps_does_not_depend_on_the_locale_or_the_timezone() {
     // the hash is that of the text in the C locale and UTC, which every nexo gets, whatever its own settings
     assert_eq!(ps_start(me), Some(fnv(&String::from_utf8_lossy(&printed.stdout))));
 }
+
+/// The `ts` of every message line in the session file, in order.
+fn message_stamps(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter_map(|l| match serde_json::from_str::<Line>(l) {
+            Ok(Line::Message { ts, .. }) => Some(ts),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_rewind_keeps_the_time_each_kept_message_was_said() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append_at(&Message::user("first"), "2026-01-01T10:00:00Z".into()).unwrap();
+    s.append_at(&Message::assistant("second"), "2026-01-01T11:00:00Z".into()).unwrap();
+    s.rewind(1).unwrap();
+    assert_eq!(message_stamps(s.path()), ["2026-01-01T10:00:00Z"]);
+    s.append(&Message::assistant("again")).unwrap();
+    assert_eq!(message_stamps(s.path())[0], "2026-01-01T10:00:00Z", "a later rewrite still keeps it");
+    let p = s.path().to_path_buf();
+    drop(s);
+    let mut back = Session::open_path(&p).unwrap();
+    back.rewind(2).unwrap();
+    assert_eq!(message_stamps(&p)[0], "2026-01-01T10:00:00Z", "a reopened session keeps the times it read");
+}
+
+#[test]
+fn a_reset_keeps_the_time_of_a_message_that_stays_in_place_and_stamps_a_new_one_now() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append_at(&Message::user("first"), "2026-01-01T10:00:00Z".into()).unwrap();
+    s.append_at(&Message::assistant("second"), "2026-01-01T11:00:00Z".into()).unwrap();
+    s.reset_with(&[Message::user("first"), Message::assistant("a summary of the rest")]).unwrap();
+    let stamps = message_stamps(s.path());
+    assert_eq!(stamps[0], "2026-01-01T10:00:00Z");
+    assert_ne!(stamps[1], "2026-01-01T11:00:00Z");
+}
+
+#[test]
+fn a_fork_keeps_the_time_each_copied_message_was_said() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append_at(&Message::user("first"), "2026-01-01T10:00:00Z".into()).unwrap();
+    s.append_at(&Message::assistant("second"), "2026-01-01T11:00:00Z".into()).unwrap();
+    let f = s.fork(2).unwrap();
+    assert_eq!(message_stamps(f.path()), ["2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"]);
+}

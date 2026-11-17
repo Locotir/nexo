@@ -159,6 +159,9 @@ pub struct Session {
     meta: SessionMeta,
     path: PathBuf,
     messages: Vec<Message>,
+    /// When each message was written, parallel to `messages`: a rewrite of the file keeps the time a message was
+    /// said instead of stamping it with the time of the rewrite.
+    stamps: Vec<String>,
     outputs: BTreeMap<String, ToolOutput>,
     usage: Usage,
     cost: f64,

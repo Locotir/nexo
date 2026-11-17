@@ -138,14 +138,20 @@ impl Session {
     }
 
     pub fn append(&mut self, m: &Message) -> anyhow::Result<()> {
+        self.append_at(m, now())
+    }
+
+    /// [`Session::append`] for a message said at `ts`: a fork keeps the times of the messages it copies.
+    pub(super) fn append_at(&mut self, m: &Message, ts: String) -> anyhow::Result<()> {
         let index = self.messages.len();
         self.messages.push(m.clone());
+        self.stamps.push(ts.clone());
         self.meta.messages = self.messages.len();
         // the request that carries the stop line takes it
         if self.stop.as_deref().is_some_and(|l| m.text().starts_with(l)) {
             self.stop = None;
         }
-        self.write(&Line::Message { index, ts: now(), message: m.clone() })?;
+        self.write(&Line::Message { index, ts, message: m.clone() })?;
         if self.meta.title.is_empty() && m.role == Role::User && !m.is_tool_results() {
             let t = title_of_message(&m.text());
             if !t.is_empty() {
@@ -242,12 +248,22 @@ impl Session {
     /// The history was rewritten (compaction): what follows replaces it.
     pub fn reset_with(&mut self, messages: &[Message]) -> anyhow::Result<()> {
         // one atomic rewrite: a crash leaves the old file or the new one, never a half history
+        // a message that stays where it was keeps the time it was said; a new one is stamped now
+        let stamps = messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| match (self.messages.get(i), self.stamps.get(i)) {
+                (Some(old), Some(ts)) if old == m => ts.clone(),
+                _ => now(),
+            })
+            .collect();
         let (old, outputs) = (std::mem::replace(&mut self.messages, messages.to_vec()), self.outputs.clone());
+        let old_stamps = std::mem::replace(&mut self.stamps, stamps);
         let done = self.rewrite();
         self.track(&done);
         // as in `rewind`: when the file was not replaced, memory keeps matching it
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
-            (self.messages, self.outputs) = (old, outputs);
+            (self.messages, self.stamps, self.outputs) = (old, old_stamps, outputs);
             self.meta.messages = self.messages.len();
         }
         done

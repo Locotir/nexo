@@ -8,9 +8,11 @@ impl Session {
     /// were spent. When the file cannot be rewritten, memory is left as it was, matching the file.
     pub fn rewind(&mut self, keep: usize) -> anyhow::Result<()> {
         let keep = keep.min(self.messages.len());
-        let (messages, outputs, stop) = (self.messages.clone(), self.outputs.clone(), self.stop.clone());
+        let (messages, stamps, outputs, stop) =
+            (self.messages.clone(), self.stamps.clone(), self.outputs.clone(), self.stop.clone());
         self.stop = self.stop_at(keep);
         self.messages.truncate(keep);
+        self.stamps.truncate(keep);
         let ids: std::collections::BTreeSet<String> =
             self.messages.iter().flat_map(|m| m.tool_calls().map(|(id, _, _)| id.to_string())).collect();
         self.outputs.retain(|id, _| ids.contains(id));
@@ -18,7 +20,7 @@ impl Session {
         self.track(&done);
         // a file replaced but not opened again holds the kept messages: memory stays as they are
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
-            (self.messages, self.outputs, self.stop) = (messages, outputs, stop);
+            (self.messages, self.stamps, self.outputs, self.stop) = (messages, stamps, outputs, stop);
             self.meta.messages = self.messages.len();
         }
         done
@@ -54,7 +56,15 @@ impl Session {
             }
             let mut written = std::collections::BTreeSet::new();
             for (index, m) in self.messages.iter().enumerate() {
-                writeln!(f, "{}", serde_json::to_string(&Line::Message { index, ts: now(), message: m.clone() })?)?;
+                writeln!(
+                    f,
+                    "{}",
+                    serde_json::to_string(&Line::Message {
+                        index,
+                        ts: self.stamps.get(index).cloned().unwrap_or_else(now),
+                        message: m.clone()
+                    })?
+                )?;
                 for (id, _, _) in m.tool_calls() {
                     if let Some(out) = self.outputs.get(id) {
                         written.insert(id.to_string());
@@ -143,8 +153,8 @@ impl Session {
             (e.meta.parent, e.meta.fork_at) = (parent, at);
             e
         };
-        for m in &self.messages[..keep] {
-            f.append(m)?;
+        for (i, m) in self.messages[..keep].iter().enumerate() {
+            f.append_at(m, self.stamps.get(i).cloned().unwrap_or_else(now))?;
             for (id, _, _) in m.tool_calls() {
                 if let Some(out) = self.outputs.get(id) {
                     f.record_output(id, out)?;
