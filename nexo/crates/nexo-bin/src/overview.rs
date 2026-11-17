@@ -228,14 +228,19 @@ pub fn overview_window(img: &Image, from: Option<u64>, budget: usize) -> Result<
     secs.push(nx);
 
     // rows
-    let mut items: Vec<String> = Vec::new();
+    // (kind, section title, text): every line is a row with a typed JSON object
+    let mut items: Vec<(&'static str, String, String)> = Vec::new();
     for s in &secs {
         if !s.title.is_empty() {
-            items.push(s.title.clone());
+            items.push(("title", s.title.clone(), s.title.clone()));
         }
-        items.extend(s.lines.iter().cloned());
+        items.extend(s.lines.iter().map(|l| ("line", s.title.clone(), l.clone())));
     }
-    let (rows, tail) = cut(&items, from, budget, |t| Row { key: 0, text: t.clone(), json: None });
+    let (rows, tail) = cut(&items, from, budget, |(kind, section, t)| Row {
+        key: 0,
+        text: t.clone(),
+        json: Some(json!({"kind": kind, "section": section, "text": t})),
+    });
     let meta = meta_json(img, &mains, &groups, other, &ranked, &called, &suggestions);
     Ok(Output { op: "overview", meta, rows, tail, command: command(img, "overview", "") })
 }

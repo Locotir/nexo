@@ -125,7 +125,7 @@ pub use ops::{
     strings_window, StrSort,
 };
 pub use overview::{overview, overview_window};
-pub use page::{shell_word, Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
+pub use page::{project_items, shell_word, Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
 pub use patch::{patch, patch_file, patch_with, PatchData, PatchOpts, PatchTarget};
 pub use place::{addr_in, any_addr_in, close_names, is_span, range_in, AddrExpr, RangeExpr, ADDR_FORMS, RANGE_FORMS};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};

@@ -96,7 +96,11 @@ pub(super) fn show(
                 ),
                 format!("see it: {}", fn_cmd(s, k)),
             ];
-            let rows = lines.into_iter().enumerate().map(|(n, t)| Row { key: n as u64, text: t, json: None }).collect();
+            let rows = lines
+                .into_iter()
+                .enumerate()
+                .map(|(n, t)| Row { key: n as u64, json: Some(json!({"kind": "note", "text": t})), text: t })
+                .collect();
             let meta = json!({"status": word, "function": s.name(k), "side": side, "addr": f.start});
             return Ok(Output { op: "diff", meta, rows, tail: 0, command });
         }
