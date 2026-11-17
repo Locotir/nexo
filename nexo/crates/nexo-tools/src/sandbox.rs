@@ -171,9 +171,36 @@ pub fn network_block() -> &'static str {
     }
 }
 
+/// Whether "network off" is really enforced. Only Landlock without a network namespace and without
+/// TCP rules (kernel before 6.7) lets a command keep the network: the `landlock` crate drops the
+/// access it cannot handle instead of failing, so the ruleset still counts as enforced.
+pub fn network_enforced() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        enforced(matches!(backend(), Backend::Landlock), netns_works(), landlock_abi())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        enforced(false, false, 0)
+    }
+}
+
+/// The decision of `network_enforced`, from what was found: bwrap and sandbox-exec always cut the
+/// network (or refuse to run), Landlock needs a network namespace or the TCP rules of ABI 4.
+fn enforced(is_landlock: bool, netns: bool, abi: i64) -> bool {
+    !is_landlock || netns || abi >= 4
+}
+
 /// Whether a command in this mode runs without asking: the sandbox is on and a backend enforces it.
 pub fn auto_allows(s: &SandboxSettings) -> bool {
     s.mode.is_on() && backend().usable()
+}
+
+/// Whether a sandboxed command may skip the question: `auto_allows`, and the network is shut when
+/// the settings say so. A sandbox that leaves the network open (Landlock on a kernel without
+/// namespaces or TCP rules) would let a command send out what it reads, so it asks.
+pub fn holds(s: &SandboxSettings) -> bool {
+    auto_allows(s) && (s.network || network_enforced())
 }
 
 /// One line for `/status` and the `/sandbox` answer.
@@ -181,7 +208,13 @@ pub fn describe(s: &SandboxSettings) -> String {
     if !s.mode.is_on() {
         return "off".into();
     }
-    let net = if s.network { "network on".to_string() } else { format!("network off ({})", network_block()) };
+    let net = if s.network {
+        "network on".to_string()
+    } else if !network_enforced() {
+        "network NOT blocked".to_string()
+    } else {
+        format!("network off ({})", network_block())
+    };
     match backend() {
         Backend::Unavailable(why) if cfg!(windows) => {
             format!("{} requested, {why}: every command asks first", s.mode.as_str())
@@ -449,6 +482,15 @@ mod tests {
 
     fn ws() -> SandboxSettings {
         SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![])
+    }
+
+    #[test]
+    fn network_off_counts_as_enforced_only_where_something_cuts_it() {
+        assert!(!enforced(true, false, 3), "landlock without a namespace or TCP rules leaves the network open");
+        assert!(!enforced(true, false, 0));
+        assert!(enforced(true, false, 4));
+        assert!(enforced(true, true, 3));
+        assert!(enforced(false, false, 0), "bwrap and sandbox-exec always cut it");
     }
 
     #[test]

@@ -85,11 +85,11 @@ impl Tool for Bash {
 
     fn sandbox_holds(&self, args: &Value, sandbox: &nexo_core::sandbox::SandboxSettings) -> bool {
         // a detached command outlives nexo even in the sandbox: it is asked about
-        !bool_arg(args, "unsandboxed") && !bool_arg(args, "detach") && crate::sandbox::auto_allows(sandbox)
+        !bool_arg(args, "unsandboxed") && !bool_arg(args, "detach") && crate::sandbox::holds(sandbox)
     }
 
     fn sandbox_status(&self, sandbox: &nexo_core::sandbox::SandboxSettings) -> Option<(String, bool)> {
-        let works = !sandbox.mode.is_on() || crate::sandbox::auto_allows(sandbox);
+        let works = !sandbox.mode.is_on() || crate::sandbox::holds(sandbox);
         Some((crate::sandbox::describe(sandbox), works))
     }
 

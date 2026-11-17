@@ -37,7 +37,8 @@ Caches (under the home directory, skipped when missing): `.cargo/registry`, `.ca
   with the `landlock` crate. Network off is a new user and network namespace (loopback is brought up inside,
   so a test can run its own server on 127.0.0.1; the host's listeners are out of reach). Where a namespace
   cannot be made, Landlock's TCP rules (kernel 6.7 or later) are used. If neither exists, `/status` says
-  the network is not blocked.
+  `network NOT blocked` and a command asks first instead of running on its own, even in the sandbox. The TCP
+  rules cover TCP only: UDP, and so DNS, stays open there.
 - **Linux, bwrap**: used when the kernel has no Landlock and `bwrap` is on the PATH (read-only bind of `/`,
   the write roots bound on top, `--unshare-net`). `NEXO_SANDBOX_BACKEND=bwrap` (or `landlock`) forces one.
 - **macOS, sandbox-exec** with a generated profile (writes denied except the roots, `network*` denied unless
@@ -76,6 +77,8 @@ the command harmless.
 - Unix sockets on disk (for example the Docker socket) stay reachable even with the network off: Landlock does
   not govern `connect` to a path, and the macOS profile allows them. A command that can reach one can ask
   that program to act outside the sandbox. Do not use the sandbox as a boundary against a hostile command.
+- The sandbox reads all of `/`, so a sandboxed command can still read secrets such as `~/.ssh` or the browser
+  relay token. The read, grep and instruction tools ask first for those paths; `bash` does not.
 
 For more safety: turn the sandbox off for the project (`/sandbox off`, or `sandbox = "off"`), so every `bash`
 call asks first; add deny rules for what must never run; keep keys out of the environment you start nexo from.
