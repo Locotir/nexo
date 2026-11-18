@@ -3,7 +3,53 @@
 use super::path::{FACT, NOTES};
 use super::*;
 
+/// Where a source expression lives, from the program's variable info.
+pub(crate) struct Placed {
+    pub addr: u64,
+    /// Bytes of its type (0 when the type's size is not known).
+    pub size: u64,
+    /// Its type as `ptype` names it.
+    pub ty: String,
+    /// The function of the selected frame and that frame's CFA, when both are known.
+    pub func: Option<String>,
+    pub cfa: Option<u64>,
+}
+
 impl Session {
+    /// Where `x`, `p->next->val`, `a[i]` or `*p` is in memory in the selected frame: its address and size, not read
+    /// again later. `None` when the expression does not start from a variable of the program; an error says why a
+    /// variable has no place (in a register, optimised out, a path that does not hold).
+    pub(crate) fn var_place(&mut self, src: &str) -> Option<Result<Placed>> {
+        let got = self
+            .with_vars(false, |vars, regs| {
+                let (v, amp) = match vars.path(src, regs)? {
+                    Ok(x) => x,
+                    Err(e) => return Some(Err(e)),
+                };
+                NOTES.with(|n| n.borrow_mut().clear());
+                FACT.with(|f| *f.borrow_mut() = None);
+                if amp {
+                    return Some(Err(format!("{} is an address, not a place that changes: watch the variable itself", src.trim())));
+                }
+                let At::Mem(addr) = v.at else {
+                    return Some(Err(format!(
+                        "{} is kept in a register here, and a debug register watches memory only: build without optimisation (-O0) to give it a place",
+                        src.trim()
+                    )));
+                };
+                let pc = regs.rip.wrapping_sub(regs.bias);
+                Some(Ok(Placed {
+                    addr,
+                    size: vars.size(v.ty),
+                    ty: vars.name(v.ty),
+                    func: vars.func_at(pc).map(|f| f.name.clone()),
+                    cfa: regs.cfa,
+                }))
+            })
+            .ok()???;
+        Some(got.map_err(crate::Error::Fail))
+    }
+
     /// The registers, frame and memory reader a location needs, or `None` when the program has no variables.
     /// With `prologue`, a stop before the function's prologue ends is marked so its stack slots are not read.
     /// In a caller's frame (`up`) they are that frame's, and its pc is the call (one byte before the return

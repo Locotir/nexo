@@ -2,14 +2,15 @@
 //! steps that compare the bytes.
 
 use super::*;
-use crate::engine::watch::hw_pieces;
-use crate::engine::WatchHow;
+use crate::engine::watch::{hw_pieces, in_frame};
+use crate::engine::{WatchHow, WatchScope};
 use crate::platform::PAGE;
 
 /// Most bytes one watch covers: it keeps a copy of them to compare.
 const WATCH_MAX: u64 = 1 << 24;
 
-const WATCH_USE: &str = "watch <place|A..B> [length] [w|r|x] [hw|page|step] [if <expr>] [after N] [log [text]]";
+const WATCH_USE: &str =
+    "watch [-l] <place|A..B|expr> [length] [w|r|x] [hw|page|step] [if <expr>] [after N] [log [text]]";
 
 impl Session {
     fn slots(&self) -> [Option<HwSlot>; 4] {
@@ -23,7 +24,7 @@ impl Session {
     }
 
     /// Put the debug registers as the watches say, and have the guarded pages worked out again at the next run.
-    pub(super) fn apply_watches(&mut self) -> Result<()> {
+    pub(crate) fn apply_watches(&mut self) -> Result<()> {
         if self.state == State::Exited {
             return Ok(());
         }
@@ -38,13 +39,122 @@ impl Session {
         self.mods.main_image().symbols.iter().find(|s| s.name == name && !s.func && s.size > 0).map(|s| s.size)
     }
 
+    /// How many words from the start make the place: `*(u32 *)(rdi + 8)` typed with spaces is one expression, so the
+    /// words are taken until every `(` and `[` is closed.
+    fn spec_len(words: &[String]) -> usize {
+        let mut depth = 0i32;
+        for (i, w) in words.iter().enumerate() {
+            for c in w.chars() {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth <= 0 {
+                return i + 1;
+            }
+        }
+        words.len()
+    }
+
+    /// Where a watch goes: `A..B`, a variable or `p->next->val`, `a[i]`, `*(u32*)(rdi+8)` (worked out once, now), a
+    /// symbol or an address. The place, its length, the frame it belongs to when it is a local, and what to tell.
+    fn watch_target(
+        &mut self,
+        spec: &str,
+        len: Option<u64>,
+        location: bool,
+    ) -> Result<(u64, u64, Option<WatchScope>, Option<String>)> {
+        if let Some((lo, hi)) = self.span_of(spec)? {
+            return Ok((lo, hi - lo, None, None));
+        }
+        let exact = spec.strip_prefix('*').is_some_and(|r| parse_addr(r.trim()).is_ok());
+        let mut why_not: Option<String> = None;
+        if !exact {
+            match self.var_place(spec) {
+                Some(Ok(p)) => {
+                    let n = len.unwrap_or(p.size);
+                    if n == 0 {
+                        return fail(format!("the size of {spec} is not known: give it, `watch {spec} 8`"));
+                    }
+                    let mut scope = None;
+                    let mut frame = String::new();
+                    if let (false, Some(cfa), Some(func)) = (location, p.cfa, p.func.clone()) {
+                        if in_frame(p.addr, cfa) {
+                            let slot = cfa.wrapping_sub(self.ptr_size() as u64);
+                            match self.read_ptr(slot) {
+                                Some(ret) => {
+                                    scope = Some(WatchScope {
+                                        cfa,
+                                        ret,
+                                        tid: self.cur,
+                                        what: spec.to_string(),
+                                        func: func.clone(),
+                                    });
+                                    frame = format!(
+                                        "; it lives in the frame of {func}, so the watch ends with one stop when {func} returns (`-l` watches the place for good)"
+                                    );
+                                }
+                                None => frame = format!("; the return address of {func} cannot be read, so the watch is not tied to its frame"),
+                            }
+                        }
+                    }
+                    let said = format!(
+                        "`{spec}` is {} at {:#x}, {n} bytes: the place is worked out now and not again, as gdb's `watch -l` does{frame}",
+                        p.ty, p.addr
+                    );
+                    return Ok((p.addr, n, scope, Some(said)));
+                }
+                Some(Err(e)) => {
+                    why_not = Some(if e.to_string().contains("cannot read") {
+                        format!(
+                            "`{spec}` has no place in memory: the result of an operator is a value, not a variable; watch a variable, `p->f`, `a[i]` or `*(type*)addr` ({e})"
+                        )
+                    } else {
+                        e.to_string()
+                    })
+                }
+                None => {}
+            }
+            match self.eval_place(spec) {
+                Ok(Some(pl)) => {
+                    let n = len.unwrap_or(pl.size as u64).max(1);
+                    let said = format!(
+                        "`{spec}` is {:#x}, {n} bytes: worked out once now; the expression is not worked out again, so the watch stays on this address",
+                        pl.addr
+                    );
+                    return Ok((pl.addr, n, None, Some(said)));
+                }
+                Ok(None) => {}
+                Err(e) => return fail(why_not.unwrap_or_else(|| e.to_string())),
+            }
+        }
+        match self.addr_of(spec) {
+            Ok(a) => Ok((a, len.or_else(|| self.data_size(spec)).unwrap_or(8), None, None)),
+            Err(e) => match why_not {
+                Some(w) => fail(w),
+                None if spec.chars().any(|c| "+-*/%&|^<>=!?".contains(c)) => fail(format!(
+                    "{e}; `{spec}` is not a place in memory (the result of an operator has no address): watch a variable, `p->f`, `a[i]`, `*(type*)addr`, a symbol or an address"
+                )),
+                None => Err(e),
+            },
+        }
+    }
+
     pub(super) fn cmd_watch(&mut self, words: &[String]) -> Result<Output> {
-        let Some(spec) = words.first() else { return usage(WATCH_USE) };
+        let location = words.first().is_some_and(|w| matches!(w.as_str(), "-l" | "-location"));
+        let words = if location { &words[1..] } else { words };
+        if words.is_empty() {
+            return usage(WATCH_USE);
+        }
         self.need_stopped()?;
         let (mut len, mut acc, mut how) = (None, Access::Write, None);
         let (mut cond, mut after, mut log) = (None, 0u64, None);
         let keyword = |w: &String| matches!(w.as_str(), "if" | "after" | "log");
-        let mut i = 1;
+        let spec_words = Self::spec_len(words);
+        let spec = words[..spec_words].join(" ");
+        let mut i = spec_words;
         while i < words.len() {
             let w = words[i].as_str();
             if keyword(&words[i]) {
@@ -73,13 +183,7 @@ impl Session {
             }
             i += 1;
         }
-        let (addr, len) = match self.span_of(spec)? {
-            Some((lo, hi)) => (lo, hi - lo),
-            None => {
-                let a = self.addr_of(spec)?;
-                (a, len.or_else(|| self.data_size(spec)).unwrap_or(8))
-            }
-        };
+        let (addr, len, scope, said) = self.watch_target(&spec, len, location)?;
         if len > WATCH_MAX {
             return usage(format!("{len} bytes: one watch covers at most {WATCH_MAX} bytes"));
         }
@@ -101,7 +205,8 @@ impl Session {
         if last.len() as u64 != len {
             return fail(format!("{addr:#x}+{len} cannot be read in the program: there is nothing there to watch"));
         }
-        let mut wp = Wp { id, addr, len, access: acc, how, slots: Vec::new(), last, hits: 0, cond, after, log };
+        let scoped = scope.is_some();
+        let mut wp = Wp { id, addr, len, access: acc, how, slots: Vec::new(), last, hits: 0, cond, after, log, scope };
         let mut lines = Vec::new();
         match how {
             WatchHow::Hardware => {
@@ -175,12 +280,15 @@ impl Session {
         };
         let name = self.mods.label(addr, true).filter(|n| !n.is_empty()).map(|n| format!(" {n}")).unwrap_or_default();
         lines.insert(0, format!("watch #{id} {addr:#x}{name} {len} bytes {kind} ({})", w.word()));
+        if let Some(said) = said {
+            lines.insert(1, said);
+        }
         if acc != Access::Exec {
             lines.push(
                 "at a hit `$old`, `$new` and `$at` (offset of the change in the range) hold the change for `if` and `log`; a `log` watch writes one log line per hit and does not stop".into(),
             );
         }
-        Ok(rows("watch", lines, json!({"id": id, "addr": addr, "len": len, "how": w.word()})))
+        Ok(rows("watch", lines, json!({"id": id, "addr": addr, "len": len, "how": w.word(), "scoped": scoped})))
     }
 
     /// Whether the pages of the newest watch can be guarded: they are mapped, a read guard holds no code, and the

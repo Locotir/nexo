@@ -68,6 +68,24 @@ pub struct Wp {
     pub cond: Option<String>,
     pub after: u64,
     pub log: Option<String>,
+    /// A watch on a place in a function's frame ends when that frame returns.
+    pub scope: Option<WatchScope>,
+}
+
+/// The frame a watch on a local belongs to: the watch is deleted, with one stop, when the function returns to
+/// `ret` with the stack pointer back at `cfa` or above it (a deeper call of the same function returns there too,
+/// but lower).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchScope {
+    /// The frame's CFA: the stack pointer after the function returns.
+    pub cfa: u64,
+    /// Where the function returns to: an internal breakpoint sits there while the watch lives.
+    pub ret: u64,
+    /// The thread the frame belongs to.
+    pub tid: Tid,
+    /// The expression as typed, and the function whose frame it is.
+    pub what: String,
+    pub func: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,6 +613,14 @@ impl Session {
         expr::eval(src, &mut ev)
     }
 
+    /// Where an expression that names memory lives (`*(u32*)(rdi+8)`, `p[i]`), in the selected frame; `None` when it
+    /// is not one of those forms.
+    pub fn eval_place(&mut self, src: &str) -> Result<Option<expr::Place>> {
+        let regs = self.sel_regs()?;
+        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv, lost: false };
+        expr::place(src, &mut ev)
+    }
+
     pub fn new_id(&mut self) -> u32 {
         let n = self.next_id;
         self.next_id += 1;
@@ -611,6 +637,7 @@ impl Session {
         if let Some(p) = &self.calling {
             w.insert(p.ret);
         }
+        w.extend(self.wps.iter().filter_map(|w| w.scope.as_ref().map(|s| s.ret)));
         w
     }
 
@@ -902,6 +929,9 @@ impl Session {
     fn hit(&mut self, tid: Tid, addr: u64) -> Result<Option<(Tid, Why)>> {
         if self.call_returned(tid, addr)? {
             return Ok(Some((tid, Why::Returned)));
+        }
+        if let Some(why) = self.scope_ended(tid, addr)? {
+            return Ok(Some((tid, why)));
         }
         // the loader's hook: libraries came or went, which may set breakpoints before the ones at this address
         let loaded = if self.libs.armed == Some(addr) { self.on_load(tid) } else { None };
@@ -1222,7 +1252,7 @@ impl Session {
         self.guards.clear();
         self.step_from = None;
         let n = self.wps.len();
-        self.wps.retain(|w| w.how == WatchHow::Hardware);
+        self.wps.retain(|w| w.how == WatchHow::Hardware && w.scope.is_none());
         if self.wps.len() < n {
             gone.push("page and step watches");
         }

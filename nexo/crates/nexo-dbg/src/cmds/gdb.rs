@@ -97,6 +97,13 @@ impl Session {
             "condition" => self.gdb_condition(rest),
             "ignore" => self.gdb_ignore(rest),
             "info" if !rest.is_empty() => self.gdb_info(rest),
+            // x86 debug registers cannot watch reads alone: both stop on a read or a write (`r`)
+            "rwatch" | "awatch" => {
+                let mut w = vec!["watch".to_string()];
+                w.extend(rest.iter().cloned());
+                w.push("r".to_string());
+                self.exec(&w)
+            }
             "break" | "tbreak" => {
                 let mut w = words.to_vec();
                 w[0] = name.to_string();

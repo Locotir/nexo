@@ -377,6 +377,72 @@ pub fn value(src: &str, env: &mut dyn Env) -> Result<u64> {
     Ok(eval(src, env)?.v)
 }
 
+/// A place in the program's memory: where it starts and how many bytes the expression's type has there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    pub addr: u64,
+    pub size: usize,
+}
+
+/// The place an expression names, without reading it: `*E` (the pointer's value, the size of what it points at)
+/// and `E[i]`. `None` for other forms, which the caller reads as plain addresses or as variables. An operator
+/// after the place (`*p + 1`) is no place and says so.
+pub fn place(src: &str, env: &mut dyn Env) -> Result<Option<Place>> {
+    let t = lex(src)?;
+    if t.is_empty() {
+        return fail("the expression is empty");
+    }
+    let ptr = env.ptr_bytes();
+    let not_one =
+        || fail(format!("{:?} is not one place in memory: the result of an operator has no address", src.trim()));
+    // the `[` that matches the `]` ending the expression
+    let mut open = None;
+    if matches!(t.last(), Some(Tok::Op("]"))) {
+        let mut depth = 0usize;
+        for (k, tok) in t.iter().enumerate().rev() {
+            match tok {
+                Tok::Op("]") => depth += 1,
+                Tok::Op("[") => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        open = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(k) = open.filter(|k| *k > 0) {
+        let mut b = P { t: t[..k].to_vec(), i: 0, env: &mut *env, ptr };
+        let base = b.ternary()?;
+        if b.i < b.t.len() {
+            return not_one();
+        }
+        let mut q = P { t: t[k + 1..t.len() - 1].to_vec(), i: 0, env: &mut *env, ptr };
+        let idx = q.ternary()?;
+        if q.i < q.t.len() {
+            return not_one();
+        }
+        let (step, ty) = if base.ty.is_ptr() {
+            (base.ty.step(ptr), base.ty.pointee().with_plain(base.ty, ptr))
+        } else {
+            (u64::from(ptr), word_ty(ptr))
+        };
+        return Ok(Some(Place { addr: base.v.wrapping_add(idx.v.wrapping_mul(step)), size: ty.target_bytes_of(ptr) }));
+    }
+    if matches!(t.first(), Some(Tok::Op("*"))) {
+        let mut p = P { t, i: 1, env, ptr };
+        let v = p.unary()?;
+        if p.i < p.t.len() {
+            return not_one();
+        }
+        let ty = v.ty.pointee().with_plain(v.ty, ptr);
+        return Ok(Some(Place { addr: v.v, size: ty.target_bytes_of(ptr) }));
+    }
+    Ok(None)
+}
+
 impl P<'_> {
     fn peek_op(&self, o: &str) -> bool {
         matches!(self.t.get(self.i), Some(Tok::Op(x)) if *x == o)
@@ -783,6 +849,26 @@ mod tests {
         assert!(value("rax +", &mut e).is_err());
         assert!(value("nope", &mut e).is_err());
         assert!(value("*0x5000", &mut e).unwrap_err().to_string().contains("cannot read"));
+    }
+
+    #[test]
+    fn a_deref_or_an_index_names_a_place_with_the_size_of_its_type() {
+        let mut e = T::default();
+        let p = |s: &str, e: &mut T| place(s, e).unwrap_or_else(|x| panic!("{s}: {x}"));
+        assert_eq!(p("*(u32*)(rdi+8)", &mut e), Some(Place { addr: 0x1008, size: 4 }));
+        assert_eq!(p("*(u8*)(rdi+8)", &mut e), Some(Place { addr: 0x1008, size: 1 }));
+        assert_eq!(p("*(u64*)rdi", &mut e), Some(Place { addr: 0x1000, size: 8 }));
+        // a plain number points at a word
+        assert_eq!(p("*0x2000", &mut e), Some(Place { addr: 0x2000, size: 8 }));
+        // what a `u32**` points at is a pointer
+        assert_eq!(p("*(u32**)0x2004", &mut e), Some(Place { addr: 0x2004, size: 8 }));
+        assert_eq!(p("((u32*)rdi)[2]", &mut e), Some(Place { addr: 0x1008, size: 4 }));
+        assert_eq!(p("((u16*)rdi)[rax - 4]", &mut e), Some(Place { addr: 0x1006, size: 2 }));
+        // other forms are not places here, and an operator's result has no address
+        assert_eq!(p("rdi+8", &mut e), None);
+        assert!(place("*(u32*)rdi + 1", &mut e).unwrap_err().to_string().contains("not one place"));
+        assert!(place("((u32*)rdi)[1] + 1", &mut e).is_ok_and(|p| p.is_none()));
+        assert!(place("nope[1]", &mut e).is_err());
     }
 
     #[test]
