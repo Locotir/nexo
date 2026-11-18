@@ -466,7 +466,7 @@ impl Session {
     }
 
     fn gdb_undisplay(&mut self, rest: &[String]) -> Result<Output> {
-        if rest.is_empty() {
+        if rest.is_empty() || rest[0] == "all" {
             let n = self.displays.len();
             self.displays.clear();
             return Ok(rows("undisplay", vec![format!("{n} displays removed")], json!({})));
@@ -488,6 +488,18 @@ impl Session {
             match self.exec(&w) {
                 Ok(o) => l.extend(o.rows.into_iter().map(|r| format!("{id}: {}", r.text))),
                 Err(e) => l.push(format!("{id}: {} ({e})", w[1..].join(" "))),
+            }
+        }
+        l
+    }
+
+    /// The displays as `expr=value`, one piece each, for the one line of a compact stop.
+    pub(crate) fn display_pieces(&mut self) -> Vec<String> {
+        let mut l = Vec::new();
+        for (_, w) in self.displays.clone() {
+            match self.exec(&w) {
+                Ok(o) => l.extend(o.rows.into_iter().map(|r| r.text.replacen(" = ", "=", 1))),
+                Err(e) => l.push(format!("{} ({e})", w[1..].join(" "))),
             }
         }
         l
