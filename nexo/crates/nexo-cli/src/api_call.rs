@@ -644,7 +644,7 @@ async fn watch_inner(
     let mut prev = if sel.is_some() { None } else { state.and_then(read_state) };
     let mut prev_pick = sel.as_ref().and_then(|x| x.load());
     let mut n: u32 = 0;
-    let mut last_failed = false;
+    let mut last_failed: bool;
     loop {
         n += 1;
         match s.once(ep, &p.inputs).await {

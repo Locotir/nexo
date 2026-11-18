@@ -24,6 +24,7 @@ pub(crate) struct Module {
 impl Module {
     /// What to add to a file address to get the live one: where the module is loaded minus where its file puts its
     /// first byte (`Image::image_base`). Wrapping, so a module loaded below its file base is a negative amount.
+    #[cfg(test)]
     pub fn delta(&self, image_base: u64) -> u64 {
         self.base.wrapping_sub(image_base)
     }

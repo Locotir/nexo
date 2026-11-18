@@ -20,10 +20,6 @@ use std::time::Duration;
 /// An exit code and what to say (the one `api_call` uses).
 type Fail = (i32, String);
 
-fn usage(e: String) -> Fail {
-    (crate::headless::EXIT_USAGE, e)
-}
-
 fn failed(e: String) -> Fail {
     (1, e)
 }

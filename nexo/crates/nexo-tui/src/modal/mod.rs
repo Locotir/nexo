@@ -370,7 +370,7 @@ impl Trust {
 
 #[derive(Debug, Clone)]
 pub enum Modal {
-    Permission(Permission),
+    Permission(Box<Permission>),
     /// The model asks something, or shows a plan to approve.
     Question(Box<Ask>),
     Picker(Picker),
@@ -586,7 +586,7 @@ pub fn help_rows(macos: bool) -> Vec<(&'static str, Vec<(&'static str, &'static 
 
 impl Modal {
     pub fn permission(req: PermissionRequest) -> Modal {
-        Modal::Permission(Permission {
+        Modal::Permission(Box::new(Permission {
             req,
             scroll: 0,
             buttons: Vec::new(),
@@ -594,7 +594,7 @@ impl Modal {
             rules_gated: false,
             rules_open: false,
             body_cache: [None, None],
-        })
+        }))
     }
 
     pub fn id(&self) -> Option<&str> {

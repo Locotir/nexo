@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, Write};
 
-use clap::{Arg, ArgAction, CommandFactory, Parser};
+use clap::{Arg, ArgAction, CommandFactory};
 use serde_json::{json, Value};
 
 mod dbg_run;

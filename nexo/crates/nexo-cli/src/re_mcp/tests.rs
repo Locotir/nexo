@@ -1,5 +1,6 @@
 use super::*;
 
+use clap::Parser;
 use std::io::Cursor;
 
 /// Send these lines to a server and return its answers, one value each.

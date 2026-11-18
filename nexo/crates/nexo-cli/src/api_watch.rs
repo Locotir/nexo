@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn the_exit_code_is_not_one_watch_or_check_already_use() {
         // watch: 0, 1 (a call failed, drift), 2 (usage), 3 (stream); check: 0 to 3
-        assert!(EXIT_ALERT > 3);
+        const { assert!(EXIT_ALERT > 3) };
         assert_eq!(EXIT_ALERT, 4);
     }
 

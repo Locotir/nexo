@@ -1,5 +1,4 @@
 use super::clap_facts::*;
-use super::shell::*;
 use super::*;
 
 /// The tool as a session with the `debug` tool beside it has it.

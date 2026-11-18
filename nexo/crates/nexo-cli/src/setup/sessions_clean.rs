@@ -150,7 +150,7 @@ fn size_in(dir: &Path, out: &mut impl Write) -> std::io::Result<()> {
             (total, m.id, m.title)
         })
         .collect();
-    biggest.sort_by(|a, b| b.0.cmp(&a.0));
+    biggest.sort_by_key(|a| std::cmp::Reverse(a.0));
     if !biggest.is_empty() {
         writeln!(out)?;
         writeln!(out, "largest sessions (with their curator state)")?;

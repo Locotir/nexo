@@ -53,6 +53,7 @@ pub struct Api;
 
 /// What a line parses to.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Parsed {
     Help(String),
     Cmd(ApiCmd),

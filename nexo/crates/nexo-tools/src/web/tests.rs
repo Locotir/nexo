@@ -652,7 +652,7 @@ async fn fetch_decodes_the_charset_the_header_names() {
     let s = MockServer::start_async().await;
     s.mock_async(|when, then| {
         when.method(GET).path("/latin1.txt");
-        then.status(200).header("content-type", "text/plain; charset=ISO-8859-1").body(b"caf\xE9 cr\xE8me".to_vec());
+        then.status(200).header("content-type", "text/plain; charset=ISO-8859-1").body(b"caf\xE9 cr\xE8me");
     })
     .await;
     let t = WebFetch::new(&WebConfig::default());
@@ -764,7 +764,7 @@ async fn a_failed_fetch_with_a_binary_body_shows_no_body() {
     let s = MockServer::start_async().await;
     s.mock_async(|when, then| {
         when.method(GET).path("/img");
-        then.status(500).header("content-type", "image/png").body(b"\x89PNG\r\n".to_vec());
+        then.status(500).header("content-type", "image/png").body(b"\x89PNG\r\n");
     })
     .await;
     let t = WebFetch::new(&WebConfig::default());

@@ -79,6 +79,9 @@ pub(super) struct HeldEnd {
 /// The width, scroll line and block count a layout chose the blocks near the view for.
 type NearKey = (usize, usize, usize);
 
+/// Reads the custom command files found under a project folder.
+pub(crate) type CommandLoader = Box<dyn Fn(&std::path::Path) -> Vec<crate::custom::CustomCommand> + Send>;
+
 pub struct App {
     pub opts: TuiOptions,
     pub theme: Theme,
@@ -333,7 +336,7 @@ pub struct App {
     /// Commands of one's own (`.nexo/commands/*.md`).
     pub custom_commands: Vec<crate::custom::CustomCommand>,
     /// Where the command files are read from; a test points it at a temporary project.
-    pub(crate) command_loader: Box<dyn Fn(&std::path::Path) -> Vec<crate::custom::CustomCommand> + Send>,
+    pub(crate) command_loader: CommandLoader,
     /// The Agent Skills found at start (`SKILL.md` folders); each also answers to `/name` as a command.
     pub skills: Vec<nexo_core::skills::Skill>,
     /// A notification for the terminal (the bell), when a long turn ended.

@@ -249,7 +249,6 @@ fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         scratch = s;
         img
     } else if c.live {
-        scratch = None;
         return Err(Error::Usage("--live reads a module of a running program: add --module NAME".into()));
     } else if c.raw && !matches!(op, BinOp::Managed { .. }) {
         live_base = None;
