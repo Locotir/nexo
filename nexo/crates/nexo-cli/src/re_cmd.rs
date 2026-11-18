@@ -100,7 +100,10 @@ pub fn map() -> String {
     ];
     out.extend(ops.iter().map(|(n, _, about)| format!("  {n:<width$}  {about}")));
     out.push("run it (nexo dbg; a live program, one bounded call at a time):".to_string());
-    out.extend(nexo_dbg::COMMANDS.iter().map(|(n, about)| format!("  {:<width$}  {about}", first_name(n))));
+    // one line each, like the other groups: the whole text (`run` takes 200 characters) is in `nexo dbg help`
+    out.extend(
+        nexo_dbg::COMMANDS.iter().map(|(n, about)| format!("  {:<width$}  {}", first_name(n), first_sentence(about))),
+    );
     if !api.is_empty() {
         out.push(
             "the API behind a website (nexo api; HAR in, calls out; secrets only from env vars; `nexo re api <op>`):"

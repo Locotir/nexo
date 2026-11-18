@@ -11,13 +11,15 @@ fn setup() -> Setup {
     // the person running the tests may be logged in to one of these providers
     std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
     // the keys are read from these variables only (named in `cfg` below): none may be set by the caller
-    for n in 1..=5 {
+    for n in [1, 3, 4, 5] {
         std::env::remove_var(format!("NEXO_T_NO_KEY_{n}"));
     }
+    // codex is the one other provider that is ready: only a provider that can be used offers its models (c6cdc996)
+    std::env::set_var("NEXO_T_CODEX_KEY", "test-key");
     let cfg = |url: &str, env: &str| ProviderConfig::new("openai-chat", url, Some(env));
     let providers = vec![
         ("deepseek".to_string(), cfg("https://api.deepseek.com", "NEXO_T_NO_KEY_1")),
-        ("codex".to_string(), cfg("https://codex.example", "NEXO_T_NO_KEY_2")),
+        ("codex".to_string(), cfg("https://codex.example", "NEXO_T_CODEX_KEY")),
         ("anthropic".to_string(), cfg("https://api.anthropic.com", "NEXO_T_NO_KEY_3")),
         ("cerebras".to_string(), cfg("https://api.cerebras.ai", "NEXO_T_NO_KEY_4")),
         ("xai".to_string(), cfg("https://api.x.ai", "NEXO_T_NO_KEY_5")),

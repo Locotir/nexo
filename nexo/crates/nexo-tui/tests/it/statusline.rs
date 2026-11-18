@@ -62,9 +62,17 @@ fn empty_list_means_every_piece_and_unknown_names_are_dropped() {
 fn default_bar_shows_model_effort_mode_context_and_cost() {
     for (w, h) in [(80, 24), (200, 60)] {
         let b = bar(&mut app(&[]), w, h);
-        for want in ["deepseek", "high", "ask", "%", "$0.0123"] {
+        for want in ["deepseek", "high", "ask", "%"] {
             assert!(b.contains(want), "{w}x{h}: `{want}` missing in {b:?}");
         }
+        // the session name (here the time it began) at the right end keeps its place on a narrow bar, and
+        // pushes the cost off it (9caf7618); where both fit, both show
+        assert!(b.ends_with("10:00"), "{w}x{h}: the name is missing in {b:?}");
+        assert_eq!(
+            b.contains("$0.0123"),
+            w >= 200,
+            "{w}x{h}: the cost is shown only where the name leaves room: {b:?}"
+        );
     }
 }
 

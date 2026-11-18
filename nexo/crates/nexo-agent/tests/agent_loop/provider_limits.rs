@@ -88,7 +88,9 @@ async fn a_window_learned_when_the_estimate_has_the_whole_reply_fitting_compacts
     let d = test_tmpdir().unwrap();
     // the estimate puts the request and the 16384-token reply well under 131072, so a shorter reply would send the
     // same request again; the error said the history is what went over
+    // (a history of one message has nothing to summarise, so a first turn is answered before the error)
     let client = Scripted::new(vec![
+        Reply::Events(bare(text("first"))),
         Reply::Err(ProviderError::new(
             ErrorKind::ContextLength,
             "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens.",
@@ -98,12 +100,14 @@ async fn a_window_learned_when_the_estimate_has_the_whole_reply_fitting_compacts
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
     r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.turn().await;
     r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(text_of(&evs), "after");
     let reqs = client.requests();
-    assert_eq!(reqs.len(), 3);
-    assert!(is_summary(&reqs[1]), "the second call is the summariser's");
+    assert_eq!(reqs.len(), 4);
+    assert!(is_summary(&reqs[2]), "the third call is the summariser's");
     r.stop().await;
 }
 
@@ -185,7 +189,27 @@ async fn the_same_window_named_again_gets_a_smaller_curated_view_and_no_summary(
     let reqs = client.requests();
     assert_eq!(reqs.len(), 10);
     assert!(estimate(&reqs[9]) < estimate(&reqs[8]), "{} then {}", estimate(&reqs[8]), estimate(&reqs[9]));
-    assert!(reqs[9].messages.iter().any(|m| m.text().contains(&fat_message(7))), "the person's words stay whole");
+    let shape: Vec<String> = reqs[9]
+        .messages
+        .iter()
+        .map(|m| {
+            let t = m.text();
+            let at = |i: usize| t.contains(&format!("w{i}x0 "));
+            format!(
+                "{:?} {} chars, starts {}, has the start of 6: {}, of 7: {}",
+                m.role,
+                t.len(),
+                t.chars().take(50).collect::<String>(),
+                at(6),
+                at(7)
+            )
+        })
+        .collect();
+    assert!(
+        reqs[9].messages.iter().any(|m| m.text().contains(&fat_message(7))),
+        "the person's words stay whole; the last request had:\n{}",
+        shape.join("\n")
+    );
     r.stop().await;
 }
 

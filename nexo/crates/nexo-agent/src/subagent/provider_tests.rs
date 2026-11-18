@@ -38,8 +38,9 @@ const FIXED_32K: u64 = 2_400;
 /// (measured 12 009). Saying that `browsers` lists the person's logged-in browsers took 1 more (12 010). The capture
 /// verbs add about 50 to the short text (estimated, not measured).
 /// Integration 1118 with land/1117: the 12 144 of the merged re branches plus the 282 that spelling out the keys of an
-/// `edit` change added (12 412 on land/1117 alone). Summed by hand at the merge, not measured yet.
-const SCHEMA_CEILING: usize = 12_426;
+/// `edit` change added (12 412 on land/1117 alone). Summed by hand at the merge, not measured yet; the first build
+/// measured 12 671.
+const SCHEMA_CEILING: usize = 12_671;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
 const TASK_WITH_OWN_KINDS: usize = 1_915;

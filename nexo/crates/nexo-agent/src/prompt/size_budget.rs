@@ -26,6 +26,7 @@ fn tool_text_chars() -> usize {
 /// parameter) are estimated at 120 more, not measured: 13960 (14010 on Windows).
 /// The diagnostics description now says that edit and write results carry the changed file's compiler errors
 /// (139 more, counted from the old and new text): 14110 (14160 on Windows); measure and tighten at the first build.
+/// First build of the merged branches (integration 1118): 14372 measured, so 14380 (14430 on Windows).
 /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
 /// model already knows about shells and search tools, and a parameter gets a description only for what its
 /// name and the tool description do not say.
@@ -33,7 +34,7 @@ fn tool_text_chars() -> usize {
 fn the_tool_text_stays_within_its_budget() {
     let n = tool_text_chars();
     // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-    let budget = if cfg!(windows) { 14_160 } else { 14_110 };
+    let budget = if cfg!(windows) { 14_430 } else { 14_380 };
     assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
 }
 
@@ -186,7 +187,10 @@ fn a_compact_tool_keeps_its_parameter_names_types_and_required_list() {
         shape(&f.parameters, &mut a, "");
         shape(&c.parameters, &mut b, "");
         assert_eq!(a, b, "{}", f.name);
-        assert!(c.description.len() < f.description.len() && c.description.len() <= 200, "{}", f.name);
+        // 200, and 260 for the browser: its short text also keeps the persons own browsers and the rule never to
+        // get past a CAPTCHA (8387ef14), which a small window must not lose
+        let most = if f.name == "browser" { 260 } else { 200 };
+        assert!(c.description.len() < f.description.len() && c.description.len() <= most, "{}", f.name);
     }
     assert!(compact_tools_text().contains("=== bash ==="));
 }

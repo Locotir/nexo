@@ -239,7 +239,19 @@ async fn a_task_list_change_leaves_the_system_text_alone_and_the_list_rides_with
     r.turn().await;
     r.stop().await;
     let reqs = client.requests();
-    assert_eq!(reqs.len(), 4);
+    let seen: Vec<String> = reqs
+        .iter()
+        .map(|q| {
+            let last: String = last_user_text(q).chars().take(120).collect();
+            format!(
+                "system {} chars, {} messages, max_tokens {}, last user text {last:?}",
+                q.system.len(),
+                q.messages.len(),
+                q.max_tokens
+            )
+        })
+        .collect();
+    assert_eq!(reqs.len(), 4, "the requests were:\n{}", seen.join("\n"));
     for q in &reqs[1..] {
         assert_eq!(q.system, reqs[0].system, "a todo call does not change the system text");
     }

@@ -571,7 +571,8 @@ fn once_the_person_has_gone_back_to_an_earlier_topic_a_new_request_opens_no_epoc
 /// to come are the least, 4. Each line below is one branch of `fire_point`.
 #[test]
 fn the_point_where_a_rewrite_pays_follows_each_branch_of_the_cost() {
-    let fire = |spec: &str, land: i64| Engine::new(params(spec).unwrap()).fire_point(land);
+    // the default spec, not the test base (which sets `ahead=0` and `margin=1`)
+    let fire = |spec: &str, land: i64| Engine::new(crate::params(spec).unwrap()).fire_point(land);
     // the numbers pass through floats: a token either way is the same answer
     let near = |got: i64, want: i64| assert!((got - want).abs() <= 1, "got {got}, want {want}");
     // under the knee both before and after: land + 2.025 land / (0.1 * 4) = 6.0625 land
@@ -582,7 +583,7 @@ fn the_point_where_a_rewrite_pays_follows_each_branch_of_the_cost() {
     // landing on or past the knee: land + 2.025 land / ((0.1 + 0.05) * 4) = 4.375 land
     near(fire("", 120_000), 525_000);
     // a session with one call left pays the whole rewrite for one call of saved rent
-    let mut one = Engine::new(params("").unwrap());
+    let mut one = Engine::new(crate::params("").unwrap());
     one.set_left(Some(1));
     near(one.fire_point(10_000), 175_000);
     // no estimate of the calls to come: twice the target, the fixed rule the cost replaced

@@ -37,6 +37,9 @@ impl Modal {
         gap(&mut lines);
         match &req.detail {
             ToolDisplay::Diff { path, old, new, start_line } => {
+                // the diff reads a carriage return alone as a line break and would show what follows it as a new
+                // line, so one inside a line is marked first (a CRLF ending is the line's own)
+                let (old, new) = (&mark_inner_cr(old), &mark_inner_cr(new));
                 let (added, removed) = diff::stats(old, new);
                 lines.push(Line::from(vec![
                     // the path comes from the model: escape and bidi characters show as markers, never as themselves or as nothing
@@ -211,6 +214,20 @@ impl Permission {
         *slot = Some(BodyCache { width: w, theme: theme.clone(), lines: lines.clone() });
         lines
     }
+}
+
+/// `s` with each carriage return that is not part of a CRLF ending shown as `␍`.
+fn mark_inner_cr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\r' && it.peek() != Some(&'\n') {
+            out.push('\u{240D}');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// `s` with what a terminal would act on or hide made visible, for text the model supplies and the owner approves: a

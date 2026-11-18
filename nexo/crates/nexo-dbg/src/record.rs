@@ -427,7 +427,8 @@ mod tests {
         wide.mem.push(MemWrite { addr: 0x6ffe, before: vec![0; 4], after: vec![9; 4] });
         t.push(wide);
         let at = |a| t.by_mem(a, 10).iter().map(|e| e.pc).collect::<Vec<_>>();
-        assert_eq!(at(0x7000), [0x10]);
+        // the wide write (0x6ffe..0x7002) covers 0x7000 too
+        assert_eq!(at(0x7000), [0x18, 0x10]);
         assert_eq!(at(0x7001), [0x18, 0x14]);
         assert_eq!(at(0x6ffe), [0x18]);
         assert!(at(0x7002).is_empty());

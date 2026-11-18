@@ -121,6 +121,8 @@ fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
     press(&mut a, KeyCode::Esc);
     click(&mut a, HintHit::Session);
     assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Session));
+    // opening the sessions asked the agent for the list
+    assert!(drain(&mut rx).contains(&AgentCommand::ListSessions));
     press(&mut a, KeyCode::Esc);
     // the queue: picking a message edits it
     click(&mut a, HintHit::Queued);

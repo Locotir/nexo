@@ -319,7 +319,7 @@ impl Tool for WebFetch {
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                 {
-                    say.push_str(&format!(" Retry-After: {wait}."));
+                    say.push_str(&format!(". Retry-After: {wait}."));
                 }
                 if matches!(status.as_u16(), 404 | 410) {
                     say.push_str(

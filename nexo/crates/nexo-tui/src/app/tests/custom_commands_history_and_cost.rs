@@ -291,7 +291,7 @@ fn a_command_file_written_mid_session_is_offered_and_run_while_skills_and_mcp_st
     std::fs::write(dir.join("lint-fix.md"), "File version").unwrap();
     a.input.set_text("/");
     a.refresh_palette();
-    let (rows, _) = a.palette.as_ref().expect("the palette").rows(40);
+    let (rows, _) = a.palette.as_ref().expect("the palette").rows(1000);
     assert!(rows.iter().any(|r| r.label == "fresh"), "the new file is offered");
     let names: Vec<&str> = a.custom_commands.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["fresh", "lint-fix", "lint-fix", "mcp__srv__ask"], "{names:?}");
@@ -332,7 +332,7 @@ fn a_skill_shadowed_by_a_command_file_comes_back_when_the_file_is_deleted() {
     // the palette offers the name once
     a.input.set_text("/");
     a.refresh_palette();
-    let (rows, _) = a.palette.as_ref().expect("the palette").rows(40);
+    let (rows, _) = a.palette.as_ref().expect("the palette").rows(1000);
     assert_eq!(rows.iter().filter(|r| r.label == "lint-fix").count(), 1);
     // the file goes: the skill is what runs again
     std::fs::remove_file(cmds.join("lint-fix.md")).unwrap();

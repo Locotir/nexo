@@ -669,7 +669,12 @@ mod tests {
             deep = json!({"a": deep});
         }
         let d = Shape::of(&deep);
-        assert!(d.cut > 0);
+        // what lies below the depth cap is counted where the cap falls: the object `MAX_DEPTH` levels down
+        let mut at = &d;
+        for _ in 0..MAX_DEPTH {
+            at = &at.fields["a"];
+        }
+        assert_eq!(at.cut, 1);
     }
 
     #[test]

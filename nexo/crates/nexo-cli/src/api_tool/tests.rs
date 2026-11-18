@@ -103,7 +103,7 @@ fn watch_and_reveal_are_refused_with_a_reason() {
 fn a_watch_is_allowed_only_in_a_bounded_form() {
     let ok = [
         "watch m.json EP --times 1 --select $.price",
-        "watch m.json EP --times 3 --every 30s --select $.price --when \"$.price < prev\" --state s.json",
+        "watch m.json EP --times 3 --every 10s --select $.price --when \"$.price < prev\" --state s.json",
         "watch m.json EP --times 2 --every 10s",
     ];
     for l in ok {
@@ -343,10 +343,10 @@ async fn a_rule_that_denies_a_read_a_write_or_a_host_stops_the_call() {
     let w = Api.run(args("analyze cap.har --save again.json"), &deny("edit")).await;
     assert!(w.is_error && w.content.contains("denies writing"), "{}", w.content);
     assert!(!dir.path().join("again.json").exists());
-    let h = Api.run(args(&format!("call map.json \"{GET}\"")), &deny("web_fetch")).await;
+    let h = Api.run(args(&format!("call map.json \"{GET}\" -p page=1")), &deny("web_fetch")).await;
     assert!(h.is_error && h.content.contains("denies https://api.test"), "{}", h.content);
     // a dry run is not a call to the host
-    let dry = Api.run(args(&format!("call map.json \"{GET}\" --dry-run")), &deny("web_fetch")).await;
+    let dry = Api.run(args(&format!("call map.json \"{GET}\" -p page=1 --dry-run")), &deny("web_fetch")).await;
     assert!(!dry.is_error, "{}", dry.content);
 }
 

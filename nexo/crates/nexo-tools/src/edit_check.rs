@@ -172,6 +172,10 @@ fn no_diagnostic(name: &str) -> String {
 
 /// Whether `line` carries a source position: `path:LINE:` (cargo, go) or `path(LINE,` (tsc).
 fn positioned(line: &str) -> bool {
+    // cargo points at a manifest it cannot parse with `--> Cargo.toml:3:1`: a place in a file that was never checked
+    if line.trim_start().starts_with("-->") {
+        return false;
+    }
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let colon = line.split(':').skip(1).any(digits);
     let paren = line.split_once('(').and_then(|(_, r)| r.split_once(',')).is_some_and(|(n, _)| digits(n));
@@ -348,6 +352,7 @@ mod tests {
         assert!(positioned("src/lib.rs:2:5: error[E0308]: mismatched types"));
         assert!(positioned("a.ts(3,4): error TS1: m"));
         assert!(!positioned("error: failed to parse manifest at `/p/Cargo.toml`"));
+        assert!(!positioned("  --> Cargo.toml:3:11"));
         assert!(!positioned("error TS5058: The specified path does not exist"));
     }
 

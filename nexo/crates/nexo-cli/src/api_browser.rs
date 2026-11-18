@@ -433,10 +433,7 @@ mod tests {
     }
 
     fn api() -> Api {
-        api_of(vec![
-            entry("GET", "https://api.test/v1/items?page=1", true),
-            entry("GET", "https://api.test/v1/open", false),
-        ])
+        api_of(vec![entry("GET", "https://api.test/v1/items", true), entry("GET", "https://api.test/v1/open", false)])
     }
 
     fn target() -> Target {

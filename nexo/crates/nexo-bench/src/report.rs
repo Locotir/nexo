@@ -638,8 +638,8 @@ mod tests {
         let s = summary(&head(1), &recs);
         assert!(s.contains("| `deepseek-chat` | `abc1234` | 100 | default | default | 1 | $5 | **$1.7500** |"), "{s}");
         assert!(!s.contains("## Parts"), "no task has parts: {s}");
-        assert!(s.contains("| plain | plain | 2 | 0 | 1/2 | 0.7500 | 20.0 | 75.00% | 20 | 22 | 2000 | 10000 | 0 | 600 | 0.7500 | 25.0 | 4 | 6000 | 6000 | 0 | 0 |"), "{s}");
-        assert!(s.contains("| compact | compact at 100000 | 1 | 0 | 0/1 | - | - | 20.75% |"), "{s}");
+        assert!(s.contains("| plain | plain | 2 | 0 | 0 | 1/2 | 0.7500 | 20.0 | 75.00% | 20 | 22 | 2000 | 10000 | 0 | 600 | 0.7500 | 25.0 | 4 | 6000 | 6000 | 0 | 0 |"), "{s}");
+        assert!(s.contains("| compact | compact at 100000 | 1 | 0 | 0 | 0/1 | - | - | 20.75% |"), "{s}");
         assert!(
             s.contains(
                 "| a | compact | 0/1 | - | - | 20.75% | 10 | 11 | 1000 | 5000 | 0 | 300 | 1.0000 | 12.5 | 2 | 6000 | 6000 | 2 | 2 |"

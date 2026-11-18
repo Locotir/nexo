@@ -118,8 +118,10 @@ impl Scratch {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let parent = data_dir.join("live");
         let dir = parent.join(format!("{}-{nanos:x}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-        let make = |p: &Path| -> std::io::Result<()> {
+        // `recursive` for the parent only: the data folder may not exist yet (a first run), the call's own must be new
+        let make = |p: &Path, recursive: bool| -> std::io::Result<()> {
             let mut b = std::fs::DirBuilder::new();
+            b.recursive(recursive);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
@@ -129,13 +131,13 @@ impl Scratch {
         };
         // the parent may exist already; the folder of this call must not
         if !parent.is_dir() {
-            if let Err(e) = make(&parent) {
+            if let Err(e) = make(&parent, true) {
                 if !parent.is_dir() {
                     return Err(Error::Io(format!("cannot make {}: {e}", parent.display())));
                 }
             }
         }
-        make(&dir).map_err(|e| Error::Io(format!("cannot make {}: {e}", dir.display())))?;
+        make(&dir, false).map_err(|e| Error::Io(format!("cannot make {}: {e}", dir.display())))?;
         Ok(Scratch(dir))
     }
 

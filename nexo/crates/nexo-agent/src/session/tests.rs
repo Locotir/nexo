@@ -1103,7 +1103,9 @@ fn a_write_after_a_cut_line_starts_on_a_line_of_its_own() {
     drop(s);
     let text = String::from_utf8(std::fs::read(&p).unwrap()).unwrap();
     let bad = text.lines().filter(|l| serde_json::from_str::<Line>(l).is_err()).count();
-    assert_eq!(bad, 1, "only the cut line is lost, nothing is glued to it");
+    // the claim removes a cut last line (8a312e4d), where an append-only handle (Windows) closes it instead
+    let want = usize::from(!cfg!(unix));
+    assert_eq!(bad, want, "only the cut line is lost, nothing is glued to it");
     let s = Session::open_path(&p).unwrap();
     assert_eq!(s.messages().len(), 13);
     assert_eq!(s.messages()[12].text(), "after the cut");

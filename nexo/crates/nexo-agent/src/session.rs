@@ -244,11 +244,13 @@ impl Session {
     /// exits (exiting runs no destructors) would otherwise leave the lock behind. Nothing is saved
     /// after this; a second call does nothing.
     pub fn release(&mut self) {
-        if std::mem::replace(&mut self.closed, true) {
+        if self.closed {
             return;
         }
-        // an output kept for the result of a round that never ended (the turn was dropped) is not lost with the session
+        // an output kept for the result of a round that never ended (the turn was dropped) is not lost with the
+        // session: written before the session is marked closed, which refuses every write
         self.write_held_whole();
+        self.closed = true;
         // opened and left without a word: nothing worth keeping in the list
         let empty = self.file.is_some()
             && self.locked

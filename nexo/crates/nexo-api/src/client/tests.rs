@@ -119,7 +119,7 @@ fn get(api: &Api, lang: Lang) -> String {
 #[test]
 fn the_test_map_has_what_the_tests_need() {
     let api = api();
-    assert_eq!(api.endpoints.len(), 5, "{:?}", api.endpoints.iter().map(|e| &e.id).collect::<Vec<_>>());
+    assert_eq!(api.endpoints.len(), 6, "{:?}", api.endpoints.iter().map(|e| &e.id).collect::<Vec<_>>());
     assert!(api.endpoints.iter().any(|e| e.gql.is_some()));
     assert!(api.auth.len() >= 2);
 }
@@ -225,7 +225,8 @@ fn only_keeps_the_endpoints_named() {
     let t = render(&api, Lang::Ts, std::slice::from_ref(&item), "2026-11-18").unwrap();
     assert!(t.contains(&format!("export async function {item}(")));
     assert!(!t.contains("graphql"));
-    assert!(!t.contains("/api/login"));
+    // the auth note may say where a token came from (`set by POST /api/login`); the call itself is not written
+    assert!(!t.contains("export async function post_api_login("));
     assert!(render(&api, Lang::Ts, &["nope".to_string()], "2026-11-18").is_err());
 }
 
