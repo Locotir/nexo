@@ -130,7 +130,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
     }
     if let Some(e) = invalid {
         out.push_str(&format!(
-            "(not valid UTF-8: invalid byte at offset {}; bad bytes are shown as U+FFFD, and edit refuses this file, change it with bash)\n",
+            "(not valid UTF-8: invalid byte at offset {}; bad bytes are shown as U+FFFD, and edit and write refuse this file, change it with bash)\n",
             e.valid_up_to()
         ));
     }

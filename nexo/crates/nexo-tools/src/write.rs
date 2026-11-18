@@ -111,9 +111,17 @@ impl Tool for Write {
             Ok(b) if is_binary(&b) => {
                 return ToolOutput::error(format!("write: {shown} is a binary file; not overwriting it"));
             }
+            // another encoding (Latin-1, CP1252, Shift-JIS): replacing it with UTF-8 text would change it silently,
+            // as `edit` refuses; a head cut in the middle of a character (no `error_len`) is not a bad byte
+            Ok(b) if std::str::from_utf8(&b).err().is_some_and(|e| !huge || e.error_len().is_some()) => {
+                let at = std::str::from_utf8(&b).err().map_or(0, |e| e.valid_up_to());
+                return ToolOutput::error(format!(
+                    "write: {shown} is not UTF-8 text (invalid byte at offset {at}); not overwriting it, change it with `bash` in its own encoding"
+                ));
+            }
             Ok(_) if huge => Some(String::new()),
             Ok(b) => {
-                // compared as bytes: a lossy text would call a file with invalid bytes the same as its U+FFFD form
+                // the file is valid UTF-8 here, so `same` is a plain byte compare
                 same = b == content.as_bytes();
                 format_note = format_change(&b, content).map(|n| format!("; {n}")).unwrap_or_default();
                 Some(String::from_utf8_lossy(&b).into_owned())
@@ -217,14 +225,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_file_with_invalid_bytes_is_not_taken_for_the_same_content() {
+    async fn a_file_with_invalid_bytes_is_refused_even_for_its_replacement_form() {
         let d = tempfile::tempdir().unwrap();
         let c = ToolContext::new(d.path().to_path_buf());
         let f = d.path().join("b.txt");
         std::fs::write(&f, [b'a', 0xFF, b'b']).unwrap();
         assert!(!crate::read::Read.run(json!({"path": "b.txt"}), &c).await.is_error);
         let out = Write.run(json!({"path": "b.txt", "content": "a\u{FFFD}b"}), &c).await;
-        assert!(!out.content.contains("already has this content"), "{}", out.content);
+        assert!(out.is_error && out.content.contains("not UTF-8"), "{}", out.content);
+        assert!(out.content.contains("invalid byte at offset 1"), "{}", out.content);
+        assert_eq!(std::fs::read(&f).unwrap(), [b'a', 0xFF, b'b']);
+    }
+
+    #[tokio::test]
+    async fn a_latin1_file_is_not_overwritten_with_utf8() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let original = [0x63u8, 0x61, 0x66, 0xE9, b'\n'];
+        std::fs::write(d.path().join("a.txt"), original).unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "a.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "a.txt", "content": "cafe\n"}), &c).await;
+        assert!(out.is_error && out.content.contains("not UTF-8"), "{}", out.content);
+        assert!(out.content.contains("invalid byte at offset 3"), "{}", out.content);
+        assert_eq!(std::fs::read(d.path().join("a.txt")).unwrap(), original);
+        // control: a UTF-8 file that has been read is still replaced
+        std::fs::write(d.path().join("u.txt"), "caf\u{e9}\n").unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "u.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "u.txt", "content": "cafe\n"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("u.txt")).unwrap(), "cafe\n");
     }
 
     #[tokio::test]
