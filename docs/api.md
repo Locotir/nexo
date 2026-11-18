@@ -1,0 +1,306 @@
+# nexo api: the API behind a website
+
+`nexo api` turns captured web traffic into a map of a site's API. The map says which endpoints exist, what they take and return, how they page and how they authenticate. You or an agent can then describe an endpoint, call it, watch it for changes, and check that it still answers as recorded. No browser is needed after the capture.
+
+Use it to:
+
+- watch data a site shows you (prices, stock, a list of items) without scraping pages;
+- let an agent act on a site through its API instead of clicking through it;
+- notice when a site changes its API, from a script or CI.
+
+All of it is worked out in Rust from the traffic. No model reads the raw capture.
+
+```
+nexo api analyze cap.har --save map.json     read a capture, save the map
+nexo api describe map.json [ENDPOINT]        list endpoints, or show one
+nexo api call map.json ENDPOINT -p k=v       call one endpoint
+nexo api watch map.json ENDPOINT --every 5m  call it on a schedule, print changes
+nexo api check map.json                      call the safe endpoints, report drift
+```
+
+`nexo re api <op>` runs the same ops (see [re.md](re.md)). Only call sites you may use, and follow their terms.
+
+## Capture
+
+`analyze` reads a HAR 1.2 file. Save one from the browser:
+
+- Chrome or Edge: open DevTools, Network tab, reload or use the site, then "Save all as HAR".
+- Firefox, Playwright `recordHar` and mitmproxy exports also read.
+
+Tick "Preserve log" first if the flow spans several pages. Response bodies must be in the file: that is where the shapes come from.
+
+nexo's own browser crate can record a HAR (headless browser: headers, request bodies and JSON or text response bodies of XHR and fetch calls; your own Chrome through the relay: only URL, method, type, status and mime type). At the moment no command or tool turns that capture on or saves it, so use a devtools HAR.
+
+### What is dropped
+
+Not everything in a capture is the site's API. These calls are dropped, and the summary counts each reason:
+
+| Reason | What it is |
+| --- | --- |
+| `not http` | `data:`, `wss:` and other schemes |
+| `other host` | only when you pass `--host`: anything not on those hosts or under them |
+| `preflight` | `OPTIONS` requests |
+| `tracker` | analytics, ads and logging hosts, and `ping` or `beacon` requests |
+| `static file` | images, scripts, styles, fonts, media, by resource type, extension or mime type |
+| `page` | HTML documents |
+| `no response` | requests that got no answer |
+| `redirect` | 3xx answers without a `set-cookie` (one that sets a cookie is kept: many logins end that way) |
+
+Each drop is counted, so nothing vanishes without a trace. A header says `N calls, K kept, E endpoints; dropped: ...`.
+
+### Secrets
+
+Secrets are removed while the file is read, before anything else sees them. A header, cookie, query parameter or body field whose name says it carries a secret (`authorization`, `token`, `session`, `api_key`, `csrf`, `password`, a bare `key` in a query, and similar) becomes `<secret>`. Only a short fingerprint is kept in memory, so nexo can tell that the token a request sends is the one an earlier login response gave. Long opaque strings (tokens, hashes) are never shown as examples, and opaque path segments print as `<opaque>`.
+
+## analyze
+
+```
+nexo api analyze cap.har
+nexo api analyze cap.har --host shop.example.com --save map.json
+nexo api analyze cap.har --openapi openapi.json
+nexo api analyze cap.har --json
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--host HOST` | Keep only this host and the hosts under it. Repeat for more. |
+| `--save FILE` | Write the map, for `call`, `describe`, `watch` and `check`. |
+| `--openapi FILE` | Also write an OpenAPI 3.1 file. |
+| `--json` | Print the OpenAPI JSON instead of the summary. |
+| `--budget N` | About how many characters the summary may take. Default 6000. |
+
+Without `--json` it prints a summary: the header, the hosts, the auth schemes, then one block per endpoint, busiest first, until the budget is used. The last line counts the endpoints left out.
+
+```
+[get_api_items] GET /api/items x12 a1
+  query: page int, q? string
+  -> 200 json {items: [{id, name}], total}
+  paging: page via ?page, items at $.items
+```
+
+Read it as: the endpoint id, the method and path, how many calls were seen (`x12`), and which auth schemes it used (`a1`). A `?` after a query name means it was not in every call. `{user_id}` in a path is a parameter: segments that look like ids are folded together, and a plain word becomes a parameter only when many different words stand in the same place with the same answer shape.
+
+Exit code: 0, or 2 if the HAR cannot be read or a file cannot be written.
+
+### The map file
+
+`--save` writes a JSON file (`"nexo_api_map": 1`; a newer format is refused). It holds:
+
+- `hosts`, `total` (calls in the capture) and `dropped` (counts by reason);
+- `auth`: each scheme with its kind, how many calls use it and, when an earlier response handed the secret out, a `source` such as `set by POST /api/login ($.access_token)`;
+- `endpoints`, each with its `id` (also the OpenAPI operationId, like `get_users_user_id`), method, origin, path, call count, path and query parameters, non-standard headers, body shape, response shapes by status, paging, auth references and one example URL.
+
+Shapes are types, string formats, a few enum values, array sizes and how often each object field appeared. They are not data.
+
+Auth kinds are `bearer`, `basic`, `api_key_header`, `api_key_query`, `cookie` and `csrf`. Paging styles are `cursor`, `next url`, `page`, `offset` and `link header`; a paging entry names the request parameter, the size parameter, the JSON path of the next-page value and the JSON path of the list. GraphQL operations are endpoints too, with ids like `gql_GetUser`: the shape is the operation's variables, batches are split into one endpoint per operation, and persisted queries are named `persisted:` plus the start of the hash. The map keeps no query text.
+
+**The map never holds a secret value.** It holds names only: the header, cookie or parameter that carries a secret, and where it came from. The values come from environment variables when you call (below). Keep the map out of version control anyway if the site is private.
+
+## describe
+
+```
+nexo api describe map.json
+nexo api describe map.json get_api_items
+nexo api describe map.json "GET /api/items/{item_id}"
+```
+
+With no endpoint it prints the same summary as `analyze` (6000 characters) and, if the map has auth, the environment variable each scheme reads. With an endpoint it prints its path, query and body parameters (`*` marks a required one, with an example when there is a safe one), the first three response shapes, paging, and per auth scheme the variable it reads and the login it can run.
+
+An endpoint is named by its id, or by `"METHOD /path"` with the templated path or a real one (`GET /api/items/99`). If a name matches more than one endpoint, the error lists the ids.
+
+## call
+
+```
+nexo api call map.json get_api_items -p page=2 --dry-run
+nexo api call map.json get_api_items -p page=2
+nexo api call map.json "POST /api/items" --body '{"name":"demo"}'
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `-p`, `--param NAME=VALUE` | A parameter. Repeat for more. `NAME=@env:VAR` reads the value from an environment variable. |
+| `--body JSON\|@FILE` | The whole body, as JSON text or a file. |
+| `--auth NAME=ENVVAR` | Read an auth scheme's secret from this variable. Repeat for more. |
+| `--login` | Run the login call the map records first, and use the token it returns. |
+| `--login-param`, `--login-body` | Parameters and body for that login call. |
+| `--dry-run` | Print the request with `<secret>` for each auth value. Send nothing. |
+| `--json` | Print `status`, `content_type`, `location`, `body` and `bytes_not_read` as JSON. |
+| `--reveal` | Print the answer unscrubbed. |
+
+**Parameters.** A `-p` name is matched to a path parameter, then a query parameter, then a body field. Prefix with `query.` or `body.` to say which, and use dots for nested body fields (`body.user.name`). Body values are typed from the map: a field seen only as numbers is sent as a number. GET and HEAD take no body. A missing required parameter is an error that lists all of them, with examples.
+
+**Auth.** Secrets come only from environment variables, never from the command line or the map. `describe` prints the default variable for each scheme, built as `NEXO_API_` plus the scheme label in capitals: `NEXO_API_BEARER`, `NEXO_API_HEADER_X_API_KEY`, `NEXO_API_COOKIE`. `--auth bearer=MY_TOKEN` names another variable. The scheme is put where the traffic had it: the header, the query parameter, the `cookie` header. For basic auth a value like `user:pass` is encoded for you.
+
+With `--login`, nexo runs the endpoint that handed out the token in the capture, reads the token from the JSON path the map records, and uses it for the call. The token stays in memory. After a 401 or 403 it logs in again once. The login call reads its own secrets (password and so on) the same way: `--login-param password=@env:SITE_PW`.
+
+**Methods.** `nexo api call` sends any method, and has no `--unsafe` flag: you named the endpoint, so it runs. The `--unsafe` flag belongs to `check` (below). Redirects are not followed. A call times out after 30 seconds, and 8 MiB of the answer are read; the rest is counted.
+
+**Output.** Unless you pass `--reveal`, token-looking values and secret fields in the answer print as `<secret>`, and so does the `code` of a redirect URL. Notes go to stderr as `nexo api: ...`.
+
+Exit code: 0; 1 if the answer status is 400 or more, or the call failed; 2 for bad arguments, an unknown endpoint, a missing parameter or an unset variable.
+
+## watch
+
+```
+nexo api watch map.json get_api_items --every 5m --state items.json
+nexo api watch map.json get_api_items --times 1 --state items.json
+```
+
+`watch` takes everything `call` takes, plus:
+
+| Flag | Meaning |
+| --- | --- |
+| `--every DURATION` | Time between calls: `30s`, `5m`, `2h`, `1d`, or bare seconds. At least 10s. Needed unless `--times 1`. |
+| `--times N` | Stop after N calls. Without it, it runs until you stop it. |
+| `--state FILE` | Keep the last answer between runs. |
+
+The first tick prints `first answer: status 200`. After that it prints nothing when the answer is the same, and otherwise `# N changes` followed by lines for each added, removed or changed path, such as `~ $.body.count: 1 -> 2`. Lists whose items share an `id`-like field (`id`, `_id`, `uuid`, `guid`, `key`, `slug`, `code`) are matched by it, so a reordered list shows only what really changed. Changes of secret fields are not changes. A tick prints at most 100 changes.
+
+`--state` is written with mode 0600 and holds the status and the scrubbed body. A body that is not JSON is saved as its size and a fingerprint only. With `--times 1` and `--state`, `watch` suits cron: one call per run, a diff against the last run.
+
+Exit code: 0; 1 if the last call failed; 2 for bad arguments (including `--every` under 10s, `--times 0`, or no `--every` without `--times 1`).
+
+## check
+
+```
+nexo api check map.json
+nexo api check map.json get_api_items -p item_id=3 --auth bearer=MY_TOKEN
+nexo api check map.json --json
+```
+
+`check` calls the endpoints of a map once and says whether each live answer still matches what was recorded.
+
+- With no endpoint names it takes every endpoint. With names (id or `"METHOD /path"`) only those.
+- Only GET and HEAD are called. Other methods are listed as `skipped` unless you pass `--unsafe`, which calls them too (they may change data; no body is sent).
+- An endpoint that needs a parameter you did not give with `-p`, or an unset auth variable, is `skipped` with the reason. A `-p` is only given to the endpoints that have that name.
+- `check` never logs in. Auth comes from environment variables only (`--auth NAME=ENVVAR` or the defaults).
+
+Each endpoint ends as one of:
+
+| State | Meaning |
+| --- | --- |
+| `ok` | Status, content type and shape match. A new field is information only. |
+| `drift` | A field that was in every recorded answer is gone, a type changed, a value can be null now, the content type changed, or the answer is no longer JSON. |
+| `broken` | The status is one the map never saw (a 404, a redirect), a 401 or 403 where the map saw success (`auth failed`), or there was no answer. |
+| `skipped` | Not called, with the reason. |
+
+Output is one line per endpoint, then detail lines (at most 12 per endpoint and 60 in all), then `N endpoints: A ok, B drift, C broken, D skipped`. `--json` prints a `summary` (`endpoints`, `ok`, `drift`, `broken`, `skipped`, `exit`) and an `endpoints` list with `id`, `method`, `path`, `state`, `status`, `recorded_status`, `content_type`, `note`, `drift`, `info`, `broken`, `changes` and `findings`. Only field names, types and statuses are printed, never a value.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | all ok or skipped |
+| 1 | some drift, none broken |
+| 2 | some endpoint broken |
+| 3 | the map or the arguments cannot be used |
+
+In CI:
+
+```sh
+export NEXO_API_BEARER="$SITE_TOKEN"
+nexo api check map.json -p item_id=3 --json > check.json || echo "API changed: exit $?"
+```
+
+## OpenAPI export
+
+`--openapi FILE` on `analyze` writes OpenAPI 3.1; `--json` prints it. It has paths with parameters, request bodies and responses as JSON Schema, and the auth schemes as `components.securitySchemes` (`a1`, `a2`, ...). The title is the first host plus "API". Extensions carry what OpenAPI has no field for: `x-nexo-paging`, `x-nexo-example`, `x-nexo-source`, `x-nexo-cookies`, and `x-nexo-graphql` for GraphQL operations (they share one URL, so they are not paths). A second operation on the same method and path goes under `x-nexo-more-operations`. No secret value is in it.
+
+## The agent tool
+
+nexo gives the model a tool named `api`. It takes one `command` string, the same line `nexo api` reads (a leading `nexo api` is optional):
+
+```
+analyze cap.har --save map.json
+describe map.json get_api_items
+call map.json "GET /api/items" -p page=2 --dry-run
+```
+
+The model can run `analyze`, `describe` and `call`. It cannot run `watch` or `check` (they run long or call many endpoints, so you run them), and it cannot use `--reveal` or `--body @file`. The answer is the text the CLI prints, cut at 12,000 characters.
+
+Secrets stay out of the model's hands. The tool refuses a command when:
+
+- a `-p` or `--login-param` value looks like a secret, or its name says it is one, and it is not `@env:VAR`;
+- a `--body` or `--login-body` holds a secret-looking value or a field with a secret name;
+- `--auth NAME=VALUE` carries a token instead of the name of a variable.
+
+The model writes the variable's name instead (`--auth bearer=MY_TOKEN`, `-p password=@env:PW`). It should start with `--dry-run`.
+
+### Permission checks
+
+Each call is classified from the parsed command, and your permission rules decide as they do for the tool that does the same thing by hand:
+
+| Command | Kind | Asked like |
+| --- | --- | --- |
+| `analyze`, `describe`, `call --dry-run` | read | a file read |
+| `analyze` with `--save` or `--openapi` | write | `edit` and `write` |
+| `call` of a GET or HEAD endpoint | network | `web_fetch` |
+| `call` of any other method, or with `--login` | exec | a shell command that changes things |
+
+More checks run per call:
+
+- The map and the HAR must pass the read rules, and files it writes must not be denied by a write rule.
+- A real call is also checked as a `web_fetch` of the endpoint's origin: a rule that denies the host stops it.
+- If the map cannot be read, the call counts as exec.
+- A relative map path is resolved from the session's folder. If that leads to a different file than the permission check saw, the call is refused: give an absolute path.
+- A `--dry-run` shows `@env:VAR` as `<VAR>` and does not read the variable.
+
+The tool is listed as exec, so a sub-agent limited to reading does not get it.
+
+## The MCP route
+
+`nexo re --mcp` serves the kit to other agents over MCP on stdio, and one of its tools is `api`, with the same `command` line and the same refusals as above (no `watch`, `check` or `--reveal`, no secret values).
+
+Reading a map, `analyze` without `--save`, and `--dry-run` always work. A call that sends a request, `--login`, and anything that writes a file are refused unless the server was started with `--allow-changes`:
+
+```
+nexo re --mcp --allow-changes
+```
+
+`nexo re api <op>` is the same as `nexo api <op>` on the command line, and `nexo re` lists the api ops next to the `bin` and `dbg` ones.
+
+## Example: from a capture to a call
+
+Save a HAR from DevTools while you use `https://shop.example.com`, then:
+
+```sh
+nexo api analyze shop.har --host shop.example.com --save shop.json
+```
+
+```
+42 calls, 6 kept, 3 endpoints; dropped: 30 static file, 4 tracker, 2 page
+hosts: https://shop.example.com
+auth:
+  [a1] bearer in authorization, set by POST /api/login ($.access_token)
+[get_api_items] GET /api/items x3 a1
+  query: page int
+  -> 200 json {items: [{id, name}], total}
+  paging: page via ?page, items at $.items
+...
+```
+
+Ask for one endpoint, and see which variable it reads:
+
+```sh
+nexo api describe shop.json get_api_items
+```
+
+Call it with a fake token from the environment. The dry run prints the request and sends nothing:
+
+```sh
+export NEXO_API_BEARER="example-token-not-real"
+nexo api call shop.json get_api_items -p page=2 --dry-run
+```
+
+```
+GET https://shop.example.com/api/items?page=2
+accept: application/json
+authorization: Bearer <secret>
+```
+
+Drop `--dry-run` to send it. Then keep an eye on it, and check the whole map from cron:
+
+```sh
+nexo api watch shop.json get_api_items -p page=1 --every 15m --state items.json
+nexo api check shop.json -p page=1
+```
+
+The outputs above show the shape of what nexo prints; the numbers and names depend on your capture.
