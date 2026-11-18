@@ -375,7 +375,10 @@ async fn without_tests(
     };
     let mut diag = String::new();
     for f in changed.iter().take(5) {
-        diag.push_str(&nexo_tools::edit_check::report(f).await);
+        let r = nexo_tools::edit_check::report(f).await;
+        if !diag.contains(r.trim()) {
+            diag.push_str(&r);
+        }
     }
     Some(format!("{diag}{note}"))
 }
