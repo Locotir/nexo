@@ -24,6 +24,8 @@ fn tool_text_chars() -> usize {
 /// Saying that `browsers` lists the person's own logged-in browsers (the model had no way to know) took 10 more: 13840.
 /// The capture verbs (`capture_start`, `capture_stop`, `capture_save` with `path`: 3 enum values and one short
 /// parameter) are estimated at 120 more, not measured: 13960 (14010 on Windows).
+/// The diagnostics description now says that edit and write results carry the changed file's compiler errors
+/// (139 more, counted from the old and new text): 14110 (14160 on Windows); measure and tighten at the first build.
 /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
 /// model already knows about shells and search tools, and a parameter gets a description only for what its
 /// name and the tool description do not say.
@@ -31,7 +33,7 @@ fn tool_text_chars() -> usize {
 fn the_tool_text_stays_within_its_budget() {
     let n = tool_text_chars();
     // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-    let budget = if cfg!(windows) { 14_010 } else { 13_960 };
+    let budget = if cfg!(windows) { 14_160 } else { 14_110 };
     assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
 }
 
