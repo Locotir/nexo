@@ -29,7 +29,7 @@ nexo RE reads and debugs compiled programs. `nexo bin` is static analysis: it re
 | `managed` | JVM `.class`/`.jar` and .NET assemblies: types, methods, strings (`--strings`), call sites (`--callers`) |
 | `diff` | Two builds, function by function; one function side by side (`--all`) |
 | `emu` | Run a function in an emulator: return value, memory written, library calls, trace |
-| `asm` | Assemble Intel x86 (`--at`, `--bits 64\|32`); prints bytes and disassembly |
+| `asm` | Assemble Intel x86 (`--at`, `--bits 64\|32`) or AArch64 (`--arch arm64`, 4-aligned `--at`); prints bytes and disassembly |
 | `patch` | Patch bytes in a copy (`--out`) or in place (`--in-place`). `W` |
 | `name` | Name an address; stays with the file (`--clear`). `S` |
 | `note` | One-line note at an address (`--clear`). `S` |
