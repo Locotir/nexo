@@ -88,6 +88,7 @@ fn same_data(x: &[Vec<u64>], y: &[Vec<u64>]) -> bool {
 }
 
 /// One decoded instruction, of either architecture.
+#[allow(clippy::large_enum_variant)]
 enum Code {
     X86(Instruction),
     /// With the address the instruction reaches through a register an `adrp` loaded, when known.
