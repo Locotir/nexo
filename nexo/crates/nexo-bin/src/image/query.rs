@@ -238,7 +238,7 @@ impl Image {
     pub fn require_x86(&self, what: &str) -> Result<()> {
         if self.arm64 {
             return Err(Error::Bad(format!(
-                "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, xref, calls, tree, path, strings, bytes, \
+                "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, decomp, xref, calls, tree, path, strings, bytes, \
                  find (--str, --asm, --seq), cfg, diff, slice, patch --nop and patch --asm do); no output is better than a wrong one"
             )));
         }
