@@ -137,12 +137,24 @@ struct Ins {
 /// range; those inside `span` only matter to the caller, but a sequence may start just before it.
 fn decode_ranges(img: &Image, span: Option<(u64, u64)>, mut each: impl FnMut(&[Ins])) {
     let mut fmt = formatter();
+    let a64 = img.arm64;
     for (start, end) in code_ranges(img) {
         if span.is_some_and(|(lo, hi)| end <= lo || start >= hi) {
             continue;
         }
         let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut list: Vec<Ins> = Vec::new();
+        if a64 {
+            // the text `fn` prints for the same word
+            crate::a64::view::walk(code, start, |ins, _, raw| {
+                if ins.undecoded.is_some() {
+                    return;
+                }
+                list.push(Ins { ip: ins.pc, raw: raw.to_vec(), text: ins.text() });
+            });
+            each(&list);
+            continue;
+        }
         walk_bits(img.bits, code, start, |ins, raw| {
             if ins.is_invalid() {
                 return;
@@ -170,9 +182,6 @@ fn with_text(mut row: Row, raw: &[u8], text: &str) -> Row {
 /// Every instruction whose disassembly (`mov eax, 0x539`) the regular expression matches, in executable code.
 pub fn find_asm_in(img: &Image, pattern: &str, within: Option<&str>, limit: usize) -> Result<Output> {
     check_limit(limit)?;
-    if img.arm64 {
-        img.require_x86("find --asm")?;
-    }
     let re = Regex::new(pattern).map_err(|e| Error::Bad(format!("bad regular expression: {e}")))?;
     let span = within.map(|w| crate::place::range_in(img, w)).transpose()?;
     let mut hits = Hits::default();
@@ -237,9 +246,6 @@ fn parse_seq(seq: &str) -> Result<Vec<String>> {
 /// match is on the text the disassembler prints), one row at the first instruction.
 pub fn find_seq_in(img: &Image, seq: &str, within: Option<&str>, limit: usize) -> Result<Output> {
     check_limit(limit)?;
-    if img.arm64 {
-        img.require_x86("find --seq")?;
-    }
     let pats = parse_seq(seq)?;
     let span = within.map(|w| crate::place::range_in(img, w)).transpose()?;
     let mut hits = Hits::default();

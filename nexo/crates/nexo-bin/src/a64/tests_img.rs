@@ -315,3 +315,31 @@ fn diff_sees_a_changed_call_target_and_refuses_mixed_architectures() {
     let e = diff_window(&x, &a, None, None, false, None, DEFAULT_LINES).unwrap_err();
     assert!(e.to_string().contains("same architecture"), "{e}");
 }
+
+#[test]
+fn find_asm_and_seq_match_the_text_fn_prints() {
+    let f = fixture::elf(true);
+    let img = open(&f);
+    // exact text, as `fn main` shows it
+    let o = find_asm_in(&img, r"^stp x29, x30, \[sp, #-16\]!$", None, 200).unwrap();
+    assert_eq!(o.meta["total"], 2, "{}", whole(&o));
+    assert!(whole(&o).contains(&pad(f.a)) && whole(&o).contains(&pad(f.e)), "{}", whole(&o));
+    assert_eq!(o.rows[0].json.as_ref().unwrap()["bytes"], "fd 7b bf a9");
+    // `*` stands for any operand text
+    let o = find_seq_in(&img, "mov w0, *; ret", None, 200).unwrap();
+    assert_eq!(o.meta["total"], 2, "{}", whole(&o));
+    // three instructions, with a bl
+    let o = find_seq_in(&img, "mov x29, sp; bl *; bl *", None, 200).unwrap();
+    assert_eq!(o.meta["total"], 1, "{}", whole(&o));
+    assert!(whole(&o).contains(&pad(f.a + 4)), "{}", whole(&o));
+    let o = find_seq_in(&img, "STP x29, x30, *;  mov x29,sp ; bl *", None, 200).unwrap();
+    assert_eq!(o.meta["total"], 1, "{}", whole(&o));
+    // restricted to a function
+    let o = find_asm_in(&img, "^bl ", Some("main"), 200).unwrap();
+    assert_eq!(o.meta["total"], 2, "{}", whole(&o));
+    let o = find_asm_in(&img, "^bl ", Some("helper"), 200).unwrap();
+    assert_eq!(o.meta["total"], 0, "{}", whole(&o));
+    // no hit
+    let o = find_seq_in(&img, "bl *; mov x29, sp", None, 200).unwrap();
+    assert!(whole(&o).contains("no match"), "{}", whole(&o));
+}
