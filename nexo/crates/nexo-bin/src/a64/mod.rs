@@ -14,6 +14,7 @@ pub(crate) mod asm;
 pub(crate) mod cfg;
 pub(crate) mod scan;
 pub(crate) mod slice;
+pub(crate) mod slice_fwd;
 pub(crate) mod view;
 
 use text::Mn;
@@ -290,3 +291,6 @@ mod tests_asm;
 mod tests_img;
 #[cfg(test)]
 mod tests_slice;
+
+#[cfg(test)]
+mod tests_slice_fwd;

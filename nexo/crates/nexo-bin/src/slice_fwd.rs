@@ -62,10 +62,7 @@ pub fn slice_forward(
     budget: usize,
 ) -> Result<Output> {
     if img.arm64 {
-        return Err(Error::Bad(
-            "slice --forward does not read AArch64 code yet (the backward slice does); no output is better than a wrong one"
-                .into(),
-        ));
+        return crate::a64::slice_fwd::slice_forward(img, at, reg, mem, from, budget);
     }
     img.require_x86("slice --forward")?;
     let at_addr = addr_in(img, at)?;
