@@ -213,6 +213,7 @@ async fn the_line_comes_again_with_the_next_message_after_a_compaction_took_it_o
     let client = Scripted::new(vec![
         Reply::Events(text("one")),
         Reply::Events(text("two")),
+        // plain policy (the test config): a context error is answered with a compaction, which is this test's point
         Reply::Err(ProviderError::new(ErrorKind::ContextLength, "too long")),
         Reply::Events(text("SUMMARY OF ALL")),
         Reply::Events(text("three")),
