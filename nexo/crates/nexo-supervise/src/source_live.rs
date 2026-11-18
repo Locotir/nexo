@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use nexo_core::jobs::JobKind;
-use nexo_core::mailbox::{live_sessions, LiveSession};
+use nexo_core::mailbox::{LiveScan, LiveSession};
 
 use super::events::{Ev, EvKind};
 use super::source::{one_line, Source, SourceKind};
@@ -35,11 +35,13 @@ pub struct LiveSource {
     /// This process: its own session is the supervisor's own row, not a peer.
     own_pid: u32,
     seen: HashMap<String, Seen>,
+    /// Remembers the heartbeats found dead, so a folder of old sessions is not read again every second.
+    scan: LiveScan,
 }
 
 impl LiveSource {
     pub fn new(root: impl Into<PathBuf>) -> LiveSource {
-        LiveSource { root: root.into(), own_pid: std::process::id(), seen: HashMap::new() }
+        LiveSource { root: root.into(), own_pid: std::process::id(), seen: HashMap::new(), scan: LiveScan::default() }
     }
 
     /// As [`LiveSource::new`] for a process other than this one (tests, where every heartbeat is this process's).
@@ -65,7 +67,7 @@ impl Source for LiveSource {
     fn poll(&mut self, now: Secs) -> Vec<Observation> {
         let mut out = Vec::new();
         let live: Vec<LiveSession> =
-            live_sessions(&self.root, now * 1000).into_iter().filter(|s| s.pid != self.own_pid).collect();
+            self.scan.scan(&self.root, now * 1000).into_iter().filter(|s| s.pid != self.own_pid).collect();
         let obs = |key: &str, kind: ObsKind| Observation { agent_key: key.to_string(), at: now, kind };
         for s in &live {
             let key = format!("nexo:{}", s.id);

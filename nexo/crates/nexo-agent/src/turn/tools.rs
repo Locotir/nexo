@@ -171,7 +171,7 @@ pub(super) async fn run_tools(
 
 /// A plain `bash` call that only looks or runs a build, test or lint (the classifier of `verify`): it changes
 /// nothing a neighbour call depends on, so it may overlap with other calls of its kind.
-fn is_pure_check(name: &str, args: &Value) -> bool {
+pub(crate) fn is_pure_check(name: &str, args: &Value) -> bool {
     let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     name == "bash"
         && !flag("background")
@@ -375,7 +375,10 @@ async fn without_tests(
     };
     let mut diag = String::new();
     for f in changed.iter().take(5) {
-        diag.push_str(&nexo_tools::edit_check::report(f).await);
+        let r = nexo_tools::edit_check::report(f).await;
+        if !diag.contains(r.trim()) {
+            diag.push_str(&r);
+        }
     }
     Some(format!("{diag}{note}"))
 }
@@ -633,7 +636,7 @@ pub(super) async fn run_call(
             let mut chained: Option<String> = None;
             let seen = {
                 let mut st = state.lock().await;
-                let _ = st.session.record_output(id, &out);
+                st.session.hold_output(id, &out);
                 saving(&mut st);
                 match (name, &file) {
                     ("read", Some((path, p))) if !out.is_error => {

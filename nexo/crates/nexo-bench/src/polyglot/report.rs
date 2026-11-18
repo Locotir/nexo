@@ -1,6 +1,9 @@
 //! The Polyglot section of a summary: pass@1 and pass@2 per language and in total, what they cost, how this
 //! run differs from aider's protocol, and the command that repeats it.
 
+use std::collections::HashSet;
+
+use crate::client::Stop;
 use crate::run::Record;
 
 /// Exercises per language in the benchmark at the pinned commit (Java: 47, not run).
@@ -22,6 +25,25 @@ fn pct(n: usize, of: usize) -> String {
         "-".into()
     } else {
         format!("{:.1}% ({n}/{of})", 100.0 * n as f64 / of as f64)
+    }
+}
+
+/// What went wrong around the runs of `set` that the pass rates alone hide, or `-`: runs the budget ended (their
+/// solution was graded as it stood, so they count as plain failures), and test runs that ran out of time or
+/// that something else killed.
+fn flags(set: &[&Record]) -> String {
+    let budget = set.iter().filter(|r| r.stop == Some(Stop::Budget)).count();
+    let timed_out: u32 = set.iter().map(|r| r.tests_timed_out).sum();
+    let killed: u32 = set.iter().map(|r| r.tests_killed).sum();
+    let parts: Vec<String> = [(budget as u32, "budget-stopped"), (timed_out, "test timeout"), (killed, "test killed")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+    if parts.is_empty() {
+        "-".into()
+    } else {
+        parts.join(", ")
     }
 }
 
@@ -48,7 +70,7 @@ pub fn section(repro: Option<&str>, records: &[Record]) -> Option<String> {
     let mut s = String::from("\n## Polyglot (Aider)\n\npass@1: solved by the first attempt. pass@2: solved by the first or the second (after seeing the test output once).\n");
     for arm in arms {
         let rows: Vec<&Record> = mine.iter().copied().filter(|r| r.arm == arm).collect();
-        s.push_str(&format!("\n### Arm `{arm}`\n\n| language | exercises | pass@1 | pass@2 | cost | per exercise | steps | input | cached | output | wall |\n|---|---|---|---|---|---|---|---|---|---|---|\n"));
+        s.push_str(&format!("\n### Arm `{arm}`\n\n| language | exercises | runs | pass@1 (of runs) | pass@2 (of runs) | cost | per run | steps | input | cached | output | wall | flags |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"));
         let mut langs: Vec<&str> = Vec::new();
         for r in &rows {
             let l = lang_of(&r.task).unwrap_or_default();
@@ -58,7 +80,10 @@ pub fn section(repro: Option<&str>, records: &[Record]) -> Option<String> {
         }
         langs.sort();
         let line = |label: &str, set: &[&Record]| -> String {
+            // `--repeats` and a second run into the same results give several records per exercise: the rates are
+            // over runs, and the exercises are counted apart so the two are not mixed up
             let n = set.len();
+            let ex = set.iter().map(|r| r.task.as_str()).collect::<HashSet<_>>().len();
             let p1 = set.iter().filter(|r| solved(r, "pass@1") == Some(true)).count();
             let p2 = set.iter().filter(|r| r.ok).count();
             let cost: f64 = set.iter().map(|r| r.cost).sum();
@@ -66,7 +91,7 @@ pub fn section(repro: Option<&str>, records: &[Record]) -> Option<String> {
             let sum = |f: &dyn Fn(&Record) -> u64| set.iter().map(|r| f(r)).sum::<u64>();
             let k = |x: u64| format!("{:.0}k", x as f64 / 1000.0);
             format!(
-                "| {label} | {n} | {} | {} | {} | {} | {:.1} | {} | {} | {} | {:.0}s |\n",
+                "| {label} | {ex} | {n} | {} | {} | {} | {} | {:.1} | {} | {} | {} | {:.0}s | {} |\n",
                 pct(p1, n),
                 pct(p2, n),
                 if est { "unknown".into() } else { format!("${cost:.4}") },
@@ -76,6 +101,7 @@ pub fn section(repro: Option<&str>, records: &[Record]) -> Option<String> {
                 k(sum(&|r| r.cache_read)),
                 k(sum(&|r| r.output)),
                 set.iter().map(|r| r.wall_s).sum::<f64>() / n as f64,
+                flags(set),
             )
         };
         for l in &langs {
@@ -139,12 +165,40 @@ mod tests {
             sample("other/task", "plain", 1.0, 5.0),
         ];
         let s = section(Some("nexo bench --tasks polyglot"), &records).unwrap();
-        assert!(s.contains("| python | 2 | 50.0% (1/2) | 100.0% (2/2) | $0.0400 | $0.0200 |"), "{s}");
-        assert!(s.contains("| rust | 1 | 0.0% (0/1) | 0.0% (0/1) | $0.0200 |"), "{s}");
-        assert!(s.contains("| **total** | 3 | 33.3% (1/3) | 66.7% (2/3) | $0.0600 |"), "{s}");
+        assert!(s.contains("| python | 2 | 2 | 50.0% (1/2) | 100.0% (2/2) | $0.0400 | $0.0200 |"), "{s}");
+        assert!(s.contains("| rust | 1 | 1 | 0.0% (0/1) | 0.0% (0/1) | $0.0200 |"), "{s}");
+        assert!(s.contains("| **total** | 3 | 3 | 33.3% (1/3) | 66.7% (2/3) | $0.0600 |"), "{s}");
         assert!(s.contains("python 34 x $0.0200 = $0.68") && s.contains("rust 30 x $0.0200 = $0.60"), "{s}");
         assert!(s.contains("```\nnexo bench --tasks polyglot\n```") && s.contains("gradle 8.7"));
         assert!(!s.contains("$5.0000"), "other tasks are not counted");
         assert!(section(None, &[sample("other/task", "plain", 1.0, 1.0)]).is_none());
+    }
+
+    #[test]
+    fn an_exercise_run_twice_counts_once_as_an_exercise_and_twice_as_runs() {
+        let mut again = rec("polyglot/python/a", false, false, 0.03);
+        again.rep = 1;
+        let records =
+            vec![rec("polyglot/python/a", true, true, 0.01), again, rec("polyglot/python/b", true, true, 0.02)];
+        let s = section(None, &records).unwrap();
+        assert!(s.contains("| python | 2 | 3 | 66.7% (2/3) | 66.7% (2/3) |"), "{s}");
+        assert!(s.contains("| **total** | 2 | 3 |"), "{s}");
+    }
+
+    #[test]
+    fn budget_stops_test_timeouts_and_outside_kills_are_flagged_per_row() {
+        let mut cut = rec("polyglot/python/a", false, false, 0.01);
+        cut.stop = Some(Stop::Budget);
+        let mut slow = rec("polyglot/python/b", false, false, 0.01);
+        slow.tests_timed_out = 2;
+        let mut oom = rec("polyglot/rust/c", false, false, 0.01);
+        oom.tests_killed = 1;
+        let clean = rec("polyglot/rust/d", true, true, 0.01);
+        let s = section(None, &[cut, slow, oom, clean]).unwrap();
+        assert!(s.contains("| 1 budget-stopped, 2 test timeout |"), "python row: {s}");
+        assert!(s.contains("| 1 test killed |"), "rust row: {s}");
+        assert!(s.contains("| 1 budget-stopped, 2 test timeout, 1 test killed |"), "total row: {s}");
+        let none = section(None, &[rec("polyglot/go/a", true, true, 0.01)]).unwrap();
+        assert!(none.contains("| - |\n"), "a clean row has no flags: {none}");
     }
 }

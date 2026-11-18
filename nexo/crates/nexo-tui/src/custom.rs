@@ -76,7 +76,7 @@ pub fn load(cwd: &Path) -> Vec<CustomCommand> {
     load_from(cwd, &nexo_core::paths::config_dir(), &nexo_core::paths::trusted_projects_file(), home.as_deref())
 }
 
-fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path, home: Option<&Path>) -> Vec<CustomCommand> {
+pub(crate) fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path, home: Option<&Path>) -> Vec<CustomCommand> {
     let reserved = |n: &str| crate::commands::lookup(n).is_some();
     nexo_core::compat::commands(cwd, config_dir, trust_file, home, &reserved)
         .into_iter()

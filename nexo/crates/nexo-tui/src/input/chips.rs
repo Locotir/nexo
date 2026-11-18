@@ -147,10 +147,27 @@ impl Input {
 
     /// The draft with every folded paste put back: what is sent.
     pub fn full_text(&self) -> String {
-        let mut text = self.text();
+        let text = self.text();
+        // One pass over the original draft: each label's first occurrence is found there, so a paste that
+        // happens to contain a later label is never rescanned and cannot swallow the real chip.
+        let mut hits: Vec<(usize, usize, &str)> = Vec::new();
         for (label, pasted) in &self.pastes {
-            text = text.replacen(label.as_str(), pasted, 1);
+            if let Some(at) = text.find(label.as_str()) {
+                hits.push((at, at + label.len(), pasted.as_str()));
+            }
         }
-        text
+        hits.sort_by_key(|h| h.0);
+        let mut out = String::with_capacity(text.len());
+        let mut done = 0;
+        for (s, e, pasted) in hits {
+            if s < done {
+                continue; // overlaps an earlier chip
+            }
+            out.push_str(&text[done..s]);
+            out.push_str(pasted);
+            done = e;
+        }
+        out.push_str(&text[done..]);
+        out
     }
 }

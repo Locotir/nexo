@@ -1,5 +1,6 @@
 use serde_json::json;
 
+use super::danger::{catastrophic_at, catastrophic_in};
 use super::*;
 
 const CWD: &str = "/work/proj";
@@ -272,6 +273,285 @@ fn the_macos_ways_to_wipe_a_machine_are_catastrophic() {
     }
 }
 
+/// The floor resolves what a name points at, so the written form does not matter: the home folder is the same
+/// folder as `$HOME/.`, `~/x/..` or `/home/lctr`, and `~/.*` is everything in it.
+#[test]
+fn a_delete_of_the_home_folder_is_catastrophic_however_it_is_written() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "rm -rf /home/lctr",
+        "rm -rf /home/lctr/",
+        "rm -rf $HOME/.",
+        "rm -rf ${HOME}/",
+        "rm -rf ~/.*",
+        "rm -rf ~/*",
+        "rm -rf ~/x/..",
+        "rm -rf -- \"$HOME\"",
+        "rm -r -f /home",
+        "rm -rf /usr",
+        "rm -rf /etc/*",
+        "rm -rf /var",
+        "rm --recursive --force /",
+        "find ~ -delete",
+        "find / -delete",
+        "find $HOME -type f -exec rm {} +",
+        "find /home/lctr -type f -exec shred -u {} ;",
+        "chmod -R 000 ~",
+        "chown -R root /home/lctr",
+        "chmod -R 777 /",
+        "shred -u ~",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "rm -rf ./build",
+        "rm -rf build",
+        "rm -rf ~/proj/target",
+        "rm -rf /home/lctr/proj",
+        "rm -rf /usr/local/share/x",
+        "rm -rf $TMP",
+        "rm file",
+        "find . -name x -delete",
+        "find ~/proj -name '*.o' -delete",
+        "find ~ -name x",
+        "find / -name x -exec grep y {} +",
+        "chmod -R 755 ./dist",
+        "chown -R me ~/proj",
+        "chmod 600 ~/.ssh/id",
+        "shred -u ~/old.key",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+/// Without a home folder the stand-in still catches the forms that name it.
+#[test]
+fn a_delete_of_the_home_folder_is_catastrophic_when_the_home_folder_is_unknown() {
+    for cmd in ["rm -rf ~", "rm -rf $HOME", "rm -rf ~/*", "rm -rf /"] {
+        assert!(catastrophic_in(cmd, None).is_some(), "{cmd}");
+    }
+    assert!(catastrophic_in("rm -rf ~/build", None).is_none());
+}
+
+#[test]
+fn tools_that_erase_or_repartition_a_disk_are_catastrophic() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "shred -n1 /dev/sda",
+        "wipefs -a /dev/nvme0n1",
+        "wipefs --all /dev/sdb",
+        "blkdiscard /dev/nvme0n1",
+        "sfdisk /dev/sda < layout",
+        "sgdisk -o /dev/sda",
+        "sgdisk --zap-all /dev/sda",
+        "parted -s /dev/sda mklabel gpt",
+        "truncate -s 0 /dev/sda",
+        "cp image.iso /dev/sdb",
+        "cat image.iso > /dev/sdb",
+        "echo x >/dev/nvme0n1p1",
+        "tee /dev/sda",
+        "dd if=/dev/zero of=/dev/nvme0n1",
+        "mkfs.ext4 /dev/sda1",
+        "/sbin/mkfs.ext4 /dev/sda1",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "dd of=/dev/null",
+        "dd if=/dev/zero of=./file bs=1M count=1",
+        "wipefs /dev/sda",
+        "sfdisk -l /dev/sda",
+        "sfdisk --dump /dev/sda",
+        "sgdisk -p /dev/sda",
+        "parted /dev/sda print",
+        "cp /dev/sda image.img",
+        "cat /dev/sda | head -c 512",
+        "echo x > /dev/null",
+        "echo x > /dev/tty",
+        "make 2>/dev/null",
+        "cmd > /dev/stderr",
+        "exec 3>/dev/fd/1",
+        "truncate -s 0 ./log",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+#[test]
+fn a_shell_started_with_a_group_of_flags_hands_its_script_to_the_floor() {
+    let home = Some(Path::new("/home/lctr"));
+    assert!(catastrophic_in("bash -lc 'rm -rf ~'", home).is_some());
+    assert!(catastrophic_in("sh -ec 'rm -rf /'", home).is_some());
+    assert!(catastrophic_in("bash -lc 'make test'", home).is_none());
+}
+
+/// A name that is not written from the top stands for the folder the command runs in: `rm -rf .` in the home
+/// folder deletes the home folder, the same line in a project deletes the project.
+#[test]
+fn a_relative_name_is_judged_by_the_folder_the_command_runs_in() {
+    let home = Some(Path::new("/home/lctr"));
+    let at = |cmd: &str, cwd: &str| catastrophic_at(cmd, home, Some(Path::new(cwd)));
+    for (cmd, cwd) in [
+        ("rm -rf .", "/home/lctr"),
+        ("rm -rf ./", "/home/lctr"),
+        ("rm -rf ./*", "/home/lctr"),
+        ("rm -rf *", "/home/lctr"),
+        ("rm -rf .*", "/home/lctr"),
+        ("rm -rf ..", "/home/lctr/proj"),
+        ("rm -rf ../..", "/home/lctr/proj/src"),
+        ("rm -rf *", "/"),
+        ("rm -rf .", "/etc"),
+        ("find . -delete", "/home/lctr"),
+        ("find -delete", "/home/lctr"),
+        ("chmod -R 000 .", "/home/lctr"),
+        ("bash -lc 'rm -rf *'", "/home/lctr"),
+        // a `cd` moves where the next command runs
+        ("cd ~ && rm -rf *", "/work/proj"),
+        ("cd && rm -rf .", "/work/proj"),
+        ("cd /home/lctr; rm -rf ./", "/work/proj"),
+        ("cd .. && rm -rf *", "/home/lctr/proj"),
+        ("(cd ~; rm -rf *)", "/work/proj"),
+    ] {
+        assert!(at(cmd, cwd).is_some(), "{cmd} in {cwd}");
+    }
+    for (cmd, cwd) in [
+        ("rm -rf build", "/home/lctr"),
+        ("rm -rf *.o", "/home/lctr"),
+        ("rm -rf ./target", "/home/lctr"),
+        ("rm -rf *", "/home/lctr/proj"),
+        ("rm -rf .", "/home/lctr/proj"),
+        ("rm -rf ../x", "/home/lctr/proj"),
+        ("find . -delete", "/home/lctr/proj"),
+        ("cd proj && rm -rf *", "/home/lctr"),
+        ("cd ~/proj && rm -rf .", "/work"),
+        // a folder that cannot be told is not judged
+        ("cd - && rm -rf *", "/home/lctr"),
+        ("cd $DIR && rm -rf *", "/home/lctr"),
+    ] {
+        assert!(at(cmd, cwd).is_none(), "{cmd} in {cwd}");
+    }
+    // without the folder a relative name is not judged
+    for cmd in ["rm -rf .", "rm -rf *", "rm -rf .."] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+/// A `find` that tests names, ages, sizes or owners removes some of a folder, not the folder: that is for the
+/// person's rules. One that tests nothing, or only everything, is a wipe.
+#[test]
+fn a_filtered_find_is_left_to_the_rules_and_an_unfiltered_one_is_catastrophic() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "find ~ -type f -delete",
+        "find ~ -name '*' -delete",
+        "find ~ -name '.*' -delete",
+        "find ~ ! -name x -delete",
+        "find ~ -not -name x -delete",
+        "find ~ -name x -o -delete",
+        "find / -type f -exec rm {} +",
+        "find /var -delete",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "find ~ -name '*.pyc' -delete",
+        "find /var -name '*.log' -mtime +30 -delete",
+        "find / -name '*.o' -delete",
+        "find ~ -mtime +30 -exec rm {} +",
+        "find ~ -size +1G -delete",
+        "find ~ -user nobody -delete",
+        "find ~ -newer stamp -delete",
+        "find ~ -empty -delete",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+/// Giving the home folder back to oneself or only adding permissions repairs it; the rest can lock the person
+/// out. Folders the machine does not boot without are not on the list for a permission change.
+#[test]
+fn a_permission_change_is_catastrophic_only_where_it_can_lock_the_person_out() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "chown -R root ~",
+        "chown -R other:other /home/lctr",
+        "chmod -R go-rwx ~",
+        "chmod -R 755 ~",
+        "chmod -R -w ~",
+        "chmod -R a+rwx ~",
+        "chown -R $USER /",
+        "chown -R $USER /etc",
+        "chown -R lctr /home",
+        "chmod -R u+rwX /usr",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "chown -R $USER ~",
+        "chown -R ${USER}:${USER} ~/*",
+        "chown -R lctr:lctr ~",
+        "chown -R $(id -un) ~",
+        "chown -R $(whoami) $HOME",
+        "chmod -R u+rwX ~",
+        "chmod -R g+w,u+x ~",
+        "chmod -R +x ~",
+        "chown -R me /opt",
+        "chown -R me /var/lib/x",
+        "chmod -R o+r /var",
+        "chmod -R 755 ~/proj",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+/// Only disks and volumes count as disks: a terminal, a serial port, `kmsg` or `shm` is not.
+#[test]
+fn only_disk_and_volume_nodes_count_as_a_disk() {
+    let home = Some(Path::new("/home/lctr"));
+    for cmd in [
+        "cp x /dev/vg0/root",
+        "echo x > /dev/mapper/vg-home",
+        "cp x /dev/disk/by-id/ata-x",
+        "echo x > /dev/dm-0",
+        "echo x > /dev/loop3",
+        "echo x > /dev/mmcblk0p1",
+        "echo x > /dev/xvda",
+        "echo x > /dev/mem",
+        "blkdiscard /dev/vdb",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in [
+        "echo AT > /dev/ttyUSB0",
+        "echo x > /dev/tty1",
+        "echo x > /dev/kmsg",
+        "cp x /dev/shm",
+        "cat x > /dev/shm/y",
+        "tee /dev/ttyS0",
+        "echo x > /dev/pts/0",
+        "cmd > /dev/fd/2",
+        "echo x > /dev/cu.usbserial-1",
+        "truncate -r /dev/sda ./file",
+        "truncate --reference /dev/sda ./file",
+    ] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
+/// A home folder that is a drive path (Windows, where `HOME` is often unset and `USERPROFILE` is `C:\Users\x`)
+/// is replaced and judged like any other.
+#[cfg(windows)]
+#[test]
+fn a_delete_of_a_home_folder_on_a_drive_is_catastrophic() {
+    let home = Some(Path::new(r"C:\Users\x"));
+    for cmd in ["rm -rf ~", "rm -rf $HOME", "rm -rf ${HOME}/", "rm -rf ~/*", "rm -rf ~/.*", "rm -rf /"] {
+        assert!(catastrophic_in(cmd, home).is_some(), "{cmd}");
+    }
+    for cmd in ["rm -rf ~/build", "rm -rf build", "rm -rf $TMP"] {
+        assert!(catastrophic_in(cmd, home).is_none(), "{cmd}");
+    }
+}
+
 /// One folder can have two names (on macOS `/tmp` is a link to `/private/tmp`, and the session folder comes back
 /// by its real name): a file in it named through the link is inside, and a link that itself sits outside stays
 /// outside.
@@ -292,6 +572,14 @@ fn the_session_folder_named_through_a_link_is_still_the_session_folder() {
     let rm = |cmd: String| p.allows_in("Bash", &json!({ "command": cmd }), &proj, None);
     assert!(!matches!(rm(format!("rm -rf {}/build", alias.display())), Verdict::Deny(_)));
     assert!(matches!(rm(format!("rm -rf {}", alias.display())), Verdict::Deny(_)));
+}
+
+#[test]
+fn path_rules_of_a_session_fold_case_only_where_the_disk_does() {
+    // command patterns (separators=false) keep their case on every system
+    assert!(!paths::matches("git branch -d *", "git branch -D old", false));
+    assert_eq!(paths::matches(".git/**", ".GIT/config", true), nexo_core::paths::FOLD_CASE);
+    assert!(paths::matches(".git/**", ".git/config", true));
 }
 
 #[cfg(target_os = "macos")]

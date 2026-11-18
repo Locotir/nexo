@@ -94,7 +94,7 @@ fn a_list_at_rest_shows_the_row_the_arrow_reached_without_another_key() {
     a.opts.animations = true;
     // the stars of the empty session behind the list rest later (see `bursts.rs`)
     a.opts.home_stars = false;
-    a.opts.sessions = (0..5).map(|i| (format!("s{i}"), format!("chat {i}"))).collect();
+    a.opts.sessions = (0..5).map(|i| row(&format!("s{i}"), &format!("chat {i}"))).collect();
     a.run_command(Command::Sessions);
     let t0 = Instant::now();
     fx_at(&mut a, t0, 0);

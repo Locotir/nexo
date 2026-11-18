@@ -26,25 +26,40 @@ pub fn line(missing: &[&str]) -> String {
     format!("Not installed here: {}.", missing.join(", "))
 }
 
-/// Runs one `sh -c` loop in `cwd` that prints each name of `list` that `command -v` does not
-/// find. `None` on any error or after 2 seconds, and on systems without a Unix shell.
-#[cfg(unix)]
+/// Runs one loop in `cwd`, in the shell the model's commands run in (`sh`, or Git Bash on Windows), that prints
+/// each name of `list` that `command -v` does not find. Asking that shell and not the Windows PATH matters:
+/// Git Bash finds `file`, `xxd` and `ps` in its own `usr/bin`, which the PATH does not list. `None` on any
+/// error, after 2 seconds, and under PowerShell (its aliases make `curl` and `ps` mean something else).
 pub fn probe(list: &[&str], cwd: &Path) -> Option<String> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
+    let shell = nexo_core::shell::shell();
+    if shell.kind == "powershell" {
+        return None;
+    }
+    // The names go into the script itself (`args_for` takes one string), so only plain program names are allowed.
+    if list.iter().any(|c| c.is_empty() || !c.chars().all(|ch| ch.is_ascii_alphanumeric() || "._+-".contains(ch))) {
+        return None;
+    }
     // On a Mac the programs of the Command Line Tools are shims in /usr/bin that find nothing without the tools:
-    // they are named `shim:<name>` and `settle_shims` decides what they are.
-    let script = r#"mac=0; [ "$(uname)" = Darwin ] && mac=1
-for c in "$@"; do
-  p=$(command -v "$c" 2>/dev/null) || { printf '%s\n' "$c"; continue; }
-  [ $mac = 1 ] && [ "$p" = "/usr/bin/$c" ] && printf 'shim:%s\n' "$c"
-done; true"#;
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(script)
-        .arg("sh")
-        .args(list)
+    // they are named `shim:<name>` and `settle_shims` decides what they are. Only the Mac branch captures a path
+    // (a command substitution forks, and a fork is slow under Git Bash); everywhere else `command -v` is a builtin
+    // and the loop starts no process, so the one cost left is the shell's own start.
+    let script = format!(
+        r#"mac=0; [ "$(uname)" = Darwin ] && mac=1
+for c in {}; do
+  if [ $mac = 1 ]; then
+    p=$(command -v "$c" 2>/dev/null) || {{ printf '%s\n' "$c"; continue; }}
+    [ "$p" = "/usr/bin/$c" ] && printf 'shim:%s\n' "$c"
+  else
+    command -v "$c" >/dev/null 2>&1 || printf '%s\n' "$c"
+  fi
+done; true"#,
+        list.join(" ")
+    );
+    let mut child = shell
+        .command(&script)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -75,11 +90,9 @@ done; true"#;
 }
 
 /// The programs a Mac ships as shims for the Command Line Tools.
-#[cfg(unix)]
 const SHIMS: [&str; 5] = ["git", "python3", "make", "gcc", "clang"];
 
 /// Whether `xcode-select -p` finds a developer folder (the real programs behind the shims).
-#[cfg(unix)]
 fn developer_tools() -> bool {
     std::process::Command::new("xcode-select")
         .arg("-p")
@@ -91,7 +104,6 @@ fn developer_tools() -> bool {
         .unwrap_or(true)
 }
 
-#[cfg(unix)]
 /// The probe output with each `shim:<name>` line turned into `<name>` (missing) when the shims have no tools behind
 /// them, and dropped otherwise.
 fn settle_shims(out: &str, shims_empty: bool) -> String {
@@ -104,11 +116,6 @@ fn settle_shims(out: &str, shims_empty: bool) -> String {
         }
     }
     text
-}
-
-#[cfg(not(unix))]
-pub fn probe(_list: &[&str], _cwd: &Path) -> Option<String> {
-    None
 }
 
 /// The line for `cwd`: probed on first use, the same text on every later call.
@@ -132,7 +139,6 @@ mod tests {
         assert!(missing(&COMMANDS, "").is_empty());
     }
 
-    #[cfg(unix)]
     #[test]
     fn shims_are_missing_only_when_the_developer_tools_are_not_there() {
         let out = "curl\nshim:git\nshim:make\nshim:ls\n";
@@ -155,12 +161,23 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_real_probe_finds_the_absent_and_not_the_present() {
+        // PowerShell is the one shell the probe leaves alone, so there is nothing to ask there.
+        if nexo_core::shell::shell().kind == "powershell" {
+            return;
+        }
         let d = tempfile::tempdir().unwrap();
         let out = probe(&["nexo-no-such-cmd-xyz", "sh"], d.path()).expect("probe ran");
         assert_eq!(missing(&["nexo-no-such-cmd-xyz", "sh"], &out), ["nexo-no-such-cmd-xyz"]);
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_plain_program_name_is_not_put_in_the_script() {
+        // The names are pasted into the shell script, so one with shell syntax must never reach it.
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(probe(&["git; echo gone"], d.path()), None);
+        assert_eq!(probe(&[""], d.path()), None);
     }
 
     #[test]

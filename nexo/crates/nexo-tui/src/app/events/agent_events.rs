@@ -111,6 +111,7 @@ impl App {
             AgentEvent::SessionDeleted { id, title } => self.on_session_deleted(id, title),
             AgentEvent::SessionRestored { id, title } => self.on_session_restored(id, title),
             AgentEvent::SessionTree { entries } => self.on_session_tree(entries),
+            AgentEvent::SessionList { sessions } => self.on_session_list(sessions),
             AgentEvent::Trash { sessions } => self.on_trash(sessions),
             AgentEvent::MemoryShared { pending } => self.on_memory_shared(pending),
             AgentEvent::Queued { pending } => self.on_queued(pending),
@@ -129,7 +130,10 @@ impl App {
             AgentEvent::MailRead { ids } => self.on_mail_read(ids),
             AgentEvent::MailStage { id, stage } => self.mail_stage(&id, stage),
             AgentEvent::Peers { peers } => self.on_peers(peers),
-            AgentEvent::Compacted { .. } | AgentEvent::Retrying { .. } | AgentEvent::TodoChanged { .. } => {}
+            AgentEvent::Retrying { attempt, retries, wait_secs, reason, .. } => {
+                self.on_retrying(attempt, retries, wait_secs, reason)
+            }
+            AgentEvent::Compacted { .. } | AgentEvent::TodoChanged { .. } => {}
             // handled before this match (see `handle_sub`)
             AgentEvent::Sub { .. }
             | AgentEvent::SubDelta { .. }

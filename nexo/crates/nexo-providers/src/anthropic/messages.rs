@@ -36,7 +36,10 @@ pub(super) fn convert(m: &Message, model: &str) -> (Value, bool) {
                     let blocks: Vec<Value> = c
                         .iter()
                         .filter_map(|p| match p {
-                            Part::Text { text } => Some(json!({"type": "text", "text": text})),
+                            // a blank text block is a 400 here as well, and the image keeps the list from being empty
+                            Part::Text { text } if !text.trim().is_empty() => {
+                                Some(json!({"type": "text", "text": text}))
+                            }
                             Part::Image { source } => Some(json!({"type": "image", "source": image_source(source)})),
                             _ => None,
                         })

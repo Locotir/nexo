@@ -108,6 +108,7 @@ mod tests {
             key_env: Some("OPENAI_API_KEY".into()),
             login: false,
             window: None,
+            shown: false,
         }
     }
 

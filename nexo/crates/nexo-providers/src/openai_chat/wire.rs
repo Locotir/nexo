@@ -44,12 +44,18 @@ pub fn usage(u: &Value) -> Usage {
         .or_else(|| count(&u["prompt_cache_hit_tokens"]))
         .or_else(|| count(&u["cached_tokens"]))
         .unwrap_or(0);
+    // OpenRouter reports cache writes inside `prompt_tokens_details`; they are part of `prompt_tokens`, like
+    // reads, so they leave the plain input count and are priced at the write rate.
+    let written = count(&u["prompt_tokens_details"]["cache_write_tokens"])
+        .or_else(|| count(&u["cache_creation_input_tokens"]))
+        .unwrap_or(0);
     Usage {
-        input: prompt.saturating_sub(cached),
+        input: prompt.saturating_sub(cached).saturating_sub(written),
         output: count(&u["completion_tokens"]).unwrap_or(0),
         cache_read: cached,
-        cache_write: 0,
+        cache_write: written,
         cache_write_1h: 0,
+        transformations: 0,
         reasoning: count(&u["completion_tokens_details"]["reasoning_tokens"]).unwrap_or(0),
     }
 }

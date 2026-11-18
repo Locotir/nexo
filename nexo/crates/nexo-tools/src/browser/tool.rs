@@ -68,13 +68,16 @@ impl Tool for BrowserTool {
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Drive a browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
-                          Headless by default; `browsers` lists the person's logged-in ones for `select_browser`.",
+                          Headless by default; `browsers` lists the person's logged-in ones for `select_browser`. \
+                          Never get past a CAPTCHA or bot check: stop and tell the person.",
             params: &[
                 ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?,to?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} find{target} click_xy|double_click|right_click|drag|hover_xy|scroll_xy{to,modifiers?} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording capture_start capture_stop capture_save{path} batch{steps} close browsers select_browser{id} switch_browser"),
                 ("target", "ref (e3), CSS selector or text"),
                 ("profile", "persistent keeps logins"),
                 ("keys", "e.g. Enter, Ctrl+A, Tab Tab"),
                 ("to", "up, down, top, bottom or target"),
+                ("gif", "clicks drags labels progress watermark: bool; quality 1-30"),
+                ("steps", "[{action, ...that action's fields}]"),
             ],
         })
     }

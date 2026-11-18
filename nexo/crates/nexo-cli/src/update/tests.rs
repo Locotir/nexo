@@ -137,6 +137,11 @@ fn cargo_lines_name_the_crate_and_the_commit() {
     assert_eq!(compiling("Compiling nexo-cli v0.1.0 (https://github.com/Locotir/nexo#4b4f255a)"), Some("nexo-cli"));
     assert_eq!(compiling("Downloaded tokio v1.54.0"), None);
     assert_eq!(git_rev("Installing nexo-cli v0.1.0 (https://github.com/Locotir/nexo#4b4f255a1c2d)"), Some("4b4f255"));
+    assert_eq!(
+        git_rev("Installing nexo-cli v0.1.0 (https://github.com/Locotir/nexo?tag=build-abc1234#4b4f255a1c2d)"),
+        Some("4b4f255")
+    );
+    assert_eq!(git_rev("Updating git repository `https://github.com/Locotir/nexo?tag=build-abc1234`"), None);
     assert_eq!(git_rev("Updating git repository `https://github.com/Locotir/nexo`"), None);
 }
 
@@ -485,4 +490,19 @@ fn macos_lines_of_the_sums_list_are_found_by_their_exact_names() {
     assert_eq!(expected_sum(&sums, "nexo-macos-aarch64"), Some(hex.as_str()));
     assert_ne!(expected_sum(&sums, "nexo-macos-x86_64"), Some(hex.as_str()));
     assert_eq!(expected_sum(&sums, "nexo-macos"), None);
+}
+
+#[test]
+fn the_source_build_is_pinned_to_the_reported_release_tag() {
+    let pinned = install_args(Some("build-abc1234"));
+    assert!(pinned.contains(&"--tag=build-abc1234".to_string()));
+    assert_eq!(pinned.last().map(String::as_str), Some("--root"));
+    assert!(pinned.contains(&"--locked".to_string()));
+}
+
+#[test]
+fn the_source_build_is_not_pinned_without_a_tag_or_with_an_odd_one() {
+    for tag in [None, Some(""), Some("a/b"), Some(".."), Some("x y")] {
+        assert!(!install_args(tag).iter().any(|a| a.starts_with("--tag")), "{tag:?}");
+    }
 }

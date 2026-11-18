@@ -208,7 +208,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         .chain(poly_jobs.iter().map(Unit::Polyglot))
         .collect();
     let mut records = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
+    let mut skips: Vec<Skip> = Vec::new();
     let mut stopped = None;
     'all: for rep in 0..opts.repeats {
         for (ui, unit) in units.iter().enumerate() {
@@ -245,16 +245,14 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
                         records.push(rec);
                     }
                     Err(why) => {
-                        let note = format!("{}: {why}", unit.name());
-                        eprintln!("bench: skipped {note}");
-                        if !skipped.contains(&note) {
-                            skipped.push(note);
-                        }
+                        eprintln!("bench: skipped {}: {why}", unit.name());
+                        skips.push(Skip { unit: unit.name().to_string(), arm: a.name.clone(), rep, why });
                     }
                 }
             }
         }
     }
+    let skipped = skip_notes(arms.len(), &skips);
     let spent = *bench.spent.lock().unwrap();
     let stopped = stopped.or_else(|| budget_spent(opts.budget, &records));
     let header = report::Header {
@@ -303,6 +301,41 @@ fn budget_spent(budget: Option<f64>, records: &[run::Record]) -> Option<String> 
 /// How the report says the arms were ordered.
 pub const ARM_ORDER: &str = "shuffled for every task and repeat (fixed seed), so no arm always goes first and \
 the provider cache is shared evenly";
+
+/// One cell of the run grid (a unit with an arm in a repeat) that could not run.
+struct Skip {
+    unit: String,
+    arm: String,
+    rep: u32,
+    why: String,
+}
+
+/// The notes the summary shows for the cells that could not run, one per unit and reason. A cause the arms
+/// share (the task is not ready, a seal is missing) hits every arm in each repeat it appears in and reads
+/// `unit: why`; any other leaves a hole in the grid, so it names the arms and repeats that are missing,
+/// because a reader comparing arm means must see which cells they lack.
+fn skip_notes(arm_count: usize, skips: &[Skip]) -> Vec<String> {
+    let mut groups: Vec<(&str, &str, Vec<&Skip>)> = Vec::new();
+    for sk in skips {
+        match groups.iter_mut().find(|(u, w, _)| *u == sk.unit && *w == sk.why) {
+            Some((_, _, cells)) => cells.push(sk),
+            None => groups.push((sk.unit.as_str(), sk.why.as_str(), vec![sk])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(unit, why, cells)| {
+            let mut reps: Vec<u32> = cells.iter().map(|c| c.rep).collect();
+            reps.sort_unstable();
+            reps.dedup();
+            if cells.len() == reps.len() * arm_count {
+                return format!("{unit}: {why}");
+            }
+            let cells: Vec<String> = cells.iter().map(|c| format!("{} (repeat {})", c.arm, c.rep)).collect();
+            format!("{unit} with {}: {why}", cells.join(", "))
+        })
+        .collect()
+}
 
 /// The arms in the order they run for repeat `rep` of unit `unit`: a seeded shuffle, because the
 /// provider caches the prefix the arms share and the first arm to send it pays the miss.
@@ -521,6 +554,32 @@ mod tests {
         assert_eq!(temperature_of(None, false), None, "the provider's own");
     }
 
+    fn skip(unit: &str, arm: &str, rep: u32, why: &str) -> Skip {
+        Skip { unit: unit.into(), arm: arm.into(), rep, why: why.into() }
+    }
+
+    #[test]
+    fn a_skip_note_names_the_arm_and_repeat_when_only_some_cells_are_missing() {
+        let skips = [skip("t1", "cur", 1, "setup failed"), skip("t1", "plain", 0, "setup failed")];
+        assert_eq!(
+            skip_notes(2, &skips),
+            ["t1 with cur (repeat 1), plain (repeat 0): setup failed"],
+            "two arms, two repeats: two of four cells, so the note says which"
+        );
+    }
+
+    #[test]
+    fn a_skip_every_arm_shares_is_one_note_without_arms() {
+        let skips = [
+            skip("t1", "plain", 0, "no compiler"),
+            skip("t1", "cur", 0, "no compiler"),
+            skip("t1", "plain", 1, "no compiler"),
+            skip("t1", "cur", 1, "no compiler"),
+            skip("t2", "cur", 0, "seal missing"),
+        ];
+        assert_eq!(skip_notes(2, &skips), ["t1: no compiler", "t2 with cur (repeat 0): seal missing"]);
+    }
+
     #[test]
     fn an_out_folder_with_earlier_results_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -660,7 +719,8 @@ mod tests {
             None,
             "no budget: unknown costs are fine"
         );
-        let p = Pricing { input: 0.1, output: 0.2, cache_read: 0.01, cache_write: 0.0, cache_write_1h: 0.0 };
+        let p =
+            Pricing { input: 0.1, output: 0.2, cache_read: 0.01, cache_write: 0.0, cache_write_1h: 0.0, long: None };
         assert_eq!(prices(&opts("no-such-model", Some(1.0), Some(p), out.clone())).unwrap(), Some(p));
         assert_eq!(prices(&opts("deepseek-chat", Some(1.0), Some(p), out.clone())).unwrap(), Some(p), "--price wins");
         assert!(prices(&opts("deepseek-chat", Some(1.0), None, out.clone())).unwrap().is_some());

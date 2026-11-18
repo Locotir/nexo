@@ -70,6 +70,7 @@ fn parses_thoughts_text_whole_calls_and_usage() {
             cache_read: 40,
             cache_write: 0,
             cache_write_1h: 0,
+            transformations: 0,
             reasoning: 6
         })
     );
@@ -78,6 +79,14 @@ fn parses_thoughts_text_whole_calls_and_usage() {
     let mut p2 = GeminiParser::default();
     let evs2: Vec<StreamEvent> = data.iter().flat_map(|d| p2.feed(d)).collect();
     assert!(matches!(&evs2[4], StreamEvent::ToolCallStart { id: id2, .. } if id2 != &id));
+}
+
+#[test]
+fn a_garbled_line_is_skipped_and_the_next_event_still_parses() {
+    let mut p = GeminiParser::default();
+    assert!(p.feed("<<not json>>").is_empty());
+    let evs = p.feed(r#"{"candidates":[{"content":{"parts":[{"text":"Hello "}],"role":"model"}}]}"#);
+    assert!(evs.contains(&StreamEvent::TextDelta("Hello ".into())), "{evs:?}");
 }
 
 #[test]
@@ -226,4 +235,243 @@ fn pin_an_error_body_uses_its_message_and_status() {
         matches!(&evs[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::Overloaded && e.message == "busy"),
         "{evs:?}"
     );
+}
+
+#[test]
+fn a_schema_with_local_definitions_is_inlined_and_a_loop_is_cut_out() {
+    // the shape a filesystem MCP server sends: the arguments point into `$defs`
+    let s = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "edits": {"type": "array", "items": {"$ref": "#/$defs/Edit"}},
+            "dry": {"$ref": "#/definitions/Flag", "description": "only show it"},
+            "tree": {"$ref": "#/$defs/Node"},
+            "gone": {"$ref": "#/$defs/Missing"},
+            "web": {"$ref": "https://example.com/other.json"}
+        },
+        "$defs": {
+            "Edit": {"type": "object", "properties": {"old": {"type": "string"}}, "required": ["old"]},
+            "Node": {"type": "object", "properties": {"label": {"type": "string"}, "child": {"$ref": "#/$defs/Node"}}}
+        },
+        "definitions": {"Flag": {"type": "boolean"}}
+    });
+    let c = clean_schema(&s);
+    assert_eq!(c["properties"]["edits"]["items"]["properties"]["old"], json!({"type": "string"}));
+    assert_eq!(c["properties"]["edits"]["items"]["required"], json!(["old"]));
+    assert_eq!(c["properties"]["dry"], json!({"type": "boolean", "description": "only show it"}));
+    // an object with no properties is a 400 anywhere in the schema, so the stand-ins are cut out
+    // and the parent says what is missing
+    let tree = &c["properties"]["tree"];
+    assert!(tree["properties"].get("child").is_none());
+    assert!(tree["description"].as_str().unwrap().contains("child"), "{tree}");
+    for name in ["gone", "web"] {
+        assert!(c["properties"].get(name).is_none(), "{name}");
+    }
+    assert!(c["description"].as_str().unwrap().contains("gone, web"), "{c}");
+    for gone in ["$defs", "definitions", "$schema"] {
+        assert!(c.get(gone).is_none(), "{gone}");
+    }
+}
+
+#[test]
+fn an_optional_field_typed_with_null_becomes_nullable() {
+    let s = json!({"type": "object", "properties": {
+        "a": {"type": ["string", "null"]},
+        "b": {"anyOf": [{"type": "integer"}, {"type": "null"}], "description": "count"},
+        "c": {"type": ["string", "integer"]},
+        "d": {"type": ["null"]}
+    }});
+    let cleaned = clean_schema(&s);
+    let p = &cleaned["properties"];
+    assert_eq!(p["a"], json!({"type": "string", "nullable": true}));
+    assert_eq!(p["b"], json!({"type": "integer", "description": "count", "nullable": true}));
+    assert_eq!(p["c"], json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}));
+    assert_eq!(p["d"], json!({"nullable": true}));
+}
+
+#[test]
+fn one_of_is_any_of_all_of_objects_are_merged_and_not_is_dropped() {
+    let s = json!({"type": "object", "properties": {
+        "pick": {"oneOf": [
+            {"type": "object", "properties": {"a": {"type": "string"}}},
+            {"type": "object", "properties": {"b": {"type": "string"}}}
+        ]},
+        "both": {"allOf": [
+            {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+            {"type": "object", "properties": {"y": {"type": "string"}}, "required": ["y"]}
+        ]},
+        "other": {"type": "string", "not": {"enum": ["no"]}}
+    }});
+    let cleaned = clean_schema(&s);
+    let p = &cleaned["properties"];
+    assert_eq!(p["pick"]["anyOf"].as_array().map(Vec::len), Some(2));
+    assert!(p["pick"].get("oneOf").is_none());
+    assert_eq!(p["both"]["type"], "object");
+    assert_eq!(p["both"]["properties"], json!({"x": {"type": "string"}, "y": {"type": "string"}}));
+    assert_eq!(p["both"]["required"], json!(["x", "y"]));
+    assert_eq!(p["other"], json!({"type": "string"}));
+}
+
+#[test]
+fn bounds_formats_and_enums_the_api_does_not_know_are_dropped_and_the_rest_kept() {
+    let s = json!({"type": "object", "properties": {
+        "n": {"type": "integer", "exclusiveMinimum": 0, "minimum": 1, "multipleOf": 2, "format": "int32"},
+        "u": {"type": "string", "format": "uri", "minLength": 1, "pattern": "^h"},
+        "t": {"type": "string", "format": "date-time"},
+        "l": {"type": "array", "uniqueItems": true, "items": {"type": "string"}, "minItems": 1},
+        "tuple": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}]},
+        "bare": {"type": "array"},
+        "level": {"type": "integer", "enum": [1, 2, 3], "description": "How loud."},
+        "mode": {"enum": ["a", "b", null]},
+        "gate": {"if": {"type": "string"}, "then": {"minLength": 2}, "else": {"type": "integer"}}
+    }});
+    let cleaned = clean_schema(&s);
+    let p = &cleaned["properties"];
+    assert_eq!(p["n"], json!({"type": "integer", "minimum": 1, "format": "int32"}));
+    assert_eq!(p["u"], json!({"type": "string", "minLength": 1, "pattern": "^h"}));
+    assert_eq!(p["t"]["format"], "date-time");
+    assert_eq!(p["l"], json!({"type": "array", "items": {"type": "string"}, "minItems": 1}));
+    assert_eq!(
+        p["tuple"],
+        json!({
+            "type": "array",
+            "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+            "description": "Items by position: string, integer."
+        })
+    );
+    assert_eq!(
+        p["bare"],
+        json!({"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]}})
+    );
+    // numbers cannot be an enum here, so the model still gets them in the description
+    assert_eq!(p["level"], json!({"type": "integer", "description": "How loud. Allowed values: 1, 2, 3."}));
+    assert_eq!(p["mode"], json!({"type": "string", "enum": ["a", "b"], "nullable": true}));
+    assert_eq!(p["gate"], json!({}));
+}
+
+#[test]
+fn the_request_body_carries_none_of_the_keywords_the_api_rejects() {
+    let mut req = ModelRequest::new("gemini-2.5-pro", "", vec![Message::user("hi")]);
+    req.tools = vec![ToolSpec {
+        name: "edit".into(),
+        description: "d".into(),
+        parameters: json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "target": {"$ref": "#/$defs/Target"},
+                "count": {"type": ["integer", "null"], "exclusiveMinimum": 0},
+                "link": {"type": "string", "format": "uri"},
+                "how": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+            },
+            "$defs": {"Target": {"allOf": [{"type": "object", "properties": {"path": {"type": "string"}}}]}}
+        }),
+    }];
+    let b = Gemini::body(&ProviderConfig::new(ID, "https://generativelanguage.googleapis.com", None), &req);
+    let sent = b["tools"][0]["functionDeclarations"][0]["parameters"].to_string();
+    for gone in ["$ref", "$defs", "$schema", "allOf", "oneOf", "exclusiveMinimum", "uri", "\"null\""] {
+        assert!(!sent.contains(gone), "{gone} in {sent}");
+    }
+    assert!(sent.contains("\"path\""), "{sent}");
+}
+
+fn foreign_calls_history() -> Vec<Message> {
+    vec![
+        Message::user("hi"),
+        Message::new(
+            Role::Assistant,
+            vec![
+                Part::tool_call("c1", "read", json!({"path": "a"})),
+                Part::tool_call("c2", "read", json!({"path": "b"})),
+            ],
+        ),
+        Message::tool_results(vec![Part::tool_result("c1", "x", false), Part::tool_result("c2", "y", false)]),
+        Message::new(Role::Assistant, vec![Part::tool_call("c3", "read", json!({"path": "c"}))]),
+    ]
+}
+
+#[test]
+fn a_call_with_no_signature_gets_the_documented_placeholder_on_gemini_3_first_call_only() {
+    let c = contents(&foreign_calls_history(), "gemini-3-pro-preview");
+    assert_eq!(c[1]["parts"][0]["thoughtSignature"], "skip_thought_signature_validator");
+    assert!(c[1]["parts"][1].get("thoughtSignature").is_none(), "parallel calls after the first carry none");
+    assert_eq!(c[3]["parts"][0]["thoughtSignature"], "skip_thought_signature_validator");
+    // an alias without a number follows the newest model of its line
+    for alias in ["gemini-flash-latest", "gemini-pro-latest"] {
+        let c = contents(&foreign_calls_history(), alias);
+        assert_eq!(c[1]["parts"][0]["thoughtSignature"], "skip_thought_signature_validator", "{alias}");
+    }
+    // a version with a dot and a proxy prefix are read the same way
+    let c = contents(&foreign_calls_history(), "models/gemini-3.1-pro");
+    assert_eq!(c[1]["parts"][0]["thoughtSignature"], "skip_thought_signature_validator");
+}
+
+#[test]
+fn gemini_2_models_get_no_placeholder_and_a_real_signature_is_never_replaced() {
+    for model in ["gemini-2.5-pro", "gem-b"] {
+        let c = contents(&foreign_calls_history(), model);
+        assert!(!serde_json::to_string(&c).unwrap().contains("thoughtSignature"), "{model}");
+    }
+    let signed = vec![
+        Message::user("hi"),
+        Message::new(
+            Role::Assistant,
+            vec![
+                Part::Reasoning { text: "t".into(), signature: Some("TS".into()), encrypted: None, model: None },
+                Part::tool_call("c1", "read", json!({})),
+            ],
+        ),
+    ];
+    let c = contents(&signed, "gemini-3-pro-preview");
+    assert_eq!(c[1]["parts"][0]["thoughtSignature"], "TS");
+}
+
+#[test]
+fn a_nested_object_without_properties_is_cut_out_with_its_required_entry_and_arrays_of_it() {
+    let s = json!({"type": "object", "properties": {
+        "keep": {"type": "string"},
+        "meta": {"type": "object", "additionalProperties": true},
+        "list": {"type": "array", "items": {"type": "object"}},
+        "deep": {"type": "object", "properties": {"inner": {"type": "object"}}},
+        "pick": {"anyOf": [{"type": "object"}, {"type": "string"}]}
+    }, "required": ["keep", "meta"]});
+    let c = clean_schema(&s);
+    assert_eq!(c["required"], json!(["keep"]));
+    let p = c["properties"].as_object().unwrap();
+    assert_eq!(p.keys().collect::<Vec<_>>(), ["keep", "pick"]);
+    assert_eq!(p["pick"]["anyOf"], json!([{"type": "string"}]));
+    assert!(c["description"].as_str().unwrap().contains("meta, list, deep"), "{c}");
+    // the top level stays as it is, for the caller to send as no parameters
+    assert_eq!(clean_schema(&json!({"type": "object"}))["type"], "object");
+}
+
+#[test]
+fn definitions_that_refer_to_each_other_many_times_are_cut_off_instead_of_growing_without_end() {
+    let mut defs = serde_json::Map::new();
+    for i in 0..40 {
+        let next = json!({"$ref": format!("#/$defs/D{}", i + 1)});
+        defs.insert(
+            format!("D{i}"),
+            json!({"type": "object", "properties": {"a": next.clone(), "b": next, "n": {"type": "string"}}}),
+        );
+    }
+    defs.insert("D40".into(), json!({"type": "object", "properties": {"n": {"type": "string"}}}));
+    let s = json!({"type": "object", "properties": {"start": {"$ref": "#/$defs/D0"}}, "$defs": defs});
+    let started = std::time::Instant::now();
+    let c = clean_schema(&s);
+    assert!(started.elapsed().as_secs() < 5);
+    assert!(c.to_string().len() < 1_000_000);
+    assert!(c["properties"]["start"]["properties"]["n"].is_object());
+}
+
+#[test]
+fn the_levels_above_high_take_the_high_thinking_budget() {
+    for e in [nexo_core::Effort::High, nexo_core::Effort::Xhigh, nexo_core::Effort::Max] {
+        let mut req = ModelRequest::new("gemini-2.5-pro", "", vec![Message::user("hi")]);
+        req.reasoning = Some(nexo_core::ReasoningConfig::Effort(e));
+        let cfg = ProviderConfig::new(ID, "https://generativelanguage.googleapis.com", None);
+        let b = Gemini::body(&cfg, &req);
+        assert_eq!(b["generationConfig"]["thinkingConfig"]["thinkingBudget"], 24_576, "{e:?}");
+    }
 }

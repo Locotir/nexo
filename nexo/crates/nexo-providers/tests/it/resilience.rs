@@ -25,6 +25,7 @@ fn req() -> ModelRequest {
 fn quick() -> Client {
     let mut c = Client::new(registry());
     c.max_backoff = Duration::ZERO;
+    c.retry_ceiling = Duration::ZERO;
     c
 }
 
@@ -108,7 +109,7 @@ async fn wait_for(value: &'static str) -> Option<Duration> {
 }
 
 #[tokio::test]
-async fn retry_after_in_every_shape_and_the_cap_on_the_wait() {
+async fn retry_after_in_every_shape_and_the_ceiling_on_the_wait() {
     assert_eq!(wait_for("0").await, Some(Duration::ZERO));
     assert_eq!(wait_for("-5").await, None, "a negative value is ignored: the usual backoff applies");
     assert_eq!(wait_for("soon").await, None);
@@ -117,15 +118,30 @@ async fn retry_after_in_every_shape_and_the_cap_on_the_wait() {
     assert_eq!(past, Some(Duration::ZERO), "a date in the past");
     let future = wait_for("Wed, 21 Oct 2099 07:28:00 GMT").await.unwrap();
     assert!(future > Duration::from_secs(3600));
-    // whatever the server asks, one wait is never longer than max_backoff
+    // what the server asks is waited as asked, even past the ladder's 30 s; only the ceiling stops it
     let client = Client::new(registry());
     let mut e = ProviderError::new(ErrorKind::RateLimit, "slow");
+    e.retry_after = Some(Duration::from_secs(90));
+    assert_eq!(client.backoff(1, &e), Duration::from_secs(90));
     e.retry_after = Some(Duration::from_secs(86_400));
-    assert_eq!(client.backoff(1, &e), Duration::from_secs(30));
-    // without a hint: 1, 2, 4, 8, 16, 30 (capped), 30
+    assert_eq!(client.backoff(1, &e), client.retry_ceiling);
+    // without a hint: 1, 2, 4, 8, 16, 30 (capped), 30, each with up to a quarter more
     e.retry_after = None;
-    let waits: Vec<u64> = (1..=7).map(|n| client.backoff(n, &e).as_secs()).collect();
-    assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
+    for (n, base) in [(1u32, 1.0f64), (2, 2.0), (3, 4.0), (4, 8.0), (5, 16.0), (6, 30.0), (7, 30.0)] {
+        let wait = client.backoff(n, &e).as_secs_f64();
+        assert!(wait >= base && wait <= base * 1.25 + 1e-9, "attempt {n}: {wait}");
+    }
+}
+
+#[tokio::test]
+async fn a_retry_after_past_the_ceiling_is_returned_at_once_not_waited_for() {
+    let (base, hits) = answering(429, &[("Retry-After", "3600")], "{\"error\":\"slow\"}".into()).await;
+    let started = std::time::Instant::now();
+    let e = first_error(&Client::new(registry()), &base, 2).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "an hour is not waited for with the turn open");
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    assert_eq!(e.retry_after, Some(Duration::from_secs(3600)));
+    assert!(e.human().contains("Rate limited"), "{}", e.human());
 }
 
 // ---- 3: which statuses retry ----
@@ -157,6 +173,20 @@ async fn server_statuses_are_retried_and_client_statuses_are_not() {
         "{}",
         e.message
     );
+}
+
+#[tokio::test]
+async fn a_429_that_says_the_balance_is_empty_is_sent_once_not_retried() {
+    let body = r#"{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}"#;
+    let (base, hits) = answering(429, &[], body.into()).await;
+    let e = first_error(&quick(), &base, 2).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "waiting does not refill a balance");
+    assert!(!e.is_retryable());
+    assert_eq!(e.status, Some(429));
+    // a plain rate limit still uses its retries
+    let (base, hits) = answering(429, &[], "slow down".into()).await;
+    first_error(&quick(), &base, 2).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
 }
 
 // ---- 4: dead connections ----
@@ -304,6 +334,64 @@ async fn a_stream_that_goes_silent_ends_in_an_error_not_a_hang() {
     let e = c.error.expect("the person is told");
     assert_eq!(e.kind, ErrorKind::Network);
     assert!(e.human().starts_with("Could not reach the provider"), "{}", e.human());
+}
+
+/// A config whose provider gives a reply `secs` seconds of quiet before the request counts as failed.
+fn quiet_after(base: &str, secs: i64) -> ProviderConfig {
+    let mut c = cfg(base);
+    c.extra.insert("idle_timeout".into(), toml::Value::Integer(secs));
+    c
+}
+
+#[tokio::test]
+async fn a_stream_quiet_for_longer_than_the_providers_limit_ends_at_that_limit() {
+    let word = "data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n";
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n";
+    let base = silent(Some(Box::leak(format!("{head}{word}").into_boxed_str()))).await;
+    let started = std::time::Instant::now();
+    let run = async {
+        let mut s = quick().stream(&quiet_after(&base, 1), &req(), 0).await.unwrap();
+        let mut c = Collector::new();
+        while let Some(ev) = s.next().await {
+            c.push(ev);
+        }
+        c
+    };
+    // the default limit is 300 s: ending within seconds is the provider's own setting at work
+    let c = tokio::time::timeout(Duration::from_secs(30), run).await.expect("the stream ended");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert_eq!(c.message().text(), "hi", "what came before the silence is kept");
+    let e = c.error.expect("the person is told");
+    assert!(e.is_retryable() && e.message.contains("no data for 1 s"), "{e:?}");
+}
+
+#[tokio::test]
+async fn a_server_that_never_answers_is_given_up_on_at_the_providers_limit() {
+    let base = silent(None).await;
+    let started = std::time::Instant::now();
+    let e = tokio::time::timeout(Duration::from_secs(30), async {
+        quick().stream(&quiet_after(&base, 1), &req(), 0).await.err().expect("an error")
+    })
+    .await
+    .expect("the call ended");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert_eq!(e.kind, ErrorKind::Network);
+    assert!(e.message.contains("no answer for 1 s"), "{}", e.message);
+}
+
+#[tokio::test]
+async fn an_error_whose_body_never_comes_is_still_told_by_its_status_at_the_providers_limit() {
+    let head = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\n\r\n";
+    let base = silent(Some(head)).await;
+    let started = std::time::Instant::now();
+    let e = tokio::time::timeout(Duration::from_secs(30), async {
+        quick().stream(&quiet_after(&base, 1), &req(), 0).await.err().expect("an error")
+    })
+    .await
+    .expect("the call ended");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert_eq!(e.status, Some(502), "{e:?}");
+    assert!(e.is_retryable(), "a stalled gateway is tried again like a failed one: {e:?}");
 }
 
 // ---- 8: the error stays short ----

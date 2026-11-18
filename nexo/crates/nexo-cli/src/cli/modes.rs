@@ -43,7 +43,12 @@ pub(super) async fn interactive(
     );
     let models = setup::model_choices(&config);
     // The session files are read while the agent is set up, not before it.
-    let listing = tokio::task::spawn_blocking(nexo_agent::session::list);
+    let listing = {
+        let cwd = cwd.clone();
+        tokio::task::spawn_blocking(move || nexo_agent::session::picker_rows(&cwd))
+    };
+    // what a crash left next to them goes in the background too, never before the first frame
+    nexo_agent::session::sweep_orphans_in_background();
     // sessions write to each other through the mailbox; it takes its session when the agent has one
     let mailbox = config.mail.enabled.then(|| {
         nexo_core::mailbox::Mailbox::unbound(
@@ -54,14 +59,8 @@ pub(super) async fn interactive(
         )
     });
     let agent_setup = setup::agent_setup_in_background(&config, &cwd, &picked, resume.clone(), mailbox.clone()).await?;
-    // A session nothing was said in has nothing to resume.
-    let sessions = listing
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|m| m.messages > 0 && !m.headless)
-        .map(|m| (m.id, m.title))
-        .collect();
+    // The rows leave out the sessions nothing was said in and the ones programs run, and put this folder's first.
+    let sessions = listing.await.unwrap_or_default();
     let opts = nexo_tui::TuiOptions {
         cwd: cwd.clone(),
         // nothing chosen: the interface names none and opens on the locked home
@@ -124,18 +123,20 @@ pub(super) async fn interactive(
             }
         });
     }
-    let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
+    let mut agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
+    let commands = handle.commands.clone();
     nexo_tui::set_supervise_options(nexo_supervise::Options::detect());
     if let Some(m) = mailbox {
         nexo_tui::set_mailbox(m);
     }
     let ui = nexo_tui::run(handle, opts).await;
-    agent.abort();
+    finish(&mut agent, &commands, CLOSE_WAIT).await;
     ui?;
     Ok(0)
 }
 
 /// Runs one request without the interface and returns the reply text and the exit code (0 done, 2 not done, 1 agent failure).
+/// Error notices are printed on stderr as they come.
 pub(super) async fn headless_collect(
     config: nexo_core::Config,
     cwd: PathBuf,
@@ -143,14 +144,39 @@ pub(super) async fn headless_collect(
     prompt: String,
 ) -> anyhow::Result<(String, i32)> {
     nexo_agent::session::mark_headless();
+    nexo_agent::session::sweep_orphans_in_background();
     let (mut handle, ends) = channels();
     let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, None, Some(gate), None).await?;
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
     let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();
+    // the address a failed connection adds to its notice, as `-p` says it
+    let reach = config
+        .providers
+        .get(&picked.provider)
+        .map(|p| crate::headless::unreachable_note(&picked.provider, &p.base_url));
     let (mut text, mut code) = (String::new(), 0);
     while let Some(ev) = handle.events.recv().await {
         match &ev {
+            // the cause of a failed run (a provider that is off, a bad key) reaches stderr as it does for `-p`,
+            // not only the generic line of the caller
+            AgentEvent::Notice { level: nexo_core::agent::Level::Error, text: t, problem } => {
+                let t = crate::headless::with_reach_note(
+                    reach.as_deref(),
+                    nexo_core::agent::Level::Error,
+                    t,
+                    problem.is_some(),
+                );
+                eprintln!(
+                    "{}",
+                    crate::headless::notice_line(
+                        nexo_core::agent::Level::Error,
+                        &t,
+                        problem.is_some(),
+                        crate::headless::color_ok()
+                    )
+                );
+            }
             AgentEvent::TextDelta { text: t } => text.push_str(t),
             AgentEvent::AssistantStart if !text.is_empty() => text.clear(),
             AgentEvent::TurnEnd { reason } => {
@@ -172,4 +198,57 @@ pub(super) async fn headless_collect(
         return Ok((text, 1));
     }
     Ok((text, code))
+}
+
+/// How long leaving the interface waits for the agent to close its session. It is a few seconds more than the time
+/// the agent gives a stuck turn (6 s), which leaves the save and the release room; a request in flight has to unwind
+/// first, and the `session_end` hook comes after them and is cut off with the agent if it is still running. The
+/// terminal is already restored, so nothing on screen waits with it.
+const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Asks the agent to close its session and waits up to `wait` for it to finish (the `session_end` hook, the last
+/// state write, the scratch wipe), then aborts it so a stuck close cannot keep the process alive. The interface
+/// leaves without a `Shutdown` when the person hangs up or the event stream closes, so the close is asked for here.
+async fn finish<T>(
+    agent: &mut tokio::task::JoinHandle<T>,
+    commands: &tokio::sync::mpsc::UnboundedSender<AgentCommand>,
+    wait: std::time::Duration,
+) {
+    let _ = commands.send(AgentCommand::Shutdown);
+    if tokio::time::timeout(wait, &mut *agent).await.is_err() {
+        agent.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn leaving_waits_for_a_close_that_finishes_in_time() {
+        let (commands, _ends) = tokio::sync::mpsc::unbounded_channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let flag = closed.clone();
+        let mut agent = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        finish(&mut agent, &commands, Duration::from_secs(5)).await;
+        assert!(closed.load(Ordering::SeqCst), "finish returned before the close ended");
+    }
+
+    #[tokio::test]
+    async fn leaving_aborts_a_close_that_never_ends_after_the_wait() {
+        let (commands, mut ends) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = tokio::spawn(std::future::pending::<()>());
+        let started = std::time::Instant::now();
+        finish(&mut agent, &commands, Duration::from_millis(150)).await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(matches!(ends.recv().await, Some(AgentCommand::Shutdown)), "the close was not asked for");
+        let joined = agent.await.expect_err("the stuck task was not aborted");
+        assert!(joined.is_cancelled());
+    }
 }

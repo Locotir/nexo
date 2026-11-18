@@ -167,9 +167,7 @@ impl Default for Nudge {
                       blocked, say why in one line and move on to something else."
                 .into(),
             question: "Yes, go ahead with what you propose. Decide the small things yourself.".into(),
-            looping: "You have had {errors} errors in a row with {tool}. Stop, read the error and try a different \
-                      approach."
-                .into(),
+            looping: "Errors are repeating: {why}. Stop, read the error and try a different approach.".into(),
         }
     }
 }

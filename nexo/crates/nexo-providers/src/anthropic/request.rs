@@ -136,9 +136,6 @@ impl Anthropic {
             if let Some(t) = req.temperature.filter(|_| takes_temperature(&req.model)) {
                 body["temperature"] = temp(t);
             }
-            if !req.stop.is_empty() {
-                body["stop_sequences"] = json!(req.stop);
-            }
             let budget = match req.reasoning {
                 Some(ReasoningConfig::Budget(b)) => Some(b.max(1024)),
                 Some(ReasoningConfig::Effort(Effort::Minimal)) => Some(1024),
@@ -170,6 +167,11 @@ impl Anthropic {
                     body.as_object_mut().map(|o| o.remove("temperature")); // not allowed with thinking
                 }
             }
+        }
+        // a stop sequence is no sampling parameter: the 5.5 line takes it like every other model, and the other
+        // protocols send it whatever the model
+        if !req.stop.is_empty() {
+            body["stop_sequences"] = json!(req.stop);
         }
         for (k, v) in &req.extra {
             // the models of the 5.5 line reject sampling parameters whatever their value

@@ -199,6 +199,23 @@ impl App {
         }
     }
 
+    /// Ctrl+D on an empty box: quit, but while a turn runs it needs a second press within two seconds,
+    /// because quitting drops the turn and its tool and the tokens already spent on them. It keeps its own
+    /// timer: sharing Ctrl+C's would make a Ctrl+C meant to interrupt the turn quit instead.
+    pub fn ctrl_d(&mut self) {
+        if !self.busy {
+            self.quit();
+            return;
+        }
+        let now = self.now();
+        if self.last_ctrl_d.is_some_and(|t| now.duration_since(t).as_secs_f32() < 2.0) {
+            self.quit();
+            return;
+        }
+        self.last_ctrl_d = Some(now);
+        self.flash("turn running, Ctrl+D again to quit");
+    }
+
     /// Ctrl+C: interrupt a turn, else clear the draft; twice within two seconds: quit.
     pub fn ctrl_c(&mut self) {
         let now = self.now();

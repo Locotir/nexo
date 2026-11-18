@@ -22,6 +22,56 @@ pub(super) struct LogFile {
 }
 pub(super) type RawLog = std::sync::Arc<std::sync::Mutex<Result<LogFile, String>>>;
 
+/// Bytes a session may hold in its command logs: eight full logs.
+#[cfg(unix)]
+pub(super) const LOG_BUDGET_BYTES: u64 = 8 * MAX_LOG_BYTES as u64;
+
+/// Logs being written right now, in every session of this process. An open log is empty on disk
+/// and may still grow to `MAX_LOG_BYTES`, so each one is counted at that size; the mutex also
+/// serialises the creation of logs, so two commands cannot both take the last slot.
+#[cfg(unix)]
+static LOGS_OPEN: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// The reservation of one open log, released when the command ends (its file is then counted at
+/// its real size, or is gone).
+#[cfg(unix)]
+#[derive(Debug)]
+pub(super) struct LogSlot(std::path::PathBuf);
+
+#[cfg(unix)]
+impl Drop for LogSlot {
+    fn drop(&mut self) {
+        LOGS_OPEN.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| *p != self.0);
+    }
+}
+
+/// Creates the private log `path` in `dir` unless the folder's bytes plus the room reserved for the
+/// logs being written leave less than one full log under `LOG_BUDGET_BYTES`.
+#[cfg(unix)]
+pub(super) fn open_log(dir: &std::path::Path, path: &std::path::Path) -> std::io::Result<(std::fs::File, LogSlot)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut open = LOGS_OPEN.lock().unwrap_or_else(|e| e.into_inner());
+    std::fs::create_dir_all(dir)?;
+    let mut used = open.iter().filter(|p| p.parent() == Some(dir)).count() as u64 * MAX_LOG_BYTES as u64;
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(entry) = entry else { continue };
+        if !open.contains(&entry.path()) {
+            used += entry.metadata().map_or(0, |m| m.len());
+        }
+    }
+    if used + MAX_LOG_BYTES as u64 > LOG_BUDGET_BYTES {
+        let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+        return Err(std::io::Error::other(format!(
+            "session log budget exhausted ({:.1} MiB kept or reserved of {:.0} MiB)",
+            mib(used),
+            mib(LOG_BUDGET_BYTES)
+        )));
+    }
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    open.push(path.to_path_buf());
+    Ok((file, LogSlot(path.to_path_buf())))
+}
+
 pub(super) async fn read_lines_logged<R: tokio::io::AsyncRead + Unpin>(
     r: R,
     tx: mpsc::UnboundedSender<String>,

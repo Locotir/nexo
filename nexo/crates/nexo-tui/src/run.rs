@@ -107,6 +107,8 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             _ = nexo_providers::usage::changed().notified() => {}
             _ = async { match wake { Some(t) => tokio::time::sleep_until(t).await, None => std::future::pending().await } } => { by_event = false; }
         }
+        // the panic hook names this session in its resume line
+        terminal::note_session(app.resumable_id());
         app.sync_plan_usage();
         if app.should_quit {
             break;

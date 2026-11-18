@@ -33,6 +33,8 @@ impl Problem {
                     .step("Pick another provider with `/model`.")
                     .step(format!("Check where {who} is offered."))
             }
+            // a firewall's or CDN's HTML block page is a 403 too, but it says nothing about the key
+            ErrorKind::Auth if status == Some(403) && m.contains("web page") => unreadable(&host, &url),
             ErrorKind::Auth => key_rejected(e, ctx, &who),
             ErrorKind::RateLimit => {
                 let (why, first) = match e.retry_after {
@@ -130,19 +132,28 @@ impl Problem {
     }
 }
 
+/// The words that can only mean an empty balance, never a per-minute limit. They are what the HTTP layer may
+/// use on a 429 to stop retrying (waiting never refills a balance); the soft words below are not safe there,
+/// because "exceeded your current quota" is also how Gemini words a per-minute limit.
+pub fn says_no_credit(m: &str) -> bool {
+    has(
+        &m.to_ascii_lowercase(),
+        &[
+            "insufficient_quota",
+            "insufficient balance",
+            "insufficient credit",
+            "credit balance",
+            "out of credits",
+            "any credits",
+            "payment required",
+            "no credits",
+        ],
+    )
+}
+
 /// The words of an empty balance. The soft ones ("exceeded your current quota") are also how a per-minute
 /// limit is worded, so on a rate limit they count only when nothing says the wait will end it.
 pub(super) fn no_credit(e: &ProviderError, m: &str) -> bool {
-    let hard = &[
-        "insufficient_quota",
-        "insufficient balance",
-        "insufficient credit",
-        "credit balance",
-        "out of credits",
-        "any credits",
-        "payment required",
-        "no credits",
-    ];
     let soft = &["exceeded your current quota", "plan and billing", "billing details"];
     let comes_back = e.retry_after.is_some()
         || has(
@@ -161,7 +172,7 @@ pub(super) fn no_credit(e: &ProviderError, m: &str) -> bool {
                 "tokens per",
             ],
         );
-    has(m, hard) || (has(m, soft) && !((e.kind == ErrorKind::RateLimit || e.status == Some(429)) && comes_back))
+    says_no_credit(m) || (has(m, soft) && !((e.kind == ErrorKind::RateLimit || e.status == Some(429)) && comes_back))
 }
 
 pub(super) fn model_or(ctx: &ProblemCtx) -> String {
@@ -311,6 +322,21 @@ pub(super) fn network(m: &str, ctx: &ProblemCtx, who: &str, host: &str, url: &st
         };
     }
     if has(m, &["stream cut", "stream ended", "truncated", "connection reset", "broken pipe", "closed"]) {
+        // The same words come from a connection that dropped after part of the reply was shown and from one
+        // that ended before any of it arrived (a server down or restarting, a proxy reset). Only the caller
+        // knows which, so the card claims a kept partial answer only when there is one.
+        if !ctx.shown {
+            let p = Problem::new(
+                format!("{who} closed the connection before answering"),
+                "The connection ended before any of the reply arrived.",
+            )
+            .step("Send your message again.");
+            return if ctx.is_local() {
+                p.step("If it keeps happening, check that the server is running, or pick another model with `/model`.")
+            } else {
+                p.step("If it keeps happening, the server may be down or restarting: check it, or pick another provider with `/model`.")
+            };
+        }
         return Problem::new("The reply was cut off", format!("The connection to {who} dropped mid-answer."))
             .step("Send your message again. What was already shown is kept.")
             .step("If it keeps happening, check your connection or pick another provider with `/model`.");

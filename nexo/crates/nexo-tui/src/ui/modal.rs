@@ -78,9 +78,9 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 Modal::permission_rules(&p.req, &theme, false).into_iter().take(room).collect()
             };
             p.rules_shown = if pinned.len() > n_rules { n_rules } else { pinned.len() };
-            let mut lines = Modal::permission_lines_with(&p.req, inner_w, &theme, false, false);
+            let mut lines = p.body(inner_w, &theme, false);
             if lines.len() as u16 + pinned.len() as u16 + 2 + btn_h > max_h {
-                lines = Modal::permission_lines_with(&p.req, inner_w, &theme, true, false);
+                lines = p.body(inner_w, &theme, true);
             }
             let b = crate::modal::permission_buttons(inner_w.saturating_sub(1));
             (crate::modal::permission_title(p.req.agent.as_deref(), &p.req.tool, inner_w), lines, Some(b))

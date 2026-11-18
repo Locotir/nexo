@@ -58,7 +58,7 @@ pub fn forget(session: &Path) {
 
 /// A write that a crash or a kill cut between the file and the rename leaves its file of up to tens of MB
 /// behind, and nothing else would ever remove it.
-const YOUNG: std::time::Duration = std::time::Duration::from_secs(3600);
+pub(crate) const YOUNG: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Removes the files of cut writes that belong to this session (`<id>.jsonl.curator.<pid>.<n>.tmp`): those of
 /// a process that is gone, those older than the saved state that took their place, and, where a process cannot
@@ -99,7 +99,7 @@ pub fn sweep(session: &Path) -> usize {
 
 /// Whether signal 0 finds no process under `pid` (a process of another user still exists: EPERM).
 #[cfg(unix)]
-fn no_such_process(pid: u32) -> bool {
+pub(crate) fn no_such_process(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
     // SAFETY: signal 0 sends nothing; it only reports whether the process exists.
     let r = unsafe { libc::kill(pid, 0) };
@@ -107,6 +107,6 @@ fn no_such_process(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn no_such_process(_pid: u32) -> bool {
+pub(crate) fn no_such_process(_pid: u32) -> bool {
     false
 }

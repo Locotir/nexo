@@ -83,6 +83,9 @@ impl ProviderError {
         let lower = body.to_ascii_lowercase();
         let kind = match status {
             401 | 403 => ErrorKind::Auth,
+            // an empty balance is not refilled by waiting: it is a refused request, like a 402, so the client
+            // does not spend its retries on it (only the unambiguous words count; see `says_no_credit`)
+            429 if crate::problem::says_no_credit(&lower) => ErrorKind::BadRequest,
             429 => ErrorKind::RateLimit,
             400 | 413 | 422 if is_context_error(Some(status), "", body) => ErrorKind::ContextLength,
             408 => ErrorKind::Network,
@@ -242,6 +245,21 @@ mod tests {
             "Could not reach the provider: connection reset"
         );
         assert!(!ProviderError::from_http(429, "{\"a\":1}").human().contains('{'));
+    }
+
+    #[test]
+    fn a_429_that_says_the_balance_is_empty_is_not_retried_but_a_busy_one_is() {
+        let empty = ProviderError::from_http(
+            429,
+            r#"{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}"#,
+        );
+        assert_eq!(empty.kind, ErrorKind::BadRequest);
+        assert!(!empty.is_retryable());
+        assert_eq!(empty.status, Some(429));
+        assert!(!ProviderError::from_http(429, "Your credit balance is too low").is_retryable());
+        assert!(ProviderError::from_http(429, "slow down").is_retryable());
+        // Gemini words a per-minute limit with the soft phrase: that one comes back, so it still retries
+        assert!(ProviderError::from_http(429, "You exceeded your current quota, retry in 12s").is_retryable());
     }
 
     #[test]

@@ -17,8 +17,9 @@ pub(super) enum Lesson {
 }
 
 /// Reads the error for what it says about the model and remembers it:
-/// the context window, the largest reply, or that the model does not exist.
-pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Lesson {
+/// the context window, the largest reply, or that the model does not exist. `wanted` is the reply room the failed
+/// request asked for.
+pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str, wanted: u32) -> Lesson {
     let mut guard = state.lock().await;
     let st = &mut *guard;
     let (provider, mut cfg, _) = st.target.get();
@@ -31,7 +32,11 @@ pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Les
             return Lesson::Context;
         }
         remember(st, &provider, &mut cfg, model, "context_window", n);
-        if before.is_none_or(|b| n < b) && st.policy.fits_window() {
+        // A policy that does not keep its view under the window can still retry once: when the request itself is
+        // well under the window, it was the reply's room (prompt plus max_tokens) that went over, which a summary
+        // does not fix and the next pass shortens.
+        if before.is_none_or(|b| n < b) && (st.policy.fits_window() || window_fit::room_left(st, u64::from(n), wanted))
+        {
             return Lesson::Refit;
         }
         return Lesson::Context;
@@ -89,11 +94,13 @@ pub(super) fn remember(st: &mut State, provider: &str, cfg: &mut ProviderConfig,
 }
 
 /// The error as a card: what failed, the likely cause and what to do, made concrete with the provider,
-/// model, address and key source of the call, and the window the session knows.
-pub(super) async fn problem_of(state: &Shared, e: &ProviderError) -> Problem {
+/// model, address and key source of the call, and the window the session knows. `shown` tells whether part of
+/// the reply had already arrived, so a dropped connection is not described as a cut answer when nothing came.
+pub(super) async fn problem_of(state: &Shared, e: &ProviderError, shown: bool) -> Problem {
     let st = state.lock().await;
     let (provider, cfg, model) = st.target.get();
     let mut ctx = ProblemCtx::from_config(&provider, &model, &cfg);
+    ctx.shown = shown;
     ctx.window = st.limits.context_window.or_else(|| hints::context_window(&e.message)).or(ctx.window);
     let mut p = Problem::of(e, &ctx);
     if hints::unknown_model(e) {

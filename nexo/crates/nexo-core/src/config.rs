@@ -136,8 +136,16 @@ impl Config {
             Ok(Some((cfg, said)))
         };
         let mut cfg = Config::default();
+        // a layer that does not combine with the one before it is said, naming the file: its values would
+        // otherwise vanish with nothing to tell the person why the file seems not to count
+        let skipped = |f: &Path, why: Option<String>, notices: &mut Vec<String>| {
+            if let Some(why) = why {
+                notices.push(format!("{}: its settings could not be applied and are ignored ({why})", f.display()));
+            }
+        };
         if let Some((part, said)) = read(user)? {
-            cfg.merge(part, &said);
+            let why = cfg.merge(part, &said);
+            skipped(user, why, &mut cfg.notices);
         }
         if let Some(f) = project {
             if let Some((mut part, said)) = read(f)? {
@@ -157,7 +165,8 @@ impl Config {
                         ));
                     }
                 }
-                cfg.merge(part, &said);
+                let why = cfg.merge(part, &said);
+                skipped(f, why, &mut cfg.notices);
             }
         }
         cfg.notices.extend(unread);
@@ -170,7 +179,8 @@ impl Config {
     /// does not define, MCP servers, hooks, allow rules, the `yolo` and `accept-edits` modes, the
     /// status command, the system prompt file, the web backend's address and key, and a `max_cost` or
     /// `max_cost_day` that is not a positive finite number at most the user's, and a `max_checkpoints` above the
-    /// user's (5 if unset); a user's `on_limit = "ask"` stays. Returns their names.
+    /// user's (5 if unset), a `[mail] inbound` that lets in more than the user's and `[mail] enabled = true`
+    /// over the user's false; a user's `on_limit = "ask"` stays. Returns their names.
     pub fn strip_untrusted(&mut self, user: &Config) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(n) = self.provider.take() {
@@ -272,6 +282,23 @@ impl Config {
                 self.permissions.sandbox = user.permissions.sandbox;
             }
         }
+        // A project may hold mail back, never let more in: `accept` drops the `auto` hold that stops a
+        // session running without asking from writing into one that asks. A project's `auto` is put back
+        // silently because the default is `auto` too, so it cannot be told from a key left out.
+        {
+            use crate::mail::Inbound;
+            let (mine, own) = (Inbound::parse(&self.mail.inbound), Inbound::parse(&user.mail.inbound));
+            if mine.strictness() < own.strictness() {
+                if mine == Inbound::Accept {
+                    out.push("mail.inbound = \"accept\"".into());
+                }
+                self.mail.inbound = user.mail.inbound.clone();
+            }
+            // `enabled` defaults to true, so this only bites when the project said so itself.
+            if self.mail.enabled && !user.mail.enabled {
+                self.mail.enabled = false;
+            }
+        }
         if !self.ui.status_command.is_empty() && self.ui.status_command != user.ui.status_command {
             out.push("ui.status_command".into());
         }
@@ -310,33 +337,45 @@ impl Config {
     /// user's `curator_spec`, a project's price for one model keeps the user's other prices, a provider
     /// that sets only `default_model` keeps the user's protocol, address and key source. An MCP server
     /// counts whole; rules and hooks add up.
-    pub fn merge(&mut self, other: Config, said: &toml::Table) {
+    ///
+    /// Returns why the values of `other` could not be applied (they do not combine into a valid `Config`),
+    /// in which case `self` keeps the values it had; its rules, hooks and notices are added all the same.
+    pub fn merge(&mut self, other: Config, said: &toml::Table) -> Option<String> {
         let table = |c: &Config| match toml::Value::try_from(c) {
-            Ok(toml::Value::Table(t)) => Some(t),
-            _ => None,
+            Ok(toml::Value::Table(t)) => Ok(t),
+            Ok(_) => Err("the settings are not a table".to_string()),
+            Err(e) => Err(e.to_string()),
         };
-        if let (Some(mut base), Some(over)) = (table(self), table(&other)) {
-            // Only the servers `other` still holds replace the user's: one a strip took out leaves it.
-            if let (Some(toml::Value::Table(names)), Some(toml::Value::Table(b))) =
-                (over.get("mcp"), base.get_mut("mcp"))
-            {
-                for n in names.keys() {
-                    b.remove(n);
+        let mut skipped = None;
+        match (table(self), table(&other)) {
+            (Err(e), _) | (_, Err(e)) => skipped = Some(e),
+            (Ok(mut base), Ok(over)) => {
+                // Only the servers `other` still holds replace the user's: one a strip took out leaves it.
+                if let (Some(toml::Value::Table(names)), Some(toml::Value::Table(b))) =
+                    (over.get("mcp"), base.get_mut("mcp"))
+                {
+                    for n in names.keys() {
+                        b.remove(n);
+                    }
                 }
-            }
-            overlay(&mut base, &over, said);
-            if let Ok(mut merged) = toml::Value::Table(base).try_into::<Config>() {
-                merged.permissions.allow = std::mem::take(&mut self.permissions.allow);
-                merged.permissions.deny = std::mem::take(&mut self.permissions.deny);
-                merged.hooks = std::mem::take(&mut self.hooks);
-                merged.notices = std::mem::take(&mut self.notices);
-                *self = merged;
+                overlay(&mut base, &over, said);
+                match toml::Value::Table(base).try_into::<Config>() {
+                    Ok(mut merged) => {
+                        merged.permissions.allow = std::mem::take(&mut self.permissions.allow);
+                        merged.permissions.deny = std::mem::take(&mut self.permissions.deny);
+                        merged.hooks = std::mem::take(&mut self.hooks);
+                        merged.notices = std::mem::take(&mut self.notices);
+                        *self = merged;
+                    }
+                    Err(e) => skipped = Some(e.message().to_string()),
+                }
             }
         }
         self.permissions.allow.extend(other.permissions.allow);
         self.permissions.deny.extend(other.permissions.deny);
         self.hooks.extend(other.hooks);
         self.notices.extend(other.notices);
+        skipped
     }
 
     pub fn apply_env(&mut self) {
@@ -402,8 +441,7 @@ impl Config {
     /// resolved and the allow rules added, or why it is not a folder.
     pub fn add_dir(&mut self, cwd: &Path, dir: &Path) -> Result<(PathBuf, Vec<String>), String> {
         let joined = if dir.is_absolute() { dir.to_path_buf() } else { cwd.join(dir) };
-        let real = joined
-            .canonicalize()
+        let real = crate::paths::canonical(&joined)
             .ok()
             .filter(|r| r.is_dir())
             .ok_or_else(|| format!("{}: not a folder", dir.display()))?;

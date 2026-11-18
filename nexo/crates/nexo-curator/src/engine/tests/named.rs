@@ -131,3 +131,25 @@ fn named_takes_at_most_half_of_a_small_window() {
 fn named_default_is_64000() {
     assert_eq!(crate::params("nudge=0").unwrap().named, 64000);
 }
+
+#[test]
+fn mission_the_files_each_closed_request_names_are_split_once_and_kept_between_decisions() {
+    let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=16000;mission=1";
+    let mut msgs = vec![json!({"role": "user", "content": "The material is report.txt and ledger.csv."})];
+    msgs.extend(step(1, "cat report.txt", &report()));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+    msgs.push(json!({"role": "user", "content": "Now count the lines of report.txt."}));
+    msgs.extend(step(2, "wc -l report.txt", "12 report.txt"));
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+    msgs.push(json!({"role": "user", "content": "Sum the second column of ledger.csv."}));
+    let mut e = Engine::new(params(spec).unwrap());
+    super::recall::feed(&mut e, &msgs);
+    // every request but the latest, which the person may still add to, is kept by the message it starts at
+    let turns = e.goal.turns.len();
+    assert_eq!(turns, 3);
+    let kept: Vec<usize> = e.turn_names.iter().map(|(start, _)| *start).collect();
+    let starts: Vec<usize> = e.goal.turns[..turns - 1].iter().map(|t| t.start).collect();
+    assert_eq!(kept, starts);
+    assert!(e.turn_names[0].1.contains("ledger") && e.turn_names[0].1.contains("report"));
+    assert!(!e.turn_names[1].1.contains("ledger"));
+}

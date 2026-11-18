@@ -9,8 +9,9 @@ no window or command list open.
 One short side request per finished turn. It repeats the last request of the conversation byte for byte (same
 system prompt, tools and messages, so the provider's prompt cache is hit), then adds the reply that request
 got and one message asking for the likely next message. The answer is capped at 200 tokens, asked with the
-least thinking the model takes, and skipped for models that always reason first. Its usage is billed and shown
-as `suggest`.
+least thinking the model takes, and skipped for models that always reason first (the known
+fixed-reasoning model names, and the models whose vendor table lists no `off` or `none` level, such as Gemini
+Pro). Its usage is billed and shown as `suggest`.
 
 ## What it never does
 

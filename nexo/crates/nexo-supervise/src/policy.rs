@@ -15,8 +15,8 @@ mod shell;
 mod tests;
 mod types;
 
-pub use danger::catastrophic;
 use danger::dangerous;
+pub use danger::{catastrophic, catastrophic_from};
 use paths::{
     bash_command, expand_home, glob, home_dir, is_write_tool, matches, normalize, outside, path_args, resolve,
 };

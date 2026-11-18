@@ -497,6 +497,38 @@ fn an_unasked_permission_exits_5_and_a_flag_without_print_is_a_usage_error() {
 }
 
 #[test]
+fn a_tool_flag_entry_that_matches_no_tool_is_warned_about_and_a_late_tool_is_not() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["-p", "hi", "--allowed-tools", "nosuch"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
+    assert!(err(&out).contains("--allowed-tools: no tool matches 'nosuch' (tools: "), "{}", err(&out));
+    let out = nexo(d.path(), &["-p", "hi", "--disallowed-tools", "nosuch,bash"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
+    assert!(err(&out).contains("--disallowed-tools: no tool matches 'nosuch' (tools: "), "{}", err(&out));
+    assert!(!err(&out).contains("'bash'"), "{}", err(&out));
+    // the sub-agent tool is registered after the setup, and a pattern entry names its tool before the bracket
+    let out = nexo(d.path(), &["-p", "hi", "--allowed-tools", "Bash(git:*),task"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
+    assert!(!err(&out).contains("no tool matches"), "{}", err(&out));
+}
+
+#[test]
+fn a_denied_call_ends_a_text_run_with_the_refusal_the_model_saw() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["-p", "tool:bash {\"command\":\"touch x\"}", "--permission-mode", "ask"]);
+    assert_eq!(out.status.code(), Some(5), "{}", err(&out));
+    assert!(err(&out).contains("nexo: Permission denied: "), "{}", err(&out));
+    assert!(err(&out).contains("non-interactive run"), "{}", err(&out));
+    let out = nexo(
+        d.path(),
+        &["-p", "tool:bash {\"command\":\"touch x\"}", "--permission-mode", "ask", "--output-format", "json"],
+    );
+    let r = &lines(&out)[0];
+    assert_eq!(r["subtype"], "error_permission_denied");
+    assert!(r["error"].as_str().unwrap().starts_with("Permission denied: "), "{r}");
+}
+
+#[test]
 fn stream_json_input_runs_two_turns_in_one_session() {
     let d = tempfile::tempdir().unwrap();
     let input = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"one\"}}\n\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n";
@@ -682,4 +714,35 @@ fn the_init_event_lists_the_tools_the_model_is_offered() {
     }
     assert!(has(&big, "todo") && has(&big, "web_search") && has(&big, "read"));
     assert!(has(&tiny, "read") && has(&tiny, "bash"));
+}
+
+/// A review whose provider is off says why, as `-p` does, before the line that the review did not finish; the
+/// exit stays 2 because 1 means "a high finding exists" for a review.
+#[test]
+fn a_review_with_the_provider_off_prints_the_card_before_the_unfinished_line() {
+    let d = tempfile::tempdir().unwrap();
+    git(d.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(d.path().join(".gitignore"), "config.toml\ndata/\ncache/\n.gitignore\n").unwrap();
+    std::fs::write(d.path().join("a.txt"), "x\n").unwrap();
+    git(d.path(), &["add", "a.txt"]);
+    let out = off_server(d.path(), &["review", "--staged"]);
+    assert_eq!(out.status.code(), Some(2), "{}", err(&out));
+    let s = err(&out);
+    let card = s.find("Nothing answers at http://127.0.0.1:").expect("the card title");
+    let last = s.find("nexo review: the model did not finish the review").expect("the closing line");
+    assert!(card < last, "{s:?}");
+    for secret in ["hunter2", "zzz9"] {
+        assert!(!s.contains(secret), "{secret}");
+    }
+}
+
+#[test]
+fn a_missing_cwd_names_the_path_and_a_missing_session_names_the_id() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["--cwd", "/nonexistent/dir", "providers"]);
+    assert!(!out.status.success());
+    assert!(err(&out).contains("cannot use --cwd /nonexistent/dir:"), "{}", err(&out));
+    let out = nexo(d.path(), &["-p", "hi", "--resume", "nosuchid"]);
+    assert!(err(&out).contains("no session nosuchid at"), "{}", err(&out));
+    assert!(err(&out).contains("`nexo sessions` lists them"), "{}", err(&out));
 }

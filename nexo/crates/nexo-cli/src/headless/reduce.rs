@@ -18,7 +18,8 @@ pub(super) struct Req {
     pub(super) text: String,
     /// The first turn end that was not a normal one.
     pub(super) end: Option<TurnEnd>,
-    pub(super) denied: bool,
+    /// The first refusal by the permission policy, as the model saw it: it names the call and what would allow it.
+    pub(super) denied: Option<String>,
     pub(super) error: Option<String>,
 }
 
@@ -28,7 +29,7 @@ impl Req {
             Some(TurnEnd::Error) => EXIT_FAILED,
             Some(TurnEnd::MaxTurns) => EXIT_MAX_TURNS,
             Some(TurnEnd::Interrupted) => EXIT_INTERRUPTED,
-            _ if self.denied => EXIT_DENIED,
+            _ if self.denied.is_some() => EXIT_DENIED,
             _ => 0,
         }
     }
@@ -173,7 +174,7 @@ impl Run {
             }
             AgentEvent::ToolDone { id, output, elapsed_ms } => {
                 if output.is_error && output.content.starts_with("Permission denied") {
-                    self.r.denied = true;
+                    self.r.denied.get_or_insert_with(|| output.content.clone());
                 }
                 if stream {
                     line(&json!({
@@ -187,22 +188,11 @@ impl Run {
                 self.t.cost = *cost_usd;
             }
             AgentEvent::Notice { level, text, problem } => {
-                let hinted;
-                let text = match (&self.reach, text.strip_prefix("Could not reach the provider")) {
-                    (Some(note), Some(rest)) if *level == Level::Error && problem.is_none() => {
-                        // the note names the address; for Ollama it replaces the raw transport detail
-                        hinted = if note.contains("Ollama") {
-                            format!("Could not reach the provider{note}")
-                        } else {
-                            format!("Could not reach the provider{note}{rest}")
-                        };
-                        &hinted
-                    }
-                    _ => text,
-                };
+                let hinted = with_reach_note(self.reach.as_deref(), *level, text, problem.is_some());
+                let text = hinted.as_str();
                 // a failure card has several lines; the result's `error` and the stream's `text` stay the one
                 // line a script reads (the card itself is the `problem` of the stream, and stderr's text)
-                let said = problem.as_ref().map_or_else(|| text.clone(), |p| p.one_line());
+                let said = problem.as_ref().map_or_else(|| text.to_string(), |p| p.one_line());
                 if *level == Level::Error {
                     self.r.error = Some(said.clone());
                 }
@@ -282,9 +272,23 @@ mod tests {
         };
         // the replay comes before the first turn of the run
         run.on_event(&denied());
-        assert!(!run.r.denied, "a recorded call counted as one this run made");
+        assert!(run.r.denied.is_none(), "a recorded call counted as one this run made");
         run.on_event(&AgentEvent::TurnStart { turn: 1 });
         run.on_event(&denied());
-        assert!(run.r.denied, "a call of this run went unreported");
+        assert!(run.r.denied.is_some(), "a call of this run went unreported");
+    }
+    #[test]
+    pub(super) fn the_first_refusal_is_kept_for_the_person_not_a_later_one() {
+        let mut run = super::Run::new(super::Fmt::Text, vec![], false, None);
+        run.on_event(&AgentEvent::TurnStart { turn: 1 });
+        for text in ["Permission denied: bash(rm x) not allowed in a non-interactive run", "Permission denied: write"] {
+            run.on_event(&AgentEvent::ToolDone {
+                id: "c".into(),
+                output: nexo_core::ToolOutput::error(text),
+                elapsed_ms: 0,
+            });
+        }
+        assert_eq!(run.r.denied.as_deref(), Some("Permission denied: bash(rm x) not allowed in a non-interactive run"));
+        assert_eq!(run.r.code(), EXIT_DENIED);
     }
 }

@@ -189,6 +189,19 @@ fn tool_output_is_weighted_by_the_calls_that_carried_it() {
 }
 
 #[test]
+fn an_output_line_without_its_text_is_weighted_by_the_length_it_says() {
+    let slim = json!({"type":"tool_output","call_id":"c1","output":{"content":"","is_error":false,"display":{"kind":"plain"}},"result_chars":4000});
+    let d = digest(&[
+        meta("/p", "m", T0),
+        msg(0, T0, "assistant", call("c1", "bash", "cargo test --all")),
+        slim, // the text is in the result message: 1000 tokens, as when the line holds it
+        usage(2_000, 0, 0, 1, 0, 0.1),
+    ]);
+    let bash = &d.days[&today()].tools["bash"];
+    assert_eq!((bash.runs, bash.tokens, bash.weighted), (1, 1000, 1000));
+}
+
+#[test]
 fn a_reset_lets_go_of_the_tool_output_and_an_orphan_output_is_ignored() {
     let d = digest(&[
         meta("/p", "m", T0),
@@ -635,4 +648,38 @@ fn a_session_is_named_by_its_folder_and_the_day_it_was_last_used() {
     // T0 is 2026-10-26
     assert_eq!(day_label(t - 3, t), "Oct 23");
     assert_eq!(day_label(t + 7, t + 20), "Nov 2");
+}
+
+#[test]
+fn the_history_changes_the_server_lists_are_summed_over_the_calls() {
+    let mut a = usage(100, 900, 0, 50, 10, 0.5);
+    a["usage"]["transformations"] = json!(3);
+    let mut b = usage(100, 900, 0, 50, 10, 0.5);
+    b["usage"]["transformations"] = json!(2);
+    // a line from before the field existed counts none
+    let d = digest(&[meta("/p", "m", T0), msg(0, T0, "user", text("a")), a, b, usage(1, 1, 0, 1, 0, 0.1)]);
+    assert_eq!(total(&d).transformations, 5);
+}
+
+#[test]
+fn a_compacted_session_keeps_its_calls_and_its_split_by_model() {
+    use crate::session::{Session, UsageKind, UsageMeta};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(dir.path(), Path::new("/p"), "mock", "big").unwrap();
+    s.append(&nexo_core::message::Message::user("a")).unwrap();
+    let main = |model: &str| UsageMeta { model: Some(model.into()), kind: Some(UsageKind::Main), held: None };
+    let one = nexo_core::stream::Usage { input: 100, output: 10, ..Default::default() };
+    s.record_usage_meta(one, 0.5, main("big")).unwrap();
+    s.record_usage_meta(one, 0.5, main("big")).unwrap();
+    s.record_usage_meta(one, 0.1, main("small")).unwrap();
+    s.reset_with(&[nexo_core::message::Message::user("[summary]")]).unwrap();
+    s.record_usage_meta(one, 0.5, main("big")).unwrap();
+    let d = digest_reader("s", Cursor::new(std::fs::read(s.path()).unwrap()), 0);
+    let t = total(&d);
+    // the three calls before the compaction are calls, not one sum
+    assert_eq!((t.calls, t.summed_input), (4, 0));
+    let models: Vec<(String, u64)> =
+        d.days.values().flat_map(|day| day.models.iter().map(|(m, t)| (m.clone(), t.calls))).collect();
+    assert_eq!(models.iter().filter(|(m, _)| m == "big").map(|(_, c)| c).sum::<u64>(), 3);
+    assert_eq!(models.iter().filter(|(m, _)| m == "small").map(|(_, c)| c).sum::<u64>(), 1);
 }

@@ -164,14 +164,18 @@ impl App {
 
     /// Enter on the draft.
     pub fn submit(&mut self) {
-        self.submit_with_kind(false);
+        self.submit_inner(false, true);
     }
 
-    pub(super) fn submit_ultracode(&mut self) {
-        self.submit_with_kind(true);
+    /// Sends text that a command expanded from what was typed (a diff prompt, a skill, a custom
+    /// command). The typed command is already in the history, so the expansion is not recorded: Up and
+    /// Ctrl+R would otherwise bring back up to 48 KB of diff instead of `/review`.
+    pub(super) fn submit_expanded(&mut self, text: &str, ultracode: bool) {
+        self.input.set_text(text);
+        self.submit_inner(ultracode, false);
     }
 
-    fn submit_with_kind(&mut self, ultracode: bool) {
+    fn submit_inner(&mut self, ultracode: bool, record: bool) {
         if self.in_sub() {
             return self.submit_sub();
         }
@@ -195,14 +199,16 @@ impl App {
         if let Some(rest) = trimmed.strip_prefix('/') {
             let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             let name = name.to_ascii_lowercase();
+            // a file written or edited since the palette last opened is what runs, and it comes before a skill or
+            // a prompt of the same name
+            self.reload_file_commands();
             // a skill: its folder and instructions are the request (read now, so edits count)
             if let Some(s) = self.skills.iter().find(|s| s.name.eq_ignore_ascii_case(&name)).cloned() {
-                if self.custom_commands.iter().any(|c| c.name == name && c.path == s.file()) {
+                if self.command_entry(&name).is_some_and(|c| c.origin == "skill" && c.path == s.file()) {
                     match s.instructions(args) {
                         Ok(text) => {
                             self.input.push_history(trimmed);
-                            self.input.set_text(&text);
-                            return self.submit();
+                            return self.submit_expanded(&text, false);
                         }
                         Err(e) => {
                             self.notice(Level::Warn, format!("cannot read skill {}: {e}", s.name));
@@ -212,7 +218,8 @@ impl App {
                 }
             }
             // a prompt of an MCP server: the agent asks the server and sends the result as the request
-            if let Some((server, prompt)) = self.mcp_prompt_of(&name) {
+            let mcp = self.mcp_prompt_of(&name).filter(|_| self.command_entry(&name).is_none_or(|c| c.origin == "mcp"));
+            if let Some((server, prompt)) = mcp {
                 self.input.push_history(trimmed);
                 self.input.clear();
                 self.send(AgentCommand::McpPrompt { server, prompt, args: args.trim().to_string() });
@@ -221,8 +228,7 @@ impl App {
             }
             if let Some(c) = self.custom_commands.iter().find(|c| c.name == name).cloned() {
                 self.input.push_history(trimmed);
-                self.input.set_text(&c.expand(args));
-                return self.submit();
+                return self.submit_expanded(&c.expand(args), false);
             }
         }
         if trimmed.starts_with('/') && !starts_with_path(trimmed) {
@@ -248,7 +254,9 @@ impl App {
             }
             return;
         }
-        self.input.push_history(trimmed);
+        if record {
+            self.input.push_history(trimmed);
+        }
         // the agent is gone (its end of the channel is closed): nothing would take the request, so the draft stays
         if !self.locked && self.commands.is_closed() {
             self.notice(
@@ -510,7 +518,7 @@ impl App {
         for s in &servers {
             for p in &s.prompts {
                 let name = format!("mcp__{}__{}", s.name, p.name).to_ascii_lowercase();
-                if crate::commands::lookup(&name).is_some() || self.custom_commands.iter().any(|c| c.name == name) {
+                if crate::commands::lookup(&name).is_some() || self.pushed_name_taken(&name) {
                     continue;
                 }
                 let hint = p

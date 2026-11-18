@@ -32,7 +32,14 @@ impl OpenAiChat {
             let role = cfg.extra.get("system_role").and_then(|v| v.as_str()).unwrap_or("system");
             messages.push(json!({"role": role, "content": req.system}));
         }
-        let send_reasoning = cfg.extra.get("send_reasoning").and_then(|v| v.as_bool()).unwrap_or(false);
+        // DeepSeek thinking mode answers 400 to a tool loop whose assistant turns lack `reasoning_content`
+        // and ignores the field otherwise, so it replays by default there. Strict servers keep it out unless
+        // `send_reasoning` says so; the key always wins.
+        let send_reasoning = cfg
+            .extra
+            .get("send_reasoning")
+            .and_then(|v| v.as_bool())
+            .unwrap_or_else(|| host_is(cfg, "api.deepseek.com"));
         for m in &req.messages {
             messages.extend(convert(m, send_reasoning));
         }

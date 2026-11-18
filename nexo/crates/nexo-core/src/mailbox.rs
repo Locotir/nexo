@@ -48,7 +48,7 @@ pub use facts::LiveFacts;
 use fsx::{age_ms, make_dir, pid_alive, text_hash, write_atomic};
 pub use fsx::{mail_root, now_ms};
 pub use ledger::{read_ledgers, read_receipts, session_ids, SentRec};
-pub use live::{live_sessions, LiveJob, LiveSession};
+pub use live::{live_sessions, LiveJob, LiveScan, LiveSession};
 use peers::clean_name;
 pub use peers::describe;
 
@@ -737,6 +737,13 @@ impl Mailbox {
                 if live.contains(&sid) {
                     continue;
                 }
+                // A session that never closed cleanly leaves its heartbeat behind. Once it is a day old and
+                // its process is gone it only costs every later scan a read and a parse; the mail stays and a
+                // session that resumes writes the file again on its next beat.
+                let beat = e.path().join("session.json");
+                if age_ms(&beat, now) > KEEP_MS && !fs::read_to_string(&beat).is_ok_and(|t| beat_process_alive(&t)) {
+                    let _ = fs::remove_file(&beat);
+                }
                 if let Ok(files) = fs::read_dir(e.path().join("inbox")) {
                     for f in files.flatten() {
                         if age_ms(&f.path(), now) > KEEP_MS {
@@ -747,6 +754,11 @@ impl Mailbox {
             }
         }
     }
+}
+
+/// Whether the heartbeat text names a process that still exists; text that is not a heartbeat names none.
+fn beat_process_alive(text: &str) -> bool {
+    serde_json::from_str::<SessionFile>(text).is_ok_and(|f| pid_alive(f.pid))
 }
 
 /// An accepted mail leaves the inbox for `done/` when it is handed over. False when the file was already gone:

@@ -195,6 +195,7 @@ mod request_prefix;
 mod resume_and_rewind;
 mod session_commands;
 mod session_models;
+mod shutdown;
 mod side_requests;
 mod small_window;
 #[cfg(unix)]
@@ -232,7 +233,7 @@ fn config(mode: PermissionMode) -> Config {
     p.models = vec!["m1".into(), "m2".into()];
     p.pricing.insert(
         "m1".into(),
-        Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 },
+        Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0, long: None },
     );
     cfg.providers.insert("mock".into(), p);
     cfg.permissions.mode = mode;

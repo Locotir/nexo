@@ -12,6 +12,12 @@ const FIRST: Duration = Duration::from_secs(90);
 const INIT: Duration = Duration::from_secs(20);
 /// After diagnostics arrive, how long to wait for more (servers publish in waves).
 const SETTLE: Duration = Duration::from_millis(1500);
+/// The largest message a server may announce; past it the connection ends, as at its EOF.
+const MAX_MESSAGE: usize = 64 << 20;
+/// The longest header line a server may send.
+const MAX_HEADER: u64 = 8 << 10;
+/// How many answers to the server's own requests may wait to be written; past it they are dropped.
+const REPLY_QUEUE: usize = 256;
 
 mod check;
 mod quick;

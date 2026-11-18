@@ -187,8 +187,8 @@ Websites: [`docs/api.md`](docs/api.md) turns a HAR capture into a map of a site'
 ## Providers
 
 Bring your own key. Built in: Anthropic, OpenAI, Google Gemini, DeepSeek, xAI, Groq, Mistral, OpenRouter, Together,
-Fireworks, Cerebras, Moonshot, Qwen, Zhipu, MiniMax, and local servers (Ollama, LM Studio, vLLM, llama.cpp). Over 200 more
-come from [models.dev](https://models.dev), and any OpenAI- or Anthropic-compatible endpoint works. `nexo auth login copilot`,
+Fireworks, Cerebras, Moonshot, Qwen, Zhipu, MiniMax, and local servers (Ollama, LM Studio, vLLM, llama.cpp). A built-in directory of 218 providers (a snapshot of [models.dev](https://models.dev))
+works offline with only the key set, and any OpenAI- or Anthropic-compatible endpoint works. `nexo auth login copilot`,
 `codex` or `xai` sign in with a subscription; check the vendor's terms first. Data goes only to the provider you pick and to
 tools the agent uses; sessions in `~/.nexo/sessions/` hold what passed through, so treat them like credentials.
 

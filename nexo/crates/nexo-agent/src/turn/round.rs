@@ -151,12 +151,12 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             }
         }
         let started = tokio::select! {
-            r = client.stream(&cfg, &req, retries) => r,
+            r = client.stream_observed(&cfg, &req, retries, retry_observer(&events)) => r,
             _ = cancel.cancelled() => return TurnEnd::Interrupted,
         };
         let mut stream = match started {
             Ok(s) => s,
-            Err(e) => match learn(&state, &e, &req.model).await {
+            Err(e) => match learn(&state, &e, &req.model, req.max_tokens).await {
                 Lesson::Refit if !refitted => {
                     refitted = true;
                     continue;
@@ -166,7 +166,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     if compact_now(&state, &events, Some(()), &cancel).await {
                         continue;
                     }
-                    let p = problem_of(&state, &e).await.after_compaction_failed();
+                    let p = problem_of(&state, &e, false).await.after_compaction_failed();
                     notice_problem(&events, p);
                     return TurnEnd::Error;
                 }
@@ -175,7 +175,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     continue;
                 }
                 _ => {
-                    notice_problem(&events, problem_of(&state, &e).await);
+                    notice_problem(&events, problem_of(&state, &e, false).await);
                     return TurnEnd::Error;
                 }
             },
@@ -280,7 +280,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         }
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
-                match learn(&state, e, &req.model).await {
+                match learn(&state, e, &req.model, req.max_tokens).await {
                     Lesson::Refit if !refitted => {
                         bill_attempt(&state, &events, &req.model, usage, call).await;
                         refitted = true;
@@ -306,7 +306,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         // reasoning is on the screen by then), and ending the turn here loses the request to one bad
         // connection. What was thought is dropped, neither kept nor sent back, and the request goes out again
         // through the checks at the top of the loop; what the attempt was billed stays spent
-        let lost = c.error.as_ref().filter(|e| e.is_retryable() && reasoned && !spoke && !interrupted);
+        let lost = c.error.as_ref().filter(|e| client.worth_retrying(e) && reasoned && !spoke && !interrupted);
         let again = RECUT_RETRIES.min(retries);
         match lost {
             Some(e) if recut < again => {
@@ -314,9 +314,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 bill_attempt(&state, &events, &req.model, usage, call).await;
                 let why =
                     "the stream was cut while the model reasoned; that reasoning is dropped and the request sent again";
-                notice(&events, Level::Warn, format!("{why} ({recut}/{again})"));
+                let wait = client.backoff(recut, e);
+                // a wait the server asked for can be long; the screen says how long, as the client's own
+                // retries only reach the log
+                let after =
+                    if wait >= Duration::from_secs(10) { format!(" in {}s", wait.as_secs()) } else { String::new() };
+                notice(&events, Level::Warn, format!("{why}{after} ({recut}/{again})"));
                 tokio::select! {
-                    _ = tokio::time::sleep(client.backoff(recut, e)) => {}
+                    _ = tokio::time::sleep(wait) => {}
                     _ = cancel.cancelled() => return TurnEnd::Interrupted,
                 }
                 continue;
@@ -358,7 +363,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let calls: Vec<(String, String, Value)> =
             msg.tool_calls().map(|(i, n, a)| (i.to_string(), n.to_string(), a.clone())).collect();
         if let Some(e) = c.error {
-            notice_problem(&events, problem_of(&state, &e).await);
+            notice_problem(&events, problem_of(&state, &e, !msg.content.is_empty()).await);
             if !calls.is_empty() {
                 push_results(&state, cancelled_results(&calls, "the model call failed before the tools ran")).await;
             }
@@ -677,10 +682,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     }
 }
 
-/// What follows a guard's stop: an answer from what was gathered (`agent.guard_answer`), or the person's word.
-/// What the model reads, after the outputs of the round a guard stopped, before the call that may only answer
-/// (`agent.guard_answer`).
-/// Where a request stands after a guard's stop (`agent.guard_answer`).
+/// Where a request stands after a guard's stop (`agent.guard_answer`): an answer from what was gathered, or the
+/// person's word.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Answer {
     /// No guard stopped the tool rounds.
@@ -806,6 +809,8 @@ pub(super) const MUTE_NOTE_AGAIN: &str =
      planning: make a tool call now that builds the simplest version that could work (write the file, run the \
      command), then test it and improve it step by step.</system-reminder>";
 
+/// What the model reads, after the outputs of the round a guard stopped, before the call that may only answer
+/// (`agent.guard_answer`).
 pub(super) const ANSWER_NOW: &str =
     "Tool calls are off until you answer: they will not run. Give your answer now, from what you have already seen. \
      They are on again after your answer, or when the person writes.";

@@ -63,16 +63,33 @@ impl Tool for Ls {
             Err(e) => return ToolOutput::error(format!("ls: cannot list {shown}: {e}")),
         };
         let mut dirs = Vec::new();
-        let mut files = Vec::new();
+        // name, size (None for a broken link), may be a program, where a symlink points
+        let mut files: Vec<(String, Option<u64>, bool, Option<String>)> = Vec::new();
         while let Ok(Some(entry)) = rd.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
             match entry.metadata().await {
+                // `DirEntry::metadata` does not follow symlinks, so a link is looked through here: the
+                // model sees what it points to instead of a file the size of the link text.
+                Ok(m) if m.file_type().is_symlink() => {
+                    let target = tokio::fs::read_link(entry.path())
+                        .await
+                        .map(|t| t.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    match tokio::fs::metadata(entry.path()).await {
+                        Ok(t) if t.is_dir() => dirs.push(format!("{name}/ -> {target}")),
+                        Ok(t) => {
+                            let program = may_be_program(&name, &t);
+                            files.push((name, Some(t.len()), program, Some(target)))
+                        }
+                        Err(_) => files.push((name, None, false, Some(target))),
+                    }
+                }
                 Ok(m) if m.is_dir() => dirs.push(format!("{name}/")),
                 Ok(m) => {
                     let program = may_be_program(&name, &m);
-                    files.push((name, m.len(), program))
+                    files.push((name, Some(m.len()), program, None))
                 }
-                Err(_) => files.push((name, 0, false)),
+                Err(_) => files.push((name, Some(0), false, None)),
             }
         }
         dirs.sort();
@@ -80,10 +97,14 @@ impl Tool for Ls {
         let total = dirs.len() + files.len();
         let kinds = files.len() <= KINDS_UP_TO;
         let mut items: Vec<String> = dirs;
-        items.extend(files.into_iter().map(|(n, s, program)| {
+        items.extend(files.into_iter().map(|(n, size, program, link)| {
+            let Some(size) = size else {
+                return format!("{n} -> {} (broken link)", link.unwrap_or_default());
+            };
+            let to = link.map(|t| format!(" -> {t}")).unwrap_or_default();
             match (kinds && program).then(|| listed_kind(&path.join(&n))).flatten() {
-                Some(kind) => format!("{n}  ({}, {kind})", human(s)),
-                None => format!("{n}  ({})", human(s)),
+                Some(kind) => format!("{n}  ({}, {kind}){to}", human(size)),
+                None => format!("{n}  ({}){to}", human(size)),
             }
         }));
         let more = total.saturating_sub(MAX_ENTRIES);
@@ -133,6 +154,23 @@ mod tests {
         std::fs::create_dir(d.path().join("empty")).unwrap();
         assert!(Ls.run(json!({"path": "empty"}), &c).await.content.contains("empty directory"));
         assert_eq!(Ls.summary(&json!({"path": "src"})), "ls src");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_is_listed_with_what_it_points_to() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::create_dir(d.path().join("real")).unwrap();
+        std::fs::write(d.path().join("real.txt"), "12345").unwrap();
+        std::os::unix::fs::symlink("real", d.path().join("dirlink")).unwrap();
+        std::os::unix::fs::symlink("real.txt", d.path().join("filelink")).unwrap();
+        std::os::unix::fs::symlink("gone", d.path().join("dangling")).unwrap();
+        let out = Ls.run(json!({}), &c).await;
+        assert_eq!(
+            out.content,
+            ".: 5 entries\ndirlink/ -> real\nreal/\ndangling -> gone (broken link)\nfilelink  (5 B) -> real.txt\nreal.txt  (5 B)"
+        );
     }
 
     #[tokio::test]

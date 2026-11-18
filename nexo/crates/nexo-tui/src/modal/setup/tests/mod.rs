@@ -559,3 +559,58 @@ fn a_failed_check_is_a_card_and_esc_returns_to_the_models() {
     assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
     assert_eq!(s.step, Step::Model);
 }
+
+fn keyless_lmstudio() -> (String, ProviderConfig) {
+    ("lmstudio".into(), ProviderConfig::new("openai-chat", "http://localhost:1234/v1", None))
+}
+
+#[test]
+fn catalogue_models_of_an_unreachable_local_preset_do_not_skip_the_start_screen() {
+    no_auth();
+    let ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_TEST_NO_SUCH_KEY"));
+    let mut s = Setup::new(
+        vec![("deepseek".into(), ds), keyless_lmstudio()],
+        vec![("lmstudio".into(), "a".into()), ("lmstudio".into(), "b".into())],
+        "",
+    );
+    assert_eq!(s.step, Step::Start);
+    // a server that answers for another preset does not make the lmstudio models usable
+    s.found_local(vec![("ollama".into(), "Ollama".into())]);
+    assert_eq!(s.step, Step::Start);
+    assert_eq!(s.list.items[0].label, "Use the models on this computer (free)");
+}
+
+#[test]
+fn a_scan_that_finds_the_server_of_the_catalogue_models_opens_the_model_list() {
+    no_auth();
+    let ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_TEST_NO_SUCH_KEY"));
+    let mut s = Setup::new(
+        vec![("deepseek".into(), ds), keyless_lmstudio()],
+        vec![("lmstudio".into(), "a".into()), ("lmstudio".into(), "b".into())],
+        "",
+    );
+    assert_eq!(s.step, Step::Start);
+    // the scan that was cached before the dialog opened is applied right after `new`
+    s.found_local(vec![("lmstudio".into(), "LM Studio".into())]);
+    assert_eq!(s.step, Step::Provider);
+    assert_eq!(s.groups.first().map(|g| g.key.as_str()), Some("lmstudio"));
+}
+
+#[test]
+fn an_unreachable_local_preset_waits_under_others_not_in_the_first_group() {
+    no_auth();
+    let mut ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_TEST_NO_SUCH_KEY"));
+    ds.api_key_cmd = Some("true".into());
+    let mut s = Setup::new(
+        vec![("deepseek".into(), ds), keyless_lmstudio()],
+        vec![("deepseek".into(), "deepseek-chat".into()), ("lmstudio".into(), "a".into())],
+        "",
+    );
+    s.step = Step::Provider;
+    s.fill_providers();
+    let keys: Vec<&str> = s.groups.iter().map(|g| g.key.as_str()).collect();
+    assert_eq!(keys.first(), Some(&"deepseek"), "{keys:?}");
+    assert!(!keys.contains(&"lmstudio"), "{keys:?}");
+    let others = s.groups.iter().find(|g| g.key == OTHERS).expect("an others group");
+    assert!(others.rows.iter().any(|(i, _)| i.value == "new:lmstudio"));
+}

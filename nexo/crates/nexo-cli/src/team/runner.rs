@@ -25,7 +25,7 @@ const TICK: Duration = Duration::from_millis(500);
 /// The configuration, folder and model of the lane, as `nexo -p` in that folder would have them.
 async fn prepare(lane: &Lane) -> anyhow::Result<(nexo_core::Config, PathBuf, setup::Picked)> {
     let dir = nexo_core::team::lane_dir(lane);
-    let cwd = std::fs::canonicalize(&dir).map_err(|e| anyhow::anyhow!("dir {}: {e}", dir.display()))?;
+    let cwd = nexo_core::paths::canonical(&dir).map_err(|e| anyhow::anyhow!("dir {}: {e}", dir.display()))?;
     let provider = lane.model.as_deref().and_then(|m| m.split_once('/')).map(|(p, _)| p);
     let mut config = crate::cli::load_config_for(provider, &cwd)?;
     if let Some(m) = &lane.mode {
@@ -33,6 +33,7 @@ async fn prepare(lane: &Lane) -> anyhow::Result<(nexo_core::Config, PathBuf, set
         config.check_mode(mode).map_err(|e| anyhow::anyhow!(e))?;
         config.permissions.mode = mode;
     }
+    lane.apply_sandbox(&mut config).map_err(|e| anyhow::anyhow!("lane {}: {e}", lane.name))?;
     if lane.model.is_none() && setup::nothing_chosen(&config) {
         anyhow::bail!(setup::nothing_chosen_message());
     }
@@ -310,6 +311,15 @@ pub async fn run(lane: &Lane, now: bool) -> i32 {
             nexo_core::mail::Inbound::parse(&config.mail.inbound),
         )
     });
+    // A lane's session is a program's, not the person's: it stays out of `/resume` and `nexo -c`, as a `nexo -p` run's
+    // does. Sessions this runner starts are marked at birth; the one the lane already has is marked now, before the
+    // agent opens it. `nexo team open` and `/team` still open it by its id.
+    nexo_agent::session::mark_headless();
+    if let Some(id) = &st.session_id {
+        if let Err(e) = nexo_agent::session::mark_headless_in(&nexo_agent::session::dir(), id) {
+            eprintln!("[{}] cannot mark the lane's session as a program's: {e}", stamp());
+        }
+    }
     let (mut handle, ends) = channels();
     let gate: Arc<dyn nexo_core::PermissionGate> = Arc::new(setup::HeadlessGate);
     let agent_setup =

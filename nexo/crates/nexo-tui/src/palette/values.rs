@@ -42,16 +42,19 @@ pub fn arg_values(
 /// Values taken from what is going on now, after the fixed ones: each running
 /// background job for `/jobs kill <id>`, and the sessions deleted in this run
 /// for `/undelete`, the last one first (the one a bare `/undelete` brings back),
-/// and the earlier sessions here for `/resume`, with their titles.
+/// and the earlier sessions for `/resume`, each with its [`session_hint`].
 pub fn live_values(
     command: &str,
     jobs: &[JobInfo],
     trashed: &[String],
-    sessions: &[(String, String)],
+    sessions: &[nexo_core::agent::SessionRow],
     peers: &[(String, String)],
 ) -> Vec<(String, String)> {
     match command {
-        "resume" => sessions.to_vec(),
+        "resume" => {
+            let now = nexo_core::mailbox::now_ms();
+            sessions.iter().map(|r| (r.id.clone(), session_hint(r, now))).collect()
+        }
         "msg" => peers.to_vec(),
         "jobs" => jobs
             .iter()
@@ -77,19 +80,54 @@ pub fn live_values(
     }
 }
 
+/// What the lists of sessions show after the id, dim: how much was said, how long ago, the folder it ran in (only
+/// for a session of another folder: resuming it runs its history in this process's folder, so the difference
+/// matters) and the title. The folder is in the text, so typing its name in the filter finds its sessions.
+pub fn session_hint(row: &nexo_core::agent::SessionRow, now_ms: i64) -> String {
+    let mut parts = Vec::new();
+    if row.messages > 0 {
+        parts.push(format!("{} msg", row.messages));
+    }
+    if row.updated_ms > 0 {
+        parts.push(format!("{} ago", nexo_core::team::age(now_ms - row.updated_ms)));
+    }
+    if !row.here {
+        if let Some(name) = row.cwd.file_name() {
+            parts.push(name.to_string_lossy().into_owned());
+        }
+    }
+    if !row.title.is_empty() {
+        parts.push(row.title.clone());
+    }
+    parts.join(" · ")
+}
+
 /// The folders `/add-dir` offers for what is typed so far: the folders inside the part before the
-/// last `/` (from `cwd`, or home for `~/`), written the way the person started, each ending in `/`
-/// so picking one lists its own folders next. Hidden folders only once a `.` is typed.
+/// last separator (from `cwd`, or home for `~/`), written the way the person started, each ending in
+/// a separator so picking one lists its own folders next. Hidden folders only once a `.` is typed.
 pub fn dir_values(cwd: &std::path::Path, typed: &str) -> Vec<(String, String)> {
-    let (head, tail) = match typed.rfind('/') {
+    dir_values_in(cwd, typed, nexo_core::paths::user_home().as_deref())
+}
+
+/// The same with the home folder given (tests): `HOME` is not set on Windows, and tests must not change the environment.
+pub(super) fn dir_values_in(
+    cwd: &std::path::Path,
+    typed: &str,
+    home: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
+    // Windows people type `\` as often as `/`; elsewhere a backslash is a letter of a name
+    let is_sep = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let (head, tail) = match typed.rfind(is_sep) {
         Some(i) => typed.split_at(i + 1),
         None => ("", typed),
     };
+    // the separator the person is using goes on each name, so `..\` offers `..\lib\` and not `..\lib/`
+    let sep = if cfg!(windows) && head.ends_with('\\') { '\\' } else { '/' };
     let base = if head.is_empty() {
         cwd.to_path_buf()
-    } else if let Some(rest) = head.strip_prefix("~/") {
-        match std::env::var_os("HOME") {
-            Some(h) => std::path::PathBuf::from(h).join(rest),
+    } else if let Some(rest) = head.strip_prefix("~/").or_else(|| head.strip_prefix("~\\").filter(|_| cfg!(windows))) {
+        match home {
+            Some(h) => h.join(rest),
             None => return Vec::new(),
         }
     } else {
@@ -104,10 +142,11 @@ pub fn dir_values(cwd: &std::path::Path, typed: &str) -> Vec<(String, String)> {
         .collect();
     names.sort();
     names.truncate(200);
-    let mut out: Vec<(String, String)> = names.into_iter().map(|n| (format!("{head}{n}/"), String::new())).collect();
+    let mut out: Vec<(String, String)> =
+        names.into_iter().map(|n| (format!("{head}{n}{sep}"), String::new())).collect();
     // the folder above is one step away when nothing narrows the list yet
-    if tail.is_empty() && !head.starts_with('~') && head.split('/').all(|p| p.is_empty() || p == "..") {
-        out.push((format!("{head}../"), "the folder above".to_string()));
+    if tail.is_empty() && !head.starts_with('~') && head.split(is_sep).all(|p| p.is_empty() || p == "..") {
+        out.push((format!("{head}..{sep}"), "the folder above".to_string()));
     }
     out
 }
@@ -131,10 +170,23 @@ pub fn recent_commands(history: &[String]) -> Vec<String> {
     out
 }
 
+/// Folders that hold no project files the person would mention: version control data and tool caches.
+const SKIPPED_DIRS: [&str; 6] = [".git", ".hg", ".svn", ".venv", ".cache", ".direnv"];
+
 /// The files of a project, relative paths, gitignore-aware, at most `max`.
+/// Dotfiles such as `.github` or `.env.example` are listed only inside a git
+/// repository, where `.gitignore` keeps the secrets out; anywhere else (a home
+/// folder, say) they would fill the cap with `.ssh` and `.config` names.
 pub fn project_files(root: &Path, max: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = ignore::WalkBuilder::new(root).hidden(true).git_ignore(true).git_global(true).build();
+    let in_repo = root.join(".git").exists();
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(!in_repo)
+        .git_ignore(true)
+        .git_global(true)
+        // matched by name alone: in a git worktree or a submodule `.git` is a file that points at the real folder
+        .filter_entry(|e| !SKIPPED_DIRS.iter().any(|d| e.file_name() == *d))
+        .build();
     for entry in walker.flatten() {
         if out.len() >= max {
             break;

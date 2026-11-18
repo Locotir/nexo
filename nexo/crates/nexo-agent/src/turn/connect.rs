@@ -30,12 +30,23 @@ pub(super) fn on_probe(rt: &mut Runtime, name: String, cfg: ProviderConfig, key:
     }
     rt.checking = Some(
         tokio::spawn(async move {
-            // a stored subscription login is renewed and applied like in a request
+            // a stored subscription login is renewed and applied like in a request; one that cannot be
+            // read is said, not probed as if there were none
             let (cfg, stored) = match (&key, cfg.auth.is_some()) {
-                (None, true) => nexo_providers::login::prepare(&cfg).await.unwrap_or((cfg.clone(), None)),
+                (None, true) => match nexo_providers::login::prepare(&cfg).await {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        emit(&events, AgentEvent::Probed { name, seq, result: Err(e.human()) });
+                        return;
+                    }
+                },
                 _ => (cfg, None),
             };
-            let key = key.or_else(|| cfg.resolve_key()).or(stored);
+            // `prepare` has tried the key sources already when a login is named
+            let key = match key.or(stored) {
+                None if cfg.auth.is_none() => nexo_providers::login::direct_key(&cfg).await,
+                k => k,
+            };
             let result = nexo_providers::probe::server(&cfg, key.as_deref()).await;
             emit(&events, AgentEvent::Probed { name, seq, result });
         })

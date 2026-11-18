@@ -15,6 +15,42 @@ fn a_first_request_from_the_command_line_is_sent_or_kept_until_a_model_is_chosen
 }
 
 #[test]
+fn a_file_the_agent_creates_shows_in_the_at_picker_after_the_turn_ends() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("old.rs"), "x").unwrap();
+    let (mut a, _rx) = app();
+    a.cwd = d.path().to_path_buf();
+    a.input.set_text("@");
+    a.refresh_palette();
+    assert!(a.palette.is_some());
+    std::fs::write(d.path().join("fresh.rs"), "x").unwrap();
+    a.input.set_text("@fresh");
+    a.refresh_palette();
+    assert!(a.palette.as_ref().and_then(|p| p.current()).is_none(), "the cached scan predates the file");
+    // the picker stays open across the turn end and must pick the new file up without another keystroke
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+    assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("fresh.rs"));
+}
+
+#[test]
+fn resuming_into_another_folder_lists_that_folders_files() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(old.path().join("old.rs"), "x").unwrap();
+    std::fs::write(new.path().join("new.rs"), "x").unwrap();
+    let (mut a, _rx) = app();
+    a.cwd = old.path().to_path_buf();
+    assert_eq!(a.files(), ["old.rs"]);
+    a.handle_agent(AgentEvent::Ready {
+        session_id: "s".into(),
+        provider: "mock".into(),
+        model: "m".into(),
+        cwd: new.path().to_path_buf(),
+        permission_mode: Default::default(),
+    });
+    assert_eq!(a.files(), ["new.rs"]);
+}
+
+#[test]
 fn an_image_dropped_as_its_path_is_attached() {
     let d = tempfile::tempdir().unwrap();
     let shot = d.path().join("shot.png");
@@ -333,8 +369,9 @@ fn the_rewind_picker_lists_the_persons_messages_newest_first_and_rewinds() {
 #[test]
 fn sessions_resume_and_export_and_diff_reach_the_agent() {
     let (mut a, mut rx) = app();
-    a.opts.sessions = vec![("20261027-1".into(), "one".into())];
+    a.opts.sessions = vec![row("20261027-1", "one")];
     a.run_command(Command::Sessions);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListSessions)), "the list is read again from disk");
     a.modal_out(ModalOut::Pick { kind: PickKind::Session, value: "20261027-1".into() });
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Resume { id }) if id == "20261027-1"));
     a.input.set_text("/export notes.md");

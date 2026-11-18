@@ -63,6 +63,8 @@ pub(super) struct State {
     pub(super) budget: Option<f64>,
     /// The 80% warning was given.
     pub(super) budget_warned: bool,
+    /// The notice that the model has no price, so a spend limit cannot count it, was given.
+    pub(super) unpriced_warned: bool,
     /// Checkpoints taken since the person last wrote (`agent.on_limit`); a goal's rounds, a mail or a job's end do not reset it.
     pub(super) ck_used: u32,
     /// Why the last request ended at a checkpoint cap or for lack of progress, for a goal's pause.

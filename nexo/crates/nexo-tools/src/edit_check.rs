@@ -1,6 +1,8 @@
 //! Compiler errors in a file the model just changed, reported inside the `edit` and `write` result so
 //! the model does not spend a step running the build to find them. Cheap and bounded: one checker picked
 //! by the project's manifest, a hard time limit, only the lines about the changed file, never an error.
+//! A check that cannot start or finish says so in one line; silence means a finished check with nothing to say.
+//! That includes a project whose checker is not installed and a run that failed without any diagnostic.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,7 +10,7 @@ use std::time::Duration;
 
 use crate::checkers::{program_ok, run};
 
-/// Hard limit of the check; a slower one is dropped silently.
+/// Hard limit of the check; a slower one is stopped and the result says it did not finish.
 pub const LIMIT: Duration = Duration::from_secs(20);
 /// Most lines reported.
 const MAX_LINES: usize = 10;
@@ -22,8 +24,8 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
 
-/// The text to append to an edit or write result: empty when the file is clean, the check is off,
-/// no checker applies or it ran out of time.
+/// The text to append to an edit or write result: empty when the file is clean, the check is off or
+/// no checker applies; a check that ran out of time or could not start adds one `check:` line saying so.
 pub async fn report(file: &Path) -> String {
     if !ENABLED.load(Ordering::Relaxed) {
         return String::new();
@@ -39,14 +41,20 @@ pub(crate) async fn report_within(file: &Path, limit: Duration) -> String {
     // the compiler check and a language server already running answer together; the server adds what
     // the compiler does not say (types in Python, C/C++, warnings) and waits no longer than QUICK
     let (server, compiler) = tokio::join!(crate::lsp::quick(file, crate::lsp::QUICK), found(file, limit));
-    let mut lines = compiler.unwrap_or_default();
+    let (mut lines, failed) = match compiler {
+        Some(Ok(lines)) => (lines, None),
+        Some(Err(fact)) => (Vec::new(), Some(fact)),
+        None => (Vec::new(), None),
+    };
     for (n, text) in server.unwrap_or_default() {
         if !lines.iter().any(|l| l.contains(&format!(":{n}:")) || l.contains(&format!("({n},"))) {
             lines.push(text);
         }
     }
+    // A check that did not run to the end is not a clean file: say so after whatever the server found.
+    let note = failed.map(|f| format!("\ncheck: {f}")).unwrap_or_default();
     if lines.is_empty() {
-        return String::new();
+        return note;
     }
     let mut out = String::from("\ndiagnostics:");
     let mut shown = 0;
@@ -61,6 +69,7 @@ pub(crate) async fn report_within(file: &Path, limit: Duration) -> String {
     if lines.len() > shown {
         out.push_str(&format!("\n(+{} more)", lines.len() - shown));
     }
+    out.push_str(&note);
     out
 }
 
@@ -68,54 +77,59 @@ fn ancestor_with(file: &Path, name: &str) -> Option<PathBuf> {
     file.ancestors().skip(1).find(|d| d.join(name).is_file()).map(Path::to_path_buf)
 }
 
-/// The error lines about `file`; `None` when no checker applies or it failed to finish.
-async fn found(file: &Path, limit: Duration) -> Option<Vec<String>> {
+/// The error lines about `file`; `None` when no checker applies, `Err` with the fact line (what the check
+/// was and why it gave no result) when the checker could not start or did not finish within `limit`.
+async fn found(file: &Path, limit: Duration) -> Option<Result<Vec<String>, String>> {
     let ext = file.extension()?.to_str()?;
-    let (mut cmd, dir, errors_only) = match ext {
+    let (mut cmd, dir, errors_only, name) = match ext {
         "rs" => {
             let dir = ancestor_with(file, "Cargo.toml")?;
             if !program_ok("cargo") {
-                return None;
+                return Some(Err(unavailable("cargo check", "cargo is not on the PATH")));
             }
             let mut c = tokio::process::Command::new("cargo");
             c.args(["check", "--message-format=short", "--quiet", "--color=never", "--all-targets"]);
-            (c, dir, true)
+            (c, dir, true, "cargo check")
         }
         "ts" | "tsx" | "mts" | "cts" => {
             let dir = ancestor_with(file, "tsconfig.json")?;
             let tsc = dir.join("node_modules").join(".bin").join(if cfg!(windows) { "tsc.cmd" } else { "tsc" });
             if !tsc.is_file() {
-                return None;
+                return Some(Err(unavailable("tsc", "node_modules/.bin/tsc is missing")));
             }
             let mut c = tokio::process::Command::new(tsc);
             c.args(["--noEmit", "--pretty", "false", "-p"]).arg(&dir);
-            (c, dir, false)
+            (c, dir, false, "tsc")
         }
         "py" => {
             let py = ["python3", "python"].into_iter().find(|p| program_ok(p))?;
             let mut c = tokio::process::Command::new(py);
             c.args(["-m", "py_compile"]).arg(file);
             c.env("PYTHONPYCACHEPREFIX", std::env::temp_dir().join("nexo-pycache"));
-            (c, file.parent()?.to_path_buf(), false)
+            (c, file.parent()?.to_path_buf(), false, "python py_compile")
         }
         "go" => {
             let dir = ancestor_with(file, "go.mod")?;
             if !program_ok("go") {
-                return None;
+                return Some(Err(unavailable("go vet", "go is not on the PATH")));
             }
             let rel = file.parent()?.strip_prefix(&dir).ok()?.to_string_lossy().replace('\\', "/");
             let mut c = tokio::process::Command::new("go");
             c.arg("vet").arg(if rel.is_empty() { "./".to_string() } else { format!("./{rel}") });
-            (c, dir, false)
+            (c, dir, false, "go vet")
         }
         _ => return None,
     };
     cmd.current_dir(&dir);
-    let (out, err, _) = run(cmd, limit).await.ok()?;
+    let (out, err, exited_ok) = match run(cmd, limit).await {
+        Ok(done) => done,
+        Err(e) => return Some(Err(failure(name, &e, limit))),
+    };
     let file_s = file.to_string_lossy().replace('\\', "/");
     let text = format!("{err}{out}");
     if ext == "py" {
-        return Some(py_error(&text, &file_s));
+        let lines = py_error(&text, &file_s);
+        return Some(if !exited_ok && lines.is_empty() { Err(no_diagnostic(name)) } else { Ok(lines) });
     }
     let mut lines: Vec<String> = Vec::new();
     for l in text.lines().map(str::trim) {
@@ -127,7 +141,41 @@ async fn found(file: &Path, limit: Duration) -> Option<Vec<String>> {
             lines.push(l);
         }
     }
-    Some(lines)
+    // A run that failed without printing any positioned diagnostic (broken manifest, unfetchable dependency, bad
+    // tsconfig) checked nothing; a failed run whose errors are all in other files did check this one.
+    if !exited_ok && lines.is_empty() && !text.lines().any(positioned) {
+        return Some(Err(no_diagnostic(name)));
+    }
+    Some(Ok(lines))
+}
+
+/// The fact line for a checker that gave no result: `name | did not finish in 20 s (no result)` or
+/// `name | not run: cannot start it`. A limit under a second is shown in milliseconds.
+fn failure(name: &str, error: &str, limit: Duration) -> String {
+    if error.starts_with("cannot start") {
+        return format!("{name} | not run: cannot start it");
+    }
+    let shown =
+        if limit.as_secs() >= 1 { format!("{} s", limit.as_secs()) } else { format!("{} ms", limit.as_millis()) };
+    format!("{name} | did not finish in {shown} (no result)")
+}
+
+/// The fact line for a project whose manifest asks for a checker that is not installed.
+fn unavailable(name: &str, why: &str) -> String {
+    format!("{name} | not run: {why}")
+}
+
+/// The fact line for a checker that exited with an error and printed no diagnostic at all.
+fn no_diagnostic(name: &str) -> String {
+    format!("{name} | failed without a diagnostic (no result)")
+}
+
+/// Whether `line` carries a source position: `path:LINE:` (cargo, go) or `path(LINE,` (tsc).
+fn positioned(line: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let colon = line.split(':').skip(1).any(digits);
+    let paren = line.split_once('(').and_then(|(_, r)| r.split_once(',')).is_some_and(|(n, _)| digits(n));
+    colon || paren
 }
 
 /// `line` with the path before the position written with forward slashes (Windows prints `src\lib.rs:2:5`).
@@ -257,12 +305,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_check_that_runs_out_of_time_says_nothing() {
+    async fn a_check_that_runs_out_of_time_names_the_check_and_the_limit() {
         if !program_ok("cargo") {
             return;
         }
         let (_d, f) = crate_with("pub fn a() -> u32 {\n    \"no\"\n}\n");
-        assert_eq!(report_within(&f, Duration::from_millis(1)).await, "");
+        let r = report_within(&f, Duration::from_millis(1)).await;
+        assert_eq!(r, "\ncheck: cargo check | did not finish in 1 ms (no result)", "{r}");
+    }
+
+    #[test]
+    fn a_checker_that_cannot_start_is_named_as_not_run() {
+        let e = "cannot start the checker: No such file or directory";
+        assert_eq!(failure("tsc", e, LIMIT), "tsc | not run: cannot start it");
+        let e = "the checker did not finish in 20 s";
+        assert_eq!(failure("go vet", e, LIMIT), "go vet | did not finish in 20 s (no result)");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_fails_without_a_diagnostic_is_not_a_clean_file() {
+        if !program_ok("cargo") {
+            return;
+        }
+        let (d, f) = crate_with("pub fn a() -> u32 {\n    1\n}\n");
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname = \"t\"\nversion = \n").unwrap();
+        let r = report_within(&f, Duration::from_secs(120)).await;
+        assert_eq!(r, "\ncheck: cargo check | failed without a diagnostic (no result)", "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_project_without_its_checker_says_it_was_not_run() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("tsconfig.json"), "{}").unwrap();
+        let f = d.path().join("a.ts");
+        std::fs::write(&f, "export const a: number = \"x\";\n").unwrap();
+        let r = report_within(&f, LIMIT).await;
+        assert_eq!(r, "\ncheck: tsc | not run: node_modules/.bin/tsc is missing", "{r}");
+    }
+
+    #[test]
+    fn only_a_line_with_a_source_position_counts_as_a_diagnostic() {
+        assert!(positioned("src/lib.rs:2:5: error[E0308]: mismatched types"));
+        assert!(positioned("a.ts(3,4): error TS1: m"));
+        assert!(!positioned("error: failed to parse manifest at `/p/Cargo.toml`"));
+        assert!(!positioned("error TS5058: The specified path does not exist"));
     }
 
     #[tokio::test]

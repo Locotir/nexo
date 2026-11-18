@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest line a server may send; past it the connection ends.
 const MAX_LINE: usize = 16 << 20;
+/// How many replies to the server's requests may wait for the pipe at once. A server that stops reading
+/// its input while it floods requests gets no more answers beyond this, instead of a task for each.
+const MAX_REPLIES_WAITING: usize = 256;
 /// The most characters of one tool result that go back to the model (the same as `bash`).
 pub const MAX_RESULT_CHARS: usize = crate::bash::MAX_OUTPUT_CHARS;
 /// The variables of nexo's environment a server gets (with its own `env`): what a process needs
@@ -46,12 +49,23 @@ pub(super) fn passed_env(name: &str) -> bool {
         || (cfg!(windows) && WINDOWS.contains(&up.as_str()))
 }
 
+/// A stdio server's process. When it is dropped its whole process tree goes with it: a launcher such as
+/// `npx` or `uvx` stands in front of the real server, and `kill_on_drop` ends only the launcher.
+struct ServerProcess(Child);
+
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        // `id` is `None` once the process was waited for, when its pid may belong to someone else
+        crate::bash::kill_group(self.0.id());
+    }
+}
+
 /// A connected server.
 pub struct McpClient {
     name: String,
     inner: Arc<Inner>,
     /// The server's process (stdio servers only).
-    child: AsyncMutex<Option<Child>>,
+    child: AsyncMutex<Option<ServerProcess>>,
     /// What the server said it is.
     pub server_info: Value,
     pub protocol_version: String,
@@ -78,6 +92,8 @@ struct Inner {
     lists: Mutex<Lists>,
     /// Counts every change of the lists; the hub and the interface wait on it.
     changes: tokio::sync::watch::Sender<u64>,
+    /// Replies to the server's own requests that are still waiting to be written.
+    replies_waiting: AtomicUsize,
 }
 
 impl McpClient {
@@ -125,6 +141,10 @@ impl McpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        // its own process group on unix (Windows ends the tree by pid), so the terminal's ^C does not reach it and
+        // the group can be ended at once
+        #[cfg(unix)]
+        cmd.process_group(0);
         if let Some(d) = &cfg.cwd {
             cmd.current_dir(d);
         }
@@ -161,11 +181,11 @@ impl McpClient {
                 let _ = tx.send(Err(why.clone()));
             }
         });
-        McpClient::handshake(name, inner, Some(child)).await
+        McpClient::handshake(name, inner, Some(ServerProcess(child))).await
     }
 
     /// The `initialize` exchange and the tool listing.
-    async fn handshake(name: &str, inner: Arc<Inner>, child: Option<Child>) -> anyhow::Result<McpClient> {
+    async fn handshake(name: &str, inner: Arc<Inner>, child: Option<ServerProcess>) -> anyhow::Result<McpClient> {
         let mut init = Err(anyhow!("no protocol version accepted"));
         for v in PROTOCOL_VERSIONS {
             let params = json!({
@@ -322,7 +342,9 @@ impl McpClient {
 
     /// Stops the server.
     pub async fn close(&self) {
-        if let Some(c) = self.child.lock().await.as_mut() {
+        if let Some(ServerProcess(c)) = self.child.lock().await.as_mut() {
+            // the tree first, then the launcher itself (which is waited for, so it cannot be hit twice)
+            crate::bash::kill_group(c.id());
             let _ = c.kill().await;
         }
         if let Link::Http(h) = &self.inner.link {
@@ -409,6 +431,7 @@ impl Inner {
             gone: std::sync::OnceLock::new(),
             lists: Mutex::new(Lists::default()),
             changes: tokio::sync::watch::channel(0).0,
+            replies_waiting: AtomicUsize::new(0),
         })
     }
 
@@ -421,7 +444,7 @@ impl Inner {
     }
 
     /// `resources/list` and `resources/templates/list`. A server may not do the second.
-    async fn list_resources(&self) -> Result<(Vec<ResourceDef>, Vec<TemplateDef>), String> {
+    async fn list_resources(self: &Arc<Self>) -> Result<(Vec<ResourceDef>, Vec<TemplateDef>), String> {
         let resources = paged(self, "resources/list", "resources")
             .await?
             .iter()
@@ -494,7 +517,7 @@ impl Inner {
     }
 
     /// A request with the call timeout.
-    async fn call_timed(&self, method: &str, params: Value) -> Result<Value, String> {
+    async fn call_timed(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, String> {
         match tokio::time::timeout(CALL_TIMEOUT, self.request(method, params)).await {
             Ok(r) => r,
             Err(_) => Err(format!("{method} timed out after {} s", CALL_TIMEOUT.as_secs())),
@@ -523,7 +546,7 @@ impl Inner {
     }
 
     /// A request; the error is the server's message or the transport's.
-    async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+    async fn request(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, String> {
         if let Link::Http(h) = &self.link {
             return h.request(method, params).await;
         }
@@ -532,22 +555,28 @@ impl Inner {
         if let Ok(mut p) = self.pending.lock() {
             p.insert(id, tx);
         }
+        // A caller that gives up (call timeout, Esc) drops this future; the guard then frees the entry
+        // and tells the server, so it does not go on working for nobody.
+        let mut guard = PendingGuard { inner: self.clone(), id, method: method.to_string(), armed: true };
         if let Err(e) = self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).await {
-            if let Ok(mut p) = self.pending.lock() {
-                p.remove(&id);
-            }
+            guard.armed = false;
             return Err(format!("cannot write to the server (it has probably exited): {e}"));
         }
         // the server's output may have ended just before the request was filed
         if let Some(why) = self.gone.get() {
-            if let Ok(mut p) = self.pending.lock() {
-                p.remove(&id);
-            }
+            guard.armed = false;
             return Err(why.clone());
         }
         match rx.await {
-            Ok(r) => r,
-            Err(_) => Err("the server closed the connection".into()),
+            Ok(r) => {
+                // dispatch() already took the entry
+                guard.armed = false;
+                r
+            }
+            Err(_) => {
+                guard.armed = false;
+                Err("the server closed the connection".into())
+            }
         }
     }
 
@@ -560,7 +589,18 @@ impl Inner {
                 } else {
                     json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "not supported by this client"}})
                 };
-                let _ = self.send(reply).await;
+                // Answered from its own task: the reader must go on draining the server's output while a
+                // write waits for the stdin lock or a full pipe, or both sides block on each other.
+                if self.replies_waiting.fetch_add(1, Ordering::SeqCst) >= MAX_REPLIES_WAITING {
+                    self.replies_waiting.fetch_sub(1, Ordering::SeqCst);
+                    tracing::debug!(server = %self.name, "mcp: {MAX_REPLIES_WAITING} replies are waiting to be written; one was dropped");
+                    return;
+                }
+                let me = self.clone();
+                tokio::spawn(async move {
+                    let _ = me.send(reply).await;
+                    me.replies_waiting.fetch_sub(1, Ordering::SeqCst);
+                });
                 return;
             }
             let tx = self.pending.lock().ok().and_then(|mut p| p.remove(&id));
@@ -575,6 +615,34 @@ impl Inner {
         } else if let Some(m) = msg.get("method").and_then(Value::as_str) {
             self.on_notification(m);
         }
+    }
+}
+
+/// Frees a stdio request's `pending` entry when its future is dropped before the answer came, and
+/// then asks the server to stop working on it with `notifications/cancelled`.
+struct PendingGuard {
+    inner: Arc<Inner>,
+    id: u64,
+    method: String,
+    /// False once the request ended by itself (answered, or the server is gone): nothing to cancel.
+    armed: bool,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.inner.pending.lock() {
+            p.remove(&self.id);
+        }
+        // the spec forbids cancelling `initialize`
+        if !self.armed || self.method == "initialize" {
+            return;
+        }
+        let Ok(rt) = tokio::runtime::Handle::try_current() else { return };
+        let inner = self.inner.clone();
+        let params = json!({"requestId": self.id, "reason": "client timeout/cancel"});
+        rt.spawn(async move {
+            let _ = inner.notify("notifications/cancelled", params).await;
+        });
     }
 }
 
@@ -684,7 +752,7 @@ async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<
 }
 
 /// Every page of a listing: the items under `key`.
-async fn paged(inner: &Inner, method: &str, key: &str) -> Result<Vec<Value>, String> {
+async fn paged(inner: &Arc<Inner>, method: &str, key: &str) -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -702,4 +770,67 @@ async fn paged(inner: &Inner, method: &str, key: &str) -> Result<Vec<Value>, Str
         }
     }
     Ok(out)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A request the caller gave up on (call timeout, Esc) leaves nothing in `pending`, and the server is
+    /// told so, except for `initialize`, which the protocol does not allow to be cancelled.
+    #[tokio::test]
+    async fn a_dropped_request_frees_its_entry_and_tells_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("stdin.log");
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", &format!("cat > '{}'", log.display())])
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let inner = Inner::new("silent", false, Link::Stdio(AsyncMutex::new(child.stdin.take().unwrap())));
+        for method in ["tools/call", "initialize"] {
+            let r = tokio::time::timeout(Duration::from_millis(200), inner.request(method, json!({}))).await;
+            assert!(r.is_err(), "the server never answers {method}");
+            assert_eq!(inner.pending.lock().unwrap().len(), 0, "{method}");
+        }
+        // The cancels are written by tasks that run once this one yields: wait for both to be due
+        // before looking, or the check for `initialize` would run before its cancel could exist.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut seen = String::new();
+        for _ in 0..100 {
+            seen = std::fs::read_to_string(&log).unwrap_or_default();
+            if seen.contains("notifications/cancelled") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let cancels: Vec<Value> = seen
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|m| m["method"] == "notifications/cancelled")
+            .collect();
+        assert_eq!(cancels.len(), 1, "only the tool call is cancelled: {seen}");
+        assert_eq!(cancels[0]["params"]["requestId"], 1);
+    }
+
+    /// A server that floods requests and never reads its input gets a bounded number of replies waiting,
+    /// not a parked task for each.
+    #[tokio::test]
+    async fn a_flood_of_requests_to_a_server_that_does_not_read_keeps_the_replies_bounded() {
+        let mut child =
+            tokio::process::Command::new("sleep").arg("60").stdin(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+        let inner = Inner::new("deaf", false, Link::Stdio(AsyncMutex::new(child.stdin.take().unwrap())));
+        let ping = json!({"jsonrpc": "2.0", "id": 7, "method": "ping"});
+        // more replies than the pipe holds, so the writes really block
+        for i in 0..6000 {
+            inner.dispatch(ping.clone()).await;
+            if i % 100 == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let waiting = inner.replies_waiting.load(Ordering::SeqCst);
+        assert!(waiting > 0 && waiting <= MAX_REPLIES_WAITING, "{waiting} replies are waiting");
+    }
 }

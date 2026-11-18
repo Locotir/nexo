@@ -319,3 +319,71 @@ fn a_long_wait_on_a_local_server_says_it_may_be_loading_the_model() {
     a.provider = "mock".into();
     assert_eq!(a.activity().as_deref(), Some("Waiting for the model"), "a hosted provider is not loading anything");
 }
+
+#[test]
+fn a_request_the_provider_fails_shows_the_retry_on_the_work_line_and_the_wait_once_in_a_toast() {
+    let (mut a, mut rx) = app();
+    a.input.set_text("hello");
+    a.submit();
+    drain(&mut rx);
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    assert!(work_line(&mut a).contains("Waiting for the model…"));
+    let retry = |attempt, wait_secs| AgentEvent::Retrying {
+        attempt,
+        retries: 4,
+        wait_secs,
+        rate_limit: true,
+        reason: "rate limited, HTTP 429".into(),
+    };
+    a.handle_agent(retry(1, 3));
+    let line = work_line(&mut a);
+    assert!(line.contains("Waiting for the model: retry 1 of 4 (rate limited, HTTP 429)"), "{line}");
+    assert!(!line.contains("3 s"), "a countdown would go stale: nothing tells the screen when the wait ends");
+    assert!(a.toasts.iter().any(|t| t.text == "rate limited, HTTP 429; trying again in 3 s"));
+    a.handle_agent(retry(2, 6));
+    assert!(work_line(&mut a).contains("retry 2 of 4"));
+    assert_eq!(a.toasts.iter().filter(|t| t.text.contains("trying again")).count(), 1, "only the first retry says it");
+    // the reply that finally comes replaces the label
+    a.handle_agent(AgentEvent::TextDelta { text: "on it".into() });
+    assert!(work_line(&mut a).contains("Writing…"));
+}
+
+#[test]
+fn a_retry_told_after_the_turn_ended_shows_nothing() {
+    let (mut a, mut rx) = app();
+    a.input.set_text("hello");
+    a.submit();
+    drain(&mut rx);
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    a.handle_agent(AgentEvent::Idle { running_jobs: 0 });
+    a.handle_agent(AgentEvent::Retrying {
+        attempt: 1,
+        retries: 4,
+        wait_secs: 1,
+        rate_limit: false,
+        reason: "network error".into(),
+    });
+    assert!(a.prep.is_none() && !a.busy, "nothing is waiting any more");
+    assert!(a.toasts.iter().all(|t| !t.text.contains("trying again")));
+}
+
+#[test]
+fn the_work_line_stops_claiming_a_failure_once_the_request_is_taken_again() {
+    let (mut a, mut rx) = app();
+    a.input.set_text("hello");
+    a.submit();
+    drain(&mut rx);
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    a.handle_agent(AgentEvent::Retrying {
+        attempt: 1,
+        retries: 4,
+        wait_secs: 1,
+        rate_limit: false,
+        reason: "network error".into(),
+    });
+    assert!(work_line(&mut a).contains("retry 1 of 4"));
+    // the agent says the model is the wait again; a model that thinks silently now reads as thinking, not failing
+    a.handle_agent(AgentEvent::Preparing { what: "waiting for the model".into() });
+    let line = work_line(&mut a);
+    assert!(line.contains("Waiting for the model") && !line.contains("retry"), "{line}");
+}

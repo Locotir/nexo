@@ -14,6 +14,17 @@ use nexo_core::config::HookConfig;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
+/// Ends the shell of a running hook and all it started when it is dropped before the hook ended (a
+/// timeout, or the turn cancelled). The hook child has no `kill_on_drop`: it would be dropped first and
+/// end the shell before the tree under it could be found.
+struct HookTree(Option<u32>);
+
+impl Drop for HookTree {
+    fn drop(&mut self) {
+        nexo_tools::bash::kill_group(self.0.take());
+    }
+}
+
 /// How long a hook may run when it sets no `timeout`.
 const LIMIT: Duration = Duration::from_secs(60);
 
@@ -151,8 +162,11 @@ pub async fn run(
             .env("NEXO_CWD", cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
+        // no `kill_on_drop`: on Windows it would end the shell before `HookTree` walks the tree under it.
+        // its own process group, so the whole tree can be ended at once
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -168,8 +182,14 @@ pub async fn run(
                 let _ = stdin.write_all(text.as_bytes()).await;
             });
         }
-        // on a timeout the child is dropped, and `kill_on_drop` stops it
-        let done = match tokio::time::timeout(limit, child.wait_with_output()).await {
+        // on a timeout or a cancelled turn the future is dropped and `tree` ends the shell with all it started
+        let mut tree = HookTree(child.id());
+        let waited = tokio::time::timeout(limit, child.wait_with_output()).await;
+        // the hook ended by itself: its pid may be given to another process now, so it is left alone
+        if waited.is_ok() {
+            tree.0 = None;
+        }
+        let done = match waited {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 out.failures.push(format!("hook `{}`: {e}", h.command));
@@ -241,7 +261,7 @@ pub fn tool_fields(name: &str, args: &Value) -> Value {
 /// `/hooks`: the loaded hooks, one line each, with where they come from.
 pub fn describe(hooks: &[HookConfig]) -> String {
     if hooks.is_empty() {
-        return "no hooks loaded (see docs/HOOKS.md; set them in [[hooks]] of config.toml or in a trusted \
+        return "no hooks loaded (see https://github.com/Locotir/nexo/blob/main/nexo/docs/HOOKS.md; set them in [[hooks]] of config.toml or in a trusted \
                 project's .claude/settings.json)"
             .into();
     }
@@ -400,6 +420,31 @@ mod tests {
         assert_eq!(out.updated_input, Some(json!({"command": "echo safe"})));
         let seen = std::fs::read_to_string(d.path().join("second.json")).unwrap();
         assert!(seen.contains("echo safe") && !seen.contains("rm x"), "{seen}");
+    }
+
+    // it reads /proc, which only Linux has: elsewhere `gone` would pass without the fix
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn what_a_timed_out_hook_started_is_ended_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        // the shell waits for a grandchild, so ending the shell alone leaves the sleep running
+        let mut h = hook("turn_end", None, "sleep 31 & echo $! > pid; wait");
+        h.timeout = Some(1);
+        let out = run(&[h], "turn_end", None, &json!({}), d.path(), "s").await;
+        assert_eq!(out.failures.len(), 1, "{:?}", out.failures);
+        let pid = std::fs::read_to_string(d.path().join("pid")).unwrap().trim().to_string();
+        // a killed process may linger as a zombie until its parent reaps it: that is gone too
+        let gone = || match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => s.rsplit(") ").next().is_some_and(|rest| rest.starts_with('Z')),
+            Err(_) => true,
+        };
+        for _ in 0..50 {
+            if gone() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(gone(), "the sleep (pid {pid}) is still running");
     }
 
     #[cfg(unix)]

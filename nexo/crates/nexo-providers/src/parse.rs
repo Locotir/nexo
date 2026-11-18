@@ -41,6 +41,20 @@ pub fn run<P: Feed>(events: impl Stream<Item = Result<SseEvent, String>> + Send 
     crate::openai_chat::terminated(s)
 }
 
+/// Leaves a trace in the log of an event whose data was not JSON, so a hole in a reply can be explained
+/// afterwards. A blank event or an SSE comment is keep-alive, not loss, and stays silent.
+pub fn note_dropped(data: &str) {
+    let t = data.trim();
+    if t.is_empty() || t.starts_with(':') {
+        return;
+    }
+    let mut end = t.len().min(200);
+    while !t.is_char_boundary(end) {
+        end -= 1;
+    }
+    tracing::warn!(bytes = data.len(), head = %&t[..end], "dropped an event that is not JSON");
+}
+
 /// The state the parsers share at the end of a stream.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Progress {
@@ -57,7 +71,8 @@ impl Progress {
     /// What the end of the stream means, given what came before: nothing at
     /// all is a response that was not the protocol (an HTML page, an empty
     /// body); a start without content is a reply cut before it began (both
-    /// retryable by the client); content without a finish is taken as complete.
+    /// retryable by the client); content without a finish is taken as complete (see `at_end_strict` for
+    /// the protocols that always say how a reply ended).
     pub fn at_end(&mut self) -> Option<StreamEvent> {
         if self.finished {
             return None;
@@ -73,6 +88,20 @@ impl Progress {
         } else {
             StreamEvent::Finish(if self.saw_tool { FinishReason::ToolUse } else { FinishReason::Stop })
         })
+    }
+
+    /// Like `at_end_with_calls`, for a protocol that always closes a reply with an explicit stop: content
+    /// with no stop means the connection closed early, so the end is a truncation error, not a finish.
+    /// The caller keeps the partial text and sees the error, as it does for a cut tool call.
+    pub fn at_end_strict(&mut self, open: bool) -> Option<StreamEvent> {
+        if !open && !self.finished && self.content {
+            self.finished = true;
+            return Some(StreamEvent::Error(ProviderError::new(
+                ErrorKind::Network,
+                "the connection closed before the reply was complete (truncated)",
+            )));
+        }
+        self.at_end_with_calls(open)
     }
 
     /// The end of a stream that left tool calls open (`open`): without a
@@ -96,7 +125,10 @@ impl Progress {
 pub fn stream_error_kind(error_type: &str, message: &str) -> ErrorKind {
     let t = error_type.to_ascii_lowercase();
     let m = message.to_ascii_lowercase();
-    if t.contains("rate_limit") || t.contains("resource_exhausted") || t == "429" || m.contains("rate limit") {
+    // an empty balance is not a limit that lifts: waiting never refills it, so it is not retried
+    if nexo_core::says_no_credit(&t) || nexo_core::says_no_credit(&m) {
+        ErrorKind::BadRequest
+    } else if t.contains("rate_limit") || t.contains("resource_exhausted") || t == "429" || m.contains("rate limit") {
         ErrorKind::RateLimit
     } else if t.contains("overloaded") || t.contains("unavailable") || m.contains("overloaded") {
         ErrorKind::Overloaded
@@ -140,6 +172,16 @@ mod tests {
         assert_eq!(stream_error_kind("", "This model's maximum context length is 8192"), ErrorKind::ContextLength);
         assert_eq!(stream_error_kind("authentication_error", ""), ErrorKind::Auth);
         assert_eq!(stream_error_kind("server_error", "boom"), ErrorKind::Server);
+    }
+
+    #[test]
+    fn an_empty_balance_reported_in_a_stream_is_not_retried_but_a_busy_one_is() {
+        let empty = stream_error_kind("insufficient_quota", "You exceeded your current quota");
+        assert_eq!(empty, ErrorKind::BadRequest);
+        assert!(!ProviderError::new(empty, "x").is_retryable());
+        assert_eq!(stream_error_kind("", "Your credit balance is too low"), ErrorKind::BadRequest);
+        assert_eq!(stream_error_kind("rate_limit_error", "slow down"), ErrorKind::RateLimit);
+        assert_eq!(stream_error_kind("RESOURCE_EXHAUSTED", "You exceeded your current quota"), ErrorKind::RateLimit);
     }
 
     #[test]

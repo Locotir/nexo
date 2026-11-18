@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::fsmode::create_private_dir;
 use crate::paths;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,16 +243,11 @@ pub fn read_from(path: &Path) -> BTreeMap<String, Credential> {
     raw.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|c| (k, c))).collect()
 }
 
-/// Makes `dir` and its missing parents. On Unix the ones made are `0700`, so the names of keys and sessions inside
-/// are not listed for other users; a folder that already exists keeps the rights it has.
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
-    }
-    #[cfg(not(unix))]
-    std::fs::create_dir_all(dir)
+/// Like [`read_from`], but a file that exists and does not parse is an error naming it, so a caller that
+/// is about to say "no login" can say what is really wrong. An absent or empty file is an empty store;
+/// entries of a kind this build does not know are skipped, as in `read_from`.
+pub fn read_checked(path: &Path) -> std::io::Result<BTreeMap<String, Credential>> {
+    Ok(read_raw(path)?.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|c| (k, c))).collect())
 }
 
 /// Writes the whole store, through a file only you can read, renamed into place.
@@ -263,13 +259,8 @@ pub fn write_to<T: Serialize>(path: &Path, map: &BTreeMap<String, T>) -> std::io
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
     {
-        let mut o = std::fs::OpenOptions::new();
+        let mut o = crate::fsmode::private_file();
         o.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.mode(0o600);
-        }
         use std::io::Write;
         let mut f = o.open(&tmp)?;
         f.write_all(text.as_bytes())?;

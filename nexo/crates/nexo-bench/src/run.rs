@@ -77,12 +77,17 @@ pub struct Record {
     /// The context window forced on every arm (`--window`), none: the model's own. With it `plain` runs as
     /// `compact` capped by the window, so it summarises when the window fills.
     pub window: Option<u32>,
+    /// The run ended its turn on a passing check (`agent.close_on_verified`). It changes the recorded stop and
+    /// the score, so results made with and without it are not comparable.
+    pub close_on_verified: bool,
+    /// The wall time one run was allowed, in seconds (none: no limit). A run cut by it ends as `timeout`.
+    pub run_timeout_s: Option<u64>,
     /// 0..1.
     pub score: f64,
     /// Every check passed.
     pub ok: bool,
     pub detail: String,
-    /// The agent stopped by itself, not at the step limit or the budget.
+    /// The agent stopped by itself (`done` or `verified`), not at the step limit, the budget, a timeout or an error.
     pub finished: bool,
     /// Why the run ended (`Stop::as_str`); null only in records of older benchmarks.
     pub stop: Option<Stop>,
@@ -120,6 +125,11 @@ pub struct Record {
     pub transcript: String,
     /// The graded parts of a task of several objectives, in the task's order (empty otherwise).
     pub parts: Vec<Part>,
+    /// Test runs of the exercise that ran out of time (Polyglot), and test runs something else killed with
+    /// SIGKILL (the OOM killer, a stray `kill -9`), so the report can tell a slow solution from a failure of
+    /// the machine. Zero in records of other tasks and of older benchmarks.
+    pub tests_timed_out: u32,
+    pub tests_killed: u32,
     /// Recall calls, re-reads and duplicate lines read from the transcript.
     pub counters: crate::counters::Counters,
     /// The agent's tool calls reached absolute paths outside the run's folders: the run could have
@@ -177,6 +187,11 @@ pub fn config(bench: &Bench, arm: &Arm) -> Config {
 /// The window `--window` forced on the model, if any (the bench provider holds no other).
 pub fn forced_window(bench: &Bench) -> Option<u32> {
     bench.provider.context_window.get(&bench.model).copied()
+}
+
+/// The wall time a run may take, in whole seconds, if limited.
+pub fn run_timeout_s(bench: &Bench) -> Option<u64> {
+    bench.run_timeout.map(|t| t.as_secs())
 }
 
 /// What one run does: the turns the agent gets in a prepared working directory, and how.
@@ -316,6 +331,9 @@ pub fn record(
     detail: String,
 ) -> Record {
     let t = &d.tally;
+    // The stop is named first because `finished` follows from it: a run the provider broke, the bench interrupted or a
+    // panic cut has no bench-side stop in the tally, yet it did not finish.
+    let stop = d.stats.stop(t.stop.as_ref(), bench.close_on_verified);
     // a sealed run saw only its own folders: the paths it names are inside the box
     let outside = if d.sealed {
         Vec::new()
@@ -335,11 +353,13 @@ pub fn record(
         temperature: bench.temperature,
         compact_at: (arm.policy == "compact").then(|| arm.compact_at()),
         window: forced_window(bench),
+        close_on_verified: bench.close_on_verified,
+        run_timeout_s: run_timeout_s(bench),
         score,
         ok,
         detail,
-        finished: t.stop.is_none() && !d.stats.hit_max_steps,
-        stop: Some(d.stats.stop(t.stop.as_ref(), bench.close_on_verified)),
+        finished: matches!(stop, Stop::Done | Stop::Verified),
+        stop: Some(stop),
         steps: t.steps,
         requests: t.requests,
         input: t.usage.input,
@@ -364,6 +384,8 @@ pub fn record(
         errors: d.stats.errors.iter().take(5).cloned().collect(),
         transcript: d.transcript.clone(),
         parts: Vec::new(),
+        tests_timed_out: 0,
+        tests_killed: 0,
         counters: crate::counters::from_file(&bench.out.join(&d.transcript)),
         contaminated: !outside.is_empty(),
         outside,
@@ -562,6 +584,8 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         temperature: None,
         compact_at: None,
         window: None,
+        close_on_verified: false,
+        run_timeout_s: None,
         score,
         ok: score == 1.0,
         detail: String::new(),
@@ -591,6 +615,8 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         errors: vec![],
         transcript: String::new(),
         parts: Vec::new(),
+        tests_timed_out: 0,
+        tests_killed: 0,
         counters: Default::default(),
         contaminated: false,
         outside: Vec::new(),

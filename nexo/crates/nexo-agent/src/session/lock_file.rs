@@ -62,19 +62,23 @@ fn pid_ns() -> Option<&'static str> {
 
 /// The lock text was written on another host or in another pid namespace (where both say so): its
 /// pid names no process here. A lock that does not say (an older one) is taken as written here.
-fn foreign(text: &str) -> bool {
+pub(super) fn foreign(text: &str) -> bool {
     let mut words = text.split_whitespace().skip(3).map(|w| Some(w).filter(|w| *w != "-"));
     let differs = |was: Option<&str>, now: Option<&str>| matches!((was, now), (Some(a), Some(b)) if a != b);
     differs(words.next().flatten(), host_name()) || differs(words.next().flatten(), pid_ns())
 }
 
 /// When process `pid` started, where the system says so: clock ticks after boot on Linux, a hash of the start
-/// time `ps` prints on macOS.
+/// time `ps` prints on macOS, the creation time on Windows (where pids are reused fast, so this is what tells
+/// a process from a later one under the same pid).
 pub(super) fn proc_start(pid: u32) -> Option<u64> {
     if cfg!(target_os = "macos") {
         return ps_start(pid);
     }
     if !cfg!(target_os = "linux") {
+        #[cfg(windows)]
+        return nexo_core::proc::process_start(pid);
+        #[cfg(not(windows))]
         return None;
     }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -260,7 +264,7 @@ pub(super) fn take_over_with(
 }
 
 /// Whether process `pid` runs, where the system says so: Linux from `/proc`, other unix systems
-/// from `ps`; None elsewhere (the age of the lock decides).
+/// from `ps`, Windows from the process handle; None elsewhere (the age of the lock decides).
 fn alive(pid: u32) -> Option<bool> {
     if cfg!(target_os = "linux") {
         let proc = Path::new("/proc");
@@ -278,5 +282,12 @@ fn alive(pid: u32) -> Option<bool> {
         }
         return (!out.status.success() && out.stderr.is_empty()).then_some(false);
     }
-    None
+    #[cfg(windows)]
+    {
+        nexo_core::proc::pid_alive(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }

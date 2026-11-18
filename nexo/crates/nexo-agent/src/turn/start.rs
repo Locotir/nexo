@@ -723,7 +723,9 @@ pub(super) async fn prepare(
     let hidden = (!st.hidden.is_empty()).then(|| nexo_supervise::watch::hidden_block(&st.hidden));
     // an active goal: the counts of its run and, once its work brings nothing new, the facts of that (see `goal_note`)
     let goal_facts = goal_note(st);
-    let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>());
+    // the task list, as it stands now: with this request only, so a change in it leaves the cached prefix alone
+    let todo = todo_note(st);
+    let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).chain(&todo).collect::<Vec<_>>());
     let view = view_now(st, extra).await;
     let (_, cfg, model) = st.target.get();
     let effort = setup::effective_effort(&cfg, &model, &st.config.agent.reasoning);
@@ -739,7 +741,7 @@ pub(super) async fn prepare(
     }
     // the notes of this request only go as one text part: a provider puts its cache breakpoint before one trailing
     // text part, so with two the breakpoint would land on a note the next request does not carry
-    let notes: Vec<String> = hidden.into_iter().chain(goal_facts).collect();
+    let notes: Vec<String> = hidden.into_iter().chain(goal_facts).chain(todo).collect();
     let notes = (!notes.is_empty()).then(|| notes.join("\n\n"));
     if let Some(n) = &notes {
         attach_hidden(&mut req.messages, n.clone());
@@ -1005,5 +1007,12 @@ mod request_only_tests {
         assert!(t >= 10_000, "{t}");
         assert_eq!(t, nexo_core::message::estimate_tokens(&[Message::user(block)]));
         assert_eq!(request_only_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn the_levels_above_high_become_a_reasoning_setting_not_none() {
+        for (s, e) in [("xhigh", Effort::Xhigh), ("max", Effort::Max), (" MAX ", Effort::Max)] {
+            assert_eq!(reasoning_of(&Some(s.into())), Some(ReasoningConfig::Effort(e)), "{s}");
+        }
     }
 }

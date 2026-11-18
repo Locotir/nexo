@@ -77,6 +77,8 @@ mod start;
 mod window_fit;
 // what a sub-agent's loop shares with the main turn's to build its view
 pub(crate) use start::{fixed_tokens, learn_ratio, reasoning_of, view_window};
+// and the rule for which calls of one round may overlap
+pub(crate) use tools::is_pure_check;
 mod state;
 mod stop;
 mod tools;

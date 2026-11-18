@@ -251,3 +251,31 @@ fn altgr_characters_typed_one_by_one_reach_the_draft() {
         KeyModifiers::SHIFT
     );
 }
+
+#[test]
+fn a_middle_click_in_the_editor_pastes_the_primary_selection_and_one_over_a_window_does_not() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let (mut a, _rx) = app();
+    a.input.set_text("ab");
+    let backend = ratatui::backend::TestBackend::new(100, 20);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
+    let e = a.editor_area;
+    let middle = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Middle),
+        column: e.x,
+        row: e.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    // nothing selected yet: nothing is pasted
+    crate::event::mouse(&mut a, middle);
+    assert_eq!(a.input.text(), "ab");
+    // a selection made earlier is the one pasted, at the clicked cell
+    crate::clipboard::copy_primary("XY");
+    crate::event::mouse(&mut a, middle);
+    assert_eq!(a.input.text(), "XYab");
+    // a window open: the click is not for the draft
+    a.modal = Some(crate::modal::Modal::Help { scroll: 0, query: String::new() });
+    crate::event::mouse(&mut a, middle);
+    assert_eq!(a.input.text(), "XYab");
+}

@@ -165,13 +165,11 @@ impl Server {
         let name =
             params.get("name").and_then(Value::as_str).ok_or((-32602, "tools/call needs a \"name\"".to_string()))?;
         let Some(tool) = self.tools.iter().find(|t| t.name == name) else {
-            let near: Vec<&str> = self
-                .tools
-                .iter()
-                .map(|t| t.name.as_str())
-                .filter(|n| n.starts_with(&name[..name.len().min(4)]))
-                .take(3)
-                .collect();
+            // The first four characters, not bytes: byte 4 of a client name such as "aéé" is inside a char, and a byte
+            // slice would panic here, before the catch_unwind below, and end the serve loop.
+            let pre: String = name.chars().take(4).collect();
+            let near: Vec<&str> =
+                self.tools.iter().map(|t| t.name.as_str()).filter(|n| n.starts_with(&pre)).take(3).collect();
             return Err((
                 -32602,
                 format!("unknown tool {name:?}; tools/list has them all (nearest: {})", near.join(", ")),

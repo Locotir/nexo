@@ -83,7 +83,11 @@ pub(super) fn tree_note(st: &mut State) -> Option<String> {
     let cwd = st.cwd.clone();
     let note = prompt::project_tree_change(&st.prefix.shown, &now, |p| cwd.join(p).exists());
     st.prefix.shown = now;
-    let _ = st.session.record_prefix(&st.prefix);
+    // only the map changed: a session that has a saved prefix writes just that
+    let _ = match st.session.prefix().is_some() {
+        true => st.session.record_shown(&st.prefix.shown),
+        false => st.session.record_prefix(&st.prefix),
+    };
     saving(st);
     Some(if st.prefix.shown.is_empty() { "Project: no files are listed any more.".to_string() } else { note })
 }

@@ -82,7 +82,7 @@ pub async fn login_cmd(
             println!("  {f:<9} {what}");
         }
         println!("\nany other provider takes a key: `nexo providers --all` lists every one nexo knows");
-        return Ok(1);
+        return Ok(0);
     };
     if !adopt(cfg, name) && flow.is_none() && key.is_none() {
         anyhow::bail!("unknown provider {name:?}; `nexo providers --all` lists them, or give --key to keep one anyway");
@@ -156,7 +156,7 @@ fn read_key(name: &str, p: &ProviderConfig, key: Option<&str>) -> anyhow::Result
     };
     let k = k.trim().to_string();
     if k.is_empty() {
-        anyhow::bail!("no key given");
+        anyhow::bail!("no key given: pass --key K, or --key - to read it from stdin");
     }
     Ok(k)
 }
@@ -460,6 +460,30 @@ pub fn add_directory(cfg: &mut Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn login_without_a_provider_lists_the_logins_and_succeeds() {
+        let mut cfg = Config::default();
+        assert_eq!(login_cmd(&mut cfg, None, None, None).await.unwrap(), 0);
+    }
+
+    /// The guide is what an assistant reads to set a provider up, so it names every protocol the code
+    /// accepts and the first words of both "nothing usable" errors it will meet.
+    #[test]
+    fn the_setup_guide_lists_every_protocol_and_both_nothing_chosen_errors() {
+        for id in [
+            nexo_providers::anthropic::ID,
+            nexo_providers::gemini::ID,
+            nexo_providers::openai_responses::ID,
+            "openai-chat",
+        ] {
+            assert!(GUIDE.contains(id), "the guide does not name the protocol {id}");
+        }
+        let first_line = crate::setup::nothing_chosen_message();
+        let first_line = first_line.lines().next().unwrap().to_string();
+        assert!(GUIDE.contains(&first_line), "the guide does not name {first_line:?}");
+        assert!(GUIDE.contains("no provider can be used"));
+    }
 
     #[test]
     fn a_hidden_key_is_what_was_typed_or_pasted_up_to_enter() {

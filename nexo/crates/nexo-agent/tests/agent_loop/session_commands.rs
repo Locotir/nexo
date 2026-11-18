@@ -205,7 +205,7 @@ async fn limits_are_reported_and_prices_can_be_set() {
         }
         _ => unreachable!(),
     }
-    let p = Pricing { input: 5.0, output: 10.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0 };
+    let p = Pricing { input: 5.0, output: 10.0, cache_read: 0.5, cache_write: 0.0, cache_write_1h: 0.0, long: None };
     r.send(AgentCommand::SetPricing { pricing: p });
     let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
     assert!(evs.iter().any(
@@ -329,6 +329,19 @@ async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_t
     let ev = r.until(|e| matches!(e, AgentEvent::SessionDeleted { .. })).await;
     assert!(matches!(ev.last(), Some(AgentEvent::SessionDeleted { id, .. }) if *id == a));
     assert!(!nexo_agent::session::list().iter().any(|m| m.id == a));
+    // the trash and the tree are read apart from the loop and still answer
+    r.send(AgentCommand::ListTrash);
+    let ev = r.until(|e| matches!(e, AgentEvent::Trash { .. })).await;
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::Trash { sessions }) if sessions.iter().any(|(i, _)| *i == a)),
+        "{ev:?}"
+    );
+    r.send(AgentCommand::ShowTree);
+    let ev = r.until(|e| matches!(e, AgentEvent::SessionTree { .. })).await;
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::SessionTree { entries }) if entries.iter().any(|(_, i, _)| *i == b)),
+        "{ev:?}"
+    );
     r.send(AgentCommand::RestoreSession { id: a.clone() });
     let ev = r.until(|e| matches!(e, AgentEvent::SessionRestored { .. })).await;
     assert!(

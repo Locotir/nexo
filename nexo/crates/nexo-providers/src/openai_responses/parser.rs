@@ -14,6 +14,15 @@ pub struct ResponsesParser {
     calls: Vec<(u64, String, String, String)>,
     /// Reasoning items by output index: their ids.
     reasoning: Vec<(u64, String)>,
+    /// Output indexes whose text arrived as deltas, so a finished message item is not emitted twice.
+    seen_text: Vec<u64>,
+    /// A text delta came without an `output_index`, so which item it belongs to is unknown and no
+    /// finished message item can be told apart from it: none is emitted again.
+    seen_text_unindexed: bool,
+    /// Some reasoning text was shown already, so a break is owed before the next part or item.
+    reasoning_shown: bool,
+    /// A part or item of reasoning ended: the next reasoning text starts after a newline.
+    break_pending: bool,
     prog: Progress,
     start_sent: bool,
 }
@@ -23,7 +32,10 @@ impl Feed for ResponsesParser {
         let mut out = Vec::new();
         let v: Value = match serde_json::from_str(data.trim()) {
             Ok(v) => v,
-            Err(_) => return out,
+            Err(_) => {
+                crate::parse::note_dropped(data);
+                return out;
+            }
         };
         let t = v["type"].as_str().unwrap_or("");
         if !t.is_empty() {
@@ -55,6 +67,11 @@ impl Feed for ResponsesParser {
             // a refusal is the model's answer, and the person reads it
             "response.output_text.delta" | "response.refusal.delta" => {
                 if let Some(d) = v["delta"].as_str() {
+                    match v["output_index"].as_u64() {
+                        Some(idx) if !self.seen_text.contains(&idx) => self.seen_text.push(idx),
+                        Some(_) => {}
+                        None => self.seen_text_unindexed = true,
+                    }
                     self.prog.content = true;
                     out.push(StreamEvent::TextDelta(d.to_string()));
                 }
@@ -62,13 +79,22 @@ impl Feed for ResponsesParser {
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 if let Some(d) = v["delta"].as_str() {
                     self.prog.content = true;
-                    out.push(StreamEvent::ReasoningDelta(d.to_string()));
+                    if d.is_empty() {
+                        return out;
+                    }
+                    // A paragraph break goes in front of the next text, never after the last one.
+                    // It is a flag and not an event of its own: the API ends each part with two
+                    // events and a server may send only some of them, but the flag cannot double up.
+                    let text = if std::mem::take(&mut self.break_pending) { format!("\n{d}") } else { d.to_string() };
+                    self.reasoning_shown = true;
+                    out.push(StreamEvent::ReasoningDelta(text));
                 }
             }
-            "response.reasoning_summary_text.done" | "response.reasoning_summary_part.done" => {
-                // a paragraph break between summary parts
-                out.push(StreamEvent::ReasoningDelta("\n".into()));
-            }
+            // The summary index counts parts inside one reasoning item, so a second item starts at 0
+            // again: the end of a part or the start of an item owes a break, not the index.
+            "response.reasoning_summary_text.done"
+            | "response.reasoning_text.done"
+            | "response.reasoning_summary_part.added" => self.break_pending = self.reasoning_shown,
             "response.output_item.added" => {
                 let item = &v["item"];
                 let idx = v["output_index"].as_u64().unwrap_or(0);
@@ -85,6 +111,7 @@ impl Feed for ResponsesParser {
                         if let Some(id) = item["id"].as_str() {
                             self.reasoning.push((idx, id.to_string()));
                         }
+                        self.break_pending = self.reasoning_shown;
                     }
                     _ => {}
                 }
@@ -116,6 +143,24 @@ impl Feed for ResponsesParser {
                         let enc = item["encrypted_content"].as_str().map(String::from);
                         if id.is_some() || enc.is_some() {
                             out.push(StreamEvent::ReasoningMeta { signature: id, encrypted: enc });
+                        }
+                    }
+                    Some("message") if !self.seen_text_unindexed && !self.seen_text.contains(&idx) => {
+                        // a server that sends the finished message without text deltas (some proxies,
+                        // short replies): without this the turn would end empty and without an error
+                        let text: String = item["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|c| match c["type"].as_str() {
+                                Some("output_text") => c["text"].as_str(),
+                                Some("refusal") => c["refusal"].as_str(),
+                                _ => None,
+                            })
+                            .collect();
+                        if !text.is_empty() {
+                            self.prog.content = true;
+                            out.push(StreamEvent::TextDelta(text));
                         }
                     }
                     Some("function_call") => {
@@ -183,7 +228,7 @@ impl Feed for ResponsesParser {
         // calls still open without a completed response: their arguments may be cut
         let open = !self.calls.is_empty();
         self.calls.clear();
-        self.prog.at_end_with_calls(open).into_iter().collect()
+        self.prog.at_end_strict(open).into_iter().collect()
     }
 }
 
@@ -206,6 +251,7 @@ pub fn usage(u: &Value) -> Usage {
         cache_read: cached,
         cache_write: 0,
         cache_write_1h: 0,
+        transformations: 0,
         reasoning: count(&u["output_tokens_details"]["reasoning_tokens"]),
     }
 }

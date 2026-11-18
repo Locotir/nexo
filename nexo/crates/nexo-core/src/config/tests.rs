@@ -335,3 +335,118 @@ fn old_curator_keys_are_ignored() {
     assert_eq!(c.context.policy, "curator");
     assert_eq!(c.context.curator_spec, "");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_key_command_that_does_not_finish_is_stopped_and_gives_no_key() {
+    let started = std::time::Instant::now();
+    let k = provider_settings::run_key_cmd("sleep 30", std::time::Duration::from_millis(300));
+    assert_eq!(k, None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "waited {:?}", started.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_key_command_that_prints_a_key_in_time_gives_it_and_one_that_fails_gives_none() {
+    let limit = std::time::Duration::from_secs(5);
+    assert_eq!(provider_settings::run_key_cmd("echo sk-test", limit).as_deref(), Some("sk-test"));
+    assert_eq!(provider_settings::run_key_cmd("echo sk-test; exit 1", limit), None);
+    assert_eq!(provider_settings::run_key_cmd("true", limit), None);
+}
+
+#[test]
+fn a_layer_that_does_not_combine_is_reported_and_the_earlier_settings_stay() {
+    let mut user = Config::parse("model = 'a'\n").unwrap();
+    // not what a file can say: a value the settings cannot be written out with
+    let mut over = Config::default();
+    over.context.reader_at = u64::MAX;
+    let why = user.merge(over, &toml::Table::new());
+    assert!(why.is_some(), "the skipped layer is returned, not swallowed");
+    assert_eq!(user.model.as_deref(), Some("a"), "the earlier settings stay");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn what_a_stopped_key_command_started_is_stopped_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("child.pid");
+    // a pipeline-like command: the shell has a child of its own that outlives it unless the group goes
+    let cmd = format!("sleep 30 & echo $! > '{}'; wait", pidfile.display());
+    let k = provider_settings::run_key_cmd(&cmd, std::time::Duration::from_millis(500));
+    assert_eq!(k, None);
+    let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    // gone, or a zombie waiting to be reaped
+    let gone = || match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(s) => s.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')),
+    };
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !gone() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(gone(), "the child of the key command is still running");
+}
+
+#[test]
+fn the_time_a_key_command_may_take_is_a_setting() {
+    let mut p = ProviderConfig::new("openai-chat", "https://api.example", None);
+    let default = p.key_cmd_limit();
+    assert!(default >= std::time::Duration::from_secs(10), "{default:?}");
+    p.extra.insert("api_key_cmd_secs".into(), toml::Value::Integer(90));
+    assert_eq!(p.key_cmd_limit(), std::time::Duration::from_secs(90));
+    // nonsense falls back to the default
+    p.extra.insert("api_key_cmd_secs".into(), toml::Value::Integer(-1));
+    assert_eq!(p.key_cmd_limit(), default);
+}
+
+#[test]
+fn a_provider_sets_how_long_a_reply_may_go_quiet_and_zero_means_never() {
+    let idle = |set: Option<toml::Value>| {
+        let mut p = ProviderConfig::new("openai-chat", "http://x", None);
+        if let Some(v) = set {
+            p.extra.insert("idle_timeout".into(), v);
+        }
+        p.idle_timeout()
+    };
+    let int = |n| Some(toml::Value::Integer(n));
+    let secs = |n| Some(std::time::Duration::from_secs(n));
+    assert_eq!(idle(None), secs(300), "unset: five minutes");
+    assert_eq!(idle(int(900)), secs(900), "a local server loading a model may need more");
+    assert_eq!(idle(int(20)), secs(20));
+    assert_eq!(idle(int(0)), None, "0 turns the limit off");
+    assert_eq!(idle(int(-5)), secs(300), "a value that is no number of seconds is not read");
+    assert_eq!(idle(Some(toml::Value::String("soon".into()))), secs(300));
+}
+
+#[test]
+fn the_readme_agent_table_lists_the_turn_limit_keys_with_their_defaults() {
+    // The headless exit code 4 and every long job point at these keys, so the README must name them and must
+    // not drift from the defaults the code applies.
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let d = AgentConfig::default();
+    let rows = [
+        ("max_turns", d.max_turns.to_string()),
+        ("on_limit", "\"checkpoint\"".to_string()),
+        ("max_tokens", d.max_tokens.to_string()),
+    ];
+    assert_eq!((d.on_limit, d.max_checkpoints), (OnLimit::Checkpoint, None));
+    for (key, default) in rows {
+        let row = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{key}` |")))
+            .unwrap_or_else(|| panic!("no README row for {key}"));
+        assert!(row.contains(&format!("`{default}`")), "{key}: {row}");
+    }
+    assert!(readme.lines().any(|l| l.starts_with("| `max_checkpoints` | unset |")));
+}
+
+/// Windows canonicalizing gives `\\?\C:\...`; the folder `/add-dir` reports is shown and compared
+/// as the person writes it, so the prefix must not survive.
+#[cfg(windows)]
+#[test]
+fn an_added_folder_is_reported_without_the_verbatim_prefix() {
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    let (real, _) = cfg.add_dir(d.path(), d.path()).unwrap();
+    assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{real:?}");
+}

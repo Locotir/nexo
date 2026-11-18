@@ -18,6 +18,37 @@ fn a_stream_cut_after_message_start_is_an_error_not_an_empty_reply() {
     assert!(p.finish().is_empty(), "nothing more after an error");
 }
 
+#[test]
+fn a_stream_that_closes_after_text_without_a_stop_is_a_truncation_error() {
+    let mut p = MessagesParser::default();
+    p.feed(r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":5}}}"#);
+    p.feed(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#);
+    p.feed(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#);
+    let end = p.finish();
+    assert!(
+        end.iter().any(
+            |e| matches!(e, StreamEvent::Error(e) if e.kind == ErrorKind::Network && e.message.contains("truncated"))
+        ),
+        "{end:?}"
+    );
+    assert!(!end.iter().any(|e| matches!(e, StreamEvent::Finish(_))), "{end:?}");
+    // the stop reason of message_delta is a finish: nothing is missing when it came
+    let mut p = MessagesParser::default();
+    p.feed(r#"{"type":"message_start","message":{"id":"m"}}"#);
+    p.feed(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#);
+    p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#);
+    assert!(p.finish().is_empty());
+}
+
+#[test]
+fn a_garbled_line_is_skipped_and_the_next_event_still_parses() {
+    let mut p = MessagesParser::default();
+    assert!(p.feed("<<not json>>").is_empty());
+    assert!(p.feed("").is_empty());
+    let evs = p.feed(r#"{"type":"message_start","message":{"id":"m"}}"#);
+    assert!(matches!(&evs[0], StreamEvent::Start { .. }), "{evs:?}");
+}
+
 const CALL_OPEN: [&str; 3] = [
     r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":5}}}"#,
     r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"read","input":{}}}"#,
@@ -162,6 +193,7 @@ fn parses_named_events_with_cache_usage() {
             cache_read: 90,
             cache_write: 5,
             cache_write_1h: 0,
+            transformations: 0,
             reasoning: 0
         })
     );
@@ -240,6 +272,37 @@ fn a_picture_in_a_tool_result_is_an_image_block_inside_it() {
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
         ])
     );
+}
+
+#[test]
+fn a_blank_text_next_to_a_picture_in_a_tool_result_is_left_out() {
+    let (m, _) = convert(
+        &Message::tool_results(vec![Part::ToolResult {
+            call_id: "c1".into(),
+            name: Some("read".into()),
+            content: vec![
+                Part::text("  \n"),
+                Part::Image { source: ImageSource::Base64 { media_type: "image/png".into(), data: "AAAA".into() } },
+            ],
+            is_error: false,
+        }]),
+        "claude-x",
+    );
+    let blocks = m["content"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["type"], "image");
+}
+
+#[test]
+fn a_stop_sequence_is_sent_to_the_5_5_line_as_well() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    for model in ["claude-sonnet-5-5", "claude-sonnet-4-5"] {
+        let mut req = modern_req(model);
+        req.stop = vec!["END".into()];
+        assert_eq!(Anthropic::body(&cfg, &req)["stop_sequences"], json!(["END"]), "{model}");
+        req.stop.clear();
+        assert!(Anthropic::body(&cfg, &req).get("stop_sequences").is_none(), "{model}");
+    }
 }
 
 fn modern_req(model: &str) -> ModelRequest {
@@ -500,8 +563,14 @@ fn usage_counts_cache_writes_and_reads_and_prices_them() {
     evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#));
     let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
     assert_eq!((u.input, u.output, u.cache_read, u.cache_write), (10, 40, 500, 2000));
-    let price =
-        nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
+    let price = nexo_core::Pricing {
+        input: 2.0,
+        output: 10.0,
+        cache_read: 0.10,
+        cache_write: 2.50,
+        cache_write_1h: 0.0,
+        long: None,
+    };
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 2000.0 * 2.50) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
 }
@@ -651,8 +720,82 @@ fn usage_reads_the_one_hour_part_of_the_writes_and_prices_it() {
     evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#));
     let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
     assert_eq!((u.cache_write, u.cache_write_1h), (2000, 1500));
-    let price =
-        nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50, cache_write_1h: 0.0 };
+    let price = nexo_core::Pricing {
+        input: 2.0,
+        output: 10.0,
+        cache_read: 0.10,
+        cache_write: 2.50,
+        cache_write_1h: 0.0,
+        long: None,
+    };
     let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 500.0 * 2.50 + 1500.0 * 4.0) / 1e6;
     assert!((price.cost(&u) - want).abs() < 1e-12);
+}
+
+fn usage_of(events: &[&str]) -> nexo_core::Usage {
+    let mut p = MessagesParser::default();
+    let mut evs = Vec::new();
+    for e in events {
+        evs.extend(p.feed(e));
+    }
+    evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap()
+}
+
+#[test]
+fn usage_counts_the_entries_the_server_lists_as_changes_to_the_history() {
+    let done = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
+    let start = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[{"a":1},{"b":2}]}}"#;
+    assert_eq!(usage_of(&[start, done]).transformations, 2);
+    // the count may come with the closing delta instead of the opening message
+    let late = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4},"input_transformations":[{"a":1}]}"#;
+    let open =
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[]}}"#;
+    assert_eq!(usage_of(&[open, late]).transformations, 1);
+    // an empty array after a listed one does not wipe it
+    let list = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[{"a":1}]}}"#;
+    let none = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4},"input_transformations":[]}"#;
+    assert_eq!(usage_of(&[list, none]).transformations, 1);
+}
+
+#[test]
+fn usage_counts_no_transformations_when_the_array_is_empty_or_missing() {
+    let done = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
+    let empty =
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10},"input_transformations":[]}}"#;
+    let none = r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10}}}"#;
+    assert_eq!(usage_of(&[empty, done]).transformations, 0);
+    assert_eq!(usage_of(&[none, done]).transformations, 0);
+}
+
+#[test]
+fn the_levels_above_high_reach_the_request_as_the_effort_or_the_larger_budget() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    for (e, want) in [(Effort::Xhigh, "xhigh"), (Effort::Max, "max")] {
+        let b = Anthropic::body(&cfg, &adaptive_req("claude-opus-5-5", Some(ReasoningConfig::Effort(e))));
+        assert_eq!(b["output_config"]["effort"], want);
+    }
+    for (e, want) in [(Effort::High, 16_384), (Effort::Xhigh, 24_576), (Effort::Max, 32_768)] {
+        let mut req = adaptive_req("claude-3-5-sonnet-latest", Some(ReasoningConfig::Effort(e)));
+        req.max_tokens = 64_000;
+        let b = Anthropic::body(&cfg, &req);
+        assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": want}), "{e:?}");
+    }
+}
+
+#[test]
+fn xhigh_goes_only_to_the_models_that_take_it_and_the_older_adaptive_ones_get_high() {
+    let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+    for (model, want) in [
+        ("claude-opus-5-5", "xhigh"),
+        ("claude-sonnet-5-5", "xhigh"),
+        ("claude-opus-4-7", "xhigh"),
+        ("claude-opus-4-8", "xhigh"),
+        ("claude-opus-4-6", "high"),
+        ("claude-sonnet-4-6", "high"),
+    ] {
+        let b = Anthropic::body(&cfg, &adaptive_req(model, Some(ReasoningConfig::Effort(Effort::Xhigh))));
+        assert_eq!(b["output_config"]["effort"], want, "{model}");
+    }
+    let b = Anthropic::body(&cfg, &adaptive_req("claude-opus-4-6", Some(ReasoningConfig::Effort(Effort::Max))));
+    assert_eq!(b["output_config"]["effort"], "max");
 }

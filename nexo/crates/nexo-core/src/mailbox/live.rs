@@ -40,26 +40,78 @@ pub struct LiveSession {
 /// The sessions whose heartbeat under `root` is fresh at `now` (ms) and whose process exists, by name and id.
 /// This is the same test the mailbox applies to its peers.
 pub fn live_sessions(root: &Path, now: i64) -> Vec<LiveSession> {
-    let mut out: Vec<LiveSession> = Vec::new();
-    if let Ok(rd) = fs::read_dir(root) {
-        for e in rd.flatten() {
-            let sid = e.file_name().to_string_lossy().to_string();
-            let Some(f) = read_live(root, &sid, now) else { continue };
-            out.push(LiveSession {
-                id: f.id,
-                name: f.name,
-                cwd: f.cwd,
-                pid: f.pid,
-                started_ms: f.started,
-                beat_ms: f.beat,
-                busy: f.busy,
-                jobs: f.jobs,
-                facts: f.facts,
-            });
+    LiveScan::default().scan(root, now)
+}
+
+/// The size and modification time of a heartbeat file: while both are the same, so is its text.
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+fn stamp_of(path: &Path) -> Option<Stamp> {
+    let m = fs::metadata(path).ok()?;
+    Some((m.len(), m.modified().ok()))
+}
+
+/// Whether a file with this stamp is old enough that a rewrite cannot share its stamp (timestamps have a
+/// granularity, so a file written a moment ago might be written again without the stamp changing).
+fn settled(stamp: &Stamp) -> bool {
+    stamp.1.is_some_and(|t| t.elapsed().is_ok_and(|d| d > std::time::Duration::from_secs(1)))
+}
+
+/// A repeated [`live_sessions`] that does not read again a heartbeat it has already found dead. A session that
+/// ended without closing leaves its file behind, and a list asked for every second would otherwise open, read
+/// and parse every such file each time. A dead heartbeat cannot come back without being written again, which
+/// changes its stamp: its beat only gets older and a process id that is gone stays gone.
+#[derive(Default)]
+pub struct LiveScan {
+    dead: HashMap<String, Stamp>,
+}
+
+impl LiveScan {
+    /// As [`live_sessions`].
+    pub fn scan(&mut self, root: &Path, now: i64) -> Vec<LiveSession> {
+        let mut out: Vec<LiveSession> = Vec::new();
+        let mut present: HashSet<String> = HashSet::new();
+        if let Ok(rd) = fs::read_dir(root) {
+            for e in rd.flatten() {
+                let sid = e.file_name().to_string_lossy().to_string();
+                let stamp = stamp_of(&root.join(&sid).join("session.json"));
+                if stamp.is_some() {
+                    present.insert(sid.clone());
+                }
+                if stamp.is_some() && self.dead.get(&sid) == stamp.as_ref() {
+                    continue;
+                }
+                let Some(f) = read_live(root, &sid, now) else {
+                    if let Some(st) = stamp.filter(settled) {
+                        self.dead.insert(sid, st);
+                    }
+                    continue;
+                };
+                self.dead.remove(&sid);
+                out.push(LiveSession {
+                    id: f.id,
+                    name: f.name,
+                    cwd: f.cwd,
+                    pid: f.pid,
+                    started_ms: f.started,
+                    beat_ms: f.beat,
+                    busy: f.busy,
+                    jobs: f.jobs,
+                    facts: f.facts,
+                });
+            }
         }
+        // a heartbeat that is gone needs no memory
+        self.dead.retain(|sid, _| present.contains(sid));
+        out.sort_by(|a, b| (a.name.as_str(), a.id.as_str()).cmp(&(b.name.as_str(), b.id.as_str())));
+        out
     }
-    out.sort_by(|a, b| (a.name.as_str(), a.id.as_str()).cmp(&(b.name.as_str(), b.id.as_str())));
-    out
+
+    /// How many heartbeats are known dead and skipped while they stay unchanged.
+    #[cfg(test)]
+    pub(super) fn skipped(&self) -> usize {
+        self.dead.len()
+    }
 }
 
 impl Mailbox {

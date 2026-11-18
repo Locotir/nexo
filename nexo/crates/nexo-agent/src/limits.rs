@@ -197,7 +197,7 @@ mod tests {
         // a configured price that differs from the preset's is the configuration's
         cfg.pricing.insert(
             "deepseek-chat".into(),
-            Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 },
+            Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0, long: None },
         );
         let l = resolve("deepseek", &cfg, "deepseek-chat", None);
         assert_eq!((l.source.as_str(), l.pricing.unwrap().input), ("config", 1.0));
@@ -332,7 +332,7 @@ mod cap_late_tests {
         cfg.window_cap = Some(272_000);
         cfg.pricing.insert(
             "m".into(),
-            Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0 },
+            Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0, cache_write_1h: 0.0, long: None },
         );
         let old = resolve("nobody", &cfg, "m", None);
         assert_eq!(old.context_window, Some(272_000));

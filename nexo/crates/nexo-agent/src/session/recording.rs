@@ -137,15 +137,28 @@ impl Session {
         self.skipped
     }
 
+    /// Whether the last line of the file, cut by a crash, was removed when the session was claimed (it is then
+    /// not counted in [`Session::skipped_lines`]).
+    pub fn cut_tail_removed(&self) -> bool {
+        self.tail_removed
+    }
+
     pub fn append(&mut self, m: &Message) -> anyhow::Result<()> {
+        self.append_at(m, now())
+    }
+
+    /// [`Session::append`] for a message said at `ts`: a fork keeps the times of the messages it copies.
+    pub(super) fn append_at(&mut self, m: &Message, ts: String) -> anyhow::Result<()> {
         let index = self.messages.len();
         self.messages.push(m.clone());
+        self.stamps.push(ts.clone());
         self.meta.messages = self.messages.len();
         // the request that carries the stop line takes it
         if self.stop.as_deref().is_some_and(|l| m.text().starts_with(l)) {
             self.stop = None;
         }
-        self.write(&Line::Message { index, ts: now(), message: m.clone() })?;
+        self.write_held_for(m);
+        self.write(&Line::Message { index, ts, message: m.clone() })?;
         if self.meta.title.is_empty() && m.role == Role::User && !m.is_tool_results() {
             let t = title_of_message(&m.text());
             if !t.is_empty() {
@@ -159,7 +172,48 @@ impl Session {
         // the pictures are already in the tool-result message; the display copy keeps none
         let output = ToolOutput { images: Vec::new(), ..output.clone() };
         self.outputs.insert(call_id.to_string(), output.clone());
-        self.write(&Line::ToolOutput { call_id: call_id.into(), output })
+        self.write(&Line::ToolOutput { call_id: call_id.into(), output, result_chars: None })
+    }
+
+    /// Keeps what a call printed in memory, to be saved with the tool-result message that answers the call (see
+    /// [`Session::append`]). The file keeps the text once: in that message, when the output is that text, and in the
+    /// output line otherwise (the model was sent a note, a digest or a line added to it, which leaves the line the
+    /// only whole copy). Saved right away, it would be written before it is known which of the two it is.
+    pub fn hold_output(&mut self, call_id: &str, output: &ToolOutput) {
+        let output = ToolOutput { images: Vec::new(), ..output.clone() };
+        self.outputs.insert(call_id.to_string(), output);
+        self.held.insert(call_id.to_string());
+        // nothing is written here, so a file that vanished is noticed now and not when the round ends
+        if let Err(e) = self.check_present() {
+            self.track(&Err(e));
+        }
+    }
+
+    /// Writes the held outputs the tool results of `m` answer, each without its text when `m` holds it as it is.
+    pub(super) fn write_held_for(&mut self, m: &Message) {
+        if self.held.is_empty() {
+            return;
+        }
+        for part in &m.content {
+            let Part::ToolResult { call_id, content, .. } = part else { continue };
+            if !self.held.remove(call_id) {
+                continue;
+            }
+            let Some(out) = self.outputs.get(call_id) else { continue };
+            let line = output_line(call_id, out, first_text(content) == Some(out.content.as_str()));
+            // a failed write is told through `track`, as for any line; the message after it fails the same way
+            let _ = self.write(&line);
+        }
+    }
+
+    /// Writes every held output whole: the calls they belong to have no result in this history.
+    pub(super) fn write_held_whole(&mut self) {
+        for id in std::mem::take(&mut self.held) {
+            if let Some(out) = self.outputs.get(&id) {
+                let line = output_line(&id, out, false);
+                let _ = self.write(&line);
+            }
+        }
     }
 
     pub fn record_usage(&mut self, usage: Usage, cost_usd: f64) -> anyhow::Result<()> {
@@ -215,6 +269,15 @@ impl Session {
         self.write(&Line::Prefix(prefix.clone()))
     }
 
+    /// The project map the model was last shown changed: only that is written, not the prefix around it. Needs a
+    /// prefix saved before (see [`Session::prefix`]); without one, nothing of it is kept.
+    pub fn record_shown(&mut self, shown: &str) -> anyhow::Result<()> {
+        if let Some(p) = &mut self.prefix {
+            p.shown = shown.to_string();
+        }
+        self.write(&Line::PrefixShown { shown: shown.to_string() })
+    }
+
     /// The line that says the person stopped the latest request, while no request has carried it yet.
     pub fn stop(&self) -> Option<&str> {
         self.stop.as_deref()
@@ -242,12 +305,29 @@ impl Session {
     /// The history was rewritten (compaction): what follows replaces it.
     pub fn reset_with(&mut self, messages: &[Message]) -> anyhow::Result<()> {
         // one atomic rewrite: a crash leaves the old file or the new one, never a half history
-        let (old, outputs) = (std::mem::replace(&mut self.messages, messages.to_vec()), self.outputs.clone());
+        // compaction puts its summary at the front and keeps the tail of the old history, so a message that
+        // survives sits at a different index but at the same distance from the end: those keep the time
+        // they were said, the summary and anything else new is stamped now
+        let kept = messages.iter().rev().zip(self.messages.iter().rev()).take_while(|(new, old)| new == old).count();
+        let (len, old_len) = (messages.len(), self.messages.len());
+        let stamps = (0..len)
+            .map(|i| {
+                if len - i <= kept {
+                    self.stamps.get(old_len - (len - i)).cloned().unwrap_or_else(now)
+                } else {
+                    now()
+                }
+            })
+            .collect();
+        let old = std::mem::replace(&mut self.messages, messages.to_vec());
+        let old_stamps = std::mem::replace(&mut self.stamps, stamps);
         let done = self.rewrite();
         self.track(&done);
-        // as in `rewind`: when the file was not replaced, memory keeps matching it
+        // as in `rewind`: when the file was not replaced, memory keeps matching it. The tool outputs are not
+        // touched by a rewrite (`rewind` is what prunes them), so only the messages go back: copying every
+        // output on each compaction to restore what never changed was wasted memory.
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
-            (self.messages, self.outputs) = (old, outputs);
+            (self.messages, self.stamps) = (old, old_stamps);
             self.meta.messages = self.messages.len();
         }
         done
@@ -257,4 +337,53 @@ impl Session {
     pub fn result_text(parts: &[Part]) -> String {
         nexo_core::message::result_text(parts)
     }
+}
+
+/// The line for one output. With `in_result` (and some text), the text is left out and its length said instead:
+/// the call's tool-result message holds it.
+pub(super) fn output_line(call_id: &str, output: &ToolOutput, in_result: bool) -> Line {
+    if in_result && !output.content.is_empty() {
+        let result_chars = Some(output.content.chars().count());
+        let output = ToolOutput {
+            content: String::new(),
+            is_error: output.is_error,
+            display: output.display.clone(),
+            images: Vec::new(),
+        };
+        return Line::ToolOutput { call_id: call_id.into(), output, result_chars };
+    }
+    Line::ToolOutput { call_id: call_id.into(), output: output.clone(), result_chars: None }
+}
+
+/// The text of each tool result among `messages` (the first text part of a result, which is what the output
+/// of the call became), by call id.
+pub(super) fn result_texts(messages: &[Message]) -> std::collections::HashMap<&str, &str> {
+    let mut texts = std::collections::HashMap::new();
+    for part in messages.iter().flat_map(|m| &m.content) {
+        if let Part::ToolResult { call_id, content, .. } = part {
+            if let Some(text) = first_text(content) {
+                texts.insert(call_id.as_str(), text);
+            }
+        }
+    }
+    texts
+}
+
+/// Whether the message that answers `call_id` (one of those `results` came from) holds `output`'s text as it
+/// is. Only then may a file written with that message leave the text out of the output line: a result that a
+/// compaction shortened, or one that is not in the file, leaves the line the only whole copy.
+pub(super) fn held_by_result(
+    results: &std::collections::HashMap<&str, &str>,
+    call_id: &str,
+    output: &ToolOutput,
+) -> bool {
+    !output.content.is_empty() && results.get(call_id).is_some_and(|t| *t == output.content)
+}
+
+/// The text of a tool result: its first text part, which is what the output of the call became.
+pub(super) fn first_text(content: &[Part]) -> Option<&str> {
+    content.iter().find_map(|p| match p {
+        Part::Text { text } => Some(text.as_str()),
+        _ => None,
+    })
 }

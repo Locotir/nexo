@@ -12,9 +12,9 @@ use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, T
 use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 
-use crate::glob::walker;
+use crate::glob::{walker, Links};
 use crate::program::{bin_call, bin_offered, callable, quoted, slash};
-use crate::util::{bool_arg, cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg};
+use crate::util::{bool_arg, cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg, utf16_text};
 
 /// Files larger than this are not searched (logs, bundles, data).
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -100,9 +100,12 @@ impl Tool for Grep {
         };
         // a bounded compiled size: a pattern like `(a{1000}){1000}` is refused, not built
         let multiline = bool_arg(&args, "multiline");
+        let crlf = multiline && !names_carriage_return(pattern);
         let re = match RegexBuilder::new(pattern)
             .case_insensitive(bool_arg(&args, "case_insensitive"))
             .multi_line(multiline)
+            // CRLF files: without this `$` and `^` never see the line break because the `\r` sits before the `\n`
+            .crlf(crlf)
             .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
@@ -114,6 +117,8 @@ impl Tool for Grep {
         let in_programs = regex::bytes::RegexBuilder::new(pattern)
             .case_insensitive(bool_arg(&args, "case_insensitive"))
             .multi_line(multiline)
+            // as above: `$` and `^` must see CRLF line ends in the byte search too
+            .crlf(crlf)
             .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
@@ -174,13 +179,15 @@ impl Tool for Grep {
             let mut cut = false;
             // files that hold keys are searched only when named as `path` (the permission asks then)
             let mut kept_out = 0usize;
+            let mut skipped_links = Links::default();
             let mut files: Vec<PathBuf> = if root2.is_file() {
                 vec![root2.clone()]
             } else {
                 let found = Mutex::new((Vec::<PathBuf>::new(), 0usize));
                 let timed_out = AtomicBool::new(false);
+                let links = Mutex::new(Links::default());
                 walker(&root2).build_parallel().run(|| {
-                    let (timed_out, root2, name_filter) = (&timed_out, &root2, &name_filter);
+                    let (timed_out, root2, name_filter, links) = (&timed_out, &root2, &name_filter, &links);
                     let mut hand = Hand { into: &found, files: Vec::new(), kept_out: 0 };
                     Box::new(move |entry| {
                         if Instant::now() > deadline {
@@ -188,14 +195,12 @@ impl Tool for Grep {
                             return WalkState::Quit;
                         }
                         let Ok(e) = entry else { return WalkState::Continue };
-                        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                        let kind = e.file_type();
+                        let is_link = kind.is_some_and(|t| t.is_symlink());
+                        if !is_link && !kind.is_some_and(|t| t.is_file()) {
                             return WalkState::Continue;
                         }
                         let p = e.into_path();
-                        if nexo_core::paths::holds_keys(&p) {
-                            hand.kept_out += 1;
-                            return WalkState::Continue;
-                        }
                         let hit = |g: &globset::GlobMatcher| {
                             if by_name {
                                 p.file_name().map(|n| g.is_match(std::path::Path::new(n))).unwrap_or(false)
@@ -203,6 +208,17 @@ impl Tool for Grep {
                                 g.is_match(p.strip_prefix(root2).unwrap_or(&p))
                             }
                         };
+                        if is_link {
+                            // not followed; counted so that an empty answer can say links were passed over
+                            if let Ok(mut l) = links.lock() {
+                                l.count(&p, name_filter.as_ref().map(hit).unwrap_or(true));
+                            }
+                            return WalkState::Continue;
+                        }
+                        if nexo_core::paths::holds_keys(&p) {
+                            hand.kept_out += 1;
+                            return WalkState::Continue;
+                        }
                         if name_filter.as_ref().map(hit).unwrap_or(true) {
                             hand.files.push(p);
                         }
@@ -212,6 +228,7 @@ impl Tool for Grep {
                 cut = timed_out.load(Ordering::Relaxed);
                 let (v, k) = found.into_inner().unwrap_or_default();
                 kept_out = k;
+                skipped_links = links.into_inner().unwrap_or_default();
                 v
             };
             // the threads finish in any order; the answer is always in path order
@@ -263,19 +280,33 @@ impl Tool for Grep {
                     break;
                 }
             }
-            (m, cut, kept_out)
+            (m, cut, kept_out, skipped_links)
         })
         .await;
-        let Ok((m, cut, kept_out)) = joined else {
+        let Ok((m, cut, kept_out, skipped_links)) = joined else {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
         let Merge {
-            items, total, left, left_files, hit_files, too_big, unreadable, counting_stopped, programs, ..
+            items,
+            total,
+            left,
+            left_files,
+            hit_files,
+            too_big,
+            unreadable,
+            counting_stopped,
+            programs,
+            wide,
+            ..
         } = m;
         let mut content = if total == 0 {
             let mut s = format!("grep: no match for `{pattern}` in {shown_root}");
             if !multiline && (pattern.contains('\n') || pattern.contains("\\n")) {
                 s.push_str(". Patterns are matched line by line; set `multiline: true` to match across lines.");
+            }
+            if let Some(note) = skipped_links.note() {
+                s.push('\n');
+                s.push_str(&note);
             }
             s
         } else if !files_only && left > 0 {
@@ -310,6 +341,12 @@ impl Tool for Grep {
         if let Some(line) = programs_line(&programs, &strings_grep, bin_offered(ctx)) {
             content.push('\n');
             content.push_str(&line);
+        }
+        // a UTF-16 file is not binary to its owner, and a silent skip would read as "no match there"
+        if wide.1 > 0 {
+            let more = wide.1 - wide.0.len();
+            let rest = if more > 0 { format!(" and {more} more") } else { String::new() };
+            content.push_str(&format!("\n[UTF-16 text not searched, grep reads UTF-8: {}{rest}]", wide.0.join(", ")));
         }
         if too_big > 0 {
             content.push_str(&format!(
@@ -353,6 +390,8 @@ enum FileOut {
     Skip,
     /// A compiled program whose bytes hold a match.
     Program(String, nexo_binmagic::Compiled),
+    /// UTF-16 text, which a search for UTF-8 patterns does not read.
+    Wide(String),
     TooBig,
     Unreadable,
     Hits {
@@ -374,6 +413,9 @@ impl Search {
             return FileOut::Unreadable;
         };
         if is_binary(&bytes) {
+            if utf16_text(&bytes).is_some() {
+                return FileOut::Wide(display_path(&self.cwd, f));
+            }
             let held = |re: &regex::bytes::Regex| re.is_match(&bytes);
             return match nexo_binmagic::kind_of(&bytes) {
                 Some(kind) if self.in_programs.as_ref().is_some_and(held) => {
@@ -470,6 +512,8 @@ struct Merge {
     hit_files: usize,
     too_big: usize,
     unreadable: usize,
+    /// The UTF-16 text files passed over: the first few, and how many in all.
+    wide: (Vec<String>, usize),
     /// Files searched and files in all, when the counting was stopped early.
     counting_stopped: Option<(usize, usize)>,
     /// The compiled programs that hold a match: the first few, and how many in all.
@@ -485,6 +529,12 @@ impl Merge {
                     self.programs.0.push((shown, kind));
                 }
                 self.programs.1 += 1;
+            }
+            FileOut::Wide(shown) => {
+                if self.wide.0.len() < PROGRAMS_NAMED {
+                    self.wide.0.push(shown);
+                }
+                self.wide.1 += 1;
             }
             FileOut::TooBig => self.too_big += 1,
             FileOut::Unreadable => self.unreadable += 1,
@@ -514,6 +564,17 @@ impl Merge {
             }
         }
     }
+}
+
+/// True when the pattern names a carriage return itself (`\r`, a hex or unicode escape, or the raw character).
+/// In CRLF mode `$` is false between the `\r` and the `\n`, so a pattern that already spells out the `\r` before its
+/// `$` (like `foo\r$`) would stop matching; those patterns keep the plain line-feed semantics they were written for.
+fn names_carriage_return(pattern: &str) -> bool {
+    pattern.contains('\r')
+        || pattern.contains("\\r")
+        || pattern.contains("\\x")
+        || pattern.contains("\\u")
+        || pattern.contains("\\U")
 }
 
 /// The compiled programs a search names in its line about them.
@@ -651,6 +712,24 @@ mod tests {
         assert_eq!(out.content, "src/a.rs:1: fn alpha() {}\nsrc/a.rs:2: let x = 1;\nsrc/a.rs:3: fn beta() {}");
         let out = Grep.run(json!({"pattern": "^let", "multiline": true, "files_only": true}), &c).await;
         assert_eq!(out.content, "1 match in 1 file\nsrc/a.rs");
+    }
+
+    #[tokio::test]
+    async fn multiline_anchors_match_lines_that_end_in_crlf() {
+        let (d, c) = fixture();
+        std::fs::write(d.path().join("win.txt"), "alpha\r\nfoo\r\nbar\r\n").unwrap();
+        let out = Grep.run(json!({"pattern": "^foo$", "multiline": true, "glob": "win.txt"}), &c).await;
+        assert_eq!(out.content, "win.txt:2: foo", "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn patterns_that_spell_out_the_carriage_return_still_match_before_the_line_end() {
+        let (d, c) = fixture();
+        std::fs::write(d.path().join("win.txt"), "alpha\r\nfoo\r\nbar\r\n").unwrap();
+        for pattern in ["foo\\r$", "foo\\x0d$", "foo\\r\\n"] {
+            let out = Grep.run(json!({"pattern": pattern, "multiline": true, "glob": "win.txt"}), &c).await;
+            assert_eq!(out.content, "win.txt:2: foo", "{pattern}: {}", out.content);
+        }
     }
 
     #[tokio::test]
@@ -816,5 +895,38 @@ mod tests {
         assert_eq!(out.content, "grep: no match for `zq_not_in_any_file_zq` in .");
         let out = Grep.run(json!({"pattern": "alpha"}), &c).await;
         assert!(!out.content.contains("not text"), "{}", out.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_no_match_answer_says_how_many_symlinks_were_not_followed() {
+        // the targets live outside the searched tree, as a shared folder or a vendored checkout does
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("shared")).unwrap();
+        std::fs::write(outside.path().join("shared/lib.rs"), "fn gamma() {}\n").unwrap();
+        std::fs::write(outside.path().join("real.rs"), "fn gamma() {}\n").unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::os::unix::fs::symlink(outside.path().join("shared"), d.path().join("vendor")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("real.rs"), d.path().join("link.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("real.rs"), d.path().join("link.txt")).unwrap();
+        let note = "[3 symlinks (1 to a directory) not followed; give the link's target as `path` to search it]";
+        let out = Grep.run(json!({"pattern": "gamma"}), &c).await;
+        assert!(
+            out.content.starts_with("grep: no match for `gamma`") && out.content.ends_with(note),
+            "{}",
+            out.content
+        );
+        // a glob counts only the file links it would have searched, so link.txt drops out
+        let out = Grep.run(json!({"pattern": "gamma", "glob": "*.rs"}), &c).await;
+        assert!(
+            out.content.ends_with(
+                "[2 symlinks (1 to a directory) not followed; give the link's target as `path` to search it]"
+            ),
+            "{}",
+            out.content
+        );
+        let out = Grep.run(json!({"pattern": "gamma", "path": "vendor"}), &c).await;
+        assert!(out.content.contains("gamma"), "{}", out.content);
     }
 }

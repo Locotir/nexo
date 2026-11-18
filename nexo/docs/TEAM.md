@@ -29,6 +29,9 @@ model = "deepseek/deepseek-chat"  # optional: provider/model; the folder's confi
 mode = "accept-edits"             # optional: ask, accept-edits, plan, yolo, read-only
 every = "15m"                     # optional: a round every 30s, 15m, 2h (start to start); none: mail only
 max_spend_day = 2.0               # optional: dollars a day, rounds and mail together
+sandbox = "workspace-write"       # optional: off, workspace-write, read-only; only this lane, none: as for any session
+sandbox_network = false           # optional: may sandboxed commands use the network
+sandbox_write_dirs = ["~/work/shared"]   # optional: more writable folders (those that exist; relative to `dir`)
 routine = "Check the orders at the top of docs/STATUS-WINDOWS.md, do the next one, report there."
 # or: routine_file = "docs/LANES.md" and routine_section = "WINDOWS"
 #     (the first code block under the line "WINDOWS:", read again before each round)

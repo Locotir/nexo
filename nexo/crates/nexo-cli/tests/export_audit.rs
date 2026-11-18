@@ -178,3 +178,12 @@ fn a_refused_call_is_logged_as_denied() {
     assert_eq!(t["status"], "denied", "{t}");
     assert_eq!(t["args"], "[redacted]", "a .env path keeps no arguments: {t}");
 }
+
+#[test]
+fn audit_report_on_a_missing_file_fails_with_usage_and_names_the_path() {
+    let d = tempfile::tempdir().unwrap();
+    let missing = d.path().join("typo.jsonl");
+    let o = nexo(d.path(), MOCK, &["audit", "report", "--file", missing.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("typo.jsonl"), "{o:?}");
+}

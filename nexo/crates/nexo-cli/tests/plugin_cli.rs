@@ -32,3 +32,11 @@ fn install_needs_yes_when_nothing_can_be_asked() {
     let list = nexo(home.path(), &["plugin", "list"]);
     assert!(String::from_utf8_lossy(&list.stdout).contains("acme"));
 }
+
+#[test]
+fn update_with_nothing_installed_says_so_instead_of_staying_silent() {
+    let home = tempfile::tempdir().unwrap();
+    let out = nexo(home.path(), &["plugin", "update"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no plugins installed"), "{:?}", out);
+}

@@ -25,6 +25,9 @@ Fix the code in {file_list} to resolve the errors.
 /// What the benchmark says when the tests do not finish in time (`run_test_real`).
 pub const TIMED_OUT: &str = "Tests timed out!";
 
+/// What the model is shown when the test run was killed from outside before it printed anything.
+pub const KILLED: &str = "The test run was killed (signal 9) before it printed any output.";
+
 /// The system prompt of the agent. Aider's protocol has no such text (the model edits the files named in
 /// its chat by replying with edits); an agent with tools needs to be told where it is.
 pub const SYSTEM: &str =

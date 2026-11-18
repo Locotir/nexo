@@ -155,9 +155,30 @@ impl Engine {
         let need = self.asks(self.goal.turns.len() - 1);
         // `mission`: the files the thread's first message names that no later request of it named yet
         let thread = self.goal.active();
-        let parts: Vec<FxHashSet<String>> = if self.p.mission != 0 {
-            let turns: Vec<usize> = self.goal.turns.iter().filter(|t| t.thread == thread).map(|t| t.start).collect();
-            turns.iter().map(|&s| name_parts(&self.unit_text_at(s, UKind::User)).into_iter().collect()).collect()
+        let parts: Vec<Arc<FxHashSet<String>>> = if self.p.mission != 0 {
+            // the requests before the latest are closed: their text is split once and kept, not again at every
+            // decision (that made a decision cost the whole length of the thread's requests). The latest one is
+            // read now, as the person may still be adding to it. A request that starts elsewhere than it did
+            // (the history was taken in again) is split anew.
+            let closed = self.goal.turns.len() - 1;
+            let same =
+                self.turn_names.iter().zip(&self.goal.turns[..closed]).take_while(|(n, t)| n.0 == t.start).count();
+            self.turn_names.truncate(same);
+            for k in same..closed {
+                let s = self.goal.turns[k].start;
+                let names: FxHashSet<String> = name_parts(&self.unit_text_at(s, UKind::User)).into_iter().collect();
+                self.turn_names.push((s, Arc::new(names)));
+            }
+            let mut sets = Vec::new();
+            for (k, t) in self.goal.turns.iter().enumerate() {
+                if t.thread == thread {
+                    sets.push(match self.turn_names.get(k) {
+                        Some((_, names)) => Arc::clone(names),
+                        None => Arc::new(name_parts(&text).into_iter().collect::<FxHashSet<String>>()),
+                    });
+                }
+            }
+            sets
         } else {
             Vec::new()
         };

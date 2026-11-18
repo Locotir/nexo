@@ -108,7 +108,13 @@ impl AgentsView {
                         if snapshot.incomplete_tail {
                             lines.push("Incomplete final record not shown yet.".into());
                         }
-                        if snapshot.records.is_empty() && !snapshot.partial_record_omitted && !snapshot.incomplete_tail
+                        if snapshot.unreadable_records > 0 {
+                            lines.push(format!("{} saved records unreadable.", snapshot.unreadable_records));
+                        }
+                        if snapshot.records.is_empty()
+                            && !snapshot.partial_record_omitted
+                            && !snapshot.incomplete_tail
+                            && snapshot.unreadable_records == 0
                         {
                             lines.push("No saved messages in this window.".into());
                         }

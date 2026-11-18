@@ -3,7 +3,64 @@
 use super::*;
 
 pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
-    let mut config = load_config(&args, &cwd)?;
+    // These commands never read the configuration, so a file that cannot be parsed must not stop them:
+    // they are what a person runs to find the file (`config path`), start over (`config init`) or
+    // read what is stored beside it.
+    if matches!(
+        &args.cmd,
+        Some(
+            Cmd::Config { .. }
+                | Cmd::Guide
+                | Cmd::Auth { what: AuthCmd::List }
+                | Cmd::Worktree { .. }
+                | Cmd::Export(_)
+                | Cmd::Sessions { .. }
+        )
+    ) {
+        // an administrator policy that cannot be read stops nexo before anything else runs (see
+        // docs/MANAGED-POLICY.md): these commands skip the rest of the configuration, not that check
+        nexo_core::managed::load()?;
+    }
+    match &args.cmd {
+        Some(Cmd::Config { what }) => return setup::config_cmd(&cwd, what.as_ref()),
+        Some(Cmd::Guide) => {
+            print!("{}", crate::account::GUIDE);
+            return Ok(0);
+        }
+        Some(Cmd::Auth { what: AuthCmd::List }) => return Ok(crate::account::list_cmd()),
+        Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
+        Some(Cmd::Export(a)) => return crate::export_cmd::run(a, &cwd),
+        Some(Cmd::Sessions { here, limit, what: None | Some(SessionsCmd::List) }) => {
+            return Ok(setup::print_sessions(*here, *limit))
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Rename { id, title }), .. }) => {
+            return setup::rename_session(id, &title.join(" "));
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Delete { ids }), .. }) => {
+            return Ok(setup::trash_sessions(ids, false))
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }), .. }) => {
+            return Ok(setup::trash_sessions(ids, true))
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Size), .. }) => return Ok(setup::size_sessions()),
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Prune { older_than, headless, trash, yes }), .. }) => {
+            return Ok(setup::prune_sessions(older_than, *headless, *trash, *yes));
+        }
+        Some(Cmd::Sessions { what: Some(SessionsCmd::Live { json }), .. }) => {
+            return Ok(crate::sessions_live::run(*json));
+        }
+        _ => {}
+    }
+    let mut config = match load_config(&args, &cwd) {
+        Ok(c) => c,
+        // `doctor` is the tool for this: it names the file and the fix instead of stopping
+        Err(e) if matches!(args.cmd, Some(Cmd::Doctor { .. })) => {
+            println!("FIX  config            {e:#}");
+            println!("     {}", way_out(&e));
+            return Ok(1);
+        }
+        Err(e) => return Err(point_to_the_files(e)),
+    };
     if trust_asked(&args, &cwd, &config).await {
         config = load_config(&args, &cwd)?;
     }
@@ -60,7 +117,6 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Auth { what: AuthCmd::Login { provider, key, flow } }) => {
             return crate::account::login_cmd(&mut config, provider.as_deref(), key.as_deref(), flow.as_deref()).await
         }
-        Some(Cmd::Auth { what: AuthCmd::List }) => return Ok(crate::account::list_cmd()),
         Some(Cmd::Auth { what: AuthCmd::Logout { provider } }) => return crate::account::logout_cmd(&config, provider),
         Some(Cmd::Usage) => return crate::account::usage_cmd(&mut config).await,
         Some(Cmd::Use { provider, model, force }) => {
@@ -76,28 +132,9 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             return crate::account::doctor(&cwd, &config, *offline).await;
         }
         Some(Cmd::Mcp { what }) => return crate::mcp_cmd::run(&cwd, &config, what).await,
-        Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
-        Some(Cmd::Export(a)) => return crate::export_cmd::run(a, &cwd),
         Some(Cmd::Audit { what }) => return crate::audit_cmd::run(&config, what),
         Some(Cmd::Plugin { what }) => return crate::plugin_cmd::run(&cwd, &config, what),
         Some(Cmd::Update { check }) => return crate::update::run(*check).await,
-        Some(Cmd::Guide) => {
-            print!("{}", crate::account::GUIDE);
-            return Ok(0);
-        }
-        Some(Cmd::Sessions { what: None | Some(SessionsCmd::List) }) => return Ok(setup::print_sessions()),
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Rename { id, title }) }) => {
-            return setup::rename_session(id, &title.join(" "));
-        }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Delete { ids }) }) => {
-            return Ok(setup::trash_sessions(ids, false))
-        }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }) }) => {
-            return Ok(setup::trash_sessions(ids, true))
-        }
-        Some(Cmd::Sessions { what: Some(SessionsCmd::Live { json }) }) => {
-            return Ok(crate::sessions_live::run(*json));
-        }
         Some(Cmd::Prompt { edit: false, tools: show_tools, builtin, window }) => {
             let tools = setup::prompt_tools(&config, &cwd);
             // what the session would get: `auto` is the built-in curator, told which tools there are
@@ -141,7 +178,6 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             )
             .await;
         }
-        Some(Cmd::Config { what }) => return setup::config_cmd(&cwd, what.as_ref()),
         Some(Cmd::Brief { conversation, task, tokens, engine, no_disk, json }) => {
             let mut cfg = nexo_agent::brief::BriefConfig::from_agent(&config.agent);
             if let Some(t) = tokens {
@@ -156,6 +192,10 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Review { .. }) => {}
         None => {}
         // handled before the configuration is read
+        Some(Cmd::Config { .. } | Cmd::Guide | Cmd::Auth { what: AuthCmd::List } | Cmd::Worktree { .. }) => {
+            return Ok(0)
+        }
+        Some(Cmd::Export(_) | Cmd::Sessions { .. }) => return Ok(0),
         Some(Cmd::Supervise { .. }) => return Ok(0),
         Some(Cmd::Bin(_)) => return Ok(0),
         Some(Cmd::Dbg(_)) => return Ok(0),
@@ -184,7 +224,18 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
     } else {
         setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?
     };
-    let resume = if args.continue_ { nexo_agent::session::latest_for(&cwd).map(|m| m.id) } else { args.resume.clone() };
+    let resume = if args.continue_ {
+        // `nexo -p -c` may chain on the last script run; an interactive `-c` prefers the person's own conversation
+        // and falls back to a script's session when that is all the folder has
+        let last = if args.prompt.is_some() {
+            nexo_agent::session::latest_for(&cwd)
+        } else {
+            nexo_agent::session::latest_own_for(&cwd).or_else(|| nexo_agent::session::latest_for(&cwd))
+        };
+        last.map(|m| m.id)
+    } else {
+        args.resume.clone()
+    };
     if args.continue_ && resume.is_none() {
         eprintln!("nexo: no earlier session in {}; starting a new one", cwd.display());
     }

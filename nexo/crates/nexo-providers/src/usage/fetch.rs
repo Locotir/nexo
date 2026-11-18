@@ -1,5 +1,5 @@
 use nexo_core::auth::{self, Credential};
-use nexo_core::{ProviderConfig, ProviderError};
+use nexo_core::{ErrorKind, ProviderConfig, ProviderError};
 use reqwest::header::HeaderMap;
 use serde_json::Value;
 
@@ -24,11 +24,13 @@ pub async fn fetch_in(
 ) -> Result<Option<PlanUsage>, ProviderError> {
     let Some(kind) = kind_of(cfg) else { return Ok(None) };
     // a key in the environment (or a command, or a file) is what the requests go with: no plan
-    if (ProviderConfig { auth: None, ..cfg.clone() }).resolve_key().is_some() {
+    if login::direct_key(cfg).await.is_some() {
         return Ok(None);
     }
     let entry = cfg.auth.clone().unwrap_or_else(|| name.to_string());
-    if !matches!(auth::read_from(store).get(&entry), Some(Credential::Oauth { .. })) {
+    // a store that cannot be parsed is an error naming it, not a provider without a plan
+    let stored = auth::read_checked(store).map_err(|e| ProviderError::new(ErrorKind::Other, e.to_string()))?;
+    if !matches!(stored.get(&entry), Some(Credential::Oauth { .. })) {
         return Ok(None);
     }
     let (cfg, key) = login::prepare_in(store, at, cfg).await?;

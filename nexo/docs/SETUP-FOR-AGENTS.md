@@ -36,7 +36,7 @@ subscription login it takes, if any), `key` (where the key is found now, or
 | Subscription login | `nexo auth login copilot` | the person pays for a subscription (table below) |
 | Stored key | `nexo auth login <provider> --key` | a key, kept by nexo (asked for, or read from stdin) |
 | Environment variable | `export DEEPSEEK_API_KEY=...` (Windows: `setx DEEPSEEK_API_KEY "..."`, then a new terminal) | a key already in the shell or a secrets manager |
-| Command | `api_key_cmd = "pass show deepseek"` in the config | a password manager |
+| Command | `api_key_cmd = "pass show deepseek"` in the config | a password manager; it is stopped (with what it started) after 20 s, or `extra.api_key_cmd_secs` (1 to 600) |
 
 A key in the environment, a file or a command always wins over the store.
 
@@ -111,7 +111,7 @@ starter file):
 
 ```toml
 [providers.myserver]
-protocol = "openai-chat"              # openai-chat | openai-responses | gemini
+protocol = "openai-chat"              # openai-chat | openai-responses | anthropic | gemini
 base_url = "http://localhost:8000/v1"
 api_key_env = "MYSERVER_API_KEY"      # or api_key_cmd = "...", or `nexo auth login myserver --key`
 models = ["my-model"]
@@ -133,7 +133,7 @@ server.
 | Message | Do |
 |---|---|
 | `needs a key: set $VAR, or run nexo auth login X` | one of the four ways in step 2 |
-| `no provider can be used` | step 2, then `nexo use <provider>` |
+| `no provider can be used`, `no provider chosen and no key found` | step 2, then `nexo use <provider>` |
 | `unknown provider` | `nexo providers --all` for the right name, or step 5 |
 | `401` / `auth` error | the key is wrong or the login expired: `nexo auth login <provider>` again |
 | `no Copilot chat access` | the GitHub account has no Copilot plan with chat |

@@ -941,8 +941,7 @@ impl App {
                 if self.session_title.is_empty() {
                     self.send(AgentCommand::Rename { title: name.into() });
                 }
-                self.input.set_text(&p);
-                self.submit();
+                self.submit_expanded(&p, false);
             }
             Err(e) => self.notice(Level::Warn, format!("{name}: {e}")),
         }

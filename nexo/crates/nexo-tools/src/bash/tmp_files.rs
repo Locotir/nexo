@@ -33,9 +33,11 @@ pub(super) fn pid_alive(pid: i32) -> bool {
     r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
+/// Whether process `pid` exists, from its handle on Windows; where the system cannot tell, it is taken as alive,
+/// so that a folder is never removed under a process that runs.
 #[cfg(not(unix))]
-pub(super) fn pid_alive(_pid: i32) -> bool {
-    true
+pub(super) fn pid_alive(pid: i32) -> bool {
+    u32::try_from(pid).ok().and_then(nexo_core::proc::pid_alive).unwrap_or(true)
 }
 
 /// The pid in a `nexo-tmp-<digits>-<rest>` folder name.
@@ -48,7 +50,7 @@ pub(super) fn tmp_name_pid(name: &str) -> Option<i32> {
 }
 
 /// `sweep_tmp` on a given temp folder, with the test for "this pid is alive" and the least age given.
-/// Windows and other systems do not probe pids: a folder goes only when untouched for 7 days.
+/// Unix and Windows probe the pid; other systems do not, and there a folder goes only when untouched for 7 days.
 pub fn sweep_tmp_in(tmp: &std::path::Path, alive: &dyn Fn(i32) -> bool, min_age: std::time::Duration) {
     let Ok(entries) = std::fs::read_dir(tmp) else { return };
     let me = std::process::id();
@@ -78,7 +80,15 @@ pub fn sweep_tmp_in(tmp: &std::path::Path, alive: &dyn Fn(i32) -> bool, min_age:
                 continue;
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // a pid reused by another process looks alive and keeps its folder, which is harmless; a pid that
+            // is gone never looks alive
+            if alive(pid) || !age.is_some_and(|a| a >= min_age) {
+                continue;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = alive;
             let least = min_age.max(std::time::Duration::from_secs(7 * 24 * 3600));
@@ -89,4 +99,28 @@ pub fn sweep_tmp_in(tmp: &std::path::Path, alive: &dyn Fn(i32) -> bool, min_age:
         removed += 1;
         let _ = std::fs::remove_dir_all(&path);
     }
+}
+
+// `sweep_tests` inject their pid answers and make links, so they are Unix only; this one asks Windows
+#[cfg(all(test, windows))]
+#[test]
+fn a_folder_of_an_exited_process_goes_at_once_on_windows_while_this_ones_stays() {
+    let t = tempfile::tempdir().unwrap();
+    let own = t.path().join(format!("nexo-tmp-{}-main", std::process::id()));
+    std::fs::create_dir_all(&own).unwrap();
+    // Windows reuses freed pids fast and tests run in parallel, so another test may own the pid when the sweep
+    // looks; a fresh exited pid per try makes that rare miss pass, while a real fault fails all five tries.
+    let swept = (0..5).any(|_| {
+        let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        drop(child);
+        let dead = t.path().join(format!("nexo-tmp-{gone}-main"));
+        std::fs::create_dir_all(&dead).unwrap();
+        // no 7-day floor: the folder is as old as the age given, which is none
+        sweep_tmp_in(t.path(), &pid_alive, std::time::Duration::ZERO);
+        !dead.exists()
+    });
+    assert!(swept);
+    assert!(own.exists());
 }

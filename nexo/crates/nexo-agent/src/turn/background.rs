@@ -260,6 +260,20 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
     });
 }
 
+/// Whether the model reasons before every reply and cannot be asked not to. The names of the known fixed-reasoning
+/// models say it. So do the probed levels where the vendor's own table made them (Gemini Pro lists no `off`): a
+/// list with no `off` or `none` there is a model that cannot be turned down. On any other host the levels are the
+/// probe's default for every reasoning model, which says nothing about whether the model can think less, so only
+/// the names decide there.
+fn always_thinks(protocol: &str, levels: &[String], model: &str) -> bool {
+    let table = nexo_providers::vendors::by_protocol(protocol).is_some_and(|v| v.efforts.is_some());
+    if table && !levels.is_empty() && !levels.iter().any(|l| l == "off" || l == "none") {
+        return true;
+    }
+    model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "r1" | "o1" | "o3" | "o4"))
+        || ["grok-4", "gpt-5", "codex"].iter().any(|m| model.contains(m))
+}
+
 pub(super) fn spawn_suggest(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {
@@ -278,8 +292,8 @@ pub(super) fn spawn_suggest(state: &Shared) {
             };
             let (_, cfg, model) = st.target.get();
             // a model that always reasons first would spend the whole cap thinking and say nothing
-            let thinks = model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "r1" | "o1" | "o3" | "o4"))
-                || ["grok-4", "gpt-5", "codex"].iter().any(|m| model.contains(m));
+            let thinks =
+                always_thinks(&cfg.protocol, cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]), &model);
             if last.model != model || !st.inbox.is_empty() || thinks {
                 return;
             }
@@ -452,6 +466,22 @@ mod suggest_tests {
         assert_eq!(r, Some(ReasoningConfig::Off));
         // and the last request itself is left as it was sent
         assert_eq!(last.reasoning, Some(ReasoningConfig::Effort(Effort::High)));
+    }
+
+    #[test]
+    fn levels_decide_only_where_the_vendor_table_made_them_and_the_names_decide_elsewhere() {
+        let lv = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (gemini, anthropic, chat) = (nexo_providers::gemini::ID, nexo_providers::anthropic::ID, "openai-chat");
+        assert!(always_thinks(gemini, &lv(&["low", "medium", "high"]), "gemini-3-pro"), "Gemini Pro lists no off");
+        assert!(!always_thinks(gemini, &lv(&["off", "low", "medium", "high"]), "gemini-3-flash"));
+        assert!(!always_thinks(anthropic, &lv(&["off", "low", "high"]), "claude-opus"));
+        // the probe's default list for any reasoning model on a generic host has no off and proves nothing
+        assert!(!always_thinks(chat, &lv(&["low", "medium", "high"]), "qwen3-235b"));
+        assert!(!always_thinks(chat, &lv(&["low", "medium", "high"]), "anthropic/claude-sonnet"));
+        assert!(always_thinks(chat, &lv(&["minimal", "low", "medium", "high"]), "gpt-5"));
+        assert!(always_thinks(chat, &[], "deepseek-reasoner"));
+        assert!(always_thinks(chat, &[], "openai/o3-mini"));
+        assert!(!always_thinks(chat, &[], "llama3"));
     }
 
     #[test]

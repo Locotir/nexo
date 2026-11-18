@@ -755,3 +755,45 @@ async fn a_budget_cut_retry_asks_for_the_next_step_with_less_thinking() {
     assert!(notices(&evs).iter().any(|n| n.contains("stopped")), "{:?}", notices(&evs));
     r.stop().await;
 }
+
+/// The title of the error card the turn ended with.
+fn error_title(evs: &[AgentEvent]) -> String {
+    evs.iter()
+        .find_map(|e| match e {
+            AgentEvent::Notice { level: Level::Error, problem: Some(p), .. } => Some(p.title.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("an error notice with a problem: {evs:?}"))
+}
+
+#[tokio::test]
+async fn a_connection_closed_before_any_of_the_reply_is_not_called_a_cut_answer() {
+    let d = test_tmpdir().unwrap();
+    // the stream starts and fails with nothing in it, as a server that went down or a proxy that reset does
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.retries = 0;
+    let client = Scripted::new(vec![Reply::Events(broken(vec![], 0))]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert!(error_title(&evs).ends_with("closed the connection before answering"), "{evs:?}");
+    let said = notices(&evs).join("\n");
+    assert!(!said.contains("already shown") && !said.contains("mid-answer"), "{said}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_connection_dropped_after_text_arrived_still_says_the_reply_was_cut_off() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(broken(vec![StreamEvent::TextDelta("half".into())], 400))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert_eq!(error_title(&evs), "The reply was cut off");
+    assert!(notices(&evs).join("\n").contains("What was already shown is kept."));
+    r.stop().await;
+}

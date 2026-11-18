@@ -51,7 +51,7 @@ pub fn registry() -> Registry;                       // the protocols by id
 impl Registry { pub fn get(&self, id: &str) -> Option<Arc<dyn Protocol>>; pub fn ids(&self) -> Vec<&'static str>; pub fn register(&mut self, p: Arc<dyn Protocol>); }
 pub fn presets() -> BTreeMap<String, ProviderConfig>; // openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter, together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, ollama, lmstudio, vllm, llamacpp, copilot, codex (with models, pricing, context windows where known)
 pub struct Client;                                     // retry/backoff around a Protocol
-pub mod catalogue;                                     // the models.dev dataset: `lookup(preset, model) -> (pricing, context, output)`, `cached()`, `refresh()`, `refresh_if_stale(done)` (7-day cache at `~/.nexo/cache/models.json`, never blocks a request)
+pub mod catalogue;                                     // the models.dev dataset: `lookup(preset, model) -> (pricing, context, output)`, `cached()`, `refresh()`, `refresh_if_stale(done)` (24-hour cache at `~/.nexo/cache/models.json`, never blocks a request)
 pub mod hints;                                         // what an error message says about the model: `context_window(msg)`, `max_output(msg)`, `unknown_model(err)`, `closest(wanted, names, n)`, `wait_hint(err)`
 impl Client { pub fn new(registry: Registry) -> Client; pub async fn stream(&self, cfg: &ProviderConfig, req: &ModelRequest, retries: u32) -> Result<EventStream, ProviderError>; pub async fn list_models(&self, cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError>; pub fn registry(&self) -> &Registry; }
 pub mod sse;                                           // `parse(bytes stream) -> Stream<SseEvent{event, data}>`
@@ -207,8 +207,9 @@ as `bash(git *)`, `bash(cargo test*)`), the path for file tools
 
 Session file: `~/.nexo/sessions/<id>.jsonl`, one JSON object per
 line: `{"type":"meta",...}` first, then `{"type":"message","index":n,"ts":...,"message":{...}}`,
-`{"type":"tool_output","call_id":...,"output":{...}}`, `{"type":"usage",...}`,
-`{"type":"title","title":...}`. The id is `YYYYMMDD-HHMMSS-<4 hex>`.
+`{"type":"tool_output","call_id":...,"output":{...}}` (with `"result_chars":n` and an empty `content` when the
+tool-result message holds the text: it is kept once), `{"type":"usage",...}`, `{"type":"title","title":...}`,
+`{"type":"prefix_shown","shown":...}` (the project map alone, when the tree changed). The id is `YYYYMMDD-HHMMSS-<4 hex>`.
 
 Model limits: what is known of the model in use (prices per million tokens,
 context window, largest reply) is resolved in this order, each source
@@ -413,8 +414,8 @@ so nexo looks the same whatever the terminal's palette; on a terminal
 without 24-bit colour (`COLORTERM` not `truecolor`/`24bit` and `TERM`
 without `256color`, or `NEXO_COLORS=256`/`16`) each value is mapped to the
 nearest of the 256-colour cube, or to the standard colour of the same hue on
-16 colours, and `/theme` says so. `dark` (default: vivid pastels, every text
-colour at WCAG AA 4.5:1 on every ground), `nexo`, `light`,
+16 colours, and `/theme` says so. `nexo` (default), `dark` (vivid pastels, every text
+colour at WCAG AA 4.5:1 on every ground), `light`,
 `catppuccin-mocha`, `gruvbox`, `nord`, `dracula`, `solarized-dark`,
 `tokyo-night`; `mono` is the one theme that leaves the terminal's colours
 alone (also under `NO_COLOR`). Code highlighting through syntect sets
@@ -432,7 +433,7 @@ pricing parser, and `TestBackend` snapshots of the layout.
 `nexo` (TUI in the current directory), `nexo -p "prompt"` (headless: prints
 the reply; `--json` prints every AgentEvent as a JSON line), `--provider`,
 `--model`, `--cwd`, `--resume <id>` / `--continue`, `--permission-mode`,
-`--context plain|curator|compact`, `--yolo`; subcommands `bench` (run the
+`--context auto|plain|curator|compact`, `--yolo`; subcommands `bench` (run the
 benchmark: `--upstream`, `--model`, `--key`, `--tasks`, `--arms`, `--repeats`,
 `--max-steps`, `--budget`, `--out`; see the README), `providers` (list
 presets and configured ones, which have a key), `models [provider]

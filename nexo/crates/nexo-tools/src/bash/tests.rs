@@ -331,6 +331,27 @@ async fn streams_lines_and_kills_on_timeout_and_cancel() {
     assert!(out.content.contains("[cancelled]"), "{}", out.content);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_foreground_command_runs_in_its_own_session_without_a_controlling_terminal() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    // Opening the terminal of the user (as a TIOCSTI injection must) fails: ENXIO.
+    let out = Bash.run(json!({"command": "(echo x > /dev/tty) 2>&1; echo status $?"}), &c).await;
+    assert!(out.content.contains("status 1"), "{}", out.content);
+    // The shell leads its session (its session id is its pid), so no terminal is attached to it.
+    #[cfg(target_os = "linux")]
+    {
+        let out = Bash.run(json!({"command": "ps -o sid= -p $$ | tr -d ' '; echo $$"}), &c).await;
+        let mut ids = out.content.lines().map(str::trim);
+        let (sid, pid) = (ids.next().unwrap_or(""), ids.next().unwrap_or(""));
+        assert!(!sid.is_empty() && sid == pid, "{}", out.content);
+    }
+}
+
 fn posix() -> bool {
     if nexo_core::shell::shell().kind == "powershell" {
         eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");
@@ -716,6 +737,118 @@ async fn a_detached_command_names_its_log_and_pid_and_outlives_the_registry() {
     let _ = std::fs::remove_file(&log);
 }
 
+/// A command that reads its input must meet an end of file at once, never wait for a person who is not there. Comparing
+/// stdin with /dev/null is what tells the closed stdin apart: `cat` and `read` alone also return when the test harness
+/// itself runs with an empty stdin.
+#[cfg(unix)]
+const STDIN_PROBE: &str = "test /dev/null -ef /dev/stdin && echo stdin-null; cat; echo cat-$?; read x; echo read-$?";
+
+/// Runs `body` in a copy of this test binary whose stdin is an open pipe that never carries a byte and never closes.
+/// A harness started with `</dev/null` (CI, a background run) would let a command that inherits stdin read an end of
+/// file anyway, so the tests would pass without the setting; an open silent pipe makes that command block instead.
+/// The copy runs the same test with `NEXO_TEST_SILENT_STDIN` set, which is where `body` really runs.
+#[cfg(unix)]
+async fn with_a_silent_open_stdin(name: &str, body: impl std::future::Future<Output = ()>) {
+    const MARK: &str = "NEXO_TEST_SILENT_STDIN";
+    if std::env::var_os(MARK).is_some() {
+        return body.await;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &format!("bash::tests::{name}"), "--nocapture", "--test-threads=1"])
+        .env(MARK, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // held until the copy ends: `wait_with_output` would close a stdin it still owned
+    let held = child.stdin.take();
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output()).await.unwrap().unwrap();
+    drop(held);
+    let (so, se) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && so.contains("1 passed"), "{}\n{so}\n{se}", out.status);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_foreground_command_reads_end_of_file_from_stdin_and_does_not_wait() {
+    with_a_silent_open_stdin("a_foreground_command_reads_end_of_file_from_stdin_and_does_not_wait", async {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let t = std::time::Instant::now();
+        let out = Bash.run(json!({"command": STDIN_PROBE, "timeout": 5}), &c).await;
+        assert!(!out.is_error && !out.content.contains("timed out"), "{}", out.content);
+        for want in ["stdin-null", "cat-0", "read-1"] {
+            assert!(out.content.contains(want), "{want} missing: {}", out.content);
+        }
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    })
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_job_reads_end_of_file_from_stdin() {
+    with_a_silent_open_stdin("a_background_job_reads_end_of_file_from_stdin", background_job_reads_eof()).await;
+}
+
+#[cfg(unix)]
+async fn background_job_reads_eof() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let cmd = format!("{{ {STDIN_PROBE}; }} > seen.txt 2>&1; echo finished >> seen.txt");
+    let out = Bash.run(json!({"command": cmd, "background": true}), &c).await;
+    assert!(out.content.contains("Started background job"), "{}", out.content);
+    let seen = d.path().join("seen.txt");
+    let t = std::time::Instant::now();
+    while !std::fs::read_to_string(&seen).unwrap_or_default().contains("finished")
+        && t.elapsed() < Duration::from_secs(5)
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = std::fs::read_to_string(&seen).unwrap_or_default();
+    for want in ["stdin-null", "cat-0", "read-1", "finished"] {
+        assert!(seen.contains(want), "{want} missing: {seen:?}");
+    }
+    c.jobs.kill_all();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_detached_command_reads_end_of_file_from_stdin() {
+    with_a_silent_open_stdin("a_detached_command_reads_end_of_file_from_stdin", detached_command_reads_eof()).await;
+}
+
+#[cfg(unix)]
+async fn detached_command_reads_eof() {
+    if !posix() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let cmd = format!("{STDIN_PROBE}; echo finished");
+    let out = Bash.run(json!({"command": cmd, "background": true, "detach": true}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    let log = out.content.split("output is in ").nth(1).unwrap().split(". Stop").next().unwrap().to_string();
+    let t = std::time::Instant::now();
+    while !std::fs::read_to_string(&log).unwrap_or_default().contains("finished")
+        && t.elapsed() < Duration::from_secs(5)
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    for want in ["stdin-null", "cat-0", "read-1", "finished"] {
+        assert!(seen.contains(want), "{want} missing: {seen:?}");
+    }
+}
+
 #[tokio::test]
 async fn detach_needs_background() {
     let d = tempfile::tempdir().unwrap();
@@ -865,4 +998,80 @@ fn the_mac_wait_loop_ends_at_once_when_ready_and_fails_after_the_cap() {
     };
     assert_eq!(run(&format!("[ -e {} ]", f.display()), 3), Some(0));
     assert_eq!(run("[ -e /no/such/file/anywhere ]", 1), Some(1));
+}
+
+#[test]
+fn capture_keeps_fifteen_thousand_characters_of_the_head_of_non_ascii_output() {
+    let mut capture = Capture::new();
+    let line = "é".repeat(100);
+    for _ in 0..400 {
+        capture.push(&line);
+    }
+    let text = capture.text();
+    let head = text.split("\n… [").next().unwrap();
+    // 2 bytes a character: counting bytes ended the head at 7,500 characters
+    assert!(head.chars().count() >= 14_900, "head holds {} characters", head.chars().count());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nine_small_truncated_outputs_in_a_session_each_keep_their_log() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = format!("log-count-{}", uuid::Uuid::new_v4());
+    for i in 0..9 {
+        // a little over 30,000 characters: truncated, so its log is kept, but far under 8 MiB
+        let out = Bash.run(json!({"command": "seq 1 8000"}), &ctx).await;
+        assert!(out.content.contains("[full captured output: "), "call {i}: {}", out.content);
+    }
+    wipe_tmp(&ctx.session_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn full_log_folder_refuses_a_log_and_says_the_bytes_it_holds() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = format!("log-budget-{}", uuid::Uuid::new_v4());
+    let dir = tmp_dir(&ctx.session_id).join(".bash-logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..8 {
+        // sparse files: 60 MiB in all, so less than one full log (8 MiB) is left of 64 MiB
+        let f = std::fs::File::create(dir.join(format!("old-{i}.log"))).unwrap();
+        f.set_len(7 * 1024 * 1024 + 512 * 1024).unwrap();
+    }
+    let out = Bash.run(json!({"command": "seq 1 8000"}), &ctx).await;
+    assert!(
+        out.content.contains(
+            "[full output log unavailable: session log budget exhausted (60.0 MiB kept or reserved of 64 MiB)]"
+        ),
+        "{}",
+        out.content
+    );
+    wipe_tmp(&ctx.session_id);
+}
+
+#[cfg(unix)]
+#[test]
+fn logs_being_written_hold_their_full_size_until_the_command_ends() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join(".bash-logs");
+    let mut open = Vec::new();
+    // empty on disk, but each may grow to 8 MiB: eight of them fill the 64 MiB
+    for i in 0..8 {
+        open.push(open_log(&dir, &dir.join(format!("{i}.log"))).unwrap_or_else(|e| panic!("log {i}: {e}")));
+    }
+    let refused = open_log(&dir, &dir.join("9.log")).unwrap_err();
+    assert!(refused.to_string().contains("64.0 MiB kept or reserved of 64 MiB"), "{refused}");
+    open.pop();
+    assert!(open_log(&dir, &dir.join("9.log")).is_ok(), "a finished command gives its room back");
+}
+
+#[test]
+fn the_stop_hint_for_a_detached_process_is_spelled_for_the_shell_that_runs_it() {
+    // Git Bash would read `/T` as a path, so its switches are doubled
+    assert_eq!(stop_hint(true, "bash", 42), "taskkill //T //F //PID 42");
+    assert_eq!(stop_hint(true, "powershell", 42), "taskkill /T /F /PID 42");
+    assert_eq!(stop_hint(false, "bash", 42), "kill -- -42");
+    assert_eq!(stop_hint(false, "sh", 42), "kill -- -42");
 }

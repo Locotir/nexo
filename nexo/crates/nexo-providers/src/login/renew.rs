@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use nexo_core::auth;
 use nexo_core::auth::Credential;
-use nexo_core::{ProviderConfig, ProviderError};
+use nexo_core::{ErrorKind, ProviderConfig, ProviderError};
 
 use super::form;
 use super::oauth::{fail, post, said, tokens, Body};
@@ -50,6 +50,16 @@ pub(crate) async fn refresh_plain(at: &Endpoints, cred: &Credential) -> Result<C
     tokens(&flow, st, &v, Some(cred))
 }
 
+/// The key `cfg` names directly (variable, file or command), not the credential store. A key command may
+/// wait for the person, so it runs on a blocking thread: the request waits for it, a worker does not.
+pub async fn direct_key(cfg: &ProviderConfig) -> Option<String> {
+    let direct = ProviderConfig { auth: None, ..cfg.clone() };
+    if direct.api_key_cmd.is_none() {
+        return direct.resolve_key();
+    }
+    tokio::task::spawn_blocking(move || direct.resolve_key()).await.ok().flatten()
+}
+
 /// The configuration and key a request to `cfg` goes out with. A key from
 /// the environment, a file or a command wins; else the store's entry (under
 /// `auth`) is used, renewed first when it is about to expire, and what its
@@ -63,12 +73,17 @@ pub async fn prepare_in(
     at: &Endpoints,
     cfg: &ProviderConfig,
 ) -> Result<(ProviderConfig, Option<String>), ProviderError> {
-    let direct = ProviderConfig { auth: None, ..cfg.clone() };
-    if let Some(k) = direct.resolve_key() {
+    if let Some(k) = direct_key(cfg).await {
         return Ok((cfg.clone(), Some(k)));
     }
     let Some(name) = cfg.auth.as_deref() else { return Ok((cfg.clone(), None)) };
-    let Some(mut cred) = auth::read_from(store).remove(name) else { return Ok((cfg.clone(), None)) };
+    // a store that cannot be parsed is said so: reading it as empty would send the person to log in again,
+    // and that login would then fail to write over the file. Not an `Auth` error: those are shown with the
+    // advice to log in again, which is the wrong one here.
+    let unreadable = |e: std::io::Error| ProviderError::new(ErrorKind::Other, e.to_string());
+    let Some(mut cred) = auth::read_checked(store).map_err(unreadable)?.remove(name) else {
+        return Ok((cfg.clone(), None));
+    };
     if cred.expiring(auth::now(), 60) {
         cred = renew_locked(store, at, name).await?.unwrap_or(cred);
     }

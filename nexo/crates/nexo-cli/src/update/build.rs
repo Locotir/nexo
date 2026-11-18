@@ -1,17 +1,32 @@
 use super::*;
 
+/// The `cargo install` arguments before `--root <stage>`. With the release `tag` the status check reported
+/// (only a plain one, so nothing odd reaches cargo) the build is of that release, not of whatever the default
+/// branch holds now, which may be ahead of it or never have passed the checks a release waits for. Without a
+/// tag (GitHub could not be asked) it builds the default branch, so the fallback still works.
+pub(super) fn install_args(tag: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = ["install", "--locked", "--git", REPO, "nexo-cli"].map(String::from).into();
+    if let Some(t) = tag.filter(|t| plain_tag(t)) {
+        // one argument, so a tag can never be read as a separate option
+        a.push(format!("--tag={t}"));
+    }
+    a.push("--root".to_string());
+    a
+}
+
 /// Runs `cargo install` from the repository into `stage`, keeping cargo's output out of the way: one live
 /// line shows the crate it is on. Its messages are shown only if it fails. Gives cargo's exit status and
-/// the commit it built (when it said which).
-pub(super) fn build(ui: &Ui, stage: &Path) -> std::io::Result<(std::process::ExitStatus, Option<String>)> {
+/// the commit it built (when it said which). `tag` is the release to build, when it is known.
+pub(super) fn build(
+    ui: &Ui,
+    stage: &Path,
+    tag: Option<&str>,
+) -> std::io::Result<(std::process::ExitStatus, Option<String>)> {
     use std::io::BufRead;
     use std::process::Stdio;
     use std::sync::{Arc, Mutex};
-    let mut child = std::process::Command::new("cargo")
-        .args(["install", "--locked", "--git", REPO, "nexo-cli", "--root"])
-        .arg(stage)
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut child =
+        std::process::Command::new("cargo").args(install_args(tag)).arg(stage).stderr(Stdio::piped()).spawn()?;
     let seen = Arc::new(Mutex::new(Seen::default()));
     let reader = child.stderr.take().map(|err| {
         let seen = Arc::clone(&seen);
@@ -77,9 +92,13 @@ pub(super) fn compiling(line: &str) -> Option<&str> {
 }
 
 /// The short commit in a cargo line that names the repository (`... (https://github.com/Locotir/nexo#4b4f255a)`).
+/// A pinned build prints the source id with a query, `nexo?tag=build-abc1234#4b4f255a`, so a `?...` part before the `#` is skipped.
 pub(super) fn git_rev(line: &str) -> Option<&str> {
     let rest = &line[line.find(REPO)? + REPO.len()..];
-    let hex = rest.strip_prefix('#')?;
+    let hex = match rest.strip_prefix('?') {
+        Some(query) => query.split_once('#')?.1,
+        None => rest.strip_prefix('#')?,
+    };
     let end = hex.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(hex.len());
     (end >= 7).then(|| &hex[..7])
 }

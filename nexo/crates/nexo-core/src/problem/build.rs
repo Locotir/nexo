@@ -35,6 +35,9 @@ pub struct ProblemCtx {
     pub login: bool,
     /// The model's window in tokens, when known.
     pub window: Option<u32>,
+    /// Part of the reply (text, reasoning or a call) had already arrived when the call failed. Only the caller
+    /// knows this; it decides whether a dropped connection can say that something was shown and kept.
+    pub shown: bool,
 }
 
 impl ProblemCtx {
@@ -46,6 +49,7 @@ impl ProblemCtx {
             key_env: cfg.api_key_env.clone(),
             login: cfg.login.is_some(),
             window: cfg.context_window.get(model).copied(),
+            shown: false,
         }
     }
 
@@ -82,18 +86,23 @@ impl ProblemCtx {
 
     /// The address as shown: no credentials, no query.
     pub(super) fn shown_url(&self) -> String {
-        let u = self.base_url.trim();
-        let (scheme, rest) = match u.split_once("://") {
-            Some((s, r)) => (format!("{s}://"), r),
-            None => (String::new(), u),
-        };
-        let rest = rest.split(['?', '#']).next().unwrap_or("");
-        let rest = match rest.split_once('@') {
-            Some((a, r)) if !a.contains('/') => r,
-            _ => rest,
-        };
-        format!("{scheme}{rest}")
+        shown_address(&self.base_url)
     }
+}
+
+/// An address as it may be printed: no credentials, no query, no fragment.
+pub fn shown_address(url: &str) -> String {
+    let u = url.trim();
+    let (scheme, rest) = match u.split_once("://") {
+        Some((s, r)) => (format!("{s}://"), r),
+        None => (String::new(), u),
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let rest = match rest.split_once('@') {
+        Some((a, r)) if !a.contains('/') => r,
+        _ => rest,
+    };
+    format!("{scheme}{rest}")
 }
 
 impl Problem {

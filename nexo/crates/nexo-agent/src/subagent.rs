@@ -125,8 +125,6 @@ impl Drop for Release {
     }
 }
 
-/// What the parent is told when an isolated sub-agent ends: its branch and what it changed, or that its
-/// worktree had no changes and is gone.
 /// The fact line for messages the main model sent that the sub-agent never read before it ended.
 fn unread_note(n: usize) -> String {
     match n {
@@ -136,6 +134,8 @@ fn unread_note(n: usize) -> String {
     }
 }
 
+/// What the parent is told when an isolated sub-agent ends: its branch and what it changed, or that its
+/// worktree had no changes and is gone.
 fn worktree_note(wt: &nexo_core::worktree::Worktree) -> String {
     match nexo_core::worktree::finish(wt) {
         nexo_core::worktree::Finished::Removed => {

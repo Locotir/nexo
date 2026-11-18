@@ -15,6 +15,13 @@ sandbox_write_dirs = ["/srv/data"]   # more writable directories (only those tha
 TUI (no argument: switch between off and workspace-write); `/status` shows the mode, the backend and how the
 network is shut.
 
+A team lane sets the same three keys in its `[[lane]]` of `team.toml` (`sandbox`, `sandbox_network`,
+`sandbox_write_dirs`), so an unattended lane is boxed without boxing the person's own sessions; a lane that
+writes sibling folders lists them in `sandbox_write_dirs`. A managed policy still bounds them. Without these
+keys a lane runs with the setting of its folder and of the person. In yolo a bash call that asks for
+`unsandboxed: true` runs outside the box without a question (see below), so a lane in yolo is contained only
+as far as the model keeps to the sandbox.
+
 A project file (not yet trusted) can only tighten the sandbox: it cannot turn it off, open the network or add
 writable directories. `nexo config trust` lifts that, as for the other settings.
 
@@ -37,7 +44,8 @@ Caches (under the home directory, skipped when missing): `.cargo/registry`, `.ca
   with the `landlock` crate. Network off is a new user and network namespace (loopback is brought up inside,
   so a test can run its own server on 127.0.0.1; the host's listeners are out of reach). Where a namespace
   cannot be made, Landlock's TCP rules (kernel 6.7 or later) are used. If neither exists, `/status` says
-  the network is not blocked.
+  `network NOT blocked` and a command asks first instead of running on its own, even in the sandbox. The TCP
+  rules cover TCP only: UDP, and so DNS, stays open there.
 - **Linux, bwrap**: used when the kernel has no Landlock and `bwrap` is on the PATH (read-only bind of `/`,
   the write roots bound on top, `--unshare-net`). `NEXO_SANDBOX_BACKEND=bwrap` (or `landlock`) forces one.
 - **macOS, sandbox-exec** with a generated profile (writes denied except the roots, `network*` denied unless
@@ -71,11 +79,20 @@ the command harmless.
   or a new size or time; only `stat` is used, no file is read), the result ends with a line such as
   `[sandbox: this command changed .git/hooks/pre-commit, which runs outside the sandbox later]` and you get a
   warning. In a git worktree the hooks and config of the real git directory count too, where the sandbox can
-  write them. A background job gets the same line in its output when it ends, but no warning.
+  write them. Where the sandbox can write your whole home folder (you started nexo in `~` or in a folder
+  above it), these count too, with their full path: the shell and session start files (`~/.bashrc`, `~/.bash_profile`,
+  `~/.bash_login`, `~/.profile`, `~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.xprofile`, fish `config.fish` and `conf.d`, `~/.config/environment.d`),
+  `~/.gitconfig`, `~/.ssh`, `~/.config/autostart`, `~/.config/systemd/user`, `~/.local/bin` and the settings of the
+  agents (`~/.nexo/config.toml`, `prompt.md`, `commands` and `agents`, `~/.claude/settings.json`, `commands` and
+  `agents`, `~/.codex/config.toml`). A guarded path that is a symlink (dotfile managers make them) is followed, so an
+  edit through the link counts, and so does pointing the link elsewhere.
+  A background job gets the same line in its output when it ends, but no warning.
   A command that runs for a while and also touches those paths may be a false alarm if you edited them yourself.
 - Unix sockets on disk (for example the Docker socket) stay reachable even with the network off: Landlock does
   not govern `connect` to a path, and the macOS profile allows them. A command that can reach one can ask
   that program to act outside the sandbox. Do not use the sandbox as a boundary against a hostile command.
+- The sandbox reads all of `/`, so a sandboxed command can still read secrets such as `~/.ssh` or the browser
+  relay token. The read, grep and instruction tools ask first for those paths; `bash` does not.
 
 For more safety: turn the sandbox off for the project (`/sandbox off`, or `sandbox = "off"`), so every `bash`
 call asks first; add deny rules for what must never run; keep keys out of the environment you start nexo from.

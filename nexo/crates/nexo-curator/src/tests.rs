@@ -300,3 +300,102 @@ fn a_text_paged_otherwise_than_in_the_last_request_counts_its_miss() {
     }
     assert!(changed > 0, "the paged text never changed");
 }
+
+/// A conversation of `n` messages that take turns, each `chars` long.
+fn talk(n: usize, chars: usize) -> Vec<Value> {
+    (0..n)
+        .map(|i| {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            json!({"role": role, "content": format!("{i} {}", "word ".repeat(chars / 5))})
+        })
+        .collect()
+}
+
+/// One answered call: the view of `msgs`, then what a provider that read `read(all)` of the `all` tokens says.
+fn answered(c: &mut Curator, msgs: &[Value], read: impl Fn(u64) -> u64) -> Reply {
+    let r = c.view(100, msgs, 0.0).unwrap();
+    let all = 100 + r.tokens as u64;
+    c.cached(read(all), all);
+    r
+}
+
+fn cal(c: &Curator, k: &str) -> i64 {
+    c.eng.stats.get(k).copied().unwrap_or(0)
+}
+
+/// The messages that came since the last call are missed by every cache, so a provider that reads all it had
+/// seen and misses only them did what the engine expected, however large they are.
+#[test]
+fn a_provider_that_misses_only_the_new_messages_is_not_a_call_the_engine_got_wrong() {
+    let mut c = Curator::new("epoch=0").unwrap();
+    let msgs = talk(12, 2000);
+    let first = answered(&mut c, &msgs[..4], |all| all);
+    assert_eq!(cal(&c, "cal_calls"), 0, "the first call has no view before it to miss");
+    // eight more messages, twice what the view held
+    let second = c.view(100, &msgs, 0.0).unwrap();
+    let all = 100 + second.tokens as u64;
+    let tail = (second.tokens - first.tokens) as i64;
+    assert!(tail * 10 > all as i64, "the tail is over a tenth of the view, past what `cal_off` allows");
+    assert_eq!(cal(&c, "miss"), 0, "the engine changed nothing");
+    c.cached(100 + first.tokens as u64, all);
+    assert_eq!(cal(&c, "cal_calls"), 1);
+    assert_eq!(cal(&c, "cal_pred_miss"), tail, "the engine changed nothing, so what it expected is the tail");
+    assert_eq!(cal(&c, "cal_real_miss"), tail);
+    assert_eq!(cal(&c, "cal_off"), 0);
+}
+
+#[test]
+fn a_provider_that_misses_the_whole_view_is_a_call_the_engine_got_wrong() {
+    let mut c = Curator::new("epoch=0").unwrap();
+    let msgs = talk(12, 2000);
+    let first = answered(&mut c, &msgs[..4], |all| all);
+    let second = answered(&mut c, &msgs, |_| 0);
+    let tail = (second.tokens - first.tokens) as i64;
+    assert_eq!(cal(&c, "cal_pred_miss"), tail);
+    assert_eq!(cal(&c, "cal_real_miss"), 100 + second.tokens, "all of it, head and messages");
+    assert_eq!(cal(&c, "cal_off"), 1);
+}
+
+/// What the engine itself changed counts for more than the tail when it reaches further back.
+#[test]
+fn an_engine_count_that_passes_the_new_messages_is_the_one_expected() {
+    let mut c = Curator::new("epoch=0").unwrap();
+    let msgs = talk(8, 2000);
+    let first = answered(&mut c, &msgs[..4], |all| all);
+    // the engine counted a rewrite from message 1 on, which reaches over the whole tail and past it
+    c.eng.stats.insert("miss", 20_000);
+    let second = answered(&mut c, &msgs, |_| 0);
+    assert!(second.tokens - first.tokens < 20_000, "the tail is the smaller of the two");
+    assert_eq!(cal(&c, "cal_pred_miss"), 20_000);
+}
+
+#[test]
+fn the_counters_start_over_with_a_reset_and_skip_the_first_call_after_it() {
+    let mut c = Curator::new("epoch=0").unwrap();
+    let msgs = talk(8, 2000);
+    answered(&mut c, &msgs[..4], |all| all);
+    answered(&mut c, &msgs[..6], |all| all);
+    assert_eq!(cal(&c, "cal_calls"), 1);
+    c.reset();
+    assert_eq!(cal(&c, "cal_calls"), 0, "the engine, and with it the counts, are new");
+    answered(&mut c, &msgs[..4], |all| all);
+    assert_eq!(cal(&c, "cal_calls"), 0, "the first call after a reset has no view before it");
+    answered(&mut c, &msgs[..6], |all| all);
+    assert_eq!(cal(&c, "cal_calls"), 1);
+}
+
+/// A history the host rewrote is new to the engine and all of it is the call's to miss, so a provider that
+/// read none of it was expected to.
+#[test]
+fn a_history_the_host_rewrote_is_expected_to_be_missed_whole() {
+    let mut c = Curator::new("epoch=0").unwrap();
+    let mut msgs = talk(6, 2000);
+    answered(&mut c, &msgs, |all| all);
+    // the last message is edited and the history is a message shorter than the engine saw
+    msgs.pop();
+    msgs[4]["content"] = json!("edited");
+    let second = answered(&mut c, &msgs, |_| 0);
+    assert_eq!(cal(&c, "cal_calls"), 1);
+    assert_eq!(cal(&c, "cal_pred_miss"), second.tokens);
+    assert_eq!(cal(&c, "cal_off"), 0);
+}

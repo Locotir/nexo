@@ -27,11 +27,34 @@ fn rules() -> &'static [Rule] {
             (r"\bgh[pousr]_[A-Za-z0-9]{20,}", MASK),
             (r"\bgithub_pat_[A-Za-z0-9_]{20,}", MASK),
             (r"\bxox[abeprs]-[A-Za-z0-9-]{10,}", MASK),
+            // Cerebras keys.
+            (r"\bcsk-[A-Za-z0-9]{20,}", MASK),
             (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", MASK),
             // JSON web tokens.
             (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}", MASK),
             // Authorization headers.
             (r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", "$1 [redacted]"),
+            // The Basic scheme only with its header prefix: a bare `basic <word>` would eat ordinary prose. The prefix
+            // may be quoted, as in a JSON request dump (`"Authorization": "Basic ..."`).
+            (r#"(?i)\b(authorization["']?\s*[:=]\s*["']?basic)\s+[A-Za-z0-9+/]{8,}={0,2}"#, "$1 [redacted]"),
+            // curl -u user:pass, also --user. Only a value with a colon holds a password; a bare user name is not a secret.
+            (r#"(?i)(\bcurl\b[^\r\n]*?\s(?:-u|--user)(?:\s+|=)["']?)[^\s"':]+:[^\s"']+"#, "${1}[redacted]"),
+            // Provider key formats that the `sk-` family does not cover.
+            (r"\bAIza[0-9A-Za-z_-]{20,}", MASK),
+            (r"\bgsk_[0-9A-Za-z]{16,}", MASK),
+            (r"\bhf_[A-Za-z0-9]{30,}", MASK),
+            (r"\bnpm_[A-Za-z0-9]{36}", MASK),
+            (r"\bxai-[A-Za-z0-9]{20,}", MASK),
+            (r"\b[\x73r]k_(?:live|test)_[A-Za-z0-9]{16,}", MASK),
+            // scheme://user:pass@host: an address carries its credentials before the `@`. HTTP client errors embed the URL.
+            // A user name alone (`ssh://git@host`) is not a secret and stays, so notes and mail can name such an address;
+            // a lone long token before the `@` (`https://<token>@host`) is a credential and goes.
+            (r"(?i)\b([a-z][a-z0-9+.-]*://)(?:[^\s/?#@:]*:[^\s/?#]*|[a-z0-9_-]{24,})@", "${1}[redacted]@"),
+            // ?key=..., &sig=..., ;auth=...: query parameters named like a secret (`api_key=` and `token=` are also caught by the assignment rule below).
+            (
+                r#"(?i)([?&;]\s*[a-z0-9_.-]*(?:key|token|secret|password|passwd|signature|sig|auth)=)[^&\s)"'<>#,`$\[{*][^&\s)"'<>#,`]*"#,
+                "${1}[redacted]",
+            ),
             // Lines of an env file: NAME=value.
             (r"(?m)^([ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*[ \t]*=[ \t]*)[^\r\n]+$", "${1}[redacted]"),
             // password=..., "token": "...", api_key: ...
@@ -78,6 +101,32 @@ mod tests {
     fn openai_style_key() {
         let k = key("s", "k-abcdefghijklmnopqrstuv1234");
         hides(&format!("use {k} for it"), &k);
+    }
+
+    #[test]
+    fn groq_google_cerebras_xai_and_stripe_live_keys() {
+        for k in [
+            key("gs", "k_abcdefghijklmnop1234"),
+            key("AI", "zaSyabcdefghijklmnopqrstuvwxyz_-12345"),
+            key("cs", "k-abcdefghijklmnopqrst1234"),
+            key("xa", "i-abcdefghijklmnopqrst1234"),
+            key("s", "k_live_abcdefghijklmnop1234"),
+            key("r", "k_live_abcdefghijklmnop1234"),
+        ] {
+            hides(&format!("key {k} in use"), &k);
+        }
+    }
+
+    #[test]
+    fn publishable_stripe_key_is_kept() {
+        let k = key("p", "k_live_abcdefghijklmnop1234");
+        assert!(matches!(redact(&format!("use {k} in the page")), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn provider_prefix_words_in_prose_are_borrowed() {
+        let t = "a task-driven flow, xai-driven design, gsk_short, csk-x and AIza are plain words";
+        assert!(matches!(redact(t), Cow::Borrowed(_)));
     }
 
     #[test]
@@ -133,6 +182,75 @@ mod tests {
         ] {
             hides(text, secret);
         }
+    }
+
+    #[test]
+    fn address_credentials_and_secret_query_parameters() {
+        hides("GET https://user:hunter2pw@host.example/x failed", "hunter2pw");
+        hides("error for url (https://api.example/v1?key=zzz9abc&x=1)", "zzz9abc");
+        hides("https://cdn.example/f?sig=q1w2e3r4t5&n=1", "q1w2e3r4t5");
+        hides("https://h.example/f?X-Auth=a1b2c3d4", "a1b2c3d4");
+        let kept = redact("https://example.org/path?page=2&sort=name");
+        assert_eq!(kept, "https://example.org/path?page=2&sort=name");
+    }
+
+    #[test]
+    fn a_user_name_without_a_password_and_a_placeholder_query_value_are_not_secrets() {
+        for plain in [
+            "ssh://git@github.com/org/repo",
+            "https://user@host.example/x",
+            "see ?key=`$KEY` and &sig= in the docs",
+            "https://h.example/f?key=${API_KEY}&n=1",
+        ] {
+            assert_eq!(redact(plain), plain);
+        }
+        // A lone long token in the user position is a credential, as in a git remote.
+        let t = key("tok", "enabcdefghijklmnopqrstuvwxyz0123");
+        hides(&format!("origin https://{t}@git.example/org/repo"), &t);
+    }
+
+    #[test]
+    fn basic_authorization_in_json_and_curl_user_options() {
+        hides(r#"{"Authorization": "Basic dXNlcjpwYXNzd29yZA=="}"#, "dXNlcjpwYXNzd29yZA");
+        hides("headers = {'authorization': 'Basic dXNlcjpwYXNzd29yZA=='}", "dXNlcjpwYXNzd29yZA");
+        hides("curl -s -u admin:hunter2pw https://h.example/api", "hunter2pw");
+        hides("curl --user=admin:hunter2pw https://h.example/api", "hunter2pw");
+        hides("curl -u 'admin:hunter2pw' https://h.example/api", "hunter2pw");
+        let kept = "curl -u admin https://h.example/api && ls -u";
+        assert_eq!(redact(kept), kept);
+    }
+
+    #[test]
+    fn google_and_groq_keys() {
+        let g = key("AI", "zaSyabcdefghijklmnopqrstuvwxyz0123");
+        hides(&format!("maps {g}"), &g);
+        let q = key("gs", "k_abcdefghijklmnopqrstuvwx");
+        hides(&format!("groq {q}"), &q);
+    }
+
+    #[test]
+    fn hugging_face_npm_and_xai_tokens() {
+        let h = key("hf", "_abcdefghijklmnopqrstuvwxyzABCDEFGH");
+        hides(&format!("hub {h}"), &h);
+        let n = key("npm", "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ");
+        hides(&format!("registry {n}"), &n);
+        let x = key("xa", "i-abcdefghijklmnopqrstuvwx");
+        hides(&format!("grok {x}"), &x);
+    }
+
+    #[test]
+    fn stripe_live_and_test_keys() {
+        let s = key("s", "k_live_abcdefghijklmnop1234");
+        hides(&format!("charge with {s}"), &s);
+        let r = key("r", "k_test_abcdefghijklmnop1234");
+        hides(&format!("restricted {r}"), &r);
+    }
+
+    #[test]
+    fn basic_authorization_header_only_with_its_prefix() {
+        hides("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA");
+        let prose = "set the basic configuration before the first run";
+        assert_eq!(redact(prose), prose);
     }
 
     #[test]

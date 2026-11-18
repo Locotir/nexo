@@ -51,8 +51,7 @@ impl App {
                     if self.permission_mode != PermissionMode::Plan {
                         self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
                     }
-                    self.input.set_text(text);
-                    self.submit();
+                    self.submit_expanded(text, false);
                 }
                 _ if self.permission_mode == PermissionMode::Plan => {
                     self.notice(Level::Info, "already in plan mode · /plan off or Shift+Tab leaves it")
@@ -75,13 +74,15 @@ impl App {
                 ) {
                     self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
                 }
-                self.input.set_text(&format!(
-                    "Plan this multi-agent task and submit it using ultracode_execute. \
+                self.submit_expanded(
+                    &format!(
+                        "Plan this multi-agent task and submit it using ultracode_execute. \
                     Do not launch agents directly. Consider configured providers and model prices; \
                     mark unavailable information unknown and never invent it. Use start_clean only if requested; \
                     it does not isolate project files or remove the agent profile.\n\nTask:\n{task}"
-                ));
-                self.submit_ultracode();
+                    ),
+                    true,
+                );
             }
             Command::Prompt => self.send(AgentCommand::ShowPrompt),
             Command::PromptEdit => self.prompt_edit(),
@@ -178,8 +179,7 @@ impl App {
                 if self.session_title.is_empty() {
                     self.send(AgentCommand::Rename { title: "/init".into() });
                 }
-                self.input.set_text(INIT_PROMPT);
-                self.submit();
+                self.submit_expanded(INIT_PROMPT, false);
             }
             Command::Review(arg) => self.git_prompt(
                 "/review",
@@ -263,29 +263,31 @@ impl App {
             Command::Diff => self.open_diffview(),
             Command::Resume(what) => {
                 let w = what.trim();
-                let found = self.opts.sessions.iter().find(|(id, _)| id == w).or_else(|| {
-                    let mut by_title = self.opts.sessions.iter().filter(|(_, t)| t.eq_ignore_ascii_case(w));
+                let found = self.opts.sessions.iter().find(|r| r.id == w).or_else(|| {
+                    let mut by_title = self.opts.sessions.iter().filter(|r| r.title.eq_ignore_ascii_case(w));
                     by_title.next().filter(|_| by_title.next().is_none())
                 });
                 match found {
-                    Some((id, _)) => {
-                        let id = id.clone();
+                    Some(r) => {
+                        let id = r.id.clone();
                         self.send(AgentCommand::Resume { id });
                     }
-                    None => self.notice(Level::Warn, format!("/resume: no session '{w}' here · /resume lists them")),
+                    // The list is a snapshot: a session made since it was read (by this process before a /new or a
+                    // /fork, or in another terminal) is not in it. A word shaped like an id goes to the agent, which
+                    // knows the files and says so when there is no such session.
+                    None if !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+                        self.send(AgentCommand::Resume { id: w.to_string() })
+                    }
+                    None => self.notice(Level::Warn, format!("/resume: no session '{w}' · /resume lists them")),
                 }
             }
             Command::Sessions => {
-                if self.opts.sessions.is_empty() {
-                    self.notice(Level::Info, "no earlier sessions here");
-                } else {
-                    let items = self
-                        .opts
-                        .sessions
-                        .iter()
-                        .map(|(id, title)| PickItem { label: id.clone(), value: id.clone(), hint: title.clone() })
-                        .collect();
-                    self.modal = Some(Modal::Picker(Picker::new(PickKind::Session, "Sessions", items, None)));
+                // Read again from disk: the list from the start lacks the sessions made since. The picker opens at
+                // once on what is known and takes the fresh list when it comes; with nothing known it waits for it.
+                self.send(AgentCommand::ListSessions);
+                self.sessions_asked = self.opts.sessions.is_empty();
+                if !self.sessions_asked {
+                    self.open_sessions();
                 }
             }
             // `/shared-memory` alone picks the sessions whose memory joins the next message; `read` and `write` are the
@@ -306,13 +308,8 @@ impl App {
             }
             Command::Mem(None) => {
                 let here = self.session_id.clone().unwrap_or_default();
-                let items: Vec<PickItem> = self
-                    .opts
-                    .sessions
-                    .iter()
-                    .filter(|(id, _)| *id != here)
-                    .map(|(id, title)| PickItem { label: id.clone(), value: id.clone(), hint: title.clone() })
-                    .collect();
+                // the sessions of every folder: what another project learned is a fair thing to share
+                let items: Vec<PickItem> = self.session_items().into_iter().filter(|it| it.value != here).collect();
                 if items.is_empty() {
                     self.notice(Level::Info, "no other session to share from");
                 } else {
@@ -386,22 +383,25 @@ impl App {
     }
 
     /// `/doctor`: the checks of `nexo doctor --offline`, run by this same program and shown here.
-    /// The live call to the provider stays with the shell command.
+    /// The live call to the provider stays with the shell command. The checks run on a thread: a key
+    /// command that waits for a passphrase must not stop the screen from drawing or the keys from being read.
     pub(super) fn run_doctor(&mut self) {
+        if self.doctor.is_some() {
+            return self.notice(Level::Info, "/doctor: still checking");
+        }
         let exe = std::env::current_exe().ok().filter(|e| {
             e.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s == "nexo" || s.starts_with("nexo-cli"))
         });
-        let out = exe.and_then(|e| {
-            std::process::Command::new(e).args(["doctor", "--offline"]).current_dir(&self.cwd).output().ok()
+        let Some(exe) = exe else {
+            return self.notice(Level::Warn, "/doctor: run `nexo doctor` in a shell");
+        };
+        let cwd = self.cwd.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(doctor_probe(&exe, &cwd, DOCTOR_WAIT));
         });
-        match out {
-            Some(o) => {
-                let mut text = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
-                text.push_str("\n(`nexo doctor` in a shell also calls the provider)");
-                self.notice(if o.status.success() { Level::Info } else { Level::Warn }, text);
-            }
-            None => self.notice(Level::Warn, "/doctor: run `nexo doctor` in a shell"),
-        }
+        self.doctor = Some(rx);
+        self.notice(Level::Info, "/doctor: checking...");
     }
 
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
@@ -421,11 +421,13 @@ impl App {
 
     /// The line printed when the interface closes on a session something was said in: how to come back to it.
     pub fn resume_hint(&self) -> Option<String> {
+        self.resumable_id().map(|id| format!("nexo --resume {id}   (or nexo -c here)"))
+    }
+
+    /// The session `nexo --resume` can bring back: one something was said in. An empty one was never written.
+    pub fn resumable_id(&self) -> Option<&str> {
         let id = self.session_id.as_deref()?;
-        self.blocks
-            .iter()
-            .any(|b| matches!(b, Block::User { .. }))
-            .then(|| format!("nexo --resume {id}   (or nexo -c here)"))
+        self.blocks.iter().any(|b| matches!(b, Block::User { .. })).then_some(id)
     }
 
     pub(super) fn nothing_chosen(&self) -> bool {
@@ -592,4 +594,79 @@ impl App {
             }
         }
     }
+}
+
+/// How long `/doctor` waits for `nexo doctor --offline` before it gives up on it.
+const DOCTOR_WAIT: Duration = Duration::from_secs(15);
+
+/// Runs `exe doctor --offline` in `cwd` and returns whether it succeeded and what to show. A child that
+/// outlives `wait` is killed: the only thing the offline checks can wait on is a key command or a
+/// credential helper that is itself stuck, and a stuck one must not leave a process behind.
+pub(super) fn doctor_probe(exe: &std::path::Path, cwd: &std::path::Path, wait: Duration) -> (bool, String) {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let shell_hint = "/doctor: no answer, run `nexo doctor` in a shell".to_string();
+    let mut cmd = Command::new(exe);
+    cmd.args(["doctor", "--offline"])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // its own process group, so ending the probe can end what the key command started too
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let Ok(mut child) = cmd.spawn() else {
+        return (false, shell_hint);
+    };
+    // read aside, so a child that fills the pipe cannot stall in write while this loop waits for its exit
+    let Some(mut out) = child.stdout.take() else {
+        kill_tree(&mut child);
+        return (false, shell_hint);
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let deadline = Instant::now() + wait;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            _ => {
+                kill_tree(&mut child);
+                return (false, format!("/doctor: no answer in {} s; run `nexo doctor` in a shell", wait.as_secs()));
+            }
+        }
+    };
+    // the child has exited, so its end of the pipe is closed unless a grandchild kept it: do not wait on that
+    let bytes = rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
+    let mut text = String::from_utf8_lossy(&bytes).trim_end().to_string();
+    text.push_str("\n(`nexo doctor` in a shell also calls the provider)");
+    (status.success(), text)
+}
+
+/// Ends the probe and everything it started. A key command is a grandchild of this process and keeps
+/// the output pipe open, so killing only the probe would leave it running and the reader waiting on it.
+/// Unix: the probe leads its own process group and the whole group is signalled. Windows has no groups,
+/// so the tree under it goes (`taskkill /T`), called while the probe is still alive.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: a plain signal to the process group the probe created for itself.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }

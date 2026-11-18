@@ -215,7 +215,14 @@ fn model_card_and_welcome_box() {
     let b = Block::Model {
         provider: "deepseek".into(),
         model: "deepseek-chat".into(),
-        pricing: Some(Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0, cache_write_1h: 0.0 }),
+        pricing: Some(Pricing {
+            input: 0.28,
+            output: 0.42,
+            cache_read: 0.028,
+            cache_write: 0.0,
+            cache_write_1h: 0.0,
+            long: None,
+        }),
         context_window: Some(128_000),
         max_output: Some(8192),
         source: "catalogue".into(),
@@ -725,4 +732,31 @@ fn an_expanded_finished_call_shows_the_description_then_the_command_once() {
     let t = texts(&described(ToolStatus::Done, false, Some(out)).render(80, &Theme::dark(), opts()));
     assert!(t[0].contains("Reading the tool selection"), "{t:?}");
     assert_eq!(t.iter().filter(|l| l.contains("sed -n")).count(), 1, "{t:?}");
+}
+
+#[test]
+fn a_failed_exit_code_stays_on_the_head_even_when_the_command_text_contains_it() {
+    let shell = |command: &str| Block::Tool {
+        id: "x1".into(),
+        name: "bash".into(),
+        summary: format!("bash: {command}"),
+        args: Value::Null,
+        status: ToolStatus::Done,
+        progress: vec![],
+        output: Some(ToolOutput::ok("[exit code 3]").with_display(ToolDisplay::Shell {
+            command: command.into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(3),
+        })),
+        started: None,
+        elapsed_ms: Some(2),
+        folded: true,
+    };
+    // the dedupe of stats the summary already says (`1/3 done`) must not eat the chip of a command
+    // that merely spells the same words
+    let t = texts(&shell(r#"sh -c "exit 3""#).render(80, &Theme::dark(), opts()));
+    assert!(t[0].contains("· exit 3"), "{t:?}");
+    let t = texts(&shell("cat /nonexistent; false").render(80, &Theme::dark(), opts()));
+    assert!(t[0].contains("· exit 3"), "{t:?}");
 }

@@ -29,6 +29,15 @@ pub struct Lane {
     pub routine_section: Option<String>,
     /// Dollars the lane may spend a day.
     pub max_spend_day: Option<f64>,
+    /// The OS sandbox for the lane's bash tool: `off`, `workspace-write` or `read-only`; none: the setting of
+    /// the lane's folder and of the person, as for any session. A lane runs unattended, so this is where a
+    /// sandbox is set for it alone, without touching the person's own sessions.
+    pub sandbox: Option<String>,
+    /// Whether sandboxed commands of the lane may use the network; none: the setting as it is.
+    pub sandbox_network: Option<bool>,
+    /// Folders besides `dir` that sandboxed commands of the lane may write (`~` is the home folder, a relative
+    /// name is taken from `dir`); only those that exist count.
+    pub sandbox_write_dirs: Vec<String>,
 }
 
 /// `team.toml` as read: the lanes, and the keys nexo does not read said in one line.
@@ -84,8 +93,15 @@ impl TeamConfig {
                     ));
                 }
             }
-            if l.max_spend_day.is_some_and(|d| d.is_nan() || d <= 0.0) {
-                return Err(format!("lane {n}: max_spend_day must be more than 0"));
+            if let Some(s) = &l.sandbox {
+                if crate::sandbox::SandboxMode::parse(s).is_none() {
+                    return Err(format!(
+                        "lane {n}: unknown sandbox {s:?}; use one of: off, workspace-write, read-only"
+                    ));
+                }
+            }
+            if l.max_spend_day.is_some_and(|d| !d.is_finite() || d <= 0.0) {
+                return Err(format!("lane {n}: max_spend_day must be a number more than 0"));
             }
         }
         // every key a lane can have, so a slip in one it left out is named with the key it was meant to be
@@ -110,7 +126,40 @@ impl Lane {
             o.get_or_insert_with(String::new);
         }
         l.max_spend_day.get_or_insert(0.0);
+        l.sandbox.get_or_insert_with(String::new);
+        l.sandbox_network.get_or_insert(false);
         l
+    }
+
+    /// Puts the lane's sandbox settings on `config`, over what the folder's and the person's files said. A
+    /// managed policy still decides: a mode looser than its floor, network it shuts and write folders it fixes
+    /// are refused or left as they are, as for the command line.
+    pub fn apply_sandbox(&self, config: &mut Config) -> Result<(), String> {
+        if let Some(s) = &self.sandbox {
+            let mode = crate::sandbox::SandboxMode::parse(s).ok_or_else(|| format!("unknown sandbox mode {s:?}"))?;
+            if let Some(p) = &config.managed {
+                p.check_sandbox(mode)?;
+            }
+            config.permissions.sandbox = mode;
+        }
+        if let Some(network) = self.sandbox_network {
+            if let Some(p) = &config.managed {
+                p.check_sandbox_network(network)?;
+            }
+            config.permissions.sandbox_network = network;
+        }
+        let fixed = config.managed.as_ref().is_some_and(|m| m.permissions.sandbox_write_dirs.is_some());
+        if !fixed {
+            let base = crate::team::lane_dir(self);
+            for d in &self.sandbox_write_dirs {
+                // a name that is not a folder is left out, as the global setting leaves it out
+                let Ok(real) = base.join(crate::team::expand_home(d)).canonicalize() else { continue };
+                if real.is_dir() && !config.permissions.sandbox_write_dirs.contains(&real) {
+                    config.permissions.sandbox_write_dirs.push(real);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -194,6 +243,15 @@ routine_section = "IOS"
     }
 
     #[test]
+    fn a_daily_cap_that_is_not_a_finite_number_above_zero_is_refused() {
+        for bad in ["inf", "-inf", "nan", "0.0", "-1.0"] {
+            let t = format!("[[lane]]\nname = \"a\"\ndir = \"/w\"\nroutine = \"x\"\nmax_spend_day = {bad}\n");
+            let e = TeamConfig::parse(&t).unwrap_err();
+            assert!(e.contains("max_spend_day must be a number more than 0"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
     fn durations_are_a_whole_number_and_one_unit() {
         use std::time::Duration;
         assert_eq!(parse_every("1s"), Ok(Duration::from_secs(1)));
@@ -223,5 +281,69 @@ routine_section = "IOS"
         assert_eq!(routine_section(text, "IOS").as_deref(), Some("not this one"));
         assert_eq!(routine_section(text, "MAC"), None);
         assert_eq!(routine_section("WINDOWS:\n```\nnever closed\n", "WINDOWS"), None);
+    }
+
+    fn lane_with(extra: &str) -> String {
+        format!("[[lane]]\nname = \"a\"\ndir = \"/w\"\nroutine = \"x\"\n{extra}")
+    }
+
+    #[test]
+    fn a_lane_reads_the_three_sandbox_modes_and_refuses_any_other() {
+        use crate::sandbox::SandboxMode;
+        for (text, mode) in [
+            ("off", SandboxMode::Off),
+            ("workspace-write", SandboxMode::WorkspaceWrite),
+            ("read-only", SandboxMode::ReadOnly),
+        ] {
+            let f = TeamConfig::parse(&lane_with(&format!("sandbox = \"{text}\"\nsandbox_network = true\n"))).unwrap();
+            assert_eq!(f.unread, None, "{text}: the keys are read");
+            let lane = &f.team.lane[0];
+            assert_eq!(lane.sandbox.as_deref().and_then(SandboxMode::parse), Some(mode), "{text}");
+            assert_eq!(lane.sandbox_network, Some(true));
+        }
+        let e = TeamConfig::parse(&lane_with("sandbox = \"sideways\"\n")).unwrap_err();
+        assert!(e.contains("unknown sandbox"), "{e}");
+        let none = TeamConfig::parse(&lane_with("")).unwrap().team;
+        assert_eq!((none.lane[0].sandbox.clone(), none.lane[0].sandbox_network), (None, None), "default: unchanged");
+    }
+
+    #[test]
+    fn a_lane_with_a_sandbox_sets_it_on_its_config_and_keeps_only_write_folders_that_exist() {
+        use crate::sandbox::SandboxMode;
+        let d = tempfile::tempdir().unwrap();
+        let shared = d.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        let real = shared.canonicalize().unwrap();
+        let lane = Lane {
+            dir: d.path().display().to_string(),
+            sandbox: Some("workspace-write".into()),
+            sandbox_network: Some(false),
+            sandbox_write_dirs: vec!["shared".into(), "missing".into(), "shared".into()],
+            ..Lane::default()
+        };
+        let mut config = crate::Config::default();
+        config.permissions.sandbox_network = true;
+        lane.apply_sandbox(&mut config).unwrap();
+        assert_eq!(config.permissions.sandbox, SandboxMode::WorkspaceWrite);
+        assert!(!config.permissions.sandbox_network);
+        assert_eq!(config.permissions.sandbox_write_dirs, vec![real]);
+        let mut untouched = crate::Config::default();
+        Lane::default().apply_sandbox(&mut untouched).unwrap();
+        assert_eq!(untouched, crate::Config::default(), "a lane that says nothing changes nothing");
+    }
+
+    #[test]
+    fn a_managed_policy_still_bounds_the_sandbox_of_a_lane() {
+        let policy = "[permissions]\nsandbox = \"workspace-write\"\nsandbox_network = false\n";
+        let managed = crate::managed::ManagedPolicy::parse(policy).unwrap();
+        let mut config = crate::Config { managed: Some(std::sync::Arc::new(managed)), ..Default::default() };
+        let lane = |sandbox: &str, network: bool| Lane {
+            sandbox: Some(sandbox.into()),
+            sandbox_network: Some(network),
+            ..Lane::default()
+        };
+        assert!(lane("off", false).apply_sandbox(&mut config).is_err());
+        assert!(lane("workspace-write", true).apply_sandbox(&mut config).is_err());
+        assert!(lane("read-only", false).apply_sandbox(&mut config).is_ok());
     }
 }

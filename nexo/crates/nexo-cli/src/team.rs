@@ -307,7 +307,13 @@ fn add_lane(given: Given, tty: bool) -> i32 {
     if !team::lane_dir(&lane).is_dir() {
         eprintln!("nexo team: note: {} does not exist yet", team::lane_dir(&lane).display());
     }
-    println!("added {}; start it with: nexo team start {}", lane.name, lane.name);
+    // A lane without a cap runs until it is stopped; the runner only enforces one when it is set.
+    let cap = if lane.max_spend_day.is_none() {
+        "no daily cap (--max-spend-day, or max_spend_day in team.toml); "
+    } else {
+        ""
+    };
+    println!("added {}; {cap}start it with: nexo team start {}", lane.name, lane.name);
     0
 }
 

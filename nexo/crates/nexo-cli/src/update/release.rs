@@ -165,7 +165,7 @@ pub(super) fn newer(list: &serde_json::Value, when: &str) -> u32 {
 /// Whether the check is turned off (`[ui] update_check = false`, `NEXO_NO_UPDATE_CHECK`) or cannot
 /// work (a build that does not know its commit).
 pub fn off(config: &nexo_core::Config) -> bool {
-    !config.ui.update_check || std::env::var_os("NEXO_NO_UPDATE_CHECK").is_some() || commit() == "unknown"
+    !config.ui.update_check || nexo_core::env::env_flag("NEXO_NO_UPDATE_CHECK") || commit() == "unknown"
 }
 
 /// The notice for the interface: none when up to date.

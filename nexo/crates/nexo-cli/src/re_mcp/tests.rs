@@ -409,3 +409,11 @@ fn api_needs_the_flag_for_a_call_or_a_save_but_not_for_a_dry_run_or_a_refusal() 
     assert!(result_text(&a[2]).contains("@env:VAR"), "{}", result_text(&a[2]));
     assert!(result_text(&a[3]).contains("needs"), "{}", result_text(&a[3]));
 }
+
+#[test]
+fn an_unknown_tool_name_with_a_multibyte_character_at_the_cut_gets_an_error_not_a_panic() {
+    // Byte 4 of "aéé" falls inside the second "é", where a byte slice used to panic.
+    let a = talk(false, &[call(1, "aéé", json!({}))]);
+    assert_eq!(a[0]["error"]["code"], -32602);
+    assert!(a[0]["error"]["message"].as_str().unwrap().contains("unknown tool"));
+}

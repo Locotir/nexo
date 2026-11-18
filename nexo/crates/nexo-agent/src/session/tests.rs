@@ -237,11 +237,79 @@ fn usage_lines_say_when_whose_and_how_much_was_held_and_old_readers_still_read_t
     std::fs::write(s.path(), old).unwrap();
     let mut back = Session::open_path(s.path()).unwrap();
     assert_eq!(back.usage().input, 6);
-    // a rewrite keeps the totals in one line marked as a sum
+    // a rewrite keeps each call's own line, with its time and model, and sums nothing it can copy
     back.rewind(1).unwrap();
     let text = std::fs::read_to_string(back.path()).unwrap();
-    let sums = text.lines().filter(|l| l.contains("\"type\":\"usage\"") && l.contains("\"kind\":\"sum\"")).count();
-    assert_eq!(sums, 1, "{text}");
+    let kept: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| v["type"] == "usage")
+        .collect();
+    assert_eq!(kept.len(), 2, "{text}");
+    assert!(kept.iter().all(|v| v["kind"] != "sum"), "{text}");
+    assert_eq!(kept[0]["model"], "m1");
+    assert!(kept[0]["ts"].as_str().is_some_and(|t| t.contains('T')));
+    assert_eq!(Session::open_path(back.path()).unwrap().usage().input, 6);
+}
+
+#[test]
+fn a_compaction_keeps_the_line_of_every_call_paid_before_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("hello there")).unwrap();
+    let main = |model: &str, held| UsageMeta { model: Some(model.into()), kind: Some(UsageKind::Main), held };
+    s.record_usage_meta(Usage { input: 5, ..Default::default() }, 0.5, main("m1", Some(42))).unwrap();
+    s.record_model("mock", "m2").unwrap();
+    s.record_usage_meta(Usage { input: 7, ..Default::default() }, 0.25, main("m2", None)).unwrap();
+    let before: Vec<String> = usage_and_model_lines(s.path());
+    assert_eq!(before.len(), 3);
+    s.reset_with(&[Message::user("[summary]")]).unwrap();
+    // the same bytes in the same order, so time, model, kind and held tokens survive
+    assert_eq!(usage_and_model_lines(s.path()), before);
+    // a second rewrite folds nothing either
+    s.reset_with(&[Message::user("[summary two]")]).unwrap();
+    assert_eq!(usage_and_model_lines(s.path()), before);
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.usage().input, 12);
+    assert!((back.cost() - 0.75).abs() < 1e-12);
+    assert_eq!(back.meta().model, "m2");
+}
+
+#[test]
+fn a_rewrite_sums_only_the_usage_that_has_no_line_in_the_file() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("hello there")).unwrap();
+    s.record_usage(Usage { input: 5, output: 1, ..Default::default() }, 0.5).unwrap();
+    s.record_usage(Usage { input: 3, ..Default::default() }, 0.25).unwrap();
+    // a usage write that failed: memory has the call, the file does not
+    let text = std::fs::read_to_string(s.path()).unwrap();
+    let last = text.lines().rfind(|l| l.contains("\"type\":\"usage\"")).unwrap();
+    std::fs::write(s.path(), text.replacen(&format!("{last}\n"), "", 1)).unwrap();
+    s.reset_with(&[Message::user("[summary]")]).unwrap();
+    let text = std::fs::read_to_string(s.path()).unwrap();
+    let usage: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| v["type"] == "usage")
+        .collect();
+    assert_eq!(usage.len(), 2, "{text}");
+    assert_ne!(usage[0]["kind"], "sum");
+    assert_eq!((usage[1]["kind"].as_str(), usage[1]["usage"]["input"].as_u64()), (Some("sum"), Some(3)), "{text}");
+    assert_eq!(usage[1]["usage"]["output"].as_u64(), Some(0), "only the remainder is summed");
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.usage().input, 8);
+    assert!((back.cost() - 0.75).abs() < 1e-12);
+}
+
+/// The `usage` and `model` lines of a session file, as written.
+fn usage_and_model_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("{\"type\":\"usage\"") || l.starts_with("{\"type\":\"model\""))
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
@@ -440,8 +508,8 @@ fn a_second_writer_is_refused_and_a_stale_lock_taken_over() {
     assert!(lock.is_file());
     drop(s);
     assert!(!lock.exists(), "the lock goes with its session");
-    // another live writer (pid 1 always runs) holds it
-    std::fs::write(&lock, "1").unwrap();
+    // another live writer holds it
+    std::fs::write(&lock, other_live_pid().to_string()).unwrap();
     let mut s = Session::open_path(&p).unwrap();
     let e = s.append(&Message::user("x")).unwrap_err().to_string();
     assert!(e.contains("in use"), "{e}");
@@ -487,6 +555,40 @@ fn continue_skips_empty_sessions_and_matches_the_folder_however_written() {
 }
 
 #[test]
+fn continue_in_a_folder_skips_a_scripts_session_unless_it_is_the_only_one() {
+    let d = tempfile::tempdir().unwrap();
+    let work = d.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let dir = d.path().join("sessions");
+    let mut own = Session::create_in(&dir, &work, "mock", "m").unwrap();
+    own.append(&Message::user("a real conversation")).unwrap();
+    let own_id = own.id().to_string();
+    drop(own);
+    // a newer session a program started: its meta line says `headless`, as `nexo -p` writes it
+    let mut script = Session::create_in(&dir, &work, "mock", "m").unwrap();
+    script.append(&Message::user("a script run")).unwrap();
+    let script_id = script.id().to_string();
+    let script_path = script.path().to_path_buf();
+    drop(script);
+    let text = std::fs::read_to_string(&script_path).unwrap();
+    let (first, rest) = text.split_once('\n').unwrap();
+    let Line::Meta(mut m) = serde_json::from_str(first).unwrap() else { panic!("no meta line") };
+    m.headless = true;
+    std::fs::write(&script_path, format!("{}\n{rest}", serde_json::to_string(&Line::Meta(m)).unwrap())).unwrap();
+    // the script run is the newer file, whatever the clock said when both were written
+    let f = File::options().write(true).open(&script_path).unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60)).unwrap();
+    drop(f);
+    assert_eq!(latest_for_in(&dir, &work).map(|m| m.id), Some(script_id));
+    assert_eq!(latest_own_for_in(&dir, &work).map(|m| m.id), Some(own_id.clone()));
+    std::fs::remove_file(dir.join(format!("{own_id}.jsonl"))).unwrap();
+    assert!(
+        latest_own_for_in(&dir, &work).is_none(),
+        "a folder with only a script's session has none of the person's own"
+    );
+}
+
+#[test]
 fn a_live_writer_keeps_its_lock_however_old() {
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
@@ -499,29 +601,41 @@ fn a_live_writer_keeps_its_lock_however_old() {
         let f = File::options().write(true).open(&lock).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600)).unwrap();
     };
-    // pid 1 always runs; its lock, with when it started, is two days old
-    two_days_old(&pid1_stamp());
+    // another process that always runs; its lock, with when it started, is two days old
+    two_days_old(&live_pid_stamp());
     let mut s = Session::open_path(&p).unwrap();
     let r = s.append(&Message::user("x"));
-    // Linux and macOS tell when a process started (`/proc`, `ps`)
-    if cfg!(any(target_os = "linux", target_os = "macos")) {
+    // Linux, macOS and Windows tell when a process started (`/proc`, `ps`, the process times)
+    if proc_start(other_live_pid()).is_some() {
         assert!(r.unwrap_err().to_string().contains("in use"));
     } else {
         r.unwrap(); // no start time here: a pid in use may be another process, the age decides
     }
     drop(s);
     // without its start time, a live pid may have been taken by another process since: the age decides
-    two_days_old("1");
+    two_days_old(&other_live_pid().to_string());
     let mut s = Session::open_path(&p).unwrap();
     s.append(&Message::user("y")).unwrap();
     assert_eq!(lock_pid(&lock), Some(std::process::id()));
 }
 
-/// The lock pid 1 would write: its pid and, where the system tells, when it started and the boot.
-fn pid1_stamp() -> String {
-    match (proc_start(1), boot_id()) {
-        (Some(start), Some(boot)) => format!("1 {start} {boot}"),
-        _ => "1".into(),
+/// A process other than the test that always runs: init on Unix, the System process on Windows (its pids are
+/// multiples of 4, so pid 1 names nothing there).
+fn other_live_pid() -> u32 {
+    if cfg!(windows) {
+        4
+    } else {
+        1
+    }
+}
+
+/// The lock that process would write: its pid and, where the system tells, when it started and the boot.
+fn live_pid_stamp() -> String {
+    let pid = other_live_pid();
+    match (proc_start(pid), boot_id()) {
+        (Some(start), Some(boot)) => format!("{pid} {start} {boot}"),
+        (Some(start), None) => format!("{pid} {start}"),
+        _ => pid.to_string(),
     }
 }
 
@@ -616,7 +730,7 @@ fn a_held_session_is_read_but_not_claimed_nor_touched() {
     // the other writer is in the middle of a line
     OpenOptions::new().append(true).open(&p).unwrap().write_all(b"{\"type\":\"ti").unwrap();
     let before = std::fs::read(&p).unwrap();
-    std::fs::write(lock_path(&p), "1").unwrap(); // pid 1 always runs
+    std::fs::write(lock_path(&p), other_live_pid().to_string()).unwrap();
     let mut s = Session::open_path(&p).unwrap();
     assert_eq!(s.messages().len(), 1);
     assert!(s.claim().unwrap_err().to_string().contains("in use"));
@@ -731,7 +845,7 @@ fn a_session_in_use_elsewhere_is_not_trashed() {
     let id = s.id().to_string();
     let lock = lock_path(s.path());
     drop(s);
-    std::fs::write(&lock, "1").unwrap(); // pid 1 always runs
+    std::fs::write(&lock, other_live_pid().to_string()).unwrap();
     let e = trash_in(d.path(), &id).unwrap_err().to_string();
     assert!(e.contains("in use"), "{e}");
     std::fs::remove_file(&lock).unwrap();
@@ -1049,6 +1163,67 @@ fn a_line_cut_by_a_full_disk_does_not_swallow_the_next_good_line() {
     assert_eq!(back.skipped_lines(), 1);
 }
 
+/// What a process killed in the middle of a line leaves at the end of `p`.
+fn cut_the_last_line(p: &Path) -> Vec<u8> {
+    let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
+    f.write_all(br#"{"type":"message","index":9,"ts":"2026"#).unwrap();
+    std::fs::read(p).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_last_line_cut_by_a_crash_is_removed_at_the_claim_so_no_later_open_warns_about_it() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let whole = std::fs::read(&p).unwrap();
+    cut_the_last_line(&p);
+    let mut s = Session::open_path(&p).unwrap();
+    assert_eq!(s.skipped_lines(), 1);
+    s.claim().unwrap();
+    assert!(s.cut_tail_removed());
+    assert_eq!(s.skipped_lines(), 0);
+    assert_eq!(std::fs::read(&p).unwrap(), whole, "only the cut line went");
+    s.append(&Message::assistant("after")).unwrap();
+    drop(s);
+    let back = Session::open_path(&p).unwrap();
+    assert_eq!(back.skipped_lines(), 0);
+    assert!(!back.cut_tail_removed());
+    assert_eq!(back.messages().last().unwrap().text(), "after");
+}
+
+#[test]
+fn a_cut_last_line_stays_and_is_closed_when_somebody_wrote_after_the_file_was_read() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let cut = cut_the_last_line(&p);
+    let mut s = Session::open_path(&p).unwrap();
+    // another writer got in between the read and the claim: what follows the cut is theirs
+    std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"x\n").unwrap();
+    s.claim().unwrap();
+    assert!(!s.cut_tail_removed());
+    assert_eq!(s.skipped_lines(), 1);
+    assert!(std::fs::read(&p).unwrap().starts_with(&cut));
+    s.append(&Message::assistant("after")).unwrap();
+    drop(s);
+    let back = Session::open_path(&p).unwrap();
+    assert_eq!(back.messages().last().unwrap().text(), "after");
+    assert_eq!(back.skipped_lines(), 1);
+}
+
+#[test]
+fn a_whole_last_line_of_a_newer_type_that_only_lacks_its_end_is_kept_at_the_claim() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let whole = std::fs::read(&p).unwrap();
+    let future = br#"{"type":"from_the_future","x":[1,2,3]}"#;
+    std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(future).unwrap();
+    let mut s = Session::open_path(&p).unwrap();
+    s.claim().unwrap();
+    assert!(!s.cut_tail_removed());
+    let now = std::fs::read(&p).unwrap();
+    assert_eq!(now, [&whole[..], &future[..], &b"\n"[..]].concat(), "closed, not cut off");
+}
+
 #[test]
 fn a_file_removed_or_replaced_by_a_folder_is_a_failure_to_save_not_a_silent_success() {
     let d = tempfile::tempdir().unwrap();
@@ -1297,4 +1472,479 @@ fn the_start_read_from_ps_does_not_depend_on_the_locale_or_the_timezone() {
         .unwrap();
     // the hash is that of the text in the C locale and UTC, which every nexo gets, whatever its own settings
     assert_eq!(ps_start(me), Some(fnv(&String::from_utf8_lossy(&printed.stdout))));
+}
+
+/// The `ts` of every message line in the session file, in order.
+fn message_stamps(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter_map(|l| match serde_json::from_str::<Line>(l) {
+            Ok(Line::Message { ts, .. }) => Some(ts),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A session with one call answered the way the loop saves it: the output held, then the result appended.
+fn answered(dir: &Path, printed: &ToolOutput, sent: &str) -> Session {
+    let mut s = Session::create_in(dir, Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("read the file")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", serde_json::json!({"path": "a"}))]))
+        .unwrap();
+    s.hold_output("c1", printed);
+    s.append(&Message::tool_results(vec![Part::tool_result("c1", sent, false)])).unwrap();
+    s
+}
+
+fn file_display(text: &str) -> ToolDisplay {
+    ToolDisplay::File { path: "a".into(), text: text.into(), start_line: 1 }
+}
+
+/// The `tool_output` lines of a session file.
+fn output_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| l.contains("\"type\":\"tool_output\""))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn a_rewind_keeps_the_time_each_kept_message_was_said() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append_at(&Message::user("first"), "2026-01-01T10:00:00Z".into()).unwrap();
+    s.append_at(&Message::assistant("second"), "2026-01-01T11:00:00Z".into()).unwrap();
+    s.rewind(1).unwrap();
+    assert_eq!(message_stamps(s.path()), ["2026-01-01T10:00:00Z"]);
+    s.append(&Message::assistant("again")).unwrap();
+    assert_eq!(message_stamps(s.path())[0], "2026-01-01T10:00:00Z", "a later rewrite still keeps it");
+    let p = s.path().to_path_buf();
+    drop(s);
+    let mut back = Session::open_path(&p).unwrap();
+    back.rewind(2).unwrap();
+    assert_eq!(message_stamps(&p)[0], "2026-01-01T10:00:00Z", "a reopened session keeps the times it read");
+}
+
+#[test]
+fn a_compaction_keeps_the_time_of_each_message_it_keeps_and_stamps_the_summary_now() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    for (i, text) in ["one", "two", "three", "four"].iter().enumerate() {
+        let m = if i % 2 == 0 { Message::user(*text) } else { Message::assistant(*text) };
+        s.append_at(&m, format!("2026-01-01T1{i}:00:00Z")).unwrap();
+    }
+    // the summary is inserted in front of the kept tail
+    s.reset_with(&[Message::user("a summary of one and two"), Message::user("three"), Message::assistant("four")])
+        .unwrap();
+    let stamps = message_stamps(s.path());
+    assert_ne!(stamps[0], "2026-01-01T10:00:00Z", "the summary is new");
+    assert_eq!(stamps[1..], ["2026-01-01T12:00:00Z", "2026-01-01T13:00:00Z"]);
+    // the summary is spliced into the first kept message: that one changed, the ones after it did not
+    s.reset_with(&[Message::user("a summary of three"), Message::assistant("four")]).unwrap();
+    let again = message_stamps(s.path());
+    assert_ne!(again[0], "2026-01-01T12:00:00Z");
+    assert_eq!(again[1], "2026-01-01T13:00:00Z");
+    // nothing changed: every time stays
+    s.reset_with(&[Message::user("a summary of three"), Message::assistant("four")]).unwrap();
+    assert_eq!(message_stamps(s.path()), again);
+}
+
+#[test]
+fn a_fork_keeps_the_time_each_copied_message_was_said() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append_at(&Message::user("first"), "2026-01-01T10:00:00Z".into()).unwrap();
+    s.append_at(&Message::assistant("second"), "2026-01-01T11:00:00Z".into()).unwrap();
+    let f = s.fork(2).unwrap();
+    assert_eq!(message_stamps(f.path()), ["2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"]);
+}
+
+#[test]
+fn a_trashed_session_takes_its_task_list_along_and_a_restore_brings_it_back() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append(&Message::user("keep me")).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let live = nexo_tools::todo::file_in(d.path(), &id);
+    let binned = nexo_tools::todo::file_in(&trash_dir_in(d.path()), &id);
+    std::fs::write(&live, "[]").unwrap();
+    trash_in(d.path(), &id).unwrap();
+    assert!(!live.exists(), "no orphan list stays in the live folder");
+    assert!(binned.is_file());
+    restore_in(d.path(), &id).unwrap();
+    assert!(live.is_file() && !binned.exists());
+}
+
+#[test]
+fn a_fork_of_the_whole_conversation_copies_the_task_list_and_a_shorter_one_does_not() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    for t in ["one", "two", "three"] {
+        s.append(&Message::user(t)).unwrap();
+    }
+    std::fs::write(nexo_tools::todo::file_in(d.path(), s.id()), r#"[{"text":"a","status":"done"}]"#).unwrap();
+    let whole = s.fork(3).unwrap();
+    let copied = nexo_tools::todo::file_in(d.path(), whole.id());
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), r#"[{"text":"a","status":"done"}]"#);
+    let part = s.fork(2).unwrap();
+    assert!(!nexo_tools::todo::file_in(d.path(), part.id()).exists(), "the list may not match fewer messages");
+    let leftovers = std::fs::read_dir(d.path())
+        .unwrap()
+        .filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
+    assert_eq!(leftovers.count(), 0);
+}
+
+#[test]
+fn a_rewind_past_a_task_list_call_removes_the_list_saved_for_it_and_one_before_the_call_keeps_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append(&Message::user("go")).unwrap();
+    s.append(&Message::new(
+        Role::Assistant,
+        vec![Part::tool_call("c1", "todo", serde_json::json!({"items": [{"text": "a"}]}))],
+    ))
+    .unwrap();
+    let file = nexo_tools::todo::file_in(d.path(), s.id());
+    std::fs::write(&file, r#"[{"text":"a","status":"pending"}]"#).unwrap();
+    // cutting where no list call goes leaves the file
+    s.rewind(2).unwrap();
+    assert!(file.is_file());
+    s.rewind(1).unwrap();
+    assert!(!file.exists(), "the call that made the list is gone");
+}
+
+#[test]
+fn a_session_that_cannot_be_opened_names_its_file_and_the_cause() {
+    let d = tempfile::tempdir().unwrap();
+    let missing = d.path().join("abc123.jsonl");
+    let e = Session::open_path(&missing).err().expect("a missing file").to_string();
+    assert!(e.contains("no session abc123") && e.contains(&missing.display().to_string()), "{e}");
+    let bad = d.path().join("broken.jsonl");
+    std::fs::write(&bad, "this is not json\n").unwrap();
+    let e = Session::open_path(&bad).err().expect("a damaged file").to_string();
+    assert!(
+        e.contains(&bad.display().to_string()) && e.contains("damaged at line 1") && !e.contains("/new"),
+        "the next step belongs to the caller: {e}"
+    );
+    let dir_as_file = d.path().join("folder.jsonl");
+    std::fs::create_dir(&dir_as_file).unwrap();
+    let e = Session::open_path(&dir_as_file).err().expect("an unreadable file").to_string();
+    assert!(e.contains(&dir_as_file.display().to_string()) && e.contains("cannot be read"), "{e}");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_fresh_lock_of_a_process_that_has_exited_is_stale_on_windows() {
+    let d = tempfile::tempdir().unwrap();
+    let lock = d.path().join("x.jsonl.lock");
+    // Windows reuses freed pids fast and tests run in parallel, so another test may own the pid when the lock is
+    // read; a fresh exited pid per try makes that rare miss pass, while a real fault fails all five tries.
+    let stale = (0..5).any(|_| {
+        let mut child = std::process::Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        // just written, so only the pid can tell that nobody holds it
+        std::fs::write(&lock, pid.to_string()).unwrap();
+        holder(&lock).is_none()
+    });
+    assert!(stale);
+    // this process runs, and its own stamp (with the start time) names it
+    std::fs::write(&lock, stamp()).unwrap();
+    assert_eq!(holder(&lock), Some(Some(std::process::id())));
+    assert!(proc_start(std::process::id()).is_some(), "Windows tells when a process started");
+}
+
+#[test]
+fn an_output_the_result_holds_is_saved_once_and_read_back_whole() {
+    let d = tempfile::tempdir().unwrap();
+    let printed = ToolOutput::ok("alpha\nbeta").with_display(file_display("alpha\nbeta"));
+    let s = answered(d.path(), &printed, "alpha\nbeta");
+    let lines = output_lines(s.path());
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("\"result_chars\":10"), "{}", lines[0]);
+    assert!(lines[0].contains("\"content\":\"\""), "the text is in the message: {}", lines[0]);
+    assert!(lines[0].contains("\"kind\":\"file\""), "the display stays: {}", lines[0]);
+    assert_eq!(s.outputs()["c1"].content, "alpha\nbeta", "memory holds the text");
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.outputs()["c1"], s.outputs()["c1"]);
+    assert_eq!(back.skipped_lines(), 0);
+}
+
+#[test]
+fn an_output_the_model_was_sent_other_text_for_stays_whole_in_its_line() {
+    let d = tempfile::tempdir().unwrap();
+    // a note that says the lines were seen, a digest, or a line a guard added: the output line is the only copy
+    let printed = ToolOutput::ok("the whole output").with_display(file_display("the whole output"));
+    let s = answered(d.path(), &printed, "unchanged since your last read");
+    let lines = output_lines(s.path());
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("the whole output") && !lines[0].contains("result_chars"), "{}", lines[0]);
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "the whole output");
+}
+
+#[test]
+fn an_empty_output_is_not_left_to_the_result_that_says_no_output() {
+    let d = tempfile::tempdir().unwrap();
+    let s = answered(d.path(), &ToolOutput::ok(""), "(no output)");
+    assert!(!output_lines(s.path())[0].contains("result_chars"));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "");
+}
+
+#[test]
+fn an_output_with_no_result_to_hold_it_is_written_whole() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("run it")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "bash", serde_json::json!({"command": "ls"}))]))
+        .unwrap();
+    s.hold_output("c1", &ToolOutput::ok("kept text"));
+    assert!(output_lines(s.path()).is_empty(), "held until the result that answers it is appended");
+    // a rewrite writes what is held, and the result is not in the file: the line is the only copy
+    s.rewind(2).unwrap();
+    let lines = output_lines(s.path());
+    assert_eq!((lines.len(), lines[0].contains("kept text")), (1, true), "{lines:?}");
+    // the result appended after it does not write the output again
+    s.append(&Message::tool_results(vec![Part::tool_result("c1", "kept text", false)])).unwrap();
+    assert_eq!(output_lines(s.path()).len(), 1);
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "kept text");
+}
+
+#[test]
+fn the_text_of_an_output_survives_a_rewind_a_fork_and_a_compaction() {
+    let d = tempfile::tempdir().unwrap();
+    let text = "line one\nline two\nline three";
+    // a plain display: a file display would hold the text a second time, which is not what this checks
+    let printed = ToolOutput::ok(text);
+    let mut s = answered(d.path(), &printed, text);
+    s.append(&Message::assistant("done")).unwrap();
+    let slim = |p: &Path| output_lines(p).iter().all(|l| l.contains("\"result_chars\":") && !l.contains("line two"));
+    assert!(slim(s.path()));
+    // a rewind that keeps the result writes the output without the text again
+    s.rewind(4).unwrap();
+    assert!(slim(s.path()), "{:?}", output_lines(s.path()));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, text);
+    // a fork copies the call and its result: the same
+    let f = s.fork(3).unwrap();
+    assert!(slim(f.path()), "{:?}", output_lines(f.path()));
+    assert_eq!(Session::open_path(f.path()).unwrap().outputs()["c1"].content, text);
+    // a fork cut before the result keeps the text in the output line
+    let cut = s.fork(2).unwrap();
+    assert!(output_lines(cut.path())[0].contains("line two"), "{:?}", output_lines(cut.path()));
+    assert_eq!(Session::open_path(cut.path()).unwrap().outputs()["c1"].content, text);
+    // a compaction that kept the result as it was
+    let kept = s.messages().to_vec();
+    s.reset_with(&kept).unwrap();
+    assert!(slim(s.path()));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, text);
+    // a compaction that shortened it: the output line is the only whole copy
+    let mut short = kept.clone();
+    short[2] = Message::tool_results(vec![Part::tool_result("c1", "line one [cut]", false)]);
+    s.reset_with(&short).unwrap();
+    assert!(output_lines(s.path())[0].contains("line two"), "{:?}", output_lines(s.path()));
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.outputs()["c1"].content, text);
+    assert_eq!(back.messages()[2], short[2]);
+    // a rewind to before the result drops it and the line becomes whole
+    let other = tempfile::tempdir().unwrap();
+    let mut s = answered(other.path(), &printed, text);
+    s.rewind(2).unwrap();
+    assert!(output_lines(s.path())[0].contains("line two"));
+}
+
+#[test]
+fn a_100_kb_read_is_saved_in_under_1_2_times_its_bytes_in_the_message_and_the_display() {
+    let d = tempfile::tempdir().unwrap();
+    let text: String = (0..2500).map(|i| format!("line {i:05} of the file, with some words in it\n")).collect();
+    assert!(text.len() > 100_000);
+    let printed = ToolOutput::ok(text.clone()).with_display(file_display(&text));
+    let s = answered(d.path(), &printed, &text);
+    // the text is in the message, and in the display (the raw file the person is shown): twice, not three times
+    let wanted = 2 * text.len();
+    let size = std::fs::metadata(s.path()).unwrap().len() as usize;
+    assert!(size * 10 < wanted * 12, "{size} bytes for {wanted} of text");
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, text);
+}
+
+#[test]
+fn a_file_written_before_the_text_was_left_out_reads_as_it_did() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("go")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "bash", serde_json::json!({"command": "ls"}))]))
+        .unwrap();
+    s.record_output("c1", &ToolOutput::ok("files")).unwrap();
+    s.append(&Message::tool_results(vec![Part::tool_result("c1", "files", false)])).unwrap();
+    assert!(!output_lines(s.path())[0].contains("result_chars"));
+    assert_eq!(Session::open_path(s.path()).unwrap().outputs()["c1"].content, "files");
+}
+
+#[test]
+fn an_output_line_whose_result_was_never_saved_reads_without_text_instead_of_failing() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("go")).unwrap();
+    let mut f = OpenOptions::new().append(true).open(s.path()).unwrap();
+    writeln!(
+        f,
+        r#"{{"type":"tool_output","call_id":"x","output":{{"content":"","is_error":false,"display":{{"kind":"plain"}}}},"result_chars":5}}"#
+    )
+    .unwrap();
+    drop(f);
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!((back.skipped_lines(), back.outputs()["x"].content.as_str()), (0, ""));
+}
+
+#[test]
+fn a_changed_project_map_writes_only_the_map_and_a_resume_reads_it_back() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    let mut p = Prefix { tools: vec!["bash".into()], shown: "src/\n  a.rs".into(), ..Prefix::default() };
+    p.volatile.instructions = "x".repeat(20_000);
+    s.record_prefix(&p).unwrap();
+    let before = std::fs::metadata(s.path()).unwrap().len();
+    for n in 0..5 {
+        s.record_shown(&format!("src/\n  a.rs\n  b{n}.rs")).unwrap();
+    }
+    let grown = std::fs::metadata(s.path()).unwrap().len() - before;
+    assert!(grown < 1000, "five changed maps wrote {grown} bytes");
+    p.shown = "src/\n  a.rs\n  b4.rs".into();
+    assert_eq!(s.prefix(), Some(&p), "memory has the last map");
+    let back = Session::open_path(s.path()).unwrap();
+    assert_eq!(back.prefix(), Some(&p), "a resume reads the last map with the rest of the prefix");
+    assert_eq!(back.skipped_lines(), 0);
+    // a rewrite and a fork write the whole prefix once, with the last map
+    s.reset_with(&[Message::user("one")]).unwrap();
+    assert_eq!(Session::open_path(s.path()).unwrap().prefix(), Some(&p));
+    assert_eq!(Session::open_path(s.fork(1).unwrap().path()).unwrap().prefix(), Some(&p));
+    // a full prefix saved after a map (the instructions changed) wins
+    p.volatile.instructions = "y".into();
+    s.record_prefix(&p).unwrap();
+    s.record_shown("only").unwrap();
+    p.shown = "only".into();
+    assert_eq!(Session::open_path(s.path()).unwrap().prefix(), Some(&p));
+}
+
+#[test]
+fn a_map_with_no_prefix_before_it_is_ignored_on_open() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    s.record_shown("tree").unwrap();
+    assert!(s.prefix().is_none());
+    let back = Session::open_path(s.path()).unwrap();
+    assert!(back.prefix().is_none());
+    assert_eq!((back.skipped_lines(), back.messages().len()), (0, 1));
+}
+
+#[test]
+fn an_output_still_held_when_the_session_is_let_go_is_written_whole() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("run both")).unwrap();
+    s.append(&Message::new(
+        Role::Assistant,
+        vec![
+            Part::tool_call("c1", "bash", serde_json::json!({"command": "ls"})),
+            Part::tool_call("c2", "bash", serde_json::json!({"command": "sleep 600"})),
+        ],
+    ))
+    .unwrap();
+    // the first call finished; the round that answers both never ends (the turn is dropped)
+    s.hold_output("c1", &ToolOutput::ok("finished text"));
+    assert!(output_lines(s.path()).is_empty());
+    let path = s.path().to_path_buf();
+    drop(s);
+    let lines = output_lines(&path);
+    assert_eq!((lines.len(), lines[0].contains("finished text")), (1, true), "{lines:?}");
+    assert_eq!(Session::open_path(&path).unwrap().outputs()["c1"].content, "finished text");
+}
+
+#[test]
+fn a_session_file_that_vanished_is_told_when_an_output_is_held_not_when_the_round_ends() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("run it")).unwrap();
+    assert_eq!(s.take_save_news(), None);
+    std::fs::remove_file(s.path()).unwrap();
+    s.hold_output("c1", &ToolOutput::ok("text"));
+    assert!(matches!(s.take_save_news(), Some(SaveNews::Stopped(_))));
+}
+
+#[test]
+fn a_session_marked_after_the_fact_is_a_programs_and_the_mark_is_written_once() {
+    let d = tempfile::tempdir().unwrap();
+    let id = {
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        s.append(&Message::user("hello there")).unwrap();
+        s.meta().id.clone()
+    };
+    assert!(!meta_in(d.path(), &id).unwrap().headless);
+    assert!(mark_headless_in(d.path(), &id).unwrap(), "the line is written");
+    assert!(meta_in(d.path(), &id).unwrap().headless);
+    assert!(!mark_headless_in(d.path(), &id).unwrap(), "a marked session is left as it is");
+    assert_eq!(meta_in(d.path(), &id).unwrap().messages, 1, "the mark is not a message");
+    let reopened = Session::open_path(&d.path().join(format!("{id}.jsonl"))).unwrap();
+    assert!(reopened.meta().headless, "a reopened session keeps the mark");
+    assert!(!mark_headless_in(d.path(), "nothing-like-it").unwrap(), "an unknown id is not an error");
+}
+
+#[test]
+fn the_latest_conversation_of_a_folder_skips_the_ones_programs_ran() {
+    let d = tempfile::tempdir().unwrap();
+    let mut own = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    own.append(&Message::user("mine")).unwrap();
+    let own_id = own.meta().id.clone();
+    drop(own);
+    let mut lane = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    lane.append(&Message::user("a lane's")).unwrap();
+    let lane_id = lane.meta().id.clone();
+    drop(lane);
+    assert!(mark_headless_in(d.path(), &lane_id).unwrap());
+    assert_eq!(latest_own_for_in(d.path(), Path::new("/p")).map(|m| m.id), Some(own_id));
+    assert!(latest_own_for_in(d.path(), Path::new("/elsewhere")).is_none());
+}
+
+#[test]
+fn the_resume_rows_put_this_folder_first_and_leave_out_empty_and_program_sessions() {
+    let mk = |id: &str, cwd: &str, messages: usize, headless: bool, updated: &str| SessionMeta {
+        id: id.into(),
+        cwd: cwd.into(),
+        created: String::new(),
+        updated: updated.into(),
+        provider: "x".into(),
+        model: "y".into(),
+        title: format!("title {id}"),
+        messages,
+        parent: None,
+        fork_at: None,
+        headless,
+    };
+    // newest first, as `list` returns them
+    let metas = vec![
+        mk("other-new", "/o", 3, false, "2026-11-17T12:00:00Z"),
+        mk("empty", "/p", 0, false, "2026-11-17T11:00:00Z"),
+        mk("lane", "/p", 9, true, "2026-11-17T10:00:00Z"),
+        mk("here-old", "/p", 2, false, "2026-11-17T09:00:00Z"),
+        mk("here-older", "/p", 5, false, "2026-11-16T09:00:00Z"),
+    ];
+    let rows = rows_for(metas, Path::new("/p"));
+    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["here-old", "here-older", "other-new"]);
+    assert_eq!(rows.iter().map(|r| r.here).collect::<Vec<_>>(), [true, true, false]);
+    assert_eq!(rows[0].messages, 2);
+    assert!(rows[0].updated_ms > rows[1].updated_ms && rows[1].updated_ms > 0, "the age is carried as a time");
+}
+
+#[test]
+fn a_folder_written_with_a_trailing_slash_is_still_this_folder() {
+    let d = tempfile::tempdir().unwrap();
+    let with_slash = PathBuf::from(format!("{}/", d.path().display()));
+    assert!(same_folder(&with_slash, d.path()));
+    assert!(!same_folder(d.path(), Path::new("/definitely/not/here")));
 }

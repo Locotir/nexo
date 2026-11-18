@@ -17,9 +17,6 @@ pub(super) fn load(st: &mut State) {
     if let Some(p) = session_file(st) {
         saved::sweep(&p);
     }
-    if let Some(p) = session_file(st) {
-        saved::sweep(&p);
-    }
     if let Some(bytes) = session_file(st).and_then(|p| saved::read(&p)) {
         st.policy.restore(bytes);
     }

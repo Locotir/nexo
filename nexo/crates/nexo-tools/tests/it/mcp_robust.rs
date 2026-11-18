@@ -388,3 +388,28 @@ async fn a_hub_started_in_the_background_returns_at_once_and_each_server_joins_w
     hub.ready().await;
     hub.close().await;
 }
+
+// ---- 10 ----
+
+#[tokio::test]
+async fn a_flood_of_server_pings_does_not_stop_the_reader_from_reading_answers() {
+    // After the handshake the server stops reading its stdin and writes 5000 pings, then the
+    // answer to `tools/list`. The client's replies fill the stdin pipe; if the reader waited for
+    // them it would never get to the answer, and the server would wait for the reader.
+    let flood = r#"yes '{"jsonrpc":"2.0","id":7,"method":"ping"}' | head -n 5000"#;
+    let s = format!(
+        r#"read l; id=1; {INIT_REPLY}
+read l; read l
+{flood}
+id=2; {list}
+sleep 60
+"#,
+        list = ok_reply(LIST)
+    );
+    let client = tokio::time::timeout(Duration::from_secs(15), McpClient::connect("pinger", &cfg(s)))
+        .await
+        .expect("the answer behind the pings is read")
+        .expect("connect");
+    assert_eq!(client.defs().len(), 1);
+    client.close().await;
+}

@@ -349,12 +349,15 @@ pub(super) fn money(v: f64) -> String {
     }
 }
 
-/// A path under the home folder as `~/…`.
+/// A path under the home folder as `~/…`. The shared helper matches whole folders only, so a sibling that shares
+/// the home prefix (`/home/me-old`) stays whole, and it reads `USERPROFILE` where Windows has no `HOME`. On Windows
+/// every path comes out with `/` between its parts, as the rest of nexo shows paths.
 pub(super) fn tilde(p: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() && p.starts_with(&h) => format!("~{}", &p[h.len()..]),
-        _ => p.to_string(),
-    }
+    tilde_in(p, crate::insights::home().as_deref())
+}
+
+fn tilde_in(p: &str, home: Option<&str>) -> String {
+    crate::insights::tilde(p, home)
 }
 
 /// The tree lines before a nested row's glyph with one space after them (`╰ `, `+- `), so the name column is
@@ -364,5 +367,21 @@ fn lead_of(prefix: &str) -> String {
         String::new()
     } else {
         format!("{} ", prefix.trim_end())
+    }
+}
+
+#[cfg(test)]
+mod tilde_tests {
+    use super::tilde_in;
+
+    #[test]
+    fn a_sibling_folder_that_shares_the_home_prefix_is_not_shortened() {
+        assert_eq!(tilde_in("/home/lctr-old/x", Some("/home/lctr")), "/home/lctr-old/x");
+    }
+
+    #[test]
+    fn a_home_with_a_trailing_slash_still_gives_a_slash_after_the_tilde() {
+        assert_eq!(tilde_in("/home/lctr/x", Some("/home/lctr/")), "~/x");
+        assert_eq!(tilde_in("/home/lctr/x", Some("/home/lctr")), "~/x");
     }
 }

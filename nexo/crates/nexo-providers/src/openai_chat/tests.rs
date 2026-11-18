@@ -119,7 +119,7 @@ fn body_places_system_tools_and_results_the_openai_way() {
     assert_eq!(b["messages"][0], json!({"role": "system", "content": "be brief"}));
     assert_eq!(b["messages"][1], json!({"role": "user", "content": "read a.rs"}));
     assert_eq!(b["messages"][2]["role"], "assistant");
-    assert!(b["messages"][2].get("reasoning_content").is_none(), "readable reasoning is not sent back");
+    assert_eq!(b["messages"][2]["reasoning_content"], "secret", "DeepSeek wants the reasoning back next to tool calls");
     assert_eq!(b["messages"][2]["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a.rs\"}");
     assert_eq!(b["messages"][3], json!({"role": "tool", "tool_call_id": "c1", "content": "fn main() {}"}));
     assert_eq!(b["tools"][0]["type"], "function");
@@ -170,6 +170,7 @@ fn parses_fragmented_tool_calls_reasoning_and_deepseek_usage() {
             cache_read: 64,
             cache_write: 0,
             cache_write_1h: 0,
+            transformations: 0,
             reasoning: 3
         })
     );

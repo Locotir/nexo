@@ -168,7 +168,12 @@ pub struct Paired {
     pub cost: Delta,
     pub steps: Delta,
     pub recalls: Delta,
+    /// Repeated reads and shell commands counted naively, so a rerun after an edit is included. It is
+    /// not a bound on `needless`: that one also counts repeated `ls`, `glob` and `grep` calls, which
+    /// this one ignores.
     pub re_reads: Delta,
+    /// Repeats that nothing in between could have changed (`Counters::needless`).
+    pub needless: Delta,
     /// Duplicate lines, in points of percentage.
     pub dup: Delta,
     /// Wall seconds.
@@ -270,6 +275,7 @@ pub fn paired(records: &[crate::run::Record], baseline: &str, arm: &str) -> Opti
         steps: Delta::of(&diffs(|r| r.steps as f64)),
         recalls: Delta::of(&diffs(|r| r.counters.recall_calls as f64)),
         re_reads: Delta::of(&diffs(|r| r.counters.re_reads as f64)),
+        needless: Delta::of(&diffs(|r| r.counters.needless.len() as f64)),
         dup: Delta::of(&diffs(|r| r.counters.dup_percent())),
         wall: Delta::of(&diffs(|r| r.wall_s)),
         reps_min,

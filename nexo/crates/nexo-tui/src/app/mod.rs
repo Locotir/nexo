@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nexo_core::agent::{
-    AgentCommand, AgentEvent, Attachment, CallMark, CommandTx, ContextCell, ContextZone, GoalState, Level, TurnEnd,
+    AgentCommand, AgentEvent, Attachment, CallMark, CommandTx, ContextCell, ContextZone, GoalState, Level, SessionRow,
+    TurnEnd,
 };
 use nexo_core::message::{result_text, Message, Part, Role};
 use nexo_core::permission::{PermissionDecision, PermissionMode, PermissionRequest};
@@ -201,6 +202,8 @@ pub struct App {
     /// Something glides, fades or pulses: the loop draws at ~60 fps while true.
     pub moving: bool,
     last_ctrl_c: Option<Instant>,
+    /// The last Ctrl+D pressed while a turn ran: a second one within two seconds quits.
+    last_ctrl_d: Option<Instant>,
     last_esc: Option<Instant>,
     /// The last Esc interrupted a turn: a quick second one belongs to it, it is not a rewind.
     esc_interrupted: bool,
@@ -244,6 +247,9 @@ pub struct App {
     pub session_title: String,
     /// Sessions deleted from here, the last at the end: `/undelete` brings them back.
     pub trashed: Vec<String>,
+    /// `/resume` asked the agent for the session list and opens its picker when the list arrives (the list from the
+    /// start had nothing to show).
+    pub sessions_asked: bool,
     /// Memory of other sessions waiting to go with the next message: `(id, title, tokens)`.
     pub shared: Vec<(String, String, usize)>,
     /// The person's messages so far, `(index in the history, text)`, for the rewind picker.
@@ -326,6 +332,8 @@ pub struct App {
     pub draft_edit_request: bool,
     /// Commands of one's own (`.nexo/commands/*.md`).
     pub custom_commands: Vec<crate::custom::CustomCommand>,
+    /// Where the command files are read from; a test points it at a temporary project.
+    pub(crate) command_loader: Box<dyn Fn(&std::path::Path) -> Vec<crate::custom::CustomCommand> + Send>,
     /// The Agent Skills found at start (`SKILL.md` folders); each also answers to `/name` as a command.
     pub skills: Vec<nexo_core::skills::Skill>,
     /// A notification for the terminal (the bell), when a long turn ended.
@@ -378,6 +386,8 @@ pub struct App {
     pub status_cmd: Option<crate::status_cmd::StatusCommand>,
     /// The sessions read for the usage window's insights.
     pub insights: crate::insights::Scanner,
+    /// `/doctor` while it runs on its thread: the answer, when it comes.
+    pub doctor: Option<std::sync::mpsc::Receiver<(bool, String)>>,
     /// Turns ended this run: the bar's script runs again after each.
     pub turns_ended: u64,
     /// When the palette and the dialog on top opened: they pop in.
@@ -481,6 +491,7 @@ impl App {
             force_clear: false,
             moving: false,
             last_ctrl_c: None,
+            last_ctrl_d: None,
             last_esc: None,
             esc_interrupted: false,
             status: None,
@@ -506,6 +517,7 @@ impl App {
             palette_rows: Vec::new(),
             session_title: String::new(),
             trashed: Vec::new(),
+            sessions_asked: false,
             shared: Vec::new(),
             user_messages: Vec::new(),
             selection: None,
@@ -550,6 +562,7 @@ impl App {
             edit_request: None,
             draft_edit_request: false,
             custom_commands: crate::custom::load(&opts.cwd),
+            command_loader: Box::new(crate::custom::load),
             skills: Vec::new(),
             bell_request: None,
             mouse_on: opts.mouse,
@@ -577,6 +590,7 @@ impl App {
             status_hits: Vec::new(),
             status_cmd: crate::status_cmd::StatusCommand::new(&opts.status_command, &opts.cwd),
             insights: crate::insights::Scanner::default(),
+            doctor: None,
             turns_ended: 0,
             palette_at: None,
             modal_at: None,

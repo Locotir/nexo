@@ -14,11 +14,37 @@ const LOG_ERROR_SPAN: i64 = 600;
 /// How much of the end of a reply is read for a question.
 const TAIL_CHARS: usize = 300;
 
+/// Which of the three loop rules fired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopKind {
+    /// The same call failed this many times running.
+    Same,
+    /// At least `WINDOW_ERRORS` of the last `of` results were errors, not necessarily in a row.
+    Window { of: usize },
+    /// Error level log records within `LOG_ERROR_SPAN`, with no say about which tool.
+    Log,
+}
+
 /// Why a session counts as looping, for the nudge text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoopWhy {
     pub errors: usize,
     pub tool: String,
+    pub kind: LoopKind,
+}
+
+impl LoopWhy {
+    /// The facts behind the loop in one clause, worded for the rule that fired so the model is never told the
+    /// errors were consecutive when they were not.
+    pub fn fact(&self) -> String {
+        let n = self.errors;
+        match self.kind {
+            LoopKind::Same => format!("your last {n} `{}` calls were the same call and all failed", self.tool),
+            LoopKind::Window { of } if self.tool.is_empty() => format!("{n} of your last {of} tool calls failed"),
+            LoopKind::Window { of } => format!("{n} of your last {of} tool calls failed (last one: `{}`)", self.tool),
+            LoopKind::Log => format!("{n} errors were logged in the last {} minutes", LOG_ERROR_SPAN / 60),
+        }
+    }
 }
 
 /// The state of `track` at `now` under `policy`.
@@ -118,15 +144,15 @@ pub fn loop_signal(track: &AgentTrack, now: Secs) -> Option<LoopWhy> {
             .take_while(|r| r.is_error && r.name == first.name && r.input_hash == first.input_hash)
             .count();
         if run >= SAME_CALL_ERRORS {
-            return Some(LoopWhy { errors: run, tool: first.name.clone() });
+            return Some(LoopWhy { errors: run, tool: first.name.clone(), kind: LoopKind::Same });
         }
     }
     if errors >= WINDOW_ERRORS {
-        return Some(LoopWhy { errors, tool: last_error_tool() });
+        return Some(LoopWhy { errors, tool: last_error_tool(), kind: LoopKind::Window { of: recent.len() } });
     }
     let logged = track.errors.iter().filter(|t| now - **t <= LOG_ERROR_SPAN).count();
     if logged >= LOG_ERRORS {
-        return Some(LoopWhy { errors: logged, tool: last_error_tool() });
+        return Some(LoopWhy { errors: logged, tool: last_error_tool(), kind: LoopKind::Log });
     }
     None
 }

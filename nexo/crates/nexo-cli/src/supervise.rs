@@ -78,7 +78,7 @@ pub async fn daemon() -> anyhow::Result<i32> {
     }
     panel.set_notes(notes);
     eprintln!("nexo: supervising; hooks reach it at {}", socket::default_path().display());
-    tokio::signal::ctrl_c().await?;
+    nexo_core::signals::stop().await?;
     drop(panel);
     Ok(0)
 }

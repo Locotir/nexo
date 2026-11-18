@@ -111,9 +111,28 @@ impl Picker {
         let at = self.selected;
         self.items.retain(|i| i.value != value);
         self.ticked.retain(|t| t != value);
+        if self.armed.as_deref() == Some(value) {
+            self.armed = None;
+        }
         let labels: Vec<String> = self.items.iter().map(|i| format!("{} {}", i.label, i.hint)).collect();
         self.ranked = fuzzy::rank(&self.query, &labels);
         self.selected = at.min(self.ranked.len().saturating_sub(1));
+    }
+
+    /// Swaps the rows for a fresher list while the picker is open: the filter stays, the cursor stays on its row
+    /// when that row is still listed, and a mark or a tick on a row that went is dropped.
+    pub fn replace_items(&mut self, items: Vec<PickItem>) {
+        let at = self.current().map(|it| it.value.clone());
+        self.items = items;
+        self.refilter();
+        if let Some(pos) = at.and_then(|v| self.ranked.iter().position(|&i| self.items[i].value == v)) {
+            self.selected = pos;
+        }
+        let items = &self.items;
+        self.ticked.retain(|t| items.iter().any(|it| it.value == *t));
+        if self.armed.as_ref().is_some_and(|a| !items.iter().any(|it| it.value == *a)) {
+            self.armed = None;
+        }
     }
 
     pub(crate) fn refilter(&mut self) {
@@ -152,6 +171,17 @@ pub struct Permission {
     pub rules_gated: bool,
     /// The first `a` was pressed and the list shows.
     pub rules_open: bool,
+    /// The body at the last width and theme, one slot per layout (roomy, compact): a big diff is laid out once,
+    /// not on every frame, and the compact retry of a draw does not evict the roomy layout.
+    body_cache: [Option<BodyCache>; 2],
+}
+
+/// The lines of a permission body for the width and theme they were built at.
+#[derive(Debug, Clone)]
+struct BodyCache {
+    width: usize,
+    theme: Theme,
+    lines: Vec<Line<'static>>,
 }
 
 /// A question from the model (`ask_user`), or a plan waiting for approval (`exit_plan`):
@@ -563,6 +593,7 @@ impl Modal {
             rules_shown: usize::MAX,
             rules_gated: false,
             rules_open: false,
+            body_cache: [None, None],
         })
     }
 

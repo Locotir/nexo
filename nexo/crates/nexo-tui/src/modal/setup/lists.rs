@@ -55,8 +55,10 @@ impl Setup {
         // the providers with a model of their own first (the one in use at the top), then the
         // other ready ones, running servers before the rest
         let mut order: Vec<String> = Vec::new();
+        // a model of a keyless local preset is listed even when nothing runs there, so it only leads
+        // when the preset is usable; the others wait under "others" until a server answers
         for (p, _) in &self.models {
-            if !order.contains(p) {
+            if !order.contains(p) && self.usable(p) {
                 order.push(p.clone());
             }
         }
@@ -211,6 +213,11 @@ impl Setup {
     pub fn found_local(&mut self, found: Vec<(String, String)>) {
         self.local = found;
         self.scanned = true;
+        // a server that answers can make catalogue models usable: the start screen was only for
+        // someone with nothing to switch to, so the list of models takes its place
+        if self.step == Step::Start && self.models.iter().any(|(p, _)| self.usable(p)) {
+            self.step = Step::Provider;
+        }
         if self.step == Step::Start {
             self.fill_start();
         } else if self.step == Step::Provider {

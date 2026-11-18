@@ -8,6 +8,7 @@ fn ctx(provider: &str, model: &str, base: &str) -> ProblemCtx {
         key_env: Some(format!("{}_API_KEY", provider.to_ascii_uppercase())),
         login: false,
         window: None,
+        shown: false,
     }
 }
 
@@ -253,6 +254,19 @@ fn a_filter_refusal_asks_for_other_words() {
 }
 
 #[test]
+fn a_403_block_page_is_not_blamed_on_the_key() {
+    let c = ctx("openai", "gpt-5", "https://gw.io/v1");
+    let page = "the server answered with a web page, not an API reply (check the base URL, and that the server is up and serves this API)";
+    let p = of(403, page, &c);
+    sane(&p);
+    assert_eq!(p.title, "Could not read the answer from gw.io");
+    assert!(!p.plain().contains("rejected the key"), "{p:?}");
+    // a 403 with words from the provider is still a key that has no access
+    let p = of(403, r#"{"error":{"message":"Project has no access to this model"}}"#, &c);
+    assert_eq!(p.title, "openai rejected the key");
+}
+
+#[test]
 fn a_local_server_that_is_off_says_how_to_start_it() {
     let msg = "error sending request for url (http://localhost:11434/v1/chat/completions): client error (Connect): tcp connect error: Connection refused (os error 111)";
     let p = net(msg, &ctx("ollama", "llama3", "http://localhost:11434/v1"));
@@ -288,16 +302,29 @@ fn network_causes_are_told_apart() {
     let slow = net("error sending request: operation timed out", &c);
     sane(&slow);
     assert_eq!(slow.title, "openai took too long to answer");
-    let cut = net("stream cut: error decoding response body: connection reset", &c);
+    let shown = ProblemCtx { shown: true, ..c.clone() };
+    let cut = net("stream cut: error decoding response body: connection reset", &shown);
     sane(&cut);
     assert_eq!(cut.title, "The reply was cut off");
+    assert!(cut.plain().contains("What was already shown is kept."), "{cut:?}");
+    // nothing arrived: no partial answer to point at, and the server is what to check
+    let early = net("stream cut: error decoding response body: connection reset", &c);
+    sane(&early);
+    assert_eq!(early.title, "openai closed the connection before answering");
+    let said = early.plain();
+    assert!(!said.contains("already shown") && !said.contains("mid-answer"), "{said}");
     let cut = net("the stream ended before the reply began", &c);
-    assert_eq!(cut.title, "The reply was cut off");
+    sane(&cut);
+    assert_eq!(cut.title, "openai closed the connection before answering");
+    let local = ctx("ollama", "m", "http://localhost:11434/v1");
+    let early_local = net("connection reset by peer", &local);
+    sane(&early_local);
+    assert!(early_local.plain().contains("check that the server is running"), "{early_local:?}");
     let other = net("something odd", &c);
     sane(&other);
     assert_eq!(other.title, "Could not reach openai");
     // every one keeps the raw text
-    for p in [dns, tls, proxy, slow, cut, other] {
+    for p in [dns, tls, proxy, slow, cut, early, other] {
         assert!(p.detail.is_some(), "{p:?}");
     }
 }

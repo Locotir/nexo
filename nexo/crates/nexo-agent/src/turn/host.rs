@@ -9,6 +9,25 @@ pub(super) fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Us
     add_usage_priced(st, events, model, usage, call, None, kind);
 }
 
+/// What a model call cost at `p`. A long-prompt tier is chosen by the size of one request, so the attempt that
+/// answered is priced on its own and the attempts the client retried (the rest of `usage`, kept together) apart
+/// from it, not as one request as large as all of them.
+fn billed(p: &Pricing, usage: &Usage, call: &Usage) -> f64 {
+    if call.is_empty() {
+        return p.cost(usage);
+    }
+    let retried = Usage {
+        input: usage.input.saturating_sub(call.input),
+        output: usage.output.saturating_sub(call.output),
+        cache_read: usage.cache_read.saturating_sub(call.cache_read),
+        cache_write: usage.cache_write.saturating_sub(call.cache_write),
+        cache_write_1h: usage.cache_write_1h.saturating_sub(call.cache_write_1h),
+        transformations: usage.transformations.saturating_sub(call.transformations),
+        reasoning: usage.reasoning.saturating_sub(call.reasoning),
+    };
+    p.cost(call) + p.cost(&retried)
+}
+
 /// [`add_usage`] with the prices of another provider (a sub-agent sent there); none: the main agent's.
 pub(super) fn add_usage_priced(
     st: &mut State,
@@ -23,7 +42,19 @@ pub(super) fn add_usage_priced(
     let (prov, _, _) = st.target.get();
     let sent_to_other = other.is_some();
     let pricing = other.or_else(|| main_pricing(st, model));
-    let cost = pricing.map(|p| p.cost(&usage)).unwrap_or(0.0);
+    let cost = pricing.map(|p| billed(&p, &usage, &call)).unwrap_or(0.0);
+    // A limit counts dollars, and a model with no price adds none: say so once instead of letting the limit sit
+    // there never firing. A price of 0 is a price (a free or local model), so it does not count as missing.
+    let limited = st.budget.is_some_and(|b| b > 0.0) || st.config.agent.max_cost_day.is_some_and(|d| d > 0.0);
+    let spent_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write > 0;
+    if pricing.is_none() && limited && spent_tokens && !st.unpriced_warned {
+        st.unpriced_warned = true;
+        notice(
+            events,
+            Level::Warn,
+            format!("{model} has no price, so the spend limit cannot count it (set one with /pricing in=.. out=..)"),
+        );
+    }
     st.cost += cost;
     // what the view left out of the history at this call (the conversation's own calls only)
     let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(st.last_view.1));
@@ -253,4 +284,40 @@ pub(super) fn set_sandbox(st: &mut State, mode: Option<nexo_core::sandbox::Sandb
     let (line, ok) = sandbox_line(st);
     let level = if ok { Level::Info } else { Level::Warn };
     notice(&st.events, level, format!("sandbox: {line}"));
+}
+
+#[cfg(test)]
+mod billing_tests {
+    use super::*;
+    use nexo_core::pricing::LongTier;
+
+    fn haiku_like() -> Pricing {
+        let long = LongTier { above: 100_000, input: 2.0, output: 10.0, cache_read: 0.2, cache_write: 2.5 };
+        Pricing { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25, long: Some(long), ..Default::default() }
+    }
+
+    #[test]
+    fn two_attempts_under_the_line_are_not_priced_as_one_long_request() {
+        // the client retried once: 60k billed and thrown away, then 60k that answered; each is under the 100k line
+        let each = Usage { input: 60_000, output: 1_000, ..Default::default() };
+        let both = each + each;
+        let one = haiku_like().cost(&each);
+        assert!((billed(&haiku_like(), &both, &each) - 2.0 * one).abs() < 1e-9);
+        // priced as the sum, the 120k prompt would have paid the tier
+        assert!(haiku_like().cost(&both) > 2.0 * one);
+    }
+
+    #[test]
+    fn a_call_without_a_split_is_priced_as_one_request() {
+        let u = Usage { input: 150_000, output: 1_000, ..Default::default() };
+        assert_eq!(billed(&haiku_like(), &u, &Usage::default()), haiku_like().cost(&u));
+    }
+
+    #[test]
+    fn a_retried_attempt_that_was_itself_long_pays_the_tier() {
+        let long = Usage { input: 150_000, ..Default::default() };
+        let short = Usage { input: 10_000, output: 500, ..Default::default() };
+        let want = haiku_like().cost(&long) + haiku_like().cost(&short);
+        assert!((billed(&haiku_like(), &(long + short), &short) - want).abs() < 1e-9);
+    }
 }

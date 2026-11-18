@@ -195,11 +195,15 @@ pub fn canonical(p: &Path) -> std::io::Result<PathBuf> {
     Ok(c)
 }
 
+/// Whether the disks of this platform compare file names without case: APFS by default on macOS, NTFS on Windows.
+/// Every path rule and guarded-folder check folds case by this one flag, so `.GIT` is `.git` for all of them.
+pub const FOLD_CASE: bool = cfg!(any(target_os = "macos", windows));
+
 /// A file that holds keys or credentials, by where it is and what it is called: anything under
 /// `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker` or `.password-store`, the macOS keychains
 /// (`Library/Keychains`, `*.keychain`, `*.keychain-db`), the GitHub and Google Cloud command line
 /// logins (`.config/gh`, `.config/gcloud`), `.env` files, private keys and certificates, `.netrc`
-/// and its kind, and nexo's own credential store and keys. Names compare without case, as macOS
+/// and its kind, and nexo's own credential store, browser token and keys. Names compare without case, as macOS
 /// and Windows open them. The path as given (callers that care about links check the resolved one
 /// too).
 pub fn holds_keys(p: &Path) -> bool {
@@ -210,7 +214,10 @@ pub fn holds_keys(p: &Path) -> bool {
         &[".netrc", ".git-credentials", ".pgpass", ".npmrc", ".pypirc", "credentials", "credentials.json"];
     const KEYS: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
     const EXTS: &[&str] = &["pem", "key", "p12", "pfx", "jks", "keystore", "keychain", "keychain-db"];
-    if p.starts_with(crate::auth::file()) || p.starts_with(data_dir().join("keys")) {
+    if p.starts_with(crate::auth::file())
+        || p.starts_with(data_dir().join("keys"))
+        || p.starts_with(data_dir().join("browser").join("token"))
+    {
         return true;
     }
     let lower = |s: &std::ffi::OsStr| s.to_string_lossy().to_ascii_lowercase();
@@ -442,6 +449,7 @@ mod tests {
         ] {
             assert!(holds_keys(Path::new(p)), "{p}");
         }
+        assert!(holds_keys(&data_dir().join("browser").join("token")), "the browser relay token");
         for p in [
             "/Users/a/Library/Fonts/x.ttf",
             "/Users/a/Library/Caches/pip/x",
@@ -451,5 +459,15 @@ mod tests {
         ] {
             assert!(!holds_keys(Path::new(p)), "{p}");
         }
+    }
+
+    // `--cwd`, team folders and `/add-dir` all go through `canonical`, so the prefix must never reach them.
+    #[cfg(windows)]
+    #[test]
+    fn canonical_drops_the_verbatim_prefix_windows_adds() {
+        let d = std::env::temp_dir();
+        let c = canonical(&d).unwrap();
+        assert!(!c.to_string_lossy().starts_with(r"\\?\"), "{c:?}");
+        assert_eq!(c.canonicalize().unwrap(), d.canonicalize().unwrap());
     }
 }

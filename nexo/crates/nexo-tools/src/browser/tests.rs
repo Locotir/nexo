@@ -425,6 +425,20 @@ fn the_compact_text_names_the_persons_own_browsers() {
 }
 
 #[test]
+fn the_compact_text_keeps_the_captcha_stop_rule() {
+    let c = BrowserTool::default().compact().expect("compact");
+    assert!(c.description.contains("CAPTCHA"));
+}
+
+#[test]
+fn the_compact_params_describe_gif_and_steps() {
+    let c = BrowserTool::default().compact().expect("compact");
+    let text = |name: &str| c.params.iter().find(|(n, _)| *n == name).map(|(_, t)| *t).unwrap_or("");
+    assert!(text("gif").contains("quality"));
+    assert!(text("steps").contains("action"));
+}
+
+#[test]
 fn the_lists_are_compact_and_capped() {
     let tabs = vec![
         TabInfo { index: 0, title: "A".into(), url: "https://a.b".into(), active: false },

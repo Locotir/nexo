@@ -135,14 +135,14 @@ fn t7_chat_prompt_cache_key_goes_to_openai_only() {
 }
 
 #[test]
-fn t7_chat_reasoning_effort_is_sent_only_when_asked_and_reasoning_is_not_replayed_by_default() {
+fn t7_chat_reasoning_effort_is_sent_only_when_asked_and_reasoning_is_replayed_only_to_deepseek_or_on_request() {
     let (c, mut r) = api("gpt-5");
     assert!(OpenAiChat::body(&c, &r).get("reasoning_effort").is_none());
     r.reasoning = Some(ReasoningConfig::Effort(Effort::High));
     assert_eq!(OpenAiChat::body(&c, &r)["reasoning_effort"], "high");
     r.reasoning = Some(ReasoningConfig::Off);
     assert!(OpenAiChat::body(&c, &r).get("reasoning_effort").is_none());
-    // earlier reasoning stays out of the history: DeepSeek R1 answers 400 to `reasoning_content` in input
+    // earlier reasoning stays out of the history of strict servers; DeepSeek thinking mode needs it back
     r.messages.push(Message::new(
         Role::Assistant,
         vec![
@@ -155,6 +155,11 @@ fn t7_chat_reasoning_effort_is_sent_only_when_asked_and_reasoning_is_not_replaye
     let mut on = c.clone();
     on.extra.insert("send_reasoning".into(), toml::Value::Boolean(true));
     assert_eq!(OpenAiChat::body(&on, &r)["messages"][2]["reasoning_content"], "secret plan");
+    let ds = cfg("openai-chat", "https://api.deepseek.com/v1");
+    assert_eq!(OpenAiChat::body(&ds, &r)["messages"][2]["reasoning_content"], "secret plan");
+    let mut off = ds.clone();
+    off.extra.insert("send_reasoning".into(), toml::Value::Boolean(false));
+    assert!(!OpenAiChat::body(&off, &r).to_string().contains("secret plan"), "the key overrides the host default");
 }
 
 #[test]
@@ -318,6 +323,40 @@ fn t7_gemini_results_are_named_after_their_calls() {
     let b = Gemini::body(&c, &r);
     assert_eq!(b["contents"][1]["parts"][0]["functionCall"]["name"], "read");
     assert_eq!(b["contents"][2]["parts"][0]["functionResponse"]["name"], "read");
+}
+
+#[test]
+fn t7_chat_deepseek_tool_loop_sends_reasoning_content_back_on_the_second_request() {
+    // before: the second request of a thinking-mode tool loop carried no `reasoning_content` and DeepSeek answered 400
+    let mut r = req("deepseek-reasoner");
+    r.tools = vec![spec("read", json!({"type":"object"}))];
+    r.messages.push(Message::new(
+        Role::Assistant,
+        vec![
+            Part::Reasoning { text: "need the file".into(), signature: None, encrypted: None, model: None },
+            Part::tool_call("call_1", "read", json!({"path":"a"})),
+        ],
+    ));
+    r.messages.push(Message::tool_results(vec![Part::tool_result("call_1", "fn main() {}", false)]));
+    let b = OpenAiChat::body(&cfg("openai-chat", "https://api.deepseek.com/v1"), &r);
+    assert_eq!(b["messages"][2]["reasoning_content"], "need the file", "{b}");
+    assert_eq!(b["messages"][2]["tool_calls"][0]["id"], "call_1");
+}
+
+#[test]
+fn t7_chat_deepseek_tool_call_turns_without_reasoning_still_carry_the_field() {
+    // history from a non-thinking model or a curator cut has no reasoning; the key must still be present
+    let mut r = req("deepseek-reasoner");
+    r.tools = vec![spec("read", json!({"type":"object"}))];
+    r.messages.push(Message::new(Role::Assistant, vec![Part::tool_call("call_1", "read", json!({"path":"a"}))]));
+    r.messages.push(Message::tool_results(vec![Part::tool_result("call_1", "x", false)]));
+    r.messages.push(Message::new(Role::Assistant, vec![Part::text("done")]));
+    let ds = cfg("openai-chat", "https://api.deepseek.com/v1");
+    let b = OpenAiChat::body(&ds, &r);
+    assert_eq!(b["messages"][2]["reasoning_content"], "", "{b}");
+    assert!(b["messages"][4].get("reasoning_content").is_none(), "a text-only turn needs no field: {b}");
+    let other = OpenAiChat::body(&cfg("openai-chat", "https://api.openai.com/v1"), &r);
+    assert!(!other.to_string().contains("reasoning_content"), "other hosts stay unchanged: {other}");
 }
 
 // ================= t8: model list and probe =================

@@ -139,4 +139,36 @@ mod tests {
             assert!(!spec.description.is_empty(), "{}", spec.name);
         }
     }
+
+    /// Walks a JSON schema and lists where an array has no `items` or `required` is an empty list.
+    fn schema_holes(v: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                if m.get("type").is_some_and(|t| t == "array") && !m.contains_key("items") {
+                    out.push(format!("{at}: array without items"));
+                }
+                if m.get("required").and_then(|r| r.as_array()).is_some_and(Vec::is_empty) {
+                    out.push(format!("{at}: empty required"));
+                }
+                for (k, x) in m {
+                    schema_holes(x, &format!("{at}.{k}"), out);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    schema_holes(x, &format!("{at}[{i}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn no_builtin_schema_has_an_array_without_items_or_an_empty_required() {
+        let mut holes = Vec::new();
+        for spec in builtin().specs() {
+            schema_holes(&spec.parameters, &spec.name, &mut holes);
+        }
+        assert!(holes.is_empty(), "{holes:#?}");
+    }
 }

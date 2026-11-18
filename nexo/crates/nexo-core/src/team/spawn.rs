@@ -34,13 +34,26 @@ pub fn runner_of(exe: &Path, name: &str) -> std::io::Result<u32> {
     launch(exe, name, false)
 }
 
+/// Opens a lane's log for appending, after it is rotated. What a lane prints is its transcript: commands and tool
+/// output, which can hold secrets read from a file. So the team folder is `0700` (this also closes the older logs and
+/// state files inside it) and the log `0600`, an existing one included. Closing what exists is hardening, not a
+/// condition of starting: a folder or log this user cannot chmod (another owner, a read-only mount) is used as it is.
+fn open_log(log: &Path) -> std::io::Result<std::fs::File> {
+    use crate::fsmode::{create_private_dir, private_file, tighten_dir, tighten_file};
+    let dir = log.parent().unwrap_or(Path::new("."));
+    create_private_dir(dir)?;
+    let _ = tighten_dir(dir);
+    rotate(log, LOG_MAX);
+    let out = private_file().create(true).append(true).open(log)?;
+    let _ = tighten_file(log);
+    Ok(out)
+}
+
 // the runner is meant to outlive this command, so it is never waited on
 #[allow(clippy::zombie_processes)]
 fn launch(exe: &Path, name: &str, now: bool) -> std::io::Result<u32> {
-    std::fs::create_dir_all(state::dir())?;
     let log = state::log_file(name);
-    rotate(&log, LOG_MAX);
-    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+    let out = open_log(&log)?;
     let err = out.try_clone()?;
     if now {
         std::fs::write(state::now_file(name), b"")?;
@@ -79,6 +92,28 @@ fn launch(exe: &Path, name: &str, now: bool) -> std::io::Result<u32> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn a_started_lane_gets_a_private_log_and_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let d = tempfile::tempdir().unwrap();
+        // a team folder and log from before nexo set a mode, as an installed nexo has them
+        let dir = d.path().join("team");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old = dir.join("OLD.log");
+        std::fs::write(&old, b"earlier").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(super::open_log(&old).unwrap());
+        assert_eq!((mode(&dir), mode(&old)), (0o700, 0o600));
+        assert_eq!(std::fs::read(&old).unwrap(), b"earlier");
+        // a folder and log made new
+        let fresh = d.path().join("fresh/team/NEW.log");
+        drop(super::open_log(&fresh).unwrap());
+        assert_eq!((mode(fresh.parent().unwrap()), mode(&fresh)), (0o700, 0o600));
+    }
+
     #[test]
     fn a_log_past_its_size_keeps_one_old_copy() {
         let d = tempfile::tempdir().unwrap();

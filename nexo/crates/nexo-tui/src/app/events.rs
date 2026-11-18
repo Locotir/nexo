@@ -8,7 +8,7 @@ impl App {
     pub(super) fn set_skills(&mut self, skills: Vec<nexo_core::skills::Skill>) {
         for s in &skills {
             let name = s.name.to_ascii_lowercase();
-            if crate::commands::lookup(&name).is_some() || self.custom_commands.iter().any(|c| c.name == name) {
+            if crate::commands::lookup(&name).is_some() || self.pushed_name_taken(&name) {
                 continue;
             }
             // the text is read when the command runs, so an edited skill is used as it is then
@@ -125,6 +125,22 @@ impl App {
         if self.insights.poll() {
             self.dirty = true;
         }
+    }
+
+    /// Shows the answer of `/doctor` when its thread has one, or says why there is none.
+    pub fn poll_doctor(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.doctor else { return };
+        let (level, text) = match rx.try_recv() {
+            Ok((ok, text)) => (if ok { Level::Info } else { Level::Warn }, text),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                (Level::Warn, "/doctor: no answer, run `nexo doctor` in a shell".to_string())
+            }
+        };
+        self.doctor = None;
+        self.notice(level, text);
+        self.dirty = true;
     }
 
     /// Runs the bar's script (`[ui] status_command`) when a turn ended or the model changed,
@@ -309,6 +325,7 @@ impl App {
         self.poll_fleet();
         self.poll_diffview();
         self.poll_insights();
+        self.poll_doctor();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {
             self.read_branch();
         }

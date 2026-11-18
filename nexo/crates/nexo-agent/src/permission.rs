@@ -110,9 +110,15 @@ impl Policy {
     }
 
     fn decide_one(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {
-        // what would wipe the machine beyond doubt runs in no mode and by no rule
+        // What would wipe the machine beyond doubt runs in no mode and by no rule. Every form of the line is
+        // judged (each simple command, what its wrappers run, the scripts it hands a shell), so `sudo -u root
+        // rm -rf /` and `bash -lc 'rm -rf ~'` weigh the same as the bare command. Best effort: a script written
+        // to a file and run later, or `python -c`, is out of its sight; the OS sandbox is the wall there.
         if kind == ToolKind::Exec {
-            if let Some(why) = target_of(kind, args).as_deref().and_then(nexo_supervise::policy::catastrophic) {
+            let why = target_of(kind, args).and_then(|c| {
+                bash::floor_forms(&c).iter().find_map(|f| nexo_supervise::policy::catastrophic_from(f, cwd))
+            });
+            if let Some(why) = why {
                 return Decision::Deny(format!("never run: {why}"));
             }
         }

@@ -144,6 +144,8 @@ pub enum AgentCommand {
     },
     /// The sessions of this directory as a tree of forks; answered with `SessionTree`.
     ShowTree,
+    /// The earlier sessions as `/resume` lists them, read again from disk; answered with `SessionList`.
+    ListSessions,
     /// Move a recorded session (not the one in use) to the trash; answered with `SessionDeleted`.
     DeleteSession {
         id: String,

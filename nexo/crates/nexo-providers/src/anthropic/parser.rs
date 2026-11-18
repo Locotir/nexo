@@ -21,7 +21,10 @@ impl Feed for MessagesParser {
         let mut out = Vec::new();
         let v: Value = match serde_json::from_str(data.trim()) {
             Ok(v) => v,
-            Err(_) => return out,
+            Err(_) => {
+                crate::parse::note_dropped(data);
+                return out;
+            }
         };
         if v["type"].is_string() {
             self.prog.started = true;
@@ -43,6 +46,7 @@ impl Feed for MessagesParser {
                     model: m["model"].as_str().map(String::from),
                 });
                 self.take_usage(&m["usage"]);
+                self.take_transformations(m);
             }
             "content_block_start" => {
                 let idx = v["index"].as_u64().unwrap_or(0);
@@ -116,6 +120,7 @@ impl Feed for MessagesParser {
             }
             "message_delta" => {
                 self.take_usage(&v["usage"]);
+                self.take_transformations(&v);
                 if let Some(r) = v["delta"]["stop_reason"].as_str() {
                     out.extend(self.end_calls());
                     if !self.prog.finished {
@@ -180,7 +185,7 @@ impl Feed for MessagesParser {
         // calls still open without a stop: their arguments may be cut
         let open = self.blocks.iter().any(|b| b.1 == "tool_use");
         self.blocks.clear();
-        out.extend(self.prog.at_end_with_calls(open));
+        out.extend(self.prog.at_end_strict(open));
         out
     }
 }
@@ -207,6 +212,18 @@ impl MessagesParser {
         // the split of the writes by lifetime, where the response gives one
         if let Some(n) = u["cache_creation"]["ephemeral_1h_input_tokens"].as_u64() {
             self.usage.cache_write_1h = n;
+        }
+    }
+
+    /// How many entries `input_transformations` lists, the changes the server made to the history it was sent.
+    /// With `drop_block` binding (`request.rs`) a reasoning block that no longer matched the prefix is expected
+    /// to be one, but the entries are not documented, so only their number is read. Verified: the key sits
+    /// beside `usage` in the `message` of `message_start` (722 recorded responses, all with `[]`; an entry has
+    /// never been seen). Inferred: it may also come in `message_delta`, so it is read there too. The most of
+    /// the two is kept, so a closing delta with an empty array does not wipe what the opening message listed.
+    fn take_transformations(&mut self, holder: &Value) {
+        if let Some(a) = holder["input_transformations"].as_array() {
+            self.usage.transformations = self.usage.transformations.max(a.len() as u64);
         }
     }
 

@@ -93,6 +93,7 @@ fn the_picker_price_column_reads_plan_for_a_login_provider() {
                 cache_read: 0.0,
                 cache_write: 0.0,
                 cache_write_1h: 0.0,
+                long: None,
             }),
             ..Default::default()
         }],

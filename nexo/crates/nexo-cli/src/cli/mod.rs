@@ -14,8 +14,8 @@ mod dispatch;
 mod modes;
 
 pub use args::*;
-pub(crate) use config::load_config_for;
-use config::{load_config, trust_asked};
+use config::{load_config, trust_asked, way_out};
+pub(crate) use config::{load_config_for, point_to_the_files};
 use dispatch::run_in;
 use modes::{headless_collect, interactive};
 
@@ -81,11 +81,8 @@ pub async fn main() -> i32 {
     if let Some(Cmd::Supervise { what }) = &args.cmd {
         return match what {
             Some(SuperviseCmd::Hook { kind }) => crate::supervise::hook(kind),
-            Some(SuperviseCmd::Install { print: true }) => crate::supervise::install_print(),
-            Some(SuperviseCmd::Install { print: false }) => {
-                eprintln!("nexo: nothing is written; use `nexo supervise install --print` and add the text yourself");
-                2
-            }
+            // printing is the only mode, so it is the default; `--print` stays accepted
+            Some(SuperviseCmd::Install { .. }) => crate::supervise::install_print(),
             None => match crate::supervise::daemon().await {
                 Ok(c) => c,
                 Err(e) => {
@@ -138,7 +135,9 @@ pub async fn main() -> i32 {
 
 async fn run(args: Args) -> anyhow::Result<i32> {
     let cwd = match &args.cwd {
-        Some(d) => std::fs::canonicalize(d)?,
+        Some(d) => {
+            nexo_core::paths::canonical(d).map_err(|e| anyhow::anyhow!("cannot use --cwd {}: {e}", d.display()))?
+        }
         None => std::env::current_dir()?,
     };
     let made = crate::worktree::enter(&args, &cwd)?;

@@ -30,10 +30,8 @@ impl Ui {
     pub(super) fn detect() -> Self {
         use std::io::IsTerminal;
         let dumb = std::env::var("TERM").is_ok_and(|t| t == "dumb");
-        let tty = std::io::stderr().is_terminal()
-            && std::io::stdout().is_terminal()
-            && std::env::var_os("NO_COLOR").is_none()
-            && !dumb;
+        let tty =
+            std::io::stderr().is_terminal() && std::io::stdout().is_terminal() && !nexo_core::env::no_color() && !dumb;
         #[cfg(windows)]
         let tty = tty && crossterm::ansi_support::supports_ansi();
         Self::new(tty)
@@ -110,7 +108,7 @@ impl Ui {
         }
     }
 
-    /// On Ctrl+C: wipes the live line, brings the cursor back, removes `stage` and leaves with 130.
+    /// On Ctrl+C or a terminate request: wipes the live line, brings the cursor back, removes `stage` and leaves with 130.
     pub(super) fn on_interrupt(&self, stage: &Path) {
         if !self.fancy {
             return;
@@ -118,7 +116,7 @@ impl Ui {
         let stage = stage.to_path_buf();
         std::thread::spawn(move || {
             let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
-            if rt.block_on(tokio::signal::ctrl_c()).is_ok() {
+            if rt.block_on(nexo_core::signals::stop()).is_ok() {
                 eprint!("\r{CLEAR_LINE}{SHOW_CURSOR}");
                 eprintln!("{}", styled(true, Kind::Warn, "update cancelled"));
                 let _ = std::fs::remove_dir_all(stage);

@@ -51,7 +51,15 @@ async fn openai_chat_fixture() {
         check(&c, &evs, false);
         assert_eq!(
             c.usage,
-            Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 9 }
+            Usage {
+                input: 176,
+                output: 31,
+                cache_read: 1024,
+                cache_write: 0,
+                cache_write_1h: 0,
+                transformations: 0,
+                reasoning: 9
+            }
         );
     }
 }
@@ -64,7 +72,15 @@ async fn openai_responses_fixture() {
         check(&c, &evs, true);
         assert_eq!(
             c.usage,
-            Usage { input: 176, output: 40, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 12 }
+            Usage {
+                input: 176,
+                output: 40,
+                cache_read: 1024,
+                cache_write: 0,
+                cache_write_1h: 0,
+                transformations: 0,
+                reasoning: 12
+            }
         );
         let enc = c.message().content.iter().find_map(|p| match p {
             Part::Reasoning { encrypted, signature, .. } => Some((encrypted.clone(), signature.clone())),
@@ -82,7 +98,15 @@ async fn anthropic_fixture() {
         check(&c, &evs, true);
         assert_eq!(
             c.usage,
-            Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 0 }
+            Usage {
+                input: 176,
+                output: 31,
+                cache_read: 1024,
+                cache_write: 0,
+                cache_write_1h: 0,
+                transformations: 0,
+                reasoning: 0
+            }
         );
     }
 }
@@ -95,7 +119,15 @@ async fn gemini_fixture() {
         check(&c, &evs, true);
         assert_eq!(
             c.usage,
-            Usage { input: 176, output: 31, cache_read: 1024, cache_write: 0, cache_write_1h: 0, reasoning: 12 }
+            Usage {
+                input: 176,
+                output: 31,
+                cache_read: 1024,
+                cache_write: 0,
+                cache_write_1h: 0,
+                transformations: 0,
+                reasoning: 12
+            }
         );
         assert!(c.message().tool_calls().next().unwrap().0.starts_with("call_"), "ids are synthesised");
     }

@@ -31,6 +31,12 @@ pub(super) fn session_builtins(cfg: &Config) -> ToolSet {
 /// The tools a session starts with from `cwd` (what `nexo prompt` describes): the built-in ones, the skill
 /// tool, `task` when sub-agents are on and `ask_user`. MCP servers and mail are not started for it.
 pub fn prompt_tools(cfg: &Config, cwd: &Path) -> ToolSet {
+    prompt_tools_with(cfg, cwd, || nexo_agent::subagent::load(cwd))
+}
+
+/// [`prompt_tools`] with the sub-agent kinds given (read only when sub-agents are on): `load` reads the person's
+/// own agent files, which a test of the tool text must not depend on.
+fn prompt_tools_with(cfg: &Config, cwd: &Path, kinds: impl FnOnce() -> Vec<nexo_agent::subagent::Profile>) -> ToolSet {
     nexo_tools::edit_check::set_enabled(cfg.tools.edit_diagnostics);
     let mut tools: ToolSet = session_builtins(cfg);
     if !nexo_tools::lsp::available(cwd) {
@@ -50,7 +56,7 @@ pub fn prompt_tools(cfg: &Config, cwd: &Path) -> ToolSet {
             client,
             nexo_agent::Target::new(provider, pcfg, model),
             &tools,
-            nexo_agent::subagent::load(cwd),
+            kinds(),
             Arc::default(),
         )
         .with_providers(cfg.providers.clone())
@@ -197,5 +203,45 @@ mod tests {
         let h = names(&c);
         assert!(!h.iter().any(|n| n.starts_with("web_")), "{h:?}");
         assert!(h.iter().any(|n| n == "read"));
+    }
+
+    /// Characters (name, description, parameter schema) of the tools a session has that `builtin()` does not: the
+    /// ones `prompt_tools` adds (`ask_user`, `task`, `bin` and, where there is a backend, `debug`), as a model is
+    /// offered them in a normal window and in a small one. The tool budget in `nexo-agent` counts `builtin()` only.
+    fn session_extras(small: bool) -> usize {
+        let mut cfg = super::Config::default();
+        // no skills from the person's home, and the sub-agent kinds are the built-in ones, not the person's own
+        // agent files: the count must not depend on whose machine runs it
+        cfg.agent.hermetic = true;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = super::prompt_tools_with(&cfg, dir.path(), nexo_agent::subagent::builtin);
+        let counted: Vec<String> = nexo_tools::builtin().names().map(String::from).collect();
+        let window = small.then_some(nexo_agent::prompt::COMPACT_WINDOW);
+        tools
+            .specs_for(small)
+            .iter()
+            .filter(|s| !counted.contains(&s.name) && !nexo_agent::prompt::left_out(window, &s.name))
+            .map(|s| s.name.len() + s.description.len() + serde_json::to_string(&s.parameters).unwrap().len())
+            .sum()
+    }
+
+    /// 2045 characters (about 520 tokens) when this budget was set: `ask_user` 832, `task` 646 (its short text, as
+    /// it is a rare tool), `debug` 300 and `bin` 267; every request carries them. It may grow 5% and no more.
+    /// `the_tool_text_stays_within_its_budget` in `nexo-agent` is the same guard for `builtin()`.
+    #[test]
+    fn the_session_tools_beyond_the_built_in_ones_stay_within_their_budget() {
+        let n = session_extras(false);
+        // `debug` (300) is there only where it has a backend
+        let budget = if nexo_tools::debug::available() { 2_150 } else { 1_830 };
+        assert!(n <= budget, "ask_user, task, bin and debug take {n} characters; the budget is {budget}");
+        assert!(n > 1_000, "the extra tools were not counted: {n} characters");
+    }
+
+    /// In a 32k window only `ask_user` of them is offered: 452 characters when this budget was set, 5% more at most.
+    #[test]
+    fn the_session_tools_beyond_the_built_in_ones_stay_within_their_small_window_budget() {
+        let n = session_extras(true);
+        assert!(n <= 480, "the extra tools of a small window take {n} characters; the budget is 480");
+        assert!(n > 200, "the extra tools were not counted: {n} characters");
     }
 }

@@ -192,3 +192,12 @@ fn messages_the_sub_agent_never_read_are_one_fact_line_in_what_the_main_model_ge
     assert_eq!(unread_note(1), "\n\n1 message you sent it arrived after its last step and was not read.");
     assert_eq!(unread_note(3), "\n\n3 messages you sent it arrived after its last step and were not read.");
 }
+
+#[test]
+fn the_note_on_a_forced_report_names_the_rounds_it_used() {
+    for rounds in [16, 40, 7] {
+        let note = cut_note(rounds);
+        assert!(note.contains(&format!("used all {rounds} rounds")), "{note}");
+        assert!(note.contains("not in the report"), "{note}");
+    }
+}

@@ -149,6 +149,16 @@ impl Inbound {
         }
     }
 
+    /// How much a setting holds back, from `accept` (0) to `refuse` (3); a project may only raise it.
+    pub fn strictness(self) -> u8 {
+        match self {
+            Inbound::Accept => 0,
+            Inbound::Auto => 1,
+            Inbound::Hold => 2,
+            Inbound::Refuse => 3,
+        }
+    }
+
     /// `auto`: a receiver that asks for permission accepts unless the sender runs without asking; one that
     /// runs without asking holds, unless the sender does too. A mail the person wrote is always taken in.
     pub fn verdict(self, receiver_bypass: bool, sender_bypass: bool, kind: FromKind) -> Verdict {

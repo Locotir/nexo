@@ -22,13 +22,32 @@ impl Tool for Edit {
     }
 
     fn spec(&self) -> ToolSpec {
+        // One change as `changes()` reads it. Spelled out because a bare object or an array without
+        // `items` tells the model nothing about the keys and strict validators refuse it. The nested
+        // `new_string` carries no description: the top-level one says it, and every copy costs characters in
+        // each request.
+        let change = json!({
+            "type": "object",
+            "properties": {
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"}
+            },
+            "required": ["old_string", "new_string"]
+        });
+        // A file entry is `path` and its `edits`. (One entry also takes a single pair like the top level, but
+        // saying so would repeat the pair in every request for a form `edits` already covers.)
+        let file = json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": change}},
+            "required": ["path"]
+        });
         ToolSpec {
             name: "edit".into(),
             description: "Replace `old_string` in a file with `new_string`. It must match \
                           exactly (indentation included) and occur once; add surrounding lines to make it \
                           unique, or set `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
-                          `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
-                          nothing is written. Several files: `files`. `check` runs a test or build after."
+                          `edits`, applied in order; if one fails nothing is written. Several files: `files`. `check` runs a test or build after."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -37,11 +56,10 @@ impl Tool for Edit {
                     "old_string": {"type": "string"},
                     "new_string": {"type": "string", "description": "Empty to delete."},
                     "replace_all": {"type": "boolean"},
-                    "edits": {"type": "array", "items": {"type": "object"}},
-                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array"}}}},
+                    "edits": {"type": "array", "items": change},
+                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": file},
                     "check": {"type": "string", "description": "Short command to run after; exit and tail come back."}
-                },
-                "required": []
+                }
             }),
         }
     }
@@ -55,6 +73,25 @@ impl Tool for Edit {
                 ("check", "Command to run after"),
             ],
         })
+    }
+
+    /// A small window gets the entries as bare objects (the arrays keep an `items`, so no schema is refused):
+    /// the keys are named by the short text and the call's error, and the typed entries would add about 330
+    /// characters to a fixed part of a request that is held to a few thousand tokens.
+    fn trim_compact(&self, spec: &mut ToolSpec) {
+        let Some(props) = spec.parameters.get_mut("properties").and_then(Value::as_object_mut) else { return };
+        if let Some(edits) = props.get_mut("edits").and_then(Value::as_object_mut) {
+            edits.insert("items".into(), json!({"type": "object"}));
+        }
+        if let Some(files) = props.get_mut("files").and_then(Value::as_object_mut) {
+            files.insert(
+                "items".into(),
+                json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}}
+                }),
+            );
+        }
     }
 
     fn kind(&self) -> ToolKind {

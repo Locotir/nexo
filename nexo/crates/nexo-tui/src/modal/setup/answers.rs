@@ -180,6 +180,7 @@ impl Setup {
                     cache_read: f("price cached").unwrap_or(0.0),
                     cache_write: 0.0,
                     cache_write_1h: 0.0,
+                    long: None,
                 },
             );
         }

@@ -293,6 +293,11 @@ mod remote_tests {
         tx.send(Err("offline".into())).unwrap();
         app.remote_tick();
         assert!(format!("{:?}", app.blocks).contains("offline"));
+        // a lost view is a failure, so it is not shown at the level of a plain note
+        assert!(app
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Notice { level: Level::Warn, text } if text.contains("offline"))));
         tx.send(Ok(RemoteUpdate::Delta(observer.observation.snapshot_since(&first).unwrap()))).unwrap();
         app.remote_tick();
         assert!(!format!("{:?}", app.blocks).contains("offline"));

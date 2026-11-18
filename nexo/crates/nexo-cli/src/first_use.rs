@@ -51,7 +51,11 @@ pub fn mistyped_command(word: &str, commands: &[String]) -> Option<String> {
         return None;
     }
     let best = commands.iter().filter(|c| c.as_str() != "help").min_by_key(|c| distance(&w, c))?;
-    (distance(&w, best) <= 2).then(|| {
+    // Zero edits is a capitalised command (`Doctor`), which clap does not match. One edit is a slip of the finger. Two edits only count in a longer word that starts the same: `test` is two
+    // edits from `team` and `lint` from `bin`, and those are requests, not typos.
+    let d = distance(&w, best);
+    let close = d <= 1 || (d == 2 && w.chars().count() >= 6 && w.chars().next() == best.chars().next());
+    close.then(|| {
         format!("{word:?} is not a command; did you mean `nexo {best}`? (to send it as a request: `nexo -p {word}`)")
     })
 }
@@ -73,7 +77,53 @@ pub fn unknown_provider(cwd: &Path, cfg: &Config) -> Option<String> {
     ))
 }
 
-/// One line for each setting that cannot work: an unknown theme or context policy.
+/// The warning for a setting whose value is a word from a fixed list that the runtime reads leniently
+/// (anything else becomes the default without a message). The comparison ignores case and padding,
+/// as the readers do, unless `exact` is set.
+fn word_warning(source: &Path, table: &str, key: &str, value: &str, accepted: &[&str], exact: bool) -> Option<String> {
+    let ok =
+        if exact { accepted.contains(&value) } else { accepted.iter().any(|a| a.eq_ignore_ascii_case(value.trim())) };
+    (!ok).then(|| {
+        format!(
+            "{}: [{table}] {key} = {value:?} is not a known value; accepted: {}",
+            source.display(),
+            accepted.join(", ")
+        )
+    })
+}
+
+/// The string at `table.key` in the first of the project's and the person's files that sets it
+/// (the order `source_of` uses), with that file. `OnLimit`, `Detail` and `Figure` turn an unknown word
+/// into their default while the file is read, so only the file still holds what was written.
+fn raw_value(cwd: &Path, table: &str, key: &str) -> Option<(PathBuf, String)> {
+    let read = |p: PathBuf| {
+        let text = std::fs::read_to_string(&p).ok()?;
+        let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+        let item = doc.get(table)?.get(key)?;
+        Some((p, item.as_str().map(str::to_string)))
+    };
+    let (path, value) = nexo_core::paths::project_config_file(cwd)
+        .and_then(read)
+        .or_else(|| read(nexo_core::paths::user_config_file()))?;
+    value.map(|v| (path, v))
+}
+
+/// The first of `files` whose `[agent] key` is a number that limits nothing (0, negative or nan). An untrusted
+/// project's higher limit is replaced by the person's own while the files load, so the value that now
+/// reads as no limit can sit in the person's file while the project file also sets the key.
+fn file_with_empty_limit(files: &[PathBuf], key: &str) -> Option<PathBuf> {
+    files.iter().find_map(|p| {
+        let text = std::fs::read_to_string(p).ok()?;
+        let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+        let item = doc.get("agent")?.get(key)?;
+        let v = item.as_float().or_else(|| item.as_integer().map(|i| i as f64))?;
+        (v.is_nan() || v <= 0.0).then(|| p.clone())
+    })
+}
+
+/// One line for each setting that cannot work or that reads as something else than it says: a word outside
+/// its list (theme, context policy, mail inbound, screen, status pieces, brief engine, on_limit, detail, figure),
+/// an unknown web search backend, and a spend limit that limits nothing.
 pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
     let mut out = Vec::new();
     let theme = cfg.ui.theme.trim();
@@ -89,6 +139,78 @@ pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
             "{}: [context] policy = {policy:?} is not a policy; accepted: auto, plain, curator, compact",
             source_of(cwd, Some("context"), "policy").display()
         ));
+    }
+    let mail = cfg.mail.inbound.trim().to_ascii_lowercase();
+    // An unknown word reads as `auto`, the most permissive of the four, so a typo of `refuse` opens the inbox.
+    if !matches!(mail.as_str(), "auto" | "accept" | "hold" | "refuse") {
+        out.push(format!(
+            "{}: [mail] inbound = {:?} is not a mode, so it reads as auto; accepted: auto, accept, hold, refuse",
+            source_of(cwd, Some("mail"), "inbound").display(),
+            cfg.mail.inbound
+        ));
+    }
+    // The runtime compares this one exactly, so ` inline` or `Inline` gives the full screen.
+    out.extend(word_warning(
+        &source_of(cwd, Some("ui"), "screen"),
+        "ui",
+        "screen",
+        &cfg.ui.screen,
+        &["full", "inline"],
+        true,
+    ));
+    // Unknown pieces are dropped, and a list with none known left draws an empty status bar.
+    let unknown: Vec<String> = cfg
+        .ui
+        .status_line
+        .iter()
+        .filter(|n| !nexo_tui::ui::STATUS_PIECES.iter().any(|p| p.eq_ignore_ascii_case(n.trim())))
+        .map(|n| format!("{n:?}"))
+        .collect();
+    if !unknown.is_empty() {
+        out.push(format!(
+            "{}: [ui] status_line has unknown pieces {}, which are dropped (a list with none known draws an empty bar); accepted: {}",
+            source_of(cwd, Some("ui"), "status_line").display(),
+            unknown.join(", "),
+            nexo_tui::ui::STATUS_PIECES.join(", ")
+        ));
+    }
+    let engine = cfg.agent.subagent_brief_engine.trim().to_ascii_lowercase();
+    if !matches!(engine.as_str(), "auto" | "curator" | "lexical" | "rust") {
+        out.push(format!(
+            "{}: [agent] subagent_brief_engine = {:?} is not an engine, so it reads as auto; accepted: auto, curator, lexical, rust",
+            source_of(cwd, Some("agent"), "subagent_brief_engine").display(),
+            cfg.agent.subagent_brief_engine
+        ));
+    }
+    let search = cfg.web.search.trim();
+    // The runtime refuses an unknown backend only at the first search, as a tool failure.
+    if !search.is_empty() && !search.eq_ignore_ascii_case("auto") && nexo_tools::web::Backend::parse(search).is_none() {
+        out.push(format!(
+            "{}: [web] search = {search:?} is not a backend; accepted: auto, duckduckgo (ddg), brave, tavily, exa, searxng (searx)",
+            source_of(cwd, Some("web"), "search").display()
+        ));
+    }
+    // A limit at or under zero, or nan, is no limit at all: `max_cost = 0` does not mean "spend nothing".
+    let files: Vec<PathBuf> =
+        nexo_core::paths::project_config_file(cwd).into_iter().chain([nexo_core::paths::user_config_file()]).collect();
+    for (key, v) in [("max_cost", cfg.agent.max_cost), ("max_cost_day", cfg.agent.max_cost_day)] {
+        if let Some(v) = v.filter(|v| v.is_nan() || *v <= 0.0) {
+            let file = file_with_empty_limit(&files, key).unwrap_or_else(|| source_of(cwd, Some("agent"), key));
+            out.push(format!(
+                "{}: [agent] {key} = {v} does not stop anything: a limit that is 0, negative or nan means no limit; use a positive dollar amount, or remove the key",
+                file.display()
+            ));
+        }
+    }
+    // These three read an unknown word as their default while the file loads, so `cfg` cannot tell.
+    for (table, key, accepted) in [
+        ("agent", "on_limit", &["checkpoint", "ask"][..]),
+        ("ui", "detail", &["quiet", "full"][..]),
+        ("ui", "figure", &["galaxy", "constellation", "none"][..]),
+    ] {
+        if let Some((path, v)) = raw_value(cwd, table, key) {
+            out.extend(word_warning(&path, table, key, &v, accepted, false));
+        }
     }
     out
 }
@@ -145,11 +267,144 @@ mod tests {
 
     #[test]
     fn one_word_near_a_command_is_a_typo_and_nothing_else_is() {
-        let cmds: Vec<String> = ["sessions", "doctor", "use", "review"].map(String::from).to_vec();
+        let cmds: Vec<String> = ["sessions", "doctor", "use", "review", "team", "bin"].map(String::from).to_vec();
         assert!(mistyped_command("sesions", &cmds).unwrap().contains("`nexo sessions`"));
         assert!(mistyped_command("Docter", &cmds).is_some());
+        assert!(
+            mistyped_command("Doctor", &cmds).unwrap().contains("`nexo doctor`"),
+            "a capitalised command is not matched by clap"
+        );
         assert!(mistyped_command("ls", &cmds).is_none(), "too short to judge");
+        assert!(mistyped_command("test", &cmds).is_none(), "two edits from team in a four-letter word is a request");
+        assert!(mistyped_command("lint", &cmds).is_none(), "two edits from bin in a four-letter word is a request");
         assert!(mistyped_command("refactor", &cmds).is_none());
         assert!(mistyped_command("fix the bug", &cmds).is_none());
+    }
+
+    /// The warnings of `cfg` that name `key`, with a project folder that holds no settings of its own.
+    fn warnings_for(cfg: &Config, key: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        setting_warnings(dir.path(), cfg).into_iter().filter(|w| w.contains(key)).collect()
+    }
+
+    #[test]
+    fn a_mistyped_mail_inbound_mode_is_named_and_a_valid_one_is_not() {
+        let mut cfg = Config::default();
+        cfg.mail.inbound = "refues".into();
+        let w = warnings_for(&cfg, "inbound");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("\"refues\"") && w[0].contains("accepted: auto, accept, hold, refuse"), "{w:?}");
+        cfg.mail.inbound = " Refuse ".into();
+        assert!(warnings_for(&cfg, "inbound").is_empty());
+    }
+
+    #[test]
+    fn a_screen_other_than_full_or_inline_is_named_because_the_runtime_compares_it_exactly() {
+        let mut cfg = Config::default();
+        cfg.ui.screen = "Inline".into();
+        let w = warnings_for(&cfg, "screen");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("\"Inline\"") && w[0].contains("accepted: full, inline"), "{w:?}");
+        cfg.ui.screen = "inline".into();
+        assert!(warnings_for(&cfg, "screen").is_empty());
+    }
+
+    #[test]
+    fn unknown_status_pieces_are_listed_and_known_ones_in_any_case_are_not() {
+        let mut cfg = Config::default();
+        cfg.ui.status_line = vec!["Model".into(), "modle".into(), " cost ".into(), "dirr".into()];
+        let w = warnings_for(&cfg, "status_line");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("\"modle\", \"dirr\"") && w[0].contains("accepted: model, effort"), "{w:?}");
+        cfg.ui.status_line = vec!["Model".into(), " cost ".into()];
+        assert!(warnings_for(&cfg, "status_line").is_empty());
+    }
+
+    #[test]
+    fn a_mistyped_subagent_brief_engine_is_named_and_a_valid_one_is_not() {
+        let mut cfg = Config::default();
+        cfg.agent.subagent_brief_engine = "lexicall".into();
+        let w = warnings_for(&cfg, "subagent_brief_engine");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("\"lexicall\"") && w[0].contains("accepted: auto, curator, lexical, rust"), "{w:?}");
+        cfg.agent.subagent_brief_engine = "Rust".into();
+        assert!(warnings_for(&cfg, "subagent_brief_engine").is_empty());
+    }
+
+    #[test]
+    fn an_unknown_web_search_backend_is_named_before_the_first_search() {
+        let mut cfg = Config::default();
+        cfg.web.search = "tavilly".into();
+        let w = warnings_for(&cfg, "[web]");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("\"tavilly\"") && w[0].contains("accepted: auto, duckduckgo (ddg)"), "{w:?}");
+        for ok in ["", "AUTO", " Tavily ", "ddg", "searx"] {
+            cfg.web.search = ok.into();
+            assert!(warnings_for(&cfg, "[web]").is_empty(), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn a_spend_limit_that_is_zero_negative_or_nan_is_said_to_limit_nothing() {
+        for key in ["max_cost", "max_cost_day"] {
+            for bad in [0.0, -1.0, f64::NAN] {
+                let mut cfg = Config::default();
+                if key == "max_cost" {
+                    cfg.agent.max_cost = Some(bad);
+                } else {
+                    cfg.agent.max_cost_day = Some(bad);
+                }
+                let w = warnings_for(&cfg, key);
+                assert_eq!(w.len(), 1, "{key} = {bad}: {w:?}");
+                assert!(w[0].contains("means no limit"), "{w:?}");
+            }
+            let mut cfg = Config::default();
+            if key == "max_cost" {
+                cfg.agent.max_cost = Some(1.5);
+            } else {
+                cfg.agent.max_cost_day = Some(1.5);
+            }
+            assert!(warnings_for(&cfg, key).is_empty(), "{key} = 1.5");
+        }
+    }
+
+    #[test]
+    fn an_empty_spend_limit_is_pinned_on_the_file_that_holds_it_not_on_one_that_was_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        let user = dir.path().join("user.toml");
+        std::fs::write(&project, "[agent]\nmax_cost = 5\nmax_cost_day = 0\n").unwrap();
+        std::fs::write(&user, "[agent]\nmax_cost = 0.0\nmax_cost_day = nan\n").unwrap();
+        let files = [project.clone(), user.clone()];
+        assert_eq!(file_with_empty_limit(&files, "max_cost"), Some(user.clone()), "the project's 5 is a real limit");
+        assert_eq!(file_with_empty_limit(&files, "max_cost_day"), Some(project.clone()), "both are empty: the first");
+        std::fs::write(&user, "[agent]\nmax_cost = 2\n").unwrap();
+        assert_eq!(file_with_empty_limit(&files, "max_cost"), None);
+        assert_eq!(file_with_empty_limit(&files, "other"), None);
+    }
+
+    #[test]
+    fn words_the_loader_turns_into_a_default_are_found_in_the_project_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::create_dir(dir.path().join(".nexo")).unwrap();
+        std::fs::write(
+            dir.path().join(".nexo/config.toml"),
+            "[agent]\non_limit = \"asck\"\n[ui]\ndetail = \"Full\"\nfigure = \"gallaxy\"\n",
+        )
+        .unwrap();
+        let w = setting_warnings(dir.path(), &Config::default());
+        let has = |key: &str, word: &str| w.iter().any(|l| l.contains(key) && l.contains(word));
+        assert!(has("on_limit", "\"asck\"") && has("figure", "\"gallaxy\""), "{w:?}");
+        assert!(w.iter().all(|l| !l.contains("detail")), "a valid word in another case is fine: {w:?}");
+        assert!(w.iter().any(|l| l.contains("accepted: checkpoint, ask")), "{w:?}");
+    }
+
+    #[test]
+    fn a_word_outside_its_list_is_accepted_only_by_the_comparison_the_reader_makes() {
+        let p = Path::new("c.toml");
+        assert!(word_warning(p, "ui", "figure", " NONE ", &["galaxy", "none"], false).is_none());
+        assert!(word_warning(p, "ui", "screen", " inline", &["full", "inline"], true).is_some());
     }
 }

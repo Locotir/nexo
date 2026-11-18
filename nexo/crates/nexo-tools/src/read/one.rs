@@ -7,7 +7,9 @@ use super::symbol::read_symbol;
 use super::{DEFAULT_LIMIT, FILE_CAP, LINE_CHARS};
 use crate::picture;
 use crate::program::{about, bin_offered};
-use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, MAX_FILE_BYTES};
+use crate::util::{
+    cut_line, display_path, int_arg, is_binary, outside_note, resolve, utf16_text, Cuts, MAX_FILE_BYTES,
+};
 
 /// A compiled program shows nothing as text: the answer is what it is and the call that reads it.
 fn not_text(
@@ -71,20 +73,29 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
             bytes.len()
         ));
     }
-    if is_binary(&bytes) {
+    // UTF-16 text has a NUL in every other byte, so it passes the binary test; it is decoded here instead
+    let wide = if is_binary(&bytes) { utf16_text(&bytes) } else { None };
+    if wide.is_none() && is_binary(&bytes) {
         if let Some(kind) = nexo_binmagic::kind_of(&bytes) {
             return not_text(ctx, &shown, &path, &kind, bytes.len() as u64);
         }
         return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
     }
     if let Some(symbol) = args.get("symbol").and_then(Value::as_str) {
+        // UTF-16 ASCII is valid UTF-8 byte for byte (the NULs are characters), so it needs its own refusal
         let text = match std::str::from_utf8(&bytes) {
-            Ok(text) => text,
-            Err(_) => return ToolOutput::error("read: Rust symbol lookup requires UTF-8"),
+            Ok(text) if wide.is_none() => text,
+            _ => return ToolOutput::error("read: Rust symbol lookup requires UTF-8"),
         };
         return read_symbol(ctx, &shown, text, symbol);
     }
-    let text = String::from_utf8_lossy(&bytes);
+    // where the bytes are not UTF-8 the text below has U+FFFD in place of them: the fact says so, with the
+    // first bad byte (a U+FFFD that was in the file is valid UTF-8 and is not flagged)
+    let invalid = if wide.is_none() { std::str::from_utf8(&bytes).err() } else { None };
+    let text = match &wide {
+        Some((decoded, ..)) => std::borrow::Cow::Borrowed(decoded.as_str()),
+        None => String::from_utf8_lossy(&bytes),
+    };
     // a notebook is JSON whose outputs can hold megabytes of base64: show its cells as text instead
     let notebook =
         if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipynb")) { notebook(&text) } else { None };
@@ -111,9 +122,22 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         }
         None => String::new(),
     };
+    if let Some((_, le, _)) = &wide {
+        out.push_str(&format!(
+            "(decoded from UTF-16{}; edit and write refuse this file, change it with bash, e.g. iconv)\n",
+            if *le { "LE" } else { "BE" }
+        ));
+    }
+    if let Some(e) = invalid {
+        out.push_str(&format!(
+            "(not valid UTF-8: invalid byte at offset {}; bad bytes are shown as U+FFFD, and edit refuses this file, change it with bash)\n",
+            e.valid_up_to()
+        ));
+    }
     let mut raw = String::new();
     let mut n = 0usize;
     let mut capped = false;
+    let mut cuts = Cuts::default();
     let mut chars = out.chars().count();
     // the call's cap, held to what the window leaves of a request
     let cap = ctx.cap(FILE_CAP);
@@ -131,6 +155,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         chars += here;
         raw.push_str(&shown_line);
         raw.push('\n');
+        cuts.seen(i + 1, line, LINE_CHARS);
         n = i + 1;
     }
     if capped {
@@ -157,6 +182,10 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         });
     } else if n < total {
         out.push_str(&format!("… {} more lines (of {total}); read with offset {} to continue\n", total - n, n + 1));
+    }
+    // a line cut to LINE_CHARS says so, with its length, so the model knows the rest was not shown
+    if let Some(note) = cuts.note(LINE_CHARS) {
+        out.push_str(&format!("({note})\n"));
     }
     ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown, text: raw, start_line: offset })
 }

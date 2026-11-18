@@ -68,6 +68,8 @@ pub enum Edit {
     Submit,
     /// Nothing the editor handles.
     Ignored,
+    /// The draft is untouched, but the key was a miss the user should be told about (shown as a flash).
+    Notice(String),
 }
 
 impl Input {

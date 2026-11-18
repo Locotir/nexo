@@ -11,7 +11,7 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex, Notify};
 
 use super::table::uri;
-use super::{FIRST, INIT, SETTLE};
+use super::{FIRST, INIT, MAX_HEADER, MAX_MESSAGE, REPLY_QUEUE, SETTLE};
 /// uri → (the version the diagnostics are for, the diagnostics).
 pub(super) type Diags = Arc<Mutex<HashMap<String, (Option<i64>, Vec<Value>)>>>;
 
@@ -100,7 +100,8 @@ impl Server {
         // the reader: answers go to their callers, diagnostics to the map, requests get null
         let busy: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::default();
         let (p, dg, pb, bz) = (pending.clone(), diags.clone(), published.clone(), busy.clone());
-        let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        // bounded: a server that does not read its input while it floods requests gets no answer beyond this
+        let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<Value>(REPLY_QUEUE);
         let dead = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader = tokio::spawn(async move {
             let mut r = BufReader::new(stdout);
@@ -108,8 +109,10 @@ impl Server {
                 let mut len = 0usize;
                 loop {
                     let mut line = String::new();
-                    match r.read_line(&mut line).await {
+                    // bounded: a stream of garbage with no newline must not grow without limit
+                    match (&mut r).take(MAX_HEADER).read_line(&mut line).await {
                         Ok(0) | Err(_) => return,
+                        Ok(_) if line.len() as u64 >= MAX_HEADER && !line.ends_with('\n') => return,
                         Ok(_) => {}
                     }
                     let line = line.trim_end();
@@ -119,6 +122,11 @@ impl Server {
                     if let Some(v) = line.strip_prefix("Content-Length:") {
                         len = v.trim().parse().unwrap_or(0);
                     }
+                }
+                // the length is the server's word: a huge one would be allocated whole (an abort, not an error)
+                if len > MAX_MESSAGE {
+                    tracing::warn!("lsp: the server announced a {len} byte message; the connection was ended");
+                    return;
                 }
                 let mut buf = vec![0u8; len];
                 if r.read_exact(&mut buf).await.is_err() {
@@ -137,7 +145,7 @@ impl Server {
                     }
                     (Some(id), Some(_)) => {
                         // a request from the server (configuration, progress tokens): a plain answer
-                        let _ = reply_tx.send(json!({"jsonrpc": "2.0", "id": id, "result": Value::Null}));
+                        let _ = reply_tx.try_send(json!({"jsonrpc": "2.0", "id": id, "result": Value::Null}));
                     }
                     (None, Some("$/progress")) => {
                         let token = msg["params"]["token"].to_string();

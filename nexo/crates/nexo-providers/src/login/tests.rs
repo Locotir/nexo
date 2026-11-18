@@ -3,7 +3,7 @@ use super::*;
 use base64::Engine;
 use httpmock::prelude::*;
 use nexo_core::auth::{self, Credential};
-use nexo_core::ProviderConfig;
+use nexo_core::{ErrorKind, ProviderConfig};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -240,4 +240,135 @@ async fn xai_login_polls_with_the_device_grant_and_slows_down_when_asked() {
     );
     assert!(oauth_poll_error::<()>(&json!({"error": "access_denied"})).is_err());
     assert!(login_at(&at(&s), "nope", &|_| {}).await.is_err());
+}
+
+#[tokio::test]
+async fn a_credential_store_that_does_not_parse_is_said_not_read_as_signed_out() {
+    let dir = std::env::temp_dir().join(format!("nexo-login-corrupt-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("auth.json");
+    std::fs::write(&store, "not json").unwrap();
+    let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+    cfg.auth = Some("codex".into());
+    let e = Endpoints::default();
+    let bad = prepare_in(&store, &e, &cfg).await;
+    // an absent store is still just no login yet
+    let none = prepare_in(&dir.join("absent.json"), &e, &cfg).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    let msg = bad.expect_err("a corrupt store is an error").to_string();
+    assert!(msg.contains("cannot be read"), "{msg}");
+    assert!(msg.contains("auth.json"), "{msg}");
+    assert!(none.unwrap().1.is_none());
+}
+
+#[tokio::test]
+async fn an_unreadable_store_is_not_shown_with_the_advice_to_log_in_again() {
+    let dir = std::env::temp_dir().join(format!("nexo-login-corrupt-hint-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("auth.json");
+    std::fs::write(&store, "not json").unwrap();
+    let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+    cfg.auth = Some("codex".into());
+    cfg.login = Some("codex".into());
+    let e = prepare_in(&store, &Endpoints::default(), &cfg).await.expect_err("a corrupt store is an error");
+    let _ = std::fs::remove_dir_all(&dir);
+    // an `Auth` error is shown as "run `nexo auth login`", and a login cannot be written over this file
+    assert_ne!(e.kind, nexo_core::ErrorKind::Auth);
+    assert!(!e.to_string().contains("nexo auth login"), "{e}");
+    assert!(!e.human().contains("nexo auth login"), "{}", e.human());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_key_command_is_run_off_the_worker_and_gives_its_key() {
+    let mut cfg = ProviderConfig::new("openai-chat", "https://api.example", None);
+    cfg.api_key_cmd = Some("echo sk-from-cmd".into());
+    assert_eq!(direct_key(&cfg).await.as_deref(), Some("sk-from-cmd"));
+    // a heartbeat on the same single thread keeps ticking while a slow command runs
+    cfg.api_key_cmd = Some("sleep 1; echo sk-slow".into());
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let beat = ticks.clone();
+    let h = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            beat.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    assert_eq!(direct_key(&cfg).await.as_deref(), Some("sk-slow"));
+    h.abort();
+    assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) >= 5, "the runtime was held while the command ran");
+}
+
+/// An expiring or expired login of `flow`, as the store would hold it.
+fn oauth_of(flow: &str, refresh: &str) -> Credential {
+    let mut md = BTreeMap::new();
+    md.insert("flow".to_string(), flow.to_string());
+    Credential::Oauth { access: "at1".into(), refresh: refresh.into(), expires: auth::now() + 5, metadata: md }
+}
+
+#[tokio::test]
+async fn a_revoked_refresh_token_tells_the_user_to_log_in_again() {
+    let s = MockServer::start();
+    let token = s.mock(|w, t| {
+        w.method(POST).path("/oauth/token");
+        t.status(400).json_body(json!({"error": "invalid_grant", "error_description": "token revoked"}));
+    });
+    let e = refresh_at(&at(&s), &oauth_of("codex", "rt1")).await.unwrap_err();
+    token.assert_calls(1);
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["codex", "400", "token revoked", "nexo auth login"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test]
+async fn a_renewal_the_server_fails_without_a_body_still_names_the_flow_and_status() {
+    let s = MockServer::start();
+    s.mock(|w, t| {
+        w.method(POST).path("/token");
+        t.status(500);
+    });
+    let e = refresh_at(&at(&s), &oauth_of("xai", "rt1")).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["xai", "500", "nexo auth login"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test]
+async fn a_login_without_a_refresh_token_asks_for_a_new_login_without_calling_the_server() {
+    let s = MockServer::start();
+    let token = s.mock(|w, t| {
+        w.method(POST).path("/oauth/token");
+        t.status(200).json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+    });
+    let e = refresh_at(&at(&s), &oauth_of("codex", "")).await.unwrap_err();
+    token.assert_calls(0);
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["codex", "nexo auth login"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_renewal_the_server_never_answers_fails_naming_the_login() {
+    let s = MockServer::start();
+    s.mock(|w, t| {
+        w.method(POST).path("/oauth/token");
+        // longer than RENEWAL_LIMIT, which is one second under test
+        t.status(200)
+            .delay(Duration::from_millis(2500))
+            .json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+    });
+    let dir = std::env::temp_dir().join(format!("nexo-login-timeout-test-{}", std::process::id()));
+    let store = dir.join("auth.json");
+    auth::set_in(&store, "codex", oauth_of("codex", "rt1")).unwrap();
+    let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+    cfg.auth = Some("codex".into());
+    let e = prepare_in(&store, &at(&s), &cfg).await.unwrap_err();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(e.kind, ErrorKind::Auth);
+    for fact in ["codex", "did not answer", "1s"] {
+        assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
 }

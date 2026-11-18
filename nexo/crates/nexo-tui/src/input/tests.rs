@@ -62,6 +62,18 @@ fn a_long_paste_is_folded_in_the_draft_and_sent_whole() {
     assert_eq!(i.text(), "[Pasted text #1 +40 lines]", "numbering starts again with a new draft");
 }
 
+#[test]
+fn a_paste_that_contains_a_later_chip_label_is_sent_as_typed() {
+    let mut i = Input::new("");
+    let first = format!("log line\n{}\n{}", "[Pasted text #2 2000 chars]", "x\n".repeat(30));
+    let second = "y".repeat(2000);
+    i.insert_paste(&first);
+    i.insert_paste(" ");
+    i.insert_paste(&second);
+    assert_eq!(i.text(), "[Pasted text #1 +32 lines] [Pasted text #2 2000 chars]");
+    assert_eq!(i.full_text(), format!("{first} {second}"));
+}
+
 fn k(code: KeyCode, m: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, m)
 }
@@ -463,4 +475,49 @@ fn omega_redoes_on_a_mac_and_is_a_letter_elsewhere() {
     // with nothing to redo the character is typed
     i.key(k(KeyCode::Char('Ω'), KeyModifiers::NONE));
     assert!(i.text().ends_with('Ω'));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_history_file_is_readable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let d = tempfile::tempdir().unwrap();
+    // a file left by an older run is tightened when the history is loaded
+    let old = d.path().join("old.jsonl");
+    std::fs::write(&old, "\"one\"\n").unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut i = Input::new("");
+    i.persist_history(old.clone());
+    i.push_history("two");
+    assert_eq!(mode(&old), 0o600);
+    assert_eq!(i.history(), ["one", "two"]);
+    // a new file is private from the first line
+    let fresh = d.path().join("fresh.jsonl");
+    let mut j = Input::new("");
+    j.persist_history(fresh.clone());
+    j.push_history("secret");
+    assert_eq!(mode(&fresh), 0o600);
+    // trimming a long file rewrites it without widening the mode
+    let long = d.path().join("long.jsonl");
+    let lines: String = (0..2 * MAX_HISTORY + 5).map(|n| format!("\"p{n}\"\n")).collect();
+    std::fs::write(&long, lines).unwrap();
+    let mut k = Input::new("");
+    k.persist_history(long.clone());
+    assert_eq!(k.history().len(), MAX_HISTORY);
+    assert_eq!(std::fs::read_to_string(&long).unwrap().lines().count(), MAX_HISTORY);
+    assert_eq!(mode(&long), 0o600);
+}
+
+#[test]
+fn a_vim_operator_pair_that_is_not_implemented_says_so_and_leaves_the_draft_alone() {
+    let mut i = Input::new("");
+    i.set_text("hello world");
+    i.vim = Some(VimMode::Normal);
+    let n = |i: &mut Input, c: char| i.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+    assert_eq!(n(&mut i, 'd'), Edit::Changed, "the operator waits for its second key");
+    assert_eq!(n(&mut i, 'w'), Edit::Notice("vim: dw not supported".to_string()));
+    assert_eq!(i.text(), "hello world");
+    // the operator was cleared, so the next key is a plain one again
+    assert_eq!(n(&mut i, 'q'), Edit::Ignored, "an unknown key with no operator stays silent, as in vim");
 }

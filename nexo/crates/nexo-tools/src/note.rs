@@ -609,6 +609,11 @@ mod tests {
         // the limit is 200 characters: 200 are kept, 201 are refused
         assert!(unfit(&"a".repeat(MAX_RULE)).is_none());
         assert!(unfit(&"a".repeat(MAX_RULE + 1)).is_some_and(|m| m.starts_with("too long: keep the exact fact")));
+        // an address with a user name only, and a query that names a secret parameter without a value, are plain facts
+        assert!(unfit("Rule: clone with ssh://git@github.com/org/repo or https://user@host/x").is_none());
+        assert!(unfit("Rule: the API takes `?key=` and `&sig=` in the query").is_none());
+        assert!(unfit("Rule: the API takes ?key=$API_KEY in the query").is_none());
+        assert!(unfit("Rule: clone with https://user:pw1234@host/x").is_some());
     }
 
     #[tokio::test]

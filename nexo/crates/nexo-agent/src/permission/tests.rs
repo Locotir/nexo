@@ -528,9 +528,19 @@ fn allow_rules_for_commands_keep_the_case_of_their_flags() {
     }
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn path_rules_fold_case_on_macos() {
+fn path_globs_fold_case_when_asked_and_never_for_commands() {
+    // platform independent: the fold flag decides, so Linux runs the same check Windows CI does
+    let fold = rules::build_glob(".git/**", true).unwrap();
+    assert!(fold.is_match(".GIT/config") && fold.is_match(".git/config"));
+    assert!(!rules::build_glob(".git/**", false).unwrap().is_match(".GIT/config"));
+    let command = rules::glob("git branch -d *").unwrap();
+    assert!(command.is_match("git branch -d old") && !command.is_match("git branch -D old"));
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn path_rules_fold_case_where_the_disk_does() {
     let p = Policy { mode: PermissionMode::Ask, allow: vec![], deny: vec!["write(.git/**)".into()] };
     let d = p.decide("write", ToolKind::Write, &json!({ "path": ".GIT/config" }), &cwd());
     assert!(matches!(d, Decision::Deny(_)));
@@ -566,5 +576,36 @@ fn an_osascript_shell_call_that_cannot_be_read_in_full_is_denied() {
     // a call that is read and holds nothing denied, and a script with no shell call, pass the rule
     for cmd in ["osascript -e 'do shell script \"ls\"'", "osascript -e 'display dialog \"hi\"'"] {
         assert_eq!(decide_bash("bash", "bash(rm *)", cmd), Decision::Allow, "{cmd}");
+    }
+}
+
+/// The floor judges each command a line runs, not the line as typed: a wrapper with options, a shell started
+/// with a group of flags, `eval`, a substitution and a loop body all end in the same denied command.
+#[test]
+fn the_floor_sees_a_destroyer_behind_wrappers_shells_and_loops_in_yolo() {
+    let c = cwd();
+    let p = Policy { mode: PermissionMode::Auto, allow: vec![], deny: vec![] };
+    for cmd in [
+        "bash -lc 'rm -rf ~'",
+        "sh -ec 'rm -rf /'",
+        "sudo -u root rm -rf /",
+        "sudo -E rm -rf ~",
+        "env -i rm -rf ~",
+        "eval 'rm -rf ~'",
+        "echo $(rm -rf ~)",
+        "echo `rm -rf ~`",
+        "(rm -rf ~)",
+        "for f in 1; do rm -rf ~; done",
+        "if true; then rm -rf ~; fi",
+        "{ rm -rf ~; }",
+        "find ~ -delete",
+        "sudo -u root find / -type f -delete",
+        "cd / && rm -rf *",
+    ] {
+        assert!(matches!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Deny(_)), "{cmd}");
+    }
+    // a `;` or a destroyer's name inside a quoted word is text, not a second command
+    for cmd in ["echo 'run; rm -rf ~'", "git commit -m 'never rm -rf ~'", "bash -lc 'make test'", "sudo -u me ls"] {
+        assert_eq!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Allow, "{cmd}");
     }
 }

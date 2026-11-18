@@ -39,16 +39,57 @@ fn user_name() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// Where the log goes: the configured file, else `<data dir>/audit/YYYY-MM.jsonl` by the line's month.
-fn target(cfg: &AuditConfig, ts: &str) -> PathBuf {
-    match cfg.path.as_deref().filter(|p| !p.trim().is_empty()) {
+/// Where the log goes: the configured file, else `<dir>/YYYY-MM.jsonl` by the line's month (`dir` is [`default_dir`]).
+fn target(cfg: &AuditConfig, dir: &Path, ts: &str) -> PathBuf {
+    match configured(cfg) {
         Some(p) => expand(p),
-        None => default_dir().join(format!("{}.jsonl", ts.get(..7).unwrap_or("unknown"))),
+        None => dir.join(format!("{}.jsonl", ts.get(..7).unwrap_or("unknown"))),
     }
 }
 
 pub fn default_dir() -> PathBuf {
     nexo_core::paths::data_dir().join("audit")
+}
+
+/// Opens the log for appending, making its folder. The audit log holds the commands and arguments of every tool call,
+/// so when it lives in the data folder (`private`) the folder is `0700` and the file `0600`, an existing one included:
+/// logs written before this had the umask rights. A file the admin pointed `path` at keeps whatever rights its owner
+/// gave it; only a file made new gets the private mode.
+///
+/// Closing an old folder or file is hardening, not a condition of writing: when the rights cannot be changed (a folder
+/// or log owned by another user, a read-only mount) the log is still written, as it was before, and one warning says so.
+fn open_log(path: &Path, private: bool) -> std::io::Result<std::fs::File> {
+    use nexo_core::fsmode::{create_private_dir, private_file, tighten_dir, tighten_file};
+    let warn = |what: &Path, e: std::io::Error| {
+        tracing::warn!("audit log: could not make {} private: {e}", what.display());
+    };
+    if let Some(dir) = path.parent() {
+        if private {
+            create_private_dir(dir)?;
+            if let Err(e) = tighten_dir(dir) {
+                warn(dir, e);
+            }
+        } else {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let file = private_file().create(true).append(true).open(path)?;
+    if private {
+        if let Err(e) = tighten_file(path) {
+            warn(path, e);
+        }
+    }
+    Ok(file)
+}
+
+/// The file the admin set in `[audit] path`, if any; a blank one counts as none.
+fn configured(cfg: &AuditConfig) -> Option<&str> {
+    cfg.path.as_deref().filter(|p| !p.trim().is_empty())
+}
+
+/// Whether the log lives in nexo's own data folder, which is the only place nexo sets rights on (see [`open_log`]).
+fn own_folder(cfg: &AuditConfig) -> bool {
+    configured(cfg).is_none()
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -149,6 +190,11 @@ impl Drop for Inner {
 impl Audit {
     /// The writer when `[audit] enabled`; none (and nothing written, not even a directory) otherwise.
     pub fn from_config(cfg: &AuditConfig) -> Option<Audit> {
+        Self::start(cfg, default_dir())
+    }
+
+    /// [`Self::from_config`] with the folder of the month files given, so a test does not need the data folder.
+    fn start(cfg: &AuditConfig, dir: PathBuf) -> Option<Audit> {
         if !cfg.enabled {
             return None;
         }
@@ -159,18 +205,16 @@ impl Audit {
             .spawn(move || {
                 let mut open: Option<(PathBuf, std::fs::File)> = None;
                 let mut warned = false;
+                // a log in the data folder is the user's alone; one the admin pointed somewhere else is left as set
+                let private = own_folder(&cfg);
                 for line in rx {
                     let ts = serde_json::from_str::<Value>(&line)
                         .ok()
                         .and_then(|v| v.get("ts").and_then(Value::as_str).map(String::from))
                         .unwrap_or_default();
-                    let path = target(&cfg, &ts);
+                    let path = target(&cfg, &dir, &ts);
                     if open.as_ref().map(|(p, _)| p != &path).unwrap_or(true) {
-                        let file = path
-                            .parent()
-                            .map(std::fs::create_dir_all)
-                            .unwrap_or(Ok(()))
-                            .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(&path));
+                        let file = open_log(&path, private);
                         match file {
                             Ok(f) => open = Some((path.clone(), f)),
                             Err(e) => {
@@ -359,7 +403,7 @@ pub fn report(files: &[PathBuf], since: Option<&str>, by: By) -> Vec<Row> {
 
 /// The log files to read: the configured file, else every month file in the default folder.
 pub fn files(cfg: &AuditConfig) -> Vec<PathBuf> {
-    if let Some(p) = cfg.path.as_deref().filter(|p| !p.trim().is_empty()) {
+    if let Some(p) = configured(cfg) {
         return vec![expand(p)];
     }
     let mut v: Vec<PathBuf> = std::fs::read_dir(default_dir())
@@ -376,6 +420,97 @@ pub fn files(cfg: &AuditConfig) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_audit_log_and_its_folder_are_the_users_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("audit/2026-11.jsonl");
+        drop(open_log(&path, true).unwrap());
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_audit_log_made_with_the_umask_is_tightened_when_it_is_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("audit");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("2026-11.jsonl");
+        std::fs::write(&path, b"{}\n").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(open_log(&path, true).unwrap());
+        assert_eq!((mode(&dir), mode(&path)), (0o700, 0o600));
+        // the lines already in it stay
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_log_the_admin_pointed_elsewhere_keeps_the_rights_its_owner_set() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = d.path().join("shared.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        drop(open_log(&path, false).unwrap());
+        assert_eq!((mode(d.path()), mode(&path)), (0o755, 0o640));
+    }
+
+    /// One request line through a writer started the way `from_config` starts it, finished before it returns.
+    #[cfg(unix)]
+    fn write_one_line(cfg: &AuditConfig, dir: PathBuf) {
+        let a = Audit::start(cfg, dir).unwrap();
+        let cwd = Path::new("/");
+        a.request(RequestRecord {
+            session: "s",
+            cwd,
+            provider: "p",
+            model: "m",
+            call: "main",
+            usage: Usage::default(),
+            cost_usd: 0.0,
+        });
+        // the last clone dropped waits for the thread, so the line and the rights are in place after it
+        drop(a);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_writer_without_a_path_closes_the_data_folder_and_one_with_a_path_leaves_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        // no path, or a blank one: the month file goes in the folder nexo owns
+        for (i, path) in [None, Some("  ".to_string())].into_iter().enumerate() {
+            let dir = d.path().join(format!("audit{i}"));
+            write_one_line(&AuditConfig { enabled: true, path }, dir.clone());
+            let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+            assert_eq!(files.len(), 1, "{files:?}");
+            assert_eq!((mode(&dir), mode(&files[0])), (0o700, 0o600));
+        }
+        // a path of the admin's: the folder and a file that exist keep their rights, and the line is appended
+        let shared = d.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = shared.join("audit.jsonl");
+        std::fs::write(&file, b"").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let cfg = AuditConfig { enabled: true, path: Some(file.display().to_string()) };
+        write_one_line(&cfg, d.path().join("never-made"));
+        assert_eq!((mode(&shared), mode(&file)), (0o755, 0o640));
+        assert_eq!(std::fs::read_to_string(&file).unwrap().lines().count(), 1);
+        assert!(!d.path().join("never-made").exists());
+    }
 
     #[test]
     fn close_all_writes_the_queued_lines_of_a_writer_still_held() {

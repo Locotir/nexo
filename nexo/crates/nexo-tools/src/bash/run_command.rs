@@ -35,8 +35,18 @@ pub(super) async fn run_command_logged(
         let _ = std::fs::create_dir_all(tmp);
         cmd.env("NEXO_TMP", tmp);
     }
+    // A session of its own (which is also a group of its own, so `kill_group` still reaches every
+    // descendant): the command has no controlling terminal, so it cannot open /dev/tty and inject
+    // keystrokes (TIOCSTI) into the one the user types in. `process_group` must not be set as well:
+    // std runs setpgid first, and setsid then fails with EPERM for a group leader.
     #[cfg(unix)]
-    cmd.process_group(0);
+    // SAFETY: runs in the forked child before exec and only calls `setsid`, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return End::Failed(e.to_string()),
@@ -145,7 +155,7 @@ pub(crate) async fn prove(
 /// Kills the whole process group the command started (its children too). Windows has no groups:
 /// there the tree under the process goes (`taskkill /T`), as ending the shell alone leaves what it
 /// started running. Called while the process is still alive, so the tree can still be found.
-pub(crate) fn kill_group(pid: Option<u32>) {
+pub fn kill_group(pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pid) = pid {
         // SAFETY: a plain signal to a process group this process created.
@@ -155,11 +165,16 @@ pub(crate) fn kill_group(pid: Option<u32>) {
     }
     #[cfg(windows)]
     if let Some(pid) = pid {
+        use std::os::windows::process::CommandExt;
+        // no window for the helper: a nexo started without a console would flash one. It is waited
+        // for on purpose, as the tree must be walked before the shell under it is killed.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .status();
     }
     #[cfg(not(any(unix, windows)))]

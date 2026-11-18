@@ -1,7 +1,7 @@
 use nexo_core::{ToolContext, ToolDisplay, ToolOutput};
 
 use super::{FILE_CAP, LINE_CHARS};
-use crate::util::cut_line;
+use crate::util::{cut_line, Cuts};
 /// Parse Rust rather than guessing brace boundaries in comments, strings or macros.
 pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str) -> ToolOutput {
     use syn::spanned::Spanned;
@@ -61,11 +61,12 @@ pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str
             let mut out = String::new();
             let mut raw = String::new();
             let mut last = start - 1;
+            let mut cuts = Cuts::default();
             let mut chars = 0;
             // the call's cap, held to what the window leaves of a request
             let cap = ctx.cap(FILE_CAP);
-            for (i, line) in text.lines().enumerate().skip(start - 1).take(end - start + 1) {
-                let line = cut_line(line, LINE_CHARS);
+            for (i, whole) in text.lines().enumerate().skip(start - 1).take(end - start + 1) {
+                let line = cut_line(whole, LINE_CHARS);
                 let numbered = format!("{:>6}│ {line}\n", i + 1);
                 let len = numbered.chars().count();
                 if last >= start && chars + len > cap {
@@ -75,6 +76,7 @@ pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str
                 raw.push_str(&line);
                 raw.push('\n');
                 chars += len;
+                cuts.seen(i + 1, whole, LINE_CHARS);
                 last = i + 1;
             }
             if last < end {
@@ -92,6 +94,10 @@ pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str
                     Some(fact) => out.push_str(&format!("… symbol truncated at line {last} of {end}; {fact}\n")),
                     None => out.push_str(&format!("… symbol truncated at line {last} of {end}; {rest}\n")),
                 }
+            }
+            // a line cut to LINE_CHARS says so, with its length, so the model knows the rest was not shown
+            if let Some(note) = cuts.note(LINE_CHARS) {
+                out.push_str(&format!("({note})\n"));
             }
             ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown.into(), text: raw, start_line: start })
         }

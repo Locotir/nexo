@@ -1,6 +1,7 @@
 use super::*;
 use httpmock::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 fn ctx() -> ToolContext {
     ToolContext::new(std::env::temp_dir())
@@ -644,4 +645,259 @@ fn summaries_and_registration() {
     assert_eq!(f.kind(), ToolKind::Network);
     assert_eq!(tools(&WebConfig::default()).len(), 2);
     assert!(tools(&WebConfig { enabled: false, ..Default::default() }).is_empty());
+}
+
+#[tokio::test]
+async fn fetch_decodes_the_charset_the_header_names() {
+    let s = MockServer::start_async().await;
+    s.mock_async(|when, then| {
+        when.method(GET).path("/latin1.txt");
+        then.status(200).header("content-type", "text/plain; charset=ISO-8859-1").body(b"caf\xE9 cr\xE8me".to_vec());
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/latin1.txt")}), &ctx()).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("café crème"), "{}", out.content);
+    assert!(!out.content.contains('\u{FFFD}'), "{}", out.content);
+    assert!(out.content.contains("(decoded as windows-1252)"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn fetch_decodes_the_charset_a_meta_tag_names_when_the_header_does_not() {
+    let s = MockServer::start_async().await;
+    // 0x80 is the euro sign in windows-1252 and a control character in latin-1, so only the real label passes
+    let cp1252 = b"<html><head><meta charset=\"windows-1252\"><title>Prix</title></head><body><p>caf\xE9 \x80 5</p></body></html>".to_vec();
+    s.mock_async(move |when, then| {
+        when.method(GET).path("/meta.html");
+        then.status(200).header("content-type", "text/html").body(cp1252);
+    })
+    .await;
+    let sjis = b"<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=shift_jis\"></head><body><p>\x93\xFA\x96\x7B\x8C\xEA</p></body></html>".to_vec();
+    s.mock_async(move |when, then| {
+        when.method(GET).path("/sjis.html");
+        then.status(200).header("content-type", "text/html").body(sjis);
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/meta.html")}), &ctx()).await;
+    assert!(out.content.contains("café € 5"), "{}", out.content);
+    let out = t.run(json!({"url": s.url("/sjis.html")}), &ctx()).await;
+    assert!(out.content.contains("日本語"), "{}", out.content);
+    assert!(out.content.contains("(decoded as Shift_JIS)"), "{}", out.content);
+}
+
+#[test]
+fn decode_prefers_a_byte_order_mark_then_the_header_then_the_meta_and_falls_back_to_utf8() {
+    // a UTF-16LE mark beats a header that says otherwise
+    let (text, name) = decode("text/plain; charset=iso-8859-1", b"\xFF\xFEh\0i\0", false);
+    assert_eq!((&*text, name), ("hi", Some("UTF-16LE")));
+    // the header beats the meta
+    let (text, _) = decode("text/html; charset=iso-8859-1", b"<meta charset=\"utf-8\">\xE9", true);
+    assert!(text.ends_with('é'), "{text}");
+    // a meta is read only for HTML, and only in the first KiB
+    let (text, name) = decode("text/plain", b"<meta charset=\"iso-8859-1\">\xE9", false);
+    assert!(text.ends_with('\u{FFFD}') && name.is_none(), "{text}");
+    let late = [vec![b' '; 2000], b"<meta charset=\"iso-8859-1\">\xE9".to_vec()].concat();
+    assert!(decode("text/html", &late, true).1.is_none());
+    // a label nobody knows is ignored: the UTF-8 default reads the body
+    let (text, name) = decode("text/plain; charset=made-up-9", "café".as_bytes(), false);
+    assert_eq!((&*text, name), ("café", None));
+    // a label that means the replacement encoding is ignored too: it would turn the page into one U+FFFD
+    let (text, name) = decode("text/plain; charset=iso-2022-kr", b"hello", false);
+    assert_eq!((&*text, name), ("hello", None));
+    let (text, name) = decode("text/html", b"<meta charset=\"hz-gb-2312\">hello", true);
+    assert!(text.ends_with("hello") && name.is_none(), "{text}");
+    // a page that says utf-8 stays on the borrowed fast path
+    assert!(matches!(decode("text/html; charset=\"UTF-8\"", b"<p>ok</p>", true).0, std::borrow::Cow::Borrowed(_)));
+}
+
+#[tokio::test]
+async fn a_429_fetch_shows_retry_after_and_the_json_error_body() {
+    let s = MockServer::start_async().await;
+    s.mock_async(|when, then| {
+        when.method(GET).path("/api");
+        then.status(429)
+            .header("content-type", "application/json")
+            .header("retry-after", " 30 ")
+            .body(r#"{"error": "rate limit: 5 requests per minute"}"#);
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/api")}), &ctx()).await;
+    assert!(out.is_error, "{}", out.content);
+    assert_eq!(
+        out.content,
+        format!(
+            "web_fetch: HTTP 429 Too Many Requests for {}. Retry-After: 30.\n\nResponse body: {{\"error\": \"rate limit: 5 requests per minute\"}}",
+            s.url("/api")
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_403_fetch_shows_the_text_of_an_html_challenge_page_not_its_scripts() {
+    let s = MockServer::start_async().await;
+    let page = format!(
+        "<html><head><title>Just a moment...</title><style>{}</style><script>var secret = 1;</script></head>\
+         <body><h1>Checking your browser</h1><p>{}</p></body></html>",
+        "x{}".repeat(50),
+        "Enable JavaScript and cookies to continue. ".repeat(40)
+    );
+    s.mock_async(move |when, then| {
+        when.method(GET).path("/blocked");
+        then.status(403).header("content-type", "text/html; charset=utf-8").body(page);
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/blocked")}), &ctx()).await;
+    assert!(out.is_error && out.content.contains("HTTP 403 Forbidden"), "{}", out.content);
+    assert!(out.content.contains("Response body (first 500 characters): # Just a moment..."), "{}", out.content);
+    assert!(out.content.contains("Checking your browser"), "{}", out.content);
+    assert!(!out.content.contains("secret"), "{}", out.content);
+    let shown = out.content.split("characters): ").nth(1).unwrap();
+    assert_eq!(shown.chars().count(), 500, "{shown}");
+}
+
+#[tokio::test]
+async fn a_failed_fetch_with_a_binary_body_shows_no_body() {
+    let s = MockServer::start_async().await;
+    s.mock_async(|when, then| {
+        when.method(GET).path("/img");
+        then.status(500).header("content-type", "image/png").body(b"\x89PNG\r\n".to_vec());
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/img")}), &ctx()).await;
+    assert_eq!(out.content, format!("web_fetch: HTTP 500 Internal Server Error for {}", s.url("/img")));
+}
+
+#[tokio::test]
+async fn a_pdf_fetch_says_what_the_file_is() {
+    let s = MockServer::start_async().await;
+    let m = s
+        .mock_async(|when, then| {
+            when.method(GET).path("/paper.pdf");
+            then.status(200).header("content-type", "application/pdf").body("%PDF-1.7 ...");
+        })
+        .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/paper.pdf")}), &ctx()).await;
+    m.assert_async().await;
+    assert!(out.is_error, "{}", out.content);
+    assert_eq!(
+        out.content,
+        format!(
+            "web_fetch: {} is application/pdf, not text; web_fetch reads HTML, text, Markdown and JSON. The file is a PDF (12 bytes).",
+            s.url("/paper.pdf")
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_file_refused_by_its_headers_is_not_downloaded() {
+    // a server that promises a large PDF and never sends it: reading the body would wait for the timeout
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/pdf\r\ncontent-length: 50000000\r\n\r\n%PDF";
+        sock.write_all(head.as_bytes()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    });
+    let t = WebFetch::new(&WebConfig::default());
+    let run = t.run(json!({"url": format!("http://{addr}/big.pdf")}), &ctx());
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), run).await.expect("the body was waited for");
+    assert!(out.is_error && out.content.contains("The file is a PDF (50000000 bytes)."), "{}", out.content);
+    assert!(
+        out.content.starts_with("web_fetch: http://") && !out.content.contains("web_fetch: web_fetch"),
+        "{}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn an_error_page_cut_inside_an_unclosed_script_shows_no_script_text() {
+    let s = MockServer::start_async().await;
+    let page = format!("<html><body><p>Access denied</p><script>var secret = \"{}\";", "x".repeat(20_000));
+    s.mock_async(move |when, then| {
+        when.method(GET).path("/cut");
+        then.status(403).header("content-type", "text/html").body(page);
+    })
+    .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": s.url("/cut")}), &ctx()).await;
+    assert!(out.content.contains("Access denied"), "{}", out.content);
+    assert!(!out.content.contains("secret") && !out.content.contains("xxxx"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn reading_on_from_start_uses_the_copy_of_the_last_read_and_a_read_from_the_start_fetches_again() {
+    let s = MockServer::start_async().await;
+    let m = s
+        .mock_async(|when, then| {
+            when.method(GET).path("/long.txt");
+            then.status(200).header("content-type", "text/plain").body("0123456789".repeat(10));
+        })
+        .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let url = s.url("/long.txt");
+    let out = t.run(json!({"url": url, "max_chars": 30}), &ctx()).await;
+    assert!(!out.content.contains("copy fetched"), "{}", out.content);
+    let out = t.run(json!({"url": url, "start": 30, "max_chars": 30}), &ctx()).await;
+    assert!(out.content.contains("(read from the copy fetched "), "{}", out.content);
+    assert!(
+        out.content.contains("\n\n012345678901234567890123456789\n\n… 40 more characters; call again with start=60"),
+        "{}",
+        out.content
+    );
+    let out = t.run(json!({"url": url, "start": 60, "max_chars": 30}), &ctx()).await;
+    assert!(out.content.contains("… 10 more characters; call again with start=90"), "{}", out.content);
+    assert_eq!(m.calls_async().await, 1);
+    let out = t.run(json!({"url": url, "max_chars": 30}), &ctx()).await;
+    assert!(!out.content.contains("copy fetched"), "{}", out.content);
+    assert_eq!(m.calls_async().await, 2);
+}
+
+#[tokio::test]
+async fn a_continuation_without_a_copy_fetches_and_keeps_a_copy_for_the_next_one() {
+    let s = MockServer::start_async().await;
+    let m = s
+        .mock_async(|when, then| {
+            when.method(GET).path("/long.txt");
+            then.status(200).header("content-type", "text/plain").body("0123456789".repeat(10));
+        })
+        .await;
+    let t = WebFetch::new(&WebConfig::default());
+    let url = s.url("/long.txt");
+    t.run(json!({"url": url, "start": 20, "max_chars": 30}), &ctx()).await;
+    t.run(json!({"url": url, "start": 50, "max_chars": 30}), &ctx()).await;
+    assert_eq!(m.calls_async().await, 1);
+}
+
+#[tokio::test]
+async fn the_page_copies_hold_four_pages_and_each_for_a_minute() {
+    let t = WebFetch::new(&WebConfig::default());
+    let keep = |key: &str, at: Instant| {
+        t.keep(PageCopy {
+            key: key.into(),
+            at,
+            final_url: Url::parse("https://example.com/").unwrap(),
+            text: key.into(),
+            cut: false,
+            charset: None,
+        })
+    };
+    for key in ["a", "b", "c", "d", "e"] {
+        keep(key, Instant::now());
+    }
+    assert!(t.copy_of("a").is_none(), "the oldest copy goes when a fifth page comes");
+    assert_eq!(t.copy_of("e").unwrap().text, "e");
+    keep("b", Instant::now());
+    assert_eq!(t.copies.lock().unwrap().len(), 4, "a page read again replaces its copy");
+    keep("old", Instant::now() - Duration::from_secs(61));
+    assert!(t.copy_of("old").is_none(), "a copy older than a minute is not used");
 }

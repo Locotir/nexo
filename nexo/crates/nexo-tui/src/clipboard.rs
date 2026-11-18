@@ -35,6 +35,16 @@ mod fake {
 
     thread_local! {
         static COPIED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static PRIMARY: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// What a selection made the PRIMARY selection (the latest one stands, as on a real display).
+    pub fn record_primary(text: &str) {
+        PRIMARY.with(|p| *p.borrow_mut() = Some(text.to_string()));
+    }
+
+    pub fn primary() -> Result<String, String> {
+        PRIMARY.with(|p| p.borrow().clone()).ok_or_else(|| "the primary selection is empty".to_string())
     }
 
     pub fn record(text: &str) -> Result<&'static str, String> {
@@ -104,6 +114,104 @@ pub fn copy_with(text: &str, system: bool, tools: &[Tool]) -> Result<&'static st
             Err(format!("{why}. {}", failure_hint(cfg!(target_os = "macos"))))
         }
     }
+}
+
+/// Tools that set the PRIMARY selection (the text a middle click pastes on X11 and Wayland), in the order tried.
+/// Many Wayland compositors lack the primary-selection protocol, so a failure here is never reported.
+#[cfg(all(unix, not(target_os = "macos")))]
+const PRIMARY_COPY_TOOLS: &[Tool] = &[
+    ("wl-copy", &["--primary"], "WAYLAND_DISPLAY"),
+    ("xclip", &["-selection", "primary"], "DISPLAY"),
+    ("xsel", &["--primary", "--input"], "DISPLAY"),
+];
+
+/// Tools that print the PRIMARY selection: `(name, args, needs)`.
+#[cfg(all(unix, not(target_os = "macos")))]
+const PRIMARY_PASTE_TOOLS: &[Tool] = &[
+    ("wl-paste", &["--primary", "--no-newline"], "WAYLAND_DISPLAY"),
+    ("xclip", &["-selection", "primary", "-o"], "DISPLAY"),
+    ("xsel", &["--primary", "--output"], "DISPLAY"),
+];
+
+/// How long a clipboard tool may run before it is killed.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Makes `text` the PRIMARY selection, as terminals do for what is selected with the mouse, so a middle click
+/// pastes it elsewhere. Only selections do this; an explicit copy stays on the clipboard alone (the X convention).
+/// macOS and Windows have no PRIMARY, and a failure is ignored: the clipboard copy already reported.
+pub fn copy_primary(text: &str) {
+    #[cfg(test)]
+    fake::record_primary(text);
+    #[cfg(all(not(test), unix, not(target_os = "macos")))]
+    copy_primary_with(text, PRIMARY_COPY_TOOLS);
+    #[cfg(not(any(test, all(unix, not(target_os = "macos")))))]
+    let _ = text;
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg_attr(test, allow(dead_code))]
+fn copy_primary_with(text: &str, tools: &[Tool]) {
+    for (name, args, needs) in tools {
+        if !needs.is_empty() && std::env::var_os(needs).is_none_or(|v| v.is_empty()) {
+            continue;
+        }
+        if run_tool(name, args, text).is_ok() {
+            return;
+        }
+    }
+}
+
+/// The PRIMARY selection's text, for a middle click. Empty or unreachable is an error.
+pub fn paste_primary() -> Result<String, String> {
+    #[cfg(test)]
+    return fake::primary();
+    #[cfg(all(not(test), unix, not(target_os = "macos")))]
+    return paste_primary_with(PRIMARY_PASTE_TOOLS, TOOL_TIMEOUT);
+    #[cfg(all(not(test), not(all(unix, not(target_os = "macos")))))]
+    return Err("this system has no primary selection".into());
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg_attr(test, allow(dead_code))]
+fn paste_primary_with(tools: &[Tool], timeout: Duration) -> Result<String, String> {
+    for (name, args, needs) in tools {
+        if !needs.is_empty() && std::env::var_os(needs).is_none_or(|v| v.is_empty()) {
+            continue;
+        }
+        if let Some(text) = read_tool(name, args, timeout) {
+            if !text.is_empty() {
+                return Ok(text);
+            }
+        }
+    }
+    Err("the primary selection is empty or unreachable".into())
+}
+
+/// Runs a tool that prints the selection and returns its output, or `None` when the tool is absent, fails or
+/// does not finish within `timeout`. A tool stuck on an unresponsive selection owner is killed, so a middle click
+/// never freezes the interface for longer than the write side (`run_tool`) does.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg_attr(test, allow(dead_code))]
+fn read_tool(name: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child =
+        Command::new(name).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // The reader is never joined: if the tool hangs it is killed below and the pipe closes, ending the thread.
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let bytes = rx.recv_timeout(timeout).ok();
+    if bytes.is_none() {
+        let _ = child.kill();
+    }
+    // reaped either way, so no zombie is left behind
+    let status = child.wait().ok()?;
+    let bytes = bytes?;
+    status.success().then(|| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// What to try when no clipboard could be reached. macOS has neither wl-clipboard nor xclip, and its terminals
@@ -249,7 +357,7 @@ fn run_tool(name: &str, args: &[&str], text: &str) -> Result<(), String> {
             Ok(Some(status)) => {
                 return if status.success() { Ok(()) } else { Err(format!("exit {}", status.code().unwrap_or(-1))) };
             }
-            Ok(None) if start.elapsed() > Duration::from_secs(3) => {
+            Ok(None) if start.elapsed() > TOOL_TIMEOUT => {
                 let _ = child.kill();
                 // reaped, so a tool that hung leaves no zombie behind
                 let _ = child.wait();
@@ -336,6 +444,80 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A tool on PATH that records what it was given (`name.out`) or prints `reply`, for the PRIMARY selection.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn fake_primary_tool(dir: &std::path::Path, name: &str, reply: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let f = dir.join(name);
+        let out = dir.join(format!("{name}.out"));
+        let body = format!(
+            "#!/bin/sh\necho \"$*\" > '{o}.args'\nPATH=/usr/bin:/bin cat > '{o}' 2>/dev/null </dev/stdin\nprintf %s '{reply}'\n",
+            o = out.display()
+        );
+        std::fs::write(&f, body).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_selection_is_written_to_primary_with_the_tool_that_has_its_display() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        fake_primary_tool(dir.path(), "wl-copy", "");
+        fake_primary_tool(dir.path(), "xclip", "");
+        let back = EnvBack::save();
+        std::env::set_var("PATH", dir.path());
+        // wl-copy has no Wayland display here, so xclip takes it
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        copy_primary_with("picked words", PRIMARY_COPY_TOOLS);
+        drop(back);
+        assert!(!dir.path().join("wl-copy.out").exists(), "wl-copy must not run without Wayland");
+        assert_eq!(std::fs::read_to_string(dir.path().join("xclip.out")).unwrap(), "picked words");
+        assert_eq!(std::fs::read_to_string(dir.path().join("xclip.out.args")).unwrap().trim(), "-selection primary");
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_middle_click_reads_primary_and_an_empty_one_is_an_error() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        fake_primary_tool(dir.path(), "xclip", "from primary");
+        let back = EnvBack::save();
+        std::env::set_var("PATH", dir.path());
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        let got = paste_primary_with(PRIMARY_PASTE_TOOLS, TOOL_TIMEOUT);
+        std::env::remove_var("DISPLAY");
+        let none = paste_primary_with(PRIMARY_PASTE_TOOLS, TOOL_TIMEOUT);
+        drop(back);
+        assert_eq!(got, Ok("from primary".to_string()));
+        assert!(none.is_err(), "without a display nothing is read");
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_primary_tool_that_hangs_is_killed_and_the_next_one_is_tried() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        // exec, so the killed process is the sleeper itself and holds no pipe open behind it
+        let wl = dir.path().join("wl-paste");
+        std::fs::write(&wl, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
+        std::fs::set_permissions(&wl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake_primary_tool(dir.path(), "xclip", "from xclip");
+        let back = EnvBack::save();
+        std::env::set_var("PATH", dir.path());
+        std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        std::env::set_var("DISPLAY", ":0");
+        let start = Instant::now();
+        let got = paste_primary_with(PRIMARY_PASTE_TOOLS, Duration::from_millis(300));
+        let took = start.elapsed();
+        drop(back);
+        assert_eq!(got, Ok("from xclip".to_string()));
+        assert!(took < Duration::from_secs(5), "the hung tool must be cut off, took {took:?}");
     }
 
     /// `copy` in a test run records the text and starts no process: a tool on PATH that would

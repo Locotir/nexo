@@ -41,7 +41,7 @@ pub struct Args {
     #[arg(long, value_name = "MODE", env = "NEXO_SANDBOX", value_parser = sandbox_mode_arg)]
     pub sandbox: Option<String>,
     /// Context policy: auto | plain | curator | compact (auto is the curator, built in)
-    #[arg(long, value_name = "POLICY", env = "NEXO_CONTEXT")]
+    #[arg(long, value_name = "POLICY", value_parser = context_policy_arg)]
     pub context: Option<String>,
     /// Curator settings for this run, over [context] curator_spec (`eoq=32000;dedup=0`)
     #[arg(long, value_name = "SPEC", env = "NEXO_CURATOR_SPEC")]
@@ -94,6 +94,18 @@ fn permission_mode_arg(s: &str) -> Result<String, String> {
     match PermissionMode::parse(s) {
         Some(_) => Ok(s.to_string()),
         None => Err(format!("unknown permission mode {s:?}; use one of: ask, accept-edits, plan, yolo, read-only")),
+    }
+}
+
+/// `--context`: refused at once, with the names that work. An empty value stays (the config reads it as the curator).
+/// NEXO_CONTEXT is read by the config, not here, so a stale value in the environment (a team lane inherits it) is only a
+/// warning and never stops `nexo team status`; a bad one in the config file is a warning too.
+fn context_policy_arg(s: &str) -> Result<String, String> {
+    let name = s.trim();
+    if name.is_empty() || nexo_agent::context::POLICY_NAMES.contains(&name) {
+        Ok(s.to_string())
+    } else {
+        Err(format!("unknown context policy {s:?}; use one of: {}", nexo_agent::context::POLICY_NAMES.join(", ")))
     }
 }
 
@@ -154,8 +166,14 @@ pub enum Cmd {
     },
     /// Print the setup guide (written so an assistant can follow it for you).
     Guide,
-    /// List the recorded sessions, or rename one.
+    /// List the recorded sessions, rename them, move them to the trash and back, or show the live ones.
     Sessions {
+        /// Only the sessions that ran in this folder.
+        #[arg(long)]
+        here: bool,
+        /// Only the newest N (after --here).
+        #[arg(short = 'n', long, value_name = "N")]
+        limit: Option<usize>,
         #[command(subcommand)]
         what: Option<SessionsCmd>,
     },
@@ -182,7 +200,7 @@ pub enum Cmd {
         #[arg(long, value_name = "KEY=VALUE", num_args = 1.., value_delimiter = ',')]
         set: Vec<String>,
     },
-    /// Show the configuration paths, or write a starter file.
+    /// Show the configuration paths, write a starter file, or trust a project.
     Config {
         #[command(subcommand)]
         what: Option<ConfigCmd>,
@@ -230,7 +248,7 @@ pub enum Cmd {
     },
     /// Write a session as a shareable file: HTML (one self-contained file), markdown or JSON, with keys and tokens taken out.
     Export(crate::export_cmd::ExportArgs),
-    /// The local audit log of tool calls and model requests (`[audit]` in the configuration, see docs/AUDIT.md).
+    /// The local audit log of tool calls and model requests (`[audit]` in the configuration, see https://github.com/Locotir/nexo/blob/main/nexo/docs/AUDIT.md).
     Audit {
         #[command(subcommand)]
         what: crate::audit_cmd::AuditCmd,
@@ -251,7 +269,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: Option<SuperviseCmd>,
     },
-    /// List, remove or prune the git worktrees nexo made (see docs/WORKTREES.md).
+    /// List, remove or prune the git worktrees nexo made (see https://github.com/Locotir/nexo/blob/main/nexo/docs/WORKTREES.md).
     Worktree {
         #[command(subcommand)]
         what: crate::worktree::WorktreeCmd,
@@ -266,7 +284,7 @@ pub enum Cmd {
     Re(crate::re_cmd::ReArgs),
     /// Turn the traffic of a website (a HAR file) into the API behind it: endpoints, shapes, auth, paging, OpenAPI; no secret is kept.
     Api(crate::api_cmd::ApiArgs),
-    /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
+    /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see https://github.com/Locotir/nexo/blob/main/nexo/docs/ACP.md).
     Acp,
     /// Lanes that run on their own in the background (`<config dir>/team.toml`): start, status, stop, pause, hold, open.
     Team {
@@ -289,8 +307,9 @@ pub enum SuperviseCmd {
     },
     /// Print the hook settings to add to the sessions' settings file. Nothing is written.
     Install {
-        /// Print the snippet (the only mode).
+        /// Accepted for compatibility; the snippet is always printed.
         #[arg(long)]
+        #[allow(dead_code)] // read by nobody now; kept so a script that passes it keeps working
         print: bool,
     },
 }
@@ -324,6 +343,27 @@ pub enum SessionsCmd {
     Delete { ids: Vec<String> },
     /// Bring sessions back from the trash.
     Restore { ids: Vec<String> },
+    /// Show how much room the sessions, the curator state saved beside them and the trash take, and which sessions take most.
+    Size,
+    /// Move the sessions not written for AGE to the trash, or with `--trash` delete what is that old in the trash.
+    ///
+    /// Nothing changes until `--yes`: without it the sessions that would go are listed. `nexo sessions restore`
+    /// brings a session back from the trash. A session another nexo holds is never moved. The age counts from the
+    /// session's last write; in the trash it counts from the day the session was moved there.
+    Prune {
+        /// A number of days or hours: `90d`, `36h`.
+        #[arg(long, value_name = "AGE")]
+        older_than: String,
+        /// Only the sessions started by `nexo -p` (a script or another program).
+        #[arg(long, conflicts_with = "trash")]
+        headless: bool,
+        /// Delete for good the files in the trash of that age, instead of moving sessions there.
+        #[arg(long)]
+        trash: bool,
+        /// Do it, instead of listing what would be done.
+        #[arg(long)]
+        yes: bool,
+    },
     /// List the sessions that are live now, with their running jobs (a session is live while its heartbeat is fresh).
     ///
     /// `--json` prints an array with one object per live session and the keys `id`, `title`, `provider`,
@@ -388,6 +428,28 @@ mod tests {
         assert!(super::Args::try_parse_from(["nexo", "--name", "   "]).is_err());
         assert!(super::Args::try_parse_from(["nexo", "--name"]).is_err());
     }
+
+    #[test]
+    fn a_context_policy_that_does_not_exist_is_refused_before_the_run_starts() {
+        use clap::Parser;
+        let e = super::Args::try_parse_from(["nexo", "--context", "bogus"]).unwrap_err().to_string();
+        assert!(e.contains("unknown context policy \"bogus\"") && e.contains("auto, plain, curator, compact"), "{e}");
+        for ok in ["plain", "auto", "curator", "compact", " plain ", ""] {
+            let a = super::Args::try_parse_from(["nexo", "--context", ok]).unwrap();
+            assert_eq!(a.context.as_deref(), Some(ok));
+        }
+    }
+
+    #[test]
+    fn a_stale_context_in_the_environment_does_not_stop_a_subcommand() {
+        use clap::CommandFactory;
+        // NEXO_CONTEXT reaches the config through apply_env (a warning); clap must not read it as well, or one
+        // bad value inherited by a team lane would fail every invocation at parse time.
+        let cmd = super::Args::command();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "context").expect("the --context argument");
+        assert!(arg.get_env().is_none(), "--context must not read an environment variable in clap");
+    }
+
     #[test]
     fn bench_subcommand_follows_the_feature() {
         use clap::Parser;

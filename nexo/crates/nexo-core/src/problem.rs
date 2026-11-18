@@ -12,6 +12,7 @@ mod causes;
 mod text;
 
 pub use build::*;
+pub use causes::says_no_credit;
 pub use text::*;
 
 #[cfg(test)]

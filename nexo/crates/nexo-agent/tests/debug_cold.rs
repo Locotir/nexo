@@ -55,10 +55,11 @@ fn say(s: &str) -> Vec<StreamEvent> {
     ]
 }
 
-/// The program under test, found next to the test binary's target folder or built.
+/// The program under test: this package's own build of the debugger's test program (see Cargo.toml), or a nested
+/// build when only this test binary was built.
 #[path = "../../nexo-dbg/tests/it/common/mod.rs"]
 mod common;
-use common::target;
+use common::target_as;
 
 static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -136,7 +137,7 @@ async fn drive(dir: &std::path::Path, steps: Vec<String>, ask: &str) -> Vec<Stri
 #[tokio::test]
 async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
     let dir = tempfile::tempdir().unwrap();
-    let prog = target();
+    let prog = target_as("dbg_target_cold");
     let steps = vec![
         format!("run {} crash", prog.display()),
         "cont".to_string(),

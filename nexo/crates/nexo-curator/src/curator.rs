@@ -8,6 +8,10 @@ use crate::mechanical::MARK;
 use crate::params::params;
 use crate::{json, msg, Memory, State};
 
+/// The share of the view by which a call's recorded miss may pass the engine's own estimate of it before the
+/// call counts as one the engine got wrong (`cal_off`).
+const CAL_OFF: f64 = 0.1;
+
 /// What one call of the curator returns.
 #[derive(Debug, Clone)]
 pub struct Reply {
@@ -49,6 +53,20 @@ pub struct Curator {
     pub(crate) tools: Option<Vec<String>>,
     /// For each position of the last view, a hash of the text the window paged there (`None`: not paged).
     pub(crate) paged: Vec<Option<u64>>,
+    /// The engine's `miss` count when the host last said what the provider read (`cached`), so the next
+    /// call's own predicted miss is the difference (`None`: no call has been answered yet).
+    #[serde(default)]
+    pub(crate) cal_miss: Option<i64>,
+    /// How many messages the last answered call was made from, so the messages after them are the new tail of
+    /// the next one.
+    #[serde(default)]
+    pub(crate) cal_len: usize,
+    /// How many messages the last view was made from.
+    #[serde(default)]
+    pub(crate) cal_seen: usize,
+    /// Whether the engine started over since the last answered call (the host rewrote the history).
+    #[serde(default)]
+    pub(crate) cal_fresh: bool,
 }
 
 impl Curator {
@@ -64,6 +82,10 @@ impl Curator {
             last: Vec::new(),
             tools: None,
             paged: Vec::new(),
+            cal_miss: None,
+            cal_len: 0,
+            cal_seen: 0,
+            cal_fresh: false,
         })
     }
 
@@ -88,6 +110,10 @@ impl Curator {
             }
             self.last.clear();
             self.paged.clear();
+            self.cal_miss = None;
+            self.cal_len = 0;
+            self.cal_seen = 0;
+            self.cal_fresh = false;
             if let Some(t) = &self.tools {
                 self.eng.tools(t);
             }
@@ -121,7 +147,8 @@ impl Curator {
         self.eng.set_budget(budget);
         self.eng.set_left(self.left);
         let missed = self.eng.stats.get("miss").copied().unwrap_or(0);
-        self.eng.sync(messages);
+        self.cal_fresh |= self.eng.sync(messages);
+        self.cal_seen = messages.len();
         let mut view = self.eng.view();
         let mut tokens = self.eng.tokens();
         let mut paged = Vec::new();
@@ -172,7 +199,36 @@ impl Curator {
     /// What the provider said of the call made with the last view: the input tokens it read from its cache
     /// and all the input tokens. With `pockets`, how long the provider keeps a view is learned from it.
     pub fn cached(&mut self, read: u64, input: u64) {
+        self.compare_miss(read, input);
         self.eng.learn(self.head_tokens, read, input);
+    }
+
+    /// Sets what the engine expected the call to miss against what the provider said it missed, as counters
+    /// (`cal_calls`, `cal_pred_miss`, `cal_real_miss`, and `cal_off` for a call the engine under-counted by
+    /// more than `CAL_OFF` of the view), all in the estimated tokens of the view. What the engine expected is
+    /// the larger of its own count of what it changed and the messages that came since the last call, since
+    /// no cache holds a message the provider has not seen. The first call has no view before it to miss, so
+    /// it is not counted. This holds at every spec, since `learn` only listens when `pockets` is on.
+    fn compare_miss(&mut self, read: u64, input: u64) {
+        let seen = self.eng.stats.get("miss").copied().unwrap_or(0);
+        let (len, fresh) = (self.cal_len, std::mem::take(&mut self.cal_fresh));
+        self.cal_len = self.cal_seen;
+        let Some(before) = self.cal_miss.replace(seen) else { return };
+        if input == 0 {
+            return;
+        }
+        // an engine that started over has read the history anew: all of it is this call's
+        let (changed, from) = if fresh { (seen, 0) } else { ((seen - before).max(0), len) };
+        let all = self.head_tokens as i64 + self.eng.tokens();
+        let predicted = changed.max(self.eng.tokens_from(from));
+        let real = ((input - read.min(input)) as f64 / input as f64 * all as f64).round() as i64;
+        let stats = &mut self.eng.stats;
+        *stats.entry("cal_calls").or_insert(0) += 1;
+        *stats.entry("cal_pred_miss").or_insert(0) += predicted;
+        *stats.entry("cal_real_miss").or_insert(0) += real;
+        if real - predicted > (CAL_OFF * all as f64) as i64 {
+            *stats.entry("cal_off").or_insert(0) += 1;
+        }
     }
 
     /// G0: the rule (and request) that took out the last place message `mi` held `word`, if none sends it.

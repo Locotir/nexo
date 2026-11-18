@@ -174,6 +174,10 @@ async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
         !done.is_error && done.content.starts_with("x is kept in a.rs:3; b.rs not checked\n\n[tool log] 16 tool calls"),
         "{done:?}"
     );
+    assert!(
+        done.content.contains("the sub-agent used all 16 rounds and was told to report"),
+        "the parent is told the report was forced out by the last round: {done:?}"
+    );
     let reqs = client.requests();
     assert!(reqs[1].system.contains("You have 16 rounds"), "it knows its budget");
     let told = reqs[17]
@@ -396,7 +400,7 @@ async fn a_sub_agent_goes_to_the_provider_and_model_asked_for_and_is_priced_ther
     other.models = vec!["o1".into()];
     other.pricing.insert(
         "o1".into(),
-        Pricing { input: 10.0, output: 20.0, cache_read: 1.0, cache_write: 0.0, cache_write_1h: 0.0 },
+        Pricing { input: 10.0, output: 20.0, cache_read: 1.0, cache_write: 0.0, cache_write_1h: 0.0, long: None },
     );
     cfg.providers.insert("other".into(), other);
     let mut r = start(client.clone(), cfg, None, d.path()).await;

@@ -375,3 +375,39 @@ fn an_old_string_that_overlaps_itself_is_not_taken_for_unique() {
     // replace_all still replaces the matches that do not overlap
     assert_eq!(apply::replace("aaa", "aa", "b", true, "f").unwrap(), ("ba".to_string(), 1));
 }
+
+#[tokio::test]
+async fn a_binary_file_is_refused_and_left_byte_identical() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    std::fs::write(d.path().join("x.bin"), [1u8, 0, 2]).unwrap();
+    let out = Edit.run(json!({"path": "x.bin", "old_string": "a", "new_string": "b"}), &c).await;
+    assert_eq!(out.content, "edit: x.bin is a binary file");
+    assert_eq!(std::fs::read(d.path().join("x.bin")).unwrap(), [1u8, 0, 2]);
+}
+
+#[test]
+fn the_schema_names_the_keys_of_a_change_and_of_a_file_entry() {
+    let p = Edit.spec().parameters;
+    let change = &p["properties"]["edits"]["items"];
+    assert_eq!(change["required"], json!(["old_string", "new_string"]));
+    assert_eq!(change["properties"]["replace_all"]["type"], "boolean");
+    let file = &p["properties"]["files"]["items"];
+    assert_eq!(file["required"], json!(["path"]));
+    assert_eq!(file["properties"]["edits"]["items"], *change, "a file's edits are the same entries");
+    assert!(p.get("required").is_none(), "`path` is not required when `files` is used");
+}
+
+#[test]
+fn a_small_window_gets_the_entries_as_bare_objects_that_still_have_items() {
+    let mut spec = Edit.compact().unwrap().apply(Edit.spec());
+    Edit.trim_compact(&mut spec);
+    let props = &spec.parameters["properties"];
+    assert_eq!(props["edits"]["items"], json!({"type": "object"}));
+    let file = &props["files"]["items"];
+    assert_eq!(file["properties"]["path"]["type"], "string");
+    assert_eq!(file["properties"]["edits"]["items"], json!({"type": "object"}));
+    // what the whole text adds to a request, the short one leaves out: the compact text stays near its old size
+    let (short, whole) = (json!(spec).to_string().len(), json!(Edit.spec()).to_string().len());
+    assert!(short < 800 && short < whole - 400, "short {short}, whole {whole}");
+}

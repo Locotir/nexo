@@ -202,7 +202,14 @@ fn shorten_path(path: &str, max: usize) -> String {
     if width(path) <= max || max < 4 {
         return path.to_string();
     }
-    let tail: String = path.chars().rev().take(max - 1).collect::<Vec<_>>().into_iter().rev().collect();
+    // Cut by columns and whole graphemes: a wide character is two columns, so counting chars overflowed.
+    let mut tail = String::new();
+    for g in unicode_segmentation::UnicodeSegmentation::graphemes(path, true).rev() {
+        if width(&tail) + width(g) + 1 > max {
+            break;
+        }
+        tail.insert_str(0, g);
+    }
     let tail = match tail.find('/') {
         Some(i) if i + 1 < tail.len() => tail[i..].to_string(),
         _ => tail,
@@ -321,6 +328,16 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn a_wide_character_path_is_cut_to_the_columns_given() {
+        let p = "/home/用户/项目/文件夹/测试目录";
+        for max in 4..=24 {
+            assert!(width(&shorten_path(p, max)) <= max, "max {max}: {}", shorten_path(p, max));
+        }
+        assert!(shorten_path(p, 12).starts_with('…'));
+        assert_eq!(shorten_path("/home/me/projects/nexo/src", 14), "…/nexo/src");
     }
 
     fn view(i: ChromeInfo) -> ChromeView {

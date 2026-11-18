@@ -83,9 +83,23 @@ pub fn header_of(records: &[Record]) -> Header {
     }
 }
 
-/// The settings the records do not agree on, if any.
+/// The settings the records do not agree on, if any. A forced context window, `close_on_verified` (it
+/// changes the recorded stop and the score) and the run time limit count: results made with unlike values
+/// are not comparable. Prices are not recorded, so a price difference cannot be seen here; the cost column
+/// shows it.
 fn mixed(records: &[Record]) -> Option<String> {
-    let key = |r: &Record| (r.model.clone(), r.commit.clone(), r.temperature, r.max_steps, r.max_tokens);
+    let key = |r: &Record| {
+        (
+            r.model.clone(),
+            r.commit.clone(),
+            r.temperature,
+            r.max_steps,
+            r.max_tokens,
+            r.window,
+            r.close_on_verified,
+            r.run_timeout_s,
+        )
+    };
     let mut groups: Vec<_> = Vec::new();
     for r in records {
         if !groups.contains(&key(r)) {
@@ -97,11 +111,14 @@ fn mixed(records: &[Record]) -> Option<String> {
     }
     let list: Vec<String> = groups
         .iter()
-        .map(|(m, c, t, s, k)| {
+        .map(|(m, c, t, s, k, w, v, o)| {
             format!(
-                "{m} @ {c}, temperature {}, max steps {s}, max tokens {}",
+                "{m} @ {c}, temperature {}, max steps {s}, max tokens {}, context window {}, close on verified {}, run time limit {}",
                 t.map_or("default".into(), |t| t.to_string()),
-                k.map_or("default".into(), |n| n.to_string())
+                k.map_or("default".into(), |n| n.to_string()),
+                w.map_or("default".into(), |n| n.to_string()),
+                if *v { "on" } else { "off" },
+                o.map_or("none".into(), |n| format!("{n} s"))
             )
         })
         .collect();
@@ -110,6 +127,22 @@ fn mixed(records: &[Record]) -> Option<String> {
          record's and arms are not comparable across them: {}.",
         groups.len(),
         list.join("; ")
+    ))
+}
+
+/// A note when some runs are recorded as sealed and others are not. A machine without unprivileged user namespaces runs
+/// the tasks that are not marked sealed open (network on, host files visible), so one results file can mix both and
+/// the open runs are checked only by the contamination scan. Records from before the field existed carry no value
+/// and read as not sealed even when their task ran sealed, so the line says "not recorded as sealed" and is only
+/// shown when at least one run was recorded as sealed.
+fn isolation(records: &[Record]) -> Option<String> {
+    let sealed = records.iter().filter(|r| r.sealed).count();
+    let open = records.len() - sealed;
+    if sealed == 0 || open == 0 {
+        return None;
+    }
+    Some(format!(
+        "**Mixed isolation**: {sealed} run(s) ran sealed and {open} are not recorded as sealed (older results files carry no value, otherwise network on and host files visible); those are checked only by the contamination scan."
     ))
 }
 
@@ -165,6 +198,9 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     if let Some(m) = mixed(records) {
         s.push_str(&format!("\n{m}\n"));
     }
+    if let Some(m) = isolation(records) {
+        s.push_str(&format!("\n{m}\n"));
+    }
     if let Some(why) = &h.stopped {
         s.push_str(&format!("\n**Stopped early**: {why}.\n"));
     }
@@ -185,14 +221,15 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     if let Some(p) = crate::polyglot::report::section(h.repro.as_deref(), records) {
         s.push_str(&p);
     }
-    s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals. Runs that reached outside their folders (contaminated) are left out of the numbers and counted apart.\n\n");
-    s.push_str(&header(&["arm", "settings", "runs", "contaminated"]));
+    s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals. Runs that reached outside their folders (contaminated) are left out of the numbers and counted apart. Runs stopped by the budget are in these numbers but not in the paired table, which is why they are counted in their own column.\n\n");
+    s.push_str(&header(&["arm", "settings", "runs", "contaminated", "budget stops"]));
     for arm in &arms {
         let all: Vec<&Record> = records.iter().filter(|r| r.arm == *arm).collect();
         let rows: Vec<&Record> = all.iter().copied().filter(|r| !r.contaminated).collect();
         let bad = all.len() - rows.len();
+        let budget_stops = all.iter().filter(|r| r.stop == Some(Stop::Budget)).count();
         s.push_str(&row(
-            &[arm.to_string(), settings(all[0]), rows.len().to_string(), bad.to_string()],
+            &[arm.to_string(), settings(all[0]), rows.len().to_string(), bad.to_string(), budget_stops.to_string()],
             &numbers(&rows),
         ));
     }
@@ -203,14 +240,14 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
         s.push_str(&format!(
             "\n## Paired with {base}\n\nPer task (repeats averaged), arm minus {base}; mean and 95% bootstrap \
              interval over tasks. Runs stopped by the budget are left out. With fewer than {MIN_TASKS} tasks or {MIN_REPEATS} runs \
-             per task and arm the interval is not shown: the mark \"not enough runs\" stands in its place.\n\n| arm | tasks | min runs | Δ score (points) | Δ cost $ | Δ steps | Δ recall calls | Δ re-reads | Δ dup lines (points) | Δ wall s |\n|---|---|---|---|---|---|---|---|---|---|\n"
+             per task and arm the interval is not shown: the mark \"not enough runs\" stands in its place.\n\n| arm | tasks | min runs | Δ score (points) | Δ cost $ | Δ steps | Δ recall calls | Δ re-reads (naive) | Δ needless | Δ dup lines (points) | Δ wall s |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
         ));
         let unknown = records.iter().any(|r| r.estimated);
         for p in &pairs {
             let enough = p.tasks >= MIN_TASKS && p.reps_min >= MIN_REPEATS;
             let d = |d: Delta, k: f64, places: usize| delta(d, k, places, enough);
             s.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 p.arm,
                 p.tasks,
                 p.reps_min,
@@ -219,6 +256,7 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
                 d(p.steps, 1.0, 1),
                 d(p.recalls, 1.0, 1),
                 d(p.re_reads, 1.0, 1),
+                d(p.needless, 1.0, 1),
                 d(p.dup, 1.0, 1),
                 d(p.wall, 1.0, 1)
             ));
@@ -508,7 +546,7 @@ fn steps_table(records: &[Record], arms: &[&str]) -> String {
     let mut s = format!(
         "\n## Steps per run\n\nMean over the runs not stopped by the budget, with the 95% bootstrap interval over runs \
          (the mark \"not enough runs\" under {MIN_TASKS} runs).\n\n\
-         | arm | runs | finished | hit step cap | stopped by budget | steps per run |\n|---|---|---|---|---|---|\n"
+         | arm | runs | finished | hit step cap | stopped by budget | broke or timed out | steps per run |\n|---|---|---|---|---|---|---|\n"
     );
     for arm in arms {
         let mine: Vec<&Record> = records.iter().filter(|r| r.arm == *arm).collect();
@@ -517,8 +555,14 @@ fn steps_table(records: &[Record], arms: &[&str]) -> String {
         let d = Delta { mean: spread(&steps).0, ci: bootstrap(&steps, RESAMPLES, 0x6e65_786f) };
         let count = |stop: Stop| mine.iter().filter(|r| r.stop == Some(stop.clone())).count();
         let finished = mine.iter().filter(|r| r.finished).count();
+        // A provider error, a timeout, a cancel or a panic ends a run without the agent finishing it; they stay in the
+        // means, so the reader needs to see how many there were.
+        let broke = mine
+            .iter()
+            .filter(|r| matches!(r.stop, Some(Stop::Error | Stop::Timeout | Stop::Cancelled | Stop::Other(_))))
+            .count();
         s.push_str(&format!(
-            "| {arm} | {} | {finished} | {} | {} | {} |\n",
+            "| {arm} | {} | {finished} | {} | {} | {broke} | {} |\n",
             mine.len(),
             count(Stop::MaxSteps),
             count(Stop::Budget),
@@ -635,7 +679,30 @@ mod tests {
         assert!(s.contains("| recall calls | re-reads | needless | dup lines % |"), "{s}");
         assert!(s.contains("| 0 | 4 | 0 | 20.0 |\n"), "{s}");
         assert!(s.contains("| 3 | 1 | 0 | 5.0 |\n"), "{s}");
-        assert!(s.contains("| +3.0 (not enough runs) | -3.0 (not enough runs) | -15.0 (not enough runs) |"), "{s}");
+        assert!(
+            s.contains("| +3.0 (not enough runs) | -3.0 (not enough runs) | +0.0 (not enough runs) | -15.0 (not enough runs) |"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn the_paired_table_keeps_a_rerun_after_an_edit_out_of_the_needless_column() {
+        // The baseline reruns its tests after each edit: five naive re-reads, none needless. The other
+        // arm has fewer re-reads yet one needless repeat, so the needless delta may exceed the re-reads delta.
+        let mut recs = vec![record("a", "plain", 1.0, 0.5), record("a", "cur", 1.0, 0.5)];
+        recs[0].counters = crate::counters::Counters { re_reads: 5, ..Default::default() };
+        recs[1].counters = crate::counters::Counters {
+            re_reads: 2,
+            needless: vec![crate::counters::Needless { at: 3, what: "read x".into() }],
+            ..Default::default()
+        };
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("| Δ recall calls | Δ re-reads (naive) | Δ needless | Δ dup lines (points) |"), "{s}");
+        assert!(s.contains("| +0.0 (not enough runs) | -3.0 (not enough runs) | +1.0 (not enough runs) |"), "{s}");
+        // Same naive re-reads in both arms but no needless repeat in either: the needless delta is zero.
+        recs[1].counters = crate::counters::Counters { re_reads: 0, ..Default::default() };
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("| +0.0 (not enough runs) | -5.0 (not enough runs) | +0.0 (not enough runs) |"), "{s}");
     }
 
     #[test]
@@ -723,7 +790,20 @@ mod tests {
         let s = summary(&head(3), &recs);
         assert!(s.contains("Left out (stopped by the budget): t0 cur #0."), "{s}");
         assert!(s.contains("cur: 1 run(s) of cur and plain hit the step cap"), "{s}");
-        assert!(s.contains("| cur | 18 | 16 | 1 | 1 | 10.0 ["), "{s}");
+        assert!(s.contains("| cur | 18 | 16 | 1 | 1 | 0 | 10.0 ["), "{s}");
+    }
+
+    #[test]
+    fn a_run_that_broke_is_marked_stopped_and_counted_apart() {
+        let mut recs = grid(6, 3);
+        recs[3].stop = Some(Stop::Error);
+        recs[3].finished = false;
+        recs[5].stop = Some(Stop::Timeout);
+        recs[5].finished = false;
+        let s = summary(&head(3), &recs);
+        assert!(s.contains("| t0 #1 (stopped) | cur |"), "{s}");
+        assert!(s.contains("| t0 #2 (stopped) | cur |"), "{s}");
+        assert!(s.contains("| cur | 18 | 16 | 0 | 0 | 2 | "), "{s}");
     }
 
     #[test]
@@ -750,6 +830,7 @@ mod tests {
             cache_read: 0.0028,
             cache_write: 0.0,
             cache_write_1h: 0.0,
+            long: None,
         }));
         let s = summary(&h, &grid(1, 1));
         assert!(s.contains("Prices given with --price: $0.14 input on a cache miss, $0.0028 on a cache hit, $0.28 output, per million tokens."), "{s}");
@@ -768,6 +849,64 @@ mod tests {
         assert!(s.contains("**Mixed settings**: these results come from 3 different setups"), "{s}");
         assert!(s.contains("deepseek-chat @ def5678"), "{s}");
         assert!(s.contains("Arm order: shuffled."), "{s}");
+    }
+
+    #[test]
+    fn a_different_window_close_on_verified_or_time_limit_is_mixed_settings() {
+        let base = grid(2, 1);
+        assert!(mixed(&base).is_none());
+        let mut windowed = base.clone();
+        windowed[1].window = Some(64_000);
+        let m = mixed(&windowed).unwrap();
+        assert!(
+            m.contains("2 different setups")
+                && m.contains("context window 64000")
+                && m.contains("context window default"),
+            "{m}"
+        );
+        let mut closed = base.clone();
+        closed[2].close_on_verified = true;
+        let m = mixed(&closed).unwrap();
+        assert!(m.contains("close on verified on") && m.contains("close on verified off"), "{m}");
+        let mut limited = base.clone();
+        limited[3].run_timeout_s = Some(600);
+        let m = mixed(&limited).unwrap();
+        assert!(m.contains("run time limit 600 s") && m.contains("run time limit none"), "{m}");
+    }
+
+    #[test]
+    fn older_results_without_the_new_settings_still_agree() {
+        let old: Record = serde_json::from_str(r#"{"task":"t","arm":"a"}"#).unwrap();
+        assert!(!old.close_on_verified && old.run_timeout_s.is_none());
+        assert!(mixed(&[old.clone(), old]).is_none());
+    }
+
+    #[test]
+    fn the_arms_table_counts_budget_stops_the_paired_table_leaves_out() {
+        let mut recs = grid(2, 1);
+        recs[1].stop = Some(Stop::Budget);
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("| arm | settings | runs | contaminated | budget stops |"), "{s}");
+        let arm_row = |arm: &str| s.lines().find(|l| l.starts_with(&format!("| {arm} | {arm} |"))).unwrap().to_string();
+        assert!(arm_row("plain").starts_with("| plain | plain | 2 | 0 | 0 |"), "{s}");
+        assert!(arm_row("cur").starts_with("| cur | cur | 2 | 0 | 1 |"), "{s}");
+        assert!(s.contains("not in the paired table"), "{s}");
+    }
+
+    #[test]
+    fn a_file_that_mixes_sealed_and_open_runs_says_so_in_the_header() {
+        let mut recs = grid(2, 1);
+        assert!(
+            !summary(&head(1), &recs).contains("Mixed isolation"),
+            "none recorded as sealed: older files read this way"
+        );
+        for r in &mut recs {
+            r.sealed = true;
+        }
+        assert!(!summary(&head(1), &recs).contains("Mixed isolation"), "all sealed");
+        recs[1].sealed = false;
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("**Mixed isolation**: 3 run(s) ran sealed and 1 are not recorded as sealed"), "{s}");
     }
 
     #[test]
@@ -798,7 +937,7 @@ mod tests {
         dirty.outside = vec!["/home/x/inventory.rs".into()];
         let recs = [record("a", "plain", 0.0, 0.5), record("a", "cur", 0.5, 0.5), dirty];
         let s = summary(&head(1), &recs);
-        assert!(s.contains("| cur | cur | 1 | 1 | 0/1 | - | - | 50.00% |"), "{s}");
+        assert!(s.contains("| cur | cur | 1 | 1 | 0 | 0/1 | - | - | 50.00% |"), "{s}");
         assert!(s.contains("Left out (contaminated): a cur #0."), "{s}");
         assert!(s.contains("| +50.0 "), "{s}");
         assert!(s.contains("## Contaminated runs") && s.contains("`/home/x/inventory.rs`"), "{s}");

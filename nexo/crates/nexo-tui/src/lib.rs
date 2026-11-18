@@ -139,8 +139,9 @@ pub struct TuiOptions {
     /// The first request, given on the command line (`nexo "fix the test"`): sent once the interface opens.
     pub prompt: Option<String>,
     pub session_id: Option<String>,
-    /// `(id, title)` of earlier sessions here, newest first.
-    pub sessions: Vec<(String, String)>,
+    /// The earlier sessions `/resume` offers, those of this folder first and newest first within each group. The
+    /// others stay in the list: `/resume <id>` opens any of them, so a row says where its session ran.
+    pub sessions: Vec<nexo_core::agent::SessionRow>,
     /// The Agent Skills found for the working directory; each answers to `/name`.
     pub skills: Vec<nexo_core::skills::Skill>,
 }

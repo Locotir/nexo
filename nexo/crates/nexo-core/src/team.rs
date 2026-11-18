@@ -24,7 +24,12 @@ pub fn read_lanes() -> Result<crate::config::TeamFile, String> {
 
 /// The lane's folder: `~` is the home folder.
 pub fn lane_dir(lane: &Lane) -> PathBuf {
-    let d = lane.dir.trim();
+    expand_home(&lane.dir)
+}
+
+/// A folder name with `~` taken as the home folder.
+pub fn expand_home(name: &str) -> PathBuf {
+    let d = name.trim();
     match (d.strip_prefix("~"), crate::paths::user_home()) {
         (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
             home.join(rest.trim_start_matches(['/', '\\']))

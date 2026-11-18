@@ -481,8 +481,10 @@ impl Block {
                     }
                     _ => String::new(),
                 };
-                // a summary that already says it (`todo: 1/3 done`) is not repeated
-                let stat = if !stat.is_empty() && summary.contains(stat.trim_start_matches(" · ")) {
+                // a summary that already says it (`todo: 1/3 done`) is not repeated. The exit code is exempt: a
+                // shell summary is the command text, and a command such as `sh -c "exit 3"` must not hide the chip
+                let exit_chip = matches!(output, Some(ToolOutput { display: ToolDisplay::Shell { exit_code: Some(c), .. }, .. }) if *c != 0);
+                let stat = if !exit_chip && !stat.is_empty() && summary.contains(stat.trim_start_matches(" · ")) {
                     String::new()
                 } else {
                     stat

@@ -55,7 +55,7 @@ nexo                            # picks the first provider whose key is present
 nexo --provider openai --model gpt-5
 nexo "fix the failing test"     # opens the session and sends this first
 nexo -i shot.png "why is this red?"   # attaches an image to that first request (also with -p)
-nexo -p "what does this repository do?"            # headless: prints the reply
+nexo -p "what does this repository do?"            # headless: prints the reply (exit codes and JSON: docs/HEADLESS.md)
 nexo -p "run the tests and fix what fails" --permission-mode yolo --json
 nexo --continue                 # resume the latest session of this directory
 nexo --name "api cleanup"        # name the session from the start (-n; with --continue or --resume it renames that one)
@@ -73,7 +73,7 @@ setup, and `nexo guide` prints the step-by-step guide
 ([`docs/SETUP-FOR-AGENTS.md`](docs/SETUP-FOR-AGENTS.md)), which an assistant
 can follow to set nexo up for you.
 
-More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo/<name>`, kept if it changed), `--theme NAME`, `--no-mouse`, `--no-alt-screen` (keep the session in the scrollback), `--inline` (finished turns go to the terminal's scrollback), `--context POLICY` (`NEXO_CONTEXT`), `--log FILE`. Other commands:
+More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo/<name>`, kept if it changed), `--theme NAME`, `--no-mouse`, `--no-alt-screen` (`NEXO_NO_ALT_SCREEN`; keep the session in the scrollback), `--inline` (`NEXO_INLINE`; finished turns go to the terminal's scrollback), `--context POLICY` (`NEXO_CONTEXT`), `--log FILE`. Other commands:
 
 | Command | What it does |
 |---|---|
@@ -83,11 +83,15 @@ More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo
 | `nexo mcp`, `nexo plugin`, `nexo worktree` | MCP servers, plugins ([docs/PLUGINS.md](docs/PLUGINS.md)), the worktrees nexo made ([docs/WORKTREES.md](docs/WORKTREES.md)) |
 | `nexo audit` | the local audit log of tool calls and requests ([docs/AUDIT.md](docs/AUDIT.md)) |
 | `nexo supervise` | watch long-running sessions and answer their hooks |
+| `nexo team` | lanes: named sessions that run on their own in the background ([docs/TEAM.md](docs/TEAM.md)) |
 | `nexo acp` | run as an Agent Client Protocol server for editors ([docs/ACP.md](docs/ACP.md)) |
+| `nexo team` | lanes: named sessions that run on their own in the background on a clock ([docs/TEAM.md](docs/TEAM.md)) |
 
 ## In the interface
 
 The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `yolo` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `12 calls` the calls so far (a `cache miss · 31k full price` chip joins them only when a call lost the cache; the share is in `/context`) and `⏱ 14s` the running turn. `/context` prints all of them.
+
+Every word nexo puts on screen follows the rules in [docs/READABLE-TEXT.md](docs/READABLE-TEXT.md): short sentences, plain words.
 
 
 | Keys | What |
@@ -105,6 +109,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | `→` / `←` / `Enter` (a block selected) | open / fold / toggle it; `Esc` or typing lets it go |
 | `→` / `←` on a message, double click | your message shows only what you typed. The dim line under it, `+ nexo added · N tokens (start note, 2 files, hook…)`, says what nexo put around your words (hook context, shared memory, the start note, attached files, MCP resources; a supervisor note is marked `this request only`); `→` or a double click opens it to the exact text (long files cut with `… N more lines`), `←` or another double click folds it. Resumed sessions show the same, found again by their markers |
 | `/sent` (`/request`) | a window with the last request as the model got it: the system prompt by parts, the tools offered, then every message by role, the curator's text marked `[curator]`, a token count per section; `/` searches, `n`/`N` step, `y` copies the section, `e` opens a folded one |
+| `Ctrl+X` (while the agent works) | send the sub-agents the turn waits for to the background; they report when they end |
 | `Ctrl+O` | fold or open every tool group, tool card and thinking block |
 | `Ctrl+T` | show or hide the model's reasoning |
 | `Ctrl+P` | interpreted view: a markdown, JSON, CSV or TSV block (and a `.md`/`.json`/`.csv` file a tool read or wrote) shows rendered instead of as source; again: the source |
@@ -159,6 +164,10 @@ Other `[agent]` keys:
 
 | Key | Default | What |
 |---|---|---|
+| `max_turns` | `200` | tool rounds one request may take before `on_limit` applies (headless exit code 4, see [docs/HEADLESS.md](docs/HEADLESS.md)); sub-agents have their own limit and always stop there |
+| `on_limit` | `"checkpoint"` | at `max_turns`: `checkpoint` gives the model one short progress message and it decides to stop or go on, so a long job needs no "continue"; `ask` stops and waits for you |
+| `max_checkpoints` | unset | the most checkpoints one request may take: unset means 5 while no spend limit is in force and no cap when one is; `0` never checkpoints (as `ask`) |
+| `max_tokens` | `16384` | the reply size asked of the model |
 | `reasoning_budget` | `8000` | tokens a reply may reason before it says or calls anything; past it the reply is cut, its reasoning dropped, and the model asked for a call or the answer at its lowest listed effort (off, minimal or low) until a reply calls or answers; the third cut in a row stops the turn, and a model that lists none of those levels gets its third reply free up to `max_tokens` instead (`0` off; skipped when an effort level is set) |
 | `parallel_tasks` | `true` | `false` runs sub-agents that can change files one after another |
 | `subagents` | `true` | `false` removes the `task` tool |
@@ -311,7 +320,7 @@ prints the findings (read-only mode) and exits 1 on a high-severity finding, 3 w
 
 **Sessions.** In the `/resume` list, `Del` marks a session and a second `Del` moves it to the trash (a folder
 inside the sessions folder; nothing is erased): `/undelete` brings back the last one, `/undelete <id>` any of
-them, and `nexo sessions delete|restore <id>...` does the same from the shell. `/shared-memory` shares what another
+them, and `nexo sessions delete|restore <id>...` does the same from the shell. `nexo sessions size` shows what the sessions, the curator state saved beside them and the trash take, and `nexo sessions prune --older-than 90d` lists the sessions not written for that long (`--headless`: only those `nexo -p` started); with `--yes` it moves them to the trash, and `--trash` instead deletes for good what is that old in the trash. Files a crash left next to the sessions are cleared in the background at each start, and a session that holds only its first line (nothing was ever said) and was not written for a day is moved to the trash. `/shared-memory` shares what another
 session knows with this one: pick it (Space ticks several sessions, Enter takes the ticked ones, or the row under the
 cursor when none is ticked; or `/shared-memory <id> [focus]`) and its notes (`Finding:`, `Plan:`,
 `Decision:` lines), its constraints, files and failing commands, and the excerpts that bear on the focus (its
@@ -405,8 +414,8 @@ own; `Esc` dismisses. In a run nobody watches the tool is not offered.
 Code blocks, files and diffs are coloured for every language `bat` knows, by name, alias, extension or
 first line; a shell command in a `bash` card too. Every theme is a complete set of RGB values with its own
 background, so it looks the same in any terminal (without 24-bit colour: the nearest of the 256-colour cube).
-`/theme` previews each as you move and remembers the choice (`[ui] theme`). `dark` is the default; the others:
-`nexo`, `light`, `mono` (no colour; also when `NO_COLOR` is set), `catppuccin-mocha`, `gruvbox`, `nord`,
+`/theme` previews each as you move and remembers the choice (`[ui] theme`). `nexo` is the default (`[ui] theme = "auto"` picks `light` on a light terminal background and `nexo` otherwise); the others:
+`dark`, `light`, `mono` (no colour; also when `NO_COLOR` is set), `catppuccin-mocha`, `gruvbox`, `nord`,
 `dracula`, `solarized-dark`, `tokyo-night`.
 
 ## Configuration
@@ -424,7 +433,8 @@ a spend limit are ignored, and the session opens with a notice naming them: a pr
 `api_key_*`, `auth`, `login`, `headers`, `protocol`, `extra` and `pricing` (your own for that provider
 stay), a `provider` your file does not define, `[mcp.*]`, `[[hooks]]`, `permissions.allow`,
 `permissions.mode` set to `yolo` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`,
-`web.url` and `web.api_key_env`, and an `agent.max_cost` or `max_cost_day` above yours or not a positive
+`web.url` and `web.api_key_env`, a `[mail] inbound` that lets in more mail than yours (`accept` over
+`auto`, `auto` over `hold`; a project may only be stricter than you), and an `agent.max_cost` or `max_cost_day` above yours or not a positive
 number (0, a negative number or `nan` would mean no limit). Everything else in it applies, and its `deny`
 rules always do.
 The project's `.nexo/commands/` and `.nexo/agents/` are not loaded either until you trust it.
@@ -511,6 +521,28 @@ nexo mcp remove linear
 `url` and `headers`), only once the project is trusted (`nexo config trust`); a server of the same name in
 your configuration wins.
 
+### Environment variables
+
+These are read at start. Where a variable matches a flag, the flag wins.
+
+| Variable | Effect |
+|---|---|
+| `NEXO_CONFIG_DIR`, `NEXO_DATA_DIR` | move the settings (`config.toml`, `prompt.md`, `commands/`, `agents/`) and what nexo writes as it works (`sessions/`, `keys/`, `spend.json`); both default to `~/.nexo` |
+| `NEXO_CACHE_DIR` | what can be thrown away; default `~/.nexo/cache` |
+| `NEXO_AUTH_FILE` | the credential store; default `auth.json` in the data folder |
+| `NEXO_COMPAT_HOME` | where the other tools' home folders are looked up (empty: off) |
+| `NEXO_NO_ALT_SCREEN`, `NEXO_INLINE` | `1` is `--no-alt-screen` and `--inline` |
+| `NEXO_ASCII` | `1` forces the plain-ASCII symbols, `0` forbids them; by default they are on for the Linux console, a locale that is not UTF-8 and the legacy Windows console |
+| `NEXO_COLORS` | `truecolor` (or `24bit`), `256`, `16` (or `ansi`): the colour depth, instead of what `COLORTERM` and `TERM` say |
+| `NEXO_PROVIDER`, `NEXO_MODEL` | the same as `--provider` and `--model` |
+| `NEXO_PERMISSION_MODE`, `NEXO_SANDBOX` | the same as `--permission-mode` and `--sandbox` |
+| `NEXO_CONTEXT`, `NEXO_CURATOR_SPEC` | the same as `--context` and `--curator-spec` |
+| `NEXO_BROWSER` | the browser executable the `browser` tool uses, ahead of the search for an installed one |
+| `NEXO_SHARED_MEMORY` | the file of the shared memory notes; default `~/.nexo/shared-memory.md` |
+| `NEXO_NO_UPDATE_CHECK` | any value turns the update check off, like `[ui] update_check = false` |
+| `NEXO_TRACE` | a file to which one line per terminal event, command and agent event is appended, to find why a key went nowhere; never what was typed or a key |
+| `NEXO_TMP` | set by nexo for every `bash` command: a folder the command may use for its own files |
+
 ### Providers
 
 Four wire protocols cover every provider ([`docs/providers-base.md`](../docs/providers-base.md) is the
@@ -518,7 +550,8 @@ specification): `openai-chat`, `openai-responses`, `anthropic`, `gemini`.
 Presets exist for openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter,
 together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, copilot, codex,
 and the local servers ollama, lmstudio, vllm and llamacpp. Beyond them, a
-built-in directory of 200+ providers works with only the key set.
+built-in directory of 218 providers (a snapshot of [models.dev](https://models.dev),
+compiled in) works offline with only the key set.
 
 | Command | What it does |
 |---|---|
@@ -535,6 +568,37 @@ The guide is [`docs/SETUP-FOR-AGENTS.md`](docs/SETUP-FOR-AGENTS.md): hand it to
 any assistant and it can set nexo up for you without writing a key to a file.
 A new vendor is a `[providers.name]` block; a new protocol is one adapter in
 `crates/nexo-providers`.
+
+#### Provider settings in `extra`
+
+The `[providers.name.extra]` table holds settings that the protocol serving the provider reads. A key
+the protocol does not know has no effect and is not reported.
+
+| Protocol | Key | Type, default | Effect |
+|---|---|---|---|
+| `anthropic` | `api_version` | string, `2023-06-01` | the `anthropic-version` header |
+| `anthropic` | `bearer` | bool, `false` | send the key as `Authorization: Bearer` instead of `x-api-key` |
+| `anthropic` | `cache` | bool, `true` | mark the prompt for caching |
+| `anthropic` | `cache_ttl_1h` | bool, `true` | ask for the one-hour cache lifetime where the context policy wants it |
+| `anthropic` | `block_binding` | bool, `true` | let the API drop a thinking block whose history changed, instead of failing the call |
+| `gemini` | `bearer` | bool, `false` | send the key as `Authorization: Bearer` instead of `x-goog-api-key` |
+| `openai-chat` | `system_role` | string, `system` | the role of the system message (`developer` where a server wants it) |
+| `openai-chat` | `send_reasoning` | bool, `false` | send the model's earlier reasoning back with the history |
+| `openai-chat` | `max_tokens_key` | string, by model | the name of the reply limit field (`max_tokens` or `max_completion_tokens`) |
+| `openai-responses` | `omit_max_tokens` | bool, `false` | no reply limit in the request, as a ChatGPT subscription backend wants (`nexo auth login codex` sets it) |
+| `openai-responses` | `store` | bool, `false` | ask the server to keep the response |
+| `openai-responses` | `include_reasoning` | bool, `false` | ask for the encrypted reasoning back |
+| `openai-responses` | `prompt_cache_key` | bool, on for OpenAI and a ChatGPT login only | send a cache key with each request |
+| `openai-chat`, `openai-responses` | `versionless` | bool, `false` | use `base_url/path` as it is, for a server that has no `/v1` segment |
+
+```toml
+[providers.myserver]
+protocol = "openai-chat"
+base_url = "http://localhost:8000/v1"
+
+[providers.myserver.extra]
+send_reasoning = true
+```
 
 ### Setting up a model: `/model`
 
@@ -806,8 +870,11 @@ view, each within its budget in tokens (0 turns it off):
   first; a later edit marks a written file "re-read before trusting", a large
   edit or a failed write drops it, a new write replaces it.
 
-The ledger takes what they leave. Nothing is written to disk: the blocks live
-in the anchor of the curated view.
+The ledger takes what they leave. The blocks that left the view are not stored
+as text anywhere: they live in the anchor of the curated view. The curator's
+state is saved in `<id>.jsonl.curator` beside the session file, so a resume
+replays only the later replies; the session file itself is unchanged, and the
+state file goes to the trash with the session.
 
 `/context-live` shows, beside the transcript, a map of the whole history with
 what each call sends (whole, cut, left out) and the cells that just changed
@@ -868,7 +935,7 @@ nexo's DeepSeek preset starts on `deepseek-flash` (1M-token window, replies up t
 
 ## Layout of the code
 
-See `ARCHITECTURE.md`: the crates, one rule (`core ← providers, tools, agent,
+See `ARCHITECTURE.md` (and [docs/CRATES.md](docs/CRATES.md) for the crate graph): the crates, one rule (`core ← providers, tools, agent,
 tui ← cli`), the public API each crate commits to, the session file format
 and the interface's specification. `crates/nexo-bin` reads compiled programs as bytes and `crates/nexo-dbg`
 is the debugger; both stand alone, and the `bin` and `debug` tools and `nexo bin`, `nexo dbg` and `nexo re`

@@ -14,7 +14,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// How long a run may take.
 pub const TIMEOUT: Duration = Duration::from_millis(500);
@@ -328,7 +329,9 @@ fn sgr(params: &str, mut s: Style, base: Style) -> Style {
 
 /// The pieces cut to `width` columns, with `…` as the last one when something was left out.
 pub fn fit(pieces: Vec<(String, Style)>, width: usize) -> Vec<(String, Style)> {
-    let total: usize = pieces.iter().flat_map(|(t, _)| t.chars()).map(|c| c.width().unwrap_or(0)).sum();
+    // Whole graphemes, measured as the title bar measures them, so a flag or a letter with a combining mark is
+    // never cut between its parts.
+    let total: usize = pieces.iter().map(|(t, _)| t.width()).sum();
     if total <= width {
         return pieces;
     }
@@ -339,8 +342,8 @@ pub fn fit(pieces: Vec<(String, Style)>, width: usize) -> Vec<(String, Style)> {
     'all: for (t, s) in pieces {
         let mut kept = String::new();
         last = s;
-        for c in t.chars() {
-            let w = c.width().unwrap_or(0);
+        for g in t.graphemes(true) {
+            let w = g.width();
             if used + w > room {
                 if !kept.is_empty() {
                     out.push((kept, s));
@@ -348,7 +351,7 @@ pub fn fit(pieces: Vec<(String, Style)>, width: usize) -> Vec<(String, Style)> {
                 break 'all;
             }
             used += w;
-            kept.push(c);
+            kept.push_str(g);
         }
         out.push((kept, s));
     }
@@ -393,6 +396,17 @@ mod tests {
         // wide characters are never cut in half
         let text: String = fit(spans("日本語", Style::default()), 4).iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(text, "日…");
+    }
+
+    #[test]
+    fn a_combining_mark_and_a_flag_are_never_cut_from_their_base() {
+        // "e" plus an acute accent is one column: cutting at room 2 keeps both parts or neither.
+        let text: String = fit(spans("ae\u{301}bcd", Style::default()), 4).iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "ae\u{301}b…");
+        // A flag is two regional indicators in one grapheme: it is kept whole or dropped whole. At room 3 a cut
+        // between the two indicators would leave "ab🇪", which is what a per-character loop gives.
+        let text: String = fit(spans("ab🇪🇸cd", Style::default()), 4).iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "ab…");
     }
 
     #[cfg(unix)]

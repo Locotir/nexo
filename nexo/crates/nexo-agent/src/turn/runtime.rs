@@ -148,6 +148,7 @@ impl Runtime {
             checkpoints: Vec::new(),
             budget: max_cost,
             budget_warned: false,
+            unpriced_warned: false,
             ck_used: 0,
             ck_stop: None,
             inbox: VecDeque::new(),
@@ -196,6 +197,7 @@ impl Runtime {
         }
         {
             let mut st = state.lock().await;
+            session_opened(&st);
             st.system = full_system(&st);
             // with a limit set, the interface shows the spending against it from the start
             if st.budget.is_some() || st.config.agent.max_cost_day.is_some() {
@@ -329,10 +331,10 @@ fn open_session(
     Ok(match resume {
         Some(id) => {
             // taken before anything is spent: a session another nexo writes is not resumed here
-            let s = Session::open(id)
-                .and_then(|mut s| s.claim().map(|_| s))
-                .map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
-            skipped_note(events, id, s.skipped_lines());
+            // an open error already names the session file, so the id is said once; only a claim needs it
+            let mut s = Session::open(id).map_err(|e| anyhow::anyhow!("cannot resume: {e}"))?;
+            s.claim().map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
+            skipped_note(events, id, &s);
             let h = s.messages().to_vec();
             (s, h, true)
         }

@@ -42,7 +42,6 @@ libc = { workspace = true }
 toml_edit = { workspace = true }
 time = { workspace = true }
 reqwest = { workspace = true }
-sha2 = { workspace = true }
 url = { workspace = true }
 futures = { workspace = true }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }

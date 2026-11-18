@@ -94,5 +94,36 @@ pub(super) fn contents(messages: &[Message], model: &str) -> Vec<Value> {
             _ => out.push(json!({"role": role, "parts": parts})),
         }
     }
+    // A call made by another model, or by another provider before a switch, has no signature of
+    // this one. The first call of each step still needs a value, and only the first: the calls
+    // that follow it in parallel carry none.
+    if needs_call_signature(model) {
+        for c in out.iter_mut().filter(|c| c["role"] == "model") {
+            let first_call =
+                c["parts"].as_array_mut().and_then(|p| p.iter_mut().find(|p| p.get("functionCall").is_some()));
+            if let Some(call) = first_call.filter(|c| c.get("thoughtSignature").is_none()) {
+                call["thoughtSignature"] = json!(NO_SIGNATURE);
+            }
+        }
+    }
     out
+}
+
+/// The documented stand-in for a function call that has no thought signature (Google, "Thought
+/// signatures": a dummy value skips the validation; the Vertex name of the same switch).
+const NO_SIGNATURE: &str = "skip_thought_signature_validator";
+
+/// Whether the model checks the signature of the first function call of each step: Gemini 3 and
+/// later do and answer 400 to a call without one, earlier models do not check and may refuse an
+/// unknown value. The version is read after `gemini-`, so a proxy prefix such as `models/` is fine.
+/// The `-latest` aliases (`gemini-flash-latest`) have no number and point at the newest model of
+/// their line, which is past version 3, so they count as such.
+fn needs_call_signature(model: &str) -> bool {
+    let Some(i) = model.find("gemini-") else { return false };
+    let rest = &model[i + 7..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return rest.ends_with("-latest");
+    }
+    digits.parse::<u32>().is_ok_and(|v| v >= 3)
 }

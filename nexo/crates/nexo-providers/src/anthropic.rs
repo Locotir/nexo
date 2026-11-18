@@ -50,7 +50,7 @@ impl Protocol for Anthropic {
                 }
             }
         }
-        let body = http::post_stream(&Self::url(cfg), headers, &json).await?;
+        let body = http::post_stream(&Self::url(cfg), headers, &json, cfg.idle_timeout()).await?;
         Ok(Self::parse(http::sse(body)))
     }
 

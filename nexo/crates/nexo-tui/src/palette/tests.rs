@@ -169,7 +169,12 @@ fn lists_running_jobs_and_sessions_deleted_in_this_run() {
     assert!(u[0].1.contains("brings back"));
     assert!(live_values("theme", &jobs, &t, &[], &[]).is_empty());
     // /resume finds a session by a word of its title
-    let s = vec![("20261101-1".to_string(), "parser fix".to_string()), ("20261102-1".to_string(), "docs".to_string())];
+    let row = |id: &str, title: &str| nexo_core::agent::SessionRow {
+        id: id.into(),
+        title: title.into(),
+        ..Default::default()
+    };
+    let s = vec![row("20261101-1", "parser fix"), row("20261102-1", "docs")];
     let p = Palette::args("resume", "pars", 8, live_values("resume", &[], &[], &s, &[]));
     assert_eq!(p.current(), Some("20261101-1"));
     assert!(p.runs_selection(), "Enter opens it");
@@ -215,6 +220,47 @@ fn walks_a_project() {
 }
 
 #[test]
+fn a_git_project_lists_its_dotfiles_but_not_ignored_secrets_or_vcs_data() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    std::fs::create_dir_all(p.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(p.join(".github/workflows")).unwrap();
+    std::fs::create_dir_all(p.join(".venv/lib")).unwrap();
+    std::fs::write(p.join(".git/HEAD"), "ref").unwrap();
+    std::fs::write(p.join(".github/workflows/ci.yml"), "on: push").unwrap();
+    std::fs::write(p.join(".venv/lib/x.py"), "x").unwrap();
+    std::fs::write(p.join(".env.example"), "KEY=").unwrap();
+    std::fs::write(p.join(".env"), "KEY=secret").unwrap();
+    std::fs::write(p.join(".gitignore"), ".env\n").unwrap();
+    let f = project_files(p, 100);
+    assert!(f.contains(&".env.example".to_string()), "{f:?}");
+    assert!(f.contains(&".github/workflows/ci.yml".to_string()), "{f:?}");
+    assert!(!f.iter().any(|x| x == ".env" || x.starts_with(".git/") || x.starts_with(".venv/")), "{f:?}");
+}
+
+#[test]
+fn the_git_pointer_file_of_a_worktree_or_submodule_is_not_listed() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    std::fs::create_dir_all(p.join("sub")).unwrap();
+    std::fs::write(p.join(".git"), "gitdir: ../elsewhere").unwrap();
+    std::fs::write(p.join("sub/.git"), "gitdir: ../../elsewhere").unwrap();
+    std::fs::write(p.join("sub/lib.rs"), "x").unwrap();
+    std::fs::write(p.join("main.rs"), "x").unwrap();
+    assert_eq!(project_files(p, 100), vec!["main.rs", "sub/lib.rs"]);
+}
+
+#[test]
+fn a_folder_that_is_not_a_repository_keeps_hiding_dotfiles() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join(".ssh")).unwrap();
+    std::fs::write(d.path().join(".ssh/id_ed25519"), "k").unwrap();
+    std::fs::write(d.path().join(".bashrc"), "x").unwrap();
+    std::fs::write(d.path().join("notes.txt"), "x").unwrap();
+    assert_eq!(project_files(d.path(), 100), vec!["notes.txt"]);
+}
+
+#[test]
 fn previews_the_selected_file_safely() {
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("a.rs"), "fn a() {}\n\x1b[31mred\x1b[0m\tx\nthird\n").unwrap();
@@ -229,4 +275,51 @@ fn previews_the_selected_file_safely() {
     let pv = p.preview(d.path(), 2).cloned().unwrap();
     assert!(pv.lines.is_empty() && pv.note.starts_with("binary"), "{pv:?}");
     assert!(Palette::commands("", 1).preview(d.path(), 2).is_none());
+}
+
+#[test]
+fn add_dir_completes_from_the_home_folder_it_is_given() {
+    let d = tempfile::tempdir().unwrap();
+    for p in ["home/work", "home/.cache", "cwd"] {
+        std::fs::create_dir_all(d.path().join(p)).unwrap();
+    }
+    let home = d.path().join("home");
+    let v = |t: &str, h: Option<&std::path::Path>| {
+        values::dir_values_in(&d.path().join("cwd"), t, h).into_iter().map(|(v, _)| v).collect::<Vec<_>>()
+    };
+    assert_eq!(v("~/", Some(&home)), ["~/work/"], "home folders, hidden left out, no folder above");
+    assert!(v("~/", None).is_empty(), "no home folder, nothing to offer");
+}
+
+/// Windows has no `HOME` and its people type `\`; both must still complete.
+#[cfg(windows)]
+#[test]
+fn add_dir_completes_after_a_backslash_with_backslashes() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("home/work")).unwrap();
+    std::fs::create_dir_all(d.path().join("cwd")).unwrap();
+    let home = d.path().join("home");
+    let v = |t: &str| {
+        values::dir_values_in(&d.path().join("cwd"), t, Some(&home)).into_iter().map(|(v, _)| v).collect::<Vec<_>>()
+    };
+    assert_eq!(v("~\\"), ["~\\work\\"]);
+    assert_eq!(v("..\\"), ["..\\cwd\\", "..\\home\\", "..\\..\\"]);
+}
+
+#[test]
+fn a_session_row_says_how_much_how_long_ago_and_where_only_when_elsewhere() {
+    let now = 10 * 3_600_000;
+    let mut r = nexo_core::agent::SessionRow {
+        id: "s1".into(),
+        title: "parser fix".into(),
+        cwd: "/work/api".into(),
+        here: true,
+        messages: 12,
+        updated_ms: now - 3 * 3_600_000,
+    };
+    assert_eq!(session_hint(&r, now), "12 msg · 3h ago · parser fix");
+    r.here = false;
+    assert_eq!(session_hint(&r, now), "12 msg · 3h ago · api · parser fix", "the folder shows for another project");
+    let bare = nexo_core::agent::SessionRow { id: "s2".into(), title: "docs".into(), ..Default::default() };
+    assert_eq!(session_hint(&bare, now), "docs", "a row without counts or time shows the title alone");
 }

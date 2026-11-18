@@ -35,6 +35,17 @@ pub(super) fn replay_history(events: &EventTx, session: &Session, tools: &ToolSe
     );
 }
 
+/// Tells the tools the session that is now the conversation, so one that keeps a list for it (`todo`) takes up
+/// what its messages and what was saved for it say, and lets go of what it held for the one before.
+pub(super) fn session_opened(st: &State) {
+    let id = st.session.id();
+    for name in st.tools.names() {
+        if let Some(t) = st.tools.get(name) {
+            t.session_opened(id, st.session.messages());
+        }
+    }
+}
+
 /// Makes `session` the conversation: the interface starts over and gets the replay.
 pub(super) fn install_session(st: &mut State, session: Session) {
     // the jobs of the session left behind stop, and none of them is reported to this one
@@ -44,6 +55,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     // its scratch folder (`$NEXO_TMP`) goes with it
     nexo_tools::bash::wipe_tmp(st.session.id());
     st.session = session;
+    session_opened(st);
     prefix::adopt(st);
     st.checkpoints.clear();
     st.history.replace(st.session.messages().to_vec());
@@ -112,16 +124,26 @@ pub(super) fn close_open_calls(st: &mut State) {
 }
 
 pub(super) async fn resume_session(state: &Shared, id: &str) {
-    let mut st = state.lock().await;
-    if id == st.session.id() && !st.session.is_lost() {
-        // a second copy would drop the lock this one holds when it replaced it (a lost session holds none)
-        notice(&st.events, Level::Info, format!("session {id} is the one in use"));
-        return;
+    {
+        let st = state.lock().await;
+        if id == st.session.id() && !st.session.is_lost() {
+            // a second copy would drop the lock this one holds when it replaced it (a lost session holds none)
+            notice(&st.events, Level::Info, format!("session {id} is the one in use"));
+            return;
+        }
     }
+    // The file is read and claimed with the state unlocked: the jobs, mail and sub-agents that need it meanwhile
+    // are not held for the read. Commands are handled one at a time, so the session in use is still the one
+    // checked above when the lock is taken again.
     // taken before anything is spent: a session another nexo writes is not resumed here
-    match Session::open(id).and_then(|mut s| s.claim().map(|_| s)) {
+    let wanted = id.to_string();
+    let opened = tokio::task::spawn_blocking(move || Session::open(&wanted).and_then(|mut s| s.claim().map(|_| s)))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("the read did not finish: {e}")));
+    let mut st = state.lock().await;
+    match opened {
         Ok(s) => {
-            skipped_note(&st.events, id, s.skipped_lines());
+            skipped_note(&st.events, id, &s);
             install_session(&mut st, s);
             if !st.history.is_empty() {
                 super::saved_state::load(&mut st);
@@ -164,30 +186,37 @@ pub(super) async fn fork_session(state: &Shared, index: Option<usize>) {
 
 /// Readies what session `id` knows (bearing on `focus`, or on its goal or title) to go with the next request.
 pub(super) async fn share_memory(state: &Shared, id: Option<String>, focus: Option<String>) {
-    let mut st = state.lock().await;
-    let Some(id) = id else {
-        st.shared.clear();
-        emit(&st.events, AgentEvent::MemoryShared { pending: Vec::new() });
-        return;
+    let (events, id, room) = {
+        let mut st = state.lock().await;
+        let Some(id) = id else {
+            st.shared.clear();
+            emit(&st.events, AgentEvent::MemoryShared { pending: Vec::new() });
+            return;
+        };
+        if st.session.id() == id {
+            notice(&st.events, Level::Warn, "that is this session: its memory is already here");
+            return;
+        }
+        // what already waits (other than this session, which is read again) uses part of the one share's room
+        let room = room_left(&st, std::slice::from_ref(&id));
+        if room < MIN_SHARE_TOKENS {
+            notice(&st.events, Level::Warn, ROOM_USED_UP);
+            return;
+        }
+        (st.events.clone(), id, room)
     };
-    if st.session.id() == id {
-        notice(&st.events, Level::Warn, "that is this session: its memory is already here");
-        return;
-    }
-    // what already waits (other than this session, which is read again) uses part of the one share's room
-    let room = room_left(&st, std::slice::from_ref(&id));
-    if room < MIN_SHARE_TOKENS {
-        notice(&st.events, Level::Warn, ROOM_USED_UP);
-        return;
-    }
-    match recall_session(&id, focus, room) {
-        Ok(Some((title, block))) => {
+    // the other session's file is read with the state unlocked
+    let read = recall_sessions(vec![id.clone()], focus, room).await.pop().map(|(_, r)| r);
+    match read {
+        Some(Ok(Some((title, block)))) => {
+            let mut st = state.lock().await;
             st.shared.retain(|(i, _, _)| *i != id);
             st.shared.push((id, title, block));
             emit_pending(&st);
         }
-        Ok(None) => notice(&st.events, Level::Info, format!("session {id} holds nothing to share")),
-        Err(e) => notice(&st.events, Level::Error, e),
+        Some(Ok(None)) => notice(&events, Level::Info, format!("session {id} holds nothing to share")),
+        Some(Err(e)) => notice(&events, Level::Error, e),
+        None => {}
     }
 }
 
@@ -195,40 +224,49 @@ pub(super) async fn share_memory(state: &Shared, id: Option<String>, focus: Opti
 /// sessions (as `share_memory` does). One share's room ([`SHARE_TOKENS`]) is divided among them and what waits, so
 /// all of it together is no larger than one share was, however the shares were asked for.
 pub(super) async fn share_memories(state: &Shared, ids: Vec<String>) {
-    let mut st = state.lock().await;
-    let here = st.session.id().to_string();
-    let mut ids: Vec<String> = ids.into_iter().fold(Vec::new(), |mut all, id| {
-        if id != here && !all.contains(&id) {
-            all.push(id);
+    let (events, ids, each) = {
+        let st = state.lock().await;
+        let here = st.session.id().to_string();
+        let mut ids: Vec<String> = ids.into_iter().fold(Vec::new(), |mut all, id| {
+            if id != here && !all.contains(&id) {
+                all.push(id);
+            }
+            all
+        });
+        if ids.is_empty() {
+            notice(&st.events, Level::Warn, "no other session to take memory from");
+            return;
         }
-        all
-    });
-    if ids.is_empty() {
-        notice(&st.events, Level::Warn, "no other session to take memory from");
-        return;
-    }
-    let room = room_left(&st, &ids);
-    let most = MAX_SHARED_SESSIONS.min(room / MIN_SHARE_TOKENS);
-    if most == 0 {
-        notice(&st.events, Level::Warn, ROOM_USED_UP);
-        return;
-    }
-    if ids.len() > most {
-        notice(&st.events, Level::Warn, format!("taking the first {most} sessions: the room does not stretch further"));
-        ids.truncate(most);
-    }
-    let each = room / ids.len();
+        let room = room_left(&st, &ids);
+        let most = MAX_SHARED_SESSIONS.min(room / MIN_SHARE_TOKENS);
+        if most == 0 {
+            notice(&st.events, Level::Warn, ROOM_USED_UP);
+            return;
+        }
+        if ids.len() > most {
+            notice(
+                &st.events,
+                Level::Warn,
+                format!("taking the first {most} sessions: the room does not stretch further"),
+            );
+            ids.truncate(most);
+        }
+        let each = room / ids.len();
+        (st.events.clone(), ids, each)
+    };
+    // the sessions' files are read with the state unlocked
     let mut taken = Vec::new();
-    for id in ids {
-        match recall_session(&id, None, each) {
+    for (id, read) in recall_sessions(ids, None, each).await {
+        match read {
             Ok(Some((title, block))) => taken.push((id, title, block)),
-            Ok(None) => notice(&st.events, Level::Info, format!("session {id} holds nothing to share")),
-            Err(e) => notice(&st.events, Level::Error, e),
+            Ok(None) => notice(&events, Level::Info, format!("session {id} holds nothing to share")),
+            Err(e) => notice(&events, Level::Error, e),
         }
     }
     if taken.is_empty() {
         return;
     }
+    let mut st = state.lock().await;
     st.shared.retain(|(i, _, _)| !taken.iter().any(|(t, _, _)| t == i));
     st.shared.extend(taken);
     emit_pending(&st);
@@ -247,6 +285,30 @@ const ROOM_USED_UP: &str = "the room for shared memory is used up: `/shared-memo
 fn emit_pending(st: &State) {
     let pending = st.shared.iter().map(|(i, t, b)| (i.clone(), t.clone(), crate::brief::tokens(b))).collect();
     emit(&st.events, AgentEvent::MemoryShared { pending });
+}
+
+/// [`recall_session`] for each of `ids`, read on a blocking thread so the state lock is not held while the files
+/// are. A read that did not finish is told as that session's error.
+async fn recall_sessions(
+    ids: Vec<String>,
+    focus: Option<String>,
+    budget: usize,
+) -> Vec<(String, Result<Option<(String, String)>, String>)> {
+    let read = ids.clone();
+    let done = tokio::task::spawn_blocking(move || {
+        read.into_iter()
+            .map(|id| {
+                let got = recall_session(&id, focus.clone(), budget);
+                (id, got)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    done.unwrap_or_else(|e| {
+        ids.into_iter()
+            .map(|id| (id.clone(), Err(format!("cannot read session {id}: the read did not finish: {e}"))))
+            .collect()
+    })
 }
 
 /// What session `id` knows, bearing on `focus` (else its goal or title), within about `budget` tokens: its
@@ -294,15 +356,27 @@ const MIN_SHARE_TOKENS: usize = 200;
 
 /// Moves a recorded session to the trash; the one in use stays (it is still being written).
 pub(super) async fn delete_session(state: &Shared, id: &str) {
-    let st = state.lock().await;
-    if st.session.id() == id {
-        notice(&st.events, Level::Warn, "this is the session in use: /clear first, then delete it");
-        return;
-    }
-    let title = crate::session::Session::open(id).map(|s| s.meta().title.clone()).unwrap_or_default();
-    match crate::session::trash(id) {
-        Ok(_) => emit(&st.events, AgentEvent::SessionDeleted { id: id.to_string(), title }),
-        Err(e) => notice(&st.events, Level::Error, format!("cannot delete: {e}")),
+    let events = {
+        let st = state.lock().await;
+        if st.session.id() == id {
+            notice(&st.events, Level::Warn, "this is the session in use: /clear first, then delete it");
+            return;
+        }
+        st.events.clone()
+    };
+    // The title is read as the list reads it (not the whole conversation), and the file moves, with the state
+    // unlocked: a running turn is not held for either. Commands are handled one at a time, so the session in use
+    // is still the one checked above.
+    let doomed = id.to_string();
+    let done = tokio::task::spawn_blocking(move || {
+        let title = crate::session::meta_in(&crate::session::dir(), &doomed).map(|m| m.title).unwrap_or_default();
+        crate::session::trash(&doomed).map(|_| title)
+    })
+    .await;
+    match done {
+        Ok(Ok(title)) => emit(&events, AgentEvent::SessionDeleted { id: id.to_string(), title }),
+        Ok(Err(e)) => notice(&events, Level::Error, format!("cannot delete: {e}")),
+        Err(e) => notice(&events, Level::Error, format!("cannot delete: {e}")),
     }
 }
 
@@ -330,6 +404,8 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     let dropped = st.history.len().saturating_sub(keep);
     st.history.truncate(keep);
     let restored = restore_files(&mut st, keep);
+    // the task list is the one the kept messages left: one set by what was dropped no longer holds
+    session_opened(&st);
     st.policy.reset();
     st.last_prompt = None;
     st.last_call = None;
@@ -456,6 +532,7 @@ pub(super) async fn clear(state: &Shared) {
         let s = &mut *st;
         s.prefix = prefix::fresh(&mut s.session, &s.cwd, &s.config.agent, &s.tools);
     }
+    session_opened(&st);
     st.system = full_system(&st);
     st.history.clear();
     st.checkpoints.clear();

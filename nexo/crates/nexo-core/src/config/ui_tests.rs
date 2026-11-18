@@ -95,3 +95,33 @@ fn an_untrusted_project_cannot_loosen_the_sandbox() {
     let c = load_pair(user, "[permissions]\nsandbox = \"read-only\"\n", false);
     assert_eq!(c.permissions.sandbox, SandboxMode::ReadOnly, "a project may tighten it");
 }
+
+#[test]
+fn an_untrusted_project_cannot_loosen_mail_inbound() {
+    let c = load_pair("", "[mail]\ninbound = \"accept\"\n", false);
+    assert_eq!(c.mail.inbound, "auto");
+    assert!(c.notices.iter().any(|n| n.contains("mail.inbound")), "the person is told: {:?}", c.notices);
+    let t = load_pair("", "[mail]\ninbound = \"accept\"\n", true);
+    assert_eq!(t.mail.inbound, "accept", "a trusted project may");
+    let quiet = load_pair("", "[mail]\ninbound = \"auto\"\n", false);
+    assert!(!quiet.notices.iter().any(|n| n.contains("mail.inbound")), "auto is the default, no notice");
+}
+
+#[test]
+fn an_untrusted_project_may_only_tighten_mail_inbound() {
+    let user = "[mail]\ninbound = \"hold\"\n";
+    for loose in ["accept", "auto"] {
+        let c = load_pair(user, &format!("[mail]\ninbound = \"{loose}\"\n"), false);
+        assert_eq!(c.mail.inbound, "hold", "{loose} must not beat the user's hold");
+    }
+    let c = load_pair(user, "[mail]\ninbound = \"refuse\"\n", false);
+    assert_eq!(c.mail.inbound, "refuse", "a project may tighten it");
+}
+
+#[test]
+fn an_untrusted_project_cannot_switch_mail_back_on() {
+    let c = load_pair("[mail]\nenabled = false\n", "[mail]\nenabled = true\n", false);
+    assert!(!c.mail.enabled);
+    let t = load_pair("[mail]\nenabled = false\n", "[mail]\nenabled = true\n", true);
+    assert!(t.mail.enabled, "a trusted project may");
+}

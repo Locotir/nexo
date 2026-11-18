@@ -82,20 +82,34 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         AgentCommand::Resume { id } => on_resume(rt, id).await,
         AgentCommand::Fork { index } => on_fork(rt, index).await,
         AgentCommand::ShowTree => {
-            let st = rt.state.lock().await;
-            let entries =
-                crate::session::tree(&crate::session::list()).into_iter().map(|(d, m)| (d, m.id, m.title)).collect();
-            emit(&st.events, AgentEvent::SessionTree { entries });
+            // the scan reads every session file: it runs on a blocking thread and takes no lock, so a turn's
+            // rounds do not wait for it. It is awaited here so its event comes before those of later commands
+            // and a panic in it is reported
+            let scan = tokio::task::spawn_blocking(|| {
+                crate::session::tree(&crate::session::list()).into_iter().map(|(d, m)| (d, m.id, m.title)).collect()
+            })
+            .await;
+            match scan {
+                Ok(entries) => emit(&rt.events, AgentEvent::SessionTree { entries }),
+                Err(e) => notice(&rt.events, Level::Error, format!("cannot read the session tree: {e}")),
+            }
         }
+        AgentCommand::ListSessions => on_list_sessions(rt).await,
         AgentCommand::DeleteSession { id } => delete_session(&rt.state, &id).await,
         AgentCommand::ShareMemory { id, focus } => share_memory(&rt.state, id, focus).await,
         AgentCommand::ShareMemories { ids } => share_memories(&rt.state, ids).await,
         AgentCommand::ReadSharedMemory { since } => read_shared_memory(&rt.state, since).await,
         AgentCommand::WriteSharedMemory { text } => append_shared_memory(&rt.state, &text).await,
         AgentCommand::ListTrash => {
-            let st = rt.state.lock().await;
-            let sessions = crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect();
-            emit(&st.events, AgentEvent::Trash { sessions });
+            // read on a blocking thread without the lock and awaited, as the tree is
+            let read = tokio::task::spawn_blocking(|| {
+                crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect()
+            })
+            .await;
+            match read {
+                Ok(sessions) => emit(&rt.events, AgentEvent::Trash { sessions }),
+                Err(e) => notice(&rt.events, Level::Error, format!("cannot read the trash: {e}")),
+            }
         }
         AgentCommand::RestoreSession { id } => on_restore_session(rt, id).await,
         AgentCommand::Rewind { index } => {
@@ -424,6 +438,18 @@ async fn on_resume(rt: &mut Runtime, id: String) {
     }
 }
 
+/// The list `/resume` shows, read again from disk. It is read on a task of its own: with thousands of sessions it
+/// takes a while, and the agent keeps answering commands meanwhile.
+async fn on_list_sessions(rt: &mut Runtime) {
+    let cwd = rt.state.lock().await.cwd.clone();
+    let events = rt.events.clone();
+    tokio::spawn(async move {
+        if let Ok(sessions) = tokio::task::spawn_blocking(move || crate::session::picker_rows(&cwd)).await {
+            emit(&events, AgentEvent::SessionList { sessions });
+        }
+    });
+}
+
 /// `/fork` between turns; the sub-agents of the conversation it replaced are forgotten.
 async fn on_fork(rt: &mut Runtime, index: Option<usize>) {
     if rt.turn.is_some() {
@@ -439,13 +465,18 @@ async fn on_fork(rt: &mut Runtime, index: Option<usize>) {
 
 /// A session taken out of the trash.
 async fn on_restore_session(rt: &mut Runtime, id: String) {
-    let st = rt.state.lock().await;
-    match crate::session::restore(&id) {
-        Ok(p) => {
-            let title = crate::session::Session::open_path(&p).map(|s| s.meta().title.clone()).unwrap_or_default();
-            emit(&st.events, AgentEvent::SessionRestored { id, title });
-        }
-        Err(e) => notice(&st.events, Level::Error, format!("cannot restore: {e}")),
+    // nothing here reads the state, so the lock stays free while the file moves and its title is read (the title
+    // alone, as the list reads it, not the whole conversation)
+    let restoring = id.clone();
+    let done = tokio::task::spawn_blocking(move || {
+        crate::session::restore(&restoring)
+            .map(|_| crate::session::meta_in(&crate::session::dir(), &restoring).map(|m| m.title).unwrap_or_default())
+    })
+    .await;
+    match done {
+        Ok(Ok(title)) => emit(&rt.events, AgentEvent::SessionRestored { id, title }),
+        Ok(Err(e)) => notice(&rt.events, Level::Error, format!("cannot restore: {e}")),
+        Err(e) => notice(&rt.events, Level::Error, format!("cannot restore: {e}")),
     }
 }
 
