@@ -138,8 +138,9 @@ fn a_call_to_an_import_uses_stub_libc_or_stops_naming_it() {
 }
 
 #[test]
-fn svc_and_simd_stop_with_a_clear_message() {
-    let (img, g) = with(&[0xd400_0001, RET]);
+fn svc_with_another_immediate_and_simd_stop_with_a_clear_message() {
+    // svc #1 is not a Linux system call
+    let (img, g) = with(&[0xd400_0021, RET]);
     let (text, v) = run(&img, g, &[], |_| {});
     assert_eq!(kind(&v), "unsupported", "{text}");
     assert!(text.contains("unsupported on arm64: svc"), "{text}");
@@ -152,9 +153,107 @@ fn svc_and_simd_stop_with_a_clear_message() {
 }
 
 #[test]
-fn the_x86_only_options_are_refused_on_arm64() {
+fn the_x86_only_abi_option_is_refused_on_arm64() {
     let (img, g) = with(&[RET]);
     let mut spec = EmuSpec::new(&format!("{g:#x}"));
-    spec.hooks = vec![format!("{g:#x}=print")];
+    spec.abi = Some("sysv".into());
     assert!(emulate(&img, &spec).is_err());
+}
+
+/// mov x8,#64; mov x0,#1; adr x1,msg; mov x2,#3; svc #0; mov x8,#94; mov x0,#7; svc #0; msg: "hi\n\0"
+const WRITE_EXIT: [u32; 9] = [
+    0xd280_0808,
+    0xd280_0020,
+    0x1000_00c1,
+    0xd280_0062,
+    0xd400_0001,
+    0xd280_0bc8,
+    0xd280_00e0,
+    0xd400_0001,
+    0x000a_6968,
+];
+
+#[test]
+fn svc_write_then_exit_group_gives_the_output_and_the_exit_code() {
+    let (img, g) = with(&WRITE_EXIT);
+    let (text, v) = run(&img, g, &[], |_| {});
+    assert_eq!(kind(&v), "exit", "{text}");
+    assert_eq!(v["exit"].as_i64(), Some(7), "{text}");
+    assert_eq!(v["stdout"].as_str(), Some("hi\n"), "{text}");
+    assert!(text.contains("syscall write(1, ") && text.contains("= 3"), "{text}");
+    assert!(text.contains("syscall exit_group(7)"), "{text}");
+}
+
+#[test]
+fn an_unknown_syscall_stops_with_its_number_and_name() {
+    // mov x8,#999; svc #0; ret
+    let (img, g) = with(&[0xd280_7ce8, 0xd400_0001, RET]);
+    let (text, v) = run(&img, g, &[], |_| {});
+    assert_eq!(kind(&v), "syscall", "{text}");
+    assert!(text.contains("system call 999 (?)"), "{text}");
+    // mov x8,#56 (openat); svc #0
+    let (img, g) = with(&[0xd280_0708, 0xd400_0001, RET]);
+    let (text, v) = run(&img, g, &[], |_| {});
+    assert_eq!(kind(&v), "syscall", "{text}");
+    assert!(text.contains("system call 56 (openat)"), "{text}");
+}
+
+#[test]
+fn brk_grows_and_the_answer_comes_back_in_x0() {
+    // mov x8,#214; mov x0,#0; movk x0,#0x7e80,lsl #32; movk x0,#0,lsl #48; add x0,x0,#1,lsl #12; svc #0;
+    // mov x8,#94; svc #0   (exit_group(x0) shows the low 32 bits of the new break)
+    let words =
+        [0xd280_1ac8, 0xd280_0000, 0xf2cf_d000, 0xf2e0_0000, 0x9140_0400, 0xd400_0001, 0xd280_0bc8, 0xd400_0001];
+    let (img, g) = with(&words);
+    let (text, v) = run(&img, g, &[], |_| {});
+    assert_eq!(kind(&v), "exit", "{text}");
+    assert_eq!(v["exit"].as_i64(), Some(0x1000), "{text}");
+    assert_eq!(v["regs"]["x0"].as_u64(), Some(0x7e80_0000_1000), "{text}");
+    assert!(text.contains("syscall brk(0x7e8000001000) = 0x7e8000001000"), "{text}");
+}
+
+#[test]
+fn break_stops_at_the_svc_with_the_registers_and_hook_changes_a_register() {
+    let (img, g) = with(&WRITE_EXIT);
+    let at = g + 16;
+    let (text, v) = run(&img, g, &[], |s| s.breaks = vec![format!("{at:#x}")]);
+    assert_eq!(kind(&v), "break", "{text}");
+    assert_eq!(v["regs"]["x8"].as_u64(), Some(64), "{text}");
+    assert_eq!(v["regs"]["x2"].as_u64(), Some(3), "{text}");
+    assert!(text.contains("stack top") && text.contains("x8=0x40"), "{text}");
+    assert_eq!(v["stdout"].as_str(), Some(""), "the call did not run: {text}");
+    // a hook sets the length to 2, prints, and the run goes on
+    let (text, v) = run(&img, g, &[], |s| s.hooks = vec![format!("{at:#x}=set:x2=2"), format!("{at:#x}=print")]);
+    assert_eq!(kind(&v), "exit", "{text}");
+    assert_eq!(v["stdout"].as_str(), Some("hi"), "{text}");
+    assert!(text.contains("hooks     2 hit(s)") && text.contains("pc=") && text.contains("x8=0x40"), "{text}");
+    assert!(emulate(&img, &EmuSpec { hooks: vec![format!("{at:#x}=set:rax=1")], ..EmuSpec::new(&format!("{g:#x}")) })
+        .is_err());
+}
+
+#[test]
+fn max_calls_lists_that_many_and_counts_the_rest() {
+    let (img, g) = with(&WRITE_EXIT);
+    let (text, v) = run(&img, g, &[], |s| s.max_calls = 1);
+    assert!(text.contains("1 more call(s) not listed (1 of them system calls)"), "{text}");
+    assert_eq!(v["calls_total"].as_u64(), Some(2), "{text}");
+    assert_eq!(v["calls_not_listed"].as_u64(), Some(1), "{text}");
+}
+
+#[test]
+fn the_x86_system_calls_still_go_through_the_shared_code_unchanged() {
+    // lea rsi,[rip+0xf9]; mov edi,1; mov edx,3; mov eax,1; syscall; mov edi,7; mov eax,231; syscall; data "hi\n"
+    let mut code: Vec<u8> = vec![0x48, 0x8d, 0x35, 0xf9, 0, 0, 0];
+    code.extend_from_slice(&[0xbf, 1, 0, 0, 0, 0xba, 3, 0, 0, 0, 0xb8, 1, 0, 0, 0, 0x0f, 0x05]);
+    code.extend_from_slice(&[0xbf, 7, 0, 0, 0, 0xb8, 0xe7, 0, 0, 0, 0x0f, 0x05]);
+    code.resize(0x100, 0xcc);
+    code.extend_from_slice(b"hi\n");
+    let img = Image::from_raw(code, PathBuf::from("/fx/sys.bin"), 0x40_1000, None).expect("the raw image opens");
+    let (text, v) = run(&img, 0x40_1000, &[], |_| {});
+    // the same expectations as tests_sys::write_to_stdout_then_exit_group_gives_the_output_and_the_exit_code
+    assert_eq!(kind(&v), "exit", "{text}");
+    assert_eq!(v["exit"].as_i64(), Some(7), "{text}");
+    assert_eq!(v["stdout"].as_str(), Some("hi\n"), "{text}");
+    assert!(text.contains("syscall write(1, ") && text.contains("= 3"), "{text}");
+    assert!(text.contains("syscall exit_group(7)"), "{text}");
 }

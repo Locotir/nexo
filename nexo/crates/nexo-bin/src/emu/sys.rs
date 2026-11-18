@@ -1,4 +1,4 @@
-//! Linux x86-64 system calls for the emulator, with no effect on the host: `read` takes bytes from a buffer
+//! Linux system calls (x86-64 and AArch64) for the emulator, with no effect on the host: `read` takes bytes from a buffer
 //! the person gave (`--stdin`), `write` goes into the run's output, memory calls work on emulator pages, the
 //! clock and the process id are fixed, and the random bytes come from a seed. A system call this file does not
 //! know stops the run with its number and name; nothing is faked.
@@ -152,15 +152,103 @@ pub(super) fn name_of(n: u64) -> &'static str {
     }
 }
 
-/// How many arguments a system call this file emulates takes.
-fn arg_count(n: u64) -> usize {
+/// What a system call does, whichever architecture numbers it. Only the number table and the register
+/// mapping are per architecture; the effects below are shared.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Op {
+    Read,
+    Write,
+    Mmap,
+    Mprotect,
+    Munmap,
+    Brk,
+    Getpid,
+    Exit,
+    Gettimeofday,
+    ArchPrctl,
+    Time,
+    ClockGettime,
+    Getrandom,
+}
+
+/// The emulated calls of Linux x86-64, by number.
+fn op_x86(n: u64) -> Option<Op> {
+    Some(match n {
+        0 => Op::Read,
+        1 => Op::Write,
+        9 => Op::Mmap,
+        10 => Op::Mprotect,
+        11 => Op::Munmap,
+        12 => Op::Brk,
+        39 | 186 => Op::Getpid,
+        60 | 231 => Op::Exit,
+        96 => Op::Gettimeofday,
+        158 => Op::ArchPrctl,
+        201 => Op::Time,
+        228 => Op::ClockGettime,
+        318 => Op::Getrandom,
+        _ => return None,
+    })
+}
+
+/// The emulated calls of Linux AArch64 (the generic table of `asm-generic/unistd.h`), by number.
+fn op_a64(n: u64) -> Option<Op> {
+    Some(match n {
+        63 => Op::Read,
+        64 => Op::Write,
+        222 => Op::Mmap,
+        226 => Op::Mprotect,
+        215 => Op::Munmap,
+        214 => Op::Brk,
+        172 | 178 => Op::Getpid,
+        93 | 94 => Op::Exit,
+        169 => Op::Gettimeofday,
+        113 => Op::ClockGettime,
+        278 => Op::Getrandom,
+        _ => return None,
+    })
+}
+
+/// The name of a system call number (Linux AArch64), `?` when this table does not have it.
+pub(super) fn name_of_a64(n: u64) -> &'static str {
     match n {
-        39 | 186 => 0,
-        12 | 60 | 231 | 201 => 1,
-        11 | 96 | 158 | 228 => 2,
-        0 | 1 | 10 | 318 => 3,
-        9 => 6,
-        _ => 0,
+        29 => "ioctl",
+        56 => "openat",
+        57 => "close",
+        63 => "read",
+        64 => "write",
+        66 => "writev",
+        78 => "readlinkat",
+        79 => "newfstatat",
+        80 => "fstat",
+        93 => "exit",
+        94 => "exit_group",
+        96 => "set_tid_address",
+        113 => "clock_gettime",
+        134 => "rt_sigaction",
+        135 => "rt_sigprocmask",
+        160 => "uname",
+        169 => "gettimeofday",
+        172 => "getpid",
+        178 => "gettid",
+        214 => "brk",
+        215 => "munmap",
+        222 => "mmap",
+        226 => "mprotect",
+        261 => "prlimit64",
+        278 => "getrandom",
+        _ => "?",
+    }
+}
+
+/// How many arguments a system call this file emulates takes.
+fn arg_count(op: Op) -> usize {
+    match op {
+        Op::Getpid => 0,
+        Op::Brk | Op::Exit | Op::Time => 1,
+        Op::Munmap | Op::Gettimeofday | Op::ArchPrctl | Op::ClockGettime => 2,
+        Op::Read | Op::Write | Op::Mprotect | Op::Getrandom => 3,
+        Op::Mmap => 6,
     }
 }
 
@@ -195,44 +283,62 @@ fn result_text(ret: u64) -> String {
 }
 
 impl Machine<'_> {
-    /// Run system call `n` (the arguments are in the registers, as `syscall` takes them). `Ok` when the run goes
-    /// on: rax has the answer, rcx the next instruction and r11 the flags, as the real instruction leaves them.
-    /// `site` is the address of the `syscall` instruction and `next` the one after it.
+    /// Run x86-64 system call `n` (the arguments are in the registers, as `syscall` takes them). `Ok` when the
+    /// run goes on: rax has the answer, rcx the next instruction and r11 the flags, as the real instruction
+    /// leaves them. `site` is the address of the `syscall` instruction and `next` the one after it.
     pub(super) fn syscall(&mut self, n: u64, site: u64, next: u64) -> std::result::Result<(), Stop> {
         let g = self.cpu.gpr;
         let a = [g[RDI], g[RSI], g[RDX], g[10], g[8], g[9]];
-        let name = name_of(n);
-        let known = matches!(n, 0 | 1 | 9 | 10 | 11 | 12 | 39 | 60 | 96 | 158 | 186 | 201 | 228 | 231 | 318);
-        if !known {
-            self.log_kind(site, format!("syscall {n} ({name}) stopped the run"), true);
-            return Err(Stop::Syscall(n));
-        }
-        let args: Vec<String> =
-            (0..arg_count(n)).map(|i| if n == 1 && i == 1 { self.show_ptr(a[1]) } else { short(a[i]) }).collect();
-        let args = args.join(", ");
-        let ret = match n {
-            0 => self.sys_read(a[0], a[1], a[2]),
-            1 => self.sys_write(a[0], a[1], a[2]),
-            9 => self.sys_mmap(a),
-            10 => self.sys_mprotect(a[0], a[1], a[2]),
-            11 => self.sys_munmap(a[0], a[1]),
-            12 => self.sys_brk(a[0]),
-            39 | 186 => FAKE_PID,
-            60 | 231 => {
-                self.log_kind(site, format!("syscall {name}({args})"), true);
-                return Err(Stop::Exit(a[0] as i32 as i64));
-            }
-            96 => self.sys_gettimeofday(a[0], a[1]),
-            158 => self.sys_arch_prctl(a[0], a[1]),
-            201 => self.sys_time(a[0]),
-            228 => self.sys_clock_gettime(a[1]),
-            _ => self.sys_getrandom(a[0], a[1]),
-        };
-        self.log_kind(site, format!("syscall {name}({args}) = {}", result_text(ret)), true);
+        let ret = self.run_sys(n, name_of(n), op_x86(n), a, site)?;
         self.cpu.gpr[RAX] = ret;
         self.cpu.gpr[RCX] = next;
         self.cpu.gpr[11] = self.cpu.flags;
         Ok(())
+    }
+
+    /// Run AArch64 system call `n` (x8) with the arguments x0..x5. `Ok` has the answer for x0.
+    pub(super) fn syscall_a64(&mut self, n: u64, a: [u64; 6], site: u64) -> std::result::Result<u64, Stop> {
+        self.run_sys(n, name_of_a64(n), op_a64(n), a, site)
+    }
+
+    /// The part both architectures share: log the call, do its effect, answer. A call `op` does not name stops
+    /// the run with its number and name.
+    fn run_sys(
+        &mut self,
+        n: u64,
+        name: &str,
+        op: Option<Op>,
+        a: [u64; 6],
+        site: u64,
+    ) -> std::result::Result<u64, Stop> {
+        let Some(op) = op else {
+            self.log_kind(site, format!("syscall {n} ({name}) stopped the run"), true);
+            return Err(Stop::Syscall(n));
+        };
+        let args: Vec<String> = (0..arg_count(op))
+            .map(|i| if op == Op::Write && i == 1 { self.show_ptr(a[1]) } else { short(a[i]) })
+            .collect();
+        let args = args.join(", ");
+        let ret = match op {
+            Op::Read => self.sys_read(a[0], a[1], a[2]),
+            Op::Write => self.sys_write(a[0], a[1], a[2]),
+            Op::Mmap => self.sys_mmap(a),
+            Op::Mprotect => self.sys_mprotect(a[0], a[1], a[2]),
+            Op::Munmap => self.sys_munmap(a[0], a[1]),
+            Op::Brk => self.sys_brk(a[0]),
+            Op::Getpid => FAKE_PID,
+            Op::Exit => {
+                self.log_kind(site, format!("syscall {name}({args})"), true);
+                return Err(Stop::Exit(a[0] as i32 as i64));
+            }
+            Op::Gettimeofday => self.sys_gettimeofday(a[0], a[1]),
+            Op::ArchPrctl => self.sys_arch_prctl(a[0], a[1]),
+            Op::Time => self.sys_time(a[0]),
+            Op::ClockGettime => self.sys_clock_gettime(a[1]),
+            Op::Getrandom => self.sys_getrandom(a[0], a[1]),
+        };
+        self.log_kind(site, format!("syscall {name}({args}) = {}", result_text(ret)), true);
+        Ok(ret)
     }
 
     fn put(&mut self, at: u64, bytes: &[u8]) -> bool {

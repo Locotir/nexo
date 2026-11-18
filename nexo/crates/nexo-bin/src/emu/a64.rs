@@ -2,8 +2,8 @@
 //! instructions that pure functions are made of (arithmetic and logic, bitfields, conditional select,
 //! multiply and divide, loads and stores, pairs, literals and branches). It runs the decoder's `Ins`
 //! by mnemonic and operand shape, shares the memory, the library stubs, `--stub`, the limits and the
-//! answer format with the x86 emulator, and stops by name on what it does not run (`svc`, SIMD and
-//! floating point, atomics, system registers other than `tpidr_el0`): it never guesses.
+//! answer format with the x86 emulator, runs `svc #0` as the Linux system calls of `sys.rs` (no effect on the
+//! host), and stops by name on what it does not run (other `svc`, SIMD and floating point, atomics, system registers other than `tpidr_el0`): it never guesses.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -13,8 +13,8 @@ use serde_json::json;
 use super::mem::Mem;
 use super::report::{body_rows, fault_text, num, num_at};
 use super::{
-    configure, libc, start_of, value_in, EmuSpec, Machine, Rows, Stop, MAX_SECS, MAX_STEPS, MAX_TRACE, RET_MAGIC,
-    STACK_TOP,
+    configure, hook, libc, start_of, sys, value_in, EmuSpec, Machine, Rows, Stop, MAX_SECS, MAX_STEPS, MAX_TRACE,
+    RET_MAGIC, STACK_TOP,
 };
 use crate::a64::{decode, Flow, Ins, Mem as AMem, Opd, Why};
 use crate::page::{shell_word, Output};
@@ -771,6 +771,24 @@ struct Done {
     trace: VecDeque<(Ins, Vec<(usize, u64)>)>,
 }
 
+/// How `--hook` names the registers here: x0..x30 and sp.
+const A64_REGS: hook::Regs =
+    hook::Regs { find: reg_index, name: reg_name, pc: "pc", range: "x0..x30", sp: 31, count: 32 };
+
+impl Arm {
+    /// `svc #0`: a Linux system call. The number is in x8, the arguments in x0..x5 and the answer goes in x0
+    /// (a negative errno on error). Any other `svc` immediate is not a Linux system call and stops the run.
+    fn svc(&mut self, m: &mut Machine, ins: &Ins) -> Res<()> {
+        if !matches!(ins.ops[0], Opd::Imm(0) | Opd::UImm(0)) {
+            return Err(Stop::Unsupported(ins.text()));
+        }
+        self.pc = ins.pc.wrapping_add(4);
+        let a = [self.x[0], self.x[1], self.x[2], self.x[3], self.x[4], self.x[5]];
+        self.x[0] = m.syscall_a64(self.x[8], a, ins.pc)?;
+        Ok(())
+    }
+}
+
 fn reg_name(r: usize) -> String {
     if r == 31 {
         "sp".to_string()
@@ -781,11 +799,6 @@ fn reg_name(r: usize) -> String {
 
 /// Run the function or stretch of AArch64 code `spec` names and describe what happened.
 pub(super) fn emulate(img: &Image, spec: &EmuSpec) -> crate::Result<Output> {
-    if !spec.hooks.is_empty() {
-        return Err(Error::Usage(
-            "--hook acts on x86 registers; on arm64 use --break (stop and show the registers) and --stub".into(),
-        ));
-    }
     if spec.abi.is_some() {
         return Err(Error::Usage("--abi does not apply to arm64: it always uses AAPCS64 (x0..x7)".into()));
     }
@@ -823,6 +836,10 @@ pub(super) fn emulate(img: &Image, spec: &EmuSpec) -> crate::Result<Output> {
             None => format!("x{r}={}", num_at(img, v)),
         });
     }
+    for s in &spec.hooks {
+        let (a, act) = hook::parse(img, &mut m, s, &A64_REGS)?;
+        m.hooks.at.entry(a).or_default().push(act);
+    }
     // the stack: arguments past x7 at sp, and the return address in x30
     let mut sp = STACK_TOP - 0x4000;
     sp -= 8 * stack_args.len() as u64;
@@ -851,6 +868,12 @@ pub(super) fn emulate(img: &Image, spec: &EmuSpec) -> crate::Result<Output> {
         }
         if Some(pc) == spec.to && steps > 0 {
             break Stop::Reached(pc);
+        }
+        if !m.hooks.at.is_empty() && m.hooks.at.contains_key(&pc) {
+            let mut r = c.regs();
+            m.run_hooks(pc, &mut r, &A64_REGS);
+            c.x.copy_from_slice(&r[..31]);
+            c.sp = r[31];
         }
         if !m.hooks.breaks.is_empty() && m.hooks.breaks.contains(&pc) {
             break Stop::Break(pc);
@@ -903,7 +926,7 @@ pub(super) fn emulate(img: &Image, spec: &EmuSpec) -> crate::Result<Output> {
             m.last_call = pc;
         }
         let before = c.regs();
-        let done = c.exec(&mut m.mem, &ins);
+        let done = if ins.mn.as_str() == "svc" { c.svc(&mut m, &ins) } else { c.exec(&mut m.mem, &ins) };
         steps += 1;
         if trace_n > 0 {
             let now = c.regs();
@@ -967,6 +990,11 @@ fn report(img: &Image, spec: &EmuSpec, m: &Machine, c: &Arm, d: &Done) -> Output
         Stop::Fault(f) => fault_text(m, f, &at(pc), &cur()),
         Stop::Trap(t) => format!("{t} at {}: the program traps here", at(pc)),
         Stop::Break(a) => format!("reached --break {}", at(*a)),
+        Stop::Syscall(n) => format!(
+            "system call {n} ({}) at {}: emu does not emulate it (it does read, write, exit, exit_group, brk, mmap, munmap, mprotect, getpid, gettid, clock_gettime, gettimeofday, getrandom)",
+            sys::name_of_a64(*n),
+            at(pc)
+        ),
         Stop::Exit(code) => format!("the program called exit({code})"),
         Stop::Abort(why) => why.clone(),
         Stop::LibFault { call, fault } => format!(
@@ -1060,6 +1088,8 @@ fn report(img: &Image, spec: &EmuSpec, m: &Machine, c: &Arm, d: &Done) -> Output
         "nzcv": c.nzcv(),
         "calls_total": m.calls_total,
         "calls_not_listed": m.unlogged,
+        "hooks_total": m.hooks.total,
+        "hooks": m.hooks.log.iter().map(|h| json!({"addr": h.addr, "lines": h.lines})).collect::<Vec<_>>(),
         "regs": regs,
         "stdout": String::from_utf8_lossy(&m.stdout),
         "stderr": String::from_utf8_lossy(&m.stderr),
