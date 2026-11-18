@@ -511,7 +511,7 @@ pub(crate) fn slice_forward(
                     set = set
                         .into_iter()
                         .map(|l| match l {
-                            Loc::Slot(SP, off, s) => Loc::Slot(SP, off - d, s),
+                            Loc::Slot(SP, off, s) => Loc::Slot(SP, off.wrapping_sub(d), s),
                             o => o,
                         })
                         .collect();
