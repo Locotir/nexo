@@ -22,6 +22,7 @@ fn billed(p: &Pricing, usage: &Usage, call: &Usage) -> f64 {
         cache_read: usage.cache_read.saturating_sub(call.cache_read),
         cache_write: usage.cache_write.saturating_sub(call.cache_write),
         cache_write_1h: usage.cache_write_1h.saturating_sub(call.cache_write_1h),
+        transformations: usage.transformations.saturating_sub(call.transformations),
         reasoning: usage.reasoning.saturating_sub(call.reasoning),
     };
     p.cost(call) + p.cost(&retried)
