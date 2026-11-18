@@ -225,10 +225,10 @@ fn copy_todo(dir: &Path, from: &str, to: &str) {
     }
 }
 
-/// Copies the `usage` and `model` lines of the file as it stands to `out`, byte for byte and in order, and
-/// returns what the usage lines add up to. A line is told by how it starts (the writer puts `type` first, as
-/// `read_meta` relies on) and kept only when it still parses, so a line cut by a crash is not carried along.
-/// Lines of an earlier `sum` are copied like the others, so a second rewrite folds nothing. A file that
+/// Copies the `usage` and `model` lines of the file as it stands to `out`, trimmed of surrounding whitespace and
+/// in order, and returns what the usage lines add up to. A line is told by how it starts (the writer puts `type`
+/// first, as `read_meta` relies on) and kept only when it still parses, so a line cut by a crash is not carried
+/// along. Lines of an earlier `sum` are copied like the others, so a second rewrite folds nothing. A file that
 /// cannot be read copies nothing: the caller then sums from memory.
 fn copy_detail(path: &Path, out: &mut impl Write) -> anyhow::Result<(Usage, f64)> {
     const USAGE: &[u8] = br#"{"type":"usage""#;
