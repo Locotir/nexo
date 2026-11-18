@@ -55,7 +55,7 @@ const STATIC_EXTS: [&str; 21] = [
 ];
 
 /// Whether `host` is `domain` or one of its sub-domains.
-fn under(host: &str, domain: &str) -> bool {
+pub(crate) fn under(host: &str, domain: &str) -> bool {
     host == domain
         || (host.len() > domain.len()
             && host.ends_with(domain)
@@ -115,6 +115,9 @@ fn reason(x: &Exchange, hosts: &[String]) -> Option<&'static str> {
     if is_tracker(x, &host) {
         return Some("tracker");
     }
+    if x.kind == "eventsource" || response_mime(x) == "text/event-stream" {
+        return Some("event stream");
+    }
     if is_static(x) {
         return Some("static file");
     }
@@ -132,8 +135,9 @@ fn reason(x: &Exchange, hosts: &[String]) -> Option<&'static str> {
 
 /// Which exchanges are worth looking at: the indexes kept (in order) and how many were dropped for each reason.
 /// Reasons are checked in this order: `not http`, `other host` (only when `hosts` is not empty: a host equal to one
-/// of them or under it is kept), `preflight`, `tracker`, `static file`, `page`, `no response`, `redirect` (a 3xx
-/// without a `set-cookie` is only a hop; one that sets a cookie is kept, it is how many logins end).
+/// of them or under it is kept), `preflight`, `tracker`, `event stream` (a channel, read by [`crate::channel`]),
+/// `static file`, `page`, `no response`, `redirect` (a 3xx without a `set-cookie` is only a hop; one that sets a
+/// cookie is kept, it is how many logins end).
 pub fn sift(all: &[Exchange], hosts: &[String]) -> (Vec<usize>, IndexMap<&'static str, usize>) {
     let mut kept = Vec::new();
     let mut dropped: IndexMap<&'static str, usize> = IndexMap::new();

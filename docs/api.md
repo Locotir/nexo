@@ -54,6 +54,7 @@ Not everything in a capture is the site's API. These calls are dropped, and the 
 | `other host` | only when you pass `--host`: anything not on those hosts or under them |
 | `preflight` | `OPTIONS` requests |
 | `tracker` | analytics, ads and logging hosts, and `ping` or `beacon` requests |
+| `event stream` | `text/event-stream` answers: they are read as channels, not as endpoints (see Live channels) |
 | `static file` | images, scripts, styles, fonts, media, by resource type, extension or mime type |
 | `page` | HTML documents |
 | `no response` | requests that got no answer |
@@ -64,6 +65,21 @@ Each drop is counted, so nothing vanishes without a trace. A header says `N call
 ### Secrets
 
 Secrets are removed while the file is read, before anything else sees them. A header, cookie, query parameter or body field whose name says it carries a secret (`authorization`, `token`, `session`, `api_key`, `csrf`, `password`, a bare `key` in a query, and similar) becomes `<secret>`. Only a short fingerprint is kept in memory, so nexo can tell that the token a request sends is the one an earlier login response gave. Long opaque strings (tokens, hashes) are never shown as examples, and opaque path segments print as `<opaque>`.
+
+### Live channels
+
+A HAR that holds WebSocket frames (`_webSocketMessages`, as Chrome and Edge devtools write them) or `text/event-stream` answers also gives channels. `analyze` groups the messages of a channel by the field that tells their kind (`type`, `event`, `op`, `channel` or `action`), else by their top-level shape; a stream by its event name. Per message type it keeps the direction, the count, the rate per minute and the JSON shape. Heartbeats (ping and pong frames, stream comments, tiny repeated frames, `{"type":"ping"}`) are counted and named, not listed as types. The first client messages after the open are kept as the subscribe pattern. Tokens inside frames are hidden like any other secret, and a map holds none.
+
+The summary prints one line per channel and one short line per type (capped):
+
+```
+[ws_socket] WS app.test/socket, 14 messages, by "type"
+  subscribe: {"type":"subscribe","token":"<secret>"}
+  <- ticker x6 [7/min] {price:number, symbol:string}
+  heartbeat: ping/pong x12
+```
+
+The OpenAPI export has them under `x-nexo-channels`, and the map file holds them, so `describe` shows them. Nexo's own headless browser exports no frames in its HAR yet: use a devtools HAR for channels.
 
 ## analyze
 
@@ -167,10 +183,21 @@ nexo api watch map.json get_api_items --times 1 --state items.json
 | `--every DURATION` | Time between calls: `30s`, `5m`, `2h`, `1d`, or bare seconds. At least 10s. Needed unless `--times 1`. |
 | `--times N` | Stop after N calls. Without it, it runs until you stop it. |
 | `--state FILE` | Keep the last answer between runs. |
+| `--for DURATION` | Follow a live channel of the map instead (the endpoint argument is its id): see below. |
 
 The first tick prints `first answer: status 200`. After that it prints nothing when the answer is the same, and otherwise `# N changes` followed by lines for each added, removed or changed path, such as `~ $.body.count: 1 -> 2`. Lists whose items share an `id`-like field (`id`, `_id`, `uuid`, `guid`, `key`, `slug`, `code`) are matched by it, so a reordered list shows only what really changed. Changes of secret fields are not changes. A tick prints at most 100 changes.
 
 `--state` is written with mode 0600 and holds the status and the scrubbed body. A body that is not JSON is saved as its size and a fingerprint only. With `--times 1` and `--state`, `watch` suits cron: one call per run, a diff against the last run.
+
+### Following a channel
+
+```
+nexo api watch map.json sse_events --for 60s
+```
+
+With `--for`, `watch` opens the channel's event stream with a plain streaming GET (auth read from environment variables as `call` does), reads for that long (1s to 1h) and prints the messages seen, one line per type with its count and rate, and what differs from the map: a message type that did not show is `drift:` (a type not seen in a short window is not proof it is gone), a new type is `new:`, and a changed field type or a missing field are reported like `check` does. At most 30 difference lines. Exit code 1 if there is drift.
+
+A WebSocket channel is not followed: nexo has no WebSocket client with TLS (the one in nexo-browser speaks only plain `ws://` to the local browser), so `watch` says so and sends nothing. Record the site again and run `analyze` on the capture to see the channel's current types.
 
 Exit code: 0; 1 if the last call failed; 2 for bad arguments (including `--every` under 10s, `--times 0`, or no `--every` without `--times 1`).
 
@@ -216,7 +243,7 @@ nexo api check map.json -p item_id=3 --json > check.json || echo "API changed: e
 
 ## OpenAPI export
 
-`--openapi FILE` on `analyze` writes OpenAPI 3.1; `--json` prints it. It has paths with parameters, request bodies and responses as JSON Schema, and the auth schemes as `components.securitySchemes` (`a1`, `a2`, ...). The title is the first host plus "API". Extensions carry what OpenAPI has no field for: `x-nexo-paging`, `x-nexo-example`, `x-nexo-source`, `x-nexo-cookies`, and `x-nexo-graphql` for GraphQL operations (they share one URL, so they are not paths). A second operation on the same method and path goes under `x-nexo-more-operations`. No secret value is in it.
+`--openapi FILE` on `analyze` writes OpenAPI 3.1; `--json` prints it. It has paths with parameters, request bodies and responses as JSON Schema, and the auth schemes as `components.securitySchemes` (`a1`, `a2`, ...). The title is the first host plus "API". Extensions carry what OpenAPI has no field for: `x-nexo-paging`, `x-nexo-example`, `x-nexo-source`, `x-nexo-cookies`, and `x-nexo-channels` for WebSocket and event-stream channels (id, kind, url, subscribe pattern, heartbeat, and `messages_by_type` with direction, count, rate and schema), `x-nexo-graphql` for GraphQL operations (they share one URL, so they are not paths). A second operation on the same method and path goes under `x-nexo-more-operations`. No secret value is in it.
 
 ## The agent tool
 

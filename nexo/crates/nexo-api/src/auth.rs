@@ -64,8 +64,20 @@ fn csrf_name(name: &str) -> bool {
     n.contains("csrf") || n.contains("xsrf")
 }
 
+/// Whether the exchange is an http call or the handshake of a WebSocket (which is an http request that upgrades).
 fn is_http(x: &Exchange) -> bool {
-    matches!(x.url.scheme(), "http" | "https")
+    matches!(x.url.scheme(), "http" | "https" | "ws" | "wss")
+}
+
+/// The origin of an exchange, with a WebSocket's `wss://host` read as `https://host`, so that its cookies and tokens
+/// belong to the same site as the page's calls.
+fn site_origin(x: &Exchange) -> String {
+    let o = x.origin();
+    match o.split_once("://") {
+        Some(("wss", rest)) => format!("https://{rest}"),
+        Some(("ws", rest)) => format!("http://{rest}"),
+        _ => o,
+    }
 }
 
 /// Whether a header name is one of the two that carry a scheme word.
@@ -160,7 +172,7 @@ pub fn detect(all: &[Exchange]) -> Vec<Auth> {
     let mut found: Vec<Found> = Vec::new();
     let mut issued: Vec<Issued> = Vec::new();
     for x in all.iter().filter(|x| is_http(x)) {
-        let origin = x.origin();
+        let origin = site_origin(x);
         for s in &x.sent {
             match s.place {
                 Place::Header => {

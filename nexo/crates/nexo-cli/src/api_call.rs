@@ -85,8 +85,8 @@ fn net_error(e: reqwest::Error) -> String {
     }
 }
 
-/// Sends a request. This is the only place a secret value is read back out of a `Val`.
-async fn send(client: &reqwest::Client, req: &call::Request) -> Result<Answer, String> {
+/// Opens a request. This is the only place a secret value is read back out of a `Val`.
+async fn open(client: &reqwest::Client, req: &call::Request) -> Result<reqwest::Response, String> {
     let mut url = url::Url::parse(&req.url).map_err(|e| format!("bad url: {e}"))?;
     if !req.query.is_empty() {
         let mut q = url.query_pairs_mut();
@@ -103,7 +103,12 @@ async fn send(client: &reqwest::Client, req: &call::Request) -> Result<Answer, S
     if let Some(body) = &req.body {
         b = b.body(body.wire());
     }
-    let mut resp = b.send().await.map_err(net_error)?;
+    b.send().await.map_err(net_error)
+}
+
+/// Sends a request and reads the whole answer.
+async fn send(client: &reqwest::Client, req: &call::Request) -> Result<Answer, String> {
+    let mut resp = open(client, req).await?;
     let status = resp.status().as_u16();
     let header =
         |name: reqwest::header::HeaderName| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -479,11 +484,43 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// `nexo api watch`.
-pub async fn watch(t: &Target, every: Option<&str>, times: Option<u32>, state: Option<&Path>) -> i32 {
-    exit_of(watch_inner(t, every, times, state).await.map(|code| Out { text: String::new(), notes: Vec::new(), code }))
+pub async fn watch(
+    t: &Target,
+    every: Option<&str>,
+    times: Option<u32>,
+    state: Option<&Path>,
+    follow: Option<&str>,
+) -> i32 {
+    exit_of(watch_inner(t, every, times, state, follow).await.map(|code| Out {
+        text: String::new(),
+        notes: Vec::new(),
+        code,
+    }))
 }
 
-async fn watch_inner(t: &Target, every: Option<&str>, times: Option<u32>, state: Option<&Path>) -> Result<i32, Fail> {
+async fn watch_inner(
+    t: &Target,
+    every: Option<&str>,
+    times: Option<u32>,
+    state: Option<&Path>,
+    follow: Option<&str>,
+) -> Result<i32, Fail> {
+    {
+        let api = load_map(&t.map)?;
+        let key = t.endpoint.trim();
+        if let Some(c) = api.channels.iter().find(|c| c.id == key) {
+            return follow_channel(&api, c, t, follow.unwrap_or("60s")).await;
+        }
+        if follow.is_some() {
+            let ids: Vec<&str> = api.channels.iter().take(8).map(|c| c.id.as_str()).collect();
+            let list = if ids.is_empty() {
+                "the map has no channel".to_string()
+            } else {
+                format!("channels: {}", ids.join(", "))
+            };
+            return Err(usage(format!("--for follows a channel of the map, and {key:?} is not one ({list})")));
+        }
+    }
     let wait = match (every, times) {
         (Some(e), _) => {
             let d = call::duration(e).map_err(usage)?;
@@ -532,6 +569,146 @@ async fn watch_inner(t: &Target, every: Option<&str>, times: Option<u32>, state:
         tokio::time::sleep(wait).await;
     }
     Ok(if last_failed { 1 } else { 0 })
+}
+
+// ---------------------------------------------------------------- live channels
+
+/// How many bytes of a stream are read in one follow.
+const FOLLOW_CAP: usize = 8 << 20;
+/// How many difference lines a follow prints.
+const MAX_FOLLOW_LINES: usize = 30;
+
+/// A client for a long answer: no total timeout, the follow keeps its own clock.
+fn stream_client() -> Result<reqwest::Client, Fail> {
+    nexo_providers::build_client(|| {
+        reqwest::Client::builder()
+            .connect_timeout(TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
+    })
+    .map_err(failed)
+}
+
+/// `nexo api watch MAP CHANNEL --for 60s`: follows one channel of the map for a while and says which message types
+/// came, how often, and what differs from the map. An event stream is followed with a plain streaming GET. A
+/// WebSocket is not: this build has no WebSocket client with TLS (the one in nexo-browser speaks plain `ws://` to the
+/// local debugging port only), so it says so and sends nothing.
+async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, window: &str) -> Result<i32, Fail> {
+    use nexo_api::channel::{self, Kind};
+    let span = call::duration(window).map_err(usage)?;
+    if span.is_zero() || span > Duration::from_secs(3600) {
+        return Err(usage(format!("--for {window} must be between 1s and 1h")));
+    }
+    if c.kind == Kind::Ws {
+        return Err(usage(format!(
+            "{} is a WebSocket channel and this build cannot follow it: nexo has no WebSocket client with TLS (nexo-browser's speaks plain ws:// to the local browser only). An event-stream channel can be followed; for this one, record it again in the browser and `nexo api analyze` the capture",
+            c.id
+        )));
+    }
+    let ep = Endpoint {
+        id: c.id.clone(),
+        method: "GET".to_string(),
+        origin: c.origin.clone(),
+        path: c.path.clone(),
+        gql: None,
+        calls: 0,
+        path_params: Vec::new(),
+        query: Vec::new(),
+        headers: Vec::new(),
+        body: None,
+        responses: Default::default(),
+        paging: None,
+        auth: c.auth.clone(),
+        example: String::new(),
+    };
+    let explicit = call::auth_map(api, &t.auth).map_err(usage)?;
+    let (vals, missing) = call::auth_values(api, &ep, &explicit, &BTreeMap::new(), &lookup);
+    if !missing.is_empty() {
+        return Err(usage(format!(
+            "set {} (or name another variable with --auth NAME=ENVVAR); `nexo api describe` lists them",
+            missing.join(", ")
+        )));
+    }
+    let mut req = call::build(api, &ep, &call::Inputs::default(), &vals).map_err(usage)?;
+    req.headers.push(("accept".to_string(), call::Val::plain("text/event-stream")));
+    let known: std::collections::HashSet<exchange::Fp> = vals.iter().map(|(_, v)| exchange::fingerprint(v)).collect();
+    let client = stream_client()?;
+    println!("following {} (SSE {}{}) for {}s", c.id, c.origin, c.path, span.as_secs());
+    let mut resp = open(&client, &req).await.map_err(failed)?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(failed(format!("the stream answered {status}")));
+    }
+    let started = std::time::Instant::now();
+    let mut parser = channel::SseParser::new();
+    let mut msgs: Vec<channel::Msg> = Vec::new();
+    let mut read = 0usize;
+    let mut ended = false;
+    loop {
+        let left = span.saturating_sub(started.elapsed());
+        if left.is_zero() || read >= FOLLOW_CAP {
+            break;
+        }
+        match tokio::time::timeout(left, resp.chunk()).await {
+            Err(_) => break,
+            Ok(Err(e)) => return Err(failed(net_error(e))),
+            Ok(Ok(None)) => {
+                ended = true;
+                break;
+            }
+            Ok(Ok(Some(chunk))) => {
+                read += chunk.len();
+                msgs.extend(parser.feed(&String::from_utf8_lossy(&chunk)));
+            }
+        }
+    }
+    msgs.extend(parser.finish());
+    for m in &mut msgs {
+        m.text = channel::redact_text(&m.text, &known);
+    }
+    let secs = started.elapsed().as_secs_f64();
+    let live = channel::observe(Kind::Sse, &c.origin, &c.path, &msgs, Some(secs));
+    print!("{}", follow_report(c, &live, secs, ended));
+    let _ = std::io::stdout().flush();
+    let drift = nexo_api::drift::channel(c, &live).iter().any(|f| f.drift);
+    Ok(if drift { 1 } else { 0 })
+}
+
+/// What a follow prints: the messages seen, one line per type, then what differs from the recorded channel.
+fn follow_report(
+    rec: &nexo_api::channel::Channel,
+    live: &nexo_api::channel::Channel,
+    secs: f64,
+    ended: bool,
+) -> String {
+    use nexo_api::channel::rate_text;
+    let mut out = format!(
+        "{} messages in {:.0}s{}\n",
+        live.messages,
+        secs,
+        if ended { " (the server closed the stream)" } else { "" }
+    );
+    for t in live.types.iter().take(20) {
+        let rate = live.per_min(t.total()).map(|r| format!(" [{}]", rate_text(r))).unwrap_or_default();
+        out.push_str(&format!("  {} x{}{}\n", t.name, t.total(), rate));
+    }
+    if live.types.len() > 20 {
+        out.push_str(&format!("  ... {} more types\n", live.types.len() - 20));
+    }
+    if let Some(b) = &live.beat {
+        out.push_str(&format!("  heartbeat: {} x{}\n", b.name, b.got + b.sent));
+    }
+    let found = nexo_api::drift::channel(rec, live);
+    if found.is_empty() {
+        out.push_str("same message types and shapes as the map\n");
+    }
+    for f in found.iter().take(MAX_FOLLOW_LINES) {
+        out.push_str(&format!("{} {}\n", if f.drift { "drift:" } else { "new:  " }, f.text));
+    }
+    if found.len() > MAX_FOLLOW_LINES {
+        out.push_str(&format!("... {} more differences\n", found.len() - MAX_FOLLOW_LINES));
+    }
+    out
 }
 
 #[cfg(test)]

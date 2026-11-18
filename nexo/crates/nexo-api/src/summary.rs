@@ -3,6 +3,7 @@
 //! types and shapes are printed, never a value that came from a header, a cookie or an opaque string.
 
 use crate::auth::{Auth, Scheme};
+use crate::channel::{rate_text, Channel};
 use crate::spec::{Api, Endpoint, Payload};
 
 /// How many hosts, auth lines, query parameters, headers and statuses are listed before `…+N`.
@@ -11,6 +12,8 @@ const MAX_AUTH: usize = 8;
 const MAX_QUERY: usize = 10;
 const MAX_HEADERS: usize = 6;
 const MAX_STATUS: usize = 4;
+/// How many message types of a channel get a line before `…+N more types`.
+const MAX_TYPES: usize = 6;
 
 fn auth_line(i: usize, a: &Auth) -> String {
     let what = match &a.scheme {
@@ -92,6 +95,64 @@ fn block(e: &Endpoint, multi: bool) -> String {
     s
 }
 
+/// One channel: a line for it and one short line per message type (the busiest first), the subscribe example, the
+/// heartbeats.
+fn channel_block(c: &Channel) -> String {
+    let host = c.origin.split("://").nth(1).unwrap_or(&c.origin);
+    let refs: String = c.auth.iter().map(|i| format!(" a{}", i + 1)).collect();
+    let by = c.field.as_ref().map(|f| format!(", by \"{f}\"")).unwrap_or_default();
+    let conns = if c.connections > 1 { format!(" x{} conns", c.connections) } else { String::new() };
+    let mut lines = vec![format!(
+        "[{}] {} {}{}{}, {} messages{}{}",
+        c.id,
+        c.kind.name().to_ascii_uppercase(),
+        host,
+        c.path,
+        conns,
+        c.messages,
+        by,
+        refs
+    )];
+    if !c.subscribe.is_empty() {
+        let shown: Vec<String> = c
+            .subscribe
+            .iter()
+            .take(2)
+            .map(|e| {
+                if e.chars().count() > 160 {
+                    format!("{}…", e.chars().take(159).collect::<String>())
+                } else {
+                    e.clone()
+                }
+            })
+            .collect();
+        let more = if c.subscribe.len() > 2 { format!(" …+{}", c.subscribe.len() - 2) } else { String::new() };
+        lines.push(format!("  subscribe: {}{}", shown.join(" ; "), more));
+    }
+    for t in c.types.iter().take(MAX_TYPES) {
+        let rate = c.per_min(t.total()).map(|r| format!(" {}", rate_text(r))).unwrap_or_default();
+        let what = if t.shape.seen > 0 {
+            format!(" {}", t.shape.sketch(100))
+        } else if t.binary {
+            " binary".to_string()
+        } else {
+            String::new()
+        };
+        lines.push(format!("  {} {} x{}{}{}", t.arrow(), t.name, t.total(), rate, what));
+    }
+    if c.types.len() > MAX_TYPES {
+        let rest: usize = c.types.iter().skip(MAX_TYPES).map(|t| t.total()).sum();
+        lines.push(format!("  …+{} more types ({} messages)", c.types.len() - MAX_TYPES, rest));
+    }
+    if let Some(b) = &c.beat {
+        let rate = c.per_min(b.sent + b.got).map(|r| format!(" {}", rate_text(r))).unwrap_or_default();
+        lines.push(format!("  heartbeat: {} x{}{}", b.name, b.sent + b.got, rate));
+    }
+    let mut s = lines.join("\n");
+    s.push('\n');
+    s
+}
+
 /// The summary. The header, hosts and auth lines always print; endpoint blocks are added while the whole stays within
 /// `budget` characters, and the ones left out are counted in a last line.
 pub fn render(api: &Api, budget: usize) -> String {
@@ -104,8 +165,15 @@ pub fn render(api: &Api, budget: usize) -> String {
     } else {
         reasons.iter().map(|(r, n)| format!("{n} {r}")).collect::<Vec<_>>().join(", ")
     };
-    let mut out =
-        format!("{} calls, {} kept, {} endpoints; dropped: {}\n", api.total, kept, api.endpoints.len(), dropped);
+    let chans = if api.channels.is_empty() { String::new() } else { format!(", {} channels", api.channels.len()) };
+    let mut out = format!(
+        "{} calls, {} kept, {} endpoints{}; dropped: {}\n",
+        api.total,
+        kept,
+        api.endpoints.len(),
+        chans,
+        dropped
+    );
 
     if !api.hosts.is_empty() {
         let mut hosts: Vec<String> = api.hosts.iter().take(MAX_HOSTS).cloned().collect();
@@ -127,6 +195,18 @@ pub fn render(api: &Api, budget: usize) -> String {
     }
 
     let multi = api.hosts.len() > 1;
+    let mut shown_channels = 0;
+    for c in &api.channels {
+        let b = channel_block(c);
+        if shown_channels > 0 && out.chars().count() + b.chars().count() > budget / 2 {
+            break;
+        }
+        out.push_str(&b);
+        shown_channels += 1;
+    }
+    if shown_channels < api.channels.len() {
+        out.push_str(&format!("… {} more channels (--json for all)\n", api.channels.len() - shown_channels));
+    }
     let total = api.endpoints.len();
     let mut shown = 0;
     for (i, e) in api.endpoints.iter().enumerate() {

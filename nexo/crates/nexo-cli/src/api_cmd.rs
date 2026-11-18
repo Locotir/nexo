@@ -98,6 +98,10 @@ pub enum ApiCmd {
         /// Keep the last answer here between runs (secrets scrubbed before it is saved).
         #[arg(long, value_name = "FILE")]
         state: Option<PathBuf>,
+        /// Follow a live channel of the map (an event stream) for this long, like 60s, and say which message types
+        /// came and what differs from the map. The endpoint argument is then the channel's id.
+        #[arg(long = "for", value_name = "DURATION")]
+        follow: Option<String>,
     },
 }
 
@@ -106,7 +110,7 @@ pub enum ApiCmd {
 pub struct Target {
     /// The map file written by `nexo api analyze --save`.
     pub map: PathBuf,
-    /// An endpoint id, or "METHOD /path".
+    /// An endpoint id, or "METHOD /path" (for `watch --for`, a channel id).
     pub endpoint: String,
     /// A param: name=value (or name=@env:VAR to read it from the environment). Repeat for more.
     #[arg(short = 'p', long = "param", value_name = "NAME=VALUE")]
@@ -143,8 +147,8 @@ pub async fn run(a: &ApiArgs) -> i32 {
         ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json } => {
             crate::api_check::check(map, endpoints, params, auth, *allow_unsafe, *json).await
         }
-        ApiCmd::Watch { target, every, times, state } => {
-            crate::api_call::watch(target, every.as_deref(), *times, state.as_deref()).await
+        ApiCmd::Watch { target, every, times, state, follow } => {
+            crate::api_call::watch(target, every.as_deref(), *times, state.as_deref(), follow.as_deref()).await
         }
         ApiCmd::Analyze { har, host, openapi, json, budget, save } => {
             match analyze_text(har, host, openapi.as_deref(), *json, *budget, save.as_deref()) {
@@ -319,11 +323,25 @@ mod tests {
         ])
         .unwrap();
         match w.cmd {
-            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Watch { target, every, times, state } })) => {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Watch { target, every, times, state, .. } })) => {
                 assert_eq!(target.endpoint, "GET /api/items");
                 assert_eq!(every.as_deref(), Some("30s"));
                 assert_eq!(times, Some(3));
                 assert_eq!(state, Some(PathBuf::from("s.json")));
+            }
+            other => panic!("not parsed as nexo api watch: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_takes_for_to_follow_a_channel() {
+        let w =
+            crate::cli::Args::try_parse_from(["nexo", "api", "watch", "m.json", "sse_events", "--for", "60s"]).unwrap();
+        match w.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Watch { target, follow, every, .. } })) => {
+                assert_eq!(target.endpoint, "sse_events");
+                assert_eq!(follow.as_deref(), Some("60s"));
+                assert_eq!(every, None);
             }
             other => panic!("not parsed as nexo api watch: {other:?}"),
         }

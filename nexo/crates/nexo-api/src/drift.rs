@@ -7,6 +7,7 @@
 //! changed, a value that can be null now, a media type that changed are drift; an answer with a status the map never
 //! saw (a 401 where it saw 200, a 404, a redirect) is broken.
 
+use crate::channel::Channel;
 use crate::shape::Shape;
 use crate::spec::Endpoint;
 use serde_json::Value;
@@ -275,6 +276,84 @@ pub fn check(ep: &Endpoint, status: u16, content_type: &str, body: Option<&Value
     report
 }
 
+/// One difference between a recorded channel and a live one, or between two maps' channels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelFinding {
+    /// Drift (a channel, a message type or a field is gone, a type changed), as opposed to information (something new).
+    pub drift: bool,
+    pub text: String,
+}
+
+impl ChannelFinding {
+    fn new(drift: bool, text: String) -> ChannelFinding {
+        ChannelFinding { drift, text }
+    }
+}
+
+/// How many field-level findings of one message type are listed.
+const MAX_TYPE_FINDINGS: usize = 5;
+
+/// Sets the message types of a channel seen live (or in a newer capture) against the recorded ones: a type that is
+/// gone (`gone` is the word: `vanished`, `not seen`) is drift, a new one is information, and for a type both have the
+/// JSON shapes are compared like an endpoint's answer. `beat` also reports heartbeats that are gone.
+fn channel_findings(rec: &Channel, live: &Channel, gone: &str, beat: bool) -> Vec<ChannelFinding> {
+    let mut out = Vec::new();
+    for rt in &rec.types {
+        match live.type_named(&rt.name) {
+            None => out
+                .push(ChannelFinding::new(true, format!("message type {} {gone} (recorded x{})", rt.name, rt.total()))),
+            Some(lt) => {
+                if rt.shape.seen > 0 && lt.shape.seen > 0 {
+                    for f in compare(&rt.shape, &lt.shape).into_iter().take(MAX_TYPE_FINDINGS) {
+                        out.push(ChannelFinding::new(f.is_drift(), format!("{}: {}", rt.name, f.text())));
+                    }
+                }
+            }
+        }
+    }
+    for lt in &live.types {
+        if rec.type_named(&lt.name).is_none() {
+            out.push(ChannelFinding::new(false, format!("new message type {} (x{})", lt.name, lt.total())));
+        }
+    }
+    if beat && rec.beat.is_some() && live.beat.is_none() {
+        out.push(ChannelFinding::new(true, "heartbeat vanished".to_string()));
+    }
+    // drift first, each group in the order found
+    out.sort_by_key(|f| !f.drift);
+    out
+}
+
+/// A recorded channel against what the same channel does now (a live follow): the differences, drift first. A type
+/// the window did not show is reported as `not seen`, not as gone for good.
+pub fn channel(recorded: &Channel, live: &Channel) -> Vec<ChannelFinding> {
+    channel_findings(recorded, live, "not seen", false)
+}
+
+/// The channels of two maps (or two captures) against each other, matched by kind, host and path like endpoints: a
+/// channel that vanished is drift, a new one is information, and for both the message types are compared.
+pub fn channels(old: &[Channel], new: &[Channel]) -> Vec<ChannelFinding> {
+    let same = |a: &Channel, b: &Channel| a.kind == b.kind && a.origin == b.origin && a.path == b.path;
+    let mut out = Vec::new();
+    for o in old {
+        match new.iter().find(|n| same(o, n)) {
+            None => out.push(ChannelFinding::new(true, format!("channel {} vanished", o.id))),
+            Some(n) => {
+                for f in channel_findings(o, n, "vanished", true) {
+                    out.push(ChannelFinding::new(f.drift, format!("{}: {}", o.id, f.text)));
+                }
+            }
+        }
+    }
+    for n in new {
+        if !old.iter().any(|o| same(o, n)) {
+            out.push(ChannelFinding::new(false, format!("new channel {}", n.id)));
+        }
+    }
+    out.sort_by_key(|f| !f.drift);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +521,29 @@ mod tests {
         // json and a +json type are the same family
         let r = check(&e, 200, "application/vnd.api+json", Some(&json!({"a": 1})));
         assert_eq!(r.verdict, Verdict::Ok);
+    }
+
+    #[test]
+    fn a_vanished_message_type_or_channel_is_drift_and_a_new_one_is_information() {
+        use crate::channel::{self, Kind as ChKind};
+        let (all, live) = crate::har::read_all(&channel::tests::har()).unwrap();
+        let old = channel::build(&all, &live, &[]);
+        let mut new = old.clone();
+        let ws = new.iter_mut().find(|c| c.kind == ChKind::Ws).unwrap();
+        ws.types.retain(|t| t.name != "trade");
+        let mut extra = ws.types[0].clone();
+        extra.name = "orderbook".to_string();
+        ws.types.push(extra);
+        let found = channels(&old, &new);
+        assert!(found[0].drift && found[0].text.contains("message type trade vanished"), "{found:?}");
+        assert!(found.iter().any(|f| !f.drift && f.text.contains("new message type orderbook")), "{found:?}");
+        assert!(found.iter().all(|f| !f.text.contains("ticker")), "{found:?}");
+        // a whole channel gone
+        new.retain(|c| c.kind == ChKind::Ws);
+        let found = channels(&old, &new);
+        assert!(found.iter().any(|f| f.drift && f.text == "channel sse_api_stream vanished"), "{found:?}");
+        // the same difference seen in a live follow is only "not seen"
+        let live_only = channel(&old[0], &new[0]);
+        assert!(live_only.iter().any(|f| f.drift && f.text.contains("trade not seen")), "{live_only:?}");
     }
 }

@@ -1,12 +1,21 @@
 //! Reads a HAR 1.2 file (Chrome and Edge DevTools, Firefox, Playwright `recordHar`, mitmproxy exports) into
 //! [`Exchange`]s. Every entry goes through [`Raw::into_exchange`], so no secret value leaves this module.
 
-use crate::exchange::{Exchange, Raw};
+use crate::channel::{self, Kind, Live, Msg};
+use crate::exchange::{Exchange, Fp, Raw};
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// Reads the text of a HAR file. Entries keep their file order; an entry whose URL does not parse is skipped, and
 /// `seq` counts only the entries that were kept. A file without `log.entries` is an error.
 pub fn read(text: &str) -> Result<Vec<Exchange>, String> {
+    read_all(text).map(|(all, _)| all)
+}
+
+/// [`read`], and the live channels too: the frames a WebSocket entry holds (`_webSocketMessages`) and the events of
+/// a `text/event-stream` body, each with the index of its handshake in the exchanges. Frames are redacted like any
+/// body, against every secret the capture held (see [`channel::redact_text`]).
+pub fn read_all(text: &str) -> Result<(Vec<Exchange>, Vec<Live>), String> {
     let root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("not a HAR file: the text is not valid JSON ({e})"))?;
     let entries = root
@@ -15,14 +24,70 @@ pub fn read(text: &str) -> Result<Vec<Exchange>, String> {
         .and_then(Value::as_array)
         .ok_or_else(|| "not a HAR file: there is no log.entries list".to_string())?;
     let mut out = Vec::with_capacity(entries.len());
+    let mut pending: Vec<Live> = Vec::new();
     for entry in entries {
         if let Some(raw) = raw_of(entry) {
-            if let Some(x) = raw.into_exchange(out.len()) {
+            let live = live_of(entry, &raw);
+            let index = out.len();
+            if let Some(x) = raw.into_exchange(index) {
+                if let Some(mut l) = live {
+                    l.index = index;
+                    pending.push(l);
+                }
                 out.push(x);
             }
         }
     }
-    Ok(out)
+    let known: HashSet<Fp> = out.iter().flat_map(|x| x.sent.iter().chain(x.got.iter())).map(|s| s.fp).collect();
+    for l in pending.iter_mut() {
+        for m in l.msgs.iter_mut() {
+            m.text = channel::redact_text(&m.text, &known);
+        }
+    }
+    Ok((out, pending))
+}
+
+/// The frames or events of an entry that is a live channel, not yet redacted; `index` is filled in by the caller.
+fn live_of(entry: &Value, raw: &Raw) -> Option<Live> {
+    if let Some(frames) = entry.get("_webSocketMessages").and_then(Value::as_array) {
+        let mut msgs = Vec::new();
+        for f in frames.iter().take(channel::MAX_FRAMES) {
+            let opcode = f.get("opcode").and_then(Value::as_u64).and_then(|o| u8::try_from(o).ok()).unwrap_or(1);
+            let data = if opcode == 2 { "" } else { text_of(f, "data") };
+            msgs.push(Msg {
+                send: text_of(f, "type") == "send",
+                time: f.get("time").and_then(Value::as_f64),
+                opcode,
+                text: data.to_string(),
+                event: None,
+            });
+        }
+        let times: Vec<f64> = msgs.iter().filter_map(|m| m.time).collect();
+        let span = match (times.iter().copied().reduce(f64::min), times.iter().copied().reduce(f64::max)) {
+            (Some(a), Some(b)) if b > a => Some(b - a),
+            _ => None,
+        };
+        return Some(Live { kind: Kind::Ws, index: 0, span, msgs });
+    }
+    if raw.kind == "websocket" {
+        return Some(Live { kind: Kind::Ws, index: 0, span: None, msgs: Vec::new() });
+    }
+    let header_type = raw
+        .resp_headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.to_ascii_lowercase())
+        .unwrap_or_default();
+    let body_type = raw.resp_body.as_ref().map(|(m, _)| m.to_ascii_lowercase()).unwrap_or_default();
+    if header_type.starts_with("text/event-stream") || body_type.starts_with("text/event-stream") {
+        let msgs = match &raw.resp_body {
+            Some((_, text)) => channel::parse_sse(text),
+            None => Vec::new(),
+        };
+        let span = entry.get("time").and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| ms / 1000.0);
+        return Some(Live { kind: Kind::Sse, index: 0, span, msgs });
+    }
+    None
 }
 
 /// A string field, empty when missing.

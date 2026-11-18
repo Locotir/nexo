@@ -4,6 +4,7 @@
 //! were taken out when the capture was read, and opaque strings are never shown as examples.
 
 use crate::auth::{self, Auth};
+use crate::channel::Channel;
 use crate::exchange::{opaque, secret_name, Exchange};
 use crate::graphql::{self, Op};
 use crate::noise;
@@ -86,6 +87,8 @@ pub struct Api {
     pub total: usize,
     /// How many were dropped, by reason.
     pub dropped: IndexMap<&'static str, usize>,
+    /// The WebSocket and event-stream channels the capture held.
+    pub channels: Vec<Channel>,
 }
 
 /// The GraphQL calls by method, origin, path and operation: each call with its operation and how many its request had.
@@ -340,5 +343,5 @@ pub fn build(all: &[Exchange], o: &Options) -> Api {
         }
         endpoints.push(ep);
     }
-    Api { endpoints, auth: auths, hosts, total: all.len(), dropped }
+    Api { endpoints, auth: auths, hosts, total: all.len(), dropped, channels: Vec::new() }
 }

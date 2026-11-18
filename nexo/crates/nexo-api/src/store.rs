@@ -4,6 +4,7 @@
 //! `&'static str` fields that a derive could not read back, and the crate stays free of `serde`.
 
 use crate::auth::{Auth, Scheme};
+use crate::channel::{Beat, Channel, Kind, MsgType};
 use crate::paging::Paging;
 use crate::shape::{Fmt, Shape};
 use crate::spec::{Api, Endpoint, Param, Payload};
@@ -17,8 +18,18 @@ pub const VERSION: u64 = 1;
 const MAX_DEPTH: usize = 64;
 
 /// The reasons a call can be dropped (see `noise.rs`); a file with another one reads as `other`.
-const REASONS: [&str; 9] =
-    ["not http", "other host", "preflight", "tracker", "static file", "page", "no response", "redirect", "other"];
+const REASONS: [&str; 10] = [
+    "not http",
+    "other host",
+    "preflight",
+    "tracker",
+    "event stream",
+    "static file",
+    "page",
+    "no response",
+    "redirect",
+    "other",
+];
 /// The paging styles (see `paging.rs`).
 const STYLES: [&str; 5] = ["cursor", "next url", "page", "offset", "link header"];
 
@@ -54,7 +65,7 @@ fn fmt_of(name: &str) -> Fmt {
     }
 }
 
-fn shape_json(s: &Shape) -> Value {
+pub(crate) fn shape_json(s: &Shape) -> Value {
     let mut m = Map::new();
     put(&mut m, "seen", s.seen);
     put(&mut m, "nulls", s.nulls);
@@ -114,7 +125,7 @@ fn object<'a>(v: &'a Value, what: &str) -> Result<&'a Map<String, Value>, String
     v.as_object().ok_or_else(|| format!("{what} is not an object"))
 }
 
-fn shape_of(v: &Value, depth: usize) -> Result<Shape, String> {
+pub(crate) fn shape_of(v: &Value, depth: usize) -> Result<Shape, String> {
     if depth > MAX_DEPTH {
         return Err("a shape nests too deep".to_string());
     }
@@ -297,6 +308,94 @@ fn endpoint_of(v: &Value, auths: usize) -> Result<Endpoint, String> {
     })
 }
 
+fn channel_json(c: &Channel) -> Value {
+    let mut m = Map::new();
+    m.insert("id".to_string(), json!(c.id));
+    m.insert("kind".to_string(), json!(c.kind.name()));
+    m.insert("origin".to_string(), json!(c.origin));
+    m.insert("path".to_string(), json!(c.path));
+    m.insert("connections".to_string(), json!(c.connections));
+    m.insert("auth".to_string(), json!(c.auth));
+    if let Some(f) = &c.field {
+        m.insert("field".to_string(), json!(f));
+    }
+    m.insert("messages".to_string(), json!(c.messages));
+    if let Some(s) = c.span {
+        m.insert("span".to_string(), json!(s));
+    }
+    let types: Vec<Value> = c
+        .types
+        .iter()
+        .map(|t| {
+            let mut o = Map::new();
+            o.insert("name".to_string(), json!(t.name));
+            put(&mut o, "sent", t.sent);
+            put(&mut o, "got", t.got);
+            if t.binary {
+                o.insert("binary".to_string(), json!(true));
+            }
+            o.insert("shape".to_string(), shape_json(&t.shape));
+            Value::Object(o)
+        })
+        .collect();
+    m.insert("types".to_string(), Value::Array(types));
+    if let Some(b) = &c.beat {
+        m.insert("beat".to_string(), json!({ "name": b.name, "sent": b.sent, "got": b.got }));
+    }
+    if !c.subscribe.is_empty() {
+        m.insert("subscribe".to_string(), json!(c.subscribe));
+    }
+    Value::Object(m)
+}
+
+fn channel_of(v: &Value, auths: usize) -> Result<Channel, String> {
+    let m = object(v, "a channel")?;
+    let id = text(m, "id")?;
+    let ctx = |e: String| format!("channel {id}: {e}");
+    let kind = text(m, "kind").map_err(ctx)?;
+    let kind = Kind::of(&kind).ok_or_else(|| ctx(format!("unknown kind \"{kind}\"")))?;
+    let mut types = Vec::new();
+    for t in m.get("types").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        let t = object(t, "a message type").map_err(ctx)?;
+        let shape = match t.get("shape") {
+            Some(s) => shape_of(s, 0).map_err(ctx)?,
+            None => Shape::default(),
+        };
+        types.push(MsgType {
+            name: text(t, "name").map_err(ctx)?,
+            sent: count(t, "sent"),
+            got: count(t, "got"),
+            shape,
+            binary: t.get("binary").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    let mut auth = Vec::new();
+    if let Some(a) = m.get("auth").and_then(Value::as_array) {
+        for i in a {
+            let i = i.as_u64().map(|n| n as usize).filter(|n| *n < auths);
+            auth.push(i.ok_or_else(|| ctx("an auth index is out of range".to_string()))?);
+        }
+    }
+    let beat = match m.get("beat").and_then(Value::as_object) {
+        Some(b) => Some(Beat { name: text(b, "name").map_err(ctx)?, sent: count(b, "sent"), got: count(b, "got") }),
+        None => None,
+    };
+    Ok(Channel {
+        kind,
+        origin: text(m, "origin").map_err(ctx)?,
+        path: text(m, "path").map_err(ctx)?,
+        connections: count(m, "connections"),
+        auth,
+        field: opt_text(m, "field"),
+        messages: count(m, "messages"),
+        span: m.get("span").and_then(Value::as_f64),
+        types,
+        beat,
+        subscribe: texts(m, "subscribe"),
+        id,
+    })
+}
+
 /// The map as JSON.
 pub fn to_json(api: &Api) -> Value {
     let auth: Vec<Value> = api
@@ -313,14 +412,20 @@ pub fn to_json(api: &Api) -> Value {
         })
         .collect();
     let dropped: Map<String, Value> = api.dropped.iter().map(|(k, n)| (k.to_string(), json!(n))).collect();
-    json!({
+    let mut doc = json!({
         "nexo_api_map": VERSION,
         "hosts": api.hosts,
         "total": api.total,
         "dropped": dropped,
         "auth": auth,
         "endpoints": api.endpoints.iter().map(endpoint_json).collect::<Vec<_>>(),
-    })
+    });
+    if !api.channels.is_empty() {
+        if let Some(o) = doc.as_object_mut() {
+            o.insert("channels".to_string(), Value::Array(api.channels.iter().map(channel_json).collect()));
+        }
+    }
+    doc
 }
 
 /// Reads a map back. Every error says what was wrong; a file that is not a map is refused.
@@ -344,6 +449,10 @@ pub fn from_json(v: &Value) -> Result<Api, String> {
     for e in m.get("endpoints").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         endpoints.push(endpoint_of(e, auth.len())?);
     }
+    let mut channels = Vec::new();
+    for c in m.get("channels").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        channels.push(channel_of(c, auth.len())?);
+    }
     let mut dropped: IndexMap<&'static str, usize> = IndexMap::new();
     if let Some(d) = m.get("dropped").and_then(Value::as_object) {
         for (k, n) in d {
@@ -351,7 +460,7 @@ pub fn from_json(v: &Value) -> Result<Api, String> {
             *dropped.entry(reason).or_insert(0) += n.as_u64().map(|n| n as usize).unwrap_or(0);
         }
     }
-    Ok(Api { endpoints, auth, hosts: texts(m, "hosts"), total: count(m, "total"), dropped })
+    Ok(Api { endpoints, auth, hosts: texts(m, "hosts"), total: count(m, "total"), dropped, channels })
 }
 
 /// The map as text, ready to write.

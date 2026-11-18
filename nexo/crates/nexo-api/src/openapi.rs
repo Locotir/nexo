@@ -3,6 +3,7 @@
 //! share one URL, so they cannot be paths). Everything comes from shapes and names; no secret value is in it.
 
 use crate::auth::{Auth, Scheme};
+use crate::channel::Channel;
 use crate::exchange::clean_url;
 use crate::shape::Shape;
 use crate::spec::{Api, Endpoint, Payload};
@@ -141,6 +142,53 @@ fn operation(e: &Endpoint, multi: bool) -> Value {
     Value::Object(op)
 }
 
+/// One live channel for `x-nexo-channels`: where it is, how to start it, and each message type as a JSON Schema.
+fn channel_json(c: &Channel) -> Value {
+    let mut m = Map::new();
+    m.insert("id".into(), json!(c.id));
+    m.insert("kind".into(), json!(c.kind.name()));
+    m.insert("url".into(), json!(format!("{}{}", c.origin, c.path)));
+    m.insert("connections".into(), json!(c.connections));
+    m.insert("messages".into(), json!(c.messages));
+    if let Some(f) = &c.field {
+        m.insert("discriminator".into(), json!(f));
+    }
+    if !c.auth.is_empty() {
+        let refs: Vec<String> = c.auth.iter().map(|i| format!("a{}", i + 1)).collect();
+        m.insert("security".into(), json!(refs));
+    }
+    if !c.subscribe.is_empty() {
+        m.insert("subscribe".into(), json!(c.subscribe));
+    }
+    if let Some(b) = &c.beat {
+        m.insert("heartbeat".into(), json!({ "name": b.name, "sent": b.sent, "got": b.got }));
+    }
+    let types: Vec<Value> = c
+        .types
+        .iter()
+        .map(|t| {
+            let dir = match (t.sent > 0, t.got > 0) {
+                (true, true) => "both",
+                (true, false) => "send",
+                _ => "receive",
+            };
+            let mut o = Map::new();
+            o.insert("name".into(), json!(t.name));
+            o.insert("direction".into(), json!(dir));
+            o.insert("count".into(), json!(t.total()));
+            if let Some(r) = c.per_min(t.total()) {
+                o.insert("per_minute".into(), json!((r * 10.0).round() / 10.0));
+            }
+            if t.shape.seen > 0 {
+                o.insert("schema".into(), schema(&t.shape));
+            }
+            Value::Object(o)
+        })
+        .collect();
+    m.insert("messages_by_type".into(), Value::Array(types));
+    Value::Object(m)
+}
+
 /// OpenAPI 3.1 for what the traffic showed. `title` names the API.
 pub fn to_openapi(api: &Api, title: &str) -> Value {
     let mut root = Map::new();
@@ -194,6 +242,9 @@ pub fn to_openapi(api: &Api, title: &str) -> Value {
     }
     if !graphql.is_empty() {
         root.insert("x-nexo-graphql".into(), Value::Array(graphql));
+    }
+    if !api.channels.is_empty() {
+        root.insert("x-nexo-channels".into(), Value::Array(api.channels.iter().map(channel_json).collect()));
     }
     if !more.is_empty() {
         root.insert("x-nexo-more-operations".into(), Value::Array(more));

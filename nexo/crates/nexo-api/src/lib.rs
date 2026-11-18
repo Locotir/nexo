@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod call;
+pub mod channel;
 pub mod diff;
 pub mod drift;
 pub mod exchange;
@@ -20,10 +21,20 @@ pub mod store;
 pub mod summary;
 pub mod template;
 
-/// Reads the text of a HAR file and works out the API behind it: [`har::read`] and then [`spec::build`].
+/// Reads the text of a HAR file and works out the API behind it: [`har::read_all`], then [`spec::build`] for the
+/// endpoints and [`channel::build`] for the WebSocket and event-stream channels.
 pub fn analyze_har(text: &str, o: &spec::Options) -> Result<spec::Api, String> {
-    let all = har::read(text)?;
-    Ok(spec::build(&all, o))
+    let (all, live) = har::read_all(text)?;
+    let mut api = spec::build(&all, o);
+    api.channels = channel::build(&all, &live, &api.auth);
+    if !o.hosts.is_empty() {
+        let hosts = &o.hosts;
+        api.channels.retain(|c| {
+            let host = c.origin.split("://").nth(1).unwrap_or("").split(':').next().unwrap_or("").to_ascii_lowercase();
+            hosts.iter().any(|h| noise::under(&host, &h.trim().to_ascii_lowercase()))
+        });
+    }
+    Ok(api)
 }
 
 #[cfg(test)]
@@ -282,5 +293,79 @@ mod tests {
                 assert!(!out.contains(secret), "{secret} leaked in {out}");
             }
         }
+    }
+
+    fn live_api() -> spec::Api {
+        analyze_har(&channel::tests::har(), &spec::Options::default()).unwrap()
+    }
+
+    #[test]
+    fn channels_sit_next_to_endpoints_and_the_event_stream_is_not_an_endpoint() {
+        let api = live_api();
+        assert_eq!(api.endpoints.len(), 1, "{:?}", api.endpoints.iter().map(|e| &e.id).collect::<Vec<_>>());
+        assert_eq!(api.channels.len(), 2);
+        assert_eq!(api.dropped.get("event stream"), Some(&1));
+        let back = store::from_text(&store::to_text(&api)).unwrap();
+        assert_eq!(back.channels.len(), 2);
+        let (a, b) = (&api.channels[0], &back.channels[0]);
+        assert_eq!((&a.id, a.kind, &a.origin, &a.path, &a.field), (&b.id, b.kind, &b.origin, &b.path, &b.field));
+        assert_eq!(a.types.len(), b.types.len());
+        assert_eq!(a.types[0].shape, b.types[0].shape);
+        assert_eq!(a.beat, b.beat);
+        assert_eq!(a.subscribe, b.subscribe);
+        assert_eq!(a.span, b.span);
+        let saved = store::to_text(&api);
+        assert!(!saved.contains(channel::tests::WS_TOKEN) && !saved.contains("QUERYTOKEN"), "{saved}");
+    }
+
+    #[test]
+    fn the_summary_has_one_line_per_channel_and_one_short_line_per_type() {
+        let api = live_api();
+        let s = summary::render(&api, 3000);
+        assert!(s.contains("2 channels"), "{s}");
+        assert!(s.contains("[ws_socket] WS app.test/socket, 14 messages, by \"type\""), "{s}");
+        assert!(s.contains("subscribe: {\"type\":\"subscribe\""), "{s}");
+        assert!(s.contains("<- ticker x6"), "{s}");
+        assert!(s.contains("-> subscribe x1"), "{s}");
+        assert!(s.contains("heartbeat: ping/pong x12"), "{s}");
+        assert!(s.contains("[sse_api_stream] SSE app.test/api/stream, 3 messages"), "{s}");
+        assert!(s.contains("<- tick x2"), "{s}");
+        assert!(s.contains("heartbeat: comment x1"), "{s}");
+        assert!(!s.contains(channel::tests::WS_TOKEN), "{s}");
+        // channels never push the summary over its budget
+        let tight = summary::render(&api, 500);
+        assert!(tight.chars().count() <= 500 + 120, "{tight}");
+    }
+
+    #[test]
+    fn many_message_types_are_capped_in_the_summary() {
+        let mut api = live_api();
+        let proto = api.channels[0].types[0].clone();
+        for i in 0..10 {
+            let mut t = proto.clone();
+            t.name = format!("extra{i}");
+            api.channels[0].types.push(t);
+        }
+        let s = summary::render(&api, 6000);
+        assert!(s.contains("more types"), "{s}");
+        assert!(s.lines().filter(|l| l.starts_with("  <-") || l.starts_with("  ->")).count() <= 12, "{s}");
+    }
+
+    #[test]
+    fn openapi_lists_the_channels_under_x_nexo_channels() {
+        let oa = openapi::to_openapi(&live_api(), "app.test API");
+        let ch = oa["x-nexo-channels"].as_array().expect("channels");
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0]["kind"], "ws");
+        assert_eq!(ch[0]["url"], "wss://app.test/socket");
+        assert_eq!(ch[0]["discriminator"], "type");
+        assert_eq!(ch[0]["heartbeat"]["name"], "ping/pong");
+        let types = ch[0]["messages_by_type"].as_array().unwrap();
+        let ticker = types.iter().find(|t| t["name"] == "ticker").unwrap();
+        assert_eq!(ticker["direction"], "receive");
+        assert!(ticker["schema"]["properties"]["price"].is_object(), "{ticker}");
+        assert_eq!(ch[1]["kind"], "sse");
+        let text = oa.to_string();
+        assert!(!text.contains(channel::tests::WS_TOKEN), "token leaked");
     }
 }
