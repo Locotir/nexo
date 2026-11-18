@@ -85,6 +85,9 @@ pub(crate) fn vet(cmd: &ApiCmd) -> Result<(), String> {
         ApiCmd::Watch { .. } => Err(
             "watch runs until it is stopped, so the person runs it: `nexo api watch MAP ENDPOINT --every 5m`".into(),
         ),
+        ApiCmd::Check { .. } => Err(
+            "check calls many endpoints of a map in one go, so the person runs it: `nexo api check MAP`".into(),
+        ),
         ApiCmd::Call { reveal: true, .. } => Err(
             "--reveal prints the raw answer with its secrets, and the model never sees those; the person can run `nexo api call --reveal`"
                 .into(),
@@ -201,7 +204,7 @@ pub(crate) fn kind_in(cmd: &ApiCmd, base: &Path) -> ToolKind {
                 _ => ToolKind::Exec,
             }
         }
-        ApiCmd::Watch { .. } => ToolKind::Exec,
+        ApiCmd::Watch { .. } | ApiCmd::Check { .. } => ToolKind::Exec,
     }
 }
 
@@ -406,6 +409,8 @@ async fn run_cmd(cmd: &mut ApiCmd, ctx: &ToolContext) -> Result<String, String> 
             }
         }
         // `vet` refused it before
-        ApiCmd::Watch { .. } => Err("api: watch is not offered to the model".to_string()),
+        ApiCmd::Watch { .. } | ApiCmd::Check { .. } => {
+            Err("api: watch and check are not offered to the model".to_string())
+        }
     }
 }

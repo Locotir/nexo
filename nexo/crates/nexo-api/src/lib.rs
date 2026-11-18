@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod call;
 pub mod diff;
+pub mod drift;
 pub mod exchange;
 pub mod graphql;
 pub mod har;
