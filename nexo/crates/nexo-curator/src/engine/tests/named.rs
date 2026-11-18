@@ -96,7 +96,9 @@ fn mission_a_read_of_a_file_the_first_message_lists_stays_until_a_request_takes_
 
 /// A file named by the request, read as 10 pages; how many of the pages' first lines the view holds.
 fn pages_kept(budget: i64) -> usize {
-    let page = |k: usize| listing(200 * k, 200 * k + 199);
+    // the slot numbers of the later pages repeat the addresses of the first ones, so each page ends in a word of
+    // its own: a page whose words all sit in newer ones is a copy of them, which `named` rightly leaves out
+    let page = |k: usize| format!("{}\nmark_{}_{}", listing(200 * k, 200 * k + 199), word(5000 + k), word(6000 + k));
     let mut msgs =
         vec![json!({"role": "user", "content": "Which client has the largest invoice total in report.txt?"})];
     for k in 0..10 {
@@ -105,7 +107,7 @@ fn pages_kept(budget: i64) -> usize {
     }
     msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
     msgs.push(json!({"role": "user", "content": "Now sort report.txt by date, please."}));
-    let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=64000").unwrap());
+    let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;target=0;named=64000").unwrap());
     if budget > 0 {
         e.set_budget(budget);
     }
