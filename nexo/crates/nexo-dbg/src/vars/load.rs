@@ -20,7 +20,14 @@ impl Vars {
             Ok(EndianSlice::new(get(id.name()), LittleEndian))
         };
         let dwarf = gimli::Dwarf::load(load).ok()?;
-        let mut out = Vars { funcs: Vec::new(), globals: Vec::new(), types: HashMap::new(), files: Vec::new(), ptr: 8 };
+        let mut out = Vars {
+            funcs: Vec::new(),
+            globals: Vec::new(),
+            types: HashMap::new(),
+            files: Vec::new(),
+            ptr: 8,
+            shapes: Default::default(),
+        };
         let mut units = dwarf.units();
         while let Ok(Some(header)) = units.next() {
             let Ok(unit) = dwarf.unit(header) else { continue };
@@ -200,10 +207,61 @@ impl Vars {
                         None => 0,
                     };
                     let m = (name(e), at, type_of(e));
-                    if let Some((_, Ctx::Type(r))) = stack.last() {
-                        if let Some(Ty::Record { members, .. }) = self.types.get_mut(r) {
-                            members.push(m);
+                    match stack.last() {
+                        Some((_, Ctx::Type(r))) => {
+                            if let Some(Ty::Record { members, .. }) = self.types.get_mut(r) {
+                                members.push(m);
+                            }
                         }
+                        // the first member of a variant part is its discriminant
+                        Some((_, Ctx::Part(r))) => {
+                            if let Some(p) = self.shapes.variants.get_mut(r) {
+                                if p.discr.is_none() {
+                                    p.discr = Some((m.1, m.2));
+                                }
+                            }
+                        }
+                        // the member of a variant names it and gives its payload type
+                        Some((_, Ctx::Variant(r))) => {
+                            if let Some(vr) = self.shapes.variants.get_mut(r).and_then(|p| p.variants.last_mut()) {
+                                vr.name = m.0;
+                                vr.off = m.1;
+                                vr.ty = m.2;
+                            }
+                        }
+                        _ => {}
+                    }
+                    Ctx::Other
+                }
+                gimli::DW_TAG_variant_part => match stack.last() {
+                    Some((_, Ctx::Type(r))) => {
+                        self.shapes.variants.insert(*r, views::VariantPart::default());
+                        Ctx::Part(*r)
+                    }
+                    _ => Ctx::Skip,
+                },
+                gimli::DW_TAG_variant => match stack.last() {
+                    Some((_, Ctx::Part(r))) => {
+                        let discr = e
+                            .attr_value(gimli::DW_AT_discr_value)
+                            .and_then(|v| v.udata_value().or_else(|| v.sdata_value().map(|s| s as u64)));
+                        if let Some(p) = self.shapes.variants.get_mut(r) {
+                            p.variants.push(views::Variant { discr, ..Default::default() });
+                        }
+                        Ctx::Variant(*r)
+                    }
+                    _ => Ctx::Skip,
+                },
+                gimli::DW_TAG_inheritance => {
+                    let at = e.attr_value(gimli::DW_AT_data_member_location).and_then(|v| v.udata_value()).unwrap_or(0);
+                    if let Some((_, Ctx::Type(r))) = stack.last() {
+                        self.shapes.bases.entry(*r).or_default().push((at, type_of(e)));
+                    }
+                    Ctx::Other
+                }
+                gimli::DW_TAG_template_type_parameter => {
+                    if let Some((_, Ctx::Type(r))) = stack.last() {
+                        self.shapes.tparams.entry(*r).or_default().push((name(e), type_of(e)));
                     }
                     Ctx::Other
                 }

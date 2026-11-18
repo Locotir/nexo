@@ -171,8 +171,14 @@ mod tests {
             prototyped: true,
             ret,
         };
-        let v =
-            Vars { funcs: vec![f], globals: Vec::new(), types: types.into_iter().collect(), files: Vec::new(), ptr: 8 };
+        let v = Vars {
+            funcs: vec![f],
+            globals: Vec::new(),
+            types: types.into_iter().collect(),
+            files: Vec::new(),
+            ptr: 8,
+            shapes: Default::default(),
+        };
         let mut rd = |_: u64, _: usize| None;
         let gp: [u64; 16] = std::array::from_fn(|i| 0x10 * i as u64);
         let mut regs =

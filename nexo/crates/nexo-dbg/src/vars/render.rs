@@ -32,8 +32,13 @@ impl Vars {
         s
     }
 
-    fn render_inner(&self, v: &Val, regs: &mut Regs, depth: usize) -> String {
+    pub(super) fn render_inner(&self, v: &Val, regs: &mut Regs, depth: usize) -> String {
         let Some(ty) = self.strip(v.ty.0) else { return "?".into() };
+        if v.ty.1 == 0 {
+            if let Some(s) = self.view(v, regs, depth) {
+                return s;
+            }
+        }
         if let Ty::Array { elem, dims } = ty {
             let dims = &dims[v.ty.1.min(dims.len())..];
             let count = dims.first().copied().flatten();

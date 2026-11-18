@@ -9,14 +9,16 @@ const THREADS_BT_MAX: usize = 50;
 impl Session {
     pub(super) fn cmd_print(&mut self, a: &Args) -> Result<Output> {
         if a.pos.is_empty() {
-            return usage("print <expression> [--as str|string|vector[:u8|u32|u64|ptr]|<type>]");
+            return usage("print <expression> [--as raw|str|string|vector[:u8|u32|u64|ptr]|<type>]");
         }
         self.need_stopped()?;
         let src = a.pos.join(" ");
-        let view = a.flag("as");
+        // `--as raw` prints a variable as its raw layout, without the container views
+        let raw = a.flag("as") == Some("raw");
+        let view = a.flag("as").filter(|k| *k != "raw");
         let calls = crate::expr::has_call(&src);
         if view.is_none() && !calls {
-            if let Some(r) = self.print_var(&src) {
+            if let Some(r) = self.print_var(&src, raw) {
                 return r;
             }
         }
