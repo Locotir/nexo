@@ -123,6 +123,8 @@ const CONTROL: &[&str] = &[
     "stdin",
     "catch",
     "watch",
+    "rwatch",
+    "awatch",
     "core",
     "strace",
     "ltrace",
@@ -370,7 +372,9 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
             "attach" | "connect" => format!("`{name}` attaches to a process or a remote stub"),
             "run" => "`run` starts a program".to_string(),
             "serve" | "__serve" => format!("`{name}` opens a port or an internal server"),
-            "stdin" | "watch" | "calls" | "core" | "end" => format!("`{name}` changes the session or the program"),
+            "stdin" | "watch" | "rwatch" | "awatch" | "calls" | "core" | "end" => {
+                format!("`{name}` changes the session or the program")
+            }
             other => {
                 format!("`{other}` is not a command this server may run without permission (unknown or not read-only)")
             }

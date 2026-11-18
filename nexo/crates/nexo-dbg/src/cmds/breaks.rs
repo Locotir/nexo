@@ -359,6 +359,9 @@ impl Session {
             if let Some(t) = &w.log {
                 s.push_str(&format!(" log {t:?}"));
             }
+            if let Some(sc) = &w.scope {
+                s.push_str(&format!(" until {} returns (`{}`)", sc.func, sc.what));
+            }
             l.push(s);
         }
         if l.is_empty() {

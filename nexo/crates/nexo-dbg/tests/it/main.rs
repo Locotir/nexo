@@ -37,4 +37,5 @@ mod source_level;
 mod stdin_bytes;
 mod unassigned_locals;
 mod watch_any;
+mod watch_scope;
 mod x86_32;

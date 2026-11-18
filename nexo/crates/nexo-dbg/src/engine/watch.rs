@@ -58,6 +58,21 @@ pub fn hw_pieces(addr: u64, len: u64, max: usize) -> Option<Vec<(u64, u8)>> {
     Some(v)
 }
 
+/// How far below a frame's CFA a local can sit: a place that deep in the stack belongs to the frame. The stack is
+/// far from the heap and the libraries, so a place this close under it is a local of some frame and not data.
+const FRAME_SPAN: u64 = 32 << 20;
+
+/// The frame whose CFA is `cfa` has returned: the stack pointer is back at its CFA or above. A deeper call of the
+/// same function (recursion) returns to the same address with the stack pointer below.
+pub fn frame_gone(sp: u64, cfa: u64) -> bool {
+    sp >= cfa
+}
+
+/// `addr` is a place on the stack of the frame with this CFA (below it, within [`FRAME_SPAN`]).
+pub fn in_frame(addr: u64, cfa: u64) -> bool {
+    addr < cfa && cfa - addr <= FRAME_SPAN
+}
+
 /// The value of up to 8 little-endian bytes.
 fn le(b: &[u8]) -> u64 {
     let mut x = [0u8; 8];
@@ -301,6 +316,32 @@ impl Session {
         stops
     }
 
+    /// A thread is at `addr`, where a watch on a local waits for its function to return: when that frame is gone
+    /// the watch is deleted (its stack slot is somebody else's data from now on) and the stop says so.
+    pub(crate) fn scope_ended(&mut self, tid: Tid, addr: u64) -> Result<Option<Why>> {
+        let at_ret = |w: &Wp| w.scope.as_ref().is_some_and(|s| s.ret == addr && s.tid == tid);
+        if !self.wps.iter().any(at_ret) {
+            return Ok(None);
+        }
+        let sp = self.t.regs(tid)?.rsp();
+        let mut gone = Vec::new();
+        for w in &self.wps {
+            if let Some(s) = w.scope.as_ref().filter(|s| s.ret == addr && s.tid == tid && frame_gone(sp, s.cfa)) {
+                gone.push((w.id, s.what.clone(), s.func.clone()));
+            }
+        }
+        if gone.is_empty() {
+            return Ok(None);
+        }
+        for (id, what, func) in &gone {
+            self.wps.retain(|w| w.id != *id);
+            self.watch_lines
+                .push(format!("watch #{id} deleted: `{what}` went out of scope (frame of {func} returned)"));
+        }
+        self.apply_watches()?;
+        Ok(Some(Why::Watch(gone.into_iter().map(|g| g.0).collect())))
+    }
+
     /// The watch side of a batch of events: debug register hits, faults in guarded pages and the steps of a step
     /// watch. Returns the stop they make, if any, and the threads whose fault they took.
     pub(crate) fn watch_events(&mut self, evs: Vec<(Tid, Stop)>) -> Result<Option<(Tid, Why)>> {
@@ -423,5 +464,32 @@ impl Session {
         let writer = ins.as_ref().map(|i| self.ins_at(pc, i));
         stops.extend(self.watch_round(tid, &ids, writer, &touched));
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_is_gone_when_the_stack_pointer_is_back_at_its_cfa_and_a_deeper_call_is_not() {
+        let cfa = 0x7fff_0000_1000;
+        // the function returned: sp is the CFA (the value before the call pushed the return address)
+        assert!(frame_gone(cfa, cfa));
+        assert!(frame_gone(cfa + 0x40, cfa));
+        // a recursive call returning to the same address has its own, lower CFA
+        assert!(!frame_gone(cfa - 0x40, cfa));
+        assert!(!frame_gone(cfa - 8, cfa));
+    }
+
+    #[test]
+    fn a_place_just_under_the_cfa_is_the_frames_and_the_heap_or_a_global_is_not() {
+        let cfa = 0x7fff_0000_1000;
+        assert!(in_frame(cfa - 20, cfa));
+        assert!(in_frame(cfa - 0x10_0000, cfa));
+        assert!(!in_frame(cfa, cfa));
+        assert!(!in_frame(cfa + 8, cfa));
+        assert!(!in_frame(0x5555_5555_8010, cfa));
+        assert!(!in_frame(0x7f00_0000_0000, cfa));
     }
 }
