@@ -21,15 +21,15 @@ use crate::page::{cut, Output, Row};
 use crate::place::addr_in;
 use crate::{Error, Image, Result};
 
-const SP: u8 = 31;
-const FP: u8 = 29;
-const LR: u8 = 30;
+pub(super) const SP: u8 = 31;
+pub(super) const FP: u8 = 29;
+pub(super) const LR: u8 = 30;
 /// x0..x7 carry the first eight integer arguments.
-const ARG_REGS: u8 = 8;
+pub(super) const ARG_REGS: u8 = 8;
 
 /// A place a value lives.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Loc {
+pub(super) enum Loc {
     /// x0..x30.
     Reg(u8),
     /// `[base + disp]` with base sp (31) or x29, `size` bytes.
@@ -45,7 +45,7 @@ struct Want {
     need: u64,
 }
 
-fn overlaps(a: &Loc, b: &Loc) -> bool {
+pub(super) fn overlaps(a: &Loc, b: &Loc) -> bool {
     match (a, b) {
         (Loc::Reg(x), Loc::Reg(y)) => x == y,
         (Loc::Slot(b1, d1, s1), Loc::Slot(b2, d2, s2)) => {
@@ -57,7 +57,7 @@ fn overlaps(a: &Loc, b: &Loc) -> bool {
 }
 
 /// Whether a write of `store` replaces everything `held` stands for.
-fn covers(store: &Loc, held: &Loc) -> bool {
+pub(super) fn covers(store: &Loc, held: &Loc) -> bool {
     match (store, held) {
         (Loc::Slot(b1, d1, s1), Loc::Slot(b2, d2, s2)) => {
             b1 == b2 && *d1 <= *d2 && *d2 + i64::from(*s2) <= *d1 + i64::from(*s1)
@@ -67,7 +67,7 @@ fn covers(store: &Loc, held: &Loc) -> bool {
     }
 }
 
-fn reg_name(n: u8) -> String {
+pub(super) fn reg_name(n: u8) -> String {
     format!("x{n}")
 }
 
@@ -79,7 +79,7 @@ fn base_name(b: u8) -> &'static str {
     }
 }
 
-fn loc_text(img: &Image, l: &Loc) -> String {
+pub(super) fn loc_text(img: &Image, l: &Loc) -> String {
     match l {
         Loc::Reg(n) => reg_name(*n),
         Loc::Slot(b, d, _) => {
@@ -99,7 +99,7 @@ fn loc_text(img: &Image, l: &Loc) -> String {
 }
 
 /// `x0`..`x30`, `w0`..`w30`, `fp`, `lr`.
-fn parse_reg(s: &str) -> Result<u8> {
+pub(super) fn parse_reg(s: &str) -> Result<u8> {
     let t = s.trim().to_ascii_lowercase();
     match t.as_str() {
         "sp" | "wsp" => {
@@ -121,7 +121,7 @@ fn parse_reg(s: &str) -> Result<u8> {
 }
 
 /// `sp+0x10`, `x29-0x20`, `[sp, #16]`.
-fn parse_mem(s: &str) -> Result<Loc> {
+pub(super) fn parse_mem(s: &str) -> Result<Loc> {
     let t = s.trim().trim_start_matches('[').trim_end_matches(']').replace([' ', '#'], "");
     let bad = || Error::Bad(format!("{s:?} is not a stack slot; write sp+0x10 or x29-0x20"));
     let (name, off) = match t.find(['+', '-']) {
@@ -141,7 +141,7 @@ fn parse_mem(s: &str) -> Result<Loc> {
 
 /// How an instruction moves sp.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-enum Sp {
+pub(super) enum Sp {
     #[default]
     Same,
     /// sp_after = sp_before + n.
@@ -150,20 +150,20 @@ enum Sp {
 }
 
 /// One memory access of an instruction with a base register.
-struct Mref {
-    base: u8,
+pub(super) struct Mref {
+    pub(super) base: u8,
     /// Offset from the base as sp stood before the instruction, and after its write-back.
-    before: Option<i64>,
-    after: Option<i64>,
+    pub(super) before: Option<i64>,
+    pub(super) after: Option<i64>,
     /// 0 when the extent is not known (a vector structure access).
-    size: u32,
+    pub(super) size: u32,
     /// The address when an `adrp` pair or a literal gives it.
-    via: Option<u64>,
-    store: bool,
+    pub(super) via: Option<u64>,
+    pub(super) store: bool,
 }
 
 /// Where an access lands: a global, or a slot of sp or x29. `after` picks the offset as sp stands after the instruction.
-fn resolve(m: &Mref, after: bool) -> Option<Loc> {
+pub(super) fn resolve(m: &Mref, after: bool) -> Option<Loc> {
     if let Some(a) = m.via {
         return Some(Loc::Global(a, m.size.max(1)));
     }
@@ -177,20 +177,20 @@ fn resolve(m: &Mref, after: bool) -> Option<Loc> {
 }
 
 #[derive(Default)]
-struct Fx {
+pub(super) struct Fx {
     /// x registers read (x29 left out: it is a base, like rbp on x86).
-    reads: Vec<u8>,
+    pub(super) reads: Vec<u8>,
     /// x registers replaced.
-    defs: Vec<u8>,
+    pub(super) defs: Vec<u8>,
     /// x registers changed from their old value (`movk`, a written-back base).
-    rmw: Vec<u8>,
-    refs: Vec<Mref>,
-    sp: Sp,
+    pub(super) rmw: Vec<u8>,
+    pub(super) refs: Vec<Mref>,
+    pub(super) sp: Sp,
     /// Why the instruction cannot be followed at all.
-    opaque: Option<String>,
-    zeroing: bool,
+    pub(super) opaque: Option<String>,
+    pub(super) zeroing: bool,
     /// An address made from `adrp`, `adr` or an `add` on an `adrp` result.
-    addr: Option<u64>,
+    pub(super) addr: Option<u64>,
 }
 
 fn is_pair(mn: &str) -> bool {
@@ -287,7 +287,7 @@ fn mem_effects(fx: &mut Fx, ins: &Ins, mn: &str, m: Mem, via: Option<Via>) {
 }
 
 /// What one instruction reads, replaces and touches in memory.
-fn effects(ins: &Ins, via: Option<Via>) -> Fx {
+pub(super) fn effects(ins: &Ins, via: Option<Via>) -> Fx {
     let mut fx = Fx::default();
     if !ins.is_decoded() {
         fx.opaque = Some("a word the decoder does not read: it may write anything".into());
@@ -380,7 +380,7 @@ struct Stop {
     certainty: &'static str,
 }
 
-fn call_name(img: &Image, ins: &Ins) -> String {
+pub(super) fn call_name(img: &Image, ins: &Ins) -> String {
     match (ins.flow, ins.target) {
         (Flow::Call, Some(t)) => node_name(img, node_of(img, t)),
         _ => "an indirect target".into(),

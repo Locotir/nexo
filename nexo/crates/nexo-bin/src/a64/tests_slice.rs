@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use super::fixture::{self, adrp, bl, ldr_w, mov_w, LDP_FRAME, RET, STP_FRAME};
 use crate::*;
 
-fn movz(rd: u32, imm: u32, hw: u32) -> u32 {
+pub(super) fn movz(rd: u32, imm: u32, hw: u32) -> u32 {
     0xd280_0000 | (hw << 21) | (imm << 5) | rd
 }
 
@@ -14,44 +14,44 @@ fn movk(rd: u32, imm: u32, hw: u32) -> u32 {
 }
 
 /// `add xd, xn, xm`
-fn add_reg(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(super) fn add_reg(rd: u32, rn: u32, rm: u32) -> u32 {
     0x8b00_0000 | (rm << 16) | (rn << 5) | rd
 }
 
 /// `mov xd, xm`
-fn mov_reg(rd: u32, rm: u32) -> u32 {
+pub(super) fn mov_reg(rd: u32, rm: u32) -> u32 {
     0xaa00_03e0 | (rm << 16) | rd
 }
 
-fn ldr_x(rt: u32, rn: u32, off: u32) -> u32 {
+pub(super) fn ldr_x(rt: u32, rn: u32, off: u32) -> u32 {
     0xf940_0000 | ((off / 8) << 10) | (rn << 5) | rt
 }
 
-fn str_x(rt: u32, rn: u32, off: u32) -> u32 {
+pub(super) fn str_x(rt: u32, rn: u32, off: u32) -> u32 {
     0xf900_0000 | ((off / 8) << 10) | (rn << 5) | rt
 }
 
 /// `sub sp, sp, #n`
-fn sub_sp(n: u32) -> u32 {
+pub(super) fn sub_sp(n: u32) -> u32 {
     0xd100_03ff | (n << 10)
 }
 
 /// The extra function G of the fixture (nothing about it depends on its words): its start, helper, C, the global.
-fn places() -> (u64, u64, u64, u64) {
+pub(super) fn places() -> (u64, u64, u64, u64) {
     let f = fixture::elf(true);
     (f.g, f.b, f.c, f.global)
 }
 
-fn image(extra: &[u32]) -> Image {
+pub(super) fn image(extra: &[u32]) -> Image {
     let f = fixture::elf_with(true, extra);
     Image::from_bytes(f.bytes, PathBuf::from("/fx/prog")).expect("the fixture opens")
 }
 
-fn hex(a: u64) -> String {
+pub(super) fn hex(a: u64) -> String {
     format!("{a:#x}")
 }
 
-fn pad(a: u64) -> String {
+pub(super) fn pad(a: u64) -> String {
     format!("{a:#010x}")
 }
 
@@ -142,7 +142,4 @@ fn what_is_not_followed_is_refused_or_said() {
     // an argument register that is not set before the call comes from the caller
     let t = run(&img, g + 4, None, Some(1), None).unwrap();
     assert!(t.contains("x0 is argument 1 of"), "{t}");
-    // --forward says it is not done on AArch64
-    let e = slice_forward(&img, &hex(g), None, None, None, 50).unwrap_err().to_string();
-    assert!(e.contains("slice --forward does not read AArch64"), "{e}");
 }
