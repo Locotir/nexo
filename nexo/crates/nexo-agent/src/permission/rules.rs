@@ -154,6 +154,14 @@ pub(super) fn local_targets(args: &Value) -> Vec<String> {
 fn collect_local(args: &Value, out: &mut Vec<String>, depth: usize) {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
     for url in [s("url"), s("uri")].into_iter().flatten() {
+        // `view-source:file:///...` shows the file as a page too: judge the address behind the prefix
+        let mut url = url;
+        while url.get(..12).is_some_and(|p| p.eq_ignore_ascii_case("view-source:")) {
+            url = url[12..].trim_start();
+        }
+        if url.is_empty() {
+            continue;
+        }
         match url::Url::parse(url) {
             Ok(u) if u.scheme() == "file" => {
                 out.extend(u.to_file_path().ok().map(|p| p.to_string_lossy().into_owned()))
