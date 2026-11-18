@@ -27,6 +27,8 @@ pub const WS_FRAMES_CAP: usize = 5_000;
 pub const WS_FRAME_CAP: usize = 65_536;
 /// Messages kept per EventSource request.
 pub const SSE_EVENTS_CAP: usize = 5_000;
+/// Bytes kept of an EventSource event name or id, and of a WebSocket error message.
+const SSE_FIELD_CAP: usize = 1_024;
 
 /// One WebSocket frame, already free of secrets.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -81,17 +83,22 @@ fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1_000.0)
 }
 
+/// A field value on one line: a line break in it would start another field of the stream.
+fn one_line(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
+}
+
 /// The messages as the body of a `text/event-stream` response.
 pub(super) fn sse_text(events: &[SseEvent]) -> String {
     let mut out = String::new();
     for e in events {
         if !e.event.is_empty() {
-            out.push_str(&format!("event: {}\n", e.event.replace('\n', " ")));
+            out.push_str(&format!("event: {}\n", one_line(&e.event)));
         }
         if !e.id.is_empty() {
-            out.push_str(&format!("id: {}\n", e.id.replace('\n', " ")));
+            out.push_str(&format!("id: {}\n", one_line(&e.id)));
         }
-        for line in e.data.split('\n') {
+        for line in e.data.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
             out.push_str(&format!("data: {line}\n"));
         }
         out.push('\n');
@@ -149,7 +156,7 @@ impl Buffers {
             "Network.webSocketFrameReceived" => c.ws_frame(&id, false, p),
             "Network.webSocketFrameError" => {
                 if let Some(ws) = c.find(&id).and_then(|i| i.req.ws.as_mut()) {
-                    ws.error = Some(txt(p, "errorMessage").to_string());
+                    ws.error = Some(cut(redact::frame_marked(txt(p, "errorMessage")), SSE_FIELD_CAP).0);
                 }
             }
             "Network.webSocketClosed" => {
@@ -208,14 +215,22 @@ impl Capture {
     }
 
     fn ws_frame(&mut self, id: &str, send: bool, p: &Value) {
-        let f = &p["response"];
-        let opcode = num(f, "opcode").map_or(1, |o| o as u8);
-        let payload = txt(f, "payloadData");
         let Some(idx) = self.items.iter().rposition(|i| i.id == id && i.req.ws.is_some()) else {
             self.stats.ws_frames_dropped += 1;
             return;
         };
-        let full = self.items[idx].req.ws.as_ref().map_or(0, |w| w.frames.len()) >= WS_FRAMES_CAP;
+        // a full socket drops before the frame is masked: a flood costs a counter, not a regex pass
+        if self.items[idx].req.ws.as_ref().map_or(0, |w| w.frames.len()) >= WS_FRAMES_CAP {
+            if let Some(ws) = self.items[idx].req.ws.as_mut() {
+                ws.dropped_frames += 1;
+            }
+            self.stats.ws_frames_dropped += 1;
+            return;
+        }
+        let f = &p["response"];
+        let opcode = num(f, "opcode").map_or(1, |o| o as u8);
+        let payload = txt(f, "payloadData");
+        // text is masked first and cut after, so a cut never leaves the start of a token visible
         let (data, length, was_cut) = if opcode == 1 {
             if payload.len() > PARSE_CAP {
                 (String::new(), Some(payload.len()), true)
@@ -230,14 +245,14 @@ impl Capture {
         let item = &mut self.items[idx];
         let clock = item.clock;
         let Some(ws) = item.req.ws.as_mut() else { return };
-        if full || over_total {
+        if over_total {
             ws.dropped_frames += 1;
             self.stats.ws_frames_dropped += 1;
             return;
         }
         let ts = num(p, "timestamp").unwrap_or(0.0);
         let time = clock.map_or(ts, |(m, w)| (w / 1_000.0) + (ts - m));
-        if opcode != 1 || length.is_some() {
+        if opcode != 1 {
             ws.binary_frames += 1;
             self.stats.ws_frames_binary += 1;
         }
@@ -256,23 +271,28 @@ impl Capture {
             self.stats.sse_events_dropped += 1;
             return;
         };
+        if self.items[idx].req.sse.len() >= SSE_EVENTS_CAP {
+            self.items[idx].req.sse_dropped += 1;
+            self.stats.sse_events_dropped += 1;
+            return;
+        }
         let data = txt(p, "data");
         let marked = if data.len() > PARSE_CAP { String::new() } else { redact::frame_marked(data) };
         let (text, _) = cut(marked, WS_FRAME_CAP);
+        // the name and the id are text from the server too
+        let (event, _) = cut(redact::frame_marked(txt(p, "eventName")), SSE_FIELD_CAP);
+        let (event_id, _) = cut(redact::frame_marked(txt(p, "eventId")), SSE_FIELD_CAP);
+        let size = text.len() + event.len() + event_id.len();
         let item = &mut self.items[idx];
-        if item.req.sse.len() >= SSE_EVENTS_CAP || self.bytes + text.len() > CAPTURE_TOTAL_CAP {
+        if self.bytes + size > CAPTURE_TOTAL_CAP {
             item.req.sse_dropped += 1;
             self.stats.sse_events_dropped += 1;
             return;
         }
-        self.bytes += text.len();
+        self.bytes += size;
         self.stats.body_bytes = self.bytes as u64;
         self.stats.sse_events += 1;
-        item.req.sse.push(SseEvent {
-            event: txt(p, "eventName").to_string(),
-            id: txt(p, "eventId").to_string(),
-            data: text,
-        });
+        item.req.sse.push(SseEvent { event, id: event_id, data: text });
     }
 }
 
@@ -373,7 +393,7 @@ mod tests {
         assert_eq!(frames.len(), 5);
         let kinds: Vec<(&str, u64)> =
             frames.iter().map(|f| (f["type"].as_str().unwrap_or(""), f["opcode"].as_u64().unwrap_or(0))).collect();
-        assert_eq!(kinds, vec![("send", 1), ("send", 1), ("receive", 2), ("receive", 1), ("receive", 9)]);
+        assert_eq!(kinds, [("send", 1), ("send", 1), ("receive", 2), ("receive", 1), ("receive", 9)]);
         assert!(frames[0]["data"].as_str().is_some_and(|d| d.contains(&redact::marker("ws-token-abc123"))));
         assert!(frames[0]["data"].as_str().is_some_and(|d| d.contains(r#""type":"auth""#)));
         assert_eq!(frames[1]["data"], format!("Bearer {}", redact::marker("plain-bearer-xyz987")));
@@ -393,6 +413,37 @@ mod tests {
         // `nexo-browser` has no dependency on `nexo-api`, so the reader is not run here: the shape above is what
         // `nexo-api/src/har.rs` reads (`_resourceType`, `_webSocketMessages` {type, time, opcode, data},
         // text/event-stream content).
+    }
+
+    #[test]
+    fn bare_jwt_and_header_tokens_are_masked_and_plain_words_stay() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJl";
+        let b = Buffers::default();
+        b.capture_start();
+        let headers = json!({"Authorization": "Bearer hdr-token-abcdefgh12345"});
+        b.cap_request(&super::super::RawRequest {
+            id: "h1",
+            wall_ms: 1.0,
+            now: Some(1.0),
+            method: "GET",
+            url: "https://app.test/api",
+            headers: &headers,
+            rtype: Some("XHR".into()),
+            post: None,
+            has_post: false,
+        });
+        feed(&b, "webSocketCreated", json!({"requestId": "w1", "url": "wss://app.test/"}));
+        let text = |d: &str| json!({"requestId": "w1", "timestamp": 1.0, "response": {"opcode": 1.0, "mask": true, "payloadData": d}});
+        feed(&b, "webSocketFrameSent", text(&format!("login {jwt} ok")));
+        feed(&b, "webSocketFrameSent", text("auth hdr-token-abcdefgh12345 done"));
+        feed(&b, "webSocketFrameSent", text("basic settings and bearer of news"));
+        let all = b.captured();
+        let frames = &all[1].ws.as_ref().expect("ws").frames;
+        assert_eq!(frames[0].data, format!("login {} ok", redact::marker(jwt)));
+        assert_eq!(frames[1].data, format!("auth {} done", redact::marker("hdr-token-abcdefgh12345")));
+        assert_eq!(frames[2].data, "basic settings and bearer of news");
+        let har = export_har(&all);
+        assert!(!har.contains(jwt) && !har.contains("hdr-token-abcdefgh12345"), "{har}");
     }
 
     fn export_har_with_stats(b: &Buffers) -> String {

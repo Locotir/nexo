@@ -154,7 +154,7 @@ fn salt() -> &'static [u8; 32] {
 /// A stand-in for a secret value: `<secret:` + 16 hex characters of sha256(salt || value) + `>`. The same value
 /// gives the same marker for the whole process (so a token a response hands out can be matched with the request
 /// that sends it later), a different value another one, and the value itself cannot be read back from it.
-pub fn marker(value: &str) -> String {
+fn marker_of(value: &str) -> String {
     let mut h = Sha256::new();
     h.update(salt());
     h.update(value.as_bytes());
@@ -165,6 +165,41 @@ pub fn marker(value: &str) -> String {
     }
     out.push('>');
     out
+}
+
+/// Markers handed out in this process (hashes only, never the values), so a value first seen in a header, cookie or
+/// body field is also found when it comes back bare in a WebSocket frame. Bounded.
+static KNOWN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+const KNOWN_CAP: usize = 20_000;
+
+pub fn marker(value: &str) -> String {
+    let m = marker_of(value);
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    if known.len() < KNOWN_CAP {
+        known.insert(m.clone());
+    }
+    m
+}
+
+/// Marks every word of `text` that is a value already marked elsewhere (see [`KNOWN`]).
+fn known_marked(text: &str) -> String {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    if known.is_empty() {
+        return text.to_string();
+    }
+    let re = RE.get_or_init(|| Regex::new(r"[A-Za-z0-9._~+/=\-]{8,4096}").ok());
+    let Some(re) = re else { return text.to_string() };
+    re.replace_all(text, |c: &regex::Captures| {
+        let m = marker_of(&c[0]);
+        if known.contains(&m) {
+            m
+        } else {
+            c[0].to_string()
+        }
+    })
+    .into_owned()
 }
 
 /// [`marker`], but an empty value stays empty (there is nothing to hide, and nothing to link).
@@ -333,16 +368,22 @@ pub(crate) fn body_marked(text: &str, mime: &str) -> String {
 }
 
 /// A WebSocket frame or an EventSource message for capture mode: [`body_marked`] (JSON of any depth, or `"key": "v"`
-/// pairs in other text), and in any text a `Bearer <token>` or `Basic <token>` has its token marked, so the token
-/// matches the one in the `Authorization` header it came from.
+/// pairs in other text); in any text a JWT, a `Bearer <token>` or `Basic <token>` (token of 16 or more base64
+/// characters; `basic settings` stays) and any value already marked in a header, cookie or body field are marked, so
+/// a token matches the one it came from.
 pub(crate) fn frame_marked(text: &str) -> String {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    let marked = body_marked(text, "");
-    let re = RE.get_or_init(|| Regex::new(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/=\-]{8,})").ok());
-    match re {
-        Some(re) => re.replace_all(&marked, |c: &regex::Captures| format!("{} {}", &c[1], marker(&c[2]))).into_owned(),
-        None => marked,
+    static JWT: OnceLock<Option<Regex>> = OnceLock::new();
+    static CRED: OnceLock<Option<Regex>> = OnceLock::new();
+    let mut out = body_marked(text, "");
+    if let Some(re) =
+        JWT.get_or_init(|| Regex::new(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?").ok())
+    {
+        out = re.replace_all(&out, |c: &regex::Captures| marker(&c[0])).into_owned();
     }
+    if let Some(re) = CRED.get_or_init(|| Regex::new(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/=\-]{16,})").ok()) {
+        out = re.replace_all(&out, |c: &regex::Captures| format!("{} {}", &c[1], marker(&c[2]))).into_owned();
+    }
+    known_marked(&out)
 }
 
 /// `a=b&c=d`: the value of a secret name, and any opaque value, becomes a marker.
