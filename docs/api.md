@@ -197,7 +197,7 @@ nexo api watch map.json sse_events --for 60s
 
 With `--for`, `watch` opens the channel's event stream with a plain streaming GET (auth read from environment variables as `call` does), reads for that long (1s to 1h) and prints the messages seen, one line per type with its count and rate, and what differs from the map: a message type that did not show is `drift:` (a type not seen in a short window is not proof it is gone), a new type is `new:`, and a changed field type or a missing field are reported like `check` does. At most 30 difference lines. Exit code 1 if there is drift.
 
-A WebSocket channel is not followed: nexo has no WebSocket client with TLS (the one in nexo-browser speaks only plain `ws://` to the local browser), so `watch` says so and sends nothing. Record the site again and run `analyze` on the capture to see the channel's current types.
+A WebSocket channel is followed the same way, over `ws://` or `wss://` (TLS with the system's root certificates): the handshake carries the map's auth headers and cookies and the page's `Origin`, the subscribe messages the map recorded are sent in order, and pings are answered (protocol pings by the library, a recorded application-level ping with the recorded pong). A `<secret>` in a subscribe message is filled from the same auth values as the headers; if one cannot be filled, `watch` names the field and connects to nothing. The window is enforced even when the server sends nothing, a binary frame counts by length only, and the connection is closed at the deadline.
 
 Exit code: 0; 1 if the last call failed; 2 for bad arguments (including `--every` under 10s, `--times 0`, or no `--every` without `--times 1`).
 

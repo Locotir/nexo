@@ -145,7 +145,10 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -1893,8 +1896,10 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "async-tungstenite",
  "clap",
  "crossterm",
+ "futures",
  "libc",
  "nexo-agent",
  "nexo-api",
@@ -3637,6 +3642,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.21",
  "utf-8",
