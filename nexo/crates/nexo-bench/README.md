@@ -116,7 +116,7 @@ applies equally to plain, compact and curator.
 |---|---|
 | header | model, commit, max steps, max tokens, repeats, budget, spent (every priced reply, runs skipped after an error included, with their share) |
 | Arms | one row per arm: settings, runs, **score** (mean), steps, requests, input, cache read, output, cost $, wall s, tool errors (sums), final view and max view (means), compactions, rewrites (sums) |
-| Paired with the first arm | per other arm, over the tasks both ran: Δ score (points), Δ cost, Δ steps, Δ recall calls, Δ re-reads, Δ dup lines (points), Δ wall s, each with a **95% paired bootstrap interval** (10000 resamples, fixed seed) once there are at least 5 tasks and 3 runs per task and arm (else "not enough runs"); left out when the arms share no task |
+| Paired with the first arm | per other arm, over the tasks both ran: Δ score (points), Δ cost, Δ steps, Δ recall calls, Δ re-reads (naive), Δ needless, Δ dup lines (points), Δ wall s, each with a **95% paired bootstrap interval** (10000 resamples, fixed seed) once there are at least 5 tasks and 3 runs per task and arm (else "not enough runs"); left out when the arms share no task |
 | Runs | one row per run, same columns |
 
 What the columns mean:
