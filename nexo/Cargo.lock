@@ -1905,6 +1905,7 @@ dependencies = [
  "nexo-api",
  "nexo-bench",
  "nexo-bin",
+ "nexo-browser",
  "nexo-browser-host",
  "nexo-core",
  "nexo-dbg",

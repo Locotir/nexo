@@ -150,6 +150,10 @@ fn the_method_and_the_flags_decide_the_kind() {
     // a dry run sends nothing
     assert_eq!(k(&format!("\"{POST}\" --dry-run")), ToolKind::Read);
     assert_eq!(k(&format!("\"{GET}\" --login --dry-run")), ToolKind::Read);
+    // the call goes out of the person's own browser: never a plain read, with or without a value after the flag
+    assert_eq!(k(&format!("\"{GET}\" --via-browser")), ToolKind::Exec);
+    assert_eq!(k(&format!("\"{GET}\" --via-browser=abc")), ToolKind::Exec);
+    assert_eq!(k(&format!("\"{GET}\" --via-browser --dry-run")), ToolKind::Read);
     // a map that cannot be read, or an endpoint it does not have, is the strict kind
     assert_eq!(kind_in(&cmd("call nope.json \"GET /v1/items\""), d), ToolKind::Exec);
     assert_eq!(k("\"GET /nothing\""), ToolKind::Exec);

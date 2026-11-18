@@ -15,7 +15,7 @@
 //! | `analyze`, `describe`, `call --dry-run` | read | a file read |
 //! | `analyze --save/--openapi` | write | `edit` and `write` |
 //! | `call` of a GET or HEAD endpoint | network | `web_fetch` |
-//! | `call` of any other method, or with `--login` | exec | a shell command that changes things |
+//! | `call` of any other method, or with `--login` or `--via-browser` | exec | a shell command that changes things |
 
 use async_trait::async_trait;
 use clap::error::ErrorKind;
@@ -38,9 +38,9 @@ const MAX_CHARS: usize = 12_000;
 const OPS: &str = "\
 analyze <har> [--save MAP] [--openapi FILE] [--host H] [--budget N] [--json]  read a HAR file: devtools Save all as HAR, or the browser tool's own capture (capture_start, browse, capture_stop, capture_save with a `path`; in the person's own Chrome it holds only URLs and statuses, so no shapes): one line per endpoint with its path params, JSON shapes, auth and paging; --save keeps the map for the ops below
 describe <map> [endpoint] [--budget N] [--flows]  (--flows: the chains, where each value of a call comes from) the endpoints of a map (the summary takes about N characters, default 6000), or one endpoint's params, body, auth and the environment variables it reads
-call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--dry-run] [--json]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>
+call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--via-browser[=ID]] [--dry-run] [--json]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>
 Never write a token, key or password in a command: name an environment variable (--auth bearer=MY_TOKEN, -p password=@env:PW); a value that looks like a secret is refused. Start with --dry-run: it prints the request and sends nothing.
-GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE and --login like a shell command that changes things; --save and --openapi write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
+GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE, --login and --via-browser (a signed-in browser sends it) like a shell command that changes things; --save and --openapi write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
 
 const COMPACT: &str = "The API behind a website: `analyze cap.har --save map.json`, `describe map.json [EP]`, `call map.json EP -p k=v --auth NAME=ENVVAR` (--dry-run first). Secrets by environment variable name only. `--help`";
 
@@ -194,7 +194,7 @@ pub(crate) fn kind_in(cmd: &ApiCmd, base: &Path) -> ToolKind {
         ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } => ToolKind::Read,
         ApiCmd::Call { dry_run: true, .. } => ToolKind::Read,
         ApiCmd::Call { target, .. } => {
-            if target.login {
+            if target.login || target.via_browser.is_some() {
                 return ToolKind::Exec;
             }
             let map = if target.map.is_relative() { base.join(&target.map) } else { target.map.clone() };

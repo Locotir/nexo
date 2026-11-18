@@ -151,6 +151,7 @@ async fn check_one(map: &Path, ep: &Endpoint, params: &[String], auth: &[String]
         login: false,
         login_params: Vec::new(),
         login_body: None,
+        via_browser: None,
     };
     match api_call::call_out(&t, false, true, false).await {
         Ok(out) => match parse_answer(&out.text) {

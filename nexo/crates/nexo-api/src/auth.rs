@@ -32,6 +32,10 @@ pub struct Auth {
     /// Where an earlier response handed the secret out: `set by POST /api/login ($.access_token)` or
     /// `cookie set by GET /`. Never a value.
     pub source: Option<String>,
+    /// For a header token ([`Scheme::Bearer`], [`Scheme::ApiKeyHeader`]): the fingerprint of the token the capture
+    /// last sent (8 bytes of its SHA-256, never the token), so a browser that holds it can be told from one that
+    /// does not. `None` for the other schemes.
+    pub fp: Option<Fp>,
 }
 
 /// Cookie names that start like this belong to analytics and ads, not to the login.
@@ -128,14 +132,18 @@ fn same(a: &Scheme, b: &Scheme) -> bool {
     }
 }
 
-fn add(found: &mut Vec<Found>, scheme: Scheme, source: Option<String>) {
+fn add(found: &mut Vec<Found>, scheme: Scheme, source: Option<String>, fp: Option<Fp>) {
     match found.iter_mut().find(|f| f.origin.is_none() && same(&f.auth.scheme, &scheme)) {
         Some(f) => {
             if f.auth.source.is_none() {
                 f.auth.source = source;
             }
+            // the latest token seen is the one most likely still alive
+            if fp.is_some() {
+                f.auth.fp = fp;
+            }
         }
-        None => found.push(Found { auth: Auth { scheme, uses: 0, source }, origin: None }),
+        None => found.push(Found { auth: Auth { scheme, uses: 0, source, fp }, origin: None }),
     }
 }
 
@@ -152,7 +160,7 @@ fn add_cookie(found: &mut Vec<Found>, origin: &str, name: &str, source: Option<S
             }
         }
         None => found.push(Found {
-            auth: Auth { scheme: Scheme::Cookie { names: vec![name.to_string()] }, uses: 0, source },
+            auth: Auth { scheme: Scheme::Cookie { names: vec![name.to_string()] }, uses: 0, source, fp: None },
             origin: Some(origin.to_string()),
         }),
     }
@@ -186,19 +194,20 @@ pub fn detect(all: &[Exchange]) -> Vec<Auth> {
                             "basic" => Scheme::Basic { header: s.name.clone() },
                             _ => Scheme::ApiKeyHeader { name: s.name.clone() },
                         };
-                        add(&mut found, scheme, source);
+                        let fp = if matches!(scheme, Scheme::Basic { .. }) { None } else { Some(s.fp) };
+                        add(&mut found, scheme, source, fp);
                     } else if csrf_name(&s.name) {
                         match csrf_from(x, s, &issued) {
-                            Some(from) => add(&mut found, Scheme::Csrf { header: s.name.clone(), from }, source),
-                            None => add(&mut found, Scheme::ApiKeyHeader { name: s.name.clone() }, source),
+                            Some(from) => add(&mut found, Scheme::Csrf { header: s.name.clone(), from }, source, None),
+                            None => add(&mut found, Scheme::ApiKeyHeader { name: s.name.clone() }, source, Some(s.fp)),
                         }
                     } else {
-                        add(&mut found, Scheme::ApiKeyHeader { name: s.name.clone() }, source);
+                        add(&mut found, Scheme::ApiKeyHeader { name: s.name.clone() }, source, Some(s.fp));
                     }
                 }
                 Place::Query => {
                     let source = find_source(&issued, &s.fp);
-                    add(&mut found, Scheme::ApiKeyQuery { name: s.name.clone() }, source);
+                    add(&mut found, Scheme::ApiKeyQuery { name: s.name.clone() }, source, None);
                 }
                 Place::Cookie => {
                     if s.name.is_empty() || analytics(&s.name) {

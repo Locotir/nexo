@@ -34,7 +34,7 @@ pub use platform::{find_browser, installed_browsers, InstalledBrowser, OVERRIDE_
 pub use pointer::Modifiers;
 pub use profile::{has_display, preflight};
 pub use record::{ActionEvent, ActionKind, RecordInfo, RecordOptions, RecordSummary};
-pub use redact::{marker, REDACTED};
+pub use redact::{body_marked, header_value_marked, marker, REDACTED};
 pub use relay::{browsers, BrowserEntry, RelayBrowser};
 pub use snapshot::{Element, Filter, PageTree, ReadPageOptions, Snapshot, DEFAULT_DEPTH, DEFAULT_MAX_CHARS};
 pub use tabs::TabInfo;
