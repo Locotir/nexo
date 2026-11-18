@@ -43,6 +43,8 @@ time = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
+futures = { workspace = true }
+async-tungstenite = { version = "0.32.1", features = ["tokio-runtime", "tokio-rustls-native-certs"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]

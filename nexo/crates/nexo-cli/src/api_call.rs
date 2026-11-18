@@ -596,20 +596,13 @@ fn stream_client() -> Result<reqwest::Client, Fail> {
 }
 
 /// `nexo api watch MAP CHANNEL --for 60s`: follows one channel of the map for a while and says which message types
-/// came, how often, and what differs from the map. An event stream is followed with a plain streaming GET. A
-/// WebSocket is not: this build has no WebSocket client with TLS (the one in nexo-browser speaks plain `ws://` to the
-/// local debugging port only), so it says so and sends nothing.
+/// came, how often, and what differs from the map. An event stream is followed with a plain streaming GET; a
+/// WebSocket by `api_ws`, with the same auth, report and exit code.
 async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, window: &str) -> Result<i32, Fail> {
     use nexo_api::channel::{self, Kind};
     let span = call::duration(window).map_err(usage)?;
     if span.is_zero() || span > Duration::from_secs(3600) {
         return Err(usage(format!("--for {window} must be between 1s and 1h")));
-    }
-    if c.kind == Kind::Ws {
-        return Err(usage(format!(
-            "{} is a WebSocket channel and this build cannot follow it: nexo has no WebSocket client with TLS (nexo-browser's speaks plain ws:// to the local browser only). An event-stream channel can be followed; for this one, record it again in the browser and `nexo api analyze` the capture",
-            c.id
-        )));
     }
     let ep = Endpoint {
         id: c.id.clone(),
@@ -642,8 +635,11 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
         )));
     }
     let mut req = call::build(api, &ep, &call::Inputs::default(), &vals).map_err(usage)?;
-    req.headers.push(("accept".to_string(), call::Val::plain("text/event-stream")));
     let known: std::collections::HashSet<exchange::Fp> = vals.iter().map(|(_, v)| exchange::fingerprint(v)).collect();
+    if c.kind == Kind::Ws {
+        return crate::api_ws::follow(api, c, &req, &vals, &known, span).await;
+    }
+    req.headers.push(("accept".to_string(), call::Val::plain("text/event-stream")));
     let client = stream_client()?;
     println!("following {} (SSE {}{}) for {}s", c.id, c.origin, c.path, span.as_secs());
     let started = std::time::Instant::now();
@@ -696,7 +692,7 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
 }
 
 /// What a follow prints: the messages seen, one line per type, then what differs from the recorded channel.
-fn follow_report(
+pub(crate) fn follow_report(
     rec: &nexo_api::channel::Channel,
     live: &nexo_api::channel::Channel,
     secs: f64,
