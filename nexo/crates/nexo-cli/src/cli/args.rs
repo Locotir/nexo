@@ -28,6 +28,9 @@ pub struct Args {
     /// Resume the latest session of this directory.
     #[arg(short = 'c', long = "continue")]
     pub continue_: bool,
+    /// Name this session (shown by `nexo sessions` and the title bar); with --resume or --continue, renames that one.
+    #[arg(short = 'n', long, value_name = "TITLE", value_parser = session_name_arg)]
+    pub name: Option<String>,
     /// ask | accept-edits | plan | yolo | read-only
     #[arg(long, value_name = "MODE", env = "NEXO_PERMISSION_MODE", value_parser = permission_mode_arg)]
     pub permission_mode: Option<String>,
@@ -73,6 +76,16 @@ fn sandbox_mode_arg(s: &str) -> Result<String, String> {
     match nexo_core::sandbox::SandboxMode::parse(s) {
         Some(_) => Ok(s.to_string()),
         None => Err(format!("unknown sandbox mode {s:?}; use one of: off, workspace-write, read-only")),
+    }
+}
+
+/// `--name`: a title with a letter in it, trimmed; an empty one is refused before anything starts.
+fn session_name_arg(s: &str) -> Result<String, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        Err("the session name is empty; give it a title, e.g. --name \"api cleanup\"".into())
+    } else {
+        Ok(t.to_string())
     }
 }
 
@@ -359,6 +372,22 @@ mod tests {
         assert_eq!(a.first.as_deref(), Some("what changed?"));
     }
 
+    #[test]
+    fn name_is_parsed_trimmed_and_an_empty_one_is_refused() {
+        use clap::Parser;
+        let a = super::Args::try_parse_from(["nexo"]).unwrap();
+        assert!(a.name.is_none());
+        let a = super::Args::try_parse_from(["nexo", "--name", "  api cleanup "]).unwrap();
+        assert_eq!(a.name.as_deref(), Some("api cleanup"));
+        let a = super::Args::try_parse_from(["nexo", "-n", "x", "-c", "-p", "go"]).unwrap();
+        assert_eq!(a.name.as_deref(), Some("x"));
+        assert!(a.continue_);
+        let a = super::Args::try_parse_from(["nexo", "--resume", "abc", "--name", "x"]).unwrap();
+        assert_eq!(a.resume.as_deref(), Some("abc"));
+        assert!(super::Args::try_parse_from(["nexo", "--name", ""]).is_err());
+        assert!(super::Args::try_parse_from(["nexo", "--name", "   "]).is_err());
+        assert!(super::Args::try_parse_from(["nexo", "--name"]).is_err());
+    }
     #[test]
     fn bench_subcommand_follows_the_feature() {
         use clap::Parser;

@@ -29,6 +29,9 @@ pub struct AgentConfig {
     /// Leave out what lives on this machine: the project instructions (`NEXO.md`, `AGENTS.md`)
     /// and `~/.nexo/prompt.md`. Benchmarks set it, so a run sends the same prompt everywhere.
     pub hermetic: bool,
+    /// Title for the session this run opens or resumes (`--name`); never read from a file.
+    #[serde(skip)]
+    pub session_title: Option<String>,
     /// Files a request names by path (a word with a `/` or an extension) that exist under the working
     /// directory, are text and at most 24 KB, up to three, are included in it in full, so the model needs no
     /// step to read them. They go under nexo's own header (`path (project file, included in full by nexo, as it
@@ -125,6 +128,7 @@ impl Default for AgentConfig {
             system_prompt_file: None,
             system_prompt_extra: None,
             hermetic: false,
+            session_title: None,
             attach_named_files: true,
             attach_budget: 6000,
             check_at_start: true,
