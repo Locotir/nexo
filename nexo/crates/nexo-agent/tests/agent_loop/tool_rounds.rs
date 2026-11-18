@@ -469,6 +469,34 @@ async fn a_stop_line_says_who_stopped_the_request_as_it_was() {
     r.stop().await;
 }
 
+/// `/clear` right after a stop waits for the turn itself, so the end of that turn never records its stop: what it
+/// left behind must not date or sign the next stop line.
+#[tokio::test]
+async fn a_clear_after_a_stop_leaves_nothing_for_the_next_stop_line() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Events(text("third")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::StopBy(nexo_core::agent::Stopper::TimeLimit));
+    r.send(AgentCommand::Clear);
+    r.until(|e| matches!(e, AgentEvent::SessionChanged { .. })).await;
+    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
+    r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = untimed(&client.requests()[2].messages.last().unwrap().text());
+    assert!(sent.starts_with("[00:00:00 the person stopped the request above (Ctrl+C) "), "{sent}");
+    r.stop().await;
+}
+
 #[tokio::test]
 async fn interrupt_run_stops_the_turn_and_runs_the_queued_request() {
     let d = test_tmpdir().unwrap();
