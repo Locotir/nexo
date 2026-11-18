@@ -141,3 +141,44 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
         (_, _) => g.is_match(tool),
     }
 }
+
+/// The local paths a network tool call names: a `file://` URL or a bare path in `url`/`uri` (a browser
+/// opens an existing local file as a page), and the file `value` of an `upload`, also inside the `steps` of
+/// a `batch`. Web addresses name none.
+pub(super) fn local_targets(args: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_local(args, &mut out, 0);
+    out
+}
+
+fn collect_local(args: &Value, out: &mut Vec<String>, depth: usize) {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+    for url in [s("url"), s("uri")].into_iter().flatten() {
+        // `view-source:file:///...` shows the file as a page too: judge the address behind the prefix
+        let mut url = url;
+        while url.get(..12).is_some_and(|p| p.eq_ignore_ascii_case("view-source:")) {
+            url = url[12..].trim_start();
+        }
+        if url.is_empty() {
+            continue;
+        }
+        match url::Url::parse(url) {
+            Ok(u) if u.scheme() == "file" => {
+                out.extend(u.to_file_path().ok().map(|p| p.to_string_lossy().into_owned()))
+            }
+            // `C:\keys\id_rsa` parses with the drive letter as its scheme
+            Ok(u) if u.scheme().len() == 1 => out.push(url.to_string()),
+            Ok(_) => {}
+            // no scheme: the browser takes a path that exists as a file page
+            Err(_) => out.push(url.to_string()),
+        }
+    }
+    if s("action") == Some("upload") {
+        out.extend(s("value").map(str::to_string));
+    }
+    if depth == 0 {
+        for step in args.get("steps").and_then(Value::as_array).into_iter().flatten() {
+            collect_local(step, out, depth + 1);
+        }
+    }
+}

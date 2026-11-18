@@ -45,7 +45,7 @@ pub struct Policy {
 pub use nexo_core::tool::catalog::ALWAYS_ALLOWED;
 
 use paths::editable;
-use rules::names_a_path;
+use rules::{local_targets, names_a_path};
 use suggest::is_flag;
 
 pub use paths::is_sensitive;
@@ -175,6 +175,18 @@ impl Policy {
         {
             let named = self.allow.iter().any(|r| names_a_path(r) && rule_matches(r, tool, kind, args, cwd));
             return if named { Decision::Allow } else { Decision::Ask };
+        }
+        // a browser opens local files as pages and uploads them to sites: a key file named that way is
+        // asked about too, even under a bare `browser` rule, unless a rule names its path
+        if kind == ToolKind::Network && self.mode != PermissionMode::Auto {
+            let keys: Vec<String> = local_targets(args).into_iter().filter(|p| is_sensitive(p, cwd)).collect();
+            if !keys.is_empty() {
+                let covered = |p: &String| {
+                    let one = serde_json::json!({ "path": p });
+                    self.allow.iter().any(|r| names_a_path(r) && rule_matches(r, tool, ToolKind::Read, &one, cwd))
+                };
+                return if keys.iter().all(covered) { Decision::Allow } else { Decision::Ask };
+            }
         }
         if self.allow.iter().any(|r| rule_matches(r, tool, kind, args, cwd)) {
             return Decision::Allow;
