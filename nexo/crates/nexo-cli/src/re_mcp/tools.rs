@@ -194,6 +194,8 @@ pub(super) fn dbg_tools() -> Vec<Tool> {
                 "cwd": {"type": "string", "description": "run: the folder the program starts in"},
                 "aslr": {"type": "boolean", "description": "run: leave address randomisation on (off by default, so addresses repeat)"},
                 "argv0": {"type": "string", "description": "run: what the program sees as its own name, argv[0]"},
+                "repeat": {"type": "integer", "description": "run: start the program from scratch up to this many times (at most 1000); needs until"},
+                "until": {"type": "string", "description": "run with repeat: what ends it: crash, exit (a code other than 0) or output~TEXT; the last run stays live"},
                 "exe": {"type": "string", "description": "core or connect: the program the core or stub belongs to"}
             }, "required": ["kind", "target"]}),
             kind: Kind::DbgStart,

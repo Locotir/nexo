@@ -29,6 +29,7 @@ mod page_guards;
 mod prologue_locals;
 mod range_page;
 mod record_back;
+mod repeat_runs;
 mod rsp;
 mod separate_debug;
 mod source_level;

@@ -3,7 +3,7 @@
 
 /// `(names, one line)`: the first name is the one the map shows, the rest are spellings the debugger also takes.
 pub const COMMANDS: &[(&str, &str)] = &[
-    ("run", "start under the debugger: run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 N] <exe> [args] [< file | <<< \"text\"] (no shell)"),
+    ("run", "start under the debugger: run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 N] [--break SPEC] [--repeat N --until crash|exit|output~TEXT] <exe> [args] [< file | <<< \"text\"] (no shell)"),
     ("attach", "attach to a process of yours: attach <pid>"),
     ("core", "open a core file or minidump: core <file> [--exe <path>]"),
     ("connect", "talk to a GDB remote stub: connect <host:port>"),

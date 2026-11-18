@@ -294,6 +294,13 @@ impl Server {
             if let Some(a) = scalar(args.get("argv0")).filter(|a| !a.is_empty()) {
                 words.extend(["--argv0".to_string(), a]);
             }
+            // `--repeat N --until COND` is checked by the debugger's own parser, from this one place
+            if let Some(n) = scalar(args.get("repeat")).filter(|n| !n.is_empty()) {
+                words.extend(["--repeat".to_string(), n]);
+                if let Some(u) = scalar(args.get("until")).filter(|u| !u.is_empty()) {
+                    words.extend(["--until".to_string(), u]);
+                }
+            }
         }
         let target = if kind == "attach" { same_user(&target)?.to_string() } else { target };
         if kind == "core" && target.starts_with('-') {
