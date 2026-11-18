@@ -70,6 +70,46 @@ pub const TYPED_DURING: &str = "typed while you worked on the request above";
 /// What it adds when the person then stopped that request.
 pub const BEFORE_STOP: &str = "before the person stopped it";
 
+/// What a person-message clock line says after the gap.
+const AFTER_PREVIOUS: &str = " after your previous message";
+
+/// How long a gap between two of the person's messages reads: `under a minute`, `7 min`, `3 h 5 min`, `2 days 4 h`.
+pub fn gap_words(gap: std::time::Duration) -> String {
+    let mins = gap.as_secs() / 60;
+    match mins {
+        0 => "under a minute".to_string(),
+        1..=59 => format!("{mins} min"),
+        60..=1439 => match mins % 60 {
+            0 => format!("{} h", mins / 60),
+            m => format!("{} h {m} min", mins / 60),
+        },
+        _ => {
+            let (d, h) = (mins / 1440, (mins / 60) % 24);
+            let unit = if d == 1 { "day" } else { "days" };
+            if h == 0 {
+                format!("{d} {unit}")
+            } else {
+                format!("{d} {unit} {h} h")
+            }
+        }
+    }
+}
+
+/// The line before the person's words that says when they wrote them (`at`, `HH:MM:SS`) and, when the person wrote
+/// before, how long after their previous message: `[16:13:05, 7 min after your previous message]`.
+pub fn person_clock(at: &str, gap: Option<std::time::Duration>) -> String {
+    match gap {
+        Some(g) => format!("[{at}, {}{AFTER_PREVIOUS}]", gap_words(g)),
+        None => format!("[{at}]"),
+    }
+}
+
+/// Whether `line` is the clock line [`person_clock`] writes before a person's message.
+pub fn is_person_clock(line: &str) -> bool {
+    timed(line.trim_end())
+        .is_some_and(|(_, rest)| rest.is_empty() || (rest.starts_with(", ") && rest.ends_with(AFTER_PREVIOUS)))
+}
+
 /// Whether `s` is a time as these lines write it: `HH:MM:SS`.
 fn is_hms(s: &str) -> bool {
     let b = s.as_bytes();
@@ -159,6 +199,19 @@ pub fn as_typed(words: &str) -> std::borrow::Cow<'_, str> {
 mod tests {
     use super::*;
     use crate::agent::PERSON_MARK;
+
+    #[test]
+    fn a_gap_reads_in_the_unit_that_fits_it() {
+        let s = std::time::Duration::from_secs;
+        assert_eq!(gap_words(s(5)), "under a minute");
+        assert_eq!(gap_words(s(7 * 60 + 30)), "7 min");
+        assert_eq!(gap_words(s(3 * 3600 + 5 * 60)), "3 h 5 min");
+        assert_eq!(gap_words(s(2 * 86400 + 4 * 3600)), "2 days 4 h");
+        assert_eq!(gap_words(s(86400)), "1 day");
+        assert!(is_person_clock("[10:00:00]") && is_person_clock(&person_clock("10:00:00", Some(s(300)))));
+        assert!(!is_person_clock("[10:00:00 the person stopped it]"));
+        assert_eq!(person_clock("10:00:00", None), "[10:00:00]");
+    }
 
     #[test]
     fn a_stop_line_is_found_at_the_start_of_a_message_and_nowhere_else() {

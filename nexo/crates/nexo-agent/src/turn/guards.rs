@@ -78,7 +78,7 @@ pub(super) async fn checkpoint_now(
         }
         out
     };
-    let first = st.history.get(from).map(Message::text).unwrap_or_default();
+    let first = st.history.get(from).map(|m| nexo_core::agent::person_words(&m.text()).to_string()).unwrap_or_default();
     let request = if first.starts_with(GOAL_CONTINUE_MARK) { "(goal continuation)".to_string() } else { first };
     let (u, u0) = (st.usage, ck.usage0);
     let spend = {

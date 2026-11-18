@@ -44,10 +44,12 @@ async fn what_nexo_adds_to_a_message_is_told_apart_and_the_request_is_unchanged(
     assert!(parts.iter().all(|p| !p.request_only && p.tokens() > 0));
     // the request carries those parts byte for byte, all in front, and the typed words last under the mark
     let sent = client.requests()[0].messages[0].text();
+    // the time of the message sits between nexo's note and the files, and is not told as an addition
+    let clock = sent.lines().find(|l| nexo_core::agent::is_person_clock(l)).expect(&sent).to_string();
     assert_eq!(
         sent,
         format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\nsee",
+            "{}\n\n{}\n\n{clock}\n\n{}\n\n{}\n\n{}\nsee",
             parts[0].text,
             parts[1].text,
             parts[2].text,
@@ -262,7 +264,9 @@ async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_reque
     let evs = r.turn().await;
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { index: 0, .. })));
     assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Added { .. })), "nothing was added: {evs:?}");
-    assert_eq!(client.requests()[0].messages[0].text(), "just words");
+    let sent = client.requests()[0].messages[0].text();
+    assert!(sent.ends_with("\n[the person's message]\njust words"), "{sent}");
+    assert!(nexo_core::agent::is_person_clock(sent.lines().next().unwrap()), "{sent}");
     r.stop().await;
 }
 
@@ -366,7 +370,7 @@ async fn files_nexo_includes_by_itself_are_apart_from_what_the_person_attached_a
     // the count line is the last of nexo's project block, says who put the files there, and matches what follows
     let block = sent.find("[project at the start of this request]\n").expect(&sent);
     let first_own = sent.find(&own("NOTES.md")).unwrap();
-    let count = sent[block..first_own].lines().last().unwrap();
+    let count = sent[block..first_own].lines().rev().find(|l| l.starts_with("included by nexo")).unwrap();
     let shown = sent.matches(" (project file, included in full by nexo, as it is now):").count();
     assert_eq!(shown, 3, "{sent}");
     assert!(

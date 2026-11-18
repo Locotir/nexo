@@ -8,7 +8,7 @@
         "content": [
           {
             "type": "text",
-            "text": "go"
+            "text": "[<T>]\n\n[the person's message]\ngo"
           }
         ]
       }
@@ -164,7 +164,7 @@
         "content": [
           {
             "type": "text",
-            "text": "go"
+            "text": "[<T>]\n\n[the person's message]\ngo"
           }
         ]
       },
@@ -350,7 +350,7 @@
         "content": [
           {
             "type": "text",
-            "text": "go"
+            "text": "[<T>]\n\n[the person's message]\ngo"
           }
         ]
       },
@@ -567,7 +567,7 @@
         "content": [
           {
             "type": "text",
-            "text": "go"
+            "text": "[<T>]\n\n[the person's message]\ngo"
           }
         ]
       },

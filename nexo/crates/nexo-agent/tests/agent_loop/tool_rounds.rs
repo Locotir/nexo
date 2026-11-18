@@ -23,7 +23,7 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
         })
         .collect();
     assert!(matches!(evs[0], AgentEvent::History { index: 0, .. }));
-    assert!(matches!(evs[1], AgentEvent::TurnStart { turn: 1 }));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::TurnStart { turn: 1 })));
     assert!(evs
         .iter()
         .any(|e| matches!(e, AgentEvent::Context { policy, messages_in_view: 1, .. } if policy == "plain")));
@@ -496,8 +496,8 @@ async fn interrupt_run_stops_the_turn_and_runs_the_queued_request() {
     assert_eq!(
         untimed(&reqs[1].messages.last().unwrap().text()),
         "[00:00:00 the person stopped the request above to run the queued request at once while your reply above was \
-         being written; it was cut there; the request was \"one\"]\n\n[the person's message]\ntwo",
-        "the queued text is the request, alone with no time, after the stop"
+         being written; it was cut there; the request was \"one\"]\n\n[00:00:00, under a minute after your previous message]\n\n[the person's message]\ntwo",
+        "the queued text is the request after the stop, with the time it was typed"
     );
     // the agent is idle again and takes the next message as usual
     r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });

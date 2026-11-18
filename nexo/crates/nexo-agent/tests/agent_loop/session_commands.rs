@@ -32,7 +32,7 @@ async fn attachments_shell_model_and_clear() {
     match &evs[0] {
         AgentEvent::History { message, .. } => {
             let t = message.text();
-            assert!(t.starts_with("@note.md (attached in full, as it is now):\n```md\nremember this\n```"), "{t}");
+            assert!(t.contains("\n\n@note.md (attached in full, as it is now):\n```md\nremember this\n```"), "{t}");
             assert!(t.ends_with(&format!("```\n\n{}\nsee", nexo_core::agent::PERSON_MARK)), "{t}");
         }
         _ => panic!(),
@@ -92,7 +92,7 @@ async fn export_writes_the_conversation_as_markdown() {
     assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text == format!("exported to {shown}")));
     let md = std::fs::read_to_string(&out).unwrap();
     assert!(md.starts_with("# please read f\n"));
-    assert!(md.contains("## You\n\nplease read f"));
+    assert!(md.contains("## You\n\n[") && md.contains("\nplease read f"));
     assert!(md.contains("**read** read f\n\n```\nread:f\n```"));
     assert!(md.contains("## nexo\n\nread it"));
     assert!(md.contains("cost: $"));
@@ -242,11 +242,14 @@ async fn a_message_sent_during_a_turn_joins_it_before_the_next_call() {
     assert_eq!(end_of(&evs), TurnEnd::Done);
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::Queued { pending: 0 })));
     assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Notice { level: Level::Info, .. })), "no notice of it");
-    assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { message, .. } if message.text() == "and say hi")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { message, .. } if nexo_core::agent::person_words(&message.text()) == "and say hi")));
     let reqs = client.requests();
     assert_eq!(reqs.len(), 2, "no turn of its own");
     let last = reqs[1].messages.last().unwrap();
-    assert_eq!(last.text(), "and say hi");
+    // it carries the time it was typed, as a first message does
+    let last = last.text();
+    assert!(nexo_core::agent::is_person_clock(last.lines().next().unwrap()), "{last}");
+    assert!(last.ends_with("\n[the person's message]\nand say hi"), "{last}");
     r.stop().await;
 }
 
@@ -320,7 +323,11 @@ async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_t
         evs.iter().find_map(|e| if let AgentEvent::Added { parts, .. } = e { Some(parts.clone()) } else { None });
     let told = told.expect("an Added event");
     assert!(told.len() == 1 && told[0].kind == AddedKind::Memory && !told[0].request_only, "{told:?}");
-    assert_eq!(sent, format!("{}\n\n{}\nfix it", told[0].text, nexo_core::agent::PERSON_MARK));
+    assert!(sent.starts_with(&told[0].text), "{sent}");
+    // the time of the message sits between that text and the typed words, and is not told as an addition
+    let clock = sent[told[0].text.len()..].trim().lines().next().unwrap().to_string();
+    assert!(nexo_core::agent::is_person_clock(&clock), "{sent}");
+    assert_eq!(sent, format!("{}\n\n{clock}\n\n{}\nfix it", told[0].text, nexo_core::agent::PERSON_MARK));
     // the one in use stays; another goes to the trash and comes back
     r.send(AgentCommand::DeleteSession { id: b.clone() });
     let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;

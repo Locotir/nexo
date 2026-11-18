@@ -498,6 +498,26 @@ fn wire(reqs: &[ModelRequest], cwd: &Path) -> Value {
         let b = a + s[a..].find("\\nGit:").expect("the system prompt names the repository");
         s.replace_range(a..b, "Date: <D>\\nSystem: <S>");
     }
+    // the time a person's message was typed (`[16:13:05]`): the clock of the run
+    let b = s.clone().into_bytes();
+    let mut t = String::new();
+    let mut i = 0;
+    while i < s.len() {
+        let at = |k: usize| b.get(i + k).copied().unwrap_or(0);
+        let hms = at(0) == b'['
+            && at(3) == b':'
+            && at(6) == b':'
+            && [1, 2, 4, 5, 7, 8].iter().all(|&k| at(k).is_ascii_digit());
+        if hms {
+            t.push_str("[<T>");
+            i += 9;
+        } else {
+            let c = s[i..].chars().next().unwrap();
+            t.push(c);
+            i += c.len_utf8();
+        }
+    }
+    let s = t;
     // the only clock in a request: how long a job took ("after 16 ms")
     let mut out = String::new();
     let mut rest = s.as_str();

@@ -18,7 +18,7 @@ fn user_texts(evs: &[AgentEvent]) -> Vec<String> {
     evs.iter()
         .filter_map(|e| match e {
             AgentEvent::History { message, .. } if message.role == nexo_core::message::Role::User => {
-                Some(message.text())
+                Some(nexo_core::agent::person_words(&message.text()).to_string())
             }
             _ => None,
         })
@@ -437,7 +437,7 @@ async fn an_active_goal_adds_no_state_line() {
     r.send(AgentCommand::Submit { text: "here it is".into(), attachments: vec![] });
     r.turn().await;
     r.stop().await;
-    assert_eq!(last_user_of(&client, 1), "here it is");
+    assert_eq!(nexo_core::agent::person_words(&last_user_of(&client, 1)), "here it is");
     assert!(!client.requests()[0].messages.last().unwrap().text().contains("not running"));
 }
 
@@ -475,4 +475,33 @@ async fn the_system_prompt_is_the_same_before_and_after_the_goal_is_met() {
     let reqs = client.requests();
     assert!(reqs[0].system.contains("Goal, in the person's words: ship it"));
     assert_eq!(reqs[0].system, reqs[1].system, "the cached prefix does not change when the goal is met");
+}
+
+fn clock_line_of(sent: &str) -> &str {
+    sent.split(nexo_core::agent::PERSON_MARK).next().unwrap().trim().lines().last().unwrap_or("")
+}
+
+#[tokio::test]
+async fn each_person_message_carries_its_time_and_the_gap_since_the_previous_one() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("one")), Reply::Events(text("two"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::Submit { text: "first words".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "ok, now the tests".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let (a, b) = (last_user_of(&client, 0), last_user_of(&client, 1));
+    let time_only = |l: &str| l.len() == 10 && l.starts_with('[') && l.ends_with(']') && l.as_bytes()[3] == b':';
+    assert!(time_only(clock_line_of(&a)), "{a}");
+    let line = clock_line_of(&b);
+    let ok = line.starts_with('[')
+        && line.as_bytes()[3] == b':'
+        && line.as_bytes()[6] == b':'
+        && line.ends_with(" after your previous message]")
+        && line[1..9].bytes().all(|c| c.is_ascii_digit() || c == b':')
+        && line[9..].starts_with(", ");
+    assert!(ok, "{b}");
+    assert!(b.ends_with(&format!("{}\nok, now the tests", nexo_core::agent::PERSON_MARK)), "{b}");
 }

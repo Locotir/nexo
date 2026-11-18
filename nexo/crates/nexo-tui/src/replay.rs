@@ -119,13 +119,21 @@ fn parts_of(text: &str) -> Vec<AddedPart> {
             i += 1;
             continue;
         }
+        if nexo_core::agent::is_person_clock(lines[i]) {
+            // the time of a message is not something nexo added to tell: it takes no row
+            i += 1;
+            continue;
+        }
         if let Some(path) = file_line(lines[i]) {
             parts.push(AddedPart::new(AddedKind::File, path, lines[i]));
             i += 1;
             continue;
         }
         let stop = |k: usize| {
-            lines[k].trim_end() == START_NOTE || attached_at(&lines, k).is_some() || file_line(lines[k]).is_some()
+            lines[k].trim_end() == START_NOTE
+                || attached_at(&lines, k).is_some()
+                || file_line(lines[k]).is_some()
+                || nexo_core::agent::is_person_clock(lines[k])
         };
         let end = (i + 1..lines.len()).find(|&k| stop(k)).unwrap_or(lines.len());
         let body = lines[i..end].join("\n").trim_end().to_string();
@@ -261,6 +269,18 @@ mod tests {
         assert_eq!((m.kind, m.label.as_str(), m.text.as_str()), (AddedKind::Memory, "memory from the parser fix", mem));
         assert_eq!(p[1], Piece::JobNote(NOTE.into()));
         assert_eq!(p[2], Piece::Text("hello".into()));
+    }
+
+    #[test]
+    fn the_time_line_of_a_message_takes_no_row_of_its_own() {
+        let note = "[project at the start of this request]\nincluded by nexo, not attached by the person: 1 project file, 23 tokens.";
+        let p = split_user(&format!("{note}\n\n[10:00:00, 7 min after your previous message]\n\n{PERSON_MARK}\nhello"));
+        let kinds: Vec<(AddedKind, String)> = p
+            .iter()
+            .filter_map(|x| if let Piece::Added(a) = x { Some((a.kind, a.label.clone())) } else { None })
+            .collect();
+        assert_eq!(kinds, [(AddedKind::StartNote, "project at the start of the request".to_string())], "{p:?}");
+        assert_eq!(p.last(), Some(&Piece::Text("hello".into())));
     }
 
     #[test]

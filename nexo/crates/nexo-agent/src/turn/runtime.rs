@@ -92,6 +92,7 @@ impl Runtime {
             replay_history(&events, &session, &tools);
         }
         announce_model(&events, &config, &provider, &model);
+        let resumed_at = if replay { std::fs::metadata(session.path()).and_then(|m| m.modified()).ok() } else { None };
         let goal = session.goal().map(String::from);
         let goal_state = session.goal_state().clone();
         if goal.is_some() {
@@ -135,6 +136,7 @@ impl Runtime {
             limits,
             fast: false,
             live: None,
+            last_person_at: resumed_at,
             turn_start: 0,
             request_in: false,
             turns: 0,

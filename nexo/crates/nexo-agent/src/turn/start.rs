@@ -325,6 +325,10 @@ async fn prepare_turn(
                 first.push(line);
             }
         }
+        let clock = if person { person_clock_line(&st, &typed) } else { None };
+        if let Some((Some(line), _)) = &clock {
+            first.push(line.clone());
+        }
         if person {
             if !push_user_checked(
                 &mut st,
@@ -336,6 +340,10 @@ async fn prepare_turn(
                 item.as_ref().map(|i| (i, cancel)),
             ) {
                 return false;
+            }
+            // the next gap is measured from this message only once the model has it
+            if let Some((_, at)) = clock {
+                st.last_person_at = Some(at);
             }
         } else {
             if !push_user_checked(
@@ -356,6 +364,21 @@ async fn prepare_turn(
         }
     }
     true
+}
+
+/// The time line before a message the person typed, and when they typed it: `None` for a goal mark, which is not
+/// the person's message. A message nexo joined from several carries a time on each part already, so it has the time
+/// and no line. The gap is measured from `last_person_at`, which the caller sets only after the message is in.
+fn person_clock_line(st: &State, typed: &str) -> Option<(Option<String>, SystemTime)> {
+    if typed.starts_with(GOAL_CONTINUE_MARK) || typed.starts_with(GOAL_SET_MARK) {
+        return None;
+    }
+    let now = SystemTime::now();
+    if typed.starts_with(nexo_core::agent::JOINED_MARK) {
+        return Some((None, now));
+    }
+    let gap = st.last_person_at.map(|t| now.duration_since(t).unwrap_or_default());
+    Some((Some(nexo_core::agent::person_clock(&nexo_core::clock::local_hms(now), gap)), now))
 }
 
 /// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`), and again
@@ -503,10 +526,17 @@ pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bo
         let included = orient::include(&named, &st.cwd);
         let ask = ask_line(&mut st, true, &text);
         let note = orient::start_note(&included, &known, None, None, ask.as_deref());
+        let clock = person_clock_line(&st, &text);
         let mut added = Vec::new();
         if !note.is_empty() {
             added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));
         }
+        // the time of the message follows nexo's note, as in a first request; the interface is not told of it
+        let note = match &clock {
+            Some((Some(line), _)) if note.is_empty() => line.clone(),
+            Some((Some(line), _)) => format!("{note}\n\n{line}"),
+            _ => note,
+        };
         if !push_user_checked(&mut st, note, Some(text.clone()), included, &attachments, added, Some((&item, cancel))) {
             if item.directed.is_none() {
                 item.text = text;
@@ -516,6 +546,9 @@ pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bo
             continue;
         }
         consumed = true;
+        if let Some((_, at)) = clock {
+            st.last_person_at = Some(at);
+        }
         if let Some((_, reply)) = item.directed.take() {
             reply.resolve(nexo_core::agent::DirectedResult::Accepted);
         }
