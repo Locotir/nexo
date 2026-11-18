@@ -71,6 +71,8 @@ async fn per_request(n: usize, policy: &str, requests: usize) -> Vec<f64> {
     let id = s.id().to_string();
     drop(s);
     let mut cfg = Config::default();
+    // nothing of the real machine (its home, its PATH) is mapped: a run here never reads them
+    std::env::set_var("NEXO_MACHINE_MAP", "0");
     let mut p = ProviderConfig::new("mock", "http://mock", None);
     p.models = vec!["m1".into()];
     cfg.providers.insert("mock".into(), p);
