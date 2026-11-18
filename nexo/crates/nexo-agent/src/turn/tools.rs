@@ -614,22 +614,24 @@ pub(super) async fn run_call(
                 }
             }
             let elapsed_ms = t0.elapsed().as_millis() as u64;
+            // a read of one file, however it is spelled (`path`, or `paths` with one entry: that answer has no
+            // `=== name ===` header either)
+            let one_read = if name == "read" { crate::reads::one_read_path(args) } else { None };
             // the file the call printed (part of), if that is all it did
-            let file =
-                match (name, args.get("path").and_then(Value::as_str).filter(|_| !nexo_core::tool::has_paths(args))) {
-                    ("read", Some(p)) => {
-                        Some((if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) }, p.to_string()))
-                    }
-                    ("bash", _) => args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print).map(
-                        |(rel, _)| {
-                            (
-                                if rel.is_absolute() { rel.clone() } else { cwd.join(&rel) },
-                                rel.to_string_lossy().into_owned(),
-                            )
-                        },
-                    ),
-                    _ => None,
-                };
+            let file = match (name, one_read.as_deref()) {
+                ("read", Some(p)) => {
+                    Some((if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) }, p.to_string()))
+                }
+                ("bash", _) => {
+                    args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print).map(|(rel, _)| {
+                        (
+                            if rel.is_absolute() { rel.clone() } else { cwd.join(&rel) },
+                            rel.to_string_lossy().into_owned(),
+                        )
+                    })
+                }
+                _ => None,
+            };
             let mut chained: Option<String> = None;
             let seen = {
                 let mut st = state.lock().await;
@@ -639,18 +641,8 @@ pub(super) async fn run_call(
                     ("read", Some((path, p))) if !out.is_error => {
                         let offset = args.get("offset").and_then(Value::as_u64);
                         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(READ_LIMIT);
-                        match &out.display {
-                            ToolDisplay::File { text, .. } => st.reads.after_read_shown(
-                                path,
-                                p,
-                                offset,
-                                limit,
-                                id,
-                                crate::reads::printed(&out),
-                                text.lines().count(),
-                            ),
-                            _ => st.reads.after_read(path, p, offset, limit, id, crate::reads::printed(&out)),
-                        }
+                        let symbol = args.get("symbol").is_some();
+                        st.reads.after_read_result(path, p, offset, limit, symbol, id, &out)
                     }
                     ("bash", Some((path, p))) if !out.is_error => {
                         let span = args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print);
