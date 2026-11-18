@@ -23,7 +23,11 @@ async fn what_nexo_adds_to_a_message_is_told_apart_and_the_request_is_unchanged(
     let at = evs.iter().position(|e| matches!(e, AgentEvent::History { index: 0, .. })).unwrap();
     let Some(AgentEvent::Added { index: 0, parts }) = evs.get(at + 1) else { panic!("{:?}", evs.get(at + 1)) };
     let kinds: Vec<AddedKind> = parts.iter().map(|p| p.kind).collect();
-    assert_eq!(kinds, [AddedKind::Hook, AddedKind::StartNote, AddedKind::File, AddedKind::File], "{parts:?}");
+    assert_eq!(
+        kinds,
+        [AddedKind::Hook, AddedKind::StartNote, AddedKind::StartNote, AddedKind::File, AddedKind::File],
+        "{parts:?}"
+    );
     assert!(parts[0].text.starts_with(nexo_core::agent::HOOK_CONTEXT_START) && parts[0].text.contains("it is monday"));
     // the note counts what nexo included by itself, as the request carries it, in its last line; the file the
     // person attached is not in that count
@@ -261,8 +265,11 @@ async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_reque
     r.send(AgentCommand::Submit { text: "just words".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { index: 0, .. })));
-    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Added { .. })), "nothing was added: {evs:?}");
-    assert_eq!(client.requests()[0].messages[0].text(), "just words");
+    // only the time of the message is added
+    let added: Vec<_> =
+        evs.iter().filter_map(|e| if let AgentEvent::Added { parts, .. } = e { Some(parts) } else { None }).collect();
+    assert!(added.len() == 1 && added[0].len() == 1 && added[0][0].label == "time of the message", "{evs:?}");
+    assert!(client.requests()[0].messages[0].text().ends_with("\n[the person's message]\njust words"));
     r.stop().await;
 }
 
@@ -366,7 +373,7 @@ async fn files_nexo_includes_by_itself_are_apart_from_what_the_person_attached_a
     // the count line is the last of nexo's project block, says who put the files there, and matches what follows
     let block = sent.find("[project at the start of this request]\n").expect(&sent);
     let first_own = sent.find(&own("NOTES.md")).unwrap();
-    let count = sent[block..first_own].lines().last().unwrap();
+    let count = sent[block..first_own].lines().rev().find(|l| l.starts_with("included by nexo")).unwrap();
     let shown = sent.matches(" (project file, included in full by nexo, as it is now):").count();
     assert_eq!(shown, 3, "{sent}");
     assert!(

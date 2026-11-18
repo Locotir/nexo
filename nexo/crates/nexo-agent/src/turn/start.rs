@@ -325,6 +325,17 @@ async fn prepare_turn(
                 first.push(line);
             }
         }
+        if person && !typed.starts_with(GOAL_CONTINUE_MARK) && !typed.starts_with(GOAL_SET_MARK) {
+            let now = SystemTime::now();
+            // messages joined into one carry a time on each part already
+            if !typed.starts_with(nexo_core::agent::JOINED_MARK) {
+                let gap = st.last_person_at.map(|t| now.duration_since(t).unwrap_or_default());
+                let line = nexo_core::agent::person_clock(&nexo_core::clock::local_hms(now), gap);
+                added.push(AddedPart::new(AddedKind::StartNote, "time of the message", line.clone()));
+                first.push(line);
+            }
+            st.last_person_at = Some(now);
+        }
         if person {
             if !push_user_checked(
                 &mut st,

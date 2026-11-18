@@ -32,7 +32,7 @@ async fn attachments_shell_model_and_clear() {
     match &evs[0] {
         AgentEvent::History { message, .. } => {
             let t = message.text();
-            assert!(t.starts_with("@note.md (attached in full, as it is now):\n```md\nremember this\n```"), "{t}");
+            assert!(t.contains("\n\n@note.md (attached in full, as it is now):\n```md\nremember this\n```"), "{t}");
             assert!(t.ends_with(&format!("```\n\n{}\nsee", nexo_core::agent::PERSON_MARK)), "{t}");
         }
         _ => panic!(),
@@ -92,7 +92,7 @@ async fn export_writes_the_conversation_as_markdown() {
     assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text == format!("exported to {shown}")));
     let md = std::fs::read_to_string(&out).unwrap();
     assert!(md.starts_with("# please read f\n"));
-    assert!(md.contains("## You\n\nplease read f"));
+    assert!(md.contains("## You\n\n[") && md.contains("\nplease read f"));
     assert!(md.contains("**read** read f\n\n```\nread:f\n```"));
     assert!(md.contains("## nexo\n\nread it"));
     assert!(md.contains("cost: $"));
@@ -319,8 +319,9 @@ async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_t
     let told =
         evs.iter().find_map(|e| if let AgentEvent::Added { parts, .. } = e { Some(parts.clone()) } else { None });
     let told = told.expect("an Added event");
-    assert!(told.len() == 1 && told[0].kind == AddedKind::Memory && !told[0].request_only, "{told:?}");
-    assert_eq!(sent, format!("{}\n\n{}\nfix it", told[0].text, nexo_core::agent::PERSON_MARK));
+    assert!(told.len() == 2 && told[0].kind == AddedKind::Memory && !told[0].request_only, "{told:?}");
+    assert!(sent.starts_with(&told[0].text), "{sent}");
+    assert_eq!(sent, format!("{}\n\n{}\n\n{}\nfix it", told[0].text, told[1].text, nexo_core::agent::PERSON_MARK));
     // the one in use stays; another goes to the trash and comes back
     r.send(AgentCommand::DeleteSession { id: b.clone() });
     let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;

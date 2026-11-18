@@ -467,7 +467,7 @@ fn dump(req: &ModelRequest) -> String {
     for m in &req.messages {
         for p in &m.content {
             out.push(match p {
-                Part::Text { text } => format!("{:?} text: {text}", m.role),
+                Part::Text { text } => format!("{:?} text: {}", m.role, nexo_core::agent::person_words(text)),
                 Part::ToolCall { id, name, args } => format!("{:?} call {id} {name} {args}", m.role),
                 Part::ToolResult { call_id, content, is_error, .. } => {
                     let t: String = content.iter().filter_map(Part::as_text).collect();

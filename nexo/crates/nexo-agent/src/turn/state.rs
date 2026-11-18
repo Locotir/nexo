@@ -38,6 +38,8 @@ pub(super) struct State {
     pub(super) fast: bool,
     /// The models the provider listed when `/fast` last asked, with its name.
     pub(super) live: Option<(String, Vec<String>)>,
+    /// When the person's last message was typed (a resumed session: when its file was last written).
+    pub(super) last_person_at: Option<std::time::SystemTime>,
     /// Where the request in progress starts in `history`.
     pub(super) turn_start: usize,
     /// The request in progress is in `history`: a turn stopped before that has no request to say was stopped.
