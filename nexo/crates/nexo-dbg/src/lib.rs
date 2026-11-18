@@ -24,6 +24,7 @@ mod modules;
 mod pe_unwind;
 mod places;
 mod platform;
+mod procinfo;
 mod rebuild;
 mod record;
 mod regs;

@@ -102,6 +102,7 @@ impl Session {
                 w[0] = name.to_string();
                 return merge_place(&w).map(|m| self.exec(&m));
             }
+            "thread" if rest.first().is_some_and(|w| w == "apply") => usage(g::THREAD_APPLY),
             "quit" => usage(g::hint("quit").unwrap_or("`end` closes the session")),
             n if n != first && fmt.is_none() => {
                 let mut w = words.to_vec();

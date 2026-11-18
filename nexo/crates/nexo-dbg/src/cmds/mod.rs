@@ -237,7 +237,7 @@ impl Session {
             "locals" => self.cmd_locals(),
             "bt" => self.cmd_bt(&a),
             "dis" | "disasm" => self.cmd_dis(&a),
-            "threads" => self.cmd_threads(),
+            "threads" => self.cmd_threads(&a),
             "thread" => self.cmd_thread(&a),
             "frame" => self.cmd_frame(&a),
             "up" | "down" => self.cmd_up(&a, cmd == "up"),

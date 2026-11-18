@@ -1099,6 +1099,10 @@ impl Target for Linux {
         self.launched
     }
 
+    fn local_proc(&self) -> bool {
+        true
+    }
+
     fn threads(&self) -> Vec<Tid> {
         self.th.keys().map(|t| *t as Tid).collect()
     }

@@ -214,6 +214,26 @@ impl Session {
         .flatten()
     }
 
+    /// The line a `finish` stop adds: what the function whose pc was `from` returned, read from the return registers
+    /// of thread `tid` (`r`) as its DWARF return type says. A function without debug info gets the raw registers; a
+    /// `void` one gets `None`.
+    pub(crate) fn returned_line(&mut self, from: u64, r: &crate::Regs, tid: crate::platform::Tid) -> Option<String> {
+        let win = self.win();
+        let vec = self.vector(tid);
+        let rr = super::returned::RetRegs {
+            rax: r.gp[0],
+            rdx: r.gp[3],
+            xmm: [vec.as_ref().map(|v| v.xmm(0)), vec.as_ref().map(|v| v.xmm(1))],
+            st0: vec.as_ref().and_then(|v| v.st(0)),
+        };
+        let got = self
+            .with_vars(false, |vars, regs| vars.returned(from.wrapping_sub(regs.bias), win, &rr, regs))
+            .ok()
+            .flatten()
+            .unwrap_or(super::returned::Returned::Unknown);
+        super::returned::returned_line(&got, &rr)
+    }
+
     /// The parameters of the function at the stop as `args` rows, with how many DWARF lists, whether the
     /// function is variadic, and which of them (by position) had no readable value; `None` without variable
     /// info for this function. Before the prologue ends they come from the argument registers.
