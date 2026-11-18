@@ -177,6 +177,10 @@ pub struct Session {
     pub recording: Option<(Vec<u32>, Vec<Vec<String>>)>,
     /// `display` expressions shown at every stop: id and the command that shows one.
     pub displays: Vec<(u32, Vec<String>)>,
+    /// `stops compact`: a stop is one line (why, where, the displays) except a crash; `compact_told` once the
+    /// way back (`stops full`) was said.
+    pub compact_stops: bool,
+    pub compact_told: bool,
     /// Lines ever written to the log, and how many of them an answer already showed.
     pub log_total: u64,
     pub log_shown: u64,
@@ -505,6 +509,8 @@ impl Session {
             conv: HashMap::new(),
             recording: None,
             displays: Vec::new(),
+            compact_stops: false,
+            compact_told: false,
             log_total: 0,
             log_shown: 0,
             calling: None,

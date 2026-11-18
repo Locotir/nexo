@@ -21,6 +21,7 @@ mod gdb;
 mod help;
 mod io;
 mod memory;
+mod quiet;
 mod record;
 mod regs;
 mod run;
@@ -227,6 +228,8 @@ impl Session {
                 }
             }
             "stop" => self.stop_now(),
+            "stops" => self.cmd_stops(&a),
+            "signal" => self.cmd_signal(&a),
             "mem" | "x" => self.cmd_mem(&a),
             "write" => self.cmd_write(&a),
             "dump" => self.cmd_dump(&a),

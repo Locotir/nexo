@@ -223,3 +223,23 @@ fn attach_stops_a_running_program_and_detach_lets_it_go() {
     child.wait().unwrap();
     assert!(gone(pid));
 }
+
+#[test]
+fn compact_stops_are_one_line_with_displays_and_a_crash_stays_full() {
+    let (mut s, _) = start("loop");
+    assert!(run(&mut s, "stops").contains("full"));
+    run(&mut s, "break dbg_add");
+    assert!(run(&mut s, "stops compact").contains("compact"));
+    run(&mut s, "display DBG_COUNTER");
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("breakpoint #1") && stop.contains("dbg_add") && stop.contains("DBG_COUNTER="), "{stop}");
+    assert!(stop.contains("stops full") && !stop.contains("pc 0x") && !stop.contains("=> "), "{stop}");
+    let again = run(&mut s, "cont");
+    assert_eq!(again.lines().count(), 1, "{again}");
+    run(&mut s, "kill");
+    let (mut c, _) = start("crash");
+    run(&mut c, "stops compact");
+    let crash = run(&mut c, "cont");
+    assert!(crash.contains("SIGSEGV") && crash.contains("backtrace:"), "{crash}");
+    run(&mut c, "kill");
+}
