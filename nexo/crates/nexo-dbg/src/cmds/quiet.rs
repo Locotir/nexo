@@ -21,10 +21,10 @@ pub(crate) fn parse_stops(words: &[String]) -> std::result::Result<StopsAsk, Str
     }
 }
 
-/// A stop is told in one line when the mode asks for it, except a signal: a crash is triaged, and that needs
+/// A stop is told in one line when the mode asks for it, except a signal: a crash or a heap error is triaged, and that needs
 /// the detail more than it needs the tokens.
 pub(crate) fn compact_applies(on: bool, why: &Why) -> bool {
-    on && !matches!(why, Why::Signal(_))
+    on && !matches!(why, Why::Signal(_) | Why::Heap(_))
 }
 
 /// Why a stop happened, in a few words.
@@ -45,6 +45,7 @@ pub(crate) fn compact_why(why: &Why) -> String {
         Why::Syscall(t) => format!("syscall {t}"),
         Why::Load(t) | Why::Fork(t) | Why::LetGo(t) => t.clone(),
         Why::Hook(_, t) => format!("hook {t}"),
+        Why::Heap(_) => "heap".into(),
         Why::Returned => "call returned".into(),
         Why::Exited(_) | Why::Killed(_) => "exit".into(),
     }
