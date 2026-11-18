@@ -35,8 +35,8 @@ mod trash;
 mod tree_and_titles;
 
 use lock_file::*;
-pub use sweep::{sweep_orphans, sweep_orphans_in_background};
 use recording::{held_by_result, output_line, result_texts};
+pub use sweep::{sweep_orphans, sweep_orphans_in_background};
 pub use trash::*;
 pub use tree_and_titles::*;
 

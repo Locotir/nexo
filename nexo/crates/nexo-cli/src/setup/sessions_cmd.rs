@@ -62,6 +62,39 @@ fn tail(s: &str, width: usize) -> String {
     format!("…{kept}")
 }
 
+/// `nexo sessions rename <id> <title>`: the title line is appended to the session file.
+pub fn rename_session(id: &str, title: &str) -> anyhow::Result<i32> {
+    let title = title.trim();
+    if title.is_empty() {
+        anyhow::bail!("give the session a name: nexo sessions rename <id> <name>");
+    }
+    let mut s = nexo_agent::session::Session::open(id)
+        .map_err(|_| anyhow::anyhow!("no session {id:?}; `nexo sessions` lists them"))?;
+    s.set_title(title)?;
+    println!("{id} is now \"{title}\"");
+    Ok(0)
+}
+
+/// `nexo sessions delete|restore <id>...`: each one moved to or from the trash; 1 when any failed.
+pub fn trash_sessions(ids: &[String], restore: bool) -> i32 {
+    if ids.is_empty() {
+        eprintln!("which session? `nexo sessions` lists them");
+        return 1;
+    }
+    let mut code = 0;
+    for id in ids {
+        let r = if restore { nexo_agent::session::restore(id) } else { nexo_agent::session::trash(id) };
+        match r {
+            Ok(p) => println!("{id} {} ({})", if restore { "restored" } else { "moved to the trash" }, p.display()),
+            Err(e) => {
+                eprintln!("{id}: {e}");
+                code = 1;
+            }
+        }
+    }
+    code
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,37 +178,4 @@ mod tests {
         let long = format!("/{}", "a".repeat(40));
         assert_eq!(tail(&long, 28), format!("…{}", "a".repeat(27)));
     }
-}
-
-/// `nexo sessions rename <id> <title>`: the title line is appended to the session file.
-pub fn rename_session(id: &str, title: &str) -> anyhow::Result<i32> {
-    let title = title.trim();
-    if title.is_empty() {
-        anyhow::bail!("give the session a name: nexo sessions rename <id> <name>");
-    }
-    let mut s = nexo_agent::session::Session::open(id)
-        .map_err(|_| anyhow::anyhow!("no session {id:?}; `nexo sessions` lists them"))?;
-    s.set_title(title)?;
-    println!("{id} is now \"{title}\"");
-    Ok(0)
-}
-
-/// `nexo sessions delete|restore <id>...`: each one moved to or from the trash; 1 when any failed.
-pub fn trash_sessions(ids: &[String], restore: bool) -> i32 {
-    if ids.is_empty() {
-        eprintln!("which session? `nexo sessions` lists them");
-        return 1;
-    }
-    let mut code = 0;
-    for id in ids {
-        let r = if restore { nexo_agent::session::restore(id) } else { nexo_agent::session::trash(id) };
-        match r {
-            Ok(p) => println!("{id} {} ({})", if restore { "restored" } else { "moved to the trash" }, p.display()),
-            Err(e) => {
-                eprintln!("{id}: {e}");
-                code = 1;
-            }
-        }
-    }
-    code
 }
