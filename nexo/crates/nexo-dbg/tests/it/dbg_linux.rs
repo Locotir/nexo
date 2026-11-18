@@ -278,14 +278,18 @@ fn checkpoint_and_restart_bring_the_counter_back_and_kill_leave_no_process() {
         .unwrap_or_else(|| panic!("no pid in {made}"));
     assert_ne!(pid, s.t.pid());
     assert!(run(&mut s, "checkpoints").contains("#1 pid"), "list");
+    // dbg_add(0, 1) has not been added yet: the counter reads 0 here and 1 + 2 = 3 two hits later
+    let before = counter(&mut s);
     run(&mut s, "cont");
     run(&mut s, "cont");
+    let moved = counter(&mut s);
+    assert_ne!(before, moved, "the counter did not move: {moved}");
     let old = s.t.pid();
     let back = run(&mut s, "restart 1");
     assert!(back.contains("back at checkpoint #1") && back.contains("breakpoint"), "{back}");
     assert!(gone(old), "the process left is still there");
     let c = counter(&mut s);
-    assert!(c.contains("0x0") || c.contains(" 0"), "{c}");
+    assert_eq!(c, before, "the counter is not back to what it was at the checkpoint");
     // the checkpoint stays usable
     let again = run(&mut s, "restart 1");
     assert!(again.contains("back at checkpoint #1"), "{again}");
