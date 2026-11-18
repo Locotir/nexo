@@ -196,6 +196,16 @@ fn threads_are_listed() {
 }
 
 #[test]
+fn threads_bt_shows_the_name_and_a_backtrace() {
+    let (mut s, _) = start("thread");
+    run(&mut s, "break dbg_add");
+    run(&mut s, "cont");
+    let t = run(&mut s, "threads --bt 3");
+    assert!(t.contains("thread") && t.contains("#0"), "{t}");
+    run(&mut s, "kill");
+}
+
+#[test]
 fn attach_stops_a_running_program_and_detach_lets_it_go() {
     let mut child = std::process::Command::new(target()).arg("attach").spawn().unwrap();
     let pid = child.id();

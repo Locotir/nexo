@@ -196,6 +196,8 @@ pub struct Session {
     step_from: Option<(Tid, u64)>,
     /// Libraries loaded and unloaded while the program runs: pending names, `catch load`.
     pub libs: crate::libs::Loads,
+    /// The pc inside the function a `finish` runs out of, until the finish stop reads its return value.
+    pub(crate) finish_from: Option<u64>,
 }
 
 /// A child the program forked.
@@ -513,6 +515,7 @@ impl Session {
             watch_lines: Vec::new(),
             step_from: None,
             libs: Default::default(),
+            finish_from: None,
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);

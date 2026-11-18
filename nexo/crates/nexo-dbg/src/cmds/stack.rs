@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Threads `threads` lists before saying how many more there are, and the most frames `threads --bt N` shows for one.
+const THREADS_SHOWN: usize = 64;
+const THREADS_BT_MAX: usize = 50;
+
 impl Session {
     pub(super) fn cmd_print(&mut self, a: &Args) -> Result<Output> {
         if a.pos.is_empty() {
@@ -228,18 +232,57 @@ impl Session {
         Ok(rows("dis", l, json!({})))
     }
 
-    pub(super) fn cmd_threads(&mut self) -> Result<Output> {
+    /// `threads [--bt N]`: every thread with its pc and symbol; on a live Linux process also its name, its state and
+    /// the system call it is blocked in. `--bt N` adds each thread's backtrace, at most N frames each.
+    pub(super) fn cmd_threads(&mut self, a: &Args) -> Result<Output> {
+        let bt = match a.flag("bt") {
+            None => None,
+            Some(v) => {
+                let n = parse_addr(v)
+                    .map_err(|_| crate::Error::Usage(format!("--bt {v:?} is not a number: threads --bt N")))?;
+                Some(n.clamp(1, THREADS_BT_MAX as u64) as usize)
+            }
+        };
+        let all = self.t.threads();
         let mut l = Vec::new();
         if self.state == State::Stopped {
-            for tid in self.t.threads() {
+            let (live, pid) = (self.t.local_proc(), self.t.pid());
+            for &tid in all.iter().take(THREADS_SHOWN) {
                 let pc = self.t.regs(tid).map(|r| r.rip).unwrap_or(0);
                 let name = self.mods.label(pc, false).unwrap_or_default();
-                l.push(format!("{} thread {tid} at {pc:#x} {name}", if tid == self.cur { "*" } else { " " }));
+                let mut row = format!("{} thread {tid} at {pc:#x} {name}", if tid == self.cur { "*" } else { " " });
+                if live {
+                    let tail = crate::procinfo::row_tail(&crate::procinfo::read_task(pid, tid), &crate::syscalls::name);
+                    if !tail.is_empty() {
+                        row.push_str("  | ");
+                        row.push_str(&tail);
+                    }
+                }
+                l.push(row);
+                if let Some(n) = bt {
+                    match self.frames_of(tid, n + 1) {
+                        Ok(f) => {
+                            let more = f.len() > n;
+                            let shown = &f[..f.len().min(n)];
+                            l.extend(self.frame_lines(shown).into_iter().map(|s| format!("      {s}")));
+                            if more {
+                                l.push("      ... more frames (`bt 50` for the selected thread)".into());
+                            }
+                        }
+                        Err(e) => l.push(format!("      no backtrace: {e}")),
+                    }
+                }
+            }
+            if all.len() > THREADS_SHOWN {
+                l.push(format!("... {} more threads not shown", all.len() - THREADS_SHOWN));
+            }
+            if !live {
+                l.push("(thread name, state and system call: live Linux processes only)".into());
             }
         } else {
-            l.push(format!("{} thread(s); `stop` first to see where they are", self.t.threads().len()));
+            l.push(format!("{} thread(s); `stop` first to see where they are", all.len()));
         }
-        Ok(rows("threads", l, json!({})))
+        Ok(rows("threads", l, json!({"threads": all.len()})))
     }
 
     pub(super) fn cmd_thread(&mut self, a: &Args) -> Result<Output> {

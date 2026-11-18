@@ -668,6 +668,9 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
     })
 }
 
+/// What gdb's `thread apply all bt` becomes here.
+pub const THREAD_APPLY: &str = "`threads --bt N` lists every thread with its name, state, system call and its own backtrace of at most N frames (gdb's `thread apply all bt`); `thread <tid>` then `bt` reads one";
+
 /// What stands for gdb's `run` once the session is started: run on, and wait for a whole run.
 pub const RUN_CONT: &str = "cont --wait 30";
 
@@ -822,6 +825,7 @@ mod tests {
         assert_eq!(base_name("x/20bx"), "x");
         assert_eq!(base_name("p/x"), "p");
         assert_eq!(base_name("backtrace"), "bt");
+        assert!(THREAD_APPLY.contains("threads --bt N"));
         assert_eq!(base_name("disassemble"), "dis");
         assert_eq!(base_name("si"), "step");
         assert_eq!(base_name("ni"), "next");

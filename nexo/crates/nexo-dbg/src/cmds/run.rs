@@ -38,7 +38,13 @@ impl Session {
     }
 
     pub(crate) fn frames(&mut self, max: usize) -> Result<Vec<crate::modules::Frame>> {
-        let r = self.tid_regs()?;
+        self.need_stopped()?;
+        self.frames_of(self.cur, max)
+    }
+
+    /// The backtrace of thread `tid` (the selected one for [`Session::frames`]).
+    pub(crate) fn frames_of(&mut self, tid: Tid, max: usize) -> Result<Vec<crate::modules::Frame>> {
+        let r = self.t.regs(tid)?;
         // a library may have come in since the last look: the chain goes through it
         self.mods.refresh(&mut *self.t);
         let Session { t, mods, .. } = self;
@@ -55,6 +61,8 @@ impl Session {
             return fail("cannot find the caller of this frame (no unwind data): use `until <address>`");
         };
         let w = a.wait()?;
+        // the function that is about to return: its return type says how to read the value at the stop
+        self.finish_from = f.first().map(|fr| fr.pc);
         self.go(Run { step: None, temp: Some(Temp { addr: caller.pc, min_sp: caller.sp, kind: TempKind::Finish }) }, w)
     }
 

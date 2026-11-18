@@ -125,6 +125,11 @@ impl Session {
             if let Some(t) = self.mods.source_text(r.rip) {
                 l.push(format!("   {t}"));
             }
+            if why == Why::Finish {
+                if let Some(from) = self.finish_from.take() {
+                    l.extend(self.returned_line(from, &r, tid));
+                }
+            }
             self.last_stop = Some(StopInfo {
                 n: self.nstop,
                 event: event.into(),
