@@ -21,6 +21,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("stop", "stop a running program now"),
     ("signal", "go on delivering a signal: signal <SIG|N|0> [--wait N] (Linux; 0 drops the pending one)"),
     ("stops", "how a stop is told: stops compact (one line, a crash stays full) | stops full"),
+    ("checkpoint checkpoints", "fork the stopped program into a stopped copy: checkpoint | checkpoint del N|all | checkpoints (Linux, one thread; the pid differs, files opened before are shared)"),
+    ("restart", "go back to a checkpoint: restart N (the copy becomes the program, N stays; the process left is killed)"),
     ("kill", "end the program; `kill call` ends a call under way and puts its registers back"),
     ("detach", "let the program go on alone"),
     ("follow", "which side of a fork is kept: follow parent|child|both (a kept child is a session of its own)"),

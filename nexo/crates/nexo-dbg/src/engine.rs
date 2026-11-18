@@ -14,7 +14,10 @@ use crate::regs::Regs;
 use crate::{fail, Result};
 
 mod call;
+mod checkpoint;
 pub mod watch;
+
+pub use checkpoint::Checkpoint;
 
 pub use watch::{Guard, WatchHow};
 
@@ -100,6 +103,8 @@ pub enum Why {
     Heap(String),
     /// A call made by `call` or `print` came back to its return address.
     Returned,
+    /// `restart N`: the program is back at a checkpoint; what it says.
+    Restart(String),
     /// The first stop of a forked child kept as a session of its own: what it is and where it came from.
     Fork(String),
     /// The program forked under `follow child`: the child is kept and this process was let go.
@@ -139,6 +144,8 @@ pub struct Rec {
 }
 
 pub struct Session {
+    /// Kills the process a `restart` made the program when the session goes; first so it drops before `t`.
+    reaper: checkpoint::Reaper,
     pub t: Box<dyn Target>,
     pub mods: Mods,
     pub state: State,
@@ -204,6 +211,11 @@ pub struct Session {
     pub libs: crate::libs::Loads,
     /// The pc inside the function a `finish` runs out of, until the finish stop reads its return value.
     pub(crate) finish_from: Option<u64>,
+    /// The checkpoints (`checkpoint`): processes forked from the program, stopped and attached.
+    pub checkpoints: Vec<Checkpoint>,
+    ckpt_next: u32,
+    /// While a checkpoint's `fork()` runs: the children the backend kept, with the pages guarded at that moment.
+    ckpt_forks: Option<Vec<(Forked, Vec<Guard>)>>,
 }
 
 /// A child the program forked.
@@ -524,6 +536,10 @@ impl Session {
             step_from: None,
             libs: Default::default(),
             finish_from: None,
+            reaper: Default::default(),
+            checkpoints: Vec::new(),
+            ckpt_next: 1,
+            ckpt_forks: None,
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -896,6 +912,7 @@ impl Session {
         self.drain_output();
         self.hooks_end();
         self.trace_end();
+        self.drop_checkpoints();
     }
 
     /// A thread is at one of our breakpoints: does it stop?
@@ -1097,6 +1114,12 @@ impl Session {
     /// of its own in `kids`, with the breakpoints copied.
     fn take_forks(&mut self) {
         for f in self.t.forks() {
+            // a checkpoint's fork: the child is kept as it is, with the guards of the moment, not adopted
+            if let Some(kept) = &mut self.ckpt_forks {
+                let guards = self.guards.iter().filter(|g| g.armed).copied().collect();
+                kept.push((f, guards));
+                continue;
+            }
             let Forked { pid, at, vfork, patches, target, .. } = f;
             // fork returns in libc, which the list read at the start may not hold yet
             if self.mods.locate(at).is_none() {

@@ -118,6 +118,8 @@ const CONTROL: &[&str] = &[
     "kill",
     "detach",
     "follow",
+    "checkpoints",
+    "restart",
     "end",
     "stdin",
     "catch",
@@ -162,7 +164,9 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let Some(first) = rest.first() else { return DbgClass::Control };
     let head = crate::gdbdialect::base_name(first);
     match head {
-        "attach" | "connect" | "write" | "setreg" | "return" | "jump" | "gcore" | "call" | "dump" => DbgClass::Change,
+        "attach" | "connect" | "write" | "setreg" | "return" | "jump" | "gcore" | "call" | "dump" | "checkpoint" => {
+            DbgClass::Change
+        }
         // an expression that calls a function of the program runs that code
         "print" | "p" | "output" if crate::expr::has_call(&rest[1..].join(" ")) => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
@@ -281,6 +285,7 @@ const READ_ALLOWED: &[&str] = &[
     "kill",
     "detach",
     "follow",
+    "checkpoints",
     "catch",
     "strace",
     "ltrace",
@@ -355,6 +360,7 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
             "write" | "setreg" | "return" | "jump" => format!("`{name}` writes into the program"),
             "gcore" => "`gcore` writes a file".to_string(),
             "call" => "`call` runs code of the program".to_string(),
+            "checkpoint" | "restart" => format!("`{name}` makes the program fork itself or replaces it with a copy"),
             "name" | "note" => format!("`{name}` saves a name or note"),
             "attach" | "connect" => format!("`{name}` attaches to a process or a remote stub"),
             "run" => "`run` starts a program".to_string(),

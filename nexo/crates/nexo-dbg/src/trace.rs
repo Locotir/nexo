@@ -96,7 +96,7 @@ impl Tracing {
         }
     }
 
-    fn wants_syscalls(&self) -> bool {
+    pub(crate) fn wants_syscalls(&self) -> bool {
         self.sys.is_some() || self.sys_catch.is_some()
     }
 }

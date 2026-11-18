@@ -527,7 +527,7 @@ fn handle(dir: &Path, port: u16, slots: &mut Vec<Slot>, stream: TcpStream) -> Op
             "wait" | "status" | "info" if pending.is_some() && sess.state != State::Running => {
                 Ok(pending.take().unwrap_or_else(|| rows("status", vec![], json!({}))))
             }
-            "cont" | "c" | "continue" | "step" | "s" | "next" | "n" | "finish" | "until" | "signal" => {
+            "cont" | "c" | "continue" | "step" | "s" | "next" | "n" | "finish" | "until" | "signal" | "restart" => {
                 *pending = None;
                 sess.exec(&words)
             }

@@ -80,6 +80,7 @@ impl Session {
         }
         self.uninsert_all();
         self.t.kill()?;
+        self.drop_checkpoints();
         self.state = State::Exited;
         self.exit = Some("killed by the debugger".into());
         let mut l = vec!["program killed".to_string()];
@@ -124,6 +125,7 @@ impl Session {
             self.uninsert_all();
         }
         self.t.detach()?;
+        self.drop_checkpoints();
         self.state = State::Exited;
         self.exit = Some("detached".into());
         l.push("the program goes on without the debugger".into());
