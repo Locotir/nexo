@@ -1190,7 +1190,7 @@ mod tests {
 
     #[test]
     fn until_conditions_pick_the_run() {
-        let ex = |c| Outcome::Exit(c);
+        let ex = Outcome::Exit;
         let sig = Outcome::Crash("SIGSEGV".into());
         let kill = Outcome::Killed("SIGKILL".into());
         assert_eq!(verdict(&Until::Exit, &ex(0), ""), Verdict::Next);
