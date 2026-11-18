@@ -170,13 +170,13 @@ pub fn utf16_text(bytes: &[u8]) -> Option<(String, bool, bool)> {
     if !body.len().is_multiple_of(2) {
         return None;
     }
-    let unit = |c: &[u8]| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) };
+    let unit = |c: &[u8; 2]| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) };
     // a NUL or another control byte means a binary that happens to start like UTF-16 (UTF-32 does)
     let control = |u: u16| u < 0x20 && !matches!(u, 9 | 10 | 12 | 13);
-    if body.chunks_exact(2).take(4096).map(unit).any(control) {
+    if body.as_chunks::<2>().0.iter().take(4096).map(unit).any(control) {
         return None;
     }
-    let text: String = char::decode_utf16(body.chunks_exact(2).map(unit)).collect::<Result<_, _>>().ok()?;
+    let text: String = char::decode_utf16(body.as_chunks::<2>().0.iter().map(unit)).collect::<Result<_, _>>().ok()?;
     Some((text, le, bom))
 }
 

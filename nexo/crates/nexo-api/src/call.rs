@@ -646,12 +646,11 @@ pub fn json_get<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
             let end = r.find(['.', '[']).unwrap_or(r.len());
             cur = cur.get(&r[..end])?;
             rest = &r[end..];
-        } else if let Some(r) = rest.strip_prefix('[') {
+        } else {
+            let r = rest.strip_prefix('[')?;
             let end = r.find(']')?;
             cur = cur.get(r[..end].parse::<usize>().ok()?)?;
             rest = &r[end + 1..];
-        } else {
-            return None;
         }
     }
     Some(cur)

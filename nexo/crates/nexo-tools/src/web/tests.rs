@@ -809,7 +809,8 @@ async fn a_file_refused_by_its_headers_is_not_downloaded() {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     });
     let t = WebFetch::new(&WebConfig::default());
-    let run = t.run(json!({"url": format!("http://{addr}/big.pdf")}), &ctx());
+    let cx = ctx();
+    let run = t.run(json!({"url": format!("http://{addr}/big.pdf")}), &cx);
     let out = tokio::time::timeout(std::time::Duration::from_secs(10), run).await.expect("the body was waited for");
     assert!(out.is_error && out.content.contains("The file is a PDF (50000000 bytes)."), "{}", out.content);
     assert!(

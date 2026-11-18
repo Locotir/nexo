@@ -406,7 +406,7 @@ pub fn mark_headless_in(dir: &Path, id: &str) -> anyhow::Result<bool> {
     }
     let mut f = OpenOptions::new().read(true).append(true).open(&path)?;
     // a file cut in the middle of a line gets the line's end first, so that the mark is a line of its own
-    let mut last = [b'\n'];
+    let mut last = *b"\n";
     if std::io::Seek::seek(&mut f, std::io::SeekFrom::End(-1)).is_ok() {
         std::io::Read::read_exact(&mut f, &mut last)?;
     }

@@ -88,7 +88,7 @@ pub(super) fn catastrophic_at(cmd: &str, home: Option<&Path>, cwd: Option<&Path>
                     });
                 let dot = String::from(".");
                 let at_whole =
-                    if starts.is_empty() { whole(&dot).is_some() } else { starts.iter().any(|a| whole(*a).is_some()) };
+                    if starts.is_empty() { whole(&dot).is_some() } else { starts.iter().any(|a| whole(a).is_some()) };
                 if deletes && at_whole && !find_narrows(args) {
                     return Some("a recursive delete of the root or home folder");
                 }
@@ -103,7 +103,7 @@ pub(super) fn catastrophic_at(cmd: &str, home: Option<&Path>, cwd: Option<&Path>
                     } else {
                         operands().next().is_some_and(|a| is_user(a, home))
                     };
-                    let breaks = operands().filter_map(|a| whole(a)).any(|kind| match kind {
+                    let breaks = operands().filter_map(&whole).any(|kind| match kind {
                         Whole::Home => !mine,
                         Whole::Root | Whole::Above | Whole::Core => true,
                         Whole::Other => false,
@@ -124,7 +124,7 @@ pub(super) fn catastrophic_at(cmd: &str, home: Option<&Path>, cwd: Option<&Path>
                 return Some("raw bytes written over a disk");
             }
             // `cp image.iso /dev/sda`: the last word is the target; a disk read as the source is harmless
-            "cp" if operands().last().is_some_and(|a| disk(a)) => return Some("raw bytes written over a disk"),
+            "cp" if operands().next_back().is_some_and(|a| disk(a)) => return Some("raw bytes written over a disk"),
             // listing signatures is harmless; `-a` and `-o` erase them
             "wipefs"
                 if operands().any(|a| disk(a))

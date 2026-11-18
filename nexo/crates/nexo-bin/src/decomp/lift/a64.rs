@@ -911,12 +911,12 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
     let len = (end.saturating_sub(start) as usize) & !3;
     let mut ins: Vec<Ins> = Vec::new();
     if let Some(bytes) = env.read(start, len) {
-        for (k, w) in bytes.chunks_exact(4).enumerate() {
-            ins.push(decode_word(u32::from_le_bytes([w[0], w[1], w[2], w[3]]), start.wrapping_add(4 * k as u64)));
+        for (k, w) in bytes.as_chunks::<4>().0.iter().enumerate() {
+            ins.push(decode_word(u32::from_le_bytes(*w), start.wrapping_add(4 * k as u64)));
         }
     }
     let at = |a: u64| -> Option<usize> {
-        if a < start || a >= end || (a - start) % 4 != 0 {
+        if a < start || a >= end || !(a - start).is_multiple_of(4) {
             return None;
         }
         let k = ((a - start) / 4) as usize;

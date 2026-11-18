@@ -222,7 +222,7 @@ fn the_date_is_the_one_given_and_the_text_is_stable() {
 fn only_keeps_the_endpoints_named() {
     let api = api();
     let item = id_of(&api, "GET", "/api/items/{item_id}");
-    let t = render(&api, Lang::Ts, &[item.clone()], "2026-11-18").unwrap();
+    let t = render(&api, Lang::Ts, std::slice::from_ref(&item), "2026-11-18").unwrap();
     assert!(t.contains(&format!("export async function {item}(")));
     assert!(!t.contains("graphql"));
     assert!(!t.contains("/api/login"));

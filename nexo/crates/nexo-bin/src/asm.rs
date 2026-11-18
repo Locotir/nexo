@@ -352,8 +352,8 @@ pub fn assembly(source: &str, at: u64, bits: u32) -> Result<Output> {
 pub fn assembly_arm64(source: &str, at: u64) -> Result<Output> {
     let bytes = crate::a64::asm::assemble(source, at)?;
     let mut lines = vec![format!("asm at {at:#x} (arm64): {}", hex(&bytes))];
-    for (i, word) in bytes.chunks_exact(4).enumerate() {
-        let raw = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+    for (i, word) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let raw = u32::from_le_bytes(*word);
         let pc = at.wrapping_add(4 * i as u64);
         lines.push(format!("{pc:#x}  {:<32} {}", hex(word), crate::a64::decode(raw, pc).text()));
     }

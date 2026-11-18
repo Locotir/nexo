@@ -324,7 +324,7 @@ pub fn build(all: &[Exchange], o: &Options) -> Api {
         drafts.push(Draft { first, ep });
     }
     for ((method, origin, path, name), members) in &gql {
-        let calls: Vec<Call> = members.iter().map(|(x, op, n)| Call { x: *x, op: Some((op, *n)) }).collect();
+        let calls: Vec<Call> = members.iter().map(|(x, op, n)| Call { x, op: Some((op, *n)) }).collect();
         let mut ep = blank(method, origin, path);
         ep.gql = Some(name.clone());
         fill(&calls, &auths, &mut ep);

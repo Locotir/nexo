@@ -414,7 +414,7 @@ impl Machine<'_> {
     }
 
     fn sys_munmap(&mut self, addr: u64, len: u64) -> u64 {
-        if addr % mem::PAGE != 0 || len == 0 || len > ARENA_MAX {
+        if !addr.is_multiple_of(mem::PAGE) || len == 0 || len > ARENA_MAX {
             return neg(EINVAL);
         }
         let size = page_up(len);
@@ -427,7 +427,7 @@ impl Machine<'_> {
 
     /// Succeeds on mapped pages. It only adds: a page that gains write or exec keeps it, and none is taken away.
     fn sys_mprotect(&mut self, addr: u64, len: u64, prot: u64) -> u64 {
-        if addr % mem::PAGE != 0 || len > ARENA_MAX * 4 {
+        if !addr.is_multiple_of(mem::PAGE) || len > ARENA_MAX * 4 {
             return neg(EINVAL);
         }
         let size = page_up(len);

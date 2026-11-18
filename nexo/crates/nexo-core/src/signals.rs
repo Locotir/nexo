@@ -49,7 +49,7 @@ mod tests {
 
     /// Polls `fut` once; `None` when it is still pending.
     async fn poll_once<F: std::future::Future + Unpin>(fut: &mut F) -> Option<F::Output> {
-        use std::{future::Future, pin::Pin, task::Poll};
+        use std::{pin::Pin, task::Poll};
         std::future::poll_fn(|cx| match Pin::new(&mut *fut).poll(cx) {
             Poll::Ready(v) => Poll::Ready(Some(v)),
             Poll::Pending => Poll::Ready(None),

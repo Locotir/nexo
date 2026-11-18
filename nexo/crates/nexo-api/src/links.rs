@@ -778,12 +778,11 @@ fn value_at(body: Option<&Value>, location: Option<&str>, path: &str) -> Option<
         if let Some(r) = rest.strip_prefix("[]") {
             cur = cur.as_array()?.first()?;
             rest = r;
-        } else if let Some(r) = rest.strip_prefix('.') {
+        } else {
+            let r = rest.strip_prefix('.')?;
             let end = r.find(['.', '[']).unwrap_or(r.len());
             cur = cur.get(&r[..end])?;
             rest = &r[end..];
-        } else {
-            return None;
         }
     }
     match cur {

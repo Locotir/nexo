@@ -334,7 +334,7 @@ fn a_provider_that_misses_only_the_new_messages_is_not_a_call_the_engine_got_wro
     // eight more messages, twice what the view held
     let second = c.view(100, &msgs, 0.0).unwrap();
     let all = 100 + second.tokens as u64;
-    let tail = (second.tokens - first.tokens) as i64;
+    let tail = second.tokens - first.tokens;
     assert!(tail * 10 > all as i64, "the tail is over a tenth of the view, past what `cal_off` allows");
     assert_eq!(cal(&c, "miss"), 0, "the engine changed nothing");
     c.cached(100 + first.tokens as u64, all);
@@ -350,7 +350,7 @@ fn a_provider_that_misses_the_whole_view_is_a_call_the_engine_got_wrong() {
     let msgs = talk(12, 2000);
     let first = answered(&mut c, &msgs[..4], |all| all);
     let second = answered(&mut c, &msgs, |_| 0);
-    let tail = (second.tokens - first.tokens) as i64;
+    let tail = second.tokens - first.tokens;
     assert_eq!(cal(&c, "cal_pred_miss"), tail);
     assert_eq!(cal(&c, "cal_real_miss"), 100 + second.tokens, "all of it, head and messages");
     assert_eq!(cal(&c, "cal_off"), 1);

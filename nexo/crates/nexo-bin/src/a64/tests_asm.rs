@@ -3,7 +3,7 @@ use super::decode;
 use crate::Error;
 
 fn words(text: &str, at: u64) -> Vec<u32> {
-    assemble(text, at).unwrap().chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect()
+    assemble(text, at).unwrap().as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
 }
 
 fn word(text: &str, at: u64) -> u32 {
