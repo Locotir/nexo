@@ -54,16 +54,20 @@ pub(super) fn units(history: &[Message]) -> Vec<Unit> {
     for (mi, m) in history.iter().enumerate() {
         for p in &m.content {
             match p {
-                Part::Text { text } if m.role == Role::User && is_request(text) => out.push(Unit {
-                    msg: mi,
-                    kind: Kind::Person,
-                    tool: String::new(),
-                    files: vec![],
-                    path: None,
-                    command: None,
-                    text: text.clone(),
-                    error: false,
-                }),
+                Part::Text { text }
+                    if m.role == Role::User && is_request(nexo_core::agent::person_words(text).trim()) =>
+                {
+                    out.push(Unit {
+                        msg: mi,
+                        kind: Kind::Person,
+                        tool: String::new(),
+                        files: vec![],
+                        path: None,
+                        command: None,
+                        text: nexo_core::agent::person_words(text).trim().to_string(),
+                        error: false,
+                    })
+                }
                 Part::Text { text } if m.role == Role::Assistant => out.push(Unit {
                     msg: mi,
                     kind: Kind::Agent,

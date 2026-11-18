@@ -76,7 +76,7 @@ pub fn names(text: &str) -> BTreeSet<String> {
 }
 
 pub(super) const NOT_REQUEST: &[&str] =
-    &["<system-reminder>", "<local-command", "<command-", "Caveat:", "[Request interrupted"];
+    &["<system-reminder>", "<local-command", "<command-", "Caveat:", "[Request interrupted", "[background jobs ended]"];
 
 pub(super) fn is_request(text: &str) -> bool {
     let t = text.trim_start();

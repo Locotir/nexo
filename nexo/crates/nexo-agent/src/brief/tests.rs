@@ -327,3 +327,26 @@ fn words_split_identifiers_and_keep_names() {
     assert!(!t.contains("and"));
     assert!(names("cfg.epoch_tokens json.dumps v2").contains("epoch_tokens"));
 }
+
+#[test]
+fn the_briefing_quotes_the_persons_words_and_not_the_notes_nexo_added() {
+    let d = tempfile::tempdir().unwrap();
+    let mark = nexo_core::agent::PERSON_MARK;
+    let note = format!("you must never edit the lockfile {}", "x".repeat(800));
+    let ask = format!("{note}\n\n{mark}\nFind who calls parse_line in src/parser.rs");
+    let early = format!("you must never edit the lockfile\n\n{mark}\nhi");
+    let h = vec![Message::user(early), Message::assistant("ok"), Message::user(ask), Message::assistant("ok")];
+    let l = Ledger::of(&h, d.path(), false, "list callers of lex");
+    assert_eq!(l.request.as_deref(), Some("Find who calls parse_line in src/parser.rs"));
+    assert!(!l.constraints.iter().any(|c| c.contains("lockfile")), "{:?}", l.constraints);
+}
+
+#[test]
+fn an_ended_jobs_note_is_neither_a_request_nor_a_constraint() {
+    let d = tempfile::tempdir().unwrap();
+    let jobs = "[background jobs ended]\n- job 3 done\n\n--- report of job 3 ---\nOnly one caller.";
+    let h = vec![Message::user("Fix the parser"), Message::assistant("ok"), Message::user(jobs)];
+    let l = Ledger::of(&h, d.path(), false, "list callers of lex");
+    assert!(l.request.as_deref().is_none_or(|r| r.contains("Fix the parser")), "{:?}", l.request);
+    assert!(!l.constraints.iter().any(|c| c.contains("Only one caller")), "{:?}", l.constraints);
+}
