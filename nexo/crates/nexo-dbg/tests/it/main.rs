@@ -21,6 +21,7 @@ mod dump_mem;
 mod float_args;
 mod follow_fork;
 mod frames;
+mod gcore_live;
 mod gdb_script;
 mod late_libs;
 mod launch_opts;

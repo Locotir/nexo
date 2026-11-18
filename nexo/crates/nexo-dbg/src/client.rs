@@ -91,6 +91,7 @@ const CONTROL: &[&str] = &[
     "log",
     "dis",
     "disasm",
+    "list",
     "sessions",
     "help",
     "catches",
@@ -158,7 +159,7 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let Some(first) = rest.first() else { return DbgClass::Control };
     let head = crate::gdbdialect::base_name(first);
     match head {
-        "attach" | "connect" | "write" | "setreg" | "call" | "dump" => DbgClass::Change,
+        "attach" | "connect" | "write" | "setreg" | "return" | "jump" | "gcore" | "call" | "dump" => DbgClass::Change,
         // an expression that calls a function of the program runs that code
         "print" | "p" | "output" if crate::expr::has_call(&rest[1..].join(" ")) => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
@@ -344,7 +345,8 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
     }
     if !READ_ALLOWED.contains(&name) {
         return Some(match name {
-            "write" | "setreg" => format!("`{name}` writes into the program"),
+            "write" | "setreg" | "return" | "jump" => format!("`{name}` writes into the program"),
+            "gcore" => "`gcore` writes a file".to_string(),
             "call" => "`call` runs code of the program".to_string(),
             "name" | "note" => format!("`{name}` saves a name or note"),
             "attach" | "connect" => format!("`{name}` attaches to a process or a remote stub"),

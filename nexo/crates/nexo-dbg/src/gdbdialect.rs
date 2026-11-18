@@ -21,6 +21,8 @@ pub fn alias(name: &str) -> &str {
         "q" => "quit",
         "k" => "kill",
         "disp" => "display",
+        "l" => "list",
+        "generate-core-file" => "gcore",
         other => other,
     }
 }
@@ -641,8 +643,6 @@ pub fn per_line(fmt: char, size: usize) -> usize {
 /// gdb commands this debugger has no twin for, with what to type instead.
 pub fn hint(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "list" | "l" => "`dis [addr] [N]` shows the code; a stop shows file:line when the program has DWARF lines",
-        "return" | "jump" => "`setreg rip <addr>` moves the program counter (asks); `finish` runs to the caller",
         "rwatch" | "awatch" => "`watch <addr|A..B> [len] r|w|x` stops on a read, a write or a fetch (`if`, `after` and `log` as on `break`)",
         "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program",
         "source" => "scripts go in the call itself, one command per line, or `a; b; c`",
