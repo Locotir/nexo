@@ -19,6 +19,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("until", "run to an address"),
     ("wait", "wait for a running program to stop [--wait N]"),
     ("stop", "stop a running program now"),
+    ("signal", "go on delivering a signal: signal <SIG|N|0> [--wait N] (Linux; 0 drops the pending one)"),
+    ("stops", "how a stop is told: stops compact (one line, a crash stays full) | stops full"),
     ("kill", "end the program; `kill call` ends a call under way and puts its registers back"),
     ("detach", "let the program go on alone"),
     ("follow", "which side of a fork is kept: follow parent|child|both (a kept child is a session of its own)"),
