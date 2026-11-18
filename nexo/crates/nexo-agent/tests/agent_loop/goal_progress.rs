@@ -76,7 +76,9 @@ async fn a_goal_that_reads_the_same_three_files_again_pauses_with_the_facts() {
     assert!(reqs.iter().all(|q| !text_of_parts(&q.messages.last().unwrap().content).contains("automatic check")));
     assert!(!tail(4).contains("goal work:"), "{}", tail(4));
     assert!(
-        tail(5).contains("[goal work: no progress for 2 steps, same result again: store.rs ×1, lock.rs ×1]"),
+        tail(5).contains(
+            "[nexo, not the person: goal work: no progress for 2 steps, same result again: store.rs ×1, lock.rs ×1]"
+        ),
         "{}",
         tail(5)
     );
@@ -194,26 +196,31 @@ async fn a_goal_run_shows_the_model_its_own_counts() {
     r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
     assert_eq!(client.requests().len(), 9);
     // nothing to count before the first call
-    assert!(!tail_of(&client, 0).contains("Goal so far"), "{}", tail_of(&client, 0));
+    assert!(!tail_of(&client, 0).contains("goal so far"), "{}", tail_of(&client, 0));
     // an edit sends the reads since the last one back to zero
     assert!(
         tail_of(&client, 3)
-            .contains("Goal so far: 0 min, round 1, 3 tool calls; read 2 files, edited 0; ran 0 commands, 0 failed."),
+            .contains("[nexo, not the person: goal so far: 0 min, round 1, 3 tool calls; read 2 files, edited 0; ran 0 commands, 0 failed.]"),
         "{}",
         tail_of(&client, 3)
     );
     assert!(
         tail_of(&client, 4).contains(
-            "Goal so far: 0 min, round 1, 4 tool calls; read 2 files (0 since the last edit), edited 1; ran 0 commands, 0 failed."
+            "[nexo, not the person: goal so far: 0 min, round 1, 4 tool calls; read 2 files (0 since the last edit), edited 1; ran 0 commands, 0 failed.]"
         ),
         "{}",
         tail_of(&client, 4)
     );
     assert!(tail_of(&client, 5).contains("read 3 files (1 since the last edit), edited 1; ran 0 commands"));
     // the second round: the continuation, then the line with the failed command counted
-    let line = "Goal so far: 0 min, round 2, 6 tool calls; read 3 files (1 since the last edit), edited 1; ran 1 command, 1 failed.";
+    let line = "[nexo, not the person: goal so far: 0 min, round 2, 6 tool calls; read 3 files (1 since the last edit), edited 1; ran 1 command, 1 failed.]";
     assert!(tail_of(&client, 7).starts_with("[goal: continue]"), "{}", tail_of(&client, 7));
     assert!(tail_of(&client, 7).contains(line), "{}", tail_of(&client, 7));
+    // nexo wrote it, not the person: the trailing line says so
+    let t7 = tail_of(&client, 7);
+    let counts = &t7[t7.find("[nexo").unwrap_or(0)..];
+    assert!(counts.starts_with("[nexo, not the person: goal so far:"), "{t7}");
+    assert!(counts.ends_with(']'), "{t7}");
     assert!(tail_of(&client, 8).contains("round 2, 7 tool calls; read 4 files (2 since the last edit)"));
     // it rides on the request only: the saved conversation holds the continuation mark alone
     let saved: Vec<String> = second
@@ -226,7 +233,7 @@ async fn a_goal_run_shows_the_model_its_own_counts() {
         })
         .collect();
     assert_eq!(saved.first().map(String::as_str), Some("[goal: continue]"));
-    assert!(saved.iter().all(|t| !t.contains("Goal so far")), "{saved:?}");
+    assert!(saved.iter().all(|t| !t.contains("goal so far")), "{saved:?}");
     r.stop().await;
 }
 
@@ -254,7 +261,7 @@ async fn a_resumed_goal_starts_its_counts_over() {
     assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
     let after = tail_of(&client, 3);
     assert!(
-        after.contains("Goal so far: 0 min, round 1, 1 tool call; read 1 file, edited 0; ran 0 commands, 0 failed."),
+        after.contains("[nexo, not the person: goal so far: 0 min, round 1, 1 tool call; read 1 file, edited 0; ran 0 commands, 0 failed.]"),
         "{after}"
     );
     r.stop().await;
@@ -288,10 +295,10 @@ async fn a_supervisor_note_and_the_goal_counts_ride_as_one_text_part() {
         .filter_map(|p| if let Part::Text { text, .. } = p { Some(text.as_str()) } else { None })
         .collect();
     let tail = texts.last().copied().unwrap_or("");
-    assert!(tail.contains("was run again") && tail.contains("Goal so far"), "{texts:?}");
-    assert!(tail.find("was run again") < tail.find("Goal so far"), "the supervisor note comes first: {tail}");
+    assert!(tail.contains("was run again") && tail.contains("goal so far"), "{texts:?}");
+    assert!(tail.find("was run again") < tail.find("goal so far"), "the supervisor note comes first: {tail}");
     assert!(
-        texts[..texts.len() - 1].iter().all(|t| !t.contains("Goal so far") && !t.contains("was run again")),
+        texts[..texts.len() - 1].iter().all(|t| !t.contains("goal so far") && !t.contains("was run again")),
         "{texts:?}"
     );
     // the person is still told of the supervisor note
