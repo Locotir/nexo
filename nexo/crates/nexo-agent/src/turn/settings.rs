@@ -33,6 +33,9 @@ async fn switch_model(state: &Shared, provider: Option<String>, model: String) -
             emit(&st.events, AgentEvent::ModelChanged { provider: provider.clone(), model: model.clone() });
             emit(&st.events, st.limits.event(&provider, &model));
             emit(&st.events, effort_event(&st));
+            if let Some(n) = setup::effort_clamp_note(&st.target.get().1, &model, &st.config.agent.reasoning) {
+                notice(&st.events, Level::Info, n);
+            }
             if fast_on(&st) != was_fast {
                 emit(&st.events, fast_event(&st));
             }
@@ -110,7 +113,7 @@ pub(super) fn status_text(st: &State) -> String {
     let project = nexo_core::paths::project_config_file(&st.cwd);
     let short = nexo_core::paths::shown;
     let file = |p: &Path| format!("{}{}", short(p), if p.is_file() { "" } else { " (none)" });
-    let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning).unwrap_or_else(|| "default".into());
+    let effort = setup::effective_effort(&cfg, &model, &st.config.agent.reasoning).unwrap_or_else(|| "default".into());
     let mut lines = vec![
         format!(
             "nexo {} · {}{}",
@@ -236,7 +239,7 @@ pub(super) fn tools_text(tools: &ToolSet) -> String {
 pub(super) fn effort_event(st: &State) -> AgentEvent {
     let (_, cfg, model) = st.target.get();
     AgentEvent::Effort {
-        current: setup::effort_of(&cfg, &model, &st.config.agent.reasoning),
+        current: setup::effective_effort(&cfg, &model, &st.config.agent.reasoning),
         levels: cfg.efforts.get(&model).cloned().unwrap_or_default(),
         model,
     }

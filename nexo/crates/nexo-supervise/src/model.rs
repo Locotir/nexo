@@ -165,9 +165,12 @@ impl Judge for ClientJudge {
         let (system, input) = (system.to_string(), input.to_string());
         let (tx, rx) = mpsc::channel();
         self.rt.spawn(async move {
+            let reasoning = nexo_providers::probe::side_reasoning(&cfg, &model);
             let mut req = ModelRequest::new(model, system, vec![Message::user(input)]);
             req.max_tokens = MAX_REPLY_TOKENS;
             req.cache = false;
+            // a short ruling on text in hand: the least thinking the model takes
+            req.reasoning = reasoning;
             let out = async {
                 let mut stream = client.stream(&cfg, &req, 0).await.map_err(|e| e.message)?;
                 let mut c = Collector::new();

@@ -88,6 +88,8 @@ pub async fn ask(
     // room for a model that reasons before it answers; the answer itself is one word
     req.max_tokens = 1024;
     req.temperature = Some(0.0);
+    // one word of answer: the least thinking the model takes, not the session's level
+    req.reasoning = nexo_providers::probe::side_reasoning(&cfg, &model);
     let mut stream = client.stream(&cfg, &req, retries).await?;
     let mut c = Collector::new();
     while let Some(ev) = stream.next().await {

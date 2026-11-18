@@ -85,14 +85,8 @@ pub(super) const SUGGEST_TOKENS: u32 = 200;
 /// A side request that needs a few words: no thinking first (or the least the model takes, where off is not a
 /// level it has), and a cap that keeps it cheap on any model.
 pub(super) fn lean(req: &mut ModelRequest, levels: &[String], tokens: u32) {
-    let has = |l: &str| levels.iter().any(|x| x == l);
-    req.reasoning = Some(if has("minimal") && !has("off") && !has("none") {
-        ReasoningConfig::Effort(Effort::Minimal)
-    } else if has("low") && !has("off") && !has("none") {
-        ReasoningConfig::Effort(Effort::Low)
-    } else {
-        ReasoningConfig::Off
-    });
+    // a model that lists no `off` gets its lowest level, not off, which it may refuse
+    req.reasoning = nexo_core::provider::lowest_level(levels, true).or(Some(ReasoningConfig::Off));
     req.max_tokens = tokens;
 }
 
@@ -440,7 +434,24 @@ mod suggest_tests {
         assert_eq!(r(&["off", "low", "high"]), Some(ReasoningConfig::Off));
         assert_eq!(r(&["minimal", "low", "medium", "high"]), Some(ReasoningConfig::Effort(Effort::Minimal)));
         assert_eq!(r(&["low", "high"]), Some(ReasoningConfig::Effort(Effort::Low)));
+        // no `off` and no low rung in the list: its lowest level, not off
+        assert_eq!(r(&["medium", "high"]), Some(ReasoningConfig::Effort(Effort::Medium)));
         assert_eq!(suggest_request(&last, Message::assistant("ok"), &[]).max_tokens, SUGGEST_TOKENS);
+    }
+
+    /// The session's level does not ride on a side request: it asks for the least thinking the model lists, or none.
+    #[test]
+    fn a_suggestion_is_not_raised_to_the_level_of_the_session() {
+        let mut last = ModelRequest::new("m", "", vec![]);
+        last.reasoning = Some(ReasoningConfig::Effort(Effort::Xhigh));
+        let lv = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let r = suggest_request(&last, Message::assistant("ok"), &lv(&["low", "high", "xhigh"])).reasoning;
+        assert_eq!(r, Some(ReasoningConfig::Effort(Effort::Low)));
+        last.reasoning = Some(ReasoningConfig::Effort(Effort::High));
+        let r = suggest_request(&last, Message::assistant("ok"), &lv(&["off", "high"])).reasoning;
+        assert_eq!(r, Some(ReasoningConfig::Off));
+        // and the last request itself is left as it was sent
+        assert_eq!(last.reasoning, Some(ReasoningConfig::Effort(Effort::High)));
     }
 
     #[test]

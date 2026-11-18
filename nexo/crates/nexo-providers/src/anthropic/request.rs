@@ -3,7 +3,7 @@
 use nexo_core::{Effort, EventStream, ModelRequest, Part, ProviderConfig, ReasoningConfig, Role};
 use serde_json::{json, Value};
 
-use super::family::{adaptive_thinking, family, modern, takes_temperature};
+use super::family::{adaptive_thinking, modern, off_thinking, takes_temperature, takes_xhigh};
 use super::messages::convert;
 use super::parser::MessagesParser;
 use super::{Anthropic, VERSION};
@@ -16,19 +16,22 @@ pub(super) const MODERN_MAX_TOKENS: u32 = 64_000;
 /// The largest reply of a Claude 5.5 model.
 pub const MODERN_MAX_OUTPUT: u32 = 128_000;
 
-/// The `output_config.effort` of a reasoning setting; `None` is off.
-pub(super) fn effort_name(r: ReasoningConfig) -> Option<&'static str> {
-    match r {
-        ReasoningConfig::Off => None,
-        ReasoningConfig::Effort(Effort::Minimal | Effort::Low) => Some("low"),
-        ReasoningConfig::Effort(Effort::Medium) => Some("medium"),
-        ReasoningConfig::Effort(Effort::High) => Some("high"),
-        ReasoningConfig::Budget(b) => Some(match b {
-            0..=2048 => "low",
-            2049..=12_000 => "medium",
-            _ => "high",
-        }),
-    }
+/// The `output_config.effort` of a reasoning setting; `None` is off. `model` lowers `xhigh` to `high` where the
+/// model has no such level (it is a 400 there).
+pub(super) fn effort_name(r: ReasoningConfig, model: &str) -> Option<&'static str> {
+    let e = match r {
+        ReasoningConfig::Off => return None,
+        ReasoningConfig::Effort(e) => e,
+        ReasoningConfig::Budget(b) => Effort::from_budget(b),
+    };
+    Some(match e {
+        Effort::Minimal | Effort::Low => "low",
+        Effort::Medium => "medium",
+        Effort::High => "high",
+        Effort::Xhigh if takes_xhigh(model) => "xhigh",
+        Effort::Xhigh => "high",
+        Effort::Max => "max",
+    })
 }
 
 impl Anthropic {
@@ -142,6 +145,8 @@ impl Anthropic {
                 Some(ReasoningConfig::Effort(Effort::Low)) => Some(2048),
                 Some(ReasoningConfig::Effort(Effort::Medium)) => Some(8192),
                 Some(ReasoningConfig::Effort(Effort::High)) => Some(16384),
+                Some(ReasoningConfig::Effort(Effort::Xhigh)) => Some(24576),
+                Some(ReasoningConfig::Effort(Effort::Max)) => Some(32768),
                 _ => None,
             };
             // SetModel can land between the rounds of one turn (the command loop in
@@ -151,9 +156,12 @@ impl Anthropic {
             // the budget must stay below max_tokens and at least 1024: a reply too small for that goes without
             if adaptive_thinking(&req.model) {
                 // no budget on these models: the depth is the effort, and no reasoning set leaves it to the model
-                if let Some(e) = req.reasoning.and_then(effort_name).filter(|_| !broken_round) {
+                if let Some(e) = req.reasoning.and_then(|r| effort_name(r, &req.model)).filter(|_| !broken_round) {
                     body["thinking"] = json!({"type": "adaptive"});
                     body["output_config"] = json!({"effort": e});
+                } else if let (Some(ReasoningConfig::Off), Some(t)) = (req.reasoning, off_thinking(&req.model)) {
+                    // Claude 5 thinks when `thinking` is left out: off must say so
+                    body["thinking"] = json!({"type": t});
                 }
             } else if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
                 let b = b.min(req.max_tokens - 1);
@@ -183,7 +191,7 @@ impl Anthropic {
         // a round whose thinking block another model made keeps its settings here: the 5.5 API drops a block it
         // cannot read by itself, and the None branch below would strip every block of the history (a history edit:
         // the messages cache and every later block are lost)
-        let effort = req.reasoning.map_or(Some("medium"), effort_name);
+        let effort = req.reasoning.map_or(Some("medium"), |r| effort_name(r, &req.model));
         match effort {
             Some(e) => {
                 body["output_config"] = json!({"effort": e});
@@ -196,11 +204,11 @@ impl Anthropic {
                 body["thinking"] = thinking;
             }
             None => {
-                // reasoning off: Sonnet has a lowest setting; the others always think and take nothing
-                if family(&req.model) == Some("sonnet") {
-                    body["thinking"] = json!({"type": "between_tools"});
+                // reasoning off: Sonnet has a lowest setting, Haiku can be disabled; Opus 5.5 always thinks and takes nothing
+                if let Some(t) = off_thinking(&req.model) {
+                    body["thinking"] = json!({"type": t});
                 }
-                // `between_tools` takes no `block_binding`: the blocks of earlier turns stay out
+                // those take no `block_binding`: the blocks of earlier turns stay out
                 if let Some(ms) = body["messages"].as_array_mut() {
                     for m in ms {
                         if let Some(c) = m["content"].as_array_mut() {

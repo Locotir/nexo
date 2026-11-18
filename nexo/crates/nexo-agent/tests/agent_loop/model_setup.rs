@@ -286,3 +286,62 @@ async fn a_good_save_replaces_the_old_key_with_the_new_one() {
     assert!(trial_files(&data).is_empty());
     r.stop().await;
 }
+
+/// The levels `m1` and `m2` list: the second does not take what the first does.
+fn two_ladders(default: &str) -> Config {
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.reasoning = Some(default.into());
+    let p = cfg.providers.get_mut("mock").unwrap();
+    p.efforts.insert("m1".into(), ["low", "high", "xhigh"].map(String::from).to_vec());
+    p.efforts.insert("m2".into(), ["high", "max"].map(String::from).to_vec());
+    cfg
+}
+
+fn clamp_notices(evs: &[AgentEvent]) -> Vec<String> {
+    evs.iter()
+        .filter_map(|e| match e {
+            AgentEvent::Notice { level: Level::Info, text, .. } if text.contains("does not take effort") => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_switch_to_a_model_that_lacks_the_level_sends_the_nearest_and_says_so_once() {
+    let d = test_tmpdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(text("one")), Reply::Events(text("two")), Reply::Events(text("three"))]);
+    let mut r = start(client.clone(), two_ladders("xhigh"), None, d.path()).await;
+    r.next().await;
+    // on m1 the level is listed: it goes as it is
+    r.send(AgentCommand::Submit { text: "a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(clamp_notices(&evs).is_empty(), "{:?}", notices(&evs));
+    // m2 lists high and max: xhigh is between them, and the tie goes to the lower
+    r.send(AgentCommand::SetModel { provider: None, model: "m2".into() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("does not take effort"))).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Effort { current: Some(c), .. } if c == "high")), "{evs:?}");
+    let said = clamp_notices(&evs);
+    assert_eq!(said.len(), 1, "{evs:?}");
+    assert!(said[0].starts_with("m2 ") && said[0].contains("`xhigh`") && said[0].contains("`high`"), "{said:?}");
+    // the next requests carry the clamped level, and the notice is not said again at each turn
+    for t in ["b", "c"] {
+        r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert!(clamp_notices(&evs).is_empty(), "{:?}", notices(&evs));
+    }
+    let reqs = client.requests();
+    let level = |i: usize| (reqs[i].model.clone(), reqs[i].reasoning);
+    let high = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::High));
+    let xhigh = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::Xhigh));
+    assert_eq!(level(0), ("m1".into(), xhigh));
+    assert_eq!(level(1), ("m2".into(), high));
+    assert_eq!(level(2), ("m2".into(), high));
+    // back on m1 the level the person had is sent again
+    r.send(AgentCommand::SetModel { provider: None, model: "m1".into() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Effort { current: Some(c), .. } if c == "xhigh")), "{evs:?}");
+    r.stop().await;
+}

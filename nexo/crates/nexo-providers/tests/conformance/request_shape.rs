@@ -321,3 +321,228 @@ fn t7_gemini_results_are_named_after_their_calls() {
 }
 
 // ================= t8: model list and probe =================
+
+/// provider x level -> the field that carries it (a JSON pointer into the body); `None` is no such field.
+#[test]
+fn effort_levels_reach_the_wire_in_the_shape_each_vendor_documents() {
+    use ReasoningConfig::{Budget, Effort as E, Off};
+    let x = Effort::Xhigh;
+    type Case = (&'static str, &'static str, &'static str, ReasoningConfig, &'static str, Option<Value>);
+    let cases: Vec<Case> = vec![
+        // openai-chat: the level, up to xhigh and max, as `reasoning_effort`; a budget is the nearest level
+        ("openai-chat", "https://api.openai.com/v1", "gpt-5.2", E(x), "/reasoning_effort", Some(json!("xhigh"))),
+        (
+            "openai-chat",
+            "https://api.openai.com/v1",
+            "gpt-5.2",
+            E(Effort::Max),
+            "/reasoning_effort",
+            Some(json!("max")),
+        ),
+        ("openai-chat", "https://api.openai.com/v1", "gpt-5", Budget(30_000), "/reasoning_effort", Some(json!("high"))),
+        ("openai-chat", "https://api.openai.com/v1", "gpt-5", Off, "/reasoning_effort", None),
+        // off has a form on DeepSeek, Mistral, Groq and Ollama; OpenRouter takes the object
+        ("openai-chat", "https://api.deepseek.com/v1", "deepseek-v4", Off, "/thinking/type", Some(json!("disabled"))),
+        (
+            "openai-chat",
+            "https://api.mistral.ai/v1",
+            "mistral-small-latest",
+            Off,
+            "/reasoning_effort",
+            Some(json!("none")),
+        ),
+        ("openai-chat", "https://api.groq.com/openai/v1", "qwen3-32b", Off, "/reasoning_effort", Some(json!("none"))),
+        ("openai-chat", "http://localhost:11434/v1", "qwen3:8b", Off, "/reasoning_effort", Some(json!("none"))),
+        (
+            "openai-chat",
+            "https://openrouter.ai/api/v1",
+            "x/y",
+            E(Effort::High),
+            "/reasoning/effort",
+            Some(json!("high")),
+        ),
+        ("openai-chat", "https://openrouter.ai/api/v1", "x/y", E(Effort::High), "/reasoning_effort", None),
+        // responses
+        ("openai-responses", "https://api.openai.com/v1", "gpt-5.2", E(x), "/reasoning/effort", Some(json!("xhigh"))),
+        (
+            "openai-responses",
+            "https://api.openai.com/v1",
+            "gpt-5",
+            Budget(100),
+            "/reasoning/effort",
+            Some(json!("low")),
+        ),
+        // anthropic: xhigh only where the model has it, max everywhere adaptive; off by model
+        (
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-opus-5-5",
+            E(x),
+            "/output_config/effort",
+            Some(json!("xhigh")),
+        ),
+        (
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-opus-5-5",
+            E(Effort::Max),
+            "/output_config/effort",
+            Some(json!("max")),
+        ),
+        (
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-opus-4-6",
+            E(x),
+            "/output_config/effort",
+            Some(json!("high")),
+        ),
+        (
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-opus-5-5",
+            E(Effort::Minimal),
+            "/output_config/effort",
+            Some(json!("low")),
+        ),
+        ("anthropic", "https://api.anthropic.com", "claude-opus-5-1", Off, "/thinking/type", Some(json!("disabled"))),
+        ("anthropic", "https://api.anthropic.com", "claude-sonnet-5-1", Off, "/thinking/type", Some(json!("disabled"))),
+        ("anthropic", "https://api.anthropic.com", "claude-haiku-5-5", Off, "/thinking/type", Some(json!("disabled"))),
+        (
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-sonnet-5-5",
+            Off,
+            "/thinking/type",
+            Some(json!("between_tools")),
+        ),
+        ("anthropic", "https://api.anthropic.com", "claude-opus-5-5", Off, "/thinking", None),
+        ("anthropic", "https://api.anthropic.com", "claude-fable-5-2", Off, "/thinking", None),
+        ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-5", Off, "/thinking", None),
+        (
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+            E(Effort::Max),
+            "/thinking/budget_tokens",
+            Some(json!(8191)),
+        ),
+        // gemini: a budget on 2.5 (Pro cannot go below 128), a level on 3
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.5-flash",
+            Off,
+            "/generationConfig/thinkingConfig/thinkingBudget",
+            Some(json!(0)),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.5-pro",
+            Off,
+            "/generationConfig/thinkingConfig/thinkingBudget",
+            Some(json!(128)),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.5-pro",
+            E(x),
+            "/generationConfig/thinkingConfig/thinkingBudget",
+            Some(json!(24576)),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-3.1-pro-preview",
+            E(Effort::Low),
+            "/generationConfig/thinkingConfig/thinkingLevel",
+            Some(json!("low")),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-3.1-pro-preview",
+            E(Effort::Max),
+            "/generationConfig/thinkingConfig/thinkingLevel",
+            Some(json!("high")),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-3-pro-preview",
+            E(Effort::Medium),
+            "/generationConfig/thinkingConfig/thinkingLevel",
+            Some(json!("high")),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-3-flash-preview",
+            E(Effort::Medium),
+            "/generationConfig/thinkingConfig/thinkingLevel",
+            Some(json!("medium")),
+        ),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com",
+            "gemini-3-flash-preview",
+            E(Effort::Medium),
+            "/generationConfig/thinkingConfig/thinkingBudget",
+            None,
+        ),
+    ];
+    for (proto, base, model, level, ptr, want) in cases {
+        let c = cfg(proto, base);
+        let mut r = req(model);
+        r.reasoning = Some(level);
+        let body = match proto {
+            "openai-chat" => OpenAiChat::body(&c, &r),
+            "openai-responses" => OpenAiResponses::body(&c, &r),
+            "anthropic" => Anthropic::body(&c, &r),
+            _ => Gemini::body(&c, &r),
+        };
+        assert_eq!(body.pointer(ptr).cloned(), want, "{proto} {model} {level:?}: {body}");
+    }
+}
+
+/// The levels each model is offered are the ones it takes: the picker cannot offer a 400.
+#[test]
+fn offered_levels_per_model_follow_the_vendor_docs() {
+    let l = |p: &str, k: &str, b: &str, m: &str| nexo_providers::probe::effort_levels(p, k, b, m, true);
+    let a = "https://api.anthropic.com";
+    // off thinks no less on Opus 5.5 and Fable: it is not offered, `low` is the least
+    assert_eq!(l("anthropic", "", a, "claude-opus-5-5"), ["low", "medium", "high", "xhigh", "max"]);
+    assert!(!l("anthropic", "", a, "claude-fable-5-2").contains(&"off".to_string()));
+    for m in ["claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
+        assert_eq!(l("anthropic", "", a, m)[0], "off", "{m}");
+    }
+    assert_eq!(l("anthropic", "", a, "claude-sonnet-4-6"), ["off", "low", "medium", "high", "max"]);
+    assert_eq!(l("anthropic", "", a, "claude-sonnet-4-5"), ["off", "low", "medium", "high"]);
+    assert_eq!(l("openai-chat", "", "https://api.openai.com/v1", "gpt-5.2"), ["low", "medium", "high", "xhigh"]);
+    assert_eq!(l("openai-chat", "", "https://api.openai.com/v1", "gpt-5.1"), ["low", "medium", "high"]);
+    assert_eq!(l("openai-chat", "", "https://api.x.ai/v1", "grok-4.7"), ["low", "medium", "high", "xhigh"]);
+    assert_eq!(l("openai-chat", "", "https://api.x.ai/v1", "grok-4.5"), ["low", "medium", "high"]);
+    assert_eq!(l("openai-chat", "", "https://api.deepseek.com/v1", "deepseek-v4"), ["off", "low", "high", "max"]);
+    assert!(l("openai-chat", "", "https://api.deepseek.com/v1", "deepseek-reasoner").is_empty());
+    assert_eq!(l("openai-chat", "", "https://api.mistral.ai/v1", "mistral-small-latest"), ["off", "high"]);
+    assert_eq!(l("gemini", "", "https://generativelanguage.googleapis.com", "gemini-3-pro-preview"), ["low", "high"]);
+    assert_eq!(
+        l("gemini", "", "https://generativelanguage.googleapis.com", "gemini-2.5-flash"),
+        ["off", "low", "medium", "high"]
+    );
+}
+
+/// A level the model does not list becomes the nearest one it does, the lower on a tie; never `off` for a level.
+#[test]
+fn nearest_level_clamps_to_what_the_model_lists() {
+    use nexo_core::provider::nearest_level;
+    let s = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(nearest_level(&s(&["low", "medium", "high"]), "xhigh").as_deref(), Some("high"));
+    assert_eq!(nearest_level(&s(&["low", "medium", "high"]), "minimal").as_deref(), Some("low"));
+    assert_eq!(nearest_level(&s(&["off", "high"]), "low").as_deref(), Some("high"));
+    assert_eq!(nearest_level(&s(&["low", "high"]), "medium").as_deref(), Some("low"));
+    assert_eq!(nearest_level(&s(&["low", "medium"]), "medium"), None, "listed: no clamp");
+    assert_eq!(nearest_level(&s(&["off", "on"]), "high"), None, "not a ladder: no clamp");
+}

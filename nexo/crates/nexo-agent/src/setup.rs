@@ -390,10 +390,79 @@ pub fn effort_of(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -
     cfg.effort.get(model).filter(|e| !e.is_empty()).cloned().or_else(|| fallback.clone())
 }
 
+/// The level a request of `model` really uses: the one set ([`effort_of`]), or the nearest the model lists when it
+/// does not list that one (a default from the config file, a model switched to). What the person sees and what is
+/// sent both come from here.
+pub fn effective_effort(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -> Option<String> {
+    let set = effort_of(cfg, model, fallback)?;
+    let levels = cfg.efforts.get(model).map(Vec::as_slice).unwrap_or(&[]);
+    let wanted = set.trim().to_ascii_lowercase();
+    Some(nexo_core::provider::nearest_level(levels, &wanted).unwrap_or(set))
+}
+
+/// The line that tells a level was lowered or raised to one the model takes, when it was.
+pub fn effort_clamp_note(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -> Option<String> {
+    let set = effort_of(cfg, model, fallback)?;
+    let used = effective_effort(cfg, model, fallback)?;
+    (used != set).then(|| format!("{model} does not take effort `{set}`: using `{used}`"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nexo_core::Pricing;
+
+    /// A provider whose model `m` lists `levels` (none listed when empty) and has `set` as its level.
+    fn effort_cfg(levels: &[&str], set: Option<&str>) -> ProviderConfig {
+        let mut cfg = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
+        if !levels.is_empty() {
+            cfg.efforts.insert("m".into(), levels.iter().map(|l| l.to_string()).collect());
+        }
+        if let Some(s) = set {
+            cfg.effort.insert("m".into(), s.into());
+        }
+        cfg
+    }
+
+    #[test]
+    fn a_listed_level_stays_and_an_unlisted_one_goes_to_the_nearest_listed() {
+        let used = |levels: &[&str], set: &str| effective_effort(&effort_cfg(levels, Some(set)), "m", &None);
+        // listed: kept as set, and no clamp line
+        assert_eq!(used(&["low", "high", "xhigh"], "xhigh").as_deref(), Some("xhigh"));
+        assert_eq!(effort_clamp_note(&effort_cfg(&["low", "high"], Some("high")), "m", &None), None);
+        // not listed: the nearest one, up or down
+        assert_eq!(used(&["low", "medium", "high"], "xhigh").as_deref(), Some("high"));
+        assert_eq!(used(&["high", "xhigh"], "low").as_deref(), Some("high"));
+        // xhigh sits between high and max: a tie goes to the lower
+        assert_eq!(used(&["high", "max"], "xhigh").as_deref(), Some("high"));
+        let note = effort_clamp_note(&effort_cfg(&["high", "max"], Some("xhigh")), "m", &None).unwrap();
+        assert!(note.contains("`xhigh`") && note.contains("`high`") && note.starts_with("m "), "{note}");
+    }
+
+    #[test]
+    fn off_stays_off_and_a_model_with_no_list_leaves_the_level_as_it_is() {
+        let used = |levels: &[&str], set: &str| effective_effort(&effort_cfg(levels, Some(set)), "m", &None);
+        assert_eq!(used(&["off", "low", "high"], "off").as_deref(), Some("off"));
+        // no list: whatever was set goes on as it is, a level the ladder does not know included
+        assert_eq!(used(&[], "xhigh").as_deref(), Some("xhigh"));
+        assert_eq!(used(&[], "off").as_deref(), Some("off"));
+        assert_eq!(used(&[], "8000").as_deref(), Some("8000"));
+        // a budget is not a rung: it stays even when the model lists levels
+        assert_eq!(used(&["low", "high"], "8000").as_deref(), Some("8000"));
+        assert_eq!(effort_clamp_note(&effort_cfg(&[], Some("xhigh")), "m", &None), None);
+        // nothing set anywhere: nothing used
+        assert_eq!(effective_effort(&effort_cfg(&["low", "high"], None), "m", &None), None);
+    }
+
+    #[test]
+    fn the_config_default_is_clamped_like_a_level_the_person_set() {
+        let cfg = effort_cfg(&["low", "high"], None);
+        let default = Some("max".to_string());
+        assert_eq!(effective_effort(&cfg, "m", &default).as_deref(), Some("high"));
+        // the person's own level for the model wins over the default
+        let cfg = effort_cfg(&["low", "high"], Some("low"));
+        assert_eq!(effective_effort(&cfg, "m", &default).as_deref(), Some("low"));
+    }
 
     #[cfg(unix)]
     #[test]

@@ -65,8 +65,8 @@ impl OpenAiResponses {
                 body["reasoning"] = json!({"effort": effort, "summary": "auto"});
                 include.push("reasoning.encrypted_content");
             }
-            Some(ReasoningConfig::Budget(_)) => {
-                body["reasoning"] = json!({"effort": "medium", "summary": "auto"});
+            Some(ReasoningConfig::Budget(b)) => {
+                body["reasoning"] = json!({"effort": nexo_core::Effort::from_budget(b).as_str(), "summary": "auto"});
                 include.push("reasoning.encrypted_content");
             }
             _ => {}

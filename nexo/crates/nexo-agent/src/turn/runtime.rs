@@ -388,11 +388,14 @@ fn warn_setup(events: &EventTx, config: &Config, tools: &ToolSet) {
 /// The model's effort levels and, when the model has a fast twin, that fast mode is on.
 fn announce_model(events: &EventTx, config: &Config, provider: &str, model: &str) {
     if let Some(c) = config.providers.get(provider) {
+        if let Some(n) = setup::effort_clamp_note(c, model, &config.agent.reasoning) {
+            notice(events, Level::Info, n);
+        }
         emit(
             events,
             AgentEvent::Effort {
                 model: model.to_string(),
-                current: setup::effort_of(c, model, &config.agent.reasoning),
+                current: setup::effective_effort(c, model, &config.agent.reasoning),
                 levels: c.efforts.get(model).cloned().unwrap_or_default(),
             },
         );

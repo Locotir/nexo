@@ -27,6 +27,61 @@ pub struct Gemini;
 
 pub const ID: &str = "gemini";
 
+/// Gemini 3 and later set the depth with `thinkingLevel`; Gemini 2.5 takes a `thinkingBudget` in tokens.
+pub fn takes_thinking_level(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.find("gemini-").is_some_and(|i| {
+        let v: String = m[i + 7..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        v.parse::<f32>().is_ok_and(|v| v >= 3.0)
+    })
+}
+
+/// The levels Gemini 3 takes, as the ones every model of the line has in common: `gemini-3-pro` has `low` and
+/// `high` only, and none of them can switch thinking off.
+pub fn level_names(model: &str) -> &'static [&'static str] {
+    if model.to_ascii_lowercase().contains("gemini-3-pro") {
+        &["low", "high"]
+    } else {
+        &["low", "medium", "high"]
+    }
+}
+
+/// The `thinkingConfig` of a reasoning setting. Off, minimal and low are `low` on Gemini 3 (it cannot think less),
+/// and Gemini 2.5 Pro takes 128 tokens at the least (a budget of 0 is a 400 there).
+fn thinking_config(model: &str, r: ReasoningConfig) -> Value {
+    let e = match r {
+        ReasoningConfig::Effort(e) => e,
+        ReasoningConfig::Budget(b) if !takes_thinking_level(model) => {
+            return json!({"thinkingBudget": b, "includeThoughts": true})
+        }
+        ReasoningConfig::Budget(b) => Effort::from_budget(b),
+        ReasoningConfig::Off => {
+            return if takes_thinking_level(model) {
+                json!({"thinkingLevel": "low"})
+            } else if model.to_ascii_lowercase().contains("pro") {
+                json!({"thinkingBudget": 128})
+            } else {
+                json!({"thinkingBudget": 0})
+            };
+        }
+    };
+    if takes_thinking_level(model) {
+        let l = match e {
+            Effort::Minimal | Effort::Low => "low",
+            Effort::Medium if level_names(model).contains(&"medium") => "medium",
+            _ => "high",
+        };
+        return json!({"thinkingLevel": l, "includeThoughts": true});
+    }
+    let b = match e {
+        Effort::Minimal => 512,
+        Effort::Low => 1024,
+        Effort::Medium => 8192,
+        Effort::High | Effort::Xhigh | Effort::Max => 24576,
+    };
+    json!({"thinkingBudget": b, "includeThoughts": true})
+}
+
 impl Gemini {
     pub fn url(cfg: &ProviderConfig, model: &str) -> String {
         http::join_versioned(&cfg.base_url, "v1beta", &format!("models/{model}:streamGenerateContent?alt=sse"))
@@ -64,21 +119,8 @@ impl Gemini {
         if !req.stop.is_empty() {
             gen["stopSequences"] = json!(req.stop);
         }
-        match req.reasoning {
-            Some(ReasoningConfig::Off) => gen["thinkingConfig"] = json!({"thinkingBudget": 0}),
-            Some(ReasoningConfig::Budget(b)) => {
-                gen["thinkingConfig"] = json!({"thinkingBudget": b, "includeThoughts": true})
-            }
-            Some(ReasoningConfig::Effort(e)) => {
-                let b = match e {
-                    Effort::Minimal => 512,
-                    Effort::Low => 1024,
-                    Effort::Medium => 8192,
-                    Effort::High => 24576,
-                };
-                gen["thinkingConfig"] = json!({"thinkingBudget": b, "includeThoughts": true});
-            }
-            None => {}
+        if let Some(t) = req.reasoning.map(|r| thinking_config(&req.model, r)) {
+            gen["thinkingConfig"] = t;
         }
         body["generationConfig"] = gen;
         for (k, v) in &req.extra {

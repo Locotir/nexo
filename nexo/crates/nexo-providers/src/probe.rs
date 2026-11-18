@@ -637,16 +637,61 @@ pub fn effort_levels(protocol: &str, kind: &str, base_url: &str, model: &str, re
     let m = model.to_ascii_lowercase();
     let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
     if crate::vendors::VENDORS.iter().any(|v| v.fixed_reasoning_host.is_some_and(|h| base_url.contains(h))) {
-        return Vec::new();
+        // DeepSeek's own models switch thinking off and take `low`, `high` and `max` (its older `reasoner` only
+        // thinks); its Anthropic-shaped endpoint takes no level here
+        let chat = protocol == crate::openai_chat::ID && !m.contains("reasoner");
+        return if chat { v(&["off", "low", "high", "max"]) } else { Vec::new() };
+    }
+    if protocol == anthropic::ID
+        || (protocol == crate::copilot::ID && crate::copilot::route(model) == crate::copilot::Route::Messages)
+    {
+        return v(anthropic::effort_levels(model));
+    }
+    if protocol == crate::gemini::ID && crate::gemini::takes_thinking_level(model) {
+        return v(crate::gemini::level_names(model));
     }
     if let Some(e) = crate::vendors::by_protocol(protocol).and_then(|v| v.efforts) {
         return v(if m.contains("pro") { e.pro.unwrap_or(e.any) } else { e.any });
     }
-    match protocol {
-        _ if kind == "ollama" && !m.contains("gpt-oss") => v(&["off", "on"]),
-        _ if m.contains("gpt-5") => v(&["minimal", "low", "medium", "high"]),
-        _ => v(&["low", "medium", "high"]),
+    // the models whose levels differ from the common three, by what their vendors document
+    if kind == "ollama" && !m.contains("gpt-oss") {
+        return v(&["off", "on"]);
     }
+    if base_url.contains("x.ai") {
+        let top = m.contains("grok-4.7") || m.contains("grok-4.6") || m.contains("multi-agent");
+        return v(if top { &["low", "medium", "high", "xhigh"] } else { &["low", "medium", "high"] });
+    }
+    if base_url.contains("mistral.ai") {
+        return v(if m.contains("small") || m.contains("medium") {
+            &["off", "high"]
+        } else {
+            &["low", "medium", "high"]
+        });
+    }
+    if base_url.contains("groq.com") {
+        return v(if m.contains("qwen3") {
+            &["off", "low", "medium", "high"]
+        } else if m.contains("muse-spark") {
+            &["low", "medium", "high", "xhigh"]
+        } else {
+            &["low", "medium", "high"]
+        });
+    }
+    if let Some(i) = m.find("gpt-5") {
+        // GPT-5 itself has `minimal`; 5.1 dropped it; 5.2 and later add `xhigh`
+        let minor: Option<u32> = m[i + 5..]
+            .strip_prefix('.')
+            .and_then(|r| r.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok());
+        return v(match minor {
+            None => &["minimal", "low", "medium", "high"][..],
+            Some(1) => &["low", "medium", "high"][..],
+            Some(_) => &["low", "medium", "high", "xhigh"][..],
+        });
+    }
+    if m.contains("gpt-6") {
+        return v(&["low", "medium", "high", "xhigh"]);
+    }
+    v(&["low", "medium", "high"])
 }
 
 /// Whether a request with reasoning off thinks less than one with no level, by protocol: Gemini sends a
@@ -665,6 +710,14 @@ pub fn off_thinks_less(protocol: &str, model: &str) -> bool {
     }
 }
 
+/// What a side request (a title, a summary, a read of one file, a judge) asks for: the least thinking `model` takes,
+/// from the levels its provider lists for it, so it never gets a level it rejects. `off` only where the model lists it
+/// and off really thinks less; else the lowest listed level; None when nothing is known to send.
+pub fn side_reasoning(cfg: &ProviderConfig, model: &str) -> Option<nexo_core::ReasoningConfig> {
+    let levels = cfg.efforts.get(model).map(Vec::as_slice).unwrap_or(&[]);
+    nexo_core::provider::lowest_level(levels, off_thinks_less(&cfg.protocol, model))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,6 +725,26 @@ mod tests {
 
     fn cfg(protocol: &str, base: &str) -> ProviderConfig {
         ProviderConfig::new(protocol, base, None)
+    }
+
+    #[test]
+    fn a_side_request_takes_the_lowest_level_the_model_lists_and_off_only_where_it_helps() {
+        use nexo_core::{Effort, ReasoningConfig as R};
+        let with = |protocol: &str, levels: &[&str]| {
+            let mut c = cfg(protocol, "http://x");
+            c.efforts.insert("m".into(), levels.iter().map(|l| l.to_string()).collect());
+            side_reasoning(&c, "m")
+        };
+        // Gemini lists off and off thinks less there
+        assert_eq!(with("gemini", &["off", "low", "high"]), Some(R::Off));
+        // no off in the list: the lowest level, never off
+        assert_eq!(with("gemini", &["medium", "high"]), Some(R::Effort(Effort::Medium)));
+        assert_eq!(with("openai-chat", &["high", "xhigh"]), Some(R::Effort(Effort::High)));
+        // the OpenAI protocols send nothing for off: the lowest rung instead
+        assert_eq!(with("openai-chat", &["off", "minimal", "high"]), Some(R::Effort(Effort::Minimal)));
+        // no list: nothing for a model where off does nothing, off where it thins the thinking
+        assert_eq!(side_reasoning(&cfg("openai-chat", "http://x"), "m"), None);
+        assert_eq!(side_reasoning(&cfg("gemini", "http://x"), "m"), Some(R::Off));
     }
 
     #[test]
@@ -683,7 +756,8 @@ mod tests {
         assert!(off_thinks_less("anthropic", "claude-opus-4-1"));
         // the other 5.5 models take nothing for off: the server's default effort
         assert!(!off_thinks_less("anthropic", "claude-opus-5-5"));
-        assert!(!off_thinks_less("anthropic", "claude-haiku-5-5"));
+        assert!(off_thinks_less("anthropic", "claude-haiku-5-5"));
+        assert!(!off_thinks_less("anthropic", "claude-fable-5-2"));
         assert!(!off_thinks_less("copilot", "claude-opus-5.5"));
         assert!(off_thinks_less("copilot", "claude-sonnet-5.5"));
         // the OpenAI protocols send nothing for off (Ollama's qwen3 lists off and on)
