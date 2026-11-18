@@ -6,6 +6,7 @@
 //! x86 condition codes, see [`A64::cond`]. What is not lifted becomes a `Stmt::Raw`, exactly as on x86.
 
 use super::*;
+use crate::a64::switch::{self as a64_switch, Table};
 use crate::a64::{decode as decode_word, Flow as AFlow, Ins, Mem, Opd, Why};
 
 #[derive(Clone, Copy)]
@@ -928,6 +929,9 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
     let mut externs: BTreeSet<u64> = BTreeSet::new();
     let mut seen: HashSet<usize> = HashSet::new();
     let mut work = vec![start];
+    let read = |a: u64, n: usize| env.read(a, n).map(<[u8]>::to_vec);
+    // the `br` instructions that dispatch through a table of this function, by instruction number
+    let mut switches: HashMap<usize, Table> = HashMap::new();
     while let Some(a) = work.pop() {
         let Some(mut k) = at(a) else { continue };
         loop {
@@ -970,10 +974,23 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
                     }
                     break;
                 }
-                AFlow::JumpReg | AFlow::Ret | AFlow::Trap => break,
+                AFlow::JumpReg => {
+                    if let Some(sw) = a64_switch::find(&ins, k, start, end, &read) {
+                        for &t in &sw.targets {
+                            if leaders.insert(t) {
+                                work.push(t);
+                            }
+                        }
+                        switches.insert(k, sw);
+                    }
+                    break;
+                }
+                AFlow::Ret | AFlow::Trap => break,
             }
         }
     }
+    // what a switch only computes the jump with: not lifted
+    let hidden: HashSet<usize> = switches.values().flat_map(|s| s.hidden.iter().copied()).collect();
     let ids: BTreeMap<u64, usize> = leaders.iter().enumerate().map(|(i, &a)| (a, i)).collect();
     let n_local = ids.len();
     let ext_ids: BTreeMap<u64, usize> = externs.iter().enumerate().map(|(i, &a)| (a, n_local + i)).collect();
@@ -1008,6 +1025,7 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
     let mut queue = vec![0usize];
     let leader_list: Vec<u64> = leaders.iter().copied().collect();
     let mut unresolved = 0;
+    let mut tables = 0;
     while let Some(id) = queue.pop() {
         if blocks[id].is_some() {
             continue;
@@ -1039,6 +1057,10 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
             if matches!(i.undecoded, Some(Why::Reserved)) {
                 term = (Term::Stop, pc);
                 break;
+            }
+            if hidden.contains(&k) {
+                k += 1;
+                continue;
             }
             match i.flow {
                 AFlow::Cond => {
@@ -1075,6 +1097,19 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
                         term = (Term::Stop, pc);
                         break;
                     };
+                    if let Some(sw) = switches.get(&k) {
+                        let idx = lf.rd(sw.idx, sw.wide, false);
+                        lf.assign(Var::Tmp(1), idx.zext(64));
+                        let scr = Expr::Var(Var::Tmp(1), if sw.wide { 64 } else { 32 });
+                        let mut cases: Vec<(u64, BlockId)> = Vec::new();
+                        for (v, t) in sw.targets.iter().enumerate() {
+                            cases.push((v as u64, ids[t]));
+                            succ_states.push((ids[t], lf.st));
+                        }
+                        tables += 1;
+                        term = (Term::Switch(scr, cases, None), pc);
+                        break;
+                    }
                     let target = lf.reg_target(n);
                     if matches!(target, Target::Import(_)) {
                         term = (Term::TailCall(lf.call_expr(target)), pc);
@@ -1133,7 +1168,7 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
         abi: Abi::Aapcs64,
         blocks,
         saves: lf.saves.clone(),
-        tables: 0,
+        tables,
         unresolved_jumps: unresolved,
         raw: lf.raw,
         instructions: ins.len(),

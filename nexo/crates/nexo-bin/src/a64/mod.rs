@@ -15,6 +15,7 @@ pub(crate) mod cfg;
 pub(crate) mod scan;
 pub(crate) mod slice;
 pub(crate) mod slice_fwd;
+pub(crate) mod switch;
 pub(crate) mod view;
 
 use text::Mn;

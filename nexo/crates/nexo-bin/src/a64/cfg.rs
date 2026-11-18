@@ -1,10 +1,12 @@
 //! The control-flow graph of an AArch64 function, from the decoder's own [`Flow`]: no lifting, no second pass over
 //! the bytes. Blocks start at the entry, at every branch target inside the function and after every instruction
 //! that ends a path (`b`, `b.cond`, `cbz`, `tbz`, `br`, `ret`, a trap, a call that never returns). A `bl` is a call
-//! that falls through; `br` and `blr` have no known target. The rows are printed by `crate::cfg`, as for x86.
+//! that falls through; `blr` has no known target, and nor has a `br` unless it reads like a switch (see
+//! [`super::switch`]), which gets one `case` edge per target. The rows are printed by `crate::cfg`, as for x86.
 
 use std::collections::{BTreeSet, HashMap};
 
+use super::switch::{self, Table};
 use super::{Flow, Ins};
 use crate::cfg::{Blk, EdgeKind, Model, Site};
 use crate::decomp::api::plain_name;
@@ -47,7 +49,15 @@ pub(crate) fn model(img: &Image, func: &Func) -> Result<Model> {
     let noreturn = |i: &Ins| i.flow == Flow::Call && is_noreturn(&callee(i));
     // where blocks start, as instruction numbers
     let mut lead: BTreeSet<usize> = BTreeSet::from([0]);
+    let read = |a: u64, len: usize| img.read_at(a, len).map(<[u8]>::to_vec);
+    let mut tabs: HashMap<usize, Table> = HashMap::new();
     for (k, i) in ins.iter().enumerate() {
+        if i.flow == Flow::JumpReg {
+            if let Some(t) = switch::find(&ins, k, start, stop, &read) {
+                lead.extend(t.targets.iter().map(|&a| at(a)));
+                tabs.insert(k, t);
+            }
+        }
         let ends = matches!(i.flow, Flow::Jump | Flow::Cond | Flow::JumpReg | Flow::Ret | Flow::Trap) || noreturn(i);
         if ends && k + 1 < n {
             lead.insert(k + 1);
@@ -65,6 +75,7 @@ pub(crate) fn model(img: &Image, func: &Func) -> Result<Model> {
     let mut blocks: Vec<Blk> = Vec::new();
     let mut edges: Vec<Vec<(usize, EdgeKind)>> = Vec::new();
     let mut unresolved = 0;
+    let mut tables = 0;
     for (b, &k) in starts.iter().enumerate() {
         let z = starts.get(b + 1).copied().unwrap_or(n);
         let last = &ins[z - 1];
@@ -96,10 +107,26 @@ pub(crate) fn model(img: &Image, func: &Func) -> Result<Model> {
                 Some(t) => ends = Some(format!("tail call {}", named(t))),
                 None => ends = Some("does not return".into()),
             },
-            Flow::JumpReg => {
-                unresolved += 1;
-                ends = Some("indirect jump, target not resolved".into());
-            }
+            Flow::JumpReg => match tabs.get(&(z - 1)) {
+                Some(t) => {
+                    tables += 1;
+                    // one edge per target, with every case value that lands there
+                    let mut by_target: Vec<(u64, Vec<u64>)> = Vec::new();
+                    for (v, &a) in t.targets.iter().enumerate() {
+                        match by_target.iter_mut().find(|x| x.0 == a) {
+                            Some(x) => x.1.push(v as u64),
+                            None => by_target.push((a, vec![v as u64])),
+                        }
+                    }
+                    for (a, v) in by_target {
+                        out.push((node(a, &pos, &mut stubs, real), EdgeKind::Case(v)));
+                    }
+                }
+                None => {
+                    unresolved += 1;
+                    ends = Some("indirect jump, target not resolved".into());
+                }
+            },
             Flow::Ret => ends = Some("ret".into()),
             Flow::Trap => ends = Some("does not return".into()),
             _ if noreturn(last) => ends = Some(format!("noreturn call {}", callee(last))),
@@ -113,5 +140,5 @@ pub(crate) fn model(img: &Image, func: &Func) -> Result<Model> {
         blocks.push(Blk { addr: s, end: s, insns: 0, calls: Vec::new(), sites: Vec::new(), ends: None });
         edges.push(Vec::new());
     }
-    Ok(Model { name, start, end, blocks, edges, tables: 0, unresolved })
+    Ok(Model { name, start, end, blocks, edges, tables, unresolved })
 }
