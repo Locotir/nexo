@@ -79,7 +79,9 @@ The summary prints one line per channel and one short line per type (capped):
   heartbeat: ping/pong x12
 ```
 
-The OpenAPI export has them under `x-nexo-channels`, and the map file holds them, so `describe` shows them. Nexo's own headless browser exports no frames in its HAR yet: use a devtools HAR for channels.
+The OpenAPI export has them under `x-nexo-channels`, and the map file holds them, so `describe` shows them.
+
+Nexo's own headless browser captures live channels too (your own Chrome does not). A WebSocket becomes one HAR entry: URL, handshake headers, status 101 and `_webSocketMessages`. An EventSource keeps its messages as the `text/event-stream` body of its response. Frame and message text goes through the same masking as bodies (a `token` field or a `Bearer ...` in a frame becomes a marker). Caps: 100 WebSockets per capture, 5000 frames per socket, 64 KiB per text frame (longer ones are cut), 5000 messages per stream, and the capture's total size cap. Binary frames keep only the opcode and their length (`_length`), never the payload. `capture_stop` and the HAR (`log._nexoCapture`, `_nexoWebSocket` on each socket) count what was left out.
 
 ## analyze
 

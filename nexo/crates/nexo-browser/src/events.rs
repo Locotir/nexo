@@ -4,9 +4,11 @@ use crate::{redact, Error, Result};
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::log::{EnableParams as LogEnable, EventEntryAdded};
 use chromiumoxide::cdp::browser_protocol::network::{
-    EnableParams as NetworkEnable, EventLoadingFailed, EventLoadingFinished, EventRequestWillBeSent,
-    EventRequestWillBeSentExtraInfo, EventResponseReceived, EventResponseReceivedExtraInfo, GetRequestPostDataParams,
-    GetResponseBodyParams, PostDataEntry,
+    EnableParams as NetworkEnable, EventEventSourceMessageReceived, EventLoadingFailed, EventLoadingFinished,
+    EventRequestWillBeSent, EventRequestWillBeSentExtraInfo, EventResponseReceived, EventResponseReceivedExtraInfo,
+    EventWebSocketClosed, EventWebSocketCreated, EventWebSocketFrameError, EventWebSocketFrameReceived,
+    EventWebSocketFrameSent, EventWebSocketHandshakeResponseReceived, EventWebSocketWillSendHandshakeRequest,
+    GetRequestPostDataParams, GetResponseBodyParams, PostDataEntry,
 };
 use chromiumoxide::cdp::js_protocol::runtime::{
     EnableParams as RuntimeEnable, EventConsoleApiCalled, EventExceptionThrown, RemoteObject,
@@ -23,7 +25,10 @@ use tokio::task::JoinHandle;
 mod capture;
 mod relay;
 
-pub use capture::{export_har, CaptureStats, CapturedRequest, CAPTURE_BODY_CAP, CAPTURE_TOTAL_CAP};
+pub use capture::{
+    export_har, export_har_with, CaptureStats, CapturedRequest, SseEvent, WsCapture, WsFrame, CAPTURE_BODY_CAP,
+    CAPTURE_TOTAL_CAP,
+};
 
 /// Entries kept per buffer; the oldest are dropped first.
 const BUFFER_CAP: usize = 1_000;
@@ -177,6 +182,23 @@ where
             on(&event);
         }
     }))
+}
+
+/// Listens to one WebSocket or EventSource event of the Network domain and hands its CDP JSON to the capture
+/// (see `capture/live.rs`). Nothing is serialized while capture is off.
+async fn listen_live<T>(page: &Page, buffers: &Buffers, method: &'static str) -> Result<JoinHandle<()>>
+where
+    T: IntoEventKind + Unpin + Send + Sync + Serialize + 'static,
+{
+    let buffers = buffers.clone();
+    listen::<T, _>(page, move |e| {
+        if buffers.capturing() {
+            if let Ok(params) = serde_json::to_value(e) {
+                buffers.cap_live_event(method, &params);
+            }
+        }
+    })
+    .await
 }
 
 impl Buffers {
@@ -338,6 +360,30 @@ impl Buffers {
                 buffers.cap_ended(e.request_id.inner(), Some(*e.timestamp.inner()), Some(e.error_text.clone()));
             })
             .await?,
+        );
+        tasks.push(listen_live::<EventWebSocketCreated>(page, self, "Network.webSocketCreated").await?);
+        tasks.push(
+            listen_live::<EventWebSocketWillSendHandshakeRequest>(
+                page,
+                self,
+                "Network.webSocketWillSendHandshakeRequest",
+            )
+            .await?,
+        );
+        tasks.push(
+            listen_live::<EventWebSocketHandshakeResponseReceived>(
+                page,
+                self,
+                "Network.webSocketHandshakeResponseReceived",
+            )
+            .await?,
+        );
+        tasks.push(listen_live::<EventWebSocketFrameSent>(page, self, "Network.webSocketFrameSent").await?);
+        tasks.push(listen_live::<EventWebSocketFrameReceived>(page, self, "Network.webSocketFrameReceived").await?);
+        tasks.push(listen_live::<EventWebSocketFrameError>(page, self, "Network.webSocketFrameError").await?);
+        tasks.push(listen_live::<EventWebSocketClosed>(page, self, "Network.webSocketClosed").await?);
+        tasks.push(
+            listen_live::<EventEventSourceMessageReceived>(page, self, "Network.eventSourceMessageReceived").await?,
         );
         page.execute(RuntimeEnable::default()).await?;
         page.execute(LogEnable::default()).await?;

@@ -14,8 +14,11 @@
 //!   Capture there gives a HAR with URLs, methods, types and statuses, and no headers or bodies.
 
 use super::{lock, Buffers};
+
+mod live;
 use crate::redact;
 use base64::Engine;
+pub use live::{SseEvent, WsCapture, WsFrame};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -49,6 +52,22 @@ pub struct CaptureStats {
     pub fetch_failed: u64,
     /// Bytes of all bodies kept.
     pub body_bytes: u64,
+    /// WebSockets kept (each is one entry in the HAR).
+    pub ws_sockets: u64,
+    /// WebSockets left out because the capture already had the maximum.
+    pub ws_sockets_dropped: u64,
+    /// Frames kept, both directions.
+    pub ws_frames: u64,
+    /// Frames left out: over the per-socket maximum, over the total size cap, or of a socket that was not kept.
+    pub ws_frames_dropped: u64,
+    /// Text frames kept but cut at the per-frame cap.
+    pub ws_frames_cut: u64,
+    /// Binary (and control) frames kept without their payload: only length and opcode.
+    pub ws_frames_binary: u64,
+    /// EventSource messages kept.
+    pub sse_events: u64,
+    /// EventSource messages left out (over the per-stream maximum or the total size cap).
+    pub sse_events_dropped: u64,
 }
 
 /// One captured request with its response, already free of secrets (markers instead of values).
@@ -75,6 +94,12 @@ pub struct CapturedRequest {
     pub response_body_note: Option<String>,
     pub duration_ms: Option<f64>,
     pub error: Option<String>,
+    /// Set for a WebSocket: its frames (the request is the handshake, the status 101).
+    pub ws: Option<WsCapture>,
+    /// The messages an `EventSource` received; the HAR writes them as a `text/event-stream` body.
+    pub sse: Vec<SseEvent>,
+    /// EventSource messages of this request left out.
+    pub sse_dropped: u64,
 }
 
 #[derive(Default)]
@@ -92,6 +117,8 @@ struct Item {
     /// The browser's monotonic clock at the request, in seconds.
     started: Option<f64>,
     body_done: bool,
+    /// For a WebSocket: (monotonic seconds, wall clock milliseconds) at its handshake, to date its frames.
+    clock: Option<(f64, f64)>,
 }
 
 /// One `Network.requestWillBeSent`, raw. It is turned into markers inside [`Buffers::cap_request`] and not kept.
@@ -224,7 +251,7 @@ impl Buffers {
                 c.stats.request_bodies += 1;
             }
         }
-        c.items.push(Item { id: r.id.to_string(), req, started: r.now, body_done: false });
+        c.items.push(Item { id: r.id.to_string(), req, started: r.now, body_done: false, clock: None });
         r.has_post && r.post.is_none()
     }
 
@@ -399,6 +426,13 @@ fn query_of(url: &str) -> Vec<Value> {
 /// markers (`<secret:...>`) where the page had credentials; no raw secret is in it. Response bodies are there
 /// only for the API calls whose body was read (see the module doc).
 pub fn export_har(entries: &[CapturedRequest]) -> String {
+    export_har_with(entries, &CaptureStats::default())
+}
+
+/// [`export_har`], and what the capture left out (see [`CaptureStats`]) in `log._nexoCapture`, a field readers of
+/// HAR ignore. WebSocket entries have `_webSocketMessages` (the Chrome devtools extension `nexo api` reads);
+/// EventSource entries have the messages as the `text/event-stream` body of the response.
+pub fn export_har_with(entries: &[CapturedRequest], stats: &CaptureStats) -> String {
     let entries: Vec<Value> = entries
         .iter()
         .map(|e| {
@@ -416,9 +450,12 @@ pub fn export_har(entries: &[CapturedRequest]) -> String {
             if let Some(body) = &e.request_body {
                 request["postData"] = json!({"mimeType": e.request_mime, "text": body});
             }
-            let size = e.response_body.as_ref().map_or(0, String::len);
-            let mut content = json!({"size": size, "mimeType": e.mime});
-            if let Some(body) = &e.response_body {
+            let stream = (!e.sse.is_empty()).then(|| live::sse_text(&e.sse));
+            let body = stream.as_ref().or(e.response_body.as_ref());
+            let size = body.map_or(0, String::len);
+            let mime = if stream.is_some() && e.mime.is_empty() { "text/event-stream" } else { e.mime.as_str() };
+            let mut content = json!({"size": size, "mimeType": mime});
+            if let Some(body) = body {
                 content["text"] = json!(body);
             }
             let mut out = json!({
@@ -443,6 +480,12 @@ pub fn export_har(entries: &[CapturedRequest]) -> String {
             if let Some(err) = &e.error {
                 out["_error"] = json!(err);
             }
+            if let Some(ws) = &e.ws {
+                live::ws_fields(&mut out, ws);
+            }
+            if e.sse_dropped > 0 {
+                out["_nexoEventSourceDropped"] = json!(e.sse_dropped);
+            }
             out
         })
         .collect();
@@ -450,6 +493,7 @@ pub fn export_har(entries: &[CapturedRequest]) -> String {
         "version": "1.2",
         "creator": {"name": "nexo", "version": env!("CARGO_PKG_VERSION")},
         "entries": entries,
+        "_nexoCapture": json!(stats),
     }});
     serde_json::to_string_pretty(&har).unwrap_or_else(|_| "{}".to_string())
 }
