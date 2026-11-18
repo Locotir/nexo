@@ -295,7 +295,7 @@ impl Mods {
             return nexo_bin::describe_addr(img, fa, memory);
         }
         let short = self.short(idx);
-        Some(match nexo_bin::nearest_symbol(img, fa) {
+        Some(match nexo_bin::nearest_symbol(img, fa).map(|(n, off)| (nexo_bin::demangle(&n), off)) {
             Some((n, 0)) => format!("{short}!{n}"),
             Some((n, off)) => format!("{short}!{n}+{off:#x}"),
             None => format!("{short}+{:#x}", addr - self.list[idx].base),
@@ -404,7 +404,46 @@ impl Mods {
                         }
                     }
                 }
-                Err(first.into())
+                self.resolve_demangled(only, name).unwrap_or_else(|| Err(first.into()))
+            }
+        }
+    }
+
+    /// A function whose demangled name is `want` (`Foo::bar`, `mycrate::parse`; the Rust hash and a C++ argument
+    /// list do not count), in the program or in the loaded files (all of them, or the one `only` names). `None`
+    /// when no symbol has it; an error when several do.
+    fn resolve_demangled(&mut self, only: Option<&str>, want: &str) -> Option<crate::Result<Place>> {
+        let mut hits: Vec<(String, u64)> = Vec::new();
+        if only.is_none() {
+            let bias = self.main_bias();
+            demangled_hits(&self.main, bias, want, "", &mut hits);
+        }
+        for idx in 0..self.list.len() {
+            if idx == self.main_idx || only.is_some_and(|o| !self.short(idx).starts_with(o)) {
+                continue;
+            }
+            self.ensure(idx);
+            let bias = self.bias(idx);
+            let short = self.short(idx);
+            if let Some(img) = self.image(idx) {
+                demangled_hits(img, bias, want, &short, &mut hits);
+            }
+        }
+        hits.sort_by_key(|h| h.1);
+        hits.dedup_by_key(|h| h.1);
+        match hits.len() {
+            0 => None,
+            1 => Some(Ok(Place::Code(hits[0].1))),
+            n => {
+                const SHOWN: usize = 5;
+                let mut l: Vec<String> = hits.iter().take(SHOWN).map(|(s, a)| format!("{s} ({a:#x})")).collect();
+                if n > SHOWN {
+                    l.push(format!("{} more", n - SHOWN));
+                }
+                Some(Err(crate::Error::Fail(format!(
+                    "{want}: {n} functions have that name: {}; break at one by its address",
+                    l.join(", ")
+                ))))
             }
         }
     }
@@ -641,9 +680,79 @@ fn cfi_expr(
     }
 }
 
+/// A name without what a person leaves out: the Rust hash (`::h0123456789abcdef`) and a C++ argument list and
+/// `const`, after demangling it when it is still mangled.
+pub(crate) fn plain_name(name: &str) -> String {
+    let d = nexo_bin::demangle(name);
+    let mut s = d.trim();
+    if let Some(r) = s.strip_suffix(" const") {
+        s = r.trim_end();
+    }
+    if s.ends_with(')') {
+        let mut depth = 0usize;
+        for (i, c) in s.char_indices().rev() {
+            match c {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // `operator()(int)`: the first pair belongs to the name
+                        s = if s[..i].ends_with("operator") { s } else { s[..i].trim_end() };
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(i) = s.rfind("::h") {
+        let h = &s[i + 3..];
+        if h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            s = &s[..i];
+        }
+    }
+    s.to_string()
+}
+
+/// Whether the demangled name `sym` is the one a person typed (`want`), ignoring the hash and the argument list.
+pub(crate) fn demangled_eq(sym: &str, want: &str) -> bool {
+    !want.is_empty() && plain_name(sym) == plain_name(want)
+}
+
+/// The functions of `img` whose demangled name is `want`, as (`file!name`, memory address).
+fn demangled_hits(img: &Image, bias: u64, want: &str, file: &str, out: &mut Vec<(String, u64)>) {
+    let shown = |n: &str| if file.is_empty() { n.to_string() } else { format!("{file}!{n}") };
+    for s in img.symbols.iter().filter(|s| s.func && demangled_eq(&s.name, want)) {
+        out.push((shown(&s.name), s.addr.wrapping_add(bias)));
+    }
+    for e in img.exports.iter().filter(|e| demangled_eq(&e.name, want)) {
+        out.push((shown(&e.name), e.addr.wrapping_add(bias)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::loads;
+    use super::{demangled_eq, loads, plain_name};
+
+    #[test]
+    fn a_mangled_rust_and_c_plus_plus_name_is_shown_demangled() {
+        assert_eq!(nexo_bin::demangle("_ZN3foo3bar17h0123456789abcdefE"), "foo::bar");
+        assert_eq!(nexo_bin::demangle("_ZN3Foo3barEv"), "Foo::bar()");
+        // a name already shown is left as it is
+        assert_eq!(nexo_bin::demangle("foo::bar"), "foo::bar");
+    }
+
+    #[test]
+    fn a_demangled_break_name_ignores_the_hash_and_the_argument_list() {
+        assert!(demangled_eq("_ZN7mycrate5parse17h0123456789abcdefE", "mycrate::parse"));
+        assert!(demangled_eq("mycrate::parse::h0123456789abcdef", "mycrate::parse"));
+        assert!(demangled_eq("_ZN3Foo3barEv", "Foo::bar"));
+        assert!(demangled_eq("Foo::bar(int, char)", "Foo::bar()"));
+        assert!(!demangled_eq("_ZN3Foo3barEv", "Foo::baz"));
+        assert!(!demangled_eq("mycrate::parse_all", "mycrate::parse"));
+        assert!(!demangled_eq("anything", ""));
+        assert_eq!(plain_name("Foo::bar(std::vector<int>) const"), "Foo::bar");
+    }
     use crate::platform::Map;
 
     fn piece(start: u64, end: u64, exec: bool, offset: u64, path: &str) -> Map {

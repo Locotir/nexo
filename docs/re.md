@@ -107,7 +107,7 @@ nexo bin fn - 0x7ffff7e00000 --module libc.so.6 --live
 nexo dbg end
 ```
 
-`nexo dbg` keeps the program alive in a small server between calls; `-s ID` picks a session when several are live, and `--lines`, `--from`, `--grep` and `--json` work as in `nexo bin`. Other commands: `step`, `next`, `finish`, `until`, `mem`, `print`, `args`, `locals`, `watch`, `catch`, `strace`, `ltrace`, `hook`, `cover`, `find`, `dump`, `core`, `connect`, `serve --gdb PORT`. `record [N]` keeps the last N instructions as they run (Linux; slow) and `back` looks at them (`--reg REG`, `--mem ADDR`); it does not undo. `write`, `setreg`, `call` and `stdin` change the program. `nexo dbg help` lists every command.
+`nexo dbg` keeps the program alive in a small server between calls; `-s ID` picks a session when several are live, and `--lines`, `--from`, `--grep` and `--json` work as in `nexo bin`. Other commands: `step`, `next`, `finish`, `until`, `mem`, `print`, `args`, `locals`, `watch`, `catch` (signals, `load`, and `throw|panic|abort` as breakpoints on `__cxa_throw`, `rust_begin_unwind`, `abort`), `strace`, `ltrace`, `hook`, `cover`, `find`, `dump`, `core`, `connect`, `serve --gdb PORT`. `record [N]` keeps the last N instructions as they run (Linux; slow) and `back` looks at them (`--reg REG`, `--mem ADDR`); it does not undo. `write`, `setreg`, `call` and `stdin` change the program. `nexo dbg help` lists every command.
 
 Batch script:
 

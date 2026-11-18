@@ -15,7 +15,8 @@ pub use debuglink::{crc32, DebugLookup};
 pub(crate) use load::blank;
 #[cfg(test)]
 pub(crate) use load_elf::reloc_pointer;
-pub(crate) use names::{demangle, raw_of};
+pub use names::demangle;
+pub(crate) use names::raw_of;
 pub use nexo_binmagic::opens;
 pub(crate) use raw::reopen_flags;
 

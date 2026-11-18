@@ -1,8 +1,50 @@
-//! `catch`: signals and, on Windows, exceptions.
+//! `catch`: signals and, on Windows, exceptions; `catch throw|panic|abort` break on the function that raises them.
 
 use super::*;
 
+/// The functions `catch throw`, `catch panic` and `catch abort` break on (the first is always set, a pending
+/// breakpoint when no loaded file has it; the others only when a loaded file has them).
+pub(crate) fn catch_symbols(kind: &str) -> Option<&'static [&'static str]> {
+    Some(match kind {
+        "throw" => &["__cxa_throw"],
+        "panic" => &["rust_begin_unwind", "rust_panic", "runtime.gopanic"],
+        "abort" => &["abort"],
+        _ => return None,
+    })
+}
+
 impl Session {
+    /// `catch throw|panic|abort`: a breakpoint (pending until a library has the name) on what raises it.
+    pub(super) fn cmd_catch_event(&mut self, a: &Args) -> Result<Output> {
+        let kind = a.pos[0].clone();
+        let Some(names) = catch_symbols(&kind) else { return usage("catch throw|panic|abort") };
+        if a.pos.len() > 1 {
+            return usage("catch throw|panic|abort");
+        }
+        let mut found: Vec<&str> = names.iter().copied().filter(|n| self.resolve_place(n).is_ok()).collect();
+        if found.is_empty() {
+            found.push(names[0]);
+        }
+        let mut lines = Vec::new();
+        let mut ids = Vec::new();
+        for n in found {
+            let words = vec![n.to_string()];
+            let args = Args::new(&words)?;
+            let before = self.bps.len();
+            self.cmd_break(false, &words, &args)?;
+            for b in self.bps.iter().skip(before) {
+                ids.push(b.id);
+                let how = if b.addr == 0 {
+                    "pending, no loaded file has it yet".to_string()
+                } else {
+                    format!("at {:#x}", b.addr)
+                };
+                lines.push(format!("catch {kind}: breakpoint #{} on {n} ({how})", b.id));
+            }
+        }
+        Ok(rows("catch", lines, json!({"catch": kind, "breakpoints": ids})))
+    }
+
     pub(super) fn cmd_catch(&mut self, a: &Args) -> Result<Output> {
         if self.t.os() == Os::Windows {
             return self.cmd_catch_windows(a);
@@ -78,5 +120,19 @@ impl Session {
             vec![format!("stops on: {}; and on any exception the program does not handle", l.join(", "))],
             json!({}),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::catch_symbols;
+
+    #[test]
+    fn catch_throw_panic_and_abort_name_the_functions_that_raise_them() {
+        assert_eq!(catch_symbols("throw"), Some(&["__cxa_throw"][..]));
+        assert_eq!(catch_symbols("panic"), Some(&["rust_begin_unwind", "rust_panic", "runtime.gopanic"][..]));
+        assert_eq!(catch_symbols("abort"), Some(&["abort"][..]));
+        assert_eq!(catch_symbols("add"), None);
+        assert_eq!(catch_symbols("load"), None);
     }
 }
