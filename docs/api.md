@@ -257,6 +257,31 @@ nexo api check map.json -p item_id=3 --json > check.json || echo "API changed: e
 
 `--openapi FILE` on `analyze` writes OpenAPI 3.1; `--json` prints it. It has paths with parameters, request bodies and responses as JSON Schema, and the auth schemes as `components.securitySchemes` (`a1`, `a2`, ...). The title is the first host plus "API". Extensions carry what OpenAPI has no field for: `x-nexo-paging`, `x-nexo-example`, `x-nexo-source`, `x-nexo-cookies`, and `x-nexo-channels` for WebSocket and event-stream channels (id, kind, url, subscribe pattern, heartbeat, and `messages_by_type` with direction, count, rate and schema), `x-nexo-graphql` for GraphQL operations (they share one URL, so they are not paths). A second operation on the same method and path goes under `x-nexo-more-operations`. No secret value is in it.
 
+## client
+
+`nexo api client MAP --lang ts|py|sh [--out FILE] [--only EP]... [--force] [--date YYYY-MM-DD]` writes a small client for the mapped API, so a watcher or an automation can run from cron or CI in your own stack without nexo.
+
+| Language | Needs | What you get |
+| --- | --- | --- |
+| `ts` | Node 18+ (global `fetch`), no imports | one async function per endpoint, interfaces for request and response bodies, and an async generator `NAME_all` for a paged list |
+| `py` | Python 3.9+, `urllib.request` and `json` | the same functions, and a generator `NAME_all` for a paged list |
+| `sh` | POSIX `sh` and `curl` | one function per endpoint; paging is left out, with a comment |
+
+The function names are the endpoint ids, so `nexo api call MAP get_api_items` and `get_api_items(...)` are the same call. A name that is a reserved word, starts with a digit or has other characters is fixed (`class_`, `_1st`). `--only` keeps some endpoints (an id, or `"METHOD /path"`). The paging follows what the map says: `page`, `offset`, `cursor`, a next URL, or a Link header, up to a `limit` you give (1000 items by default). A next URL on another origin is never followed.
+
+Secrets come from environment variables when a call runs, with the names `call` suggests (`NEXO_API_BEARER`, `NEXO_API_HEADER_X_API_KEY`, ...). A missing one stops the call with a message that names it. A session cookie is sent only when `NEXO_API_COOKIE` is set. A CSRF header that echoes a cookie reads it from that cookie string unless its own variable is set. No secret, marker or token-like example from the map is written; plain example values appear only in comments. The shell client passes headers to `curl` on standard input, so no token shows in a process list.
+
+Every call times out after 30 seconds, sends a User-Agent that names nexo, does not follow redirects, and retries once on a 429 after `Retry-After` (at most 30 seconds). The header comment holds the origin, the date (`--date`, or today), the operations, and one line per secret that says where it comes from.
+
+GraphQL endpoints become one function per operation name. The map keeps neither the query text nor a persisted-query hash, so the function takes the query text (or `extensions` with the hash) as an argument. WebSocket and event-stream channels are skipped, with a comment that points to `nexo api watch`.
+
+Without `--out` the client is printed. With `--out` it is written, and an existing file is not replaced unless `--force` is given.
+
+```sh
+nexo api client map.json --lang py --out items.py
+NEXO_API_BEARER="$SITE_TOKEN" python3 -c 'import items; print(items.get_api_items())'
+```
+
 ## The agent tool
 
 nexo gives the model a tool named `api`. It takes one `command` string, the same line `nexo api` reads (a leading `nexo api` is optional):
@@ -267,7 +292,7 @@ describe map.json get_api_items
 call map.json "GET /api/items" -p page=2 --dry-run
 ```
 
-The model can run `analyze`, `describe` and `call`. It cannot run `watch` or `check` (they run long or call many endpoints, so you run them), and it cannot use `--reveal` or `--body @file`. The answer is the text the CLI prints, cut at 12,000 characters.
+The model can run `analyze`, `describe`, `call` and `client`. It cannot run `watch` or `check` (they run long or call many endpoints, so you run them), and it cannot use `--reveal` or `--body @file`. The answer is the text the CLI prints, cut at 12,000 characters.
 
 Secrets stay out of the model's hands. The tool refuses a command when:
 
@@ -283,8 +308,8 @@ Each call is classified from the parsed command, and your permission rules decid
 
 | Command | Kind | Asked like |
 | --- | --- | --- |
-| `analyze`, `describe`, `call --dry-run` | read | a file read |
-| `analyze` with `--save` or `--openapi` | write | `edit` and `write` |
+| `analyze`, `describe`, `call --dry-run`, `client` without `--out` | read | a file read |
+| `analyze` with `--save` or `--openapi`, `client --out` | write | `edit` and `write` |
 | `call` of a GET or HEAD endpoint | network | `web_fetch` |
 | `call` of any other method, or with `--login` | exec | a shell command that changes things |
 

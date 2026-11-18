@@ -164,6 +164,10 @@ fn the_method_and_the_flags_decide_the_kind() {
     assert_eq!(kind_in(&cmd("analyze cap.har"), d), ToolKind::Read);
     assert_eq!(kind_in(&cmd("analyze cap.har --save m.json"), d), ToolKind::Write);
     assert_eq!(kind_in(&cmd("analyze cap.har --openapi o.json"), d), ToolKind::Write);
+    // a client is a write when it goes to a file, a read when it is only printed
+    assert_eq!(kind_in(&cmd("client map.json --lang ts"), d), ToolKind::Read);
+    assert_eq!(kind_in(&cmd("client map.json --lang ts --out c.ts"), d), ToolKind::Write);
+    assert_eq!(kind_in(&cmd("client map.json --lang sh --out c.sh --force"), d), ToolKind::Write);
 }
 
 #[test]
