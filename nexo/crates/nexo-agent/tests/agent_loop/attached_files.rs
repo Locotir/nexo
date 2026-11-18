@@ -23,11 +23,7 @@ async fn what_nexo_adds_to_a_message_is_told_apart_and_the_request_is_unchanged(
     let at = evs.iter().position(|e| matches!(e, AgentEvent::History { index: 0, .. })).unwrap();
     let Some(AgentEvent::Added { index: 0, parts }) = evs.get(at + 1) else { panic!("{:?}", evs.get(at + 1)) };
     let kinds: Vec<AddedKind> = parts.iter().map(|p| p.kind).collect();
-    assert_eq!(
-        kinds,
-        [AddedKind::Hook, AddedKind::StartNote, AddedKind::StartNote, AddedKind::File, AddedKind::File],
-        "{parts:?}"
-    );
+    assert_eq!(kinds, [AddedKind::Hook, AddedKind::StartNote, AddedKind::File, AddedKind::File], "{parts:?}");
     assert!(parts[0].text.starts_with(nexo_core::agent::HOOK_CONTEXT_START) && parts[0].text.contains("it is monday"));
     // the note counts what nexo included by itself, as the request carries it, in its last line; the file the
     // person attached is not in that count
@@ -48,10 +44,12 @@ async fn what_nexo_adds_to_a_message_is_told_apart_and_the_request_is_unchanged(
     assert!(parts.iter().all(|p| !p.request_only && p.tokens() > 0));
     // the request carries those parts byte for byte, all in front, and the typed words last under the mark
     let sent = client.requests()[0].messages[0].text();
+    // the time of the message sits between nexo's note and the files, and is not told as an addition
+    let clock = sent.lines().find(|l| nexo_core::agent::is_person_clock(l)).expect(&sent).to_string();
     assert_eq!(
         sent,
         format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\nsee",
+            "{}\n\n{}\n\n{clock}\n\n{}\n\n{}\n\n{}\nsee",
             parts[0].text,
             parts[1].text,
             parts[2].text,
@@ -265,11 +263,10 @@ async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_reque
     r.send(AgentCommand::Submit { text: "just words".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { index: 0, .. })));
-    // only the time of the message is added
-    let added: Vec<_> =
-        evs.iter().filter_map(|e| if let AgentEvent::Added { parts, .. } = e { Some(parts) } else { None }).collect();
-    assert!(added.len() == 1 && added[0].len() == 1 && added[0][0].label == "time of the message", "{evs:?}");
-    assert!(client.requests()[0].messages[0].text().ends_with("\n[the person's message]\njust words"));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Added { .. })), "nothing was added: {evs:?}");
+    let sent = client.requests()[0].messages[0].text();
+    assert!(sent.ends_with("\n[the person's message]\njust words"), "{sent}");
+    assert!(nexo_core::agent::is_person_clock(sent.lines().next().unwrap()), "{sent}");
     r.stop().await;
 }
 

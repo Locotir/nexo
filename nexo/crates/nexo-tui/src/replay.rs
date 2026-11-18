@@ -120,7 +120,7 @@ fn parts_of(text: &str) -> Vec<AddedPart> {
             continue;
         }
         if nexo_core::agent::is_person_clock(lines[i]) {
-            parts.push(AddedPart::new(AddedKind::StartNote, "time of the message", lines[i].trim_end()));
+            // the time of a message is not something nexo added to tell: it takes no row
             i += 1;
             continue;
         }
@@ -272,21 +272,14 @@ mod tests {
     }
 
     #[test]
-    fn the_time_line_of_a_message_is_a_start_note_of_its_own() {
+    fn the_time_line_of_a_message_takes_no_row_of_its_own() {
         let note = "[project at the start of this request]\nincluded by nexo, not attached by the person: 1 project file, 23 tokens.";
         let p = split_user(&format!("{note}\n\n[10:00:00, 7 min after your previous message]\n\n{PERSON_MARK}\nhello"));
         let kinds: Vec<(AddedKind, String)> = p
             .iter()
             .filter_map(|x| if let Piece::Added(a) = x { Some((a.kind, a.label.clone())) } else { None })
             .collect();
-        assert_eq!(
-            kinds,
-            [
-                (AddedKind::StartNote, "project at the start of the request".to_string()),
-                (AddedKind::StartNote, "time of the message".to_string())
-            ],
-            "{p:?}"
-        );
+        assert_eq!(kinds, [(AddedKind::StartNote, "project at the start of the request".to_string())], "{p:?}");
         assert_eq!(p.last(), Some(&Piece::Text("hello".into())));
     }
 
