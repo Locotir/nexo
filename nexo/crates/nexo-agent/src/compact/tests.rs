@@ -189,3 +189,13 @@ fn fresh_tokens_leave_out_an_earlier_summary() {
     let big = vec![summary, call("1", "read", "a"), result("1", &"z".repeat(8_000))];
     assert!(fresh_tokens(&big) >= 2_000, "{}", fresh_tokens(&big));
 }
+
+#[test]
+fn the_curator_knows_the_notes_nexo_writes_as_user_messages() {
+    let jobs = format!("{}\n- job 1 `make` ended after 3s, 2 lines of output", super::kept::JOBS_NOTE);
+    assert!(nexo_curator::NOT_REQUEST.contains(&super::kept::JOBS_NOTE));
+    assert!(!nexo_curator::is_request(&jobs));
+    assert!(!nexo_curator::is_request("<session-message id=\"m-1\" from=\"api\">hi</session-message>"));
+    let person = format!("{jobs}\n\n{}\nSum the totals.", nexo_core::agent::PERSON_MARK);
+    assert!(nexo_curator::is_request(&person));
+}

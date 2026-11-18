@@ -506,3 +506,40 @@ fn a_cut_inside_the_current_turn_keeps_every_message_the_person_typed_in_it() {
     assert!(text.contains("keep the old names"), "the second correction is in the view");
     assert_eq!(provider_valid(&view), Ok(()), "{view:?}");
 }
+
+#[test]
+fn a_note_nexo_wrote_is_not_the_request_the_work_is_on() {
+    // the person's long request, a reply, then a note of ended background jobs (a user message with no person mark),
+    // then many big steps: the note is data, so after a cut the view holds the whole request and the map never
+    // calls the note the person's latest request
+    let hola = format!("{PERSON_MARK}\nhola");
+    let mut msgs = vec![json!({"role": "user", "content": hola})];
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Hola."}]}));
+    let plan: String = (0..60)
+        .map(|k| format!("{k}. Build the stitching module {} and wire it to {}.", word(k + 300), word(k + 400)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let live = format!("Can you do this? Here is the plan:\n{plan}");
+    msgs.push(json!({"role": "user", "content": format!("{PERSON_MARK}\n{live}")}));
+    let ask = msgs.len() - 1;
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Starting."}]}));
+    msgs.push(json!({"role": "user", "content": "[background jobs ended]\n- job 3 `cargo build` ended after 3s, 2 lines of output"}));
+    for k in 0..15 {
+        msgs.extend(step(k, &format!("cat module{k}.rs"), &super::window::big(k + 1, 2500)));
+    }
+    let mut e = Engine::new(params("nudge=0;fresh=0;eoq=0;target=0;cap=0;hard=0;protect=4").unwrap());
+    e.set_budget(12_000);
+    e.sync(&msgs);
+    let view = e.view();
+    assert!(e.start > ask, "the cut lands after the request: start {} ask {ask} {:?}", e.start, e.stats);
+    let text = sent(&view);
+    let live_in_view = serde_json::to_string(&format!("{PERSON_MARK}\n{live}")).unwrap();
+    assert!(text.contains(&live_in_view[1..live_in_view.len() - 1]), "the person's request is whole in the view");
+    let all: String = view.iter().map(|m| text_of(m.get("content")).into_owned()).collect::<Vec<_>>().join("\n");
+    for (i, _) in all.match_indices("latest request") {
+        let after = all[i..].split("[background jobs ended]").count() > 1
+            && all[i..].find("[background jobs ended]") < Some(400);
+        assert!(!after, "the note is named the latest request: {}", &all[i..(i + 300).min(all.len())]);
+    }
+    assert_eq!(provider_valid(&view), Ok(()), "{view:?}");
+}
