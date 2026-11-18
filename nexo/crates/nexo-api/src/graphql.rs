@@ -155,7 +155,7 @@ impl<'a> Scanner<'a> {
             if c.is_whitespace() || c == ',' || c == '\u{feff}' {
                 self.chars.next();
             } else if c == '#' {
-                while let Some(d) = self.chars.next() {
+                for d in self.chars.by_ref() {
                     if d == '\n' {
                         break;
                     }
@@ -184,7 +184,7 @@ impl<'a> Scanner<'a> {
     fn skip_braces(&mut self) {
         let mut depth = 0usize;
         let mut opened = false;
-        while let Some(c) = self.chars.next() {
+        for c in self.chars.by_ref() {
             if c == '{' {
                 depth += 1;
                 opened = true;

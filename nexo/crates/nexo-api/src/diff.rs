@@ -59,7 +59,7 @@ fn id_key(old: &[Value], new: &[Value]) -> Option<&'static str> {
     ID_KEYS.iter().copied().find(|key| {
         [old, new].iter().all(|list| {
             let mut seen = HashSet::new();
-            list.iter().all(|item| field(item, key).and_then(id_text).map_or(false, |t| seen.insert(t)))
+            list.iter().all(|item| field(item, key).and_then(id_text).is_some_and(|t| seen.insert(t)))
         })
     })
 }
