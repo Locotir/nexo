@@ -258,8 +258,8 @@ impl GoalCounts {
         }
     }
 
-    /// The counts as one line of facts, `Goal so far: 23 min, round 3, 187 tool calls; read 96 files (41 since the
-    /// last edit), edited 3; ran 12 commands, 2 failed; $1.84.`: the spend only where the session priced it. None
+    /// The counts as one line of facts, `[nexo, not the person: goal so far: 23 min, round 3, 187 tool calls; read 96 files
+    /// (41 since the last edit), edited 3; ran 12 commands, 2 failed; $1.84.]`: the spend only where the session priced it. None
     /// before the first call, when there is nothing to count.
     pub(super) fn line(&self, round: u32, cost: f64) -> Option<String> {
         if self.calls == 0 {
@@ -271,7 +271,7 @@ impl GoalCounts {
             read.push_str(&format!(" ({} since the last edit)", self.read_since_edit.len()));
         }
         let mut s = format!(
-            "Goal so far: {} min, round {}, {}; {read}, edited {}; ran {}, {} failed",
+            "[nexo, not the person: goal so far: {} min, round {}, {}; {read}, edited {}; ran {}, {} failed",
             self.started.elapsed().as_secs() / 60,
             round + 1,
             many(self.calls as usize, "tool call"),
@@ -283,7 +283,7 @@ impl GoalCounts {
         if spent >= 0.005 {
             s.push_str(&format!("; ${spent:.2}"));
         }
-        s.push('.');
+        s.push_str(".]");
         Some(s)
     }
 }
@@ -308,7 +308,7 @@ pub(super) fn goal_note(st: &State) -> Option<String> {
     }
     let counts = st.goal_counts.line(st.goal_round, st.cost);
     // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
-    let idle = st.goal_idle.facts().map(|f| format!("[goal work: {f}]"));
+    let idle = st.goal_idle.facts().map(|f| format!("[nexo, not the person: goal work: {f}]"));
     let lines: Vec<String> = counts.into_iter().chain(idle).collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
@@ -745,9 +745,9 @@ mod goal_tests {
         c.round(&calls, &[true, true, true, false], kind);
         assert_eq!(
             c.line(2, 1.004).as_deref(),
-            Some("Goal so far: 0 min, round 3, 4 tool calls; read 2 files (1 since the last edit), edited 2; ran 1 command, 1 failed.")
+            Some("[nexo, not the person: goal so far: 0 min, round 3, 4 tool calls; read 2 files (1 since the last edit), edited 2; ran 1 command, 1 failed.]")
         );
-        assert!(c.line(2, 2.84).unwrap().ends_with("1 failed; $1.84."));
+        assert!(c.line(2, 2.84).unwrap().ends_with("1 failed; $1.84.]"));
     }
 }
 
