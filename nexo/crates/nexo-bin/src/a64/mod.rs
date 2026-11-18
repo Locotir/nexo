@@ -12,6 +12,7 @@ mod text;
 
 pub(crate) mod cfg;
 pub(crate) mod scan;
+pub(crate) mod slice;
 pub(crate) mod view;
 
 use text::Mn;
@@ -283,3 +284,5 @@ mod tests;
 
 #[cfg(test)]
 mod tests_img;
+#[cfg(test)]
+mod tests_slice;

@@ -185,6 +185,9 @@ pub fn slice_window(
     from: Option<u64>,
     budget: usize,
 ) -> Result<Output> {
+    if img.arm64 {
+        return crate::a64::slice::slice_window(img, at, reg, arg, mem, from, budget);
+    }
     img.require_x86("slice")?;
     let at_addr = addr_in(img, at)?;
     let f = img
