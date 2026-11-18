@@ -6,6 +6,8 @@ async fn a_context_length_error_compacts_once_and_retries() {
     let client = Scripted::new(vec![
         Reply::Events(text("first answer")),
         Reply::Events(text("second answer")),
+        // the test config runs the plain policy, which answers a context error with a compaction (the curator answers
+        // with a smaller view, see provider_limits.rs)
         Reply::Err(ProviderError::new(ErrorKind::ContextLength, "too long")),
         Reply::Events(text("SUMMARY OF ALL")),
         Reply::Events(text("third answer")),

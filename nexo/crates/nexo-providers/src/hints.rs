@@ -165,6 +165,18 @@ pub fn context_window(message: &str) -> Option<u32> {
     u32::try_from(n).ok()
 }
 
+/// The input tokens the message says the request held, when it was too long: the "in the messages" count of a
+/// message that splits the request from its reply, else the count above the limit.
+pub fn request_tokens(message: &str) -> Option<u64> {
+    let window = u64::from(context_window(message)?);
+    let nums = numbers(message);
+    let counts = || nums.iter().filter(|x| x.n >= 1_000);
+    counts()
+        .find(|x| x.after.trim_start().starts_with("in the messages"))
+        .or_else(|| counts().filter(|x| x.n > window).max_by_key(|x| x.n))
+        .map(|x| x.n)
+}
+
 /// The largest reply the message names, when `max_tokens` was too high.
 pub fn max_output(message: &str) -> Option<u32> {
     if !is_output_message(message) {
@@ -263,6 +275,30 @@ mod tests {
             context_window("Request too large for model `llama-3.3-70b-versatile` in organization `org` on tokens per minute (TPM): Limit 6000, Requested 9000, please reduce your message size"),
             None
         );
+    }
+
+    #[test]
+    fn reads_the_tokens_the_request_held() {
+        let cases = [
+            // the breakdown: the messages alone, not the reply asked for
+            ("This model's maximum context length is 131072 tokens. However, you requested 140000 tokens (130000 in the messages, 10000 in the completion). Please reduce the length of the messages or completion.", 130000),
+            ("Prompt contains 150000 tokens and 0 draft tokens, too large for model with 131072 maximum context length", 150000),
+            ("This model's maximum prompt length is 131072 but the request contains 140000 tokens.", 140000),
+            ("prompt is too long: 213000 tokens > 200000 maximum", 213000),
+            ("This model's maximum context length is 65536 tokens. However, you requested 70000 tokens.", 70000),
+        ];
+        for (msg, want) in cases {
+            assert_eq!(request_tokens(msg), Some(want), "{msg}");
+        }
+        for msg in [
+            "Your input exceeds the context window of this model. Please adjust your input and try again.",
+            "This model's maximum context length is 131072 tokens.",
+            "invalid api key",
+            // a throttle names no request
+            "Request too large for model `llama-3.3-70b-versatile` in organization `org` on tokens per minute (TPM): Limit 6000, Requested 9000, please reduce your message size",
+        ] {
+            assert_eq!(request_tokens(msg), None, "{msg}");
+        }
     }
 
     #[test]

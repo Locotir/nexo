@@ -142,45 +142,220 @@ async fn a_window_learned_when_the_estimate_has_the_whole_reply_fitting_compacts
     r.stop().await;
 }
 
-#[tokio::test]
-async fn a_window_learned_smaller_gets_a_new_curated_view_before_a_compaction() {
-    let _g = config_lock().lock().await;
-    let d = test_tmpdir().unwrap();
-    let too_long = || {
-        Reply::Err(ProviderError::new(
-            ErrorKind::ContextLength,
-            "This model's maximum context length is 65536 tokens. However, you requested 70000 tokens.",
-        ))
-    };
-    let client = Scripted::new(vec![
-        Reply::Events(text("first")),
-        too_long(),
-        Reply::Events(text("after")),
-        // the same window again: a new view would not help, the history is compacted
-        too_long(),
-        Reply::Events(text("SUMMARY")),
-        Reply::Events(text("third")),
-    ]);
+// ------------------------------------------------------------ context errors under the curator
+
+/// The window of the sessions below, in tokens (over 32k, where the prompt stays whole).
+const WINDOW: u32 = 40_000;
+/// Messages of about 3500 estimated tokens that fill the view of a session at `WINDOW`.
+const FAT_TURNS: usize = 10;
+
+/// A scripted reply with no usage: nexo goes by its own estimate alone, so no count teaches it a ratio.
+fn bare(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    events.into_iter().filter(|e| !matches!(e, StreamEvent::Usage(_))).collect()
+}
+
+fn answers(n: usize) -> Vec<Reply> {
+    (0..n).map(|_| Reply::Events(bare(text("ok")))).collect()
+}
+
+fn fat_message(i: usize) -> String {
+    (0..1_600).map(|j| format!("w{i}x{j} ")).collect()
+}
+
+/// A curator session, at `window` when given, with `turns` long messages answered.
+async fn fat_session(client: &Arc<Scripted>, window: Option<u32>, turns: usize, cwd: &std::path::Path) -> Running {
     let mut cfg = config(PermissionMode::Ask);
     cfg.context.policy = "curator".into();
-    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    if let Some(w) = window {
+        cfg.providers.get_mut("mock").unwrap().context_window.insert("m1".into(), w);
+    }
+    let mut r = start(client.clone(), cfg, None, cwd).await;
     r.next().await;
-    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
-    r.turn().await;
-    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    for i in 0..turns {
+        r.send(AgentCommand::Submit { text: fat_message(i), attachments: vec![] });
+        r.turn().await;
+    }
+    r
+}
+
+/// What a request takes by nexo's own estimate, the system prompt and the tools included.
+fn estimate(r: &ModelRequest) -> u64 {
+    let fixed = (r.system.len() + serde_json::to_string(&r.tools).unwrap().len()) as u64 / 4;
+    fixed + nexo_core::message::estimate_tokens(&r.messages)
+}
+
+fn no_summary(client: &Scripted) -> bool {
+    !client.requests().iter().any(is_summary)
+}
+
+fn too_long(message: &str) -> Reply {
+    Reply::Err(ProviderError::new(ErrorKind::ContextLength, message))
+}
+
+#[tokio::test]
+async fn the_same_window_named_again_gets_a_smaller_curated_view_and_no_summary() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let said = "This model's maximum context length is 40000 tokens. However, you requested 45000 tokens.";
+    let mut script = answers(6);
+    script.extend([
+        too_long(said),
+        Reply::Events(bare(text("after"))),
+        too_long(said),
+        Reply::Events(bare(text("third"))),
+    ]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, None, 6, d.path()).await;
+    r.send(AgentCommand::Submit { text: fat_message(6), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(text_of(&evs), "after");
-    assert!(!notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
-    let reqs = client.requests();
-    assert_eq!(reqs.len(), 3);
-    assert!(!is_summary(&reqs[2]) && reqs[2].messages == reqs[1].messages, "the history kept as it is");
-    r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
+    assert_eq!(client.requests().len(), 8);
+    // the window is the same on the second error: the view still gets smaller
+    r.send(AgentCommand::Submit { text: fat_message(7), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(text_of(&evs), "third");
-    assert!(notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(!notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
+    assert!(no_summary(&client), "no summary request");
     let reqs = client.requests();
-    assert_eq!(reqs.len(), 6);
-    assert!(is_summary(&reqs[4]));
+    assert_eq!(reqs.len(), 10);
+    assert!(estimate(&reqs[9]) < estimate(&reqs[8]), "{} then {}", estimate(&reqs[8]), estimate(&reqs[9]));
+    assert!(reqs[9].messages.iter().any(|m| m.text().contains(&fat_message(7))), "the person's words stay whole");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_error_that_names_the_requests_tokens_makes_the_next_view_fit_them() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let said = 60_000u64;
+    let mut script = answers(FAT_TURNS);
+    script.extend([
+        too_long(
+            "This model's maximum context length is 40000 tokens. However, you requested 70000 tokens \
+             (60000 in the messages, 10000 in the completion). Please reduce the length of the messages or completion.",
+        ),
+        Reply::Events(bare(text("after"))),
+    ]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, Some(WINDOW), FAT_TURNS, d.path()).await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("after", TurnEnd::Done));
+    assert!(no_summary(&client), "no summary request");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), FAT_TURNS + 2);
+    let (before, after) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 1]));
+    // the provider's count of the retried request is under the window
+    assert!(after < before && (after * said) / before < u64::from(WINDOW), "{before} then {after}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_error_with_no_numbers_under_a_known_window_shrinks_the_view_and_raises_the_ratio() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let mut script = answers(FAT_TURNS);
+    script.extend([too_long("context length exceeded"), Reply::Events(bare(text("after")))]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, Some(WINDOW), FAT_TURNS, d.path()).await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("after", TurnEnd::Done));
+    assert!(no_summary(&client), "no summary request");
+    let reqs = client.requests();
+    let (before, after) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 1]));
+    assert!(after < before, "{before} then {after}");
+    // a ratio 15 % higher takes the view window (0.95 of the room for the request over the ratio) down to this
+    let room = f64::from(WINDOW - reqs[FAT_TURNS].max_tokens);
+    assert!(after as f64 <= room * 0.95 / 1.15, "{after} over {}", room * 0.95 / 1.15);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn with_no_window_known_and_no_numbers_the_next_view_is_three_quarters_and_no_file_is_written() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let mut script = answers(6);
+    script.extend([too_long("context length exceeded"), Reply::Events(bare(text("after")))]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, None, 6, d.path()).await;
+    let file = data_dir().join("config.toml");
+    let saved = std::fs::read_to_string(&file).ok();
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("after", TurnEnd::Done));
+    assert!(no_summary(&client), "no summary request");
+    let reqs = client.requests();
+    let (before, after) = (estimate(&reqs[6]), estimate(&reqs[7]));
+    assert!(after * 4 <= before * 3, "{before} then {after}");
+    assert!(
+        evs.iter().any(|e| matches!(e, AgentEvent::ModelLimits { source, .. } if source == "estimate")),
+        "the window guessed is told to the interface"
+    );
+    assert_eq!(std::fs::read_to_string(&file).ok(), saved, "the person's config file is not touched");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn four_context_errors_in_a_row_end_the_turn_with_a_notice_and_no_summary() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let mut script = answers(FAT_TURNS);
+    script.extend([
+        too_long("context length exceeded"),
+        // the error inside the stream, before any word, is read the same way
+        Reply::Events(vec![StreamEvent::Error(ProviderError::new(
+            ErrorKind::ContextLength,
+            "context length exceeded",
+        ))]),
+        too_long("context length exceeded"),
+        Reply::Events(vec![StreamEvent::Error(ProviderError::new(
+            ErrorKind::ContextLength,
+            "context length exceeded",
+        ))]),
+        Reply::Events(bare(text("never asked"))),
+    ]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, Some(WINDOW), FAT_TURNS, d.path()).await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    let told: Vec<String> =
+        notices(&evs).into_iter().filter(|n| n.contains("/compact") && n.contains("/clear")).collect();
+    assert_eq!(told.len(), 1, "{:?}", notices(&evs));
+    assert!(told[0].contains("3 smaller views"), "{}", told[0]);
+    assert!(no_summary(&client), "no summary request");
+    assert!(!notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
+    // one request and three smaller views, none after
+    assert_eq!(client.requests().len(), FAT_TURNS + 4);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_throttle_that_reads_as_a_context_error_changes_nothing_and_asks_for_no_summary() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let mut script = answers(FAT_TURNS);
+    script.push(too_long(
+        "Request too large for model `m1` in organization `org` on tokens per minute (TPM): Limit 6000, Requested 9000, \
+         please reduce your message size",
+    ));
+    script.extend(answers(1));
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, Some(WINDOW), FAT_TURNS, d.path()).await;
+    r.send(AgentCommand::Submit { text: fat_message(FAT_TURNS), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert!(no_summary(&client), "no summary request");
+    r.send(AgentCommand::Submit { text: fat_message(FAT_TURNS + 1), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), FAT_TURNS + 2);
+    // the ratio is what it was: the next view is as large as the one that failed, not a sixth smaller
+    let (failed, next) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 1]));
+    assert!(next * 100 >= failed * 90, "{failed} then {next}");
     r.stop().await;
 }
 

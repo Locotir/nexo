@@ -19,6 +19,7 @@ async fn the_summary_asks_for_the_lowest_level_the_model_lists_not_off() {
     let client = Scripted::new(vec![
         Reply::Events(text("first answer")),
         Reply::Events(text("second answer")),
+        // plain policy (the test config): a context error is answered with a compaction, which is this test's point
         Reply::Err(ProviderError::new(ErrorKind::ContextLength, "too long")),
         Reply::Events(text("SUMMARY OF ALL")),
         Reply::Events(text("third answer")),

@@ -30,8 +30,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     };
     emit(&events, AgentEvent::TurnStart { turn: turn_no });
     let mut compacted = false;
-    // the view was asked again after the window was learned smaller (once, before any compaction)
-    let mut refitted = false;
+    // new, smaller views made after context errors in this call (at most MAX_REFITS, before the turn ends)
+    let mut refits = 0u32;
     let mut capped = false;
     let mut rounds = 0u32;
     // each tool round of this request as one hash of its calls and outputs (`agent.loop_guard`)
@@ -157,9 +157,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let mut stream = match started {
             Ok(s) => s,
             Err(e) => match learn(&state, &e, &req.model, req.max_tokens).await {
-                Lesson::Refit if !refitted => {
-                    refitted = true;
+                Lesson::Refit if refits < MAX_REFITS => {
+                    refits += 1;
                     continue;
+                }
+                // the curator answers with a smaller view and never with a summary
+                Lesson::Context | Lesson::Refit if curated(&state).await => {
+                    tell_not_fitting(&state, &events, &e, refits).await;
+                    return TurnEnd::Error;
                 }
                 Lesson::Context | Lesson::Refit if !compacted => {
                     compacted = true;
@@ -281,10 +286,15 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
                 match learn(&state, e, &req.model, req.max_tokens).await {
-                    Lesson::Refit if !refitted => {
+                    Lesson::Refit if refits < MAX_REFITS => {
                         bill_attempt(&state, &events, &req.model, usage, call).await;
-                        refitted = true;
+                        refits += 1;
                         continue;
+                    }
+                    Lesson::Context | Lesson::Refit if curated(&state).await => {
+                        bill_attempt(&state, &events, &req.model, usage, call).await;
+                        tell_not_fitting(&state, &events, e, refits).await;
+                        return TurnEnd::Error;
                     }
                     Lesson::Context | Lesson::Refit if !compacted => {
                         compacted = true;
