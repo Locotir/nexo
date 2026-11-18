@@ -1,6 +1,6 @@
 //! `nexo re --mcp`: the nexo RE kit as an MCP server on stdio, so other harnesses can use it. JSON-RPC 2.0, one
 //! message per line, written by hand (no SDK). The tools are generated from the clap definition of `nexo bin`
-//! (one for each op, so the list cannot drift), `bin_batch` (several ops in one call) plus three for `nexo dbg` sessions: start, command, stop, and  (). A tool
+//! (one for each op, so the list cannot drift), `bin_batch` (several ops in one call) plus three for `nexo dbg` sessions: start, command, stop, and one for nexo api. A tool
 //! result is the text `nexo bin` or `nexo dbg` prints. Anything that writes saved state, writes into a program,
 //! attaches to a process or opens a port is refused unless the server started with `--allow-changes`.
 
