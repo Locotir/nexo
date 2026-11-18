@@ -659,6 +659,9 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
             "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record)"
         }
         "checkpoint" | "restart" => "this debugger cannot go back in time: `cont` forward, `history` lists past stops",
+        "valgrind" | "memcheck" | "leak-check" => {
+            "`heap on`, then `cont`: a free of a bad pointer stops the program, and `heap leaks` lists the blocks never freed"
+        }
         "quit" => "`end` as its own call closes the session",
         "kill" => "`kill` ends the program, `end` closes the session",
         "define" | "document" | "python" | "py" | "guile" => {

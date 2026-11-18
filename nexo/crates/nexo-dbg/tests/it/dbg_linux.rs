@@ -223,3 +223,18 @@ fn attach_stops_a_running_program_and_detach_lets_it_go() {
     child.wait().unwrap();
     assert!(gone(pid));
 }
+
+#[test]
+fn heap_check_stops_on_a_double_free_and_lists_the_leak() {
+    let (mut s, _) = start("heap");
+    let t = run(&mut s, "heap on");
+    assert!(t.contains("heap check on: malloc calloc realloc free"), "{t}");
+    let t = run(&mut s, "cont");
+    assert!(t.contains("heap: double free of 0x") && t.contains("allocated at") && t.contains("first freed at"), "{t}");
+    let t = run(&mut s, "heap leaks");
+    assert!(t.contains("100 bytes in 1 block"), "{t}");
+    assert!(run(&mut s, "heap").contains("heap: "));
+    let t = run(&mut s, "heap off");
+    assert!(t.contains("heap check off"), "{t}");
+    run(&mut s, "kill");
+}

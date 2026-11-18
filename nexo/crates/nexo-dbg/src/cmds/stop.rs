@@ -62,6 +62,7 @@ impl Session {
             Why::Syscall(t) => format!("system call {t}"),
             Why::Load(t) => t.clone(),
             Why::Hook(_, t) => format!("hook {t}"),
+            Why::Heap(t) => t.clone(),
             Why::Returned => "a call returned".to_string(),
             Why::Fork(t) | Why::LetGo(t) => t.clone(),
             Why::Exited(c) => format!("the program exited with code {c}"),
@@ -84,6 +85,7 @@ impl Session {
             Why::Syscall(_) => "syscall",
             Why::Load(_) => "load",
             Why::Hook(..) => "hook",
+            Why::Heap(_) => "heap",
             Why::Returned => "call",
             Why::Fork(_) | Why::LetGo(_) => "fork",
             Why::Exited(_) => "exit",
@@ -104,6 +106,7 @@ impl Session {
             }
             l.extend(self.fresh_log());
             l.extend(self.tape.take_notes());
+            l.extend(self.heap_exit_note());
             l.extend(self.trace_note());
             self.last_stop = Some(StopInfo { n: self.nstop, event: event.into(), place: "-".into(), addr: 0 });
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });

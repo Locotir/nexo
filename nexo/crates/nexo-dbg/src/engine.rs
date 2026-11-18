@@ -96,6 +96,8 @@ pub enum Why {
     Load(String),
     /// A hook with `stop`: its id and its line.
     Hook(u32, String),
+    /// The heap check found a free or realloc of a pointer that is not a live block: what it says.
+    Heap(String),
     /// A call made by `call` or `print` came back to its return address.
     Returned,
     /// The first stop of a forked child kept as a session of its own: what it is and where it came from.
@@ -1199,6 +1201,9 @@ impl Session {
         let mut gone = Vec::new();
         if self.tr.lib.take().is_some() {
             gone.push("ltrace");
+        }
+        if self.tr.heap.take().is_some() {
+            gone.push("heap");
         }
         if !self.tr.hooks.is_empty() {
             self.tr.hooks.clear();
