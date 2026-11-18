@@ -6,6 +6,7 @@
 //! request. It is never written to disk and never printed. `--dry-run` sends nothing. A `watch --state` file holds the
 //! last answer after `exchange::scrub_json`, so a token in an answer is saved as `<secret>`.
 
+use crate::api_browser;
 use crate::api_cmd::Target;
 use crate::headless::EXIT_USAGE;
 use nexo_api::spec::{Api, Endpoint};
@@ -380,6 +381,9 @@ pub fn target_info(map: &Path, endpoint: &str) -> Result<(String, String), Fail>
 pub async fn call_out(t: &Target, dry_run: bool, as_json: bool, reveal: bool) -> Result<Out, Fail> {
     let p = prepare(t)?;
     let ep = &p.api.endpoints[p.ep];
+    if let Some(id) = &t.via_browser {
+        return via_browser(&p, t, id, dry_run, as_json, reveal).await;
+    }
     if dry_run {
         let (mut vals, missing) = call::auth_values(&p.api, ep, &p.explicit, &BTreeMap::new(), &lookup);
         for n in call::needs(&p.api, ep) {
@@ -400,6 +404,30 @@ pub async fn call_out(t: &Target, dry_run: bool, as_json: bool, reveal: bool) ->
     let mut s = session(&p, t)?;
     let ans = s.once(ep, &p.inputs).await?;
     Ok(answer_out(&ans, as_json, reveal))
+}
+
+/// `--via-browser`: the page of the person's own browser sends the call; see `api_browser`.
+async fn via_browser(
+    p: &Prepared,
+    t: &Target,
+    id: &str,
+    dry_run: bool,
+    as_json: bool,
+    reveal: bool,
+) -> Result<Out, Fail> {
+    if reveal {
+        return Err(usage(api_browser::refuse_flags(t, true).unwrap_err()));
+    }
+    let ep = &p.api.endpoints[p.ep];
+    let plan = api_browser::plan(&p.api, ep, &p.inputs, t).map_err(usage)?;
+    if dry_run {
+        let notes = vec!["--via-browser: the page of your browser would send it, with its own session".to_string()];
+        return Ok(Out { text: plan.shown.clone(), notes, code: 0 });
+    }
+    let page = api_browser::run(&plan, id, READ_CAP, TIMEOUT.as_millis() as u64).await?;
+    let ans =
+        Answer { status: page.status, content_type: page.content_type, location: None, text: page.text, cut: page.cut };
+    Ok(answer_out(&ans, as_json, false))
 }
 
 /// `nexo api describe`.
@@ -505,6 +533,9 @@ async fn watch_inner(
     state: Option<&Path>,
     follow: Option<&str>,
 ) -> Result<i32, Fail> {
+    if t.via_browser.is_some() {
+        return Err(usage("--via-browser is for `call`; a watch cannot hold a browser".to_string()));
+    }
     {
         let api = load_map(&t.map)?;
         let key = t.endpoint.trim();

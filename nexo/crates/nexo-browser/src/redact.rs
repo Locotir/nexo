@@ -299,7 +299,7 @@ pub(crate) fn header_list_marked(h: &Value) -> Vec<(String, String)> {
 /// into a marker (`sid=<secret:..>`; the `Set-Cookie` attributes stay). `Authorization` keeps its scheme and marks
 /// the token alone (`Bearer <secret:..>`), so the token matches the one in a login response. Any other secret
 /// header becomes the marker of its value.
-pub(crate) fn header_value_marked(name: &str, value: &str) -> String {
+pub fn header_value_marked(name: &str, value: &str) -> String {
     let lower = name.trim().to_lowercase();
     if lower == "cookie" {
         return value.split(';').map(cookie_pair).collect::<Vec<_>>().join("; ");
@@ -345,7 +345,7 @@ fn set_cookie_line(line: &str) -> String {
 /// A request or response body for capture mode: values of secret keys become markers. JSON (nested, any depth)
 /// and `a=b&c=d` forms are read as such, multipart by its part names; any other text, or JSON that does not parse,
 /// is searched for `"key": "value"` pairs. `mime` is the content type, when known.
-pub(crate) fn body_marked(text: &str, mime: &str) -> String {
+pub fn body_marked(text: &str, mime: &str) -> String {
     let m = mime.to_lowercase();
     let t = text.trim_start();
     if m.contains("multipart") {

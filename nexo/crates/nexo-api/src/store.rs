@@ -1,6 +1,6 @@
 //! The map on disk: an [`Api`] as JSON (`nexo api analyze HAR --save FILE`) and back (`nexo api call|describe|watch`).
-//! It holds what the [`Api`] holds and nothing more: names, paths, shapes, fingerprint-free auth schemes, and
-//! `<secret>` where a capture had one. The format is written by hand over `serde_json::Value`: the model has
+//! It holds what the [`Api`] holds and nothing more: names, paths, shapes, auth schemes (a header token keeps its
+//! 8-byte fingerprint, never the token), and `<secret>` where a capture had one. The format is written by hand over `serde_json::Value`: the model has
 //! `&'static str` fields that a derive could not read back, and the crate stays free of `serde`.
 
 use crate::auth::{Auth, Scheme};
@@ -408,6 +408,9 @@ pub fn to_json(api: &Api) -> Value {
             if let Some(s) = &a.source {
                 m.insert("source".to_string(), json!(s));
             }
+            if let Some(fp) = &a.fp {
+                m.insert("fp".to_string(), json!(crate::exchange::fp_hex(fp)));
+            }
             Value::Object(m)
         })
         .collect();
@@ -443,7 +446,8 @@ pub fn from_json(v: &Value) -> Result<Api, String> {
             Some(s) => scheme_of(object(s, "a scheme")?)?,
             None => return Err("an auth entry has no scheme".to_string()),
         };
-        auth.push(Auth { scheme, uses: count(a, "uses"), source: opt_text(a, "source") });
+        let fp = opt_text(a, "fp").and_then(|t| crate::exchange::fp_from_hex(&t));
+        auth.push(Auth { scheme, uses: count(a, "uses"), source: opt_text(a, "source"), fp });
     }
     let mut endpoints = Vec::new();
     for e in m.get("endpoints").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
@@ -509,6 +513,19 @@ pub(crate) mod tests {
 
     pub(crate) fn api() -> Api {
         crate::analyze_har(&har(), &Options::default()).unwrap()
+    }
+
+    #[test]
+    fn a_header_token_keeps_its_fingerprint_and_never_the_token() {
+        let a = api();
+        let token = "tkAAAA1111bbbbCCCC2222dddd";
+        let fp = a.auth.iter().find_map(|x| x.fp).expect("the bearer has a fingerprint");
+        assert_eq!(fp, crate::exchange::fingerprint(token));
+        let text = to_text(&a);
+        assert!(!text.contains(token));
+        assert!(text.contains(&crate::exchange::fp_hex(&fp)));
+        assert_eq!(from_text(&text).unwrap().auth, a.auth);
+        assert_eq!(crate::exchange::fp_from_hex("zz"), None);
     }
 
     #[test]

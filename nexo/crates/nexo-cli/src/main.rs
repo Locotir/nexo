@@ -4,6 +4,7 @@
 
 mod account;
 mod acp;
+mod api_browser;
 mod api_call;
 mod api_check;
 mod api_cmd;

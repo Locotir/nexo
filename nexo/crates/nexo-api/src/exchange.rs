@@ -21,6 +21,23 @@ pub fn fingerprint(value: &str) -> Fp {
     fp
 }
 
+/// A fingerprint as 16 lower-case hex digits.
+pub fn fp_hex(fp: &Fp) -> String {
+    fp.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Reads [`fp_hex`] back; `None` for anything else.
+pub fn fp_from_hex(text: &str) -> Option<Fp> {
+    if text.len() != 16 || !text.is_ascii() {
+        return None;
+    }
+    let mut fp = [0u8; 8];
+    for (i, b) in fp.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(fp)
+}
+
 /// Whether a string looks like a token, a hash or an encoded blob rather than words, a date or a link: 24 characters
 /// or more without a space, a colon or a leading `/`, made of 32 or more hex digits or of at least three of lower case,
 /// upper case, digits and symbols. Such a string is never shown as an example.
