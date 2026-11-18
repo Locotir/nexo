@@ -580,7 +580,7 @@ const MAX_FOLLOW_LINES: usize = 30;
 /// Exit code of a follow that could not read the stream (exit 1 is only drift).
 const EXIT_STREAM: i32 = 3;
 
-fn broken(e: String) -> Fail {
+pub(crate) fn broken(e: String) -> Fail {
     (EXIT_STREAM, e)
 }
 

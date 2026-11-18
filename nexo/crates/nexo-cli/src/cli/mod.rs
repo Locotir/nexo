@@ -19,6 +19,34 @@ use config::{load_config, trust_asked};
 use dispatch::run_in;
 use modes::{headless_collect, interactive};
 
+/// Libraries that handle requests with their auth headers and log them at `trace` (tungstenite prints the whole
+/// handshake request). Their `trace` output is never wanted, whatever `RUST_LOG` says.
+const REQUEST_LIBS: [&str; 7] = ["tungstenite", "async_tungstenite", "hyper", "hyper_util", "reqwest", "rustls", "h2"];
+
+/// `RUST_LOG` with the libraries of [`REQUEST_LIBS`] held at `debug` when something asks for `trace` (a bare level, a
+/// target, or the number 5); anything else is left as written.
+fn capped_spec(spec: &str) -> String {
+    let wants_trace = spec.split(',').any(|d| {
+        let level = d.rsplit('=').next().unwrap_or("").trim();
+        level.eq_ignore_ascii_case("trace") || level == "5"
+    });
+    if !wants_trace {
+        return spec.to_string();
+    }
+    let mut out = spec.to_string();
+    for lib in REQUEST_LIBS {
+        out.push_str(&format!(",{lib}=debug"));
+    }
+    out
+}
+
+/// The log filter of `--log`: `RUST_LOG` (errors only when unset), without `trace` from the request libraries.
+fn log_filter(spec: &str) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::ERROR.into())
+        .parse_lossy(capped_spec(spec))
+}
+
 pub async fn main() -> i32 {
     let args = match Args::try_parse() {
         Ok(a) => a,
@@ -40,7 +68,9 @@ pub async fn main() -> i32 {
         match std::fs::File::create(f) {
             Ok(file) => {
                 tracing_subscriber::fmt()
-                    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                    .with_env_filter(log_filter(
+                        &std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).unwrap_or_default(),
+                    ))
                     .with_writer(std::sync::Mutex::new(file))
                     .with_ansi(false)
                     .init();
@@ -117,4 +147,28 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         crate::worktree::leave(w);
     }
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_is_held_back_for_the_request_libraries() {
+        for spec in ["trace", "info,tungstenite=trace", "TRACE", "warn,rustls=5", "nexo=trace"] {
+            let out = capped_spec(spec);
+            assert!(out.starts_with(spec), "{out}");
+            for lib in REQUEST_LIBS {
+                assert!(
+                    out.ends_with(&format!("{lib}=debug")) || out.contains(&format!(",{lib}=debug")),
+                    "{lib} in {out}"
+                );
+            }
+            let _ = log_filter(spec);
+        }
+        // nothing asks for trace: the text is left as written
+        for spec in ["", "info", "debug,hyper=warn", "nexo=debug"] {
+            assert_eq!(capped_spec(spec), spec);
+        }
+    }
 }
