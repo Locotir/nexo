@@ -203,6 +203,8 @@ pub struct Engine {
     rules_shown: String,
     /// file path (`file_key`) -> (read in message, path, text)
     pins: IndexMap<String, (usize, String, String, String)>,
+    /// (file, message) of each change the agent made to a file, for the standing facts printed from it
+    file_edits: Vec<(String, usize)>,
     /// file path (`file_key`) -> last message that wrote it (a tool or a shell command)
     written: FxHashMap<String, usize>,
     /// file path (`file_key`) -> the agent's last whole write of it, oldest first
@@ -413,6 +415,7 @@ impl Engine {
             wrote: IndexMap::new(),
             replaced: FxHashMap::default(),
             pending_writes: FxHashMap::default(),
+            file_edits: Vec::new(),
             since_note: 0,
             since_nudge: usize::MAX,
             nudged: FxHashSet::default(),

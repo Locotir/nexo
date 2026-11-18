@@ -184,6 +184,25 @@ fn ends(s: &str, n: usize) -> String {
     format!("{head}\n{tail}")
 }
 
+/// Who said a fact: the person, the agent (a Finding of its own) or a tool's output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Speaker {
+    #[default]
+    Person,
+    Agent,
+    Tool,
+}
+
+impl Speaker {
+    fn word(self) -> &'static str {
+        match self {
+            Speaker::Person => "person",
+            Speaker::Agent => "agent",
+            Speaker::Tool => "tool",
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Fact {
     /// The line in the session's words.
@@ -194,6 +213,12 @@ struct Fact {
     src: Option<usize>,
     /// The line this one replaced.
     before: Option<String>,
+    /// Who said it.
+    #[serde(default)]
+    by: Speaker,
+    /// The file a tool printed it from (a fact of a tool's output only).
+    #[serde(default)]
+    file: Option<String>,
 }
 
 /// The table of standing facts, and what the trigger reads.
@@ -231,10 +256,18 @@ impl Standing {
     /// Takes in message ``mi``: ``user`` says whether the person sent it (a tool result comes as one), ``texts`` is
     /// its text (the agent's, with its notes), ``results`` the outputs it carries and ``calls`` the inputs of
     /// its calls that name something.
-    pub fn see(&mut self, mi: usize, user: bool, texts: &[String], results: &[String], calls: &[String]) {
+    pub fn see(
+        &mut self,
+        mi: usize,
+        user: bool,
+        texts: &[String],
+        results: &[(Option<String>, String)],
+        calls: &[String],
+    ) {
         let text = texts.join("\n");
         let text: String = text.chars().take(READ_CHARS).collect();
         let mut taken = 0;
+        let by = if user { Speaker::Person } else { Speaker::Agent };
         if user {
             if !text.trim().is_empty() {
                 self.requests += 1;
@@ -246,14 +279,14 @@ impl Standing {
                 self.user = ends(&crate::msg::request_words(&text), TRIGGER_CHARS);
                 for line in text.lines().filter(|l| !l.trim_start().starts_with("```")) {
                     for s in sentences(line) {
-                        if taken < PER_MESSAGE && self.take(mi, s) {
+                        if taken < PER_MESSAGE && self.take(mi, s, by) {
                             taken += 1;
                         }
                     }
                 }
             }
             let mut from_results = 0;
-            for r in results {
+            for (file, r) in results {
                 for c in SAVED.captures_iter(r) {
                     let line: String = c[1].chars().take(LINE_CHARS).collect();
                     // one fact per address and kind: a new note at the same place replaces the old one
@@ -261,7 +294,14 @@ impl Standing {
                     let mut targets = stems(&line);
                     targets.retain(|t| !t.starts_with('#'));
                     if from_results < PER_RESULT
-                        && self.put(mi, format!("this binary, {line}"), targets, vec![kind, c[2].to_string()])
+                        && self.put(
+                            mi,
+                            format!("this binary, {line}"),
+                            targets,
+                            vec![kind, c[2].to_string()],
+                            Speaker::Tool,
+                            file.clone(),
+                        )
                     {
                         from_results += 1;
                     }
@@ -273,7 +313,7 @@ impl Standing {
                     if let Some(c) = ASSIGN.captures(line) {
                         let mut targets = stems(line);
                         targets.retain(|t| !t.starts_with('#'));
-                        if self.put(mi, line.trim().to_string(), targets, stems(&c[1])) {
+                        if self.put(mi, line.trim().to_string(), targets, stems(&c[1]), Speaker::Tool, file.clone()) {
                             from_results += 1;
                         }
                     }
@@ -284,7 +324,7 @@ impl Standing {
             self.calls = calls.join("\n").chars().take(CALL_CHARS).collect();
             for c in FINDING.captures_iter(&text) {
                 for s in sentences(&c[1]) {
-                    if taken < PER_MESSAGE && self.take(mi, s) {
+                    if taken < PER_MESSAGE && self.take(mi, s, by) {
                         taken += 1;
                     }
                 }
@@ -293,17 +333,25 @@ impl Standing {
     }
 
     /// Takes a sentence if it is a fact.
-    fn take(&mut self, mi: usize, s: &str) -> bool {
+    fn take(&mut self, mi: usize, s: &str, by: Speaker) -> bool {
         let s = s.trim().trim_start_matches(['-', '*', '•', '>', '#', ' ']);
         if s.chars().count() < 12 || s.chars().count() > LINE_CHARS || !is_fact(s) {
             return false;
         }
-        self.put(mi, s.to_string(), stems(s), subject(s))
+        self.put(mi, s.to_string(), stems(s), subject(s), by, None)
     }
 
     /// Adds a fact; the same line again only updates where it came from, and a later line about the same
     /// subject replaces the old one.
-    fn put(&mut self, mi: usize, line: String, targets: Vec<String>, subject: Vec<String>) -> bool {
+    fn put(
+        &mut self,
+        mi: usize,
+        line: String,
+        targets: Vec<String>,
+        subject: Vec<String>,
+        by: Speaker,
+        file: Option<String>,
+    ) -> bool {
         if targets.is_empty() {
             return false;
         }
@@ -319,7 +367,7 @@ impl Standing {
             }
             before = Some(self.facts.remove(k).line);
         }
-        self.facts.push(Fact { line, targets, subject, src: Some(mi), before });
+        self.facts.push(Fact { line, targets, subject, src: Some(mi), before, by, file });
         if self.facts.len() > TABLE {
             self.facts.remove(0);
         }
@@ -335,7 +383,14 @@ impl Standing {
     /// text or the inputs of its last calls hold, the most targets first, the newest first among equals.
     /// ``skip`` says which are already in the view (their message is whole in it, the rules block has them, or
     /// another message shows their words).
-    pub fn due(&self, limit: usize, skip: &dyn Fn(Option<usize>, &str) -> bool) -> Vec<String> {
+    /// ``edited`` says which message changed a file after message ``src`` (a fact printed from it is marked); each line
+    /// names who said it.
+    pub fn due(
+        &self,
+        limit: usize,
+        skip: &dyn Fn(Option<usize>, &str) -> bool,
+        edited: &dyn Fn(&str, usize) -> Option<usize>,
+    ) -> Vec<String> {
         if self.facts.is_empty() || limit == 0 {
             return Vec::new();
         }
@@ -358,9 +413,20 @@ impl Standing {
         hit.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
         hit.into_iter()
             .take(limit)
-            .map(|(_, _, f)| match &f.before {
-                Some(old) => format!("{} (antes: {old})", f.line),
-                None => f.line.clone(),
+            .map(|(_, _, f)| {
+                let mut line = match &f.before {
+                    Some(old) => format!("{} (antes: {old})", f.line),
+                    None => f.line.clone(),
+                };
+                // who said it, and whether the file it was printed from changed since
+                let by = f.by.word();
+                match f.file.as_deref().zip(f.src).and_then(|(file, src)| edited(file, src)) {
+                    Some(m) => {
+                        line += &format!(" (by {by}; file edited later in m{:05}: re-read before trusting)", m + 1)
+                    }
+                    None => line += &format!(" (by {by})"),
+                }
+                line
             })
             .collect()
     }

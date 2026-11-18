@@ -10,7 +10,9 @@ use crate::hindsight::UKind;
 use crate::json::{est, est_str};
 use crate::msg::{blocks, get_str, person_words, request_words, text_block, text_of};
 use crate::standing::CALL_KEYS;
+use crate::tools::{classify, printed_files, shell_writes, Kind};
 
+use super::files::same_file;
 use super::notes::note_text;
 use super::view::add_blocks;
 use super::Engine;
@@ -64,11 +66,33 @@ impl Engine {
         // something the person said, and a "never" or an "always" in them is not a rule of theirs
         let texts: Vec<String> =
             bs.iter().filter_map(note_text).map(|t| if user { person_words(&t).to_string() } else { t }).collect();
-        let results: Vec<String> = bs
+        // each output with the file its call printed (the call is in the message before)
+        let before = blocks(self.last_raw.get("content"));
+        let results: Vec<(Option<String>, String)> = bs
             .iter()
             .filter(|b| get_str(b, "type") == "tool_result")
-            .map(|b| text_of(b.get("content")).into_owned())
+            .map(|b| {
+                let id = get_str(b, "tool_use_id");
+                let call = before.iter().find(|c| get_str(c, "type") == "tool_use" && get_str(c, "id") == id);
+                let file = call.and_then(|c| {
+                    let (kind, path, command) = classify(get_str(c, "name"), c.get("input"));
+                    path.filter(|_| kind == Kind::Read)
+                        .or_else(|| command.and_then(|x| printed_files(&x).into_iter().next()))
+                        .filter(|p| !p.is_empty())
+                });
+                (file, text_of(b.get("content")).into_owned())
+            })
             .collect();
+        // the files the agent changes: a value printed from one earlier is out of date
+        for b in bs.iter().filter(|b| get_str(b, "type") == "tool_use") {
+            let (kind, path, command) = classify(get_str(b, "name"), b.get("input"));
+            let files = match kind {
+                Kind::Write => path.into_iter().collect(),
+                Kind::Exec => shell_writes(&command.unwrap_or_default()),
+                _ => Vec::new(),
+            };
+            self.file_edits.extend(files.into_iter().filter(|p| !p.is_empty()).map(|p| (p, mi)));
+        }
         let calls: Vec<String> = bs
             .iter()
             .filter(|b| get_str(b, "type") == "tool_use")
@@ -178,9 +202,15 @@ impl Engine {
         }
         shown.sort_by_key(|s| (s.0, s.1, s.2));
         let (mut out, mut at): (Vec<String>, Option<usize>) = (Vec::new(), None);
-        for (mi, _, _, line) in shown {
+        for (mi, u, _, line) in shown {
             if at != Some(mi) {
-                out.push(format!("m{:05}:", mi + 1));
+                // who said the message: the person, the agent, or a tool (its output)
+                let by = match self.tr.units[u as usize].kind {
+                    UKind::User => "person",
+                    UKind::Result => "tool",
+                    _ => "agent",
+                };
+                out.push(format!("m{:05} ({by}):", mi + 1));
                 at = Some(mi);
             }
             out.push(line);
@@ -225,9 +255,15 @@ impl Engine {
                 .collect();
             let rules = &self.rules_shown;
             let shows = |line: &str| view.iter().skip(1).any(|m| holds(m.get("content"), line));
-            let due = self.standing.due(FACTS, &|src, line| {
-                src.is_some_and(|s| whole.contains(&s)) || rules.contains(line) || shows(line)
-            });
+            let edits = &self.file_edits;
+            let edited = |file: &str, src: usize| {
+                edits.iter().filter(|(p, m)| *m > src && same_file(p, file)).map(|(_, m)| *m).min()
+            };
+            let due = self.standing.due(
+                FACTS,
+                &|src, line| src.is_some_and(|s| whole.contains(&s)) || rules.contains(line) || shows(line),
+                &edited,
+            );
             if !due.is_empty() {
                 self.bump("standing", due.len() as i64);
                 lines.push(FACTS_HEAD.to_string());

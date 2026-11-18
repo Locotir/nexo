@@ -198,7 +198,7 @@ fn a_fact_whose_words_are_in_the_view_in_another_message_is_not_sent_again() {
         let mut cur = curator();
         let msgs = work(&mut cur, &opening, 250, "");
         let (_, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
-        assert_eq!(standing, [format!("Standing: {RC}")]);
+        assert_eq!(standing, [format!("Standing: {RC} (by person)")]);
         let mut cur = curator();
         let mut msgs = work(&mut cur, &opening, 250, "");
         msgs.push(quoting);
@@ -266,4 +266,70 @@ fn what_a_debug_session_saved_for_a_binary_comes_back_when_its_function_is_asked
     // a request about something else does not bring it
     let (_, other) = ask(&mut cur, msgs, "Rename the variable total in the invoices module.");
     assert!(other.iter().all(|l| !l.contains("0x1b7af")), "{other:?}");
+}
+
+/// A step of tool work whose command is ``command``: the output is the long grep-like text with ``extra`` at its
+/// head (the variant of `step` that names the call's own command and id).
+fn step_with(id: &str, name: &str, input: Value, out: &str) -> [Value; 2] {
+    [
+        json!({"role": "assistant", "content": [
+            {"type": "text", "text": "Checking."},
+            {"type": "tool_use", "id": id, "name": name, "input": input}]}),
+        json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": out}]}),
+    ]
+}
+
+/// A value a command printed from a file is as old as the file: once the agent edited that file, the value comes
+/// back marked, as a pinned or written file is ("re-read before trusting"), not as plain background.
+#[test]
+fn a_fact_printed_from_a_file_that_was_edited_since_comes_back_marked() {
+    const PRINTED: &str = "shell_rc = /etc/skel-77/rc";
+    for edited in [false, true] {
+        let mut opening = vec![user("Fix the overflow in the parser."), said("On it.")];
+        opening.extend(step_with(
+            "cat_1",
+            "bash",
+            json!({"command": "cat /etc/skel-77/rc.conf"}),
+            &format!("{PRINTED}\n"),
+        ));
+        if edited {
+            opening.extend(step_with(
+                "edit_1",
+                "edit_file",
+                json!({"path": "/etc/skel-77/rc.conf", "old_string": PRINTED, "new_string": "shell_rc = /etc/skel-78/rc"}),
+                "edited /etc/skel-77/rc.conf",
+            ));
+        }
+        let mut cur = curator();
+        let msgs = work(&mut cur, &opening, 250, "");
+        let (_, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
+        let held: Vec<&String> = standing.iter().filter(|l| l.contains("/etc/skel-77/rc")).collect();
+        if edited {
+            assert!(held.iter().all(|l| l.contains("re-read before trusting")), "edited: {standing:?}");
+        } else {
+            // (the control: the fact does come back when nothing changed it, and carries no mark)
+            assert!(!held.is_empty() && held.iter().all(|l| !l.contains("re-read before trusting")), "{standing:?}");
+        }
+    }
+}
+
+/// The person's words, the agent's own Finding and a command's output are different things: a line brought back
+/// says which one said it.
+#[test]
+fn a_standing_line_says_who_said_it() {
+    let finding = "the database (postgres) listens on port 5433, not 5432";
+    let mut opening = vec![user("Fix the overflow in the parser."), said("On it.")];
+    opening.push(said(&format!("Checked it.\nFinding: {finding}")));
+    let mut cur = curator();
+    let msgs = work(&mut cur, &opening, 250, "");
+    let (_, standing) = ask(&mut cur, msgs, "Connect to the database and count the rows in users.");
+    let line = standing.iter().find(|l| l.contains(finding)).unwrap_or_else(|| panic!("{standing:?}"));
+    assert!(line.contains("(by agent"), "{line}");
+
+    let mut cur = curator();
+    let opening = [user("Fix the overflow in the parser."), said("On it."), user(RC), said("Understood.")];
+    let msgs = work(&mut cur, &opening, 250, "");
+    let (_, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
+    let line = standing.iter().find(|l| l.contains(RC)).unwrap_or_else(|| panic!("{standing:?}"));
+    assert!(line.contains("(by person"), "{line}");
 }
