@@ -14,7 +14,7 @@ use super::Engine;
 /// its head and its tail).
 const IN_PROGRESS_CHARS: usize = 6_000;
 /// What the loop sends in the person's place to go on with a goal or after a check-in: not a request of the person.
-const LOOP_MARKS: [&str; 2] = ["[goal: continue]", "[supervisor: continue]"];
+pub(super) const LOOP_MARKS: [&str; 2] = ["[goal: continue]", "[supervisor: continue]"];
 
 pub(super) fn thousands(n: i64) -> String {
     let s = n.unsigned_abs().to_string();
@@ -128,7 +128,7 @@ impl Engine {
             let w = crate::msg::person_words(&t).trim_start();
             !LOOP_MARKS.iter().any(|m| w.starts_with(m))
         })?;
-        if r == 0 || r >= self.start || self.live_ask() == Some(r) {
+        if r == 0 || r >= self.start || self.live_asks().contains(&r) {
             // (a request the view keeps whole is not said again, word for word or as a line of the list)
             return None;
         }
@@ -161,9 +161,10 @@ impl Engine {
         let end_of = |x: usize| reqs.get(x + 1).copied().unwrap_or(n);
         let upto = bisect_left(reqs, &self.start);
         let current = self.in_progress();
+        let live = self.live_asks();
         let requests: Vec<usize> = (0..upto)
             .filter(|&x| {
-                Some(reqs[x]) != self.live_ask()
+                !live.contains(&reqs[x])
                     && (reqs[x] > 0
                         || !self.outcome(0, end_of(x)).is_empty()
                         || !self.fixes(0, end_of(x), None).is_empty())

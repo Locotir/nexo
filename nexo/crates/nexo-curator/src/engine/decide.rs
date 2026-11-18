@@ -116,10 +116,10 @@ impl Engine {
             self.bump("unsplit", 1);
             self.frozen.clear();
         }
-        // the request kept for a cut inside its turn (`live_ask`) goes once a newer request opens: the view changes
+        // the request kept for a cut inside its turn (`live_asks`) goes once a newer request opens: the view changes
         // from it on, and the cache misses from there
-        let live = self.live_ask();
-        if let Some(&mi) = sent.iter().find(|&&mi| mi != 0 && mi < self.start && live != Some(mi)) {
+        let live = self.live_asks();
+        if let Some(&mi) = sent.iter().find(|&&mi| mi != 0 && mi < self.start && !live.contains(&mi)) {
             quiet.push(("miss_live", mi));
         }
         if let Some(mi) = self.unnudged.take().filter(|&mi| was_sent(mi)) {

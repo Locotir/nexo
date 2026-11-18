@@ -81,12 +81,12 @@ impl Engine {
             // the first message, and from `start` on the ones not shut
             let from = self.start.max(1);
             let mut out = if key.0 > 0 { vec![0] } else { Vec::new() };
-            out.extend(self.live_ask());
+            out.extend(self.live_asks());
             out.extend((from..key.0).filter(|mi| !self.shut_out.contains(mi)));
             out
         } else {
             let mut out = vec![0];
-            out.extend(self.live_ask());
+            out.extend(self.live_asks());
             for &j in &g.members[g.active()] {
                 let (a, b) = g.span(j, key.0);
                 out.extend((a.max(self.start).max(1)..b).filter(|mi| !self.shut_out.contains(mi)));
@@ -98,13 +98,34 @@ impl Engine {
         out
     }
 
-    /// The message that opened the current turn when the cut has left it behind (`start` lies inside the turn):
-    /// the view keeps it, whole and in its place after the first message, so the person's live request is the last
-    /// of their words the model reads and not the first message's. It leaves no tool call without its result: it is
-    /// the person's message, and `start` is where an assistant message begins.
-    pub(super) fn live_ask(&self) -> Option<usize> {
-        let ts = self.goal.turns.last()?.start;
-        (ts >= 1 && ts < self.start && ts < self.tr.msgs.len()).then_some(ts)
+    /// The messages of the person in the current turn that the cut has left behind (`start` lies inside the turn):
+    /// the one that opened the turn and every one typed while the agent worked. The view keeps them whole, in order,
+    /// after the first message, so the person's latest words are the last of theirs the model reads and no
+    /// correction is lost. The loop's own continuations are not the person's. It leaves no tool call without its
+    /// result: they are the person's messages, and `start` is where an assistant message begins.
+    pub(super) fn live_asks(&self) -> Vec<usize> {
+        self.live_asks_before(self.start)
+    }
+
+    /// `live_asks` for a cut at `start` (the one a cut being tried would make).
+    pub(super) fn live_asks_before(&self, start: usize) -> Vec<usize> {
+        let Some(ts) = self.goal.turns.last().map(|t| t.start) else { return Vec::new() };
+        if !(ts >= 1 && ts < start && ts < self.tr.msgs.len()) {
+            return Vec::new();
+        }
+        let mut out = vec![ts];
+        let reqs = &self.fz.requests;
+        for &r in &reqs[textops::bisect_left(reqs, &(ts + 1))..] {
+            if r >= start || r >= self.tr.msgs.len() {
+                break;
+            }
+            let t = self.unit_text_at(r, UKind::User);
+            let w = crate::msg::person_words(&t).trim_start();
+            if !super::anchor::LOOP_MARKS.iter().any(|m| w.starts_with(m)) {
+                out.push(r);
+            }
+        }
+        out
     }
 
     fn key(&self, mi: usize) -> Vec<(usize, usize)> {
