@@ -3,7 +3,8 @@
 //! multiply and divide, loads and stores, pairs, literals and branches). It runs the decoder's `Ins`
 //! by mnemonic and operand shape, shares the memory, the library stubs, `--stub`, the limits and the
 //! answer format with the x86 emulator, runs `svc #0` as the Linux system calls of `sys.rs` (no effect on the
-//! host), and stops by name on what it does not run (other `svc`, SIMD and floating point, atomics, system registers other than `tpidr_el0`): it never guesses.
+//! host), and stops by name on what it does not run (other `svc`, SIMD and floating point, atomics, system
+//! registers other than `tpidr_el0`): it never guesses.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
