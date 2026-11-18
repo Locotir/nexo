@@ -57,6 +57,31 @@ pub enum ApiCmd {
         #[arg(long, default_value_t = 6000, value_name = "N")]
         budget: usize,
     },
+    /// Write a small client for a mapped API in TypeScript, Python or shell, with no dependency and no nexo needed.
+    ///
+    /// One function per endpoint (named as `nexo api call` names it), plus a generator that follows the paging in
+    /// TypeScript and Python. Secrets are read from environment variables when a call runs (the ones `nexo api call`
+    /// suggests, such as NEXO_API_BEARER) and are never written into the file. A session cookie is sent only when its
+    /// variable is set. It prints to standard output unless --out is given, and never replaces a file without --force.
+    Client {
+        /// The map file written by `nexo api analyze --save`.
+        map: PathBuf,
+        /// The language: ts (Node 18+), py (Python 3.9+) or sh (POSIX sh with curl).
+        #[arg(long, value_name = "ts|py|sh")]
+        lang: String,
+        /// Write the client to this file instead of printing it.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Only these endpoints (an id, or "METHOD /path"). Repeat for more; the default is all of them.
+        #[arg(long, value_name = "EP")]
+        only: Vec<String>,
+        /// Replace the file --out names when it exists.
+        #[arg(long)]
+        force: bool,
+        /// The date written in the header (YYYY-MM-DD); the default is today.
+        #[arg(long, value_name = "DATE")]
+        date: Option<String>,
+    },
     /// Call the safe endpoints of a saved map and say whether each live answer still has the recorded shape.
     ///
     /// Calls every GET/HEAD endpoint that needs no parameter you did not give with -p (the others are listed as
@@ -144,6 +169,18 @@ pub async fn run(a: &ApiArgs) -> i32 {
     match &a.what {
         ApiCmd::Call { target, dry_run, json, reveal } => crate::api_call::call(target, *dry_run, *json, *reveal).await,
         ApiCmd::Describe { map, endpoint, budget } => crate::api_call::describe(map, endpoint.as_deref(), *budget),
+        ApiCmd::Client { map, lang, out, only, force, date } => {
+            match client_text(map, lang, out.as_deref(), only, *force, date.as_deref()) {
+                Ok(text) => {
+                    print!("{text}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("nexo api: {e}");
+                    crate::headless::EXIT_USAGE
+                }
+            }
+        }
         ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json } => {
             crate::api_check::check(map, endpoints, params, auth, *allow_unsafe, *json).await
         }
@@ -163,6 +200,36 @@ pub async fn run(a: &ApiArgs) -> i32 {
             }
         }
     }
+}
+
+/// What `client` prints: the client itself, or a line that says where it was written. It refuses to replace a file
+/// unless `force`. The agent's `api` tool calls this too.
+pub fn client_text(
+    map: &std::path::Path,
+    lang: &str,
+    out: Option<&std::path::Path>,
+    only: &[String],
+    force: bool,
+    date: Option<&str>,
+) -> Result<String, String> {
+    let lang = nexo_api::client::Lang::parse(lang)?;
+    let text = std::fs::read_to_string(map).map_err(|e| format!("cannot read {}: {e}", map.display()))?;
+    let api = nexo_api::store::from_text(&text).map_err(|e| format!("{}: {e}", map.display()))?;
+    let today;
+    let date = match date {
+        Some(d) => d,
+        None => {
+            today = nexo_core::clock::today();
+            today.as_str()
+        }
+    };
+    let code = nexo_api::client::render(&api, lang, only, date)?;
+    let Some(path) = out else { return Ok(code) };
+    if path.exists() && !force {
+        return Err(format!("{} exists; use --force to replace it", path.display()));
+    }
+    std::fs::write(path, &code).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(format!("wrote {} ({} bytes, {})\n", path.display(), code.len(), lang.ext()))
 }
 
 /// What `analyze` prints, after it has written the files it was asked for (`openapi`, `save`). The agent's `api`
@@ -288,6 +355,49 @@ mod tests {
             }
             other => panic!("not parsed as nexo api call: {other:?}"),
         }
+    }
+
+    #[test]
+    fn client_takes_a_language_and_a_file() {
+        let d = crate::cli::Args::try_parse_from([
+            "nexo", "api", "client", "m.json", "--lang", "py", "--out", "c.py", "--only", "a", "--only", "b", "--force",
+        ])
+        .unwrap();
+        match d.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Client { lang, out, only, force, date, .. } })) => {
+                assert_eq!(lang, "py");
+                assert_eq!(out.as_deref(), Some(std::path::Path::new("c.py")));
+                assert_eq!(only, vec!["a".to_string(), "b".to_string()]);
+                assert!(force && date.is_none());
+            }
+            other => panic!("not parsed as nexo api client: {other:?}"),
+        }
+        assert!(crate::cli::Args::try_parse_from(["nexo", "api", "client", "m.json"]).is_err());
+    }
+
+    #[test]
+    fn client_refuses_to_replace_a_file_without_force() {
+        let dir = std::env::temp_dir().join(format!("nexo-client-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("map.json");
+        let har = serde_json::json!({ "log": { "entries": [{
+            "_resourceType": "xhr",
+            "request": { "method": "GET", "url": "https://app.test/api/ping", "headers": [] },
+            "response": { "status": 200, "headers": [], "content": { "mimeType": "application/json", "text": "{\"ok\":true}" } },
+        }] } });
+        let har_path = dir.join("a.har");
+        std::fs::write(&har_path, har.to_string()).unwrap();
+        analyze_text(&har_path, &[], None, false, 500, Some(&map)).unwrap();
+        let out = dir.join("c.sh");
+        let first = client_text(&map, "sh", Some(&out), &[], false, Some("2026-11-18")).unwrap();
+        assert!(first.starts_with("wrote "), "{first}");
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.contains("on 2026-11-18."));
+        let again = client_text(&map, "sh", Some(&out), &[], false, None);
+        assert!(again.unwrap_err().contains("--force"));
+        assert!(client_text(&map, "sh", Some(&out), &[], true, None).is_ok());
+        assert!(client_text(&map, "go", None, &[], false, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

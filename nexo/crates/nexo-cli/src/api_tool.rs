@@ -39,10 +39,11 @@ const OPS: &str = "\
 analyze <har> [--save MAP] [--openapi FILE] [--host H] [--budget N] [--json]  read a HAR file: devtools Save all as HAR, or the browser tool's own capture (capture_start, browse, capture_stop, capture_save with a `path`; in the person's own Chrome it holds only URLs and statuses, so no shapes): one line per endpoint with its path params, JSON shapes, auth and paging; --save keeps the map for the ops below
 describe <map> [endpoint] [--budget N]  the endpoints of a map (the summary takes about N characters, default 6000), or one endpoint's params, body, auth and the environment variables it reads
 call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--dry-run] [--json]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>
+client <map> --lang ts|py|sh [--out FILE] [--only EP]... [--force] [--date YYYY-MM-DD]  write a small client for the map (one function per endpoint, paging in ts and py); secrets are read from environment variables when it runs and are never in the text; --out writes a file and never replaces one without --force
 Never write a token, key or password in a command: name an environment variable (--auth bearer=MY_TOKEN, -p password=@env:PW); a value that looks like a secret is refused. Start with --dry-run: it prints the request and sends nothing.
-GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE and --login like a shell command that changes things; --save and --openapi write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
+GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE and --login like a shell command that changes things; --save, --openapi and client --out write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
 
-const COMPACT: &str = "The API behind a website: `analyze cap.har --save map.json`, `describe map.json [EP]`, `call map.json EP -p k=v --auth NAME=ENVVAR` (--dry-run first). Secrets by environment variable name only. `--help`";
+const COMPACT: &str = "The API behind a website: `analyze cap.har --save map.json`, `describe map.json [EP]`, `call map.json EP -p k=v --auth NAME=ENVVAR` (--dry-run first), `client map.json --lang ts --out c.ts`. Secrets by environment variable name only. `--help`";
 
 /// The tool. It holds nothing: every call parses its own line.
 pub struct Api;
@@ -93,7 +94,7 @@ pub(crate) fn vet(cmd: &ApiCmd) -> Result<(), String> {
                 .into(),
         ),
         ApiCmd::Call { target, .. } => vet_target(target),
-        ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } => Ok(()),
+        ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } | ApiCmd::Client { .. } => Ok(()),
     }
 }
 
@@ -192,6 +193,9 @@ pub(crate) fn kind_in(cmd: &ApiCmd, base: &Path) -> ToolKind {
     match cmd {
         ApiCmd::Analyze { openapi, save, .. } if openapi.is_some() || save.is_some() => ToolKind::Write,
         ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } => ToolKind::Read,
+        // a client that goes to a file is a write; one that is only printed is a read
+        ApiCmd::Client { out: Some(_), .. } => ToolKind::Write,
+        ApiCmd::Client { .. } => ToolKind::Read,
         ApiCmd::Call { dry_run: true, .. } => ToolKind::Read,
         ApiCmd::Call { target, .. } => {
             if target.login {
@@ -387,6 +391,24 @@ async fn run_cmd(cmd: &mut ApiCmd, ctx: &ToolContext) -> Result<String, String> 
             match crate::api_call::describe_out(map, endpoint.as_deref(), *budget) {
                 Ok(o) => Ok(joined(o.text, o.notes)),
                 Err((_, e)) => Err(format!("api: {e}")),
+            }
+        }
+        ApiCmd::Client { map, lang, out, only, force, date } => {
+            absolute(&ctx.cwd, map);
+            may_read(ctx, map)?;
+            if let Some(out) = out.as_mut() {
+                absolute(&ctx.cwd, out);
+                may_write(ctx, out)?;
+            }
+            let (map, lang, out, only, force, date) =
+                (map.clone(), lang.clone(), out.clone(), only.clone(), *force, date.clone());
+            let done = tokio::task::spawn_blocking(move || {
+                crate::api_cmd::client_text(&map, &lang, out.as_deref(), &only, force, date.as_deref())
+            });
+            match done.await {
+                Ok(Ok(text)) => Ok(text),
+                Ok(Err(e)) => Err(format!("api: {e}")),
+                Err(e) => Err(format!("api stopped working: {e}")),
             }
         }
         ApiCmd::Call { target, dry_run, json, .. } => {
