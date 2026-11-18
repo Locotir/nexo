@@ -91,7 +91,8 @@ impl Session {
     }
 
     /// `print` of a source expression; `None` hands it to the register expressions.
-    pub(crate) fn print_var(&mut self, src: &str) -> Option<Result<Output>> {
+    /// `raw` shows the container types as their raw layout (`print x --as raw`).
+    pub(crate) fn print_var(&mut self, src: &str, raw: bool) -> Option<Result<Output>> {
         let got = self
             .with_vars(true, |vars, regs| {
                 let (v, amp) = match vars.path(src, regs)? {
@@ -116,7 +117,7 @@ impl Session {
                         At::Mem(a) => format!(" at {a:#x}"),
                         At::Bytes(_) => String::new(),
                     };
-                    format!("{src} ({ty}{at}) = {}{fact}", vars.render(&v, regs, 0))
+                    format!("{src} ({ty}{at}) = {}{fact}", views::raw_scope(raw, || vars.render(&v, regs, 0)))
                 }];
                 l.extend(notes);
                 Some(Ok(l))

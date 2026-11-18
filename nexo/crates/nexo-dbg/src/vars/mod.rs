@@ -10,6 +10,7 @@ mod render;
 mod scope;
 mod session;
 mod types;
+mod views;
 
 use std::collections::HashMap;
 
@@ -117,6 +118,8 @@ pub struct Vars {
     files: Vec<String>,
     /// The size of a pointer: 8, or 4 in a 32-bit program.
     ptr: u64,
+    /// What the container views read besides members: enum variants, template parameters and base classes.
+    shapes: views::Shapes,
 }
 
 /// A type as used in a value: the type, and how many array dimensions were already indexed.
@@ -155,6 +158,9 @@ enum Ctx {
     Func(usize),
     Block(Vec<(u64, u64)>),
     Type(u64),
+    /// A `DW_TAG_variant_part` of a record, and one `DW_TAG_variant` in it.
+    Part(u64),
+    Variant(u64),
     Skip,
     Other,
 }
@@ -174,7 +180,14 @@ mod tests {
     }
 
     fn lone(types: Vec<(u64, Ty)>) -> Vars {
-        Vars { funcs: Vec::new(), globals: Vec::new(), types: types.into_iter().collect(), files: Vec::new(), ptr: 8 }
+        Vars {
+            funcs: Vec::new(),
+            globals: Vec::new(),
+            types: types.into_iter().collect(),
+            files: Vec::new(),
+            ptr: 8,
+            shapes: Default::default(),
+        }
     }
 
     #[test]
