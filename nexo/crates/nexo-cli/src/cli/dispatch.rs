@@ -24,6 +24,7 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             p.check_sandbox(config.permissions.sandbox).map_err(|e| anyhow::anyhow!(e))?;
         }
     }
+    config.agent.session_title = args.name.clone();
     if let Some(c) = &args.context {
         config.context.policy = c.clone();
     }

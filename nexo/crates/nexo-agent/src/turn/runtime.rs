@@ -66,6 +66,7 @@ impl Runtime {
         let flow_sub = add_subagents(&config, &cwd, &client, &target, &mut tools, &host);
         let plan = add_ask_tools(&mut tools, tools_enabled, headless, &asker);
         let (mut session, history, replay) = open_session(resume.as_deref(), &cwd, &provider, &model, &events)?;
+        apply_title(&mut session, config.agent.session_title.as_deref(), &events);
         let bin_told = crate::bin_hint::told(&history);
         let dbg_told = crate::dbg_hint::told(&history);
         let ask_told = crate::ask_hint::told(&history);
@@ -345,6 +346,16 @@ fn open_session(
     })
 }
 
+/// `--name`: the title of the session this run writes, set as `nexo sessions rename` does. It is set before the
+/// first announcement, so every view shows it at once.
+pub(crate) fn apply_title(session: &mut Session, title: Option<&str>, events: &EventTx) {
+    if let Some(t) = title.map(str::trim).filter(|t| !t.is_empty()) {
+        if let Err(e) = session.set_title(t) {
+            notice(events, Level::Warn, format!("the session name was not saved: {e}"));
+        }
+    }
+}
+
 /// The first events of a session: which session, model and folder it is, and its name.
 fn announce_session(
     events: &EventTx,
@@ -424,5 +435,27 @@ async fn settle_replay(st: &mut State, saving: &mut Option<std::thread::JoinHand
         st.last_sent.clear();
         // what the replay rebuilt is kept even when this nexo is closed before its first turn ends
         saved_state::save_in_background(st, saving);
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn the_name_is_set_on_a_new_session_and_a_resumed_one_and_a_blank_one_changes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (_h, ends) = nexo_core::agent::channels();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        s.append(&nexo_core::message::Message::user("one")).unwrap();
+        apply_title(&mut s, Some("  api cleanup "), &ends.events);
+        assert_eq!(s.meta().title, "api cleanup");
+        assert_eq!(Session::open_path(s.path()).unwrap().meta().title, "api cleanup", "it is on the file");
+        apply_title(&mut s, None, &ends.events);
+        apply_title(&mut s, Some("   "), &ends.events);
+        assert_eq!(s.meta().title, "api cleanup");
+        let mut again = Session::open_path(s.path()).unwrap();
+        apply_title(&mut again, Some("second"), &ends.events);
+        assert_eq!(Session::open_path(s.path()).unwrap().meta().title, "second", "a resumed session is renamed");
     }
 }

@@ -58,6 +58,7 @@ nexo -i shot.png "why is this red?"   # attaches an image to that first request 
 nexo -p "what does this repository do?"            # headless: prints the reply
 nexo -p "run the tests and fix what fails" --permission-mode yolo --json
 nexo --continue                 # resume the latest session of this directory
+nexo --name "api cleanup"        # name the session from the start (-n; with --continue or --resume it renames that one)
 nexo --yolo                     # never ask for permission (also /yolo inside)
 nexo --sandbox workspace-write   # bash runs in an OS sandbox: reads everywhere, writes the project only (also /sandbox)
 nexo prompt                     # print the system prompt as it would be sent from here
