@@ -568,6 +568,44 @@ mod tests {
         assert_eq!((s.requests, s.request_bodies, s.response_bodies, s.skipped_binary), (3, 2, 1, 1));
     }
 
+    /// What a HAR written by the browser holds, from the raw events to the file text: no live token, cookie or
+    /// password in it, whichever way the browser handed them over (request event, extra headers, response, bodies).
+    #[test]
+    fn a_har_made_from_raw_events_holds_no_live_secret() {
+        let b = Buffers::default();
+        b.capture_start();
+        let headers = json!({"Authorization": "Bearer live-bearer-1", "X-Api-Key": "live-key-2", "Accept": "*/*"});
+        b.cap_request(&RawRequest {
+            id: "1",
+            wall_ms: 1_000.0,
+            now: Some(1.0),
+            method: "POST",
+            url: "https://a.b/login?access_token=live-url-3",
+            headers: &headers,
+            rtype: Some("XHR".into()),
+            post: Some(r#"{"user":"ann","password":"live-pass-4"}"#.into()),
+            has_post: true,
+        });
+        b.cap_extra_request_headers("1", &json!({"Cookie": "sid=live-cookie-5; theme=dark"}));
+        b.cap_answered("1", Some(200), "OK", "application/json", &json!({"Set-Cookie": "sid=live-cookie-6; Path=/"}));
+        b.cap_extra_response_headers("1", &json!({"Set-Cookie": "sid=live-cookie-6; Path=/"}));
+        assert!(b.cap_wants_body("1"));
+        b.cap_set_response_body("1", Some((r#"{"access_token":"live-token-7","n":1}"#.to_string(), false)));
+        let har = export_har(&b.captured());
+        for secret in [
+            "live-bearer-1",
+            "live-key-2",
+            "live-url-3",
+            "live-pass-4",
+            "live-cookie-5",
+            "live-cookie-6",
+            "live-token-7",
+        ] {
+            assert!(!har.contains(secret), "{secret} reached the HAR: {har}");
+        }
+        assert!(har.contains("https://a.b/login") && har.contains("theme") && har.contains("Accept"), "{har}");
+    }
+
     #[test]
     fn bodies_are_cut_and_the_total_is_capped() {
         let mut c = Capture::default();

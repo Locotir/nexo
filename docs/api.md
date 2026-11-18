@@ -22,14 +22,27 @@ nexo api check map.json                      call the safe endpoints, report dri
 
 ## Capture
 
-`analyze` reads a HAR 1.2 file. Save one from the browser:
+`analyze` reads a HAR 1.2 file. There are two ways to get one.
+
+**From nexo's browser tool.** You, or an agent running in nexo, ask the `browser` tool:
+
+1. `capture_start` begins keeping what the page sends.
+2. Browse the flows you want mapped: log in, open the lists, use the search, page through results.
+3. `capture_stop` says how many requests were kept and what was left out.
+4. `capture_save` with a `path` (for example `shop.har`, relative to the session folder) writes the HAR.
+
+Then run `nexo api analyze shop.har --save shop.json`. Saving a file is asked about like any other write.
+
+Nexo's own headless browser keeps headers, request bodies and JSON or text response bodies of XHR and fetch calls. Every token, cookie and password value is turned into a marker before it is kept, so the saved file holds no live secret, and the same token has the same marker wherever it shows up.
+
+Your own Chrome (`select_browser`) keeps only the URL, method, type, status and mime type of each request, no headers and no bodies. `analyze` then sees endpoints and statuses but cannot learn request or response shapes, and `capture_save` says so in its answer. For shapes, use `select_browser` with the id `headless` and browse again.
+
+**From devtools.**
 
 - Chrome or Edge: open DevTools, Network tab, reload or use the site, then "Save all as HAR".
 - Firefox, Playwright `recordHar` and mitmproxy exports also read.
 
-Tick "Preserve log" first if the flow spans several pages. Response bodies must be in the file: that is where the shapes come from.
-
-nexo's own browser crate can record a HAR (headless browser: headers, request bodies and JSON or text response bodies of XHR and fetch calls; your own Chrome through the relay: only URL, method, type, status and mime type). At the moment no command or tool turns that capture on or saves it, so use a devtools HAR.
+Tick "Preserve log" first if the flow spans several pages. Response bodies must be in the file: that is where the shapes come from. A devtools HAR holds your real tokens and cookies; `analyze` never prints or saves them, but keep the file private.
 
 ### What is dropped
 
@@ -67,7 +80,7 @@ nexo api analyze cap.har --json
 | `--save FILE` | Write the map, for `call`, `describe`, `watch` and `check`. |
 | `--openapi FILE` | Also write an OpenAPI 3.1 file. |
 | `--json` | Print the OpenAPI JSON instead of the summary. |
-| `--budget N` | About how many characters the summary may take. Default 6000. |
+| `--budget N` | About how many characters the summary may take. Default 6000. `describe` takes it too. |
 
 Without `--json` it prints a summary: the header, the hosts, the auth schemes, then one block per endpoint, busiest first, until the budget is used. The last line counts the endpoints left out.
 
@@ -100,11 +113,12 @@ Auth kinds are `bearer`, `basic`, `api_key_header`, `api_key_query`, `cookie` an
 
 ```
 nexo api describe map.json
+nexo api describe map.json --budget 2000
 nexo api describe map.json get_api_items
 nexo api describe map.json "GET /api/items/{item_id}"
 ```
 
-With no endpoint it prints the same summary as `analyze` (6000 characters) and, if the map has auth, the environment variable each scheme reads. With an endpoint it prints its path, query and body parameters (`*` marks a required one, with an example when there is a safe one), the first three response shapes, paging, and per auth scheme the variable it reads and the login it can run.
+With no endpoint it prints the same summary as `analyze` (6000 characters, or about N with `--budget N`) and, if the map has auth, the environment variable each scheme reads. With an endpoint it prints its path, query and body parameters (`*` marks a required one, with an example when there is a safe one), the first three response shapes, paging, and per auth scheme the variable it reads and the login it can run.
 
 An endpoint is named by its id, or by `"METHOD /path"` with the templated path or a real one (`GET /api/items/99`). If a name matches more than one endpoint, the error lists the ids.
 

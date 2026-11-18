@@ -57,6 +57,7 @@ impl Tool for BrowserTool {
                         "items": {"type": "object"}},
                     "ms": {"type": "integer", "description": "wait: milliseconds, at most 5000."},
                     "full": {"type": "boolean", "description": "screenshot: whole page."},
+                    "path": {"type": "string", "description": "capture_save: .har file to write."},
                     "id": {"type": "string", "description": "select_browser: from `browsers`."}
                 },
                 "required": ["action"]
@@ -69,7 +70,7 @@ impl Tool for BrowserTool {
             description: "Drive a browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
                           Headless by default; `browsers` lists the person's logged-in ones for `select_browser`.",
             params: &[
-                ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?,to?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} find{target} click_xy|double_click|right_click|drag|hover_xy|scroll_xy{to,modifiers?} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording batch{steps} close browsers select_browser{id} switch_browser"),
+                ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?,to?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} find{target} click_xy|double_click|right_click|drag|hover_xy|scroll_xy{to,modifiers?} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording capture_start capture_stop capture_save{path} batch{steps} close browsers select_browser{id} switch_browser"),
                 ("target", "ref (e3), CSS selector or text"),
                 ("profile", "persistent keeps logins"),
                 ("keys", "e.g. Enter, Ctrl+A, Tab Tab"),
@@ -86,9 +87,21 @@ impl Tool for BrowserTool {
         ToolKind::Network
     }
 
+    /// Saving a capture writes a file, so it is asked about and ordered as a write; every other action is as before.
+    fn call_kind(&self, args: &Value) -> ToolKind {
+        let saves = |a: &Value| str_arg(a, "action") == Some("capture_save");
+        let in_batch = args.get("steps").and_then(Value::as_array).is_some_and(|s| s.iter().any(saves));
+        if saves(args) || in_batch {
+            ToolKind::Write
+        } else {
+            self.kind()
+        }
+    }
+
     fn summary(&self, args: &Value) -> String {
         let action = str_arg(args, "action").unwrap_or("?");
-        let arg = ["url", "target", "keys", "to", "selector", "ref_id", "id"].iter().find_map(|k| str_arg(args, k));
+        let arg =
+            ["url", "target", "keys", "to", "selector", "ref_id", "path", "id"].iter().find_map(|k| str_arg(args, k));
         match arg {
             Some(a) => format!("browser {action} {}", one_line(a, 80)),
             None => format!("browser {action}"),

@@ -275,3 +275,23 @@ async fn a_rule_that_denies_a_read_a_write_or_a_host_stops_the_call() {
     let dry = Api.run(args(&format!("call map.json \"{GET}\" --dry-run")), &deny("web_fetch")).await;
     assert!(!dry.is_error, "{}", dry.content);
 }
+
+#[test]
+fn describe_honors_the_budget_like_analyze() {
+    let dir = tempfile::tempdir().unwrap();
+    // paths of different lengths, so none of them is folded into another as a parameter
+    let words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"];
+    let entries: Vec<Value> = (1..=words.len())
+        .map(|n| entry("GET", &format!("https://api.test/{}/list", words[..n].join("/")), None))
+        .collect();
+    let cap = json!({"log": {"version": "1.2", "entries": entries}}).to_string();
+    std::fs::write(dir.path().join("cap.har"), cap).unwrap();
+    let map = dir.path().join("map.json");
+    crate::api_cmd::analyze_text(&dir.path().join("cap.har"), &[], None, false, 6000, Some(&map)).unwrap();
+    let whole = crate::api_call::describe_out(&map, None, 6000).unwrap().text;
+    let small = crate::api_call::describe_out(&map, None, 300).unwrap().text;
+    assert!(small.len() < whole.len(), "{} vs {}", small.len(), whole.len());
+    assert!(small.contains("more endpoints") && !whole.contains("more endpoints"), "{small}");
+    // the tool's own line takes the flag too
+    assert!(matches!(cmd("describe m.json --budget 300"), ApiCmd::Describe { budget: 300, .. }));
+}

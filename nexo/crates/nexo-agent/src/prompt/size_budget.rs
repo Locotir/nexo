@@ -22,6 +22,8 @@ fn tool_text_chars() -> usize {
 /// `select_browser`, not in the tool text): 13490. The mouse verbs (double_click, right_click, drag, hover_xy,
 /// scroll_xy with `modifiers`), `find` and the request number of `network` then measured 340 more: 13830.
 /// Saying that `browsers` lists the person's own logged-in browsers (the model had no way to know) took 10 more: 13840.
+/// The capture verbs (`capture_start`, `capture_stop`, `capture_save` with `path`: 3 enum values and one short
+/// parameter) are estimated at 120 more, not measured: 13960 (14010 on Windows).
 /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
 /// model already knows about shells and search tools, and a parameter gets a description only for what its
 /// name and the tool description do not say.
@@ -29,7 +31,7 @@ fn tool_text_chars() -> usize {
 fn the_tool_text_stays_within_its_budget() {
     let n = tool_text_chars();
     // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-    let budget = if cfg!(windows) { 13_890 } else { 13_840 };
+    let budget = if cfg!(windows) { 14_010 } else { 13_960 };
     assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
 }
 

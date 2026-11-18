@@ -47,6 +47,12 @@ pub(super) enum Action<'a> {
     TypeText(&'a str),
     /// start_recording, stop_recording, export_gif, clear_recording.
     Gif(gif::GifCall<'a>),
+    /// Starts keeping what the page sends to its API (headers and bodies, secrets turned into markers).
+    CaptureStart,
+    /// Stops it and says what was kept.
+    CaptureStop,
+    /// Writes the capture as a HAR file at this path.
+    CaptureSave(&'a str),
     /// Steps in order, each with the name of its action.
     Batch(Vec<(&'a str, Action<'a>)>),
     Close,
@@ -82,7 +88,7 @@ impl ReadPageArgs<'_> {
 
 pub(super) const ACTIONS: &str = "open, navigate, snapshot, read_page, read_text, click, fill, fill_batch, select, set_checkbox, press, hover, scroll, \
                        wait, screenshot, back, forward, reload, eval, console, network, tabs, tab_new, tab_switch, tab_close, \
-                       upload, resize, find, click_xy, double_click, right_click, drag, hover_xy, scroll_xy, type_text, start_recording, stop_recording, export_gif, clear_recording, batch, close, browsers, select_browser, switch_browser";
+                       upload, resize, find, click_xy, double_click, right_click, drag, hover_xy, scroll_xy, type_text, start_recording, stop_recording, export_gif, clear_recording, capture_start, capture_stop, capture_save, batch, close, browsers, select_browser, switch_browser";
 
 /// A required text argument; the error says which action needs it.
 pub(super) fn need<'a>(args: &'a Value, key: &str, action: &str) -> Result<&'a str, String> {
@@ -266,6 +272,9 @@ pub(super) fn parse(args: &Value) -> Result<Action<'_>, String> {
             Some(call) => Action::Gif(call?),
             None => return Err(format!("browser: unknown action `{name}`")),
         },
+        "capture_start" => Action::CaptureStart,
+        "capture_stop" => Action::CaptureStop,
+        "capture_save" => Action::CaptureSave(need(args, "path", action)?),
         "batch" => {
             let list = args
                 .get("steps")

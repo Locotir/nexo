@@ -53,6 +53,9 @@ pub enum ApiCmd {
         map: PathBuf,
         /// An endpoint id, or "METHOD /path".
         endpoint: Option<String>,
+        /// About how many characters the summary of the whole map may take (ignored with an endpoint).
+        #[arg(long, default_value_t = 6000, value_name = "N")]
+        budget: usize,
     },
     /// Call the safe endpoints of a saved map and say whether each live answer still has the recorded shape.
     ///
@@ -136,7 +139,7 @@ fn title(api: &nexo_api::spec::Api) -> String {
 pub async fn run(a: &ApiArgs) -> i32 {
     match &a.what {
         ApiCmd::Call { target, dry_run, json, reveal } => crate::api_call::call(target, *dry_run, *json, *reveal).await,
-        ApiCmd::Describe { map, endpoint } => crate::api_call::describe(map, endpoint.as_deref()),
+        ApiCmd::Describe { map, endpoint, budget } => crate::api_call::describe(map, endpoint.as_deref(), *budget),
         ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json } => {
             crate::api_check::check(map, endpoints, params, auth, *allow_unsafe, *json).await
         }
@@ -280,6 +283,20 @@ mod tests {
                 assert_eq!(target.login_params, vec!["user=me".to_string()]);
             }
             other => panic!("not parsed as nexo api call: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn describe_takes_a_budget_like_analyze() {
+        let d = crate::cli::Args::try_parse_from(["nexo", "api", "describe", "m.json", "--budget", "900"]).unwrap();
+        match d.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Describe { budget, .. } })) => assert_eq!(budget, 900),
+            other => panic!("not parsed as nexo api describe: {other:?}"),
+        }
+        let d = crate::cli::Args::try_parse_from(["nexo", "api", "describe", "m.json"]).unwrap();
+        match d.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Describe { budget, .. } })) => assert_eq!(budget, 6000),
+            other => panic!("not parsed as nexo api describe: {other:?}"),
         }
     }
 

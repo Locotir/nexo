@@ -398,12 +398,12 @@ pub async fn call_out(t: &Target, dry_run: bool, as_json: bool, reveal: bool) ->
 }
 
 /// `nexo api describe`.
-pub fn describe(map: &Path, endpoint: Option<&str>) -> i32 {
-    exit_of(describe_out(map, endpoint))
+pub fn describe(map: &Path, endpoint: Option<&str>, budget: usize) -> i32 {
+    exit_of(describe_out(map, endpoint, budget))
 }
 
-/// `nexo api describe`, as text.
-pub fn describe_out(map: &Path, endpoint: Option<&str>) -> Result<Out, Fail> {
+/// `nexo api describe`, as text. Without an endpoint the summary of the map takes about `budget` characters.
+pub fn describe_out(map: &Path, endpoint: Option<&str>, budget: usize) -> Result<Out, Fail> {
     let api = load_map(map)?;
     let mut text = String::new();
     match endpoint {
@@ -412,7 +412,7 @@ pub fn describe_out(map: &Path, endpoint: Option<&str>) -> Result<Out, Fail> {
             text.push_str(&call::describe(&api, ep));
         }
         None => {
-            text.push_str(&summary::render(&api, 6000));
+            text.push_str(&summary::render(&api, budget));
             if !api.auth.is_empty() {
                 text.push_str("variables `call` reads (--auth NAME=ENVVAR names another):\n");
                 for l in call::labels(&api) {

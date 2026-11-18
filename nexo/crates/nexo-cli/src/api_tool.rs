@@ -36,8 +36,8 @@ mod tests;
 const MAX_CHARS: usize = 12_000;
 
 const OPS: &str = "\
-analyze <har> [--save MAP] [--openapi FILE] [--host H] [--budget N] [--json]  read a HAR file (the browser tool's capture is one): one line per endpoint with its path params, JSON shapes, auth and paging; --save keeps the map for the ops below
-describe <map> [endpoint]  the endpoints of a map, or one endpoint's params, body, auth and the environment variables it reads
+analyze <har> [--save MAP] [--openapi FILE] [--host H] [--budget N] [--json]  read a HAR file: devtools Save all as HAR, or the browser tool's own capture (capture_start, browse, capture_stop, capture_save with a `path`; in the person's own Chrome it holds only URLs and statuses, so no shapes): one line per endpoint with its path params, JSON shapes, auth and paging; --save keeps the map for the ops below
+describe <map> [endpoint] [--budget N]  the endpoints of a map (the summary takes about N characters, default 6000), or one endpoint's params, body, auth and the environment variables it reads
 call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--dry-run] [--json]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>
 Never write a token, key or password in a command: name an environment variable (--auth bearer=MY_TOKEN, -p password=@env:PW); a value that looks like a secret is refused. Start with --dry-run: it prints the request and sends nothing.
 GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE and --login like a shell command that changes things; --save and --openapi write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
@@ -381,10 +381,10 @@ async fn run_cmd(cmd: &mut ApiCmd, ctx: &ToolContext) -> Result<String, String> 
                 Err(e) => Err(format!("api stopped working: {e}")),
             }
         }
-        ApiCmd::Describe { map, endpoint } => {
+        ApiCmd::Describe { map, endpoint, budget } => {
             absolute(&ctx.cwd, map);
             may_read(ctx, map)?;
-            match crate::api_call::describe_out(map, endpoint.as_deref()) {
+            match crate::api_call::describe_out(map, endpoint.as_deref(), *budget) {
                 Ok(o) => Ok(joined(o.text, o.notes)),
                 Err((_, e)) => Err(format!("api: {e}")),
             }
