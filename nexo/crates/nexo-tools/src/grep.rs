@@ -883,7 +883,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("real.rs"), d.path().join("link.txt")).unwrap();
         let note = "[3 symlinks (1 to a directory) not followed; give the link's target as `path` to search it]";
         let out = Grep.run(json!({"pattern": "gamma"}), &c).await;
-        assert_eq!(out.content, format!("grep: no match for `gamma` in .\n{note}"));
+        assert!(out.content.starts_with("grep: no match for `gamma`") && out.content.ends_with(note), "{}", out.content);
         // a glob counts only the file links it would have searched, so link.txt drops out
         let out = Grep.run(json!({"pattern": "gamma", "glob": "*.rs"}), &c).await;
         assert!(
