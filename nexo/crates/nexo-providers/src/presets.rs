@@ -830,6 +830,7 @@ mod tests {
         let cost = |m: &str| a.pricing_for(m).unwrap().cost(&u);
         assert!((cost("claude-sonnet-5-5") - (2.0 + 10.0 + 0.10 + 2.50)).abs() < 1e-9);
         assert!((cost("claude-opus-5-5") - (4.0 + 20.0 + 0.20 + 5.0)).abs() < 1e-9);
-        assert!((cost("claude-haiku-5-5") - (0.10 + 0.50 + 0.01 + 0.125)).abs() < 1e-9);
+        // 3M prompt tokens are far over Haiku's 100K line, so the whole usage is billed at its long-prompt rates
+        assert!((cost("claude-haiku-5-5") - (0.50 + 2.50 + 0.05 + 0.625)).abs() < 1e-9);
     }
 }
