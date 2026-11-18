@@ -143,9 +143,9 @@ const DBG_LOOK: [&str; 23] = [
     "list",
     "checkpoints",
 ];
-const DBG_MOVE: [&str; 21] = [
+const DBG_MOVE: [&str; 23] = [
     "run", "attach", "cont", "c", "continue", "step", "s", "next", "n", "finish", "until", "kill", "detach", "end",
-    "setreg", "write", "stdin", "signal", "return", "jump", "restart",
+    "setreg", "write", "stdin", "signal", "return", "jump", "restart", "rstepi", "rcont",
 ];
 
 /// The effect of one debugger command line (`-s id` first is skipped; `do "a; b"` is a move when any part is).

@@ -52,3 +52,36 @@ fn back_reg_and_mem_refuse_what_they_cannot_answer() {
     assert!(none.contains("none in the record"), "{none}");
     run(&mut s, "kill");
 }
+
+#[test]
+fn rstepi_puts_registers_and_the_stack_back_and_refuses_what_it_cannot_undo() {
+    let mut s = start();
+    // off: refused, nothing to undo
+    assert!(s.exec(&split_words("rstepi")).is_err());
+    // the program starts stopped at its entry: plain instructions, no system call in the first few
+    run(&mut s, "record 100");
+    let regs0 = run(&mut s, "regs");
+    let stack0 = run(&mut s, "mem $rsp-64 128");
+    run(&mut s, "stepi 6");
+    let regs6 = run(&mut s, "regs");
+    let ask = s.exec(&split_words("rstepi 7")).unwrap_err().to_string();
+    assert!(ask.contains("holds 6 instructions"), "{ask}");
+    assert_eq!(run(&mut s, "regs"), regs6, "a refusal changed the registers");
+    let out = run(&mut s, "rstepi 6");
+    assert!(out.contains("undid 6 instructions"), "{out}");
+    assert!(out.contains("never rewound"), "{out}");
+    assert_eq!(run(&mut s, "regs"), regs0, "the registers did not come back");
+    assert_eq!(run(&mut s, "mem $rsp-64 128"), stack0, "the stack did not come back");
+    let st = run(&mut s, "status");
+    assert!(st.contains("recording on: 0 entries kept"), "{st}");
+    // forward again records again, and `rsi` is the gdb spelling
+    run(&mut s, "stepi 2");
+    assert!(run(&mut s, "rsi 2").contains("undid 2 instructions"));
+    assert_eq!(run(&mut s, "regs"), regs0);
+    // no breakpoint or watch: `rcont` goes back as far as the record goes and says so
+    run(&mut s, "stepi 3");
+    let rc = run(&mut s, "rc");
+    assert!(rc.contains("undid 3 instructions") && rc.contains("the record ran out"), "{rc}");
+    assert_eq!(run(&mut s, "regs"), regs0);
+    run(&mut s, "kill");
+}

@@ -263,6 +263,8 @@ impl Session {
             "history" => Ok(self.cmd_history(&a)),
             "record" => self.cmd_record(&a),
             "back" => self.cmd_back(&a),
+            "rstepi" => self.cmd_rstepi(&a),
+            "rcont" => self.cmd_rcont(&a),
             "stdin" => crate::stdin::exec(self, words),
             "catch" if a.pos.first().is_some_and(|w| w == "syscall") => self.cmd_catch_syscall(&a.pos[1..]),
             "catch" if a.pos.first().is_some_and(|w| w == "load" || w == "unload") => self.cmd_catch_load(&a),

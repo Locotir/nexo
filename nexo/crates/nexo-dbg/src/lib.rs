@@ -42,6 +42,7 @@ mod syscalls;
 #[cfg(all(test, not(target_os = "macos")))]
 mod tests_harden;
 mod trace;
+mod undo;
 mod vars;
 mod vector;
 

@@ -59,6 +59,7 @@ signal <SIG|N|0>  cont delivering it (0 drops the pending one); stops compact|fu
 return [V], jump <file:line|addr|fn> [--force] [--stay], gcore [FILE]  pop the function with V; move the pc; ELF core of the live process (asks)
 regs [name|xmm0 --as f64|f32|u32x4] [--all], setreg <reg> <v>, setreg xmm0 <lanes> [--as f32]  (asks)
 call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with these arguments and give its value; every register is put back after; a stop inside it says so, `kill call` ends it (asks)
+rstepi [N], rcont  with `record` on: undo the last N instructions (memory and registers) or go back to a breakpoint or watched change; refuses across a system call or another thread (asks)
 mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T|raw|string|vector] (Rust/C++/Go strings, vectors, Option shown as values), ptype <type|var>, write <addr> <hex> (asks)
 bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, list [loc] [N], threads [--bt N], thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr|A..B> [len] [w|r|x] [hw|page|step] [if expr] [after N] [log [text]]  any length (debug registers, then guarded pages, then single steps; the answer says which and its cost); $old, $new, $at hold the change; a log watch writes a line per hit and does not stop

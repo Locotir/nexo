@@ -58,6 +58,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("history", "the last stops [N]"),
     ("record", "keep the last N instructions as they run (Linux; cont then single-steps, slow): record [N] | record stop"),
     ("back", "look at the last N recorded instructions [N] | --reg REG | --mem ADDR; it looks back, it does not undo"),
+    ("rstepi", "undo the last N recorded instructions of this thread: memory and registers go back (needs `record`; refuses across a system call or another thread; asks)"),
+    ("rcont", "undo back to an enabled breakpoint's address, a watched change, or the end of the record (asks)"),
     ("stdin", "send text to the program's input"),
     ("setreg", "change a register; setreg xmm0 <lanes> [--as f32] (asks)"),
     ("return", "pop the stopped function's frame, VALUE as its result (rax or xmm0 by its return type): return [VALUE] (asks)"),
