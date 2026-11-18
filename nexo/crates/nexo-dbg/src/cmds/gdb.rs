@@ -498,7 +498,7 @@ impl Session {
         let mut l = Vec::new();
         for (_, w) in self.displays.clone() {
             match self.exec(&w) {
-                Ok(o) => l.extend(o.rows.into_iter().map(|r| r.text.replacen(" = ", "=", 1))),
+                Ok(o) => l.extend(o.rows.iter().map(|r| super::quiet::display_piece(&w[1..].join(" "), &r.text))),
                 Err(e) => l.push(format!("{} ({e})", w[1..].join(" "))),
             }
         }

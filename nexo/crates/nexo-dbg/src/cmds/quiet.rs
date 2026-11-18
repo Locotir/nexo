@@ -69,6 +69,15 @@ pub(crate) fn compact_line(why: &str, place: &str, rest: &[String]) -> String {
     parts.join(" | ")
 }
 
+/// One display as `expr=value`: the text after the ` = ` of a print (`x (u64 at 0x..) = 3`, `x = 0x3 (3)`), no
+/// type or address; a text without one is kept whole.
+pub(crate) fn display_piece(expr: &str, text: &str) -> String {
+    match text.split_once(" = ") {
+        Some((_, v)) => format!("{expr}={v}"),
+        None => text.to_string(),
+    }
+}
+
 /// A signal for `signal`: 0 (drop the pending one), a number, or a name with or without `SIG`.
 pub(crate) fn parse_signal(os: Os, word: &str) -> std::result::Result<u32, String> {
     let w = word.trim();
@@ -150,6 +159,13 @@ mod tests {
         assert!(!compact_applies(true, &crash));
         assert!(compact_applies(true, &Why::Break(vec![1])));
         assert!(!compact_applies(false, &Why::Break(vec![1])));
+    }
+
+    #[test]
+    fn a_display_piece_is_the_expression_and_its_value_only() {
+        assert_eq!(display_piece("DBG_COUNTER", "DBG_COUNTER (u64 at 0x4010) = 3"), "DBG_COUNTER=3");
+        assert_eq!(display_piece("x", "x = 0x3 (3)"), "x=0x3 (3)");
+        assert_eq!(display_piece("x", "0x3"), "0x3");
     }
 
     #[test]

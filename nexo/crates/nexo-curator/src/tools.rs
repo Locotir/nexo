@@ -122,9 +122,9 @@ const DBG_LOOK: [&str; 21] = [
     "regs", "bt", "mem", "x", "print", "p", "args", "threads", "thread", "status", "info", "history", "out", "log",
     "maps", "modules", "find", "watches", "breaks", "catches", "stack",
 ];
-const DBG_MOVE: [&str; 17] = [
+const DBG_MOVE: [&str; 18] = [
     "run", "attach", "cont", "c", "continue", "step", "s", "next", "n", "finish", "until", "kill", "detach", "end",
-    "setreg", "write", "stdin",
+    "setreg", "write", "stdin", "signal",
 ];
 
 /// The effect of one debugger command line (`-s id` first is skipped; `do "a; b"` is a move when any part is).
