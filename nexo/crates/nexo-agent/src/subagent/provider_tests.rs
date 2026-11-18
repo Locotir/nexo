@@ -37,7 +37,8 @@ const FIXED_32K: u64 = 2_400;
 /// the result of `select_browser`). `find{target}`, the mouse verbs with `modifiers?` and `network{to?}` add 107
 /// (measured 12 009). Saying that `browsers` lists the person's logged-in browsers took 1 more (12 010). The capture
 /// verbs add about 50 to the short text (estimated, not measured).
-const SCHEMA_CEILING: usize = 12_130;
+/// Integration 1118: the merged branches together take 14 more than the 12 130 of re/api-ws alone (12 144).
+const SCHEMA_CEILING: usize = 12_144;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
 const TASK_WITH_OWN_KINDS: usize = 1_915;

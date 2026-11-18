@@ -383,7 +383,8 @@ async fn in_tab(browser: &AnyBrowser, origin: &str, js: &str, timeout_ms: u64) -
             }
         }
         None => {
-            let open = browser.tab_new(&format!("{origin}/"));
+            let url = format!("{origin}/");
+            let open = browser.tab_new(&url);
             match tokio::time::timeout(Duration::from_secs(60), open).await {
                 Ok(r) => opened = Some(r.map_err(no)?),
                 Err(_) => return Err(failed(format!("the browser did not open {origin} in time"))),

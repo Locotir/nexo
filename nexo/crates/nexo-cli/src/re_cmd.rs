@@ -95,14 +95,14 @@ pub fn map() -> String {
         .max();
     let width = width.unwrap_or(8);
     let mut out = vec![
-        "nexo RE: read a file with `nexo bin <op> <file>`, run it with `nexo dbg <command>`, site APIs with `nexo api`; `nexo re <word> ...` picks the right one.".to_string(),
+        "nexo RE: read a file with `nexo bin <op> <file>`, run it with `nexo dbg <command>`, site APIs with `nexo api`; `nexo re <word>` picks one.".to_string(),
         "read a file (nexo bin; the file is never run):".to_string(),
     ];
     out.extend(ops.iter().map(|(n, _, about)| format!("  {n:<width$}  {about}")));
     out.push("run it (nexo dbg; a live program, one bounded call at a time):".to_string());
     out.extend(nexo_dbg::COMMANDS.iter().map(|(n, about)| format!("  {:<width$}  {about}", first_name(n))));
     if !api.is_empty() {
-        out.push("the API behind a website (nexo api; a HAR capture in, calls out; secrets only from env vars; `nexo re api <op>`):".to_string());
+        out.push("the API behind a website (nexo api; HAR in, calls out; secrets only from env vars; `nexo re api <op>`):".to_string());
         out.extend(api.iter().map(|(n, about)| {
             let name = format!("api {n}");
             format!("  {name:<width$}  {about}")

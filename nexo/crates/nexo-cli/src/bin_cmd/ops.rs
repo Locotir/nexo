@@ -7,7 +7,7 @@ use super::{parse_addr, Common};
 
 #[derive(Subcommand, Debug)]
 pub enum BinOp {
-    /// Assemble Intel x86 (default) or AArch64 (`--arch arm64`) instructions (semicolon/newline separated); x86 supports labels and rel32 branches.
+    /// Assemble Intel x86 (default) or AArch64 (`--arch arm64` or aarch64) instructions (semicolon/newline separated); x86 supports labels and rel32 branches.
     Asm {
         source: String,
         #[arg(long, default_value = "0", value_parser = parse_addr)]
@@ -15,9 +15,6 @@ pub enum BinOp {
         /// x86 only: 64 or 32.
         #[arg(long, default_value = "64", value_parser = ["64", "32"])]
         bits: String,
-        /// The instruction set: x86 (default) or arm64 (alias aarch64; 4-aligned --at, 64-bit only).
-        #[arg(long, default_value = "x86", value_parser = ["x86", "arm64", "aarch64"])]
-        arch: String,
         #[command(flatten)]
         common: Common,
     },
@@ -185,7 +182,7 @@ pub enum BinOp {
         file: PathBuf,
         name: String,
         /// For example: 0:i32:id 8:ptr:next
-        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        #[arg(id = "struct_fields", value_name = "FIELDS", required_unless_present = "clear", conflicts_with = "clear")]
         fields: Option<String>,
         #[arg(long)]
         clear: bool,

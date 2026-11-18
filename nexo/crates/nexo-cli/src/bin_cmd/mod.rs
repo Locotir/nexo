@@ -215,8 +215,13 @@ fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     if op.common().module.is_some() {
         live::check(op)?;
     }
-    if let BinOp::Asm { source, at, bits, arch, .. } = op {
-        if arch != "x86" {
+    if let BinOp::Asm { source, at, bits, common, .. } = op {
+        let arm = match common.arch.as_deref() {
+            None | Some("x86") => false,
+            Some("arm64" | "aarch64") => true,
+            Some(other) => return Err(Error::Usage(format!("--arch {other}: asm takes x86, arm64 or aarch64"))),
+        };
+        if arm {
             if bits == "32" {
                 return Err(Error::Usage("--bits 32 is x86 only: AArch64 has no 32-bit mode here".into()));
             }
