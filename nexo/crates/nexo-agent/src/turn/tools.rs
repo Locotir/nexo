@@ -639,7 +639,18 @@ pub(super) async fn run_call(
                     ("read", Some((path, p))) if !out.is_error => {
                         let offset = args.get("offset").and_then(Value::as_u64);
                         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(READ_LIMIT);
-                        st.reads.after_read(path, p, offset, limit, id, crate::reads::printed(&out))
+                        match &out.display {
+                            ToolDisplay::File { text, .. } => st.reads.after_read_shown(
+                                path,
+                                p,
+                                offset,
+                                limit,
+                                id,
+                                crate::reads::printed(&out),
+                                text.lines().count(),
+                            ),
+                            _ => st.reads.after_read(path, p, offset, limit, id, crate::reads::printed(&out)),
+                        }
                     }
                     ("bash", Some((path, p))) if !out.is_error => {
                         let span = args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print);
@@ -652,6 +663,14 @@ pub(super) async fn run_call(
                             let path = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { cwd.join(&p) };
                             st.reads.after_change(&path, id, name == "write");
                         }
+                        None
+                    }
+                    ("read", None) if !out.is_error && nexo_core::tool::has_paths(args) => {
+                        // several files in one answer: each one's lines are registered, a repeated one is a note
+                        let offset = args.get("offset").and_then(Value::as_u64);
+                        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(READ_LIMIT);
+                        let paths = nexo_core::tool::call_paths(args);
+                        chained = st.reads.after_paths(cwd, &paths, offset, limit, &out.content, id);
                         None
                     }
                     ("bash", None) => {
