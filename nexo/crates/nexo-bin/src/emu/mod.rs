@@ -460,7 +460,7 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
         });
     }
     for s in &spec.hooks {
-        let (a, act) = hook::parse(img, &mut m, s)?;
+        let (a, act) = hook::parse(img, &mut m, s, &hook::X86)?;
         m.hooks.at.entry(a).or_default().push(act);
     }
     // the stack: arguments past the registers, the home area on Windows, then the return address
@@ -494,7 +494,9 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
             break Stop::Reached(rip);
         }
         if !m.hooks.at.is_empty() && m.hooks.at.contains_key(&rip) {
-            m.run_hooks(rip);
+            let mut g = m.cpu.gpr;
+            m.run_hooks(rip, &mut g, &hook::X86);
+            m.cpu.gpr = g;
         }
         if !m.hooks.breaks.is_empty() && m.hooks.breaks.contains(&rip) {
             break Stop::Break(rip);
