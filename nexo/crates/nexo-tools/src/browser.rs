@@ -28,6 +28,7 @@ use crate::util::{bool_arg, cap_text, int_arg, one_line, resolve, str_arg};
 use args::Action;
 mod args;
 use dispatch::{read, Step};
+mod capture;
 mod dispatch;
 mod gif;
 mod launch;

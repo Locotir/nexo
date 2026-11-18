@@ -18,6 +18,8 @@ bench = ["dep:nexo-bench"]
 
 [dependencies]
 nexo-core = { workspace = true }
+nexo-api = { workspace = true }
+nexo-browser = { workspace = true }
 nexo-browser-host = { workspace = true }
 nexo-providers = { workspace = true }
 nexo-tools = { workspace = true }
@@ -42,6 +44,11 @@ time = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
+futures = { workspace = true }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false }
+rustls-native-certs = "0.8.5"
+async-tungstenite = { version = "0.32.1", features = ["tokio-runtime", "tokio-rustls-native-certs"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]

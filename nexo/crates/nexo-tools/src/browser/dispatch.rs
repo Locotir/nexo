@@ -58,6 +58,20 @@ impl BrowserTool {
     async fn perform(&self, b: &Browser, action: Action<'_>, cwd: &Path) -> Result<Step, Step> {
         match action {
             Action::Gif(call) => gif::run(b, call, cwd).await,
+            Action::CaptureStart => {
+                b.capture_start();
+                Ok(Step { text: capture::started(b.is_real()), page: false })
+            }
+            Action::CaptureStop => {
+                let stats = b.capture_stop().await;
+                Ok(Step { text: capture::stopped(&stats, b.is_real()), page: false })
+            }
+            Action::CaptureSave(path) => {
+                let file = capture::target(cwd, path);
+                let text = capture::write(&file, &b.export_har(), &b.capture_stats(), b.is_real())
+                    .map_err(|e| Step { text: format!("browser capture_save: {e}"), page: false })?;
+                Ok(Step { text, page: false })
+            }
             Action::Navigate(url) => changed(b.navigate(url).await.map(|_| format!("opened {url}"))),
             Action::Snapshot => read("snapshot", b.snapshot().await.map(|s| show_snapshot(&s))),
             Action::ReadPage(a) => read("read_page", b.read_page(&a.options()).await.map(|t| show_tree(&t.text))),

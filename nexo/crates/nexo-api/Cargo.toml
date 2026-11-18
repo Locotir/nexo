@@ -1,0 +1,15 @@
+[package]
+name = "nexo-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: turns captured web traffic into an API an agent can read and call, without keeping a secret"
+
+[dependencies]
+serde_json = { workspace = true }
+url = { workspace = true }
+indexmap = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }

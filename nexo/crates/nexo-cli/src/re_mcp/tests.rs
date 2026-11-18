@@ -57,12 +57,12 @@ fn initialize_answers_with_the_tools_capability_and_a_notification_gets_no_answe
 }
 
 #[test]
-fn tools_list_has_one_tool_per_bin_op_plus_bin_batch_and_the_three_debugger_tools() {
+fn tools_list_has_one_tool_per_bin_op_plus_bin_batch_the_three_debugger_tools_and_api() {
     let a = talk(false, &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})]);
     let tools = a[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), bin_op_count() + 4);
+    assert_eq!(tools.len(), bin_op_count() + 5);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for n in ["bin_info", "bin_decomp", "bin_emu", "bin_batch", "dbg_start", "dbg_command", "dbg_stop"] {
+    for n in ["bin_info", "bin_decomp", "bin_emu", "bin_batch", "dbg_start", "dbg_command", "dbg_stop", "api"] {
         assert!(names.contains(&n), "{n} missing from {names:?}");
     }
     assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));
@@ -391,4 +391,21 @@ fn dbg_flags_are_the_clap_flags_of_common_with_their_help() {
     for (arg, _, _) in &flags {
         assert!(info.get_arguments().any(|a| a.get_id().as_str() == arg), "{arg} is not a bin flag");
     }
+}
+
+#[test]
+fn api_needs_the_flag_for_a_call_or_a_save_but_not_for_a_dry_run_or_a_refusal() {
+    let a = talk(
+        false,
+        &[
+            call(1, "api", json!({"command": "analyze cap.har --save m.json"})),
+            call(2, "api", json!({"command": "watch m.json \"GET /x\""})),
+            call(3, "api", json!({"command": "call m.json \"GET /x\" -p password=hunter2"})),
+            call(4, "api", json!({})),
+        ],
+    );
+    assert!(result_text(&a[0]).contains("--allow-changes"), "{}", result_text(&a[0]));
+    assert!(result_text(&a[1]).contains("--times"), "{}", result_text(&a[1]));
+    assert!(result_text(&a[2]).contains("@env:VAR"), "{}", result_text(&a[2]));
+    assert!(result_text(&a[3]).contains("needs"), "{}", result_text(&a[3]));
 }

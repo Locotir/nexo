@@ -715,6 +715,32 @@ impl RelayBrowser {
         self.inner.buffers.network(filter)
     }
 
+    /// Starts API capture; see [`crate::Browser::capture_start`]. From the person's own browser it records address,
+    /// method, resource type, status and mime type only: the extension keeps headers, bodies and cookies in the
+    /// browser and forwards no `loadingFinished`, so there are no headers or bodies in a relay capture.
+    pub fn capture_start(&self) {
+        self.inner.buffers.capture_start();
+    }
+
+    /// Stops API capture and says what was kept.
+    pub async fn capture_stop(&self) -> crate::CaptureStats {
+        self.flush().await;
+        self.inner.buffers.capture_stop().await
+    }
+
+    pub fn capture_stats(&self) -> crate::CaptureStats {
+        self.inner.buffers.capture_stats()
+    }
+
+    pub fn captured(&self) -> Vec<crate::CapturedRequest> {
+        self.inner.buffers.captured()
+    }
+
+    /// The capture as a HAR 1.2 file (JSON text).
+    pub fn export_har(&self) -> String {
+        crate::export_har(&self.inner.buffers.captured())
+    }
+
     /// Lets events the browser already sent reach the buffers before they are read.
     async fn flush(&self) {
         if let Ok(tab) = self.tab() {

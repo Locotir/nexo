@@ -1,10 +1,14 @@
 //! Page events kept for later reading: console messages and network requests.
 
 use crate::{redact, Error, Result};
+use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::log::{EnableParams as LogEnable, EventEntryAdded};
 use chromiumoxide::cdp::browser_protocol::network::{
-    EnableParams as NetworkEnable, EventLoadingFailed, EventLoadingFinished, EventRequestWillBeSent,
-    EventResponseReceived,
+    EnableParams as NetworkEnable, EventEventSourceMessageReceived, EventLoadingFailed, EventLoadingFinished,
+    EventRequestWillBeSent, EventRequestWillBeSentExtraInfo, EventResponseReceived, EventResponseReceivedExtraInfo,
+    EventWebSocketClosed, EventWebSocketCreated, EventWebSocketFrameError, EventWebSocketFrameReceived,
+    EventWebSocketFrameSent, EventWebSocketHandshakeResponseReceived, EventWebSocketWillSendHandshakeRequest,
+    GetRequestPostDataParams, GetResponseBodyParams, PostDataEntry,
 };
 use chromiumoxide::cdp::js_protocol::runtime::{
     EnableParams as RuntimeEnable, EventConsoleApiCalled, EventExceptionThrown, RemoteObject,
@@ -18,7 +22,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 
+mod capture;
 mod relay;
+
+pub use capture::{
+    export_har, export_har_with, CaptureStats, CapturedRequest, SseEvent, WsCapture, WsFrame, CAPTURE_BODY_CAP,
+    CAPTURE_TOTAL_CAP,
+};
 
 /// Entries kept per buffer; the oldest are dropped first.
 const BUFFER_CAP: usize = 1_000;
@@ -113,6 +123,10 @@ pub(crate) struct Buffers {
     console: Arc<Mutex<Vec<ConsoleEntry>>>,
     net: Arc<Mutex<Vec<NetEntry>>>,
     seq: Arc<AtomicU64>,
+    /// API capture mode (off until `capture_start`); see `capture.rs`.
+    capture: Arc<Mutex<capture::Capture>>,
+    /// Bodies being read from the browser for the capture.
+    pending: Arc<AtomicU64>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -139,6 +153,18 @@ fn show(arg: &RemoteObject) -> String {
     }
 }
 
+/// The request body the event itself carries: its entries, decoded. `None` when there is none or any entry is
+/// missing (the browser leaves out big ones; then it is asked for it).
+fn inline_post(entries: Option<&[PostDataEntry]>) -> Option<String> {
+    let entries = entries.filter(|e| !e.is_empty())?;
+    let mut out = Vec::new();
+    for e in entries {
+        let b64 = String::from(e.bytes.clone()?);
+        out.extend(base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()).ok()?);
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
 fn filter_regex(filter: Option<&str>) -> Result<Option<Regex>> {
     filter
         .map(|f| Regex::new(f).map_err(|e| Error::Unusable { target: f.to_string(), reason: e.to_string() }))
@@ -156,6 +182,23 @@ where
             on(&event);
         }
     }))
+}
+
+/// Listens to one WebSocket or EventSource event of the Network domain and hands its CDP JSON to the capture
+/// (see `capture/live.rs`). Nothing is serialized while capture is off.
+async fn listen_live<T>(page: &Page, buffers: &Buffers, method: &'static str) -> Result<JoinHandle<()>>
+where
+    T: IntoEventKind + Unpin + Send + Sync + Serialize + 'static,
+{
+    let buffers = buffers.clone();
+    listen::<T, _>(page, move |e| {
+        if buffers.capturing() {
+            if let Ok(params) = serde_json::to_value(e) {
+                buffers.cap_live_event(method, &params);
+            }
+        }
+    })
+    .await
 }
 
 impl Buffers {
@@ -191,7 +234,7 @@ impl Buffers {
             })
             .await?,
         );
-        let (buffers, source) = (self.clone(), page.target_id().inner().clone());
+        let (buffers, source, tab) = (self.clone(), page.target_id().inner().clone(), page.clone());
         tasks.push(
             listen::<EventRequestWillBeSent, _>(page, move |e| {
                 let id = e.request_id.inner().clone();
@@ -205,6 +248,45 @@ impl Buffers {
                         r.headers.inner(),
                     );
                     buffers.ended(&id, now, None);
+                    buffers.cap_answered(
+                        &id,
+                        u16::try_from(r.status).ok(),
+                        &r.status_text,
+                        &r.mime_type,
+                        r.headers.inner(),
+                    );
+                    buffers.cap_ended(&id, now, None);
+                }
+                if buffers.capturing() {
+                    let has_post = e.request.has_post_data.unwrap_or(false);
+                    let raw = capture::RawRequest {
+                        id: &id,
+                        wall_ms: *e.wall_time.inner() * 1_000.0,
+                        now,
+                        method: &e.request.method,
+                        url: &e.request.url,
+                        headers: e.request.headers.inner(),
+                        rtype: e
+                            .r#type
+                            .as_ref()
+                            .and_then(|t| serde_json::to_value(t).ok())
+                            .and_then(|v| v.as_str().map(str::to_string)),
+                        post: inline_post(e.request.post_data_entries.as_deref()),
+                        has_post,
+                    };
+                    if buffers.cap_request(&raw) {
+                        buffers.pending.fetch_add(1, Ordering::Relaxed);
+                        let (b, p, rid) = (buffers.clone(), tab.clone(), id.clone());
+                        tokio::spawn(async move {
+                            let body = p
+                                .execute(GetRequestPostDataParams::new(rid.clone()))
+                                .await
+                                .ok()
+                                .map(|r| r.result.post_data);
+                            b.cap_set_request_body(&rid, body);
+                            b.pending.fetch_sub(1, Ordering::Relaxed);
+                        });
+                    }
                 }
                 let mut entry = NetEntry::new(
                     buffers.next_seq(),
@@ -222,10 +304,25 @@ impl Buffers {
         );
         let buffers = self.clone();
         tasks.push(
+            listen::<EventRequestWillBeSentExtraInfo, _>(page, move |e| {
+                buffers.cap_extra_request_headers(e.request_id.inner(), e.headers.inner());
+            })
+            .await?,
+        );
+        let buffers = self.clone();
+        tasks.push(
+            listen::<EventResponseReceivedExtraInfo, _>(page, move |e| {
+                buffers.cap_extra_response_headers(e.request_id.inner(), e.headers.inner());
+            })
+            .await?,
+        );
+        let buffers = self.clone();
+        tasks.push(
             listen::<EventResponseReceived, _>(page, move |e| {
                 let r = &e.response;
                 let id = e.request_id.inner();
                 buffers.answered(id, u16::try_from(r.status).ok(), &r.status_text, &r.mime_type, r.headers.inner());
+                buffers.cap_answered(id, u16::try_from(r.status).ok(), &r.status_text, &r.mime_type, r.headers.inner());
                 if let Some(t) = &r.timing {
                     if let Some(hit) = lock(&buffers.net).iter_mut().rev().find(|n| &n.id == id) {
                         hit.first_byte_ms = Some(t.receive_headers_end);
@@ -234,10 +331,25 @@ impl Buffers {
             })
             .await?,
         );
-        let buffers = self.clone();
+        let (buffers, tab) = (self.clone(), page.clone());
         tasks.push(
             listen::<EventLoadingFinished, _>(page, move |e| {
-                buffers.ended(e.request_id.inner(), Some(*e.timestamp.inner()), None);
+                let id = e.request_id.inner();
+                buffers.ended(id, Some(*e.timestamp.inner()), None);
+                buffers.cap_ended(id, Some(*e.timestamp.inner()), None);
+                if buffers.cap_wants_body(id) {
+                    buffers.pending.fetch_add(1, Ordering::Relaxed);
+                    let (b, p, rid) = (buffers.clone(), tab.clone(), id.clone());
+                    tokio::spawn(async move {
+                        let body = p
+                            .execute(GetResponseBodyParams::new(rid.clone()))
+                            .await
+                            .ok()
+                            .map(|r| (r.result.body, r.result.base64_encoded));
+                        b.cap_set_response_body(&rid, body);
+                        b.pending.fetch_sub(1, Ordering::Relaxed);
+                    });
+                }
             })
             .await?,
         );
@@ -245,8 +357,33 @@ impl Buffers {
         tasks.push(
             listen::<EventLoadingFailed, _>(page, move |e| {
                 buffers.ended(e.request_id.inner(), Some(*e.timestamp.inner()), Some(e.error_text.clone()));
+                buffers.cap_ended(e.request_id.inner(), Some(*e.timestamp.inner()), Some(e.error_text.clone()));
             })
             .await?,
+        );
+        tasks.push(listen_live::<EventWebSocketCreated>(page, self, "Network.webSocketCreated").await?);
+        tasks.push(
+            listen_live::<EventWebSocketWillSendHandshakeRequest>(
+                page,
+                self,
+                "Network.webSocketWillSendHandshakeRequest",
+            )
+            .await?,
+        );
+        tasks.push(
+            listen_live::<EventWebSocketHandshakeResponseReceived>(
+                page,
+                self,
+                "Network.webSocketHandshakeResponseReceived",
+            )
+            .await?,
+        );
+        tasks.push(listen_live::<EventWebSocketFrameSent>(page, self, "Network.webSocketFrameSent").await?);
+        tasks.push(listen_live::<EventWebSocketFrameReceived>(page, self, "Network.webSocketFrameReceived").await?);
+        tasks.push(listen_live::<EventWebSocketFrameError>(page, self, "Network.webSocketFrameError").await?);
+        tasks.push(listen_live::<EventWebSocketClosed>(page, self, "Network.webSocketClosed").await?);
+        tasks.push(
+            listen_live::<EventEventSourceMessageReceived>(page, self, "Network.eventSourceMessageReceived").await?,
         );
         page.execute(RuntimeEnable::default()).await?;
         page.execute(LogEnable::default()).await?;

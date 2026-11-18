@@ -71,6 +71,7 @@ docs/
   providers-base.md         the provider protocols nexo speaks
   providers-policy.md       what each provider's terms allow
   context-curator.md        how the curator builds the view of a call
+  api.md                    nexo api: the API behind a website, from a HAR capture
   CI.md                     the GitHub Action and GitLab template
   bench/                    plans and results of the head-to-head runs
 nexo/

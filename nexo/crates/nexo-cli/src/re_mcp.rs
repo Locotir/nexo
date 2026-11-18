@@ -1,6 +1,6 @@
 //! `nexo re --mcp`: the nexo RE kit as an MCP server on stdio, so other harnesses can use it. JSON-RPC 2.0, one
 //! message per line, written by hand (no SDK). The tools are generated from the clap definition of `nexo bin`
-//! (one for each op, so the list cannot drift), `bin_batch` (several ops in one call) plus three for `nexo dbg` sessions: start, command, stop. A tool
+//! (one for each op, so the list cannot drift), `bin_batch` (several ops in one call) plus three for `nexo dbg` sessions: start, command, stop, and  (). A tool
 //! result is the text `nexo bin` or `nexo dbg` prints. Anything that writes saved state, writes into a program,
 //! attaches to a process or opens a port is refused unless the server started with `--allow-changes`.
 
@@ -16,7 +16,7 @@ mod tools;
 mod words;
 
 use dbg_run::{run_dbg, same_user};
-use tools::{batch_tool, bin_argv, bin_tools, dbg_flags, dbg_tools};
+use tools::{api_tools, batch_tool, bin_argv, bin_tools, dbg_flags, dbg_tools};
 pub(crate) use words::split_words;
 use words::{list_of, scalar};
 
@@ -30,6 +30,7 @@ enum Kind {
     DbgStart,
     DbgCommand,
     DbgStop,
+    Api,
 }
 
 struct Tool {
@@ -88,6 +89,7 @@ impl Server {
         let mut tools = bin_tools();
         tools.push(batch_tool());
         tools.extend(dbg_tools());
+        tools.extend(api_tools());
         Server { allow_changes, tools }
     }
 
@@ -186,6 +188,7 @@ impl Server {
             Kind::DbgStart => self.call_dbg_start(&args),
             Kind::DbgCommand => self.call_dbg_command(&args),
             Kind::DbgStop => self.call_dbg_stop(&args),
+            Kind::Api => self.call_api(&args),
         });
         let (text, is_error) = match std::panic::catch_unwind(run) {
             Ok(Ok(text)) => (text, false),
@@ -251,6 +254,35 @@ impl Server {
             Err(text)
         } else {
             Ok(text)
+        }
+    }
+
+    /// The `api` tool: the same line the agent's `api` tool takes. Reading a map and a dry run always work; a
+    /// call that sends a request, a login and anything that writes a file need `--allow-changes`.
+    fn call_api(&self, args: &Value) -> Result<String, String> {
+        let line = scalar(args.get("command")).ok_or("api needs \"command\": for example `describe map.json`")?;
+        let cwd = std::env::current_dir().map_err(|e| format!("api: no working folder: {e}"))?;
+        if let crate::api_tool::Parsed::Cmd(cmd) = crate::api_tool::parse(&line)? {
+            crate::api_tool::vet(&cmd).map_err(|e| format!("api: {e}"))?;
+            if crate::api_tool::kind_in(&cmd, &cwd) != nexo_core::ToolKind::Read && !self.allow_changes {
+                return Err(self.refuse("this `nexo api` line sends a request or writes a file"));
+            }
+        }
+        let ctx = nexo_core::ToolContext::new(cwd);
+        // this server runs inside the CLI's runtime, where `block_on` panics: the call gets a thread of its own
+        let out = std::thread::scope(|s| {
+            s.spawn(|| -> Result<nexo_core::ToolOutput, String> {
+                let rt =
+                    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+                Ok(rt.block_on(nexo_core::Tool::run(&crate::api_tool::Api, json!({"command": line}), &ctx)))
+            })
+            .join()
+        })
+        .map_err(|_| "api: the call stopped working".to_string())??;
+        if out.is_error {
+            Err(out.content)
+        } else {
+            Ok(out.content)
         }
     }
 

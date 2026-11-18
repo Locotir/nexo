@@ -182,6 +182,7 @@ nexo re run ./app         # debug it, step by step
 
 Changes only with your OK, and only on your own programs. Other agents can use the same kit with `nexo re --mcp`.
 Every command: [`docs/re.md`](docs/re.md).
+Websites: [`docs/api.md`](docs/api.md) turns a HAR capture into a map of a site's API that you or an agent can call, watch and check.
 
 ## Providers
 

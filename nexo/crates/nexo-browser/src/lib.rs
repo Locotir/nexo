@@ -25,13 +25,16 @@ mod tests;
 
 pub use any::AnyBrowser;
 pub use error::{Error, Result};
-pub use events::{ConsoleEntry, NetEntry};
+pub use events::{
+    export_har, export_har_with, CaptureStats, CapturedRequest, ConsoleEntry, NetEntry, SseEvent, WsCapture, WsFrame,
+    CAPTURE_BODY_CAP, CAPTURE_TOTAL_CAP,
+};
 pub use export::ExportOptions;
 pub use platform::{find_browser, installed_browsers, InstalledBrowser, OVERRIDE_VAR};
 pub use pointer::Modifiers;
 pub use profile::{has_display, preflight};
 pub use record::{ActionEvent, ActionKind, RecordInfo, RecordOptions, RecordSummary};
-pub use redact::REDACTED;
+pub use redact::{body_marked, header_value_marked, marker, REDACTED};
 pub use relay::{browsers, BrowserEntry, RelayBrowser};
 pub use snapshot::{Element, Filter, PageTree, ReadPageOptions, Snapshot, DEFAULT_DEPTH, DEFAULT_MAX_CHARS};
 pub use tabs::TabInfo;
@@ -433,6 +436,35 @@ impl Browser {
     pub async fn network(&self, filter: Option<&str>) -> Result<Vec<NetEntry>> {
         self.flush_events().await;
         self.buffers.network(filter)
+    }
+
+    /// Starts API capture: from now on every request is also kept with its resource type, headers, request body
+    /// and (for `XHR`, `Fetch` and `Other` calls answering JSON or text) response body, with every secret turned
+    /// into a [`marker`]. A fresh capture replaces the previous one. Off until this is called.
+    pub fn capture_start(&self) {
+        self.buffers.capture_start();
+    }
+
+    /// Stops API capture (waiting briefly for response bodies still being read) and says what was kept and
+    /// skipped. What was captured stays readable until the next [`Browser::capture_start`].
+    pub async fn capture_stop(&self) -> CaptureStats {
+        self.flush_events().await;
+        self.buffers.capture_stop().await
+    }
+
+    /// What the capture has seen and left out so far.
+    pub fn capture_stats(&self) -> CaptureStats {
+        self.buffers.capture_stats()
+    }
+
+    /// The captured requests in the order they were sent.
+    pub fn captured(&self) -> Vec<CapturedRequest> {
+        self.buffers.captured()
+    }
+
+    /// The capture as a HAR 1.2 file (JSON text); see [`export_har`].
+    pub fn export_har(&self) -> String {
+        export_har_with(&self.buffers.captured(), &self.buffers.capture_stats())
     }
 
     /// Everything known about one request of [`Browser::network`] (its `seq`): headers both ways, status, timing

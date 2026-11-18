@@ -101,6 +101,9 @@ fn every_action_parses_from_its_arguments() {
                 opts: nexo_browser::ExportOptions { watermark: false, ..Default::default() },
             }),
         ),
+        (json!({"action": "capture_start"}), Action::CaptureStart),
+        (json!({"action": "capture_stop"}), Action::CaptureStop),
+        (json!({"action": "capture_save", "path": "site.har"}), Action::CaptureSave("site.har")),
         (json!({"action": "browsers"}), Action::Browsers),
         (json!({"action": "select_browser", "id": "chrome-1"}), Action::SelectBrowser("chrome-1")),
         (json!({"action": "switch_browser"}), Action::SwitchBrowser),
@@ -149,6 +152,8 @@ fn bad_arguments_name_what_is_missing() {
         assert!(e.contains(&format!("step 2 `{read}`")) && e.contains("on its own"), "{e}");
     }
     assert!(err(json!({"action": "select_browser"})).contains("`id` is required"));
+    assert!(err(json!({"action": "capture_save"})).contains("`path` is required"));
+    assert!(err(json!({"action": "capture_save", "path": " "})).contains("`path` is required"));
     for a in ["browsers", "switch_browser"] {
         assert!(err(json!({"action": "batch", "steps": [{"action": a}]})).contains("cannot be part"), "{a}");
     }
@@ -432,6 +437,25 @@ fn the_lists_are_compact_and_capped() {
     let shown = show_console(&many);
     assert!(shown.starts_with("… 10 earlier entries left out\nerror  boom 10") && shown.ends_with("error  boom 59"));
     assert_eq!(shown.lines().count(), 51);
+}
+
+#[test]
+fn saving_a_capture_is_a_write_and_the_other_capture_actions_are_not() {
+    let t = BrowserTool::new();
+    assert_eq!(t.call_kind(&json!({"action": "capture_save", "path": "a.har"})), ToolKind::Write);
+    assert_eq!(
+        t.call_kind(
+            &json!({"action": "batch", "steps": [{"action": "tabs"}, {"action": "capture_save", "path": "a.har"}]})
+        ),
+        ToolKind::Write
+    );
+    for a in ["capture_start", "capture_stop", "navigate", "export_gif"] {
+        assert_eq!(t.call_kind(&json!({"action": a})), ToolKind::Network, "{a}");
+    }
+    assert_eq!(t.summary(&json!({"action": "capture_save", "path": "a.har"})), "browser capture_save a.har");
+    let spec = t.spec();
+    assert!(spec.parameters["properties"]["path"]["description"].is_string());
+    assert!(spec.parameters["properties"]["action"]["enum"].to_string().contains("capture_save"));
 }
 
 #[test]

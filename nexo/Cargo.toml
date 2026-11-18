@@ -17,6 +17,7 @@ members = [
     "crates/nexo-browser",
     "crates/nexo-relay",
     "crates/nexo-http",
+    "crates/nexo-api",
 ]
 
 [workspace.package]
@@ -43,6 +44,7 @@ nexo-dbg = { path = "crates/nexo-dbg" }
 nexo-browser = { path = "crates/nexo-browser" }
 nexo-relay = { path = "crates/nexo-relay" }
 nexo-http = { path = "crates/nexo-http" }
+nexo-api = { path = "crates/nexo-api" }
 nexo-browser-host = { path = "crates/nexo-browser-host" }
 
 # runtime

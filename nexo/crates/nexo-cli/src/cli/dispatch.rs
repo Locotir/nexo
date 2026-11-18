@@ -160,6 +160,7 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Dbg(_)) => return Ok(0),
         Some(Cmd::ChromeSetup(_)) => return Ok(0),
         Some(Cmd::Re(_)) => return Ok(0),
+        Some(Cmd::Api(_)) => return Ok(0),
         Some(Cmd::Team { .. }) => return Ok(0),
     }
 

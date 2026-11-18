@@ -64,8 +64,28 @@ impl Buffers {
                     let status = r.get("status").and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok());
                     self.answered(&id, status, &text(r, "statusText"), &text(r, "mimeType"), &r["headers"]);
                     self.ended(&id, now, None);
+                    self.cap_answered(&id, status, &text(r, "statusText"), &text(r, "mimeType"), &r["headers"]);
+                    self.cap_ended(&id, now, None);
                 }
                 let r = &p["request"];
+                // The extension forwards no headers, no body and no `loadingFinished`: capture gets address, method,
+                // type, status and mime type only.
+                if self.capturing() {
+                    let rtype = Some(text(p, "type")).filter(|t| !t.is_empty());
+                    let wall_ms = p.get("wallTime").and_then(Value::as_f64).unwrap_or(0.0) * 1_000.0;
+                    let none = Value::Null;
+                    self.cap_request(&super::capture::RawRequest {
+                        id: &id,
+                        wall_ms,
+                        now,
+                        method: &text(r, "method"),
+                        url: &text(r, "url"),
+                        headers: r.get("headers").unwrap_or(&none),
+                        rtype,
+                        post: None,
+                        has_post: false,
+                    });
+                }
                 let wall = p.get("wallTime").and_then(Value::as_f64).unwrap_or(0.0) * 1_000.0;
                 let mut entry =
                     NetEntry::new(self.next_seq(), text(r, "method"), &text(r, "url"), wall, tab.to_string(), id);
@@ -83,13 +103,22 @@ impl Buffers {
                     &text(r, "mimeType"),
                     &r["headers"],
                 );
+                self.cap_answered(
+                    &text(p, "requestId"),
+                    status,
+                    &text(r, "statusText"),
+                    &text(r, "mimeType"),
+                    &r["headers"],
+                );
             }
             "Network.loadingFinished" => {
-                self.ended(&text(p, "requestId"), p.get("timestamp").and_then(Value::as_f64), None)
+                self.ended(&text(p, "requestId"), p.get("timestamp").and_then(Value::as_f64), None);
+                self.cap_ended(&text(p, "requestId"), p.get("timestamp").and_then(Value::as_f64), None);
             }
             "Network.loadingFailed" => {
                 let why = Some(text(p, "errorText")).filter(|t| !t.is_empty()).or_else(|| Some("failed".into()));
-                self.ended(&text(p, "requestId"), p.get("timestamp").and_then(Value::as_f64), why);
+                self.ended(&text(p, "requestId"), p.get("timestamp").and_then(Value::as_f64), why.clone());
+                self.cap_ended(&text(p, "requestId"), p.get("timestamp").and_then(Value::as_f64), why);
             }
             "Page.javascriptDialogOpening" => {
                 let now = std::time::SystemTime::now()
@@ -163,5 +192,26 @@ mod tests {
             (Some(500), "Oops", Some(250.0), Some("net::ERR_ABORTED"))
         );
         assert!(!b.ingest(7, "Page.loadEventFired", &json!({})));
+    }
+
+    #[test]
+    fn capture_over_the_relay_has_type_and_status_but_no_bodies() {
+        let b = Buffers::default();
+        b.capture_start();
+        assert!(b.ingest(7, "Network.requestWillBeSent", &json!({"requestId": "1", "type": "Fetch", "wallTime": 2.0, "request": {"method": "POST", "url": "https://a.b/api?token=zz1"}})));
+        assert!(b.ingest(
+            7,
+            "Network.responseReceived",
+            &json!({"requestId": "1", "type": "Fetch", "response": {"status": 200, "mimeType": "application/json"}})
+        ));
+        assert!(b.ingest(7, "Network.loadingFinished", &json!({"requestId": "1", "timestamp": 3.0})));
+        let all = b.captured();
+        assert_eq!(all.len(), 1);
+        assert_eq!(
+            (all[0].resource_type.as_str(), all[0].status, all[0].mime.as_str()),
+            ("Fetch", Some(200), "application/json")
+        );
+        assert!(all[0].request_headers.is_empty() && all[0].response_body.is_none());
+        assert!(!format!("{all:?}").contains("zz1"));
     }
 }

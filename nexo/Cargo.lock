@@ -145,7 +145,10 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -1797,6 +1800,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexo-api"
+version = "0.2.0"
+dependencies = [
+ "base64 0.23.1",
+ "indexmap",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
 name = "nexo-bench"
 version = "0.2.0"
 dependencies = [
@@ -1859,6 +1873,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -1881,12 +1896,16 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "async-tungstenite",
  "clap",
  "crossterm",
+ "futures",
  "libc",
  "nexo-agent",
+ "nexo-api",
  "nexo-bench",
  "nexo-bin",
+ "nexo-browser",
  "nexo-browser-host",
  "nexo-core",
  "nexo-dbg",
@@ -1895,12 +1914,15 @@ dependencies = [
  "nexo-tools",
  "nexo-tui",
  "reqwest",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "time",
  "tokio",
+ "tokio-rustls",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -3624,6 +3646,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.21",
  "utf-8",
