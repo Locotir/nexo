@@ -90,7 +90,7 @@ nexo bin emu ./a.out hash buf:32 str:abc --stub rand=4 --show 0x404000:32
 nexo bin emu ./a.out 0x401130 --to 0x401190 --reg rbx=5 --break 0x401160 --hook 0x401170=print
 ```
 
-Arguments are `42`, `-1`, `0x401000`, `str:TEXT`, `hex:DE AD` or `buf:SIZE`. Also: `--abi sysv|ms`, `--mem ADDR=VALUE`, `--steps`, `--secs`, `--trace`, `--dump`, `--stack`, `--clock`, `--seed`. Linux system calls run in the emulator with fixed answers (`read` from `--stdin`, fixed clock, seeded random); one it does not know stops the run with its number and name. FMA3 instructions (`-march=x86-64-v3` code) are supported. `--hook` takes `ADDR=print`, `ADDR=dump:REG:LEN` or `ADDR=set:REG=VALUE`.
+Arguments are `42`, `-1`, `0x401000`, `str:TEXT`, `hex:DE AD` or `buf:SIZE`. Also: `--abi sysv|ms`, `--mem ADDR=VALUE`, `--steps`, `--secs`, `--trace`, `--dump`, `--stack`, `--clock`, `--seed`. Linux system calls run in the emulator with fixed answers (`read` from `--stdin`, fixed clock, seeded random); one it does not know stops the run with its number and name. FMA3 instructions (`-march=x86-64-v3` code) are supported. `--hook` takes `ADDR=print`, `ADDR=dump:REG:LEN` or `ADDR=set:REG=VALUE`. On arm64 the integer instructions run (registers `x0`..`x30`, `sp`, `--reg x1=5`), imports go through `--stub` and the same library stubs with AAPCS64 arguments, and `svc`, SIMD, floating point and atomics stop the run by name; `--hook` and `--abi` are x86 only.
 
 Attach to a running process (Linux, macOS and Windows; processes of yours):
 
@@ -123,7 +123,7 @@ Ops are one per line or separated by `;`, `#` lines are comments. Each answer co
 | Code | Works | Refused |
 | --- | --- | --- |
 | x86-64 | Every op | |
-| arm64 (AArch64) | `info`, `overview`, `syms`, `funcs`, `fn`, `xref`, `calls`, `tree`, `path`, `strings`, `bytes`, `find` (bytes, `--imm`, `--str`, `--asm`, `--seq`), `cfg`, `diff`, `slice` (backward), `patch --nop`, `patch --asm` | `decomp`, `emu`, `slice --forward` |
+| arm64 (AArch64) | `info`, `overview`, `syms`, `funcs`, `fn`, `xref`, `calls`, `tree`, `path`, `strings`, `bytes`, `find` (bytes, `--imm`, `--str`, `--asm`, `--seq`), `cfg`, `diff`, `slice` (backward), `emu` (integer code; `svc`, SIMD and floating point stop by name), `patch --nop`, `patch --asm` | `decomp`, `slice --forward` |
 | x86-32 | `info`, `overview`, `funcs`, `fn`, `xref`, `calls`, `strings`, `bytes`, `find` | `decomp`, `emu`, `cfg`, `slice`, `diff`, nop and asm patches |
 
 The refused ops say so instead of printing a wrong answer. A bare x86-32 or arm64 dump: `--raw --arch x86-32` or `--raw --arch arm64`.
