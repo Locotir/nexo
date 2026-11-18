@@ -360,23 +360,37 @@ fn strip_xssi(text: &str) -> &str {
     t
 }
 
-/// Replaces the secret fields of a JSON value (an object field with a secret name and a non-empty string) and records
-/// them with their JSON path.
+/// Replaces the value of a secret-named field and records it with its JSON path. A non-empty string or a number
+/// becomes [`SECRET`]; an array has each of its strings and numbers replaced the same way (`$.tokens[0]`); anything
+/// else (empty string, null, bool, object) goes on through [`redact_json`], where nested names are judged on their own.
+fn redact_secret_value(v: &mut Value, path: &str, list: &mut Vec<Secret>, raw: &mut Echo) {
+    if let Value::Array(items) = v {
+        for (i, item) in items.iter_mut().enumerate() {
+            redact_secret_value(item, &format!("{}[{}]", path, i), list, raw);
+        }
+        return;
+    }
+    let text = match &*v {
+        Value::String(s) if !s.is_empty() => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return redact_json(v, path, list, raw),
+    };
+    mark(list, raw, Place::Body, path, &text);
+    *v = Value::String(SECRET.to_string());
+}
+
+/// Replaces the secret fields of a JSON value (an object field with a secret name: a non-empty string, a number, or an
+/// array of those) and records them with their JSON path.
 fn redact_json(v: &mut Value, path: &str, list: &mut Vec<Secret>, raw: &mut Echo) {
     match v {
         Value::Object(map) => {
             for (key, child) in map.iter_mut() {
                 let here = format!("{}.{}", path, key);
                 if secret_name(key) {
-                    if let Value::String(s) = child {
-                        if !s.is_empty() {
-                            mark(list, raw, Place::Body, &here, s.as_str());
-                            *s = SECRET.to_string();
-                            continue;
-                        }
-                    }
+                    redact_secret_value(child, &here, list, raw);
+                } else {
+                    redact_json(child, &here, list, raw);
                 }
-                redact_json(child, &here, list, raw);
             }
         }
         Value::Array(items) => {
@@ -636,6 +650,41 @@ mod tests {
         assert_eq!(v["access_token"], SECRET);
         assert_eq!(v["user"]["note"], SECRET);
         assert_eq!(v["user"]["name"], "Ann");
+    }
+
+    #[test]
+    fn scrub_json_hides_secret_arrays_and_numbers() {
+        let mut v = serde_json::json!({
+            "tokens": ["tkAAAA1111bbbb", "tkBBBB2222cccc"],
+            "otp": 482913,
+            "session_id": 88123456,
+            "name": "Ann",
+        });
+        scrub_json(&mut v);
+        let text = v.to_string();
+        for leaked in ["tkAAAA1111bbbb", "tkBBBB2222cccc", "482913", "88123456"] {
+            assert!(!text.contains(leaked), "{text}");
+        }
+        assert_eq!(v["tokens"][0], SECRET);
+        assert_eq!(v["tokens"][1], SECRET);
+        assert_eq!(v["otp"], SECRET);
+        assert_eq!(v["session_id"], SECRET);
+        assert_eq!(v["name"], "Ann");
+    }
+
+    #[test]
+    fn secret_arrays_and_numbers_in_a_body_are_fingerprinted() {
+        let mut r = raw("https://a.test/x");
+        r.resp_body =
+            Some(("application/json".into(), r#"{"tokens":["tkAAAA1111bbbb","tkBBBB2222cccc"],"otp":482913}"#.into()));
+        let x = r.into_exchange(0).unwrap();
+        let json = x.resp_body.unwrap().json.unwrap();
+        assert_eq!(json["tokens"][0], SECRET);
+        assert_eq!(json["otp"], SECRET);
+        for value in ["tkAAAA1111bbbb", "tkBBBB2222cccc", "482913"] {
+            assert!(x.got.iter().any(|s| s.fp == fingerprint(value)), "no fingerprint for {value}");
+        }
+        assert_eq!(x.got.len(), 3);
     }
 
     #[test]
