@@ -81,6 +81,8 @@ impl Session {
         if let Some(bytes) = state {
             self.t.set_vector_state(self.cur, &bytes)?;
         }
+        // the fault of the function popped does not belong to its caller
+        self.t.take_signal(self.cur);
         let name = self.mods.label(callee.pc, false).unwrap_or_default();
         let mut l = vec![format!("returned from {name}")];
         if let Some(s) = shown {
@@ -142,6 +144,8 @@ impl Session {
         // a thread stopped inside a system call must not have that call restarted at the new pc
         r.orig_rax = u64::MAX;
         self.t.set_regs(self.cur, &r)?;
+        // gdb's `jump` goes on without the signal that stopped the thread: a fault jumped over must not come back
+        self.t.take_signal(self.cur);
         let now = self.frames(1)?;
         let at = match now.first() {
             Some(fr) => self.frame_line(0, fr),

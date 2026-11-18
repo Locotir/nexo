@@ -15,7 +15,7 @@ impl Session {
         self.need_stopped()?;
         let pid = self.t.pid();
         let proc = format!("/proc/{pid}");
-        if self.t.os() != Os::Linux || !std::path::Path::new(&proc).is_dir() {
+        if !self.t.local_proc() {
             return fail(
                 "gcore writes the core of a live Linux process: this target is a core file, a remote stub or not Linux",
             );

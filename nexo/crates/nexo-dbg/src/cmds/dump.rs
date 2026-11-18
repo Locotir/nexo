@@ -63,12 +63,16 @@ fn positional(w: &[String]) -> Vec<usize> {
 /// The index in `words` (a command, `dump` first) of the file a `dump` writes, so a caller can make a relative path
 /// absolute against the folder it means before the words reach the session.
 pub fn dump_path_at(words: &[String]) -> Option<usize> {
-    if words.first().map(String::as_str) != Some("dump") {
-        return None;
+    match words.first().map(String::as_str) {
+        // `gcore [FILE]` writes its file the same way
+        Some("gcore" | "generate-core-file") => positional(&words[1..]).first().map(|i| i + 1),
+        Some("dump") => {
+            let at = positional(&words[1..]);
+            let pos: Vec<String> = at.iter().map(|&i| words[1 + i].clone()).collect();
+            parse(&pos).and_then(|(_, p)| p).map(|k| at[k] + 1)
+        }
+        _ => None,
     }
-    let at = positional(&words[1..]);
-    let pos: Vec<String> = at.iter().map(|&i| words[1 + i].clone()).collect();
-    parse(&pos).and_then(|(_, p)| p).map(|k| at[k] + 1)
 }
 
 /// A word as [`split_words`] reads it back: in quotes when it holds a space or a `;`; None when it holds a `"`.
@@ -95,7 +99,7 @@ pub fn dump_part_in(part: &str, dir: &Path) -> String {
 /// script too), so the file lands where a shell in `dir` puts it whichever folder the session runs in.
 pub fn dumps_in(words: &mut Vec<String>, dir: &Path) {
     match words.first().map(String::as_str) {
-        Some("dump") => {
+        Some("dump" | "gcore" | "generate-core-file") => {
             if let Some(i) = dump_path_at(words).filter(|&i| Path::new(&words[i]).is_relative()) {
                 words[i] = dir.join(&words[i]).display().to_string();
             }
@@ -421,6 +425,8 @@ mod tests {
         // an option is not a word of the range or the path, as in `cmd_dump`
         assert_eq!(at("dump $rdi 64 out.bin --all"), Some(3));
         assert_eq!(at("dump --raw $rdi 64 out.bin"), Some(4));
+        assert_eq!(at("gcore live.core"), Some(1));
+        assert_eq!(at("gcore"), None);
     }
 
     #[cfg(unix)]
