@@ -142,11 +142,29 @@ pub fn terms(text: &str, int: &mut Interner) -> Set {
     set_of(out)
 }
 
-const NOT_REQUEST: [&str; 5] = ["<system-reminder>", "<local-command", "<command-", "Caveat:", "[Request interrupted"];
+/// What nexo (or the host) writes as a whole user message that the person did not type: system reminders, command
+/// echoes, the note of ended background jobs (`nexo_core::jobs::ended_note`) and mail from another session
+/// (`nexo_core::mail`).
+pub const NOT_REQUEST: [&str; 7] = [
+    "<system-reminder>",
+    "<local-command",
+    "<command-",
+    "Caveat:",
+    "[Request interrupted",
+    "[background jobs ended]",
+    "<session-message",
+];
 
-/// User text written by the person.
+/// User text written by the person. A message with a [`crate::msg::PERSON_MARK`] line carries their words, whatever
+/// nexo put before it.
 pub fn is_request(text: &str) -> bool {
-    !textops::strip(text).is_empty() && !NOT_REQUEST.iter().any(|p| textops::lstrip(text).starts_with(p))
+    if textops::strip(text).is_empty() {
+        return false;
+    }
+    let t = textops::lstrip(text);
+    let marked = t.starts_with(&format!("{}\n", crate::msg::PERSON_MARK))
+        || t.contains(&format!("\n{}\n", crate::msg::PERSON_MARK));
+    marked || !NOT_REQUEST.iter().any(|p| t.starts_with(p))
 }
 
 pub fn split_paragraphs(text: &str) -> Vec<(usize, usize)> {
@@ -850,4 +868,18 @@ pub static MODEL: LazyLock<Model> = LazyLock::new(|| {
 
 pub fn correct_share(p: f64, pi: f64) -> f64 {
     correct(p, pi)
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn notes_are_not_requests_unless_the_person_spoke_after_them() {
+        assert!(!is_request("[background jobs ended]\n- job 3 `cargo build` done"));
+        assert!(!is_request("<session-message id=\"m\" from=\"a\">x</session-message>"));
+        assert!(is_request("[background jobs ended]\n- job 3\n\n[the person's message]\nfix it"));
+        assert!(is_request("[the person's message]\nfix it"));
+        assert!(is_request("fix it"));
+    }
 }

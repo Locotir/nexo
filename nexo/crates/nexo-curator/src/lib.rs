@@ -54,7 +54,7 @@ pub const GENERAL_WORDS: &str = include_str!("../data/general.txt");
 pub const MODEL_JSON: &str = include_str!("../data/model.json");
 /// The names of the features the need heads see, in the order `Curator::dump_to` writes them, and how many
 /// of them the older heads see (for fits outside the curator).
-pub use learn::{K_OLD, NAMES as NEED_FEATURES};
+pub use learn::{is_request, K_OLD, NAMES as NEED_FEATURES, NOT_REQUEST};
 
 #[cfg(test)]
 mod tests;
