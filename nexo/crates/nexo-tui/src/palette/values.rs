@@ -228,7 +228,8 @@ pub fn wanted(draft: &str, cursor: usize) -> Option<(PaletteKind, usize, String)
             }
         }
     }
-    let word_start = head.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+    // the blank may be more than one byte (NBSP, the ideographic space), so step past all of it
+    let word_start = head.char_indices().rev().find(|(_, c)| c.is_whitespace()).map_or(0, |(i, c)| i + c.len_utf8());
     let word = &head[word_start..];
     if let Some(at) = word.rfind('@') {
         // only a word-initial `@` is a mention; `bob@m` and `git@host` are plain text
