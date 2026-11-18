@@ -14,7 +14,10 @@ use crate::regs::Regs;
 use crate::{fail, Result};
 
 mod call;
+mod checkpoint;
 pub mod watch;
+
+pub use checkpoint::Checkpoint;
 
 pub use watch::{Guard, WatchHow};
 
@@ -68,6 +71,24 @@ pub struct Wp {
     pub cond: Option<String>,
     pub after: u64,
     pub log: Option<String>,
+    /// A watch on a place in a function's frame ends when that frame returns.
+    pub scope: Option<WatchScope>,
+}
+
+/// The frame a watch on a local belongs to: the watch is deleted, with one stop, when the function returns to
+/// `ret` with the stack pointer back at `cfa` or above it (a deeper call of the same function returns there too,
+/// but lower).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchScope {
+    /// The frame's CFA: the stack pointer after the function returns.
+    pub cfa: u64,
+    /// Where the function returns to: an internal breakpoint sits there while the watch lives.
+    pub ret: u64,
+    /// The thread the frame belongs to.
+    pub tid: Tid,
+    /// The expression as typed, and the function whose frame it is.
+    pub what: String,
+    pub func: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +117,12 @@ pub enum Why {
     Load(String),
     /// A hook with `stop`: its id and its line.
     Hook(u32, String),
+    /// The heap check found a free or realloc of a pointer that is not a live block: what it says.
+    Heap(String),
     /// A call made by `call` or `print` came back to its return address.
     Returned,
+    /// `restart N`: the program is back at a checkpoint; what it says.
+    Restart(String),
     /// The first stop of a forked child kept as a session of its own: what it is and where it came from.
     Fork(String),
     /// The program forked under `follow child`: the child is kept and this process was let go.
@@ -137,6 +162,8 @@ pub struct Rec {
 }
 
 pub struct Session {
+    /// Kills the process a `restart` made the program when the session goes; first so it drops before `t`.
+    reaper: checkpoint::Reaper,
     pub t: Box<dyn Target>,
     pub mods: Mods,
     pub state: State,
@@ -160,6 +187,8 @@ pub struct Session {
     pub out_dropped: u64,
     pub log: VecDeque<String>,
     pub history: VecDeque<Rec>,
+    /// `record`: the instructions that ran, bounded.
+    pub tape: crate::record::Tape,
     pub nstop: u64,
     /// Where the last stop was, for the header of the answer.
     pub last_stop: Option<StopInfo>,
@@ -175,6 +204,10 @@ pub struct Session {
     pub recording: Option<(Vec<u32>, Vec<Vec<String>>)>,
     /// `display` expressions shown at every stop: id and the command that shows one.
     pub displays: Vec<(u32, Vec<String>)>,
+    /// `stops compact`: a stop is one line (why, where, the displays) except a crash; `compact_told` once the
+    /// way back (`stops full`) was said.
+    pub compact_stops: bool,
+    pub compact_told: bool,
     /// Lines ever written to the log, and how many of them an answer already showed.
     pub log_total: u64,
     pub log_shown: u64,
@@ -194,6 +227,13 @@ pub struct Session {
     step_from: Option<(Tid, u64)>,
     /// Libraries loaded and unloaded while the program runs: pending names, `catch load`.
     pub libs: crate::libs::Loads,
+    /// The pc inside the function a `finish` runs out of, until the finish stop reads its return value.
+    pub(crate) finish_from: Option<u64>,
+    /// The checkpoints (`checkpoint`): processes forked from the program, stopped and attached.
+    pub checkpoints: Vec<Checkpoint>,
+    ckpt_next: u32,
+    /// While a checkpoint's `fork()` runs: the children the backend kept, with the pages guarded at that moment.
+    ckpt_forks: Option<Vec<(Forked, Vec<Guard>)>>,
 }
 
 /// A child the program forked.
@@ -491,6 +531,7 @@ impl Session {
             out_dropped: 0,
             log: VecDeque::new(),
             history: VecDeque::new(),
+            tape: Default::default(),
             nstop: 0,
             last_stop: None,
             bridged: String::new(),
@@ -500,6 +541,8 @@ impl Session {
             conv: HashMap::new(),
             recording: None,
             displays: Vec::new(),
+            compact_stops: false,
+            compact_told: false,
             log_total: 0,
             log_shown: 0,
             calling: None,
@@ -510,6 +553,11 @@ impl Session {
             watch_lines: Vec::new(),
             step_from: None,
             libs: Default::default(),
+            finish_from: None,
+            reaper: Default::default(),
+            checkpoints: Vec::new(),
+            ckpt_next: 1,
+            ckpt_forks: None,
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -581,6 +629,14 @@ impl Session {
         expr::eval(src, &mut ev)
     }
 
+    /// Where an expression that names memory lives (`*(u32*)(rdi+8)`, `p[i]`), in the selected frame; `None` when it
+    /// is not one of those forms.
+    pub fn eval_place(&mut self, src: &str) -> Result<Option<expr::Place>> {
+        let regs = self.sel_regs()?;
+        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv, lost: false };
+        expr::place(src, &mut ev)
+    }
+
     pub fn new_id(&mut self) -> u32 {
         let n = self.next_id;
         self.next_id += 1;
@@ -597,6 +653,7 @@ impl Session {
         if let Some(p) = &self.calling {
             w.insert(p.ret);
         }
+        w.extend(self.wps.iter().filter_map(|w| w.scope.as_ref().map(|s| s.ret)));
         w
     }
 
@@ -683,6 +740,8 @@ impl Session {
         self.frame = 0;
         self.run = run;
         self.watch_lines.clear();
+        // a record single-steps whatever is not already one step: slow, and said in the answer
+        self.tape.begin_run(self.tape.on && run.step.is_none());
         let r = self.resume_now();
         if r.is_err() {
             // the program did not start: it is where it was, with none of our breakpoints in it
@@ -781,6 +840,12 @@ impl Session {
         for ev in &events {
             if let Event::Stopped { tid, stop } = *ev {
                 let stepped = self.step_from.is_some_and(|(t, _)| t == tid) && matches!(stop, Stop::Step);
+                if stepped && self.tape.on {
+                    let from = self.step_from.map(|(_, pc)| pc);
+                    if let Ok(r) = self.t.regs(tid) {
+                        self.rec_observe(tid, &r, true, from);
+                    }
+                }
                 if stepped || matches!(stop, Stop::Watch(_)) || matches!(stop, Stop::Fault(f) if self.guard_fault(&f)) {
                     watch_evs.push((tid, stop));
                 }
@@ -851,7 +916,17 @@ impl Session {
                     continue;
                 }
                 match stop {
-                    Stop::Step | Stop::Watch(_) if self.run.step.is_some() => verdict = Some((tid, Why::Step)),
+                    Stop::Step | Stop::Watch(_) if self.run.step.is_some() => {
+                        // a single step that lands on the return address of a watched frame: no breakpoint was hit
+                        // there, so the watch ends here, and the stop stays the step's
+                        if self.wps.iter().any(|w| w.scope.is_some()) {
+                            let at = self.t.regs(tid)?.rip;
+                            if self.scope_ended(tid, at)?.is_some() {
+                                self.watch_lines_to_log();
+                            }
+                        }
+                        verdict = Some((tid, Why::Step));
+                    }
                     Stop::Fault(f) => {
                         if self.catch.contains(&f.number) || (self.t.os() == Os::Windows && !f.first_chance) {
                             verdict = Some((tid, Why::Signal(f)));
@@ -874,6 +949,7 @@ impl Session {
         self.drain_output();
         self.hooks_end();
         self.trace_end();
+        self.drop_checkpoints();
     }
 
     /// A thread is at one of our breakpoints: does it stop?
@@ -881,6 +957,9 @@ impl Session {
         if self.call_returned(tid, addr)? {
             return Ok(Some((tid, Why::Returned)));
         }
+        // a watch on a local ends here; a user breakpoint or a `finish` at the same address still gets its own stop,
+        // and the line about the watch goes to the log then
+        let scoped = self.scope_ended(tid, addr)?;
         // the loader's hook: libraries came or went, which may set breakpoints before the ones at this address
         let loaded = if self.libs.armed == Some(addr) { self.on_load(tid) } else { None };
         // the trace and the hooks see every pass, whatever a breakpoint there decides
@@ -940,12 +1019,18 @@ impl Session {
         self.bps.retain(|b| !spent.contains(&b.id));
         if !stop_ids.is_empty() {
             self.bps.retain(|b| !(b.once && stop_ids.contains(&b.id)));
+            if scoped.is_some() {
+                self.watch_lines_to_log();
+            }
             return Ok(Some((tid, Why::Break(stop_ids))));
         }
         if let Some(t) = self.run.temp {
             if t.addr == addr {
                 let sp = self.t.regs(tid)?.rsp();
                 if sp >= t.min_sp {
+                    if scoped.is_some() {
+                        self.watch_lines_to_log();
+                    }
                     let why = match t.kind {
                         TempKind::Entry if self.t.os() == Os::MacOS => {
                             self.back_to_the_call_of(tid, addr);
@@ -960,7 +1045,14 @@ impl Session {
                 }
             }
         }
-        Ok(traced)
+        Ok(scoped.map(|why| (tid, why)).or(traced))
+    }
+
+    /// The lines a watch stop would show go to the log instead: the stop is another one.
+    pub(crate) fn watch_lines_to_log(&mut self) {
+        for l in std::mem::take(&mut self.watch_lines) {
+            self.log_line(l);
+        }
     }
 
     /// macOS: a program's entry (LC_MAIN) is its `main`, which dyld calls once the libraries are loaded and their
@@ -1075,6 +1167,12 @@ impl Session {
     /// of its own in `kids`, with the breakpoints copied.
     fn take_forks(&mut self) {
         for f in self.t.forks() {
+            // a checkpoint's fork: the child is kept as it is, with the guards of the moment, not adopted
+            if let Some(kept) = &mut self.ckpt_forks {
+                let guards = self.guards.iter().filter(|g| g.armed).copied().collect();
+                kept.push((f, guards));
+                continue;
+            }
             let Forked { pid, at, vfork, patches, target, .. } = f;
             // fork returns in libc, which the list read at the start may not hold yet
             if self.mods.locate(at).is_none() {
@@ -1186,6 +1284,9 @@ impl Session {
         if self.tr.lib.take().is_some() {
             gone.push("ltrace");
         }
+        if self.tr.heap.take().is_some() {
+            gone.push("heap");
+        }
         if !self.tr.hooks.is_empty() {
             self.tr.hooks.clear();
             gone.push("hooks");
@@ -1197,9 +1298,9 @@ impl Session {
         self.guards.clear();
         self.step_from = None;
         let n = self.wps.len();
-        self.wps.retain(|w| w.how == WatchHow::Hardware);
+        self.wps.retain(|w| w.how == WatchHow::Hardware && w.scope.is_none());
         if self.wps.len() < n {
-            gone.push("page and step watches");
+            gone.push("page, step and frame watches");
         }
         if self.t.os() == Os::Linux {
             if let Ok(path) = std::fs::read_link(format!("/proc/{}/exe", self.t.pid())) {

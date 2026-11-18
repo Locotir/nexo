@@ -61,6 +61,9 @@ pub fn slice_forward(
     from: Option<u64>,
     budget: usize,
 ) -> Result<Output> {
+    if img.arm64 {
+        return crate::a64::slice_fwd::slice_forward(img, at, reg, mem, from, budget);
+    }
     img.require_x86("slice --forward")?;
     let at_addr = addr_in(img, at)?;
     let f = img

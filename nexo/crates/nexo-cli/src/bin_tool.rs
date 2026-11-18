@@ -3,7 +3,7 @@
 //! `nexo bin` (the file is read as bytes, never run or loaded). Like `debug`, the call has a kind decided from the
 //! parsed op (`call_kind`): everything reads or keeps names, notes and types in nexo's data folder, so it is allowed
 //! as a read; `patch` and `sigs --out` write a file, so they are a write and the permission mode asks. `a; b` runs
-//! several ops in one call, split by the debugger's `script_units`.
+//! several ops in one call, split by `bin_cmd::script::units`, the one splitter the MCP `bin_batch` tool and `nexo bin --script` use too.
 //!
 //! Only the short text rides in every request (the tool is `rare`); `<op> --help` prints the whole of one op.
 
@@ -14,8 +14,6 @@ use nexo_core::tool::Check;
 use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
-use crate::bin_cmd::BinOp;
-
 mod clap_facts;
 mod parse;
 mod shell;
@@ -24,7 +22,9 @@ mod tests;
 
 pub(crate) use clap_facts::bin_error;
 use parse::{parse, Parsed};
-use shell::{scan_shell, units};
+use shell::scan_shell;
+
+use crate::bin_cmd::script::units;
 
 const OPS: &str = "\
 overview <file>  the map in one call: main, imports by capability, top functions and strings, next commands (start here)
@@ -36,11 +36,11 @@ decomp <file> <name|addr>...  pseudo-C
 xref <file> <name|addr> [--to ADDR|FN], xref <file> --str TEXT  who calls, reads, writes or points at it
 calls <file> <name>, tree <file> <name> [--up], path <file> <from> <to>  callers, callees, call chains
 cfg <file> <name|addr>  control-flow graph of one function: blocks, edges, loops, dominators (x86-64)
-strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len> [--as u32|char[16]|ptr|str|item[4]|a named or DWARF struct], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
+strings <file> [--grep RE], find <file> <hex|--imm N|--str TEXT [--wide]|--asm REGEX|--seq PATTERNS> [--limit N], bytes <file> <addr> <len> [--as u32|char[16]|ptr|str|item[4]|a named or DWARF struct], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
 --lines N|all, --from K, --grep RE, --json after any op; `<op> --help` for its flags
 --raw --base ADDR [--arch x86-64|x86-32|arm64] after any op: the file is bare code (a memory dump, shellcode, JIT output, an unpacked stub), one section loaded at ADDR, its first byte the entry
 a; b  several ops in one call, each answer under its own `> op` line; an error stops the rest
-Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch --out and sigs --out write a file: the person is asked";
+Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch (--out, --in-place, --patches FILE) and sigs --out write a file: the person is asked";
 
 /// The tool. Every call parses its own line; it holds only whether the session has the `debug` tool beside it, the
 /// one its short text and its answers name for running the file. `debug` is not registered on Linux arm64, nor by
@@ -101,7 +101,7 @@ impl Tool for Bin {
         let Some(line) = args.get("command").and_then(Value::as_str) else { return ToolKind::Read };
         let writes = units(line)
             .iter()
-            .any(|u| matches!(parse(u), Ok(Parsed::Op(b)) if b.op.as_ref().is_some_and(writes_a_file)));
+            .any(|u| matches!(parse(u), Ok(Parsed::Op(b)) if b.op.as_ref().is_some_and(|o| o.effect().writes_file())));
         if writes {
             ToolKind::Write
         } else {
@@ -202,6 +202,15 @@ async fn one(unit: &str, ctx: &ToolContext, debug: bool) -> ToolOutput {
             }
         }
     }
+    // `--in-place` changes the file itself and writes a backup beside it: the same rule for each
+    if let Some(check) = &ctx.check {
+        for f in op.changed_in_place() {
+            let path = f.to_string_lossy().to_string();
+            if check("edit", ToolKind::Write, &json!({ "path": path })) == Check::Deny {
+                return ToolOutput::error(format!("bin: a permission rule denies writing {path}"));
+            }
+        }
+    }
     // an answer about one place in a program `debug` can run ends with the call that stops there, when the session
     // has that tool to take it
     let asked = tokio::task::spawn_blocking(move || {
@@ -217,10 +226,4 @@ async fn one(unit: &str, ctx: &ToolContext, debug: bool) -> ToolOutput {
         Ok(Err(e)) => ToolOutput::error(format!("bin: {e}")),
         Err(e) => ToolOutput::error(format!("bin stopped working: {e}")),
     }
-}
-
-/// Whether the op writes a file the person named (a patched copy, a signature file): a write. Names, notes, types
-/// and `crypto --save` go to nexo's own data folder for this binary, as `debug`'s `name` and `note` do: a read.
-fn writes_a_file(op: &BinOp) -> bool {
-    matches!(op, BinOp::Patch { .. } | BinOp::Sigs { out: Some(_), .. })
 }

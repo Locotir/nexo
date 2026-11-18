@@ -118,13 +118,73 @@ pub enum DbgEffect {
     Still,
 }
 
-const DBG_LOOK: [&str; 21] = [
-    "regs", "bt", "mem", "x", "print", "p", "args", "threads", "thread", "status", "info", "history", "out", "log",
-    "maps", "modules", "find", "watches", "breaks", "catches", "stack",
+const DBG_LOOK: [&str; 23] = [
+    "regs",
+    "bt",
+    "mem",
+    "x",
+    "print",
+    "p",
+    "args",
+    "threads",
+    "thread",
+    "status",
+    "info",
+    "history",
+    "out",
+    "log",
+    "maps",
+    "modules",
+    "find",
+    "watches",
+    "breaks",
+    "catches",
+    "stack",
+    "list",
+    "checkpoints",
 ];
-const DBG_MOVE: [&str; 17] = [
-    "run", "attach", "cont", "c", "continue", "step", "s", "next", "n", "finish", "until", "kill", "detach", "end",
-    "setreg", "write", "stdin",
+/// Every debugger command (and gdb spelling) that runs the program, changes it or replaces the session's target.
+/// A test in `nexo-dbg` (`commands.rs`) keeps this list equal to the commands it knows as moves.
+const DBG_MOVE: [&str; 39] = [
+    "run",
+    "r",
+    "attach",
+    "connect",
+    "core",
+    "cont",
+    "c",
+    "continue",
+    "step",
+    "s",
+    "si",
+    "stepi",
+    "next",
+    "n",
+    "ni",
+    "nexti",
+    "finish",
+    "fin",
+    "until",
+    "u",
+    "advance",
+    "kill",
+    "k",
+    "detach",
+    "end",
+    "setreg",
+    "write",
+    "stdin",
+    "signal",
+    "return",
+    "jump",
+    "restart",
+    "rstepi",
+    "rcont",
+    "rsi",
+    "rc",
+    "reverse-stepi",
+    "reverse-continue",
+    "call",
 ];
 
 /// The effect of one debugger command line (`-s id` first is skipped; `do "a; b"` is a move when any part is).
@@ -146,9 +206,11 @@ fn dbg_line(line: &str) -> DbgEffect {
             DbgEffect::Still
         };
     }
+    // `heap` and `heap leaks` list the blocks as they are now; `heap on` and `heap off` change what is watched
+    let heap_list = first == "heap" && matches!(w.next(), None | Some("leaks"));
     if DBG_MOVE.contains(&first) || first == "stop" || first == "wait" {
         DbgEffect::Move
-    } else if DBG_LOOK.contains(&first) {
+    } else if DBG_LOOK.contains(&first) || heap_list {
         DbgEffect::Look
     } else {
         DbgEffect::Still
@@ -567,6 +629,11 @@ mod tests {
         assert_eq!(e("do \"break f; bt\""), Some(DbgEffect::Look));
         assert_eq!(e("do \"break f; cont; bt\""), Some(DbgEffect::Move));
         assert_eq!(e("note crash: here"), Some(DbgEffect::Still));
+        assert_eq!(e("checkpoints"), Some(DbgEffect::Look));
+        assert_eq!(e("restart 1"), Some(DbgEffect::Move));
+        assert_eq!(e("heap"), Some(DbgEffect::Look));
+        assert_eq!(e("heap leaks"), Some(DbgEffect::Look));
+        assert_eq!(e("heap on"), Some(DbgEffect::Still));
         assert_eq!(debug_effect("bash", Some(&json!({"command": "cont"}))), None);
         assert_eq!(debug_effect("debug", None), None);
         assert_eq!(debug_session(Some(&json!({"command": "bt", "session": "s2"}))), "s2");

@@ -3,7 +3,7 @@
 use iced_x86::{Formatter, IntelFormatter};
 use serde_json::json;
 
-use super::{same_data, same_target, status_of, text_row, Body, By, Item, Pairs, Refs, Side, Status};
+use super::{same_data, same_target, status_of, text_row, Body, By, Code, Item, Pairs, Refs, Side, Status};
 use super::{CONTEXT, MAX_ALIGN, MAX_EDITS, MAX_FUNC};
 use crate::disasm::{comment, formatter};
 use crate::funcs::Func;
@@ -96,7 +96,11 @@ pub(super) fn show(
                 ),
                 format!("see it: {}", fn_cmd(s, k)),
             ];
-            let rows = lines.into_iter().enumerate().map(|(n, t)| Row { key: n as u64, text: t, json: None }).collect();
+            let rows = lines
+                .into_iter()
+                .enumerate()
+                .map(|(n, t)| Row { key: n as u64, json: Some(json!({"kind": "note", "text": t})), text: t })
+                .collect();
             let meta = json!({"status": word, "function": s.name(k), "side": side, "addr": f.start});
             return Ok(Output { op: "diff", meta, rows, tail: 0, command });
         }
@@ -249,16 +253,31 @@ pub(super) fn show(
 }
 
 fn ins_text(s: &Side, fmt: &mut IntelFormatter, it: &Item) -> String {
-    if it.bad {
-        return format!("(bad) {:02x}", it.byte);
+    match &it.code {
+        Code::X86(ins) => {
+            if it.bad {
+                return format!("(bad) {:02x}", it.byte);
+            }
+            let mut t = String::new();
+            fmt.format(ins, &mut t);
+            if let Some(c) = comment(s.img, ins) {
+                t.push_str("  ; ");
+                t.push_str(&c);
+            }
+            t
+        }
+        Code::A64(ins, via) => {
+            if it.bad {
+                return format!(".word {:#010x}", ins.raw);
+            }
+            let mut t = ins.text();
+            if let Some(c) = crate::a64::view::comment(s.img, ins, *via) {
+                t.push_str("  ; ");
+                t.push_str(&c);
+            }
+            t
+        }
     }
-    let mut t = String::new();
-    fmt.format(&it.ins, &mut t);
-    if let Some(c) = comment(s.img, &it.ins) {
-        t.push_str("  ; ");
-        t.push_str(&c);
-    }
-    t
 }
 
 /// The equal keys of `a` and `b` paired in order (a longest common subsequence), and whether the middle

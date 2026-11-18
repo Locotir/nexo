@@ -32,7 +32,7 @@ impl Session {
 }
 
 /// `paint.c:42` split into the file and the line; a name with a `:` in it (`std::mem`) is not one.
-fn file_line(spec: &str) -> Option<(&str, u32)> {
+pub(crate) fn file_line(spec: &str) -> Option<(&str, u32)> {
     let (file, line) = spec.rsplit_once(':')?;
     let line: u32 = line.parse().ok().filter(|&l| l > 0)?;
     (!file.is_empty() && !file.ends_with(':') && !file.contains('!')).then_some((file, line))

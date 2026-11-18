@@ -10,6 +10,9 @@ use iced_x86::{ConditionCode, FlowControl, Instruction, InstructionInfoFactory, 
 use super::ir::*;
 use crate::disasm::{formatter, walk};
 
+mod a64;
+#[cfg(test)]
+mod a64_tests;
 mod lifter;
 mod slots;
 mod switch;
@@ -20,6 +23,9 @@ use self::switch::*;
 pub enum Abi {
     SysV,
     Win64,
+    /// AArch64 procedure call standard: x0..x7 carry arguments, x0 the result. Registers are `Reg(0..=30)` for x0..x30
+    /// and `Reg(31)` for sp.
+    Aapcs64,
 }
 
 impl Abi {
@@ -27,13 +33,16 @@ impl Abi {
         match self {
             Abi::SysV => &[7, 6, 2, 1, 8, 9],
             Abi::Win64 => &[1, 2, 8, 9],
+            Abi::Aapcs64 => &[0, 1, 2, 3, 4, 5, 6, 7],
         }
     }
 
+    /// Registers a call destroys, apart from the result register (x0 on AArch64 is set by the call itself).
     pub fn caller_saved(self) -> &'static [u8] {
         match self {
             Abi::SysV => &[1, 2, 6, 7, 8, 9, 10, 11],
             Abi::Win64 => &[1, 2, 8, 9, 10, 11],
+            Abi::Aapcs64 => &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 30],
         }
     }
 
@@ -41,6 +50,7 @@ impl Abi {
         match self {
             Abi::SysV => matches!(r, 3 | 5 | 12..=15),
             Abi::Win64 => matches!(r, 3 | 5 | 6 | 7 | 12..=15),
+            Abi::Aapcs64 => matches!(r, 19..=30),
         }
     }
 
@@ -49,6 +59,9 @@ impl Abi {
         match self {
             Abi::SysV => 16,
             Abi::Win64 => 6,
+            // v0..v7 carry float arguments and results, the only vector registers anything here reads (v16..v31 are
+            // caller-saved too); v8..v15 keep their low 64 bits.
+            Abi::Aapcs64 => 8,
         }
     }
 
@@ -61,6 +74,8 @@ impl Abi {
         match self {
             Abi::SysV => 8,
             Abi::Win64 => 40,
+            // stack arguments start at the entry stack pointer
+            Abi::Aapcs64 => 0,
         }
     }
 }
@@ -157,6 +172,15 @@ fn decode(env: &dyn Env, start: u64, end: u64) -> Decoded {
     Decoded { ins, raw: Vec::new(), by_ip }
 }
 
+/// The case targets of the switch that the indirect `jmp` at `ins[k]` dispatches through, when it reads like one
+/// and a bound check (`cmp` + `ja`/`jae`) says how many cases it has; an unbounded table gives `None`. `ins` is
+/// the tail of the function's instructions up to the jump (the finder looks back at most about 30 of them);
+/// `start..end` bounds the targets.
+pub(crate) fn switch_targets(env: &dyn Env, ins: &[Instruction], k: usize, start: u64, end: u64) -> Option<Vec<u64>> {
+    let d = Decoded { ins: ins.to_vec(), raw: Vec::new(), by_ip: HashMap::new() };
+    find_switch(env, &d, k, start, end).filter(|sw| sw.bound.is_some()).map(|sw| sw.targets)
+}
+
 fn reg_num(r: Register) -> Option<(u8, Bits, bool)> {
     use Register::*;
     if r.is_gpr64() {
@@ -235,6 +259,9 @@ fn is_cond_jump(ins: &Instruction) -> bool {
 }
 
 pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
+    if abi == Abi::Aapcs64 {
+        return a64::lift(env, start, end);
+    }
     let d = decode(env, start, end);
     let in_fn = |a: u64| a >= start && a < end;
     // 1. blocks: leaders by recursive descent

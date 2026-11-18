@@ -102,6 +102,9 @@ impl Image {
             } else {
                 crate::dwarf::read(&self.data)
             };
+            if self.slid != 0 {
+                d.slide(self.slid);
+            }
             if self.format == Format::MachO && d.protos.is_empty() && d.structs.is_empty() {
                 if let Some(bytes) = self.dsym() {
                     d = crate::dwarf::read(&bytes);
@@ -235,8 +238,8 @@ impl Image {
     pub fn require_x86(&self, what: &str) -> Result<()> {
         if self.arm64 {
             return Err(Error::Bad(format!(
-                "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, xref, calls, tree, path, strings, bytes \
-                 and find without --imm do); no output is better than a wrong one"
+                "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, decomp, xref, calls, tree, path, strings, bytes, \
+                 find (--str, --asm, --seq), cfg, diff, slice (both directions), emu, patch --nop and patch --asm do); no output is better than a wrong one"
             )));
         }
         if self.bits == 32 {

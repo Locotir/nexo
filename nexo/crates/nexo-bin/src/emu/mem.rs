@@ -65,6 +65,40 @@ impl Mem {
         }
     }
 
+    /// Take the pages that cover `[addr, addr+len)` away, with the record of what was written in them
+    /// (`addr` and `len` are whole pages).
+    pub(crate) fn unmap(&mut self, addr: u64, len: u64) {
+        if len == 0 {
+            return;
+        }
+        let end = addr.saturating_add(len);
+        for p in addr / PAGE..=(end - 1) / PAGE {
+            self.pages.remove(&p);
+        }
+        let hit: Vec<(u64, u64)> =
+            self.written.range(..end).filter(|(_, &e)| e > addr).map(|(&s, &e)| (s, e)).collect();
+        for (s, e) in hit {
+            self.written.remove(&s);
+            if s < addr {
+                self.written.insert(s, addr);
+            }
+            if e > end {
+                self.written.insert(end, e);
+            }
+        }
+    }
+
+    /// True when every byte of `[addr, addr+len)` is on a mapped page.
+    pub(crate) fn is_range_mapped(&self, addr: u64, len: u64) -> bool {
+        if len == 0 {
+            return true;
+        }
+        match addr.checked_add(len - 1) {
+            Some(last) => (addr / PAGE..=last / PAGE).all(|p| self.pages.contains_key(&p)),
+            None => false,
+        }
+    }
+
     pub(crate) fn is_mapped(&self, addr: u64) -> bool {
         self.pages.contains_key(&(addr / PAGE))
     }

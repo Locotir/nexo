@@ -62,8 +62,9 @@ impl Session {
             Why::Syscall(t) => format!("system call {t}"),
             Why::Load(t) => t.clone(),
             Why::Hook(_, t) => format!("hook {t}"),
+            Why::Heap(t) => t.clone(),
             Why::Returned => "a call returned".to_string(),
-            Why::Fork(t) | Why::LetGo(t) => t.clone(),
+            Why::Fork(t) | Why::LetGo(t) | Why::Restart(t) => t.clone(),
             Why::Exited(c) => format!("the program exited with code {c}"),
             Why::Killed(s) => {
                 format!("the program was killed by {}", crate::engine::signal_name_on(self.t.os(), *s as u32))
@@ -84,8 +85,10 @@ impl Session {
             Why::Syscall(_) => "syscall",
             Why::Load(_) => "load",
             Why::Hook(..) => "hook",
+            Why::Heap(_) => "heap",
             Why::Returned => "call",
             Why::Fork(_) | Why::LetGo(_) => "fork",
+            Why::Restart(_) => "restart",
             Why::Exited(_) => "exit",
             Why::Killed(_) => "killed",
         };
@@ -103,6 +106,8 @@ impl Session {
                 l.push(o);
             }
             l.extend(self.fresh_log());
+            l.extend(self.tape.take_notes());
+            l.extend(self.heap_exit_note());
             l.extend(self.trace_note());
             self.last_stop = Some(StopInfo { n: self.nstop, event: event.into(), place: "-".into(), addr: 0 });
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });
@@ -110,18 +115,39 @@ impl Session {
         }
         // a stop always selects the frame it stopped in: `up` and `frame N` read its callers
         self.frame = 0;
-        l.push(format!("{headline} (thread {tid}, frame #0)"));
-        if why == Why::Exec {
+        let compact = super::quiet::compact_applies(self.compact_stops, &why);
+        let mut cplace = String::new();
+        let mut cret: Option<String> = None;
+        if !compact {
+            l.push(format!("{headline} (thread {tid}, frame #0)"));
+        }
+        if why == Why::Exec && !compact {
             let mods: Vec<String> = self.mods.list.iter().map(|m| format!("{} at {:#x}", m.path, m.base)).collect();
             l.push(format!("modules now: {}", mods.join(", ")));
         }
         l.extend(self.call_note());
         if let Ok(r) = self.t.regs(tid) {
+            self.rec_observe(tid, &r, matches!(why, Why::Step), None);
             let name = self.mods.label(r.rip, false).unwrap_or_default();
-            let at = self.mods.source(r.rip).map(|s| format!("  ({s})")).unwrap_or_default();
-            l.push(format!("pc {:#x} {name}{at}", r.rip));
-            if let Some(t) = self.mods.source_text(r.rip) {
-                l.push(format!("   {t}"));
+            let src = self.mods.source(r.rip);
+            let at = src.as_ref().map(|s| format!("  ({s})")).unwrap_or_default();
+            if compact {
+                cplace = super::quiet::compact_place(r.rip, &name, src.as_deref());
+            } else {
+                l.push(format!("pc {:#x} {name}{at}", r.rip));
+                if let Some(t) = self.mods.source_text(r.rip) {
+                    l.push(format!("   {t}"));
+                }
+            }
+            if why == Why::Finish {
+                if let Some(from) = self.finish_from.take() {
+                    let got = self.returned_line(from, &r, tid);
+                    if compact {
+                        cret = got;
+                    } else {
+                        l.extend(got);
+                    }
+                }
             }
             self.last_stop = Some(StopInfo {
                 n: self.nstop,
@@ -129,8 +155,9 @@ impl Session {
                 place: if name.is_empty() { "?".into() } else { name.clone() },
                 addr: r.rip,
             });
-            let bytes = self.read_vec(r.rip, 16);
-            let ins: Option<LiveIns> = decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n));
+            let bytes = if compact { Vec::new() } else { self.read_vec(r.rip, 16) };
+            let ins: Option<LiveIns> =
+                if compact { None } else { decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n)) };
             if let Some(i) = &ins {
                 l.push(format!("=> {}", i.text));
                 // the next two as well: what the program is about to do, without a `dis` call
@@ -143,19 +170,19 @@ impl Session {
                     len = n.len as u64;
                 }
             }
-            if let Why::Watch(_) = &why {
+            if matches!(why, Why::Watch(_)) && !compact {
                 // written at the hit, when the bytes before and after and the instruction were known
                 l.append(&mut self.watch_lines);
             }
             if let Why::Signal(f) = &why {
                 l.extend(self.triage(f, &r, ins.as_ref()));
             }
-            if matches!(why, Why::Signal(_) | Why::Break(_) | Why::Until | Why::Finish) {
+            if !compact && matches!(why, Why::Signal(_) | Why::Break(_) | Why::Until | Why::Finish) {
                 l.extend(self.locals_line());
             }
             let changed = match self.prev.get(&tid) {
-                Some(p) => r.changed(p),
-                None => Vec::new(),
+                Some(p) if !compact => r.changed(p),
+                _ => Vec::new(),
             };
             if !changed.is_empty() {
                 let more = changed.len().saturating_sub(CHANGED_SHOWN);
@@ -193,7 +220,22 @@ impl Session {
             l.push(o);
         }
         l.extend(self.fresh_log());
-        l.extend(self.display_lines());
+        if compact {
+            let mut why_text = super::quiet::compact_why(&why);
+            if matches!(why, Why::Watch(_)) && !self.watch_lines.is_empty() {
+                why_text = self.watch_lines.join("; ");
+            }
+            let mut rest: Vec<String> = cret.into_iter().collect();
+            rest.extend(self.display_pieces());
+            l.insert(0, super::quiet::compact_line(&why_text, &cplace, &rest));
+            if !self.compact_told {
+                self.compact_told = true;
+                l.insert(1, "(compact stops: `stops full` brings the detail back)".to_string());
+            }
+        } else {
+            l.extend(self.display_lines());
+        }
+        l.extend(self.tape.take_notes());
         l.extend(self.trace_note());
         rows("stop", l, json!({"state": "stopped", "thread": tid}))
     }

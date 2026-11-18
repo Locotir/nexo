@@ -151,6 +151,8 @@ impl Session {
             return fail("the program's entry is not known, and a call returns to it");
         };
         let saved = self.t.regs(tid)?;
+        // the stack the call is built on is written outside the record
+        self.tape.cut();
         let (in_regs, shadow): (&[&str], u64) = if self.t.os() == Os::Windows {
             (&["rcx", "rdx", "r8", "r9"], 32)
         } else {

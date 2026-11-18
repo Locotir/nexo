@@ -82,6 +82,8 @@ pub struct Tracing {
     pub hooks: Vec<crate::hooks::Hook>,
     /// `cover`: blocks of the program's code and which were passed.
     pub cover: Option<crate::cover::Cover>,
+    /// `heap on`: the blocks the program holds and the ones it freed.
+    pub heap: Option<crate::heap::Heap>,
 }
 
 impl Tracing {
@@ -94,7 +96,7 @@ impl Tracing {
         }
     }
 
-    fn wants_syscalls(&self) -> bool {
+    pub(crate) fn wants_syscalls(&self) -> bool {
         self.sys.is_some() || self.sys_catch.is_some()
     }
 }

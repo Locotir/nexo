@@ -391,6 +391,7 @@ fn names_digest(img: &Image, data_dir: &Path) -> String {
     for src in [
         include_str!("ir.rs"),
         include_str!("lift.rs"),
+        include_str!("lift/a64.rs"),
         include_str!("flow.rs"),
         include_str!("divrec.rs"),
         include_str!("structure.rs"),
@@ -436,7 +437,9 @@ fn write_cache(path: &Path, digest: &str, lines: &[Line]) {
 }
 
 pub fn abi_of(img: &Image) -> Abi {
-    if img.format == Format::Pe {
+    if img.arm64 {
+        Abi::Aapcs64
+    } else if img.format == Format::Pe {
         Abi::Win64
     } else {
         Abi::SysV
@@ -446,7 +449,9 @@ pub fn abi_of(img: &Image) -> Abi {
 /// Decompile one function (from the cache when it is there).
 pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Line>, bool)> {
     let f = crate::ops::resolve(img, target)?;
-    img.require_x86(&format!("decomp of {} ({:#x})", img.func_name(f), f.start))?;
+    if !img.arm64 {
+        img.require_x86(&format!("decomp of {} ({:#x})", img.func_name(f), f.start))?;
+    }
     let digest = names_digest(img, data_dir);
     let cp = cache_path(img, data_dir, f.start);
     let name = img.func_name(f).to_string();

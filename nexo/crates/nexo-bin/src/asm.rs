@@ -346,3 +346,27 @@ pub fn assembly(source: &str, at: u64, bits: u32) -> Result<Output> {
         command: String::new(),
     })
 }
+
+/// Assemble AArch64 text and return the bytes and the instructions decoded back from them, in the shape of
+/// [`assembly`].
+pub fn assembly_arm64(source: &str, at: u64) -> Result<Output> {
+    let bytes = crate::a64::asm::assemble(source, at)?;
+    let mut lines = vec![format!("asm at {at:#x} (arm64): {}", hex(&bytes))];
+    for (i, word) in bytes.chunks_exact(4).enumerate() {
+        let raw = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+        let pc = at.wrapping_add(4 * i as u64);
+        lines.push(format!("{pc:#x}  {:<32} {}", hex(word), crate::a64::decode(raw, pc).text()));
+    }
+    let rows = lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| Row { key: i as u64, json: Some(json!({"text": text})), text })
+        .collect();
+    Ok(Output {
+        op: "asm",
+        meta: json!({"at": at, "arch": "arm64", "bytes": hex(&bytes)}),
+        rows,
+        tail: 0,
+        command: String::new(),
+    })
+}

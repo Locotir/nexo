@@ -38,7 +38,13 @@ impl Session {
     }
 
     pub(crate) fn frames(&mut self, max: usize) -> Result<Vec<crate::modules::Frame>> {
-        let r = self.tid_regs()?;
+        self.need_stopped()?;
+        self.frames_of(self.cur, max)
+    }
+
+    /// The backtrace of thread `tid` (the selected one for [`Session::frames`]).
+    pub(crate) fn frames_of(&mut self, tid: Tid, max: usize) -> Result<Vec<crate::modules::Frame>> {
+        let r = self.t.regs(tid)?;
         // a library may have come in since the last look: the chain goes through it
         self.mods.refresh(&mut *self.t);
         let Session { t, mods, .. } = self;
@@ -55,6 +61,8 @@ impl Session {
             return fail("cannot find the caller of this frame (no unwind data): use `until <address>`");
         };
         let w = a.wait()?;
+        // the function that is about to return: its return type says how to read the value at the stop
+        self.finish_from = f.first().map(|fr| fr.pc);
         self.go(Run { step: None, temp: Some(Temp { addr: caller.pc, min_sp: caller.sp, kind: TempKind::Finish }) }, w)
     }
 
@@ -72,9 +80,16 @@ impl Session {
         }
         self.uninsert_all();
         self.t.kill()?;
+        self.drop_checkpoints();
         self.state = State::Exited;
         self.exit = Some("killed by the debugger".into());
         let mut l = vec!["program killed".to_string()];
+        // a watch on a local belongs to a frame of the program that is gone
+        let n = self.wps.len();
+        self.wps.retain(|w| w.scope.is_none());
+        if self.wps.len() < n {
+            l.push("watches on locals deleted: their frames are gone".to_string());
+        }
         l.extend(self.call_gone());
         l.extend(self.unhit_lines());
         Ok(rows("kill", l, json!({})))
@@ -116,6 +131,7 @@ impl Session {
             self.uninsert_all();
         }
         self.t.detach()?;
+        self.drop_checkpoints();
         self.state = State::Exited;
         self.exit = Some("detached".into());
         l.push("the program goes on without the debugger".into());
@@ -167,7 +183,7 @@ impl Session {
 
     /// Several commands in one call: `do "break f; cont; args; bt"`, or a whole gdb script (one command per line,
     /// `commands ... end` blocks). It stops at the first command that fails, and when the program ends only the
-    /// commands that read what is left (`out`, `log`, `history`, `status`, `info`, `echo`, `printf`) still run;
+    /// commands that read what is left (`out`, `log`, `history`, `back`, `status`, `info`, `echo`, `printf`) still run;
     /// `--keep-going` goes on after a failure.
     pub(super) fn cmd_do(&mut self, words: &[String]) -> Result<Output> {
         let a = Args::new(words)?;
@@ -229,4 +245,5 @@ impl Session {
 }
 
 /// What a script may still run after the program ended: the commands that read what was kept.
-const AFTER_EXIT: [&str; 10] = ["out", "log", "history", "status", "info", "echo", "printf", "breaks", "help", "show"];
+const AFTER_EXIT: [&str; 13] =
+    ["out", "log", "history", "back", "status", "info", "echo", "printf", "breaks", "help", "show", "heap", "list"];

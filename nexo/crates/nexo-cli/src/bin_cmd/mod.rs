@@ -10,13 +10,19 @@ use wasm::wasm_in;
 
 mod args;
 pub(crate) mod bridge;
+mod effect;
+mod live;
 mod ops;
+pub(crate) mod script;
 mod sigs;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_json;
 mod wasm;
 
 pub use args::{BinArgs, Common};
+pub(crate) use effect::{argv_effect, effect_by_name, saving_names};
 pub use ops::BinOp;
 
 fn parse_addr(s: &str) -> Result<u64, String> {
@@ -25,6 +31,15 @@ fn parse_addr(s: &str) -> Result<u64, String> {
 
 fn parse_lines(s: &str) -> Result<Lines, String> {
     Lines::parse(s).map_err(|e| e.to_string())
+}
+
+/// One name of `--fields`: letters, digits and `_`.
+fn parse_field(s: &str) -> Result<String, String> {
+    let t = s.trim();
+    if t.is_empty() || !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("{s:?} is not a field name (letters, digits and _; separate names with commas)"));
+    }
+    Ok(t.to_string())
 }
 
 impl BinOp {
@@ -88,8 +103,8 @@ impl BinOp {
     pub fn files_mut(&mut self) -> Vec<&mut std::path::PathBuf> {
         match self {
             BinOp::Diff { file, other, .. } => vec![file, other],
-            BinOp::Patch { file, .. }
-            | BinOp::Info { file, .. }
+            BinOp::Patch { file, patches, .. } => std::iter::once(file).chain(patches.as_mut()).collect(),
+            BinOp::Info { file, .. }
             | BinOp::Syms { file, .. }
             | BinOp::Overview { file, .. }
             | BinOp::Path { file, .. }
@@ -121,9 +136,21 @@ impl BinOp {
     /// The file the op writes, to be made absolute against a session's folder: a patched copy, or a signature file.
     pub fn out_mut(&mut self) -> Option<&mut std::path::PathBuf> {
         match self {
-            BinOp::Patch { out, .. } => Some(out),
+            BinOp::Patch { out, .. } => out.as_mut(),
             BinOp::Sigs { out, .. } => out.as_mut(),
             _ => None,
+        }
+    }
+
+    /// The file an `--in-place` patch changes, and the backup it makes beside it: both are writes.
+    pub fn changed_in_place(&self) -> Vec<std::path::PathBuf> {
+        match self {
+            BinOp::Patch { file, in_place: true, .. } => {
+                let mut backup = file.clone().into_os_string();
+                backup.push(".orig");
+                vec![file.clone(), backup.into()]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -168,9 +195,39 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
 
 /// Like [`execute`], with the data dir given (tests use a temporary one).
 pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
-    let op = a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation or use --mcp".into()))?;
+    let Some(c) = a.op.as_ref().map(BinOp::common).filter(|c| !c.fields.is_empty()) else {
+        return execute_op(a, data_dir);
+    };
+    if !c.json {
+        return Err(Error::Usage("--fields needs --json: it picks keys of the JSON rows".into()));
+    }
+    let text = execute_op(a, data_dir)?;
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| Error::Usage("--fields: the answer of this op is not JSON rows".into()))?;
+    nexo_bin::project_items(&mut value, &c.fields)?;
+    serde_json::to_string_pretty(&value).map_err(|e| Error::Bad(e.to_string()))
+}
+
+fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
+    let op =
+        a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation, or use --script FILE or --mcp".into()))?;
     let t0 = std::time::Instant::now();
-    if let BinOp::Asm { source, at, bits, .. } = op {
+    if op.common().module.is_some() {
+        live::check(op)?;
+    }
+    if let BinOp::Asm { source, at, bits, arch, .. } = op {
+        if arch != "x86" {
+            if bits == "32" {
+                return Err(Error::Usage("--bits 32 is x86 only: AArch64 has no 32-bit mode here".into()));
+            }
+            if !at.is_multiple_of(4) {
+                return Err(Error::Usage(format!(
+                    "{at:#x} is not 4-aligned: AArch64 instructions start on multiples of 4"
+                )));
+            }
+            let output = nexo_bin::assembly_arm64(source, *at)?;
+            return render_copy_op(&output, op.common().json);
+        }
         let output = nexo_bin::assembly(source, *at, if bits == "32" { 32 } else { 64 })?;
         return render_copy_op(&output, op.common().json);
     }
@@ -179,9 +236,23 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     }
     let c = op.common();
     // bare bytes have no signature to tell them from a jar or a wasm module: --raw decides before the sniffing
-    let mut img = if c.raw && !matches!(op, BinOp::Managed { .. }) {
+    let live_base;
+    let scratch;
+    let mut img = if let Some(name) = c.module.as_deref() {
+        let (img, base, s) = live::open(c, name, data_dir)?;
+        live_base = Some(base);
+        scratch = s;
+        img
+    } else if c.live {
+        scratch = None;
+        return Err(Error::Usage("--live reads a module of a running program: add --module NAME".into()));
+    } else if c.raw && !matches!(op, BinOp::Managed { .. }) {
+        live_base = None;
+        scratch = None;
         Image::open_raw(op.file(), c.base.unwrap_or(0), c.arch.as_deref())?
     } else {
+        live_base = None;
+        scratch = None;
         if let Some(r) = crate::bin_managed::try_managed(op) {
             return r;
         }
@@ -190,7 +261,13 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         }
         Image::open_arch(op.file(), c.arch.as_deref())?
     };
+    // a live image saves nothing under a key of the file on disk: its names and answers go to the private folder
+    let data_dir = scratch.as_ref().map_or(data_dir, |s| s.path());
     let mut warning = nexo_bin::attach_names(&mut img, data_dir);
+    if let Some(base) = live_base {
+        // after the names are read: they are filed by file address, and move with the rest
+        img.slide_to(base)?;
+    }
     let mut other = None;
     if let BinOp::Diff { other: path, .. } = op {
         let mut b =
@@ -204,7 +281,13 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let (from, lines) = ask.window();
     let out: Output = match op {
         BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
-        BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
+        BinOp::Patch { out, in_place, at, function, bytes, asm, nop, old, verify, patches, .. } => {
+            let opts = nexo_bin::PatchOpts { old: old.as_deref(), verify: *verify, in_place: *in_place };
+            if let Some(list) = patches {
+                let text = std::fs::read_to_string(list)
+                    .map_err(|e| Error::Usage(format!("cannot read the patch file {}: {e}", list.display())))?;
+                return render_copy_op(&nexo_bin::patch_file(&img, out.as_deref(), &text, opts)?, c.json);
+            }
             let target = match (at, function) {
                 (Some(at), None) => nexo_bin::PatchTarget::Address(nexo_bin::any_addr_in(&img, at)?),
                 (None, Some(name)) => nexo_bin::PatchTarget::Function(name),
@@ -216,7 +299,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
                 (None, None, Some(n)) => nexo_bin::PatchData::Nop(*n),
                 _ => return Err(Error::Usage("give exactly one of --bytes, --asm or --nop".into())),
             };
-            return render_copy_op(&nexo_bin::patch(&img, out, target, data)?, c.json);
+            return render_copy_op(&nexo_bin::patch_with(&img, out.as_deref(), target, data, opts)?, c.json);
         }
         BinOp::Info { .. } => nexo_bin::info(&img),
         BinOp::Syms { kind, .. } => nexo_bin::syms_window(&img, kind, from, lines)?,
@@ -300,31 +383,66 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Strings { sort, .. } => {
             nexo_bin::strings_window(&img, op_grep.as_deref(), StrSort::parse(sort)?, from, lines)?
         }
-        BinOp::Emu { target, args, to, regs, mems, stubs, abi, steps, secs, trace, dump, stack, show, .. } => {
-            nexo_bin::emulate(
-                &img,
-                &nexo_bin::EmuSpec {
-                    args: args.clone(),
-                    to: to.as_deref().map(|t| nexo_bin::any_addr_in(&img, t)).transpose()?,
-                    regs: regs.clone(),
-                    mem: mems.clone(),
-                    stubs: stubs.clone(),
-                    abi: abi.clone(),
-                    steps: *steps,
-                    secs: *secs,
-                    trace: *trace,
-                    dump: *dump,
-                    stack: *stack,
-                    show: show.clone(),
-                    ..nexo_bin::EmuSpec::new(target)
-                },
-            )?
-        }
+        BinOp::Emu {
+            target,
+            args,
+            to,
+            regs,
+            mems,
+            stubs,
+            abi,
+            steps,
+            secs,
+            trace,
+            dump,
+            stack,
+            show,
+            breaks,
+            hooks,
+            stdin,
+            clock,
+            seed,
+            max_calls,
+            ..
+        } => nexo_bin::emulate(
+            &img,
+            &nexo_bin::EmuSpec {
+                args: args.clone(),
+                to: to.as_deref().map(|t| nexo_bin::any_addr_in(&img, t)).transpose()?,
+                regs: regs.clone(),
+                mem: mems.clone(),
+                stubs: stubs.clone(),
+                abi: abi.clone(),
+                steps: *steps,
+                secs: *secs,
+                trace: *trace,
+                dump: *dump,
+                stack: *stack,
+                show: show.clone(),
+                breaks: breaks.clone(),
+                hooks: hooks.clone(),
+                stdin: stdin.clone(),
+                clock: *clock,
+                seed: *seed,
+                max_calls: *max_calls,
+                ..nexo_bin::EmuSpec::new(target)
+            },
+        )?,
         BinOp::Managed { .. } => unreachable!("answered by bin_managed before the image is opened"),
-        BinOp::Find { pattern, imm, within, .. } => match imm {
-            Some(n) => nexo_bin::find_imm_in(&img, nexo_bin::parse_number(n)?, within.as_deref())?,
-            None => nexo_bin::find_bytes_in(&img, &pattern.join(" "), within.as_deref())?,
-        },
+        BinOp::Find { pattern, imm, text, wide, asm, seq, within, limit, .. } => {
+            let within = within.as_deref();
+            if let Some(t) = text {
+                nexo_bin::find_str_in(&img, t, *wide, within, *limit)?
+            } else if let Some(re) = asm {
+                nexo_bin::find_asm_in(&img, re, within, *limit)?
+            } else if let Some(s) = seq {
+                nexo_bin::find_seq_in(&img, s, within, *limit)?
+            } else if let Some(n) = imm {
+                nexo_bin::find_imm_in(&img, nexo_bin::parse_number(n)?, within)?
+            } else {
+                nexo_bin::find_bytes_in(&img, &pattern.join(" "), within)?
+            }
+        }
         BinOp::Diff { target, all, .. } => match &other {
             Some(b) => nexo_bin::diff_window(&img, b, target.as_deref(), op_grep.as_deref(), *all, from, lines)?,
             None => unreachable!("the second build is opened with the first"),
@@ -368,9 +486,15 @@ pub fn run(a: &BinArgs) -> i32 {
     if a.mcp {
         return crate::re_mcp::run_stdio(a.allow_changes);
     }
+    if let Some(path) = &a.script {
+        return script::run_script(path, a.keep_going);
+    }
     match execute(a) {
         Ok(text) => {
             println!("{text}");
+            if let Some(l) = a.op.as_ref().and_then(|op| bridge::line_for(op, &text, bridge::Reader::Cli)) {
+                eprintln!("{l}");
+            }
             0
         }
         Err(e) => {

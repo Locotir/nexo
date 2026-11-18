@@ -4,7 +4,7 @@ use super::{MAX_NAME, MAX_NAME_IN};
 
 /// Demangle Rust (legacy and v0), Itanium C++ and MSVC C++ names; anything else stays as written. The
 /// whole name is demangled (up to `MAX_NAME_IN` characters) and then the result is cut to `MAX_NAME`.
-pub(crate) fn demangle(raw: &str) -> String {
+pub fn demangle(raw: &str) -> String {
     let cut = |t: &str| t.chars().take(MAX_NAME).collect::<String>();
     let raw: String = raw.chars().take(MAX_NAME_IN).collect();
     // Mach-O writes every C symbol with one more underscore in front

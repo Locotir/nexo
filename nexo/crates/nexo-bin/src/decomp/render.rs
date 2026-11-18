@@ -227,6 +227,8 @@ pub struct Printer<'a> {
     pub names: &'a dyn Names,
     pub web: &'a WebInfo,
     pub abi_stack_arg: i64,
+    /// AArch64 register names (x0..x30, sp, v0..) instead of the x86 ones.
+    pub a64: bool,
     pub block_addr: Vec<u64>,
     pub lines: Vec<Line>,
     pub indent: usize,
@@ -300,7 +302,10 @@ impl Printer<'_> {
                 let n = self.web.names.get(&w).cloned().unwrap_or_else(|| format!("v{w}"));
                 self.names.var_name(&n).unwrap_or(n)
             }
+            Var::Reg(31) if self.a64 => "sp".to_string(),
+            Var::Reg(r) if self.a64 => format!("x{r}"),
             Var::Reg(r) => REG_NAMES[r as usize & 15].to_string(),
+            Var::Xmm(x) if self.a64 => format!("vreg{x}"),
             Var::Xmm(x) => format!("xmm{x}"),
             Var::Stack(o) => self.slot_name(i64::from(o)),
             Var::FlagOps => "flags".into(),
@@ -682,6 +687,7 @@ pub fn render(
         names,
         web,
         abi_stack_arg: f.abi.stack_arg_base(),
+        a64: f.abi == super::lift::Abi::Aapcs64,
         block_addr: f.blocks.iter().map(|b| b.addr).collect(),
         lines: Vec::new(),
         indent: 0,

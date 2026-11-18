@@ -1,7 +1,7 @@
 use clap::Args;
 use nexo_bin::{Lines, PageAsk};
 
-use super::{parse_addr, parse_lines, BinOp};
+use super::{parse_addr, parse_field, parse_lines, BinOp};
 
 #[derive(Args, Debug)]
 #[command(arg_required_else_help = true, args_conflicts_with_subcommands = true)]
@@ -14,6 +14,13 @@ pub struct BinArgs {
     /// With --mcp: allow tools that write files or saved state.
     #[arg(long, requires = "mcp")]
     pub allow_changes: bool,
+    /// Run the ops in FILE (`-`: stdin), one per line or separated by `;`, `#` lines are comments. Each answer comes
+    /// under a `== op ==` line; the first error stops the rest.
+    #[arg(long, value_name = "FILE", conflicts_with = "mcp")]
+    pub script: Option<String>,
+    /// With --script: go on after an op that fails (the exit code is the worst one).
+    #[arg(long, requires = "script")]
+    pub keep_going: bool,
 }
 
 /// Options every op takes.
@@ -33,6 +40,10 @@ pub struct Common {
     /// Print the answer as JSON (same bound).
     #[arg(long)]
     pub json: bool,
+    /// With --json: keep only these keys in each row (names as the JSON rows have them, like addr,size,name).
+    /// A name the rows do not have is an error that lists the ones they have.
+    #[arg(long, value_name = "A,B,C", value_delimiter = ',', value_parser = parse_field)]
+    pub fields: Vec<String>,
     /// Print on stderr how long the references took to build and how long the whole answer took.
     #[arg(long)]
     pub timing: bool,
@@ -47,6 +58,15 @@ pub struct Common {
     /// With --raw: the address the first byte was loaded at (default 0).
     #[arg(long, value_parser = parse_addr, value_name = "ADDR", requires = "raw")]
     pub base: Option<u64>,
+    /// A module of the program a `nexo dbg` session is running (a name like `libc.so.6`, or part of its path): the
+    /// file is opened from the path the session gives, and addresses (`--at`, targets, answers) are live ones, the
+    /// module's load base added. FILE is not read then; write `-`. Not for ops that write or save by file address.
+    #[arg(long, value_name = "NAME")]
+    pub module: Option<String>,
+    /// With --module: take the module's bytes from the running program's memory (the session's `dump module`,
+    /// at most 64 MiB, the program stopped), so what the program changed or unpacked shows.
+    #[arg(long)]
+    pub live: bool,
 }
 
 impl Common {

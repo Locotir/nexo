@@ -3,7 +3,7 @@
 
 /// `(names, one line)`: the first name is the one the map shows, the rest are spellings the debugger also takes.
 pub const COMMANDS: &[(&str, &str)] = &[
-    ("run", "start under the debugger: run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 N] <exe> [args] [< file | <<< \"text\"] (no shell)"),
+    ("run", "start under the debugger: run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 N] [--break SPEC] [--repeat N --until crash|exit|output~TEXT] <exe> [args] [< file | <<< \"text\"] (no shell)"),
     ("attach", "attach to a process of yours: attach <pid>"),
     ("core", "open a core file or minidump: core <file> [--exe <path>]"),
     ("connect", "talk to a GDB remote stub: connect <host:port>"),
@@ -19,6 +19,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("until", "run to an address"),
     ("wait", "wait for a running program to stop [--wait N]"),
     ("stop", "stop a running program now"),
+    ("signal", "go on delivering a signal: signal <SIG|N|0> [--wait N] (Linux; 0 drops the pending one)"),
+    ("stops", "how a stop is told: stops compact (one line, a crash stays full) | stops full"),
+    ("checkpoint checkpoints", "fork the stopped program into a stopped copy: checkpoint | checkpoint del N|all | checkpoints (Linux, one thread; the pid differs, files opened before are shared)"),
+    ("restart", "go back to a checkpoint: restart N (the copy becomes the program, N stays; the process left is killed)"),
     ("kill", "end the program; `kill call` ends a call under way and puts its registers back"),
     ("detach", "let the program go on alone"),
     ("follow", "which side of a fork is kept: follow parent|child|both (a kept child is a session of its own)"),
@@ -32,6 +36,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("strace", "log the system calls the program makes"),
     ("ltrace", "log the library calls the program makes, libraries loaded later included; printf/scanf arguments read off the format string"),
     ("hook hooks", "run a note, a stop or a changed argument at a function; int, float and stack arguments, float results"),
+    ("heap", "find leaks, double frees and frees of bad pointers: heap on | heap | heap leaks | heap off; every malloc and free stops the process, so the program runs slower"),
     ("cover", "which functions ran; save and diff two runs"),
     ("regs", "registers [name]; xmm0|ymm0|st0 [--as f64|f32|u32x4]; --all adds xmm and x87"),
     ("bt", "the call stack [N]"),
@@ -51,8 +56,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("out", "what the program printed [--all]"),
     ("log", "what hooks and calls logged"),
     ("history", "the last stops [N]"),
+    ("record", "keep the last N instructions as they run (Linux; cont then single-steps, slow): record [N] | record stop"),
+    ("back", "look at the last N recorded instructions [N] | --reg REG | --mem ADDR; it looks back, it does not undo"),
+    ("rstepi", "undo the last N recorded instructions of this thread: memory and registers go back (needs `record`; refuses across a system call or another thread; asks)"),
+    ("rcont", "undo back to an enabled breakpoint's address, a watched change, or the end of the record (asks)"),
     ("stdin", "send text to the program's input"),
     ("setreg", "change a register; setreg xmm0 <lanes> [--as f32] (asks)"),
+    ("return", "pop the stopped function's frame, VALUE as its result (rax or xmm0 by its return type): return [VALUE] (asks)"),
+    ("jump", "move the pc to file:line, an address or a function and go on: jump <place> [--force] [--stay] (asks)"),
+    ("gcore", "write an ELF core of the live Linux process: gcore [FILE] (asks); `core FILE` opens it"),
+    ("list", "source around the stop or a place, the current line marked: list [file:line|fn] [N]"),
     ("call", "run a function of the stopped program and give its value: call f(1, \"abc\"); print f(x) + 1 too; registers back after (asks)"),
     ("write", "write bytes into memory (asks)"),
     ("dump", "memory to a file: dump <A..B|fn> [path] | dump module <name> [path]; raw or rebuilt ELF/PE, with the bin call (asks)"),
@@ -115,6 +128,60 @@ mod tests {
         real.extend(["run", "attach", "core", "connect", "serve", "sessions", "end"].map(String::from));
         for n in spellings() {
             assert!(real.iter().any(|r| r == n), "{n} is in COMMANDS but the debugger does not take it");
+        }
+    }
+
+    /// The commands that run the program, change it or replace the session's target, by their first name. The
+    /// curator's `DBG_MOVE` must hold each of them and every spelling.
+    const MOVES: &[&str] = &[
+        "run", "attach", "connect", "core", "cont", "step", "next", "finish", "until", "kill", "detach", "end",
+        "signal", "restart", "call", "setreg", "write", "stdin", "return", "jump", "rstepi", "rcont",
+    ];
+
+    fn curator_moves() -> Vec<String> {
+        let src = include_str!("../../nexo-curator/src/tools.rs");
+        let body = src.split("const DBG_MOVE").nth(1).expect("DBG_MOVE is there");
+        let body = body.split("];").next().expect("the list ends");
+        body.split('"').skip(1).step_by(2).map(String::from).collect()
+    }
+
+    /// `(spellings, target)` of each arm of the gdb alias table.
+    fn aliases() -> Vec<(Vec<String>, String)> {
+        let src = include_str!("gdbdialect.rs");
+        let body = src.split("pub fn alias(name: &str) -> &str {").nth(1).expect("alias is there");
+        let body = body.split("other => other").next().expect("the table ends");
+        let mut v = Vec::new();
+        for line in body.lines().map(str::trim) {
+            let Some((l, r)) = line.split_once("=>") else { continue };
+            let names = l.split('|').map(|n| n.trim().trim_matches('"').to_string()).collect();
+            v.push((names, r.trim().trim_matches(',').trim_matches('"').to_string()));
+        }
+        v
+    }
+
+    #[test]
+    fn the_curators_move_list_is_every_move_spelling_and_nothing_else() {
+        let list = curator_moves();
+        let mut want: Vec<String> = Vec::new();
+        for (names, _) in COMMANDS {
+            let first = names.split(' ').next().unwrap_or("");
+            if MOVES.contains(&first) {
+                want.extend(names.split(' ').map(String::from));
+            }
+        }
+        for (names, target) in aliases() {
+            if canonical(&target).is_some_and(|c| MOVES.contains(&c)) {
+                want.extend(names);
+            }
+        }
+        for m in MOVES {
+            assert!(canonical(m).is_some(), "{m} is not a command");
+        }
+        for w in &want {
+            assert!(list.contains(w), "{w} runs or changes the program but is not in the curator's DBG_MOVE");
+        }
+        for l in &list {
+            assert!(want.contains(l), "{l} is in the curator's DBG_MOVE but is not a move command or alias");
         }
     }
 

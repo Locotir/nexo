@@ -4,15 +4,23 @@
 //! emulator does not know, or a bad memory access stops the run and says where and why. One answer gives
 //! the return value, the reason it stopped, the memory written, the library calls and a short trace.
 
+mod a64;
 mod cpu;
+mod fma;
 mod fp;
+mod hook;
 mod libc;
 mod mem;
 mod sse;
+mod sys;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_a64;
+#[cfg(test)]
 mod tests_fp;
+#[cfg(test)]
+mod tests_sys;
 mod vex;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -56,7 +64,8 @@ pub const DEFAULT_TRACE: usize = 12;
 pub const MAX_TRACE: usize = 200;
 /// Bytes of program output kept, library calls logged, bytes shown per written range by default.
 const MAX_OUTPUT: usize = 4096;
-const MAX_CALLS: usize = 40;
+pub const DEFAULT_CALLS: usize = 40;
+pub const MAX_CALLS: usize = 100_000;
 pub const DEFAULT_DUMP: usize = 64;
 pub const MAX_DUMP: usize = 4096;
 /// The largest buffer an argument may ask for.
@@ -65,7 +74,8 @@ const MAX_ARG_BUF: usize = 1 << 20;
 /// The defaults and bounds of the options.
 pub mod limits {
     pub use super::{
-        DEFAULT_DUMP, DEFAULT_SECS, DEFAULT_STEPS, DEFAULT_TRACE, MAX_DUMP, MAX_SECS, MAX_STEPS, MAX_TRACE,
+        DEFAULT_CALLS, DEFAULT_DUMP, DEFAULT_SECS, DEFAULT_STEPS, DEFAULT_TRACE, MAX_CALLS, MAX_DUMP, MAX_SECS,
+        MAX_STEPS, MAX_TRACE,
     };
 }
 
@@ -94,6 +104,18 @@ pub struct EmuSpec {
     pub stack: bool,
     /// `ADDR:LEN` regions to show after the run.
     pub show: Vec<String>,
+    /// Stop when execution reaches one of these addresses (a number or a name), and report the registers.
+    pub breaks: Vec<String>,
+    /// `ADDR=print`, `ADDR=dump:REG:LEN` or `ADDR=set:REG=VALUE`: act at the address and go on.
+    pub hooks: Vec<String>,
+    /// What `read` on fd 0 gives: a file, `hex:DE AD`, or the text itself. Nothing when absent.
+    pub stdin: Option<String>,
+    /// The clock the time system calls answer, in seconds since 1970.
+    pub clock: u64,
+    /// The seed of the bytes `getrandom` gives.
+    pub seed: u64,
+    /// Most library and system calls listed in the answer; the count of the others is said.
+    pub max_calls: usize,
 }
 
 impl EmuSpec {
@@ -112,6 +134,12 @@ impl EmuSpec {
             dump: DEFAULT_DUMP,
             stack: false,
             show: Vec::new(),
+            breaks: Vec::new(),
+            hooks: Vec::new(),
+            stdin: None,
+            clock: sys::DEFAULT_CLOCK,
+            seed: 0,
+            max_calls: DEFAULT_CALLS,
         }
     }
 }
@@ -133,6 +161,8 @@ pub(crate) enum Stop {
     Divide,
     Trap(&'static str),
     Syscall(u64),
+    /// `--break`: the run reached one of the addresses.
+    Break(u64),
     Exit(i64),
     /// A stub ended the run: abort, a failed assert, the stack protector, a bad free...
     Abort(String),
@@ -157,6 +187,7 @@ impl Stop {
             Stop::Divide => "divide_error",
             Stop::Trap(_) => "trap",
             Stop::Syscall(_) => "syscall",
+            Stop::Break(_) => "break",
             Stop::Exit(_) => "exit",
             Stop::Abort(_) => "abort",
             Stop::LibFault { .. } => "library_fault",
@@ -185,12 +216,21 @@ pub(crate) struct Machine<'a> {
     pub mem: Mem,
     pub ms_abi: bool,
     heap_next: u64,
+    /// AArch64 runs: the argument registers and stack pointer the library stubs read their arguments from.
+    a64: Option<a64::Abi>,
     pub blocks: BTreeMap<u64, Block>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub dropped_output: usize,
     calls: Vec<CallRec>,
     calls_total: usize,
+    /// How many of the calls were system calls, and how many calls (of those) the answer does not list.
+    sys_total: usize,
+    unlogged: usize,
+    unlogged_sys: usize,
+    max_calls: usize,
+    sys: sys::Sys,
+    hooks: hook::Hooks,
     /// Buffers made for arguments and presets: (start, end, label).
     regions: Vec<(u64, u64, String)>,
     imports: Vec<String>,
@@ -313,24 +353,27 @@ fn reg_named(name: &str) -> Option<usize> {
     GPR_NAMES.iter().position(|r| r.eq_ignore_ascii_case(name.trim()))
 }
 
-/// Run the function or stretch of code `spec` names and describe what happened.
-pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
-    img.require_x86("emulate")?;
-    let t0 = Instant::now();
-    let ms_abi = match spec.abi.as_deref() {
-        None => img.format == Format::Pe,
-        Some("sysv") => false,
-        Some("ms") => true,
-        Some(o) => return Err(Error::Usage(format!("--abi {o:?}: write sysv or ms"))),
-    };
-    let start = start_of(img, &spec.target)?;
-    let mut m = Machine::new(img, ms_abi)?;
+/// The options both architectures share: stubs, limits, the clock and seed, stdin, breaks and memory presets.
+fn configure(img: &Image, spec: &EmuSpec, m: &mut Machine) -> Result<()> {
     for s in &spec.stubs {
         let (n, v) = s
             .split_once('=')
             .ok_or_else(|| Error::Usage(format!("--stub {s:?}: write NAME=NUMBER, like --stub rand=4")))?;
         let v = parse_number(v).map_err(|e| Error::Usage(format!("--stub {s:?}: {e}")))? as u64;
         m.overrides.insert(n.trim().to_string(), v);
+    }
+    if spec.max_calls > MAX_CALLS {
+        return Err(Error::Usage(format!("--max-calls {}: at most {MAX_CALLS}", spec.max_calls)));
+    }
+    m.max_calls = spec.max_calls;
+    m.sys.clock = spec.clock;
+    m.sys.rng = spec.seed;
+    if let Some(s) = &spec.stdin {
+        m.sys.stdin = sys::load_stdin(s)?;
+    }
+    for s in &spec.breaks {
+        let a = crate::place::any_addr_in(img, s.trim()).map_err(|e| Error::Usage(format!("--break {s:?}: {e}")))?;
+        m.hooks.breaks.insert(a);
     }
     // memory presets first, so an argument may point into them
     for s in &spec.mem {
@@ -360,6 +403,25 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
         }
         let _ = m.mem.load(a, &bytes);
     }
+    Ok(())
+}
+
+/// Run the function or stretch of code `spec` names and describe what happened.
+pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
+    if img.arm64 {
+        return a64::emulate(img, spec);
+    }
+    img.require_x86("emulate")?;
+    let t0 = Instant::now();
+    let ms_abi = match spec.abi.as_deref() {
+        None => img.format == Format::Pe,
+        Some("sysv") => false,
+        Some("ms") => true,
+        Some(o) => return Err(Error::Usage(format!("--abi {o:?}: write sysv or ms"))),
+    };
+    let start = start_of(img, &spec.target)?;
+    let mut m = Machine::new(img, ms_abi)?;
+    configure(img, spec, &mut m)?;
     // arguments
     let regs: &[usize] = if ms_abi { &[1, 2, 8, 9] } else { &[7, 6, 2, 1, 8, 9] };
     let mut stack_args = Vec::new();
@@ -397,6 +459,10 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
             None => format!("{}={}", GPR_NAMES[r], num_at(img, v)),
         });
     }
+    for s in &spec.hooks {
+        let (a, act) = hook::parse(img, &mut m, s, &hook::X86)?;
+        m.hooks.at.entry(a).or_default().push(act);
+    }
     // the stack: arguments past the registers, the home area on Windows, then the return address
     let shadow = if ms_abi { 4 } else { 0 };
     let mut sp = STACK_TOP - 0x4000;
@@ -426,6 +492,14 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
         }
         if Some(rip) == spec.to && steps > 0 {
             break Stop::Reached(rip);
+        }
+        if !m.hooks.at.is_empty() && m.hooks.at.contains_key(&rip) {
+            let mut g = m.cpu.gpr;
+            m.run_hooks(rip, &mut g, &hook::X86);
+            m.cpu.gpr = g;
+        }
+        if !m.hooks.breaks.is_empty() && m.hooks.breaks.contains(&rip) {
+            break Stop::Break(rip);
         }
         if let Some(i) = m.import_at(rip) {
             match m.call_import(i) {
@@ -491,6 +565,18 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
             trace.push_back((ins, changed));
         }
         if let Some(e) = ev {
+            if let Event::Syscall(n) = e {
+                match m.syscall(n, rip, ins.next_ip()) {
+                    Ok(()) => {
+                        m.cpu.rip = ins.next_ip();
+                        continue;
+                    }
+                    Err(s) => {
+                        m.cpu.rip = rip;
+                        break s;
+                    }
+                }
+            }
             m.cpu.rip = rip;
             break match e {
                 Event::Fault(f) => Stop::Fault(f),

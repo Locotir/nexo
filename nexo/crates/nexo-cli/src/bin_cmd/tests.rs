@@ -108,6 +108,23 @@ fn bin_mcp_parses_the_same_change_gate_as_re_mcp() {
 }
 
 #[test]
+fn assembly_arm64_encodes_decodes_and_refuses() {
+    let out = ask(&["asm", "nop; ret", "--arch", "arm64"]).unwrap();
+    assert!(out.contains("1f 20 03 d5 c0 03 5f d6"), "{out}");
+    assert!(ask(&["asm", "nop", "--arch", "aarch64"]).unwrap().contains("1f 20 03 d5"));
+    let out = ask(&["asm", "b 0x1008", "--at", "0x1000", "--arch", "arm64"]).unwrap();
+    assert!(out.contains("02 00 00 14"), "{out}");
+    let json = ask(&["asm", "nop", "--arch", "arm64", "--json"]).unwrap();
+    assert!(json.contains("\"text\""), "{json}");
+    let e = ask(&["asm", "nop", "--at", "0x1002", "--arch", "arm64"]).unwrap_err().to_string();
+    assert!(e.contains("not 4-aligned"), "{e}");
+    let e = ask(&["asm", "nop", "--bits", "32", "--arch", "arm64"]).unwrap_err().to_string();
+    assert!(e.contains("x86 only"), "{e}");
+    let e = ask(&["asm", "frobnicate x0", "--arch", "arm64"]).unwrap_err().to_string();
+    assert!(e.contains("frobnicate"), "{e}");
+}
+
+#[test]
 fn assembly_and_copy_patch_parse_exclusive_arguments() {
     assert!(ask(&["asm", "nop; ret", "--bits", "32"]).unwrap().contains("90 c3"));
     let dir = tempfile::tempdir().unwrap();

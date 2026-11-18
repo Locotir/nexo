@@ -204,9 +204,10 @@ fn a_dump_of_an_arm64_program_reads_back_with_its_functions_and_strings() {
     let check = func(&elf, "check").start;
     let x = whole(&xref_str(&raw, "raw: access granted", false).unwrap());
     assert!(x.contains(&format!("sub_{check:x}")), "{x}");
-    // cfg reads x86-64 only: the answer names what does read arm64
-    let e = cfg_op(&raw, &format!("{check:#x}")).unwrap_err().to_string();
-    assert!(e.contains("does not read AArch64 code yet") && e.contains("strings"), "{e}");
+    // cfg reads arm64 too, raw dumps included
+    if let Err(e) = cfg_op(&raw, &format!("{check:#x}")) {
+        panic!("cfg of a raw arm64 dump: {e}");
+    }
 }
 
 #[test]

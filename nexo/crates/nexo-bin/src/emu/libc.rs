@@ -350,7 +350,7 @@ fn printf(m: &mut Machine, call: &str) -> Answer {
     };
     let f = a(m, fmt_at, call)?;
     let fmt = cstr(m, f, STR_MAX, call)?;
-    let mut cur = Cursor::new(m.ms_abi, fmt_at + 1);
+    let mut cur = Cursor::new(m.ms_abi, m.a64.is_some(), fmt_at + 1);
     let out = format(m, &fmt, &mut cur, call)?;
     let shown = m.show_ptr(f);
     match dest {
@@ -384,19 +384,27 @@ enum Dest {
 /// share the stack after them; Microsoft x64 has one position for both.
 struct Cursor {
     ms: bool,
+    /// Integer argument registers: 4 on Microsoft x64, 6 on System V, 8 on AAPCS64.
+    regs: usize,
     int: usize,
     float: usize,
     stack: usize,
 }
 
 impl Cursor {
-    fn new(ms: bool, first: usize) -> Cursor {
-        let regs = if ms { 4 } else { 6 };
-        Cursor { ms, int: first.min(regs), float: 0, stack: first.saturating_sub(regs) }
+    fn new(ms: bool, a64: bool, first: usize) -> Cursor {
+        let regs = if ms {
+            4
+        } else if a64 {
+            8
+        } else {
+            6
+        };
+        Cursor { ms, regs, int: first.min(regs), float: 0, stack: first.saturating_sub(regs) }
     }
 
     fn int(&mut self, m: &Machine, call: &str) -> Result<u64, Stop> {
-        let regs = if self.ms { 4 } else { 6 };
+        let regs = self.regs;
         if self.int < regs {
             self.int += 1;
             return a(m, self.int - 1, call);
@@ -406,6 +414,11 @@ impl Cursor {
     }
 
     fn float(&mut self, m: &Machine, call: &str) -> Result<f64, Stop> {
+        if m.a64.is_some() {
+            return Err(Stop::Unsupported(format!(
+                "a floating-point argument of {call}: nexo has no FP registers on arm64"
+            )));
+        }
         if self.ms {
             return self.int(m, call).map(f64::from_bits);
         }

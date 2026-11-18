@@ -97,11 +97,22 @@ impl Session {
             "condition" => self.gdb_condition(rest),
             "ignore" => self.gdb_ignore(rest),
             "info" if !rest.is_empty() => self.gdb_info(rest),
+            // x86 debug registers cannot watch reads alone: both stop on a read or a write (`r`)
+            "rwatch" | "awatch" => {
+                // the access goes right after the place: a trailing word would end up in an `if` or a `log` text
+                let at = Self::spec_len(rest).min(rest.len());
+                let mut w = vec!["watch".to_string()];
+                w.extend(rest[..at].iter().cloned());
+                w.push("r".to_string());
+                w.extend(rest[at..].iter().cloned());
+                self.exec(&w)
+            }
             "break" | "tbreak" => {
                 let mut w = words.to_vec();
                 w[0] = name.to_string();
                 return merge_place(&w).map(|m| self.exec(&m));
             }
+            "thread" if rest.first().is_some_and(|w| w == "apply") => usage(g::THREAD_APPLY),
             "quit" => usage(g::hint("quit").unwrap_or("`end` closes the session")),
             n if n != first && fmt.is_none() => {
                 let mut w = words.to_vec();
@@ -465,7 +476,7 @@ impl Session {
     }
 
     fn gdb_undisplay(&mut self, rest: &[String]) -> Result<Output> {
-        if rest.is_empty() {
+        if rest.is_empty() || rest[0] == "all" {
             let n = self.displays.len();
             self.displays.clear();
             return Ok(rows("undisplay", vec![format!("{n} displays removed")], json!({})));
@@ -487,6 +498,18 @@ impl Session {
             match self.exec(&w) {
                 Ok(o) => l.extend(o.rows.into_iter().map(|r| format!("{id}: {}", r.text))),
                 Err(e) => l.push(format!("{id}: {} ({e})", w[1..].join(" "))),
+            }
+        }
+        l
+    }
+
+    /// The displays as `expr=value`, one piece each, for the one line of a compact stop.
+    pub(crate) fn display_pieces(&mut self) -> Vec<String> {
+        let mut l = Vec::new();
+        for (_, w) in self.displays.clone() {
+            match self.exec(&w) {
+                Ok(o) => l.extend(o.rows.iter().map(|r| super::quiet::display_piece(&w[1..].join(" "), &r.text))),
+                Err(e) => l.push(format!("{} ({e})", w[1..].join(" "))),
             }
         }
         l
@@ -567,11 +590,12 @@ impl Session {
                 Ok(rows("info", vec![l], json!({"addr": a})))
             }
             "signals" | "signal" | "handle" => go(self, &["catches"]),
+            "checkpoints" | "checkpoint" => go(self, &["checkpoints"]),
             "line" | "source" | "functions" | "variables" | "types" | "scope" | "files" | "sources" => usage(
                 "no symbol tables are listed here: `find <text>` searches memory, `modules` and `maps` list what is loaded, `bt` and `dis` show where the program is",
             ),
             other => usage(format!(
-                "info {other}: this debugger answers info registers [REG], breakpoints, frame, sharedlibrary, proc mappings, threads, locals, args, symbol <addr>"
+                "info {other}: this debugger answers info registers [REG], breakpoints, frame, sharedlibrary, proc mappings, threads, locals, args, checkpoints, symbol <addr>"
             )),
         }
     }

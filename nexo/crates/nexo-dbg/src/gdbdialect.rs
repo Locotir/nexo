@@ -10,6 +10,8 @@ pub fn alias(name: &str) -> &str {
         "tb" | "tbr" => "tbreak",
         "br" | "brea" | "bre" => "break",
         "si" | "stepi" => "step",
+        "reverse-stepi" | "rsi" => "rstepi",
+        "reverse-continue" | "rc" => "rcont",
         "ni" | "nexti" => "next",
         "fin" => "finish",
         "f" => "frame",
@@ -21,6 +23,8 @@ pub fn alias(name: &str) -> &str {
         "q" => "quit",
         "k" => "kill",
         "disp" => "display",
+        "l" => "list",
+        "generate-core-file" => "gcore",
         other => other,
     }
 }
@@ -641,10 +645,8 @@ pub fn per_line(fmt: char, size: usize) -> usize {
 /// gdb commands this debugger has no twin for, with what to type instead.
 pub fn hint(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "list" | "l" => "`dis [addr] [N]` shows the code; a stop shows file:line when the program has DWARF lines",
-        "return" | "jump" => "`setreg rip <addr>` moves the program counter (asks); `finish` runs to the caller",
         "rwatch" | "awatch" => "`watch <addr|A..B> [len] r|w|x` stops on a read, a write or a fetch (`if`, `after` and `log` as on `break`)",
-        "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program",
+        "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program; `signal <SIG|0>` continues delivering one (0 drops the pending one)",
         "source" => "scripts go in the call itself, one command per line, or `a; b; c`",
         "shell" | "!" => "the debug tool does not run shell commands: use the shell tool",
         "target" | "tui" | "layout" | "focus" | "refresh" | "winheight" => {
@@ -654,8 +656,11 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
             "the program is chosen by `run <path> [args]`"
         }
         "start" | "starti" => "`run --main <path> [args]` starts and stops at main",
-        "checkpoint" | "restart" | "reverse-continue" | "record" => {
-            "this debugger cannot go back in time: `cont` forward, `history` lists past stops"
+        "reverse-step" | "reverse-next" | "reverse-nexti" | "reverse-finish" | "rs" | "rn" | "rni" => {
+            "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record); `rstepi N` and `rcont` undo instructions; to go back for real, `checkpoint` forks the program here and `restart N` returns to it"
+        }
+        "valgrind" | "memcheck" | "leak-check" => {
+            "`heap on`, then `cont`: a free of a bad pointer stops the program, and `heap leaks` lists the blocks never freed"
         }
         "quit" => "`end` as its own call closes the session",
         "kill" => "`kill` ends the program, `end` closes the session",
@@ -665,6 +670,9 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// What gdb's `thread apply all bt` becomes here.
+pub const THREAD_APPLY: &str = "`threads --bt N` lists every thread with its name, state, system call and its own backtrace of at most N frames (gdb's `thread apply all bt`); `thread <tid>` then `bt` reads one";
 
 /// What stands for gdb's `run` once the session is started: run on, and wait for a whole run.
 pub const RUN_CONT: &str = "cont --wait 30";
@@ -820,6 +828,7 @@ mod tests {
         assert_eq!(base_name("x/20bx"), "x");
         assert_eq!(base_name("p/x"), "p");
         assert_eq!(base_name("backtrace"), "bt");
+        assert!(THREAD_APPLY.contains("threads --bt N"));
         assert_eq!(base_name("disassemble"), "dis");
         assert_eq!(base_name("si"), "step");
         assert_eq!(base_name("ni"), "next");
@@ -975,5 +984,26 @@ mod tests {
         assert_eq!(units("print c=='x'; print c=='\\''; d"), s(&["print c=='x'", "print c=='\\''", "d"]));
         // a double quote left open still keeps the rest as one part
         assert_eq!(units("a; say \"x; b"), s(&["a", "say \"x; b"]));
+    }
+
+    #[test]
+    fn record_is_a_command_and_the_reverse_ones_say_what_to_type() {
+        // `record` has its own command now: no hint stands in its place
+        assert_eq!(hint("record"), None);
+        assert_eq!(base_name("record"), "record");
+        for c in ["reverse-step", "reverse-next", "reverse-finish", "rs"] {
+            let h = hint(c).unwrap_or_else(|| panic!("{c} has no hint"));
+            assert!(h.contains("back N") && h.contains("back --reg R") && h.contains("back --mem A"), "{c}: {h}");
+            assert!(h.contains("does not undo"), "{c}: {h}");
+        }
+        assert_eq!(hint("checkpoint"), None);
+        assert_eq!(hint("restart"), None);
+        for c in ["reverse-step", "rs"] {
+            assert!(hint(c).unwrap().contains("checkpoint"), "{c}");
+        }
+        // the two that undo are commands now
+        assert_eq!((base_name("reverse-stepi"), base_name("rsi")), ("rstepi", "rstepi"));
+        assert_eq!((base_name("reverse-continue"), base_name("rc")), ("rcont", "rcont"));
+        assert_eq!((hint("rsi"), hint("rc")), (None, None));
     }
 }

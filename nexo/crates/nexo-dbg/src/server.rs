@@ -527,7 +527,12 @@ fn handle(dir: &Path, port: u16, slots: &mut Vec<Slot>, stream: TcpStream) -> Op
             "wait" | "status" | "info" if pending.is_some() && sess.state != State::Running => {
                 Ok(pending.take().unwrap_or_else(|| rows("status", vec![], json!({}))))
             }
-            "cont" | "c" | "continue" | "step" | "s" | "next" | "n" | "finish" | "until" => {
+            "cont" | "c" | "continue" | "step" | "s" | "next" | "n" | "finish" | "until" | "signal" | "restart" => {
+                *pending = None;
+                sess.exec(&words)
+            }
+            // a `jump` runs on from the new pc unless it only moves it
+            "jump" if !words.iter().any(|w| w == "--stay") => {
                 *pending = None;
                 sess.exec(&words)
             }

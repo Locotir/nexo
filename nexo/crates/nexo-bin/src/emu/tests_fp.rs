@@ -48,13 +48,18 @@ int main(int argc, char **argv) {
 }
 "#;
 
-/// Compile the fixture with `flags`; None (with a message) when the compiler is missing or refuses a flag.
+/// Compile the fixture with `flags` for the x86-64 baseline; None (with a message) when the compiler is missing
+/// or refuses a flag.
 fn build(dir: &Path, tag: &str, flags: &[&str]) -> Option<PathBuf> {
     let src = dir.join("fp.c");
     std::fs::write(&src, SOURCE).ok()?;
     let exe = dir.join(format!("fp{tag}"));
     let ok = ["cc", "gcc"].iter().any(|cc| {
         Command::new(cc)
+            // A compiler whose default target is x86-64-v3 fuses a * b + c into FMA3 (vfmadd, vfmsub) and gives
+            // -O3 VEX forms instead of mulps; these tests are about SSE and AVX2, so the baseline comes first
+            // and `-mavx2` adds AVX2 alone on top of it.
+            .arg("-march=x86-64")
             .args(flags)
             .args(["-fcf-protection=full", "-fno-math-errno", "-o"])
             .arg(&exe)
@@ -258,4 +263,57 @@ fn emu_runs_avx2_float_loops_too() {
     returned(&v);
     let want: Vec<u8> = vals.iter().flat_map(|v| (v * 1.5f32 + 1.0f32).to_le_bytes()).collect();
     assert!(shows(&text, &want, 64), "{text}");
+}
+
+/// Does `i` fuse a multiply and an add (FMA3)?
+fn fused(i: &iced_x86::Instruction) -> bool {
+    let n = format!("{:?}", i.mnemonic()).to_lowercase();
+    ["vfmadd", "vfmsub", "vfnmadd", "vfnmsub"].iter().any(|p| n.starts_with(p))
+}
+
+#[test]
+fn emu_runs_code_built_for_x86_64_v3_with_fused_multiply_adds_like_the_real_program() {
+    // the real program is the reference, so the CPU running the test must have FMA3 and AVX2 itself
+    #[cfg(target_arch = "x86_64")]
+    let here = std::arch::is_x86_feature_detected!("fma") && std::arch::is_x86_feature_detected!("avx2");
+    #[cfg(not(target_arch = "x86_64"))]
+    let here = false;
+    if !here {
+        eprintln!("skipped: this CPU cannot run an x86-64-v3 program to compare with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for opt in ["-O2", "-O3"] {
+        let flags = [opt, "-march=x86-64-v3", "-ffp-contract=fast"];
+        let Some(exe) = build(dir.path(), &format!("-v3{opt}"), &flags) else { return };
+        let img = Image::open(&exe).unwrap();
+        let with_fma: Vec<&str> =
+            ["poly", "hyp", "show", "scale"].into_iter().filter(|f| uses(&img, f, fused)).collect();
+        assert!(!with_fma.is_empty(), "{opt}: the compiler fused nothing, so this test proves nothing");
+        for n in ["0", "3", "-7", "11"] {
+            let (text, _) = run(&img, "poly", &[n], |_| {});
+            assert_eq!(xmm0(&text), real(&exe, &["poly", n]).parse::<f64>().unwrap(), "{opt} poly({n})\n{text}");
+        }
+        for (a, b) in [("3", "4"), ("5", "12"), ("123456", "654321")] {
+            let (text, v) = run(&img, "hyp", &[a, b], |_| {});
+            if v["stop"]["kind"] == "unknown_import" {
+                continue;
+            }
+            assert_eq!(xmm0(&text), real(&exe, &["hyp", a, b]).parse::<f64>().unwrap(), "{opt} hyp({a},{b})\n{text}");
+        }
+        for n in ["0", "5", "40"] {
+            let (text, v) = run(&img, "show", &[n], |_| {});
+            returned(&v);
+            assert_eq!(v["stdout"].as_str().unwrap().trim(), real(&exe, &["show", n]), "{opt} show({n})\n{text}");
+        }
+        // the vector loop: 8 lanes of ymm, then the tail
+        let vals: Vec<f32> = (0..45).map(|i| i as f32 * 0.37 - 4.0).collect();
+        let hex: Vec<String> = vals.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02x}")).collect();
+        let (text, v) = run(&img, "scale", &[&format!("hex:{}", hex.join("")), "45"], |s| s.dump = 64);
+        returned(&v);
+        let fma = uses(&img, "scale", fused);
+        let want: Vec<u8> =
+            vals.iter().flat_map(|v| if fma { v.mul_add(1.5, 1.0) } else { v * 1.5 + 1.0 }.to_le_bytes()).collect();
+        assert!(shows(&text, &want, 64), "{opt} scale (fused: {fma})\n{text}");
+    }
 }

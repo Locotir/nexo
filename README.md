@@ -54,7 +54,7 @@ irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 On macOS the file is signed ad hoc and fetched with `curl`, so Gatekeeper stays quiet. If you download it in a browser instead, clear the quarantine mark first:
 `xattr -d com.apple.quarantine ./nexo-macos-aarch64 && chmod +x ./nexo-macos-aarch64` (use `nexo-macos-x86_64` on an Intel Mac).
 From source on any system: `cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`.
-CI runs both installers on Linux x64 and ARM and Windows x64 and ARM; the macOS (arm64 and Intel) installer jobs are new and have not run yet.
+CI runs both installers on Linux, Windows and macOS, each on x64 and ARM, and all of them pass.
 
 nexo checks for a newer release in the background; `nexo update` installs it. Turn the check off with
 `[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1`.

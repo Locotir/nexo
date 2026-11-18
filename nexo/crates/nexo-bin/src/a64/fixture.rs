@@ -18,6 +18,8 @@ pub struct Arm {
     pub d: u64,
     pub e: u64,
     pub f: u64,
+    /// Where the extra function of [`elf_with`] starts (nothing there for [`elf`]).
+    pub g: u64,
     pub text_end: u64,
     pub string: u64,
     pub global: u64,
@@ -45,6 +47,11 @@ pub fn add_imm(rd: u32, rn: u32, imm: u32) -> u32 {
 }
 
 pub fn mov_w(rd: u32, imm: u32) -> u32 {
+    mov_w_imm(rd, imm)
+}
+
+/// `mov wd, #imm` as a constant, for tables of words.
+pub const fn mov_w_imm(rd: u32, imm: u32) -> u32 {
     0x5280_0000 | (imm << 5) | rd
 }
 
@@ -69,7 +76,18 @@ fn put(v: &mut Vec<u8>, at: usize, bytes: &[u8]) {
 }
 
 pub fn elf(eh_frame: bool) -> Arm {
-    let (text_off, eh_off, data_off, sym_off) = (0x100usize, 0x200usize, 0x1000usize, 0x1100usize);
+    elf_with(eh_frame, &[])
+}
+
+/// The same file with one more function G of `extra` words after F (listed in `.eh_frame`, no symbol).
+pub fn elf_with(eh_frame: bool, extra: &[u32]) -> Arm {
+    elf_edit(eh_frame, extra, 0, &[])
+}
+
+/// [`elf_with`] with the data section `shift` bytes further on (so the string and the global change
+/// address, in the same page) and the words at the given byte offsets of `.text` replaced.
+pub fn elf_edit(eh_frame: bool, extra: &[u32], shift: usize, edits: &[(usize, u32)]) -> Arm {
+    let (text_off, eh_off, data_off, sym_off) = (0x100usize, 0x200usize, 0x1000usize + shift, 0x1100usize);
     let a = BASE + text_off as u64;
     let (b, c, d, e, f) = (a + 0x20, a + 0x40, a + 0x50, a + 0x60, a + 0x80);
     let data_addr = BASE + data_off as u64;
@@ -105,11 +123,23 @@ pub fn elf(eh_frame: bool) -> Arm {
         0x80,
         &words(&[adrp(8, f, global), ldr_w(0, 8, lo(global)), adrp(1, f + 8, string), add_imm(1, 1, lo(string)), RET]),
     );
+    let g = a + 0xa0;
+    if !extra.is_empty() {
+        put(&mut text, 0xa0, &words(extra));
+    }
+    for &(at, w) in edits {
+        if let Some(slot) = text.get_mut(at..at + 4) {
+            slot.copy_from_slice(&w.to_le_bytes());
+        }
+    }
     let text_end = a + text.len() as u64;
 
     // .eh_frame: one CIE (zR, pc-relative sdata4) and one FDE per function
     let mut eh: Vec<u8> = Vec::new();
-    let funcs = [(a, 24u64), (b, 32), (c, 16), (d, 16), (e, 32), (f, 20)];
+    let mut funcs = vec![(a, 24u64), (b, 32), (c, 16), (d, 16), (e, 32), (f, 20)];
+    if !extra.is_empty() {
+        funcs.push((g, 4 * extra.len() as u64));
+    }
     let u32le = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
     u32le(&mut eh, 16);
     u32le(&mut eh, 0);
@@ -204,5 +234,5 @@ pub fn elf(eh_frame: bool) -> Arm {
         p64(&mut out, 1);
         p64(&mut out, entsize);
     }
-    Arm { bytes: out, a, b, c, d, e, f, text_end, string, global, ptrs }
+    Arm { bytes: out, a, b, c, d, e, f, g, text_end, string, global, ptrs }
 }

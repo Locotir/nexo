@@ -17,10 +17,15 @@ mod calls;
 mod catch;
 mod dump;
 mod frame;
+mod gcore;
 mod gdb;
 mod help;
 mod io;
+mod jump;
+mod list;
 mod memory;
+mod quiet;
+mod record;
 mod regs;
 mod run;
 mod stack;
@@ -40,7 +45,7 @@ pub struct Args {
     flags: HashMap<String, String>,
 }
 
-const BOOL_FLAGS: [&str; 6] = ["all", "raw", "close", "keep-going", "once", "exact"];
+const BOOL_FLAGS: [&str; 8] = ["all", "raw", "close", "keep-going", "once", "exact", "force", "stay"];
 
 impl Args {
     pub fn new(words: &[String]) -> Result<Args> {
@@ -85,10 +90,10 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 33] = [
+pub const READ_ONLY: [&str; 35] = [
     "status", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
-    "name", "note", "ptype", "whatis", "frame", "up", "down",
+    "name", "note", "ptype", "whatis", "frame", "up", "down", "back", "list",
 ];
 
 impl Session {
@@ -204,6 +209,10 @@ impl Session {
             "status" | "info" => self.status(),
             "regs" => self.cmd_regs(&a),
             "setreg" => self.cmd_setreg(&a),
+            "return" => self.cmd_return(&a),
+            "jump" => self.cmd_jump(&a),
+            "gcore" => self.cmd_gcore(&a),
+            "list" => self.cmd_list(&a),
             "calls" => self.cmd_calls(&a),
             "break" | "b" | "tbreak" => self.cmd_break(cmd == "tbreak", &words[1..], &a),
             "breaks" | "watches" => Ok(self.cmd_breaks()),
@@ -226,6 +235,8 @@ impl Session {
                 }
             }
             "stop" => self.stop_now(),
+            "stops" => self.cmd_stops(&a),
+            "signal" => self.cmd_signal(&a),
             "mem" | "x" => self.cmd_mem(&a),
             "write" => self.cmd_write(&a),
             "dump" => self.cmd_dump(&a),
@@ -236,7 +247,7 @@ impl Session {
             "locals" => self.cmd_locals(),
             "bt" => self.cmd_bt(&a),
             "dis" | "disasm" => self.cmd_dis(&a),
-            "threads" => self.cmd_threads(),
+            "threads" => self.cmd_threads(&a),
             "thread" => self.cmd_thread(&a),
             "frame" => self.cmd_frame(&a),
             "up" | "down" => self.cmd_up(&a, cmd == "up"),
@@ -250,16 +261,25 @@ impl Session {
                 Ok(rows("log", self.log.iter().cloned().collect(), json!({})))
             }
             "history" => Ok(self.cmd_history(&a)),
+            "record" => self.cmd_record(&a),
+            "back" => self.cmd_back(&a),
+            "rstepi" => self.cmd_rstepi(&a),
+            "rcont" => self.cmd_rcont(&a),
             "stdin" => crate::stdin::exec(self, words),
             "catch" if a.pos.first().is_some_and(|w| w == "syscall") => self.cmd_catch_syscall(&a.pos[1..]),
             "catch" if a.pos.first().is_some_and(|w| w == "load" || w == "unload") => self.cmd_catch_load(&a),
+            "catch" if a.pos.first().is_some_and(|w| catch::catch_symbols(w).is_some()) => self.cmd_catch_event(&a),
             "catch" | "catches" => self.cmd_catch(&a),
             "strace" => self.cmd_strace(&a),
             "ltrace" => self.cmd_ltrace(&a),
             "hook" => self.cmd_hook(&words[1..]),
             "hooks" => self.cmd_hook(&[]),
+            "heap" => self.cmd_heap(&a),
             "cover" => self.cmd_cover(&words[1..]),
             "kill" => self.cmd_kill(&a),
+            "checkpoint" => self.cmd_checkpoint(&a),
+            "checkpoints" => self.cmd_checkpoints(),
+            "restart" => self.cmd_restart(&a),
             "detach" => self.cmd_detach(),
             "follow" => self.cmd_follow(&a),
             "name" | "note" => self.cmd_keep(cmd == "name", &words[1..]),

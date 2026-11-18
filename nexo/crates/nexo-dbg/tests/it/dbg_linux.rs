@@ -196,6 +196,16 @@ fn threads_are_listed() {
 }
 
 #[test]
+fn threads_bt_shows_the_name_and_a_backtrace() {
+    let (mut s, _) = start("thread");
+    run(&mut s, "break dbg_add");
+    run(&mut s, "cont");
+    let t = run(&mut s, "threads --bt 3");
+    assert!(t.contains("thread") && t.contains("#0"), "{t}");
+    run(&mut s, "kill");
+}
+
+#[test]
 fn attach_stops_a_running_program_and_detach_lets_it_go() {
     let mut child = std::process::Command::new(target()).arg("attach").spawn().unwrap();
     let pid = child.id();
@@ -212,4 +222,79 @@ fn attach_stops_a_running_program_and_detach_lets_it_go() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(gone(pid));
+}
+
+#[test]
+fn compact_stops_are_one_line_with_displays_and_a_crash_stays_full() {
+    let (mut s, _) = start("loop");
+    assert!(run(&mut s, "stops").contains("full"));
+    run(&mut s, "break dbg_add");
+    assert!(run(&mut s, "stops compact").contains("compact"));
+    run(&mut s, "display DBG_COUNTER");
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("breakpoint #1") && stop.contains("dbg_add") && stop.contains("DBG_COUNTER="), "{stop}");
+    assert!(stop.contains("stops full") && !stop.contains("pc 0x") && !stop.contains("=> "), "{stop}");
+    let again = run(&mut s, "cont");
+    assert_eq!(again.lines().count(), 1, "{again}");
+    run(&mut s, "kill");
+    let (mut c, _) = start("crash");
+    run(&mut c, "stops compact");
+    let crash = run(&mut c, "cont");
+    assert!(crash.contains("SIGSEGV") && crash.contains("backtrace:"), "{crash}");
+    run(&mut c, "kill");
+}
+
+#[test]
+fn heap_check_stops_on_a_double_free_and_lists_the_leak() {
+    let (mut s, _) = start("heap");
+    let t = run(&mut s, "heap on");
+    assert!(t.contains("heap check on: malloc calloc realloc free"), "{t}");
+    let t = run(&mut s, "cont");
+    assert!(t.contains("heap: double free of 0x") && t.contains("allocated at") && t.contains("first freed at"), "{t}");
+    let t = run(&mut s, "heap leaks");
+    assert!(t.contains("100 bytes in 1 block"), "{t}");
+    assert!(run(&mut s, "heap").contains("heap: "));
+    let t = run(&mut s, "heap off");
+    assert!(t.contains("heap check off"), "{t}");
+    run(&mut s, "kill");
+}
+
+fn counter(s: &mut Session) -> String {
+    run(s, "mem DBG_COUNTER 8 --as u64")
+}
+
+#[test]
+fn checkpoint_and_restart_bring_the_counter_back_and_kill_leave_no_process() {
+    let (mut s, _) = start("loop");
+    run(&mut s, "break dbg_add");
+    run(&mut s, "cont");
+    let made = run(&mut s, "checkpoint");
+    assert!(made.contains("checkpoint #1 made") && made.contains("not rewound"), "{made}");
+    let pid: u32 = made
+        .split("pid ")
+        .nth(1)
+        .and_then(|t| t.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no pid in {made}"));
+    assert_ne!(pid, s.t.pid());
+    assert!(run(&mut s, "checkpoints").contains("#1 pid"), "list");
+    // dbg_add(0, 1) has not been added yet: the counter reads 0 here and 1 + 2 = 3 two hits later
+    let before = counter(&mut s);
+    run(&mut s, "cont");
+    run(&mut s, "cont");
+    let moved = counter(&mut s);
+    assert_ne!(before, moved, "the counter did not move: {moved}");
+    let old = s.t.pid();
+    let back = run(&mut s, "restart 1");
+    assert!(back.contains("back at checkpoint #1") && back.contains("breakpoint"), "{back}");
+    assert!(gone(old), "the process left is still there");
+    let c = counter(&mut s);
+    assert_eq!(c, before, "the counter is not back to what it was at the checkpoint");
+    // the checkpoint stays usable
+    let again = run(&mut s, "restart 1");
+    assert!(again.contains("back at checkpoint #1"), "{again}");
+    let stored = s.checkpoints[0].mark.pid;
+    run(&mut s, "kill");
+    assert!(gone(stored), "checkpoint process {stored} is still there");
+    assert!(s.checkpoints.is_empty());
 }

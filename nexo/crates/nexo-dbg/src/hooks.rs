@@ -61,6 +61,22 @@ pub struct Hook {
     /// On the program's own stub for an import: the stubs and `call [slot]` sites for the same import in libraries
     /// loaded later, which reach the function without passing the program's stub. `None` elsewhere.
     pub also: Option<Vec<(u64, Option<u8>)>>,
+    /// A hook of the heap check (`heap on`): it follows this allocation function and writes no trace line.
+    pub heap: Option<crate::heap::HeapFn>,
+}
+
+/// An allocation call of the heap check whose entry was seen, waiting for its return.
+#[derive(Debug, Clone)]
+pub struct HeapCall {
+    pub f: crate::heap::HeapFn,
+    /// The pointer given to `realloc`, else 0.
+    pub old: u64,
+    /// The bytes asked for.
+    pub size: u64,
+    /// Where `posix_memalign` stores the block's address.
+    pub out: u64,
+    /// The caller frames at the entry.
+    pub bt: Vec<u64>,
 }
 
 /// A call whose entry was seen, waiting for its return.
@@ -76,6 +92,8 @@ pub struct Pending {
     pub text: String,
     /// What the function returns, from its prototype.
     pub ret: Option<Shape>,
+    /// The call is the heap check's.
+    pub heap: Option<HeapCall>,
 }
 
 fn is_float(ty: &str) -> bool {
@@ -740,6 +758,8 @@ impl Session {
     /// or its stack slot. The text says what was done.
     fn set_arg(&mut self, tid: Tid, sig: Option<&Sig>, r: &mut Regs, call_len: Option<u8>, n: usize, v: u64) -> String {
         let os = self.t.os();
+        // a stack slot written here is not in the record: entries before it cannot be undone across it
+        self.tape.cut();
         // `hook` takes `set` only for a scalar: past the prototype's arguments, an integer
         let ty = sig.and_then(|s| s.args.get(n)).and_then(Shape::scalar);
         let shown = match ty {
@@ -814,31 +834,40 @@ impl Session {
                 self.tr.pending.iter().rposition(|p| p.tid == tid && p.ret_addr == addr && p.sp_after == sp)
             {
                 let p = self.tr.pending.remove(i);
-                let ty = p.ret.as_ref().and_then(Shape::scalar);
-                let mut ret = match &p.ret {
-                    Some(Shape::Agg(a)) => match self.returned_agg(tid, a, &r) {
-                        Ok(b) => agg_text(a, &b),
-                        Err(why) => format!("? ({why})"),
-                    },
-                    Some(Shape::Unknown(t)) => format!("? (a {t} the file does not describe)"),
-                    _ => match self.returned(tid, ty, &r) {
-                        Ok(got) => self.ret_text(ty, got),
-                        Err(why) => format!("? ({why})"),
-                    },
-                };
-                if let Some(h) = p.hook.and_then(|id| self.tr.hooks.iter_mut().find(|h| h.id == id)) {
-                    h.returns += 1;
-                    if let Some(v) = h.ret {
-                        match self.set_returned(tid, ty, &mut r, v) {
-                            Ok(()) => {
-                                let now = self.ret_text(ty, v);
-                                ret = format!("{ret}, changed to {now}");
+                if let Some(call) = &p.heap {
+                    if let Some(h) = p.hook.and_then(|id| self.tr.hooks.iter_mut().find(|h| h.id == id)) {
+                        h.returns += 1;
+                    }
+                    if let Some(why) = self.heap_returned(&r, call) {
+                        verdict = Some((tid, why));
+                    }
+                } else {
+                    let ty = p.ret.as_ref().and_then(Shape::scalar);
+                    let mut ret = match &p.ret {
+                        Some(Shape::Agg(a)) => match self.returned_agg(tid, a, &r) {
+                            Ok(b) => agg_text(a, &b),
+                            Err(why) => format!("? ({why})"),
+                        },
+                        Some(Shape::Unknown(t)) => format!("? (a {t} the file does not describe)"),
+                        _ => match self.returned(tid, ty, &r) {
+                            Ok(got) => self.ret_text(ty, got),
+                            Err(why) => format!("? ({why})"),
+                        },
+                    };
+                    if let Some(h) = p.hook.and_then(|id| self.tr.hooks.iter_mut().find(|h| h.id == id)) {
+                        h.returns += 1;
+                        if let Some(v) = h.ret {
+                            match self.set_returned(tid, ty, &mut r, v) {
+                                Ok(()) => {
+                                    let now = self.ret_text(ty, v);
+                                    ret = format!("{ret}, changed to {now}");
+                                }
+                                Err(e) => ret = format!("{ret}, not changed: {e}"),
                             }
-                            Err(e) => ret = format!("{ret}, not changed: {e}"),
                         }
                     }
+                    self.tr.push(p.kind, &p.name, format!("{} = {ret}", p.text));
                 }
-                self.tr.push(p.kind, &p.name, format!("{} = {ret}", p.text));
             }
         }
         let site = self
@@ -850,7 +879,7 @@ impl Session {
             let r = self.t.regs(tid)?;
             let sig = nexo_bin::libc_proto(&s.name).map(|p| Sig::new(None, p));
             let (text, ret) = self.call_args(tid, &s.name, sig.as_ref(), &r, false, s.call_len);
-            self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret)?;
+            self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret, None)?;
         }
         let ids: Vec<(u32, Option<u8>)> = self
             .tr
@@ -863,6 +892,16 @@ impl Session {
             .collect();
         for (id, call_len) in ids {
             let Some(i) = self.tr.hooks.iter().position(|h| h.id == id) else { continue };
+            if let Some(f) = self.tr.hooks[i].heap {
+                self.tr.hooks[i].hits += 1;
+                let r = self.t.regs(tid)?;
+                if let Some(why) = self.heap_entry(tid, id, f, &r, call_len)? {
+                    if verdict.is_none() {
+                        verdict = Some((tid, why));
+                    }
+                }
+                continue;
+            }
             let h = Hook { call_len, ..self.tr.hooks[i].clone() };
             self.tr.hooks[i].hits += 1;
             let mut r = self.t.regs(tid)?;
@@ -895,7 +934,7 @@ impl Session {
                 }
             }
             text.push_str(&format!(" [hit {}]", h.hits + 1));
-            self.pend(tid, &r, h.call_len, Kind::Hook, Some(id), &h.name, text.clone(), ret)?;
+            self.pend(tid, &r, h.call_len, Kind::Hook, Some(id), &h.name, text.clone(), ret, None)?;
             if h.stop && verdict.is_none() {
                 verdict = Some((tid, Why::Hook(id, text)));
             }
@@ -904,7 +943,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn pend(
+    pub(crate) fn pend(
         &mut self,
         tid: Tid,
         r: &Regs,
@@ -914,13 +953,16 @@ impl Session {
         name: &str,
         text: String,
         ret: Option<Shape>,
+        heap: Option<HeapCall>,
     ) -> Result<()> {
         let (ret_addr, sp_after) = match call_len {
             None => {
                 // a 32-bit program's return address has 4 bytes
                 let n = if r.x32 { 4 } else { 8 };
                 let Some(back) = self.word_at(r.rsp(), n) else {
-                    self.tr.push(kind, name, format!("{text} = ? (return address unreadable)"));
+                    if heap.is_none() {
+                        self.tr.push(kind, name, format!("{text} = ? (return address unreadable)"));
+                    }
                     return Ok(());
                 };
                 (back, r.rsp() + n as u64)
@@ -928,7 +970,9 @@ impl Session {
             Some(len) => (r.rip + len as u64, r.rsp()),
         };
         if self.tr.pending.len() >= PENDING_MAX {
-            self.tr.push(kind, name, format!("{text} = ? (too many calls in flight to follow this one)"));
+            if heap.is_none() {
+                self.tr.push(kind, name, format!("{text} = ? (too many calls in flight to follow this one)"));
+            }
             return Ok(());
         }
         // an i386 System V function pops the hidden pointer for a result it returns through memory
@@ -936,19 +980,19 @@ impl Session {
         let popped =
             r.x32 && os != Os::Windows && ret.as_ref().is_some_and(|s| s.hidden_return(os, true) == Some(true));
         let sp_after = sp_after + if popped { 4 } else { 0 };
-        self.tr.pending.push(Pending { tid, ret_addr, sp_after, kind, hook, name: name.into(), text, ret });
+        self.tr.pending.push(Pending { tid, ret_addr, sp_after, kind, hook, name: name.into(), text, ret, heap });
         Ok(())
     }
 
     /// The program ended: calls still in flight never returned.
     pub(crate) fn hooks_end(&mut self) {
-        for p in std::mem::take(&mut self.tr.pending) {
+        for p in std::mem::take(&mut self.tr.pending).into_iter().filter(|p| p.heap.is_none()) {
             self.tr.push(p.kind, &p.name, format!("{} = ? (its return was not seen)", p.text));
         }
     }
 
     /// The import calls of the program, by memory address.
-    fn lib_sites(&self) -> BTreeMap<u64, Site> {
+    pub(crate) fn lib_sites(&self) -> BTreeMap<u64, Site> {
         let bias = self.mods.main_bias();
         nexo_bin::import_sites(self.mods.main_image())
             .into_iter()
@@ -1015,19 +1059,20 @@ impl Session {
                 ))
             }
             Some("del") | Some("delete") => {
-                let before = self.tr.hooks.len();
+                // the heap check's own hooks go with `heap off`
+                let before = self.tr.hooks.iter().filter(|h| h.heap.is_none()).count();
                 match w.get(1).copied() {
-                    Some("all") => self.tr.hooks.clear(),
+                    Some("all") => self.tr.hooks.retain(|h| h.heap.is_some()),
                     Some(x) => {
                         let id: u32 = x
                             .trim_start_matches('#')
                             .parse()
                             .map_err(|_| crate::Error::Usage("hook del <id>|all".into()))?;
-                        self.tr.hooks.retain(|h| h.id != id);
+                        self.tr.hooks.retain(|h| h.id != id || h.heap.is_some());
                     }
                     None => return usage("hook del <id>|all"),
                 }
-                let gone = before - self.tr.hooks.len();
+                let gone = before - self.tr.hooks.iter().filter(|h| h.heap.is_none()).count();
                 if gone == 0 {
                     return fail("no such hook: `hooks` lists them");
                 }
@@ -1140,12 +1185,26 @@ impl Session {
         }
         l.push("`cont`, then `hook show`; `hooks` lists the counters".into());
         let also = (addr != 0 && call_len.is_none() && self.lib_sites().contains_key(&addr)).then(Vec::new);
-        self.tr.hooks.push(Hook { id, addr, name, sig, call_len, bt, stop, set, ret, hits: 0, returns: 0, also });
+        self.tr.hooks.push(Hook {
+            id,
+            addr,
+            name,
+            sig,
+            call_len,
+            bt,
+            stop,
+            set,
+            ret,
+            hits: 0,
+            returns: 0,
+            also,
+            heap: None,
+        });
         Ok(rows("hook", l, json!({"id": id, "addr": addr})))
     }
 
     /// Where a hook goes: (memory address, call length when on a `call [slot]`, name, file address in the program).
-    fn hook_place(&mut self, place: &str) -> Result<(u64, Option<u8>, String, Option<u64>)> {
+    pub(crate) fn hook_place(&mut self, place: &str) -> Result<(u64, Option<u8>, String, Option<u64>)> {
         let bias = self.mods.main_bias();
         match self.resolve_place(place) {
             Ok(Place::Code(x)) => {
@@ -1185,7 +1244,7 @@ impl Session {
 
     fn hook_list(&mut self) -> Output {
         let mut l = Vec::new();
-        for h in &self.tr.hooks {
+        for h in self.tr.hooks.iter().filter(|h| h.heap.is_none()) {
             let mut what = Vec::new();
             if h.bt > 0 {
                 what.push(format!("bt {}", h.bt));

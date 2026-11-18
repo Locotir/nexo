@@ -19,6 +19,7 @@ mod decomp;
 mod disasm;
 mod dwarf;
 mod emu;
+mod findx;
 mod fnview;
 mod funcs;
 mod graph;
@@ -60,6 +61,8 @@ mod tests_debuglink;
 #[cfg(test)]
 mod tests_diff;
 #[cfg(test)]
+mod tests_find;
+#[cfg(test)]
 mod tests_fmt;
 #[cfg(test)]
 mod tests_harden;
@@ -78,6 +81,8 @@ mod tests_raw;
 #[cfg(test)]
 mod tests_sigs;
 #[cfg(test)]
+mod tests_slide;
+#[cfg(test)]
 mod tests_syms;
 #[cfg(test)]
 mod tests_wasm;
@@ -88,18 +93,19 @@ mod tests_x86_32;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod wasm_fixture;
 
-pub use asm::{assemble, assembly};
+pub use asm::{assemble, assembly, assembly_arm64};
 pub use bindiff::diff_window;
 pub use cfg::cfg_op;
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use emu::{emulate, limits as emu_limits, EmuSpec};
+pub use findx::{find_asm_in, find_seq_in, find_str_in, DEFAULT_LIMIT as FIND_LIMIT};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use graph::{path_window, tree_window};
 pub use hookinfo::{
     arg_count, block_starts, import_sites, libc_proto, parse_proto, proto_at, typedef_of, ImportSite, Proto,
 };
-pub use image::{crc32, opens, DebugLookup, Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use image::{crc32, demangle, opens, DebugLookup, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use live::{
     decode_live, decode_live_in, describe_addr, indirect_call_target, indirect_call_target_in, indirect_calls,
     nearest_symbol, place_of, slot_use, LiveIns, LiveMem, Place, SlotUse, MAX_INDIRECT_CALLS,
@@ -121,8 +127,8 @@ pub use ops::{
     strings_window, StrSort,
 };
 pub use overview::{overview, overview_window};
-pub use page::{shell_word, Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
-pub use patch::{patch, PatchData, PatchTarget};
+pub use page::{project_items, shell_word, Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
+pub use patch::{patch, patch_file, patch_with, PatchData, PatchOpts, PatchTarget};
 pub use place::{addr_in, any_addr_in, close_names, is_span, range_in, AddrExpr, RangeExpr, ADDR_FORMS, RANGE_FORMS};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
 pub use sigs::{

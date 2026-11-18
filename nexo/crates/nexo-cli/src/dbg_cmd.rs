@@ -9,7 +9,8 @@ use nexo_dbg::{Error, Host, Kind};
 #[derive(Args, Debug)]
 pub struct DbgArgs {
     /// `run <exe> [args]`, `attach <pid>`, `sessions`, `end`, or a command for a live session (`help` lists them).
-    /// Also: `-s <id>` picks a session when more than one is live; `--lines N`, `--from X`, `--json` as in `nexo bin`.
+    /// Also: `-s <id>` picks a session when more than one is live; `--lines N`, `--from X`, `--grep RE`, `--json`
+    /// as in `nexo bin`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0.., value_name = "COMMAND")]
     pub words: Vec<String>,
 }

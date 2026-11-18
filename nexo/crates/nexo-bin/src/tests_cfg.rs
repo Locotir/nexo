@@ -228,13 +228,13 @@ fn an_address_inside_the_function_names_it_and_arm64_is_refused_honestly() {
     assert!(by_name.starts_with(&format!("cfg pick {start:#x}..")), "{by_name}");
     // no function there
     assert!(cfg_op(&img, "no_such_function").is_err());
-    // AArch64: no graph is better than a wrong one
+    // AArch64: the graph comes from the decoder's flow (more in a64/tests_img.rs)
     let arm = dir.path().join("arm");
     std::fs::write(&arm, crate::a64::fixture::elf(true).bytes).unwrap();
     let img = Image::open(&arm).unwrap();
     let a = img.funcs()[0].start;
-    let e = cfg_op(&img, &format!("{a:#x}")).unwrap_err().to_string();
-    assert!(e.contains("cfg of") && e.contains("does not read AArch64 code yet"), "{e}");
+    let t = whole(&cfg_op(&img, &format!("{a:#x}")).unwrap());
+    assert!(t.contains("blocks 1, edges 2, loops 0, instructions 6"), "{t}");
 }
 
 // ---------------------------------------------------------------------------------------------

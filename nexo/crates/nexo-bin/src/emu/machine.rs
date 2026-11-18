@@ -10,12 +10,19 @@ impl<'a> Machine<'a> {
             mem: Mem::default(),
             ms_abi,
             heap_next: HEAP_BASE + 0x10,
+            a64: None,
             blocks: BTreeMap::new(),
             stdout: Vec::new(),
             stderr: Vec::new(),
             dropped_output: 0,
             calls: Vec::new(),
             calls_total: 0,
+            sys_total: 0,
+            unlogged: 0,
+            unlogged_sys: 0,
+            max_calls: DEFAULT_CALLS,
+            sys: sys::Sys::new(),
+            hooks: hook::Hooks::default(),
             regions: Vec::new(),
             imports: Vec::new(),
             overrides: HashMap::new(),
@@ -127,6 +134,10 @@ impl<'a> Machine<'a> {
 
     /// Argument `i` (from 0) of the call being stubbed: rsp points at the return address.
     pub(crate) fn arg(&self, i: usize) -> std::result::Result<u64, Fault> {
+        if let Some(a) = &self.a64 {
+            // AAPCS64: x0..x7, then the stack at sp
+            return if i < 8 { Ok(a.x[i]) } else { self.mem.read_u(a.sp.wrapping_add(8 * (i - 8) as u64), 8) };
+        }
         let regs: &[usize] = if self.ms_abi { &[1, 2, 8, 9] } else { &[7, 6, 2, 1, 8, 9] };
         if i < regs.len() {
             return Ok(self.cpu.gpr[regs[i]]);
@@ -159,15 +170,17 @@ impl<'a> Machine<'a> {
             }
         }
         if (STACK_TOP - STACK_SIZE..STACK_TOP).contains(&a) {
+            let sp0 = if self.a64.is_some() { "sp0" } else { "rsp0" };
             return if a >= self.rsp0 {
-                format!("stack rsp0+{:#x}", a - self.rsp0)
+                format!("stack {sp0}+{:#x}", a - self.rsp0)
             } else {
-                format!("stack rsp0-{:#x}", self.rsp0 - a)
+                format!("stack {sp0}-{:#x}", self.rsp0 - a)
             };
         }
         if (TLS_BASE..TLS_BASE + 0x2000).contains(&a) {
             let fs = TLS_BASE + 0x1000;
-            return if a >= fs { format!("fs+{:#x}", a - fs) } else { format!("fs-{:#x}", fs - a) };
+            let tp = if self.a64.is_some() { "tp" } else { "fs" };
+            return if a >= fs { format!("{tp}+{:#x}", a - fs) } else { format!("{tp}-{:#x}", fs - a) };
         }
         if a >= IMPORT_BASE && a < IMPORT_BASE + 16 * self.imports.len() as u64 {
             let i = ((a - IMPORT_BASE) / 16) as usize;
@@ -232,10 +245,23 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn log_call(&mut self, site: u64, text: String) {
+    pub(super) fn log_call(&mut self, site: u64, text: String) {
+        self.log_kind(site, text, false);
+    }
+
+    /// Log a call; past `--max-calls` it is counted, not kept.
+    pub(super) fn log_kind(&mut self, site: u64, text: String, is_sys: bool) {
         self.calls_total += 1;
-        if self.calls.len() < MAX_CALLS {
+        if is_sys {
+            self.sys_total += 1;
+        }
+        if self.calls.len() < self.max_calls {
             self.calls.push(CallRec { site, text });
+        } else {
+            self.unlogged += 1;
+            if is_sys {
+                self.unlogged_sys += 1;
+            }
         }
     }
 

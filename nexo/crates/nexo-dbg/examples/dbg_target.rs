@@ -5,6 +5,7 @@
 //!   echo            copy lines from standard input to standard output until it closes
 //!   thread          a second thread runs `dbg_add` in a loop
 //!   attach          allow any process of this user to attach, then sleep until killed
+//!   heap            leak one 100-byte block, free another twice (the heap check's test)
 
 use std::io::BufRead;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,6 +59,16 @@ fn main() {
             println!("about to crash");
             let p = std::hint::black_box(std::ptr::null::<u64>());
             println!("{}", dbg_crash(p));
+        }
+        "heap" => {
+            // SAFETY: the double free is the point; the process is stopped at it by the debugger under test.
+            unsafe {
+                let leaked = libc::malloc(std::hint::black_box(100));
+                let twice = libc::malloc(std::hint::black_box(50));
+                libc::free(twice);
+                libc::free(twice);
+                std::hint::black_box(leaked);
+            }
         }
         "echo" => {
             for line in std::io::stdin().lock().lines().map_while(Result::ok) {

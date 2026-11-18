@@ -258,6 +258,11 @@ pub trait Target {
     fn pid(&self) -> u32;
     /// True when this debugger started the program (it is then killed, not let go, at teardown).
     fn launched(&self) -> bool;
+    /// True when the program is a live process of this machine whose `/proc/<pid>/task/<tid>` files can be read
+    /// (a local Linux launch or attach; not a core file, a remote stub or another system).
+    fn local_proc(&self) -> bool {
+        false
+    }
     fn threads(&self) -> Vec<Tid>;
     fn regs(&mut self, tid: Tid) -> Result<Regs>;
     fn set_regs(&mut self, tid: Tid, regs: &Regs) -> Result<()>;
