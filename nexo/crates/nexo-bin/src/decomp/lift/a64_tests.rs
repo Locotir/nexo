@@ -247,3 +247,211 @@ fn carry_after_an_add_or_a_logic_op_is_the_carry() {
         assert!(d.contains("Flags(Logic") && d.contains("Cc(2)"), "{d}");
     }
 }
+
+// AArch64 switch jump tables: words from clang and gcc (encoded with llvm-mc), table bytes after the code.
+
+use crate::a64::fixture::{add_imm, adrp, mov_w};
+
+const MOV_W8_W0: u32 = 0x2a00_03e8;
+const LDRB_W11_X9_X8: u32 = 0x3868_692b; // ldrb w11, [x9, x8]
+const LDRH_W11_X9_X8_LSL1: u32 = 0x7868_792b; // ldrh w11, [x9, x8, lsl #1]
+const LDRSW_X11_X9_X8_LSL2: u32 = 0xb8a8_792b; // ldrsw x11, [x9, x8, lsl #2]
+const ADD_X10_X10_X11_LSL2: u32 = 0x8b0b_094a; // add x10, x10, x11, lsl #2
+const ADD_X10_X10_X11: u32 = 0x8b0b_014a; // add x10, x10, x11
+const BR_X10: u32 = 0xd61f_0140;
+const BR_X4: u32 = 0xd61f_0080;
+const LDRSB_W3_X1_W0_UXTW: u32 = 0x38e0_4823; // ldrsb w3, [x1, w0, uxtw]
+const LDRH_W3_X1_W0_UXTW1: u32 = 0x7860_5823; // ldrh w3, [x1, w0, uxtw #1]
+const ADD_X4_X2_W3_SXTB2: u32 = 0x8b23_8844; // add x4, x2, w3, sxtb #2
+const ADD_X4_X2_W3_SXTH2: u32 = 0x8b23_a844; // add x4, x2, w3, sxth #2
+const LDR_X10_X9_X8_LSL3: u32 = 0xf868_792a; // ldr x10, [x9, x8, lsl #3]
+
+fn cmp_w0(n: u32) -> u32 {
+    0x7100_001f | (n << 10)
+}
+
+fn b_cond(cc: u32, from: u64, to: u64) -> u32 {
+    0x5400_0000 | ((((to as i64 - from as i64) >> 2) as u32 & 0x7_ffff) << 5) | cc
+}
+
+fn adr(rd: u32, from: u64, to: u64) -> u32 {
+    let d = (to as i64 - from as i64) as u32;
+    0x1000_0000 | ((d & 3) << 29) | (((d >> 2) & 0x7_ffff) << 5) | rd
+}
+
+/// Four cases that return 10..13, then the default that returns 0.
+fn bodies() -> Vec<u32> {
+    let mut w = Vec::new();
+    for i in 0..4 {
+        w.extend([mov_w(0, 10 + i), RET]);
+    }
+    w.extend([mov_w(0, 0), RET]);
+    w
+}
+
+fn with_table(mut w: Vec<u32>, table: &[u8]) -> Vec<u32> {
+    for c in table.chunks(4) {
+        let mut b = [0u8; 4];
+        b[..c.len()].copy_from_slice(c);
+        w.push(u32::from_le_bytes(b));
+    }
+    w
+}
+
+/// Which table shape clang used.
+#[derive(Clone, Copy)]
+enum Clang {
+    Byte,
+    Half,
+    Word,
+}
+
+/// clang: `cmp w0,#3 ; b.hi def ; mov w8,w0 ; adrp ; add ; adr ; ldr* ; add ; br x10`, then the cases.
+fn clang(at: u64, kind: Clang) -> Vec<u32> {
+    let table = at + 0x4c;
+    let (load, add, base) = match kind {
+        Clang::Byte => (LDRB_W11_X9_X8, ADD_X10_X10_X11_LSL2, at + 0x24),
+        Clang::Half => (LDRH_W11_X9_X8_LSL1, ADD_X10_X10_X11_LSL2, at + 0x24),
+        // the base is the `adr` itself
+        Clang::Word => (LDRSW_X11_X9_X8_LSL2, ADD_X10_X10_X11, at + 0x14),
+    };
+    let mut w = vec![
+        cmp_w0(3),
+        b_cond(8, at + 4, at + 0x44),
+        MOV_W8_W0,
+        adrp(9, at + 0xc, table),
+        add_imm(9, 9, (table & 0xfff) as u32),
+        adr(10, at + 0x14, base),
+        load,
+        add,
+        BR_X10,
+    ];
+    w.extend(bodies());
+    let case = |i: u64| at + 0x24 + 8 * i;
+    let mut t: Vec<u8> = Vec::new();
+    for i in 0..4 {
+        let off = case(i) - base;
+        match kind {
+            Clang::Byte => t.push((off / 4) as u8),
+            Clang::Half => t.extend(((off / 4) as u16).to_le_bytes()),
+            Clang::Word => t.extend((off as u32).to_le_bytes()),
+        }
+    }
+    with_table(w, &t)
+}
+
+/// gcc: `cmp w0,#3 ; b.hi def ; adrp ; add ; ldr w3,[x1,w0,uxtw] ; adr x2,.Lrtx ; add x4,x2,w3,ext #2 ; br x4`. The
+/// base is case 2, so the entries of cases 0 and 1 are negative.
+fn gcc(at: u64, load: u32, add: u32, wide: bool) -> Vec<u32> {
+    let table = at + 0x48;
+    let mut w = vec![
+        cmp_w0(3),
+        b_cond(8, at + 4, at + 0x40),
+        adrp(1, at + 8, table),
+        add_imm(1, 1, (table & 0xfff) as u32),
+        load,
+        adr(2, at + 0x14, at + 0x30),
+        add,
+        BR_X4,
+    ];
+    w.extend(bodies());
+    let mut t: Vec<u8> = Vec::new();
+    for i in 0..4i64 {
+        let e = (at as i64 + 0x20 + 8 * i - (at as i64 + 0x30)) / 4;
+        if wide {
+            t.extend((e as i16).to_le_bytes());
+        } else {
+            t.push(e as i8 as u8);
+        }
+    }
+    with_table(w, &t)
+}
+
+fn expected(at: u64, first: u64) -> Vec<u64> {
+    (0..4).map(|i| at + first + 8 * i).collect()
+}
+
+/// The case targets of the first switch, as addresses.
+fn targets(f: &Lifted) -> Option<Vec<u64>> {
+    f.blocks.iter().find_map(|b| match &b.term {
+        Term::Switch(_, cases, _) => Some(cases.iter().map(|&(_, id)| f.blocks[id].addr).collect()),
+        _ => None,
+    })
+}
+
+fn is_a_switch(w: &[u32], first: u64) {
+    let f = lifted(w);
+    assert_eq!(f.tables, 1);
+    assert_eq!(f.unresolved_jumps, 0);
+    assert_eq!(targets(&f), Some(expected(BASE, first)));
+    let t = text(w);
+    println!("{t}");
+    assert!(t.contains("switch ("), "{t}");
+}
+
+#[test]
+fn clang_one_byte_entries_scaled_by_four_from_an_adr_base() {
+    is_a_switch(&clang(BASE, Clang::Byte), 0x24);
+}
+
+#[test]
+fn clang_two_byte_entries() {
+    is_a_switch(&clang(BASE, Clang::Half), 0x24);
+}
+
+#[test]
+fn clang_four_byte_entries_relative_to_the_adr() {
+    is_a_switch(&clang(BASE, Clang::Word), 0x24);
+}
+
+#[test]
+fn gcc_signed_byte_entries_with_a_negative_one() {
+    is_a_switch(&gcc(BASE, LDRSB_W3_X1_W0_UXTW, ADD_X4_X2_W3_SXTB2, false), 0x20);
+}
+
+#[test]
+fn gcc_signed_half_entries() {
+    is_a_switch(&gcc(BASE, LDRH_W3_X1_W0_UXTW1, ADD_X4_X2_W3_SXTH2, true), 0x20);
+}
+
+#[test]
+fn a_table_of_eight_byte_pointers_stays_unresolved() {
+    // cmp ; b.hi ; adrp ; add ; ldr x10,[x9,x8,lsl #3] ; br x10 : not a shape recovered here
+    let at = BASE;
+    let table = at + 0x1c;
+    let mut w = vec![
+        cmp_w0(3),
+        b_cond(8, at + 4, at + 0x1c),
+        MOV_W8_W0,
+        adrp(9, at + 0xc, table),
+        add_imm(9, 9, (table & 0xfff) as u32),
+        LDR_X10_X9_X8_LSL3,
+        BR_X10,
+    ];
+    w.extend([RET, RET]);
+    let f = lifted(&w);
+    assert_eq!(f.tables, 0);
+    assert_eq!(f.unresolved_jumps, 1);
+    assert!(targets(&f).is_none());
+}
+
+#[test]
+fn a_br_without_a_bound_check_stays_unresolved() {
+    let mut w = clang(BASE, Clang::Byte);
+    // the compare becomes a nop: no bound, no table
+    w[0] = 0xd503_201f;
+    let f = lifted(&w);
+    assert_eq!(f.tables, 0);
+    assert_eq!(f.unresolved_jumps, 1);
+}
+
+#[test]
+fn entries_that_leave_the_function_stay_unresolved() {
+    let mut w = clang(BASE, Clang::Byte);
+    // the last table word: entry 3 points far outside
+    let n = w.len();
+    w[n - 1] = 0x7f04_0200;
+    let f = lifted(&w);
+    assert_eq!(f.tables, 0);
+    assert_eq!(f.unresolved_jumps, 1);
+}

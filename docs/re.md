@@ -123,7 +123,7 @@ Ops are one per line or separated by `;`, `#` lines are comments. Each answer co
 | Code | Works | Refused |
 | --- | --- | --- |
 | x86-64 | Every op | |
-| arm64 (AArch64) | `info`, `overview`, `syms`, `funcs`, `fn`, `decomp` (no jump tables yet), `xref`, `calls`, `tree`, `path`, `strings`, `bytes`, `find` (bytes, `--imm`, `--str`, `--asm`, `--seq`), `cfg`, `diff`, `slice` (both directions), `emu` (integer code; `svc`, SIMD and floating point stop by name), `patch --nop`, `patch --asm` | |
+| arm64 (AArch64) | `info`, `overview`, `syms`, `funcs`, `fn`, `decomp` (switch jump tables: clang and gcc forms with 1, 2 and 4 byte entries after a `cmp`+`b.hi`/`b.hs` bound; not recovered: 8 byte entries, other bound shapes, tables over 4096 cases, xrefs to case targets), `xref`, `calls`, `tree`, `path`, `strings`, `bytes`, `find` (bytes, `--imm`, `--str`, `--asm`, `--seq`), `cfg`, `diff`, `slice` (both directions), `emu` (integer code; `svc`, SIMD and floating point stop by name), `patch --nop`, `patch --asm` | |
 | x86-32 | `info`, `overview`, `funcs`, `fn`, `xref`, `calls`, `strings`, `bytes`, `find` | `decomp`, `emu`, `cfg`, `slice`, `diff`, nop and asm patches |
 
 The refused ops say so instead of printing a wrong answer. A bare x86-32 or arm64 dump: `--raw --arch x86-32` or `--raw --arch arm64`.
