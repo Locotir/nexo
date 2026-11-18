@@ -105,7 +105,7 @@ pub use graph::{path_window, tree_window};
 pub use hookinfo::{
     arg_count, block_starts, import_sites, libc_proto, parse_proto, proto_at, typedef_of, ImportSite, Proto,
 };
-pub use image::{crc32, opens, DebugLookup, Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use image::{crc32, demangle, opens, DebugLookup, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use live::{
     decode_live, decode_live_in, describe_addr, indirect_call_target, indirect_call_target_in, indirect_calls,
     nearest_symbol, place_of, slot_use, LiveIns, LiveMem, Place, SlotUse, MAX_INDIRECT_CALLS,
