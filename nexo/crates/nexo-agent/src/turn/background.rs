@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// Whether the spending has reached `max_cost` or `max_cost_day`: no model call is made past it, background
+/// requests included.
+fn limit_reached(session: f64, day: f64, session_limit: Option<f64>, day_limit: Option<f64>) -> bool {
+    matches!(budget::verdict(session, day, session_limit, day_limit), budget::Verdict::Stop(_))
+}
+
+/// `limit_reached` for this session's spending and today's.
+fn over_budget(st: &State) -> bool {
+    limit_reached(st.cost, budget::spent_today(), st.budget, st.config.agent.max_cost_day)
+}
+
 /// Asks the vendor for its model list in the background and fills what the
 /// limits still lack (context window, largest reply, prices).
 /// Weighs every background shell command that runs past `job_review` seconds with one tool-less request apart
@@ -17,7 +28,7 @@ pub(super) fn spawn_job_review(state: &Shared, jobs: Jobs) {
         loop {
             tokio::time::sleep(Duration::from_secs(tick)).await;
             let Some(state) = weak.upgrade() else { return };
-            let (first, client, target, retries, request, events) = {
+            let (first, client, target, retries, request, events, over) = {
                 let st = state.lock().await;
                 let a = &st.config.agent;
                 (
@@ -27,10 +38,15 @@ pub(super) fn spawn_job_review(state: &Shared, jobs: Jobs) {
                     a.retries,
                     crate::review::request_of(&st.history),
                     st.events.clone(),
+                    over_budget(&st),
                 )
             };
             drop(state);
             tick = crate::review::TICK_S.min(first.max(1));
+            // a spend limit reached means no more model calls, the reviews included
+            if over {
+                continue;
+            }
             let running: Vec<_> = jobs
                 .list()
                 .into_iter()
@@ -280,7 +296,7 @@ pub(super) fn spawn_suggest(state: &Shared) {
         let (req, cfg, client, retries, turns, events) = {
             let st = state.lock().await;
             // off in the configuration (the merged one, the managed policy included): nothing is asked, whoever asks
-            if !st.config.ui.suggest {
+            if !st.config.ui.suggest || over_budget(&st) {
                 return;
             }
             let Some(last) = st.last_request.as_ref() else { return };
@@ -482,6 +498,21 @@ mod suggest_tests {
         assert!(always_thinks(chat, &[], "deepseek-reasoner"));
         assert!(always_thinks(chat, &[], "openai/o3-mini"));
         assert!(!always_thinks(chat, &[], "llama3"));
+    }
+
+    /// A suggestion or a job review is a paid request: once `max_cost` or `max_cost_day` is reached it is not made.
+    #[test]
+    fn background_requests_wait_for_the_spend_limits() {
+        // no limit set: never over
+        assert!(!limit_reached(5.0, 5.0, None, None));
+        // the session limit
+        assert!(!limit_reached(0.5, 0.0, Some(1.0), None));
+        assert!(limit_reached(1.0, 0.0, Some(1.0), None));
+        // the day limit
+        assert!(!limit_reached(0.0, 1.5, None, Some(2.0)));
+        assert!(limit_reached(0.0, 2.0, None, Some(2.0)));
+        // either one is enough
+        assert!(limit_reached(0.1, 3.0, Some(1.0), Some(2.0)));
     }
 
     #[test]
