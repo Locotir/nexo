@@ -166,3 +166,28 @@ fn with_the_default_a_long_session_stays_bounded_and_keeps_the_rule() {
     assert!(last["tokens"].as_i64().unwrap() < 40_000, "{}", last["tokens"]);
     assert!(last["view"].to_string().contains("Never use unwrap in library code."));
 }
+
+#[test]
+fn a_line_of_the_start_note_is_not_a_rule_but_the_same_line_typed_is() {
+    let note = "[project at the start of this request]\nNever use unwrap in library code.\n\n[the person's message]\n";
+    let opening = [
+        user("Fix the overflow in the parser."),
+        said("On it."),
+        user(&format!("{note}Now build the next part.")),
+        said("On it."),
+        user("Go on."),
+        said("On it."),
+    ];
+    let (anchor, _) = session("", &opening, 250);
+    assert!(!anchor.contains("Standing instructions"), "{anchor}");
+    let typed = [
+        user("Fix the overflow in the parser."),
+        said("On it."),
+        user("Never use unwrap in library code."),
+        said("On it."),
+        user("Go on."),
+        said("On it."),
+    ];
+    let (anchor, _) = session("", &typed, 250);
+    assert!(anchor.contains("turn 2: Never use unwrap in library code."), "{anchor}");
+}

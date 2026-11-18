@@ -7,7 +7,7 @@ use crate::hindsight::UKind;
 use crate::json::{est, is_person, opaque_tokens, py_eq, strip_cc};
 use crate::learn::MODEL;
 use crate::mechanical::{squeeze, MARK};
-use crate::msg::{blocks, get_str, key_of};
+use crate::msg::{blocks, get_str, key_of, person_words};
 use crate::rules::{clip, rules_in};
 use crate::textops::{self};
 use crate::tools::{
@@ -375,7 +375,9 @@ impl Engine {
                 if !results && !text.trim().is_empty() {
                     self.rules.turn += 1;
                 }
-                for r in rules_in(&text) {
+                // of the person's message only their own words: a line of the note nexo put before them is not theirs
+                let words: Vec<&str> = texts.iter().map(|t| person_words(t)).collect();
+                for r in rules_in(&words.join("\n")) {
                     self.rules.add(mi, r, false);
                 }
             }
