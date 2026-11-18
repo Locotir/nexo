@@ -2118,6 +2118,7 @@ dependencies = [
  "crossterm",
  "ignore",
  "image",
+ "libc",
  "nexo-agent",
  "nexo-core",
  "nexo-providers",
