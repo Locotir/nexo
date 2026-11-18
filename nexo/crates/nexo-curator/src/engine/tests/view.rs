@@ -471,3 +471,38 @@ fn a_cut_inside_the_current_turn_keeps_the_request_the_person_just_made() {
     assert!(all[mark + PERSON_MARK.len()..].trim_start().starts_with("Can you do this?"), "{}", &all[mark..mark + 80]);
     assert_eq!(provider_valid(&view), Ok(()), "{view:?}");
 }
+
+#[test]
+fn a_cut_inside_the_current_turn_keeps_every_message_the_person_typed_in_it() {
+    // the person asks, then corrects the work twice while the agent runs: after a cut all three stay whole
+    let mut msgs = vec![json!({"role": "user", "content": format!("{PERSON_MARK}\nhola")})];
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Hola."}]}));
+    msgs.push(json!({"role": "user", "content": format!("{PERSON_MARK}\nPlease build the stitching module.")}));
+    for k in 0..3 {
+        msgs.extend(step(k, &format!("cat first{k}.rs"), &super::window::big(k + 1, 2500)));
+    }
+    let long: String =
+        (0..30).map(|k| format!("{k}. Use {} for {}.", word(k + 500), word(k + 600))).collect::<Vec<_>>().join(" ");
+    let m1_tail = "UNIQUE-TAIL-OF-THE-FIRST-CORRECTION";
+    msgs.push(
+        json!({"role": "user", "content": format!("{PERSON_MARK}\nActually, change the plan: {long} {m1_tail}")}),
+    );
+    let m1 = msgs.len() - 1;
+    for k in 3..7 {
+        msgs.extend(step(k, &format!("cat second{k}.rs"), &super::window::big(k + 1, 2500)));
+    }
+    msgs.push(json!({"role": "user", "content": format!("{PERSON_MARK}\nAnd keep the old names.")}));
+    let m2 = msgs.len() - 1;
+    for k in 7..17 {
+        msgs.extend(step(k, &format!("cat third{k}.rs"), &super::window::big(k + 1, 2500)));
+    }
+    let mut e = Engine::new(params("nudge=0;fresh=0;eoq=0;target=0;cap=0;hard=0;protect=4").unwrap());
+    e.set_budget(12_000);
+    e.sync(&msgs);
+    let view = e.view();
+    assert!(e.start > m2, "the cut lands after the last message of the person: start {} {:?}", e.start, e.stats);
+    let text = sent(&view);
+    assert!(text.contains(m1_tail), "the first correction ({m1}) is whole in the view");
+    assert!(text.contains("keep the old names"), "the second correction is in the view");
+    assert_eq!(provider_valid(&view), Ok(()), "{view:?}");
+}
