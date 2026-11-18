@@ -201,14 +201,16 @@ pub fn patch_with(
         PatchData::Bytes(s) => bytes(s)?,
         PatchData::Asm(s) => {
             if img.arm64 {
-                return Err(Error::Bad(
-                    "--asm does not assemble AArch64 (there is no assembler for it); give the encoded words as hex, \
-                     or use --nop N"
-                        .into(),
-                ));
+                if !at.is_multiple_of(4) {
+                    return Err(Error::Bad(format!(
+                        "{at:#x} is not 4-aligned: AArch64 instructions start on multiples of 4"
+                    )));
+                }
+                crate::a64::asm::assemble(s, at)?
+            } else {
+                img.require_x86("asm patch")?;
+                crate::assemble(s, at, img.bits)?
             }
-            img.require_x86("asm patch")?;
-            crate::assemble(s, at, img.bits)?
         }
         PatchData::Nop(n) => nop_bytes(img, at, n)?,
     };

@@ -10,6 +10,7 @@ mod fp;
 mod ls;
 mod text;
 
+pub(crate) mod asm;
 pub(crate) mod cfg;
 pub(crate) mod scan;
 pub(crate) mod view;
@@ -280,6 +281,9 @@ pub(crate) type R = Result<(), Why>;
 pub(crate) mod fixture;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_asm;
 
 #[cfg(test)]
 mod tests_img;
