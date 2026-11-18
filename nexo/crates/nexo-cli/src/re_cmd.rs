@@ -103,7 +103,10 @@ pub fn map() -> String {
     out.extend(nexo_dbg::COMMANDS.iter().map(|(n, about)| format!("  {:<width$}  {about}", first_name(n))));
     if !api.is_empty() {
         out.push("the API behind a website (nexo api; a HAR capture in, calls out; secrets only from env vars; `nexo re api <op>`):".to_string());
-        out.extend(api.iter().map(|(n, about)| format!("  {:<width$}  {about}", format!("api {n}"))));
+        out.extend(api.iter().map(|(n, about)| {
+            let name = format!("api {n}");
+            format!("  {name:<width$}  {about}")
+        }));
     }
     let both = clashes(&ops);
     if !both.is_empty() {

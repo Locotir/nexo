@@ -232,8 +232,16 @@ impl Server {
             }
         }
         let ctx = nexo_core::ToolContext::new(cwd);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-        let out = rt.block_on(nexo_core::Tool::run(&crate::api_tool::Api, json!({"command": line}), &ctx));
+        // this server runs inside the CLI's runtime, where `block_on` panics: the call gets a thread of its own
+        let out = std::thread::scope(|s| {
+            s.spawn(|| -> Result<nexo_core::ToolOutput, String> {
+                let rt =
+                    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+                Ok(rt.block_on(nexo_core::Tool::run(&crate::api_tool::Api, json!({"command": line}), &ctx)))
+            })
+            .join()
+        })
+        .map_err(|_| "api: the call stopped working".to_string())??;
         if out.is_error {
             Err(out.content)
         } else {
