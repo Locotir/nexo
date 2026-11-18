@@ -432,11 +432,15 @@ impl Run {
                     }
                 } else {
                     let seen = &messages;
+                    // the hooks and permission asks of the group's calls come one at a time, in order, as in the main
+                    // turn; only their runs overlap
+                    let gate = tokio::sync::Mutex::new(());
+                    let gate = &gate;
                     let runs = calls[i..end].iter().map(|(id, name, a)| async move {
                         if name == "recall" {
                             crate::recall::answer(seen, a)
                         } else {
-                            self.call(id, name, a, ctx, say).await
+                            self.call(id, name, a, ctx, say, gate).await
                         }
                     });
                     for (k, out) in futures::future::join_all(runs).await.into_iter().enumerate() {
@@ -536,9 +540,10 @@ impl Run {
         args: &Value,
         ctx: &ToolContext,
         say: &(dyn Fn(String) + Send + Sync),
+        gate: &tokio::sync::Mutex<()>,
     ) -> ToolOutput {
         let t0 = std::time::Instant::now();
-        let done = self.call_one(id, name, args, ctx, say).await;
+        let done = self.call_one(id, name, args, ctx, say, gate).await;
         if let Some(h) = &self.host {
             let status = if done.denied {
                 "denied"
@@ -567,7 +572,10 @@ impl Run {
         args: &Value,
         ctx: &ToolContext,
         say: &(dyn Fn(String) + Send + Sync),
+        gate: &tokio::sync::Mutex<()>,
     ) -> Done {
+        // hooks and the permission ask take turns: calls that overlap ask one at a time, in the order they came
+        let turn = gate.lock().await;
         // the hooks of the main turn hold here too: PreToolUse may block a call, decide its permission or
         // replace its input, and PostToolUse adds a note after the output (they are told which sub-agent)
         let mut args = args.clone();
@@ -639,6 +647,7 @@ impl Run {
                 h.before_write(path).await;
             }
         }
+        drop(turn);
         // the stop can come while the hooks or the permission were waited for; the tools that watch the token
         // end on their own, the others (a write, an edit) would still land after it
         if ctx.cancel.is_cancelled() {
