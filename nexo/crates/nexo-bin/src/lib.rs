@@ -93,7 +93,7 @@ mod tests_x86_32;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod wasm_fixture;
 
-pub use asm::{assemble, assembly};
+pub use asm::{assemble, assembly, assembly_arm64};
 pub use bindiff::diff_window;
 pub use cfg::cfg_op;
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};

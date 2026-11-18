@@ -215,7 +215,19 @@ fn execute_op(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     if op.common().module.is_some() {
         live::check(op)?;
     }
-    if let BinOp::Asm { source, at, bits, .. } = op {
+    if let BinOp::Asm { source, at, bits, arch, .. } = op {
+        if arch != "x86" {
+            if bits == "32" {
+                return Err(Error::Usage("--bits 32 is x86 only: AArch64 has no 32-bit mode here".into()));
+            }
+            if !at.is_multiple_of(4) {
+                return Err(Error::Usage(format!(
+                    "{at:#x} is not 4-aligned: AArch64 instructions start on multiples of 4"
+                )));
+            }
+            let output = nexo_bin::assembly_arm64(source, *at)?;
+            return render_copy_op(&output, op.common().json);
+        }
         let output = nexo_bin::assembly(source, *at, if bits == "32" { 32 } else { 64 })?;
         return render_copy_op(&output, op.common().json);
     }

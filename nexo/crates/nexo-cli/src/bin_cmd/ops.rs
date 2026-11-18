@@ -7,13 +7,17 @@ use super::{parse_addr, Common};
 
 #[derive(Subcommand, Debug)]
 pub enum BinOp {
-    /// Assemble Intel x86 instructions (semicolon/newline separated); labels and rel32 branches supported.
+    /// Assemble Intel x86 (default) or AArch64 (`--arch arm64`) instructions (semicolon/newline separated); x86 supports labels and rel32 branches.
     Asm {
         source: String,
         #[arg(long, default_value = "0", value_parser = parse_addr)]
         at: u64,
+        /// x86 only: 64 or 32.
         #[arg(long, default_value = "64", value_parser = ["64", "32"])]
         bits: String,
+        /// The instruction set: x86 (default) or arm64 (alias aarch64; 4-aligned --at, 64-bit only).
+        #[arg(long, default_value = "x86", value_parser = ["x86", "arm64", "aarch64"])]
+        arch: String,
         #[command(flatten)]
         common: Common,
     },
