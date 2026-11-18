@@ -169,7 +169,11 @@ pub fn run_on_change_within(cmd: &str, alert: &Value, picked: &Picked, limit: Du
         Err(e) => return format!("on-change: could not run the command: {e}"),
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(format!("{alert_text}\n").as_bytes());
+        // a command that never reads must not hold the write (and the timeout) back
+        let line = format!("{alert_text}\n");
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(line.as_bytes());
+        });
     }
     let started = Instant::now();
     loop {
@@ -224,14 +228,23 @@ pub fn select_text(body: &str, select_args: &[String], as_json: bool, reveal: bo
     }
 }
 
+/// The `--on-change` run a channel read leaves to its caller (it blocks, so it must not run on the async path).
+pub struct Pending {
+    /// Where in the text the result line goes: right after the alert line.
+    at: usize,
+    alert: Value,
+    picked: Picked,
+}
+
 /// `watch --select ...` over a live channel (event stream or WebSocket): the messages the server sent, in order, each
-/// read as JSON; a message with none of the picked values is skipped, the others are polls. Returns what to print and
-/// the exit code ([`EXIT_ALERT`] at the first alert, which also runs `--on-change`).
-pub fn channel_report(sel: &Sel, msgs: &[Msg]) -> (String, i32) {
+/// read as JSON; a message with none of the picked values is skipped, the others are polls. Returns what to print, the
+/// exit code ([`EXIT_ALERT`] at the first alert) and the `--on-change` command still to run, if any.
+pub fn channel_poll(sel: &Sel, msgs: &[Msg]) -> (String, i32, Option<Pending>) {
     let mut prev = sel.load();
     let mut out = String::new();
     let mut ticks = 0usize;
     let mut code = 0;
+    let mut pending = None;
     let mut last: Option<Picked> = None;
     for m in msgs.iter().filter(|m| !m.send && m.opcode == 1) {
         let Ok(mut doc) = serde_json::from_str::<Value>(m.text.trim()) else { continue };
@@ -247,8 +260,8 @@ pub fn channel_report(sel: &Sel, msgs: &[Msg]) -> (String, i32) {
         }
         if let Some(a) = &step.alert {
             out.push_str(&format!("{}\n", a.line));
-            if let Some(cmd) = &sel.on_change {
-                out.push_str(&format!("{}\n", run_on_change(cmd, &a.json, &step.picked)));
+            if sel.on_change.is_some() {
+                pending = Some(Pending { at: out.len(), alert: a.json.clone(), picked: step.picked.clone() });
             }
             code = EXIT_ALERT;
         }
@@ -265,6 +278,20 @@ pub fn channel_report(sel: &Sel, msgs: &[Msg]) -> (String, i32) {
         if let Err(e) = sel.save(&p) {
             out.push_str(&format!("note: {e}\n"));
         }
+    }
+    (out, code, pending)
+}
+
+/// [`channel_poll`], then the `--on-change` command on a blocking thread, its result line placed after the alert.
+pub async fn channel_report(sel: &Sel, msgs: &[Msg]) -> (String, i32) {
+    let (mut out, code, pending) = channel_poll(sel, msgs);
+    if let (Some(cmd), Some(p)) = (sel.on_change.clone(), pending) {
+        let at = p.at;
+        let (alert, picked) = (p.alert, p.picked);
+        let r = tokio::task::spawn_blocking(move || run_on_change(&cmd, &alert, &picked))
+            .await
+            .unwrap_or_else(|e| format!("on-change: {e}"));
+        out.insert_str(at, &format!("{r}\n"));
     }
     (out, code)
 }
@@ -373,10 +400,10 @@ mod tests {
             msg(r#"{"type":"tick","price":8,"volume":3}"#),
             msg(r#"{"type":"tick","price":1,"volume":4}"#),
         ];
-        let (text, code) = channel_report(&s, &msgs);
+        let (text, code, _) = channel_poll(&s, &msgs);
         assert_eq!(code, EXIT_ALERT, "{text}");
         assert_eq!(text, "$.price\t10\n~ $.price: 10 -> 8\nalert: $.price=8 (was 10) | when $.price < prev\n");
-        let (none, code) = channel_report(&s, &msgs[..1]);
+        let (none, code, _) = channel_poll(&s, &msgs[..1]);
         assert_eq!(code, 0);
         assert_eq!(none, "no message had the selected values\n");
     }

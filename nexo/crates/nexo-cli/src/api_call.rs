@@ -837,7 +837,7 @@ async fn follow_channel(
     let secs = started.elapsed().as_secs_f64();
     let live = channel::observe(Kind::Sse, &c.origin, &c.path, &msgs, Some(secs));
     if let Some(sel) = sel {
-        let (text, code) = crate::api_watch::channel_report(sel, &msgs);
+        let (text, code) = crate::api_watch::channel_report(sel, &msgs).await;
         print!("{text}");
         let _ = std::io::stdout().flush();
         return Ok(code);

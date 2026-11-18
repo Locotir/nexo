@@ -434,7 +434,7 @@ async fn watch(
 
     if let Some(sel) = sel {
         // --select / --when: the picked values of each message, not the report on message types
-        let (mut text, code) = crate::api_watch::channel_report(sel, &msgs);
+        let (mut text, code) = crate::api_watch::channel_report(sel, &msgs).await;
         if dropped > 0 {
             text.push_str(&format!(
                 "note: {dropped} more messages came after the first {} and were not read\n",
