@@ -437,6 +437,26 @@ async fn a_suggestion_leaves_the_history_alone_runs_nothing_and_is_not_asked_whe
     assert_eq!(client.requests().len(), 2, "no side request when [ui] suggest is off");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn no_suggestion_is_asked_once_the_spend_limit_is_reached() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done")), Reply::Events(text("unasked"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    // one reply of the script costs $0.0014 at m1's prices
+    cfg.agent.max_cost = Some(0.001);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Suggest);
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Suggestion { .. })));
+    assert_eq!(client.requests().len(), 1, "no side request, and no turn, past the spend limit");
+    r.stop().await;
+}
+
 #[tokio::test]
 async fn a_cleared_conversation_does_not_count_the_failures_of_the_last_one() {
     let d = test_tmpdir().unwrap();
