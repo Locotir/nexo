@@ -6,6 +6,7 @@
 //! check-in ([`check_in_ask`], [`parse_answer`]). Pure: histories in, findings out.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use nexo_core::message::{Message, Part};
@@ -35,8 +36,8 @@ struct Step {
     id: String,
     name: String,
     args: Value,
-    /// Whether the call failed and what it printed, once its result is in.
-    result: Option<(bool, String)>,
+    /// Whether the call failed, once its result is in (what it printed is never read here).
+    result: Option<bool>,
 }
 
 impl Step {
@@ -45,7 +46,7 @@ impl Step {
     }
 
     fn failed(&self) -> bool {
-        self.result.as_ref().is_some_and(|(e, _)| *e)
+        self.result == Some(true)
     }
 
     fn key(&self) -> u64 {
@@ -74,17 +75,9 @@ fn steps(history: &[Message]) -> Vec<Step> {
                 Part::ToolCall { id, name, args } => {
                     out.push(Step { id: id.clone(), name: name.clone(), args: args.clone(), result: None });
                 }
-                Part::ToolResult { call_id, content, is_error, .. } => {
-                    let text: String = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            Part::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                Part::ToolResult { call_id, is_error, .. } => {
                     if let Some(s) = out.iter_mut().rev().find(|s| s.id == *call_id) {
-                        s.result = Some((*is_error, text));
+                        s.result = Some(*is_error);
                     }
                 }
                 _ => {}
@@ -170,23 +163,35 @@ fn is_reading(s: &Step) -> bool {
     }
 }
 
+/// For each step, its key and how many times that same call has run, itself included, since the last step of
+/// another call that changes something. One forward pass: the key of a call is computed once.
+fn run_counts(steps: &[Step]) -> Vec<(u64, usize)> {
+    let mut seen: HashMap<u64, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(steps.len());
+    for s in steps {
+        let key = s.key();
+        let times = {
+            let n = seen.entry(key).or_insert(0);
+            *n += 1;
+            *n
+        };
+        out.push((key, times));
+        if changes(s) {
+            seen.retain(|k, _| *k == key);
+        }
+    }
+    out
+}
+
 /// What the request in progress shows: `history` is the slice from the start of the request of the person.
 pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
     let steps = steps(history);
     let mut out = Vec::new();
     // the same call again, nothing changed between the runs
-    for (i, s) in steps.iter().enumerate() {
+    let counts = run_counts(&steps);
+    for (s, &(key, times)) in steps.iter().zip(&counts) {
         if s.result.is_none() || s.name == "todo" {
             continue;
-        }
-        let key = s.key();
-        let mut times = 1;
-        for p in steps[..i].iter().rev() {
-            if p.key() == key {
-                times += 1;
-            } else if changes(p) {
-                break;
-            }
         }
         let cmd = s.command().is_some();
         let fails = cmd && s.failed();
@@ -211,7 +216,7 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
         }
     }
     // an edit that puts back what an earlier edit took out
-    let mut edits: Vec<(String, String, String)> = Vec::new();
+    let mut edits: HashSet<(String, String, String)> = HashSet::new();
     for s in steps.iter().filter(|s| s.name == "edit" && !s.failed() && s.result.is_some()) {
         let path = s.args.get("path").and_then(Value::as_str).unwrap_or("").to_string();
         let mut pairs: Vec<(String, String)> = Vec::new();
@@ -228,7 +233,7 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
             }
         }
         for (o, n) in pairs {
-            if o != n && edits.iter().any(|(p, po, pn)| *p == path && *po == n && *pn == o) {
+            if o != n && edits.contains(&(path.clone(), n.clone(), o.clone())) {
                 let mut h = DefaultHasher::new();
                 (&path, &o, &n).hash(&mut h);
                 out.push(finding(
@@ -236,7 +241,7 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
                     format!("an edit of {path} puts back the text an earlier edit of it replaced; the edits undo each other"),
                 ));
             }
-            edits.push((path.clone(), o, n));
+            edits.insert((path.clone(), o, n));
         }
     }
     // a long run of reads
@@ -459,6 +464,78 @@ mod tests {
         let mut edited = reads;
         edited.push(edit("a.rs", "x", "y"));
         assert!(scan_rounds(&hist(&edited)).is_empty());
+    }
+
+    /// The back-scan this module used before the forward pass: the reference the counts must keep matching.
+    fn run_counts_back_scan(steps: &[Step]) -> Vec<(u64, usize)> {
+        let mut out = Vec::new();
+        for (i, s) in steps.iter().enumerate() {
+            let key = s.key();
+            let mut times = 1;
+            for p in steps[..i].iter().rev() {
+                if p.key() == key {
+                    times += 1;
+                } else if changes(p) {
+                    break;
+                }
+            }
+            out.push((key, times));
+        }
+        out
+    }
+
+    #[test]
+    fn the_counts_of_the_forward_pass_match_the_back_scan() {
+        let palette = [
+            read("a.rs"),
+            read("b.rs"),
+            edit("a.rs", "x", "y"),
+            edit("b.rs", "x", "y"),
+            bash("cargo test", true),
+            bash("cargo build", false),
+            bash("make deploy", true),
+            bash("rm -rf out", false),
+            todo(json!([{"text": "a", "status": "pending"}])),
+        ];
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        for len in [1usize, 5, 17, 40, 120] {
+            for _ in 0..20 {
+                let rounds: Vec<_> = (0..len)
+                    .map(|_| {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        palette[(seed >> 33) as usize % palette.len()].clone()
+                    })
+                    .collect();
+                let st = steps(&hist(&rounds));
+                assert_eq!(run_counts(&st), run_counts_back_scan(&st));
+            }
+        }
+    }
+
+    #[test]
+    fn a_call_counts_across_calls_that_change_nothing_and_restarts_after_one_that_does() {
+        let h = hist(&[read("a.rs"), read("a.rs"), edit("a.rs", "x", "y"), read("a.rs"), read("a.rs"), read("a.rs")]);
+        let f = scan_rounds(&h);
+        assert_eq!(kinds(&f), ["repeat"]);
+        assert!(f[0].text.contains("3 times"), "{}", f[0].text);
+        let h = hist(&[bash("make deploy", true), bash("make deploy", true), bash("make deploy", true)]);
+        let f = scan_rounds(&h);
+        assert_eq!(kinds(&f), ["rerun", "rerun"], "a command that changes things still counts its own reruns");
+        assert!(f[0].text.contains("again 1 time(s)"), "{}", f[0].text);
+        assert!(f[1].text.contains("again 2 time(s)"), "{}", f[1].text);
+    }
+
+    #[test]
+    fn a_long_request_of_reads_with_big_results_is_scanned_fast() {
+        let big = "x".repeat(20_000);
+        let rounds: Vec<_> =
+            (0..3000).map(|i| ("read", json!({"path": format!("f{i}.rs")}), false, big.as_str())).collect();
+        let h = hist(&rounds);
+        let t = std::time::Instant::now();
+        let f = scan_rounds(&h);
+        let took = t.elapsed();
+        assert_eq!(kinds(&f), ["reads"]);
+        assert!(took < std::time::Duration::from_millis(500), "scan took {took:?}: it grows with the request");
     }
 
     fn todo(items: Value) -> (&'static str, Value, bool, &'static str) {
