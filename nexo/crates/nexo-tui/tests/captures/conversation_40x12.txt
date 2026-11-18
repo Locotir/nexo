@@ -9,4 +9,4 @@
                                        ┃
 ─ ask ──────────────────────────────────
 ›   ask anything
- nexo │ deepseek-chat │ ask     $0.0031
+ nexo │ deepseek-chat │ ask      │ 10:00
