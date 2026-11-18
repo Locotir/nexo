@@ -33,14 +33,51 @@ pub fn with_images(first: Option<String>, images: &[PathBuf]) -> Option<String> 
         _ => paths.join(" "),
     })
 }
-
-/// The stdin of a run: what was piped in.
-pub(super) fn read_stdin() -> String {
-    let mut s = String::new();
-    if !std::io::stdin().is_terminal() {
-        let _ = std::io::stdin().read_to_string(&mut s);
+/// The stdin of a run: what was piped in. With `first_byte`, a stdin that gives nothing in that time
+/// (a caller that left it open) is given up on, and one line on stderr says so.
+pub(super) fn read_stdin(first_byte: Option<Duration>) -> String {
+    if std::io::stdin().is_terminal() {
+        return String::new();
     }
-    s
+    let (text, gave_up) = read_piped(std::io::stdin(), first_byte);
+    if gave_up {
+        eprintln!(
+            "nexo: nothing came on stdin in {} s; going on with the -p prompt alone (pipe the input, or add < /dev/null)",
+            first_byte.map_or(0, |d| d.as_secs())
+        );
+    }
+    text
+}
+
+/// Reads `r` to EOF on a thread. With `first_byte`, waits at most that long for the first chunk and
+/// then reads on without a limit. Returns the text and whether it gave up (the thread is left behind).
+pub(super) fn read_piped<R: Read + Send + 'static>(mut r: R, first_byte: Option<Duration>) -> (String, bool) {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let mut bytes: Vec<u8> = Vec::new();
+    if let Some(wait) = first_byte {
+        match rx.recv_timeout(wait) {
+            Ok(chunk) => bytes.extend(chunk),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return (String::new(), true),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return (String::new(), false),
+        }
+    }
+    while let Ok(chunk) = rx.recv() {
+        bytes.extend(chunk);
+    }
+    (String::from_utf8_lossy(&bytes).into_owned(), false)
 }
 
 /// The text of one user message of the input stream. `Ok(None)`: a line that is not a user message.
@@ -164,5 +201,65 @@ mod image_tests {
         assert_eq!(with_images(Some("why red?".into()), &got), Some(format!("why red? {quoted}")));
         assert_eq!(with_images(None, &got), Some(quoted));
         assert_eq!(with_images(Some("hi".into()), &[]), Some("hi".into()));
+    }
+}
+
+#[cfg(test)]
+mod piped_tests {
+    use super::read_piped;
+    use std::io::Read;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    /// Gives each `(delay, text)` in turn, then EOF.
+    struct Slow(Vec<(u64, &'static str)>);
+    impl Read for Slow {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Ok(0);
+            }
+            let (ms, s) = self.0.remove(0);
+            std::thread::sleep(Duration::from_millis(ms));
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            Ok(s.len())
+        }
+    }
+
+    /// Blocks until the sender goes away, which the test never does.
+    struct Never(mpsc::Receiver<()>);
+    impl Read for Never {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_stdin_nobody_writes_to_is_given_up_on() {
+        let (_keep, rx) = mpsc::channel();
+        let t = Instant::now();
+        let (text, gave_up) = read_piped(Never(rx), Some(Duration::from_millis(100)));
+        assert!(text.is_empty() && gave_up);
+        assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_wait_covers_only_the_first_byte() {
+        let r = Slow(vec![(50, "abc"), (300, "def")]);
+        assert_eq!(read_piped(r, Some(Duration::from_millis(100))), ("abcdef".to_string(), false));
+    }
+
+    #[test]
+    fn without_a_wait_slow_text_is_read_in_full() {
+        let r = Slow(vec![(300, "late text")]);
+        assert_eq!(read_piped(r, None), ("late text".to_string(), false));
+    }
+
+    #[test]
+    fn an_empty_stdin_ends_at_once() {
+        let t = Instant::now();
+        assert_eq!(read_piped(std::io::empty(), Some(Duration::from_secs(3))), (String::new(), false));
+        assert!(t.elapsed() < Duration::from_secs(1));
+        assert_eq!(read_piped(std::io::empty(), None), (String::new(), false));
     }
 }

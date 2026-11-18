@@ -157,7 +157,9 @@ pub async fn run(
     // plain stdin is part of the request
     let mut inbox: VecDeque<String> = VecDeque::new();
     if !stream_in {
-        let piped = read_stdin();
+        // a caller that left stdin open must not stall a run that already has its prompt
+        let wait = (!prompt.trim().is_empty()).then(|| Duration::from_secs(3));
+        let piped = read_stdin(wait);
         let text = match (prompt.trim().is_empty(), piped.trim().is_empty()) {
             (_, true) => prompt,
             (true, false) => piped,
