@@ -236,7 +236,7 @@ fn find_imm_matches_decoded_immediates() {
 }
 
 #[test]
-fn patch_nop_writes_aarch64_nops_and_refuses_what_is_wrong() {
+fn patch_nop_and_asm_write_aarch64_words_and_refuse_what_is_wrong() {
     let f = fixture::elf(true);
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("in");
@@ -251,8 +251,14 @@ fn patch_nop_writes_aarch64_nops_and_refuses_what_is_wrong() {
     };
     assert!(err(f.c + 2, PatchData::Nop(4)).contains("4-aligned"));
     assert!(err(f.c, PatchData::Nop(6)).contains("multiple of 4"));
-    assert!(err(f.c, PatchData::Asm("nop")).contains("does not assemble AArch64"));
+    assert!(err(f.c + 2, PatchData::Asm("nop")).contains("4-aligned"));
+    assert!(err(f.c, PatchData::Asm("frobnicate x0")).contains("frobnicate"));
     assert!(!dir.path().join("never").exists());
+    // --asm assembles arm64: two words in place of the first two
+    let out2 = dir.path().join("out2");
+    patch(&img, &out2, PatchTarget::Address(f.c), PatchData::Asm("nop; ret")).unwrap();
+    let again = Image::open(&out2).unwrap();
+    assert_eq!(again.read_at(f.c, 8).unwrap(), [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6]);
 }
 
 /// The fixture with `helper` returning another number, a function G added and the data (so the string and
