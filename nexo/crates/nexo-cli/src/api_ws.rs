@@ -8,7 +8,7 @@
 //! before anything is opened. A filled message is a `call::Val`: it prints as `<secret>`, it is never stored, and the
 //! only place that reads it back is the send.
 
-use crate::api_call::follow_report;
+use crate::api_call::{broken, follow_report};
 use crate::headless::EXIT_USAGE;
 use async_tungstenite::tungstenite::{self, client::IntoClientRequest, protocol::WebSocketConfig, Message};
 use futures::{SinkExt, StreamExt};
@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 /// An exit code and what to say.
 type Fail = (i32, String);
 
-/// How long the connection and each send may take.
+/// How long one send may take (never past the follow's own window).
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// How long the closing handshake may take.
-const CLOSE_WAIT: Duration = Duration::from_secs(2);
+/// The most the closing handshake may take, and never past the end of the window.
+const CLOSE_WAIT: Duration = Duration::from_millis(500);
 /// How many bytes of frames are read in one follow; binary frames count by length only.
 const FOLLOW_CAP: usize = 8 << 20;
 /// The largest message or frame the connection accepts.
@@ -33,10 +33,6 @@ const MAX_MESSAGE: usize = 1 << 20;
 
 fn usage(e: String) -> Fail {
     (EXIT_USAGE, e)
-}
-
-fn failed(e: String) -> Fail {
-    (1, e)
 }
 
 // ---------------------------------------------------------------- subscribe messages
@@ -238,6 +234,28 @@ fn sent(text: String) -> Msg {
 
 // ---------------------------------------------------------------- the connection
 
+/// The TLS connector for `wss://`: the system's root certificates, every one that loads and parses is kept; only
+/// when none is usable does it fail, saying how many were not. It uses the crypto provider reqwest uses (aws-lc-rs),
+/// named here so that no process-wide default has to exist.
+fn tls_connector() -> Result<tokio_rustls::TlsConnector, String> {
+    let loaded = rustls_native_certs::load_native_certs();
+    let mut roots = rustls::RootCertStore::empty();
+    let (added, ignored) = roots.add_parsable_certificates(loaded.certs);
+    if added == 0 {
+        return Err(format!(
+            "no system root certificate could be used for TLS ({} failed to load, {ignored} could not be read)",
+            loaded.errors.len()
+        ));
+    }
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("TLS setup failed: {e}"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(tokio_rustls::TlsConnector::from(std::sync::Arc::new(config)))
+}
+
 fn ws_error(e: tungstenite::Error) -> String {
     use tungstenite::Error;
     match e {
@@ -272,7 +290,7 @@ fn handshake(req: &call::Request) -> Result<tungstenite::handshake::client::Requ
         let _ = o.set_scheme(if scheme == "wss" { "https" } else { "http" });
         o.origin().ascii_serialization()
     };
-    let mut r = url.as_str().into_client_request().map_err(|e| failed(ws_error(e)))?;
+    let mut r = url.as_str().into_client_request().map_err(|e| usage(ws_error(e)))?;
     let h = r.headers_mut();
     let mut put = |k: &str, v: &str, secret: bool| -> Result<(), Fail> {
         let name = HeaderName::from_bytes(k.as_bytes()).map_err(|_| usage(format!("bad header name {k}")))?;
@@ -297,7 +315,8 @@ fn candidates(api: &Api, vals: &[(usize, String)]) -> Vec<Cand> {
     vals.iter().filter_map(|(i, v)| labels.get(*i).map(|l| Cand::new(l, v))).collect()
 }
 
-/// Follows one WebSocket channel for `span`; prints the report and returns the exit code (1 on drift).
+/// Follows one WebSocket channel for `span`; prints the report and returns the exit code (1 on drift, 3 when the
+/// connection or a read failed, as for an event stream).
 pub async fn follow(
     api: &Api,
     c: &Channel,
@@ -326,14 +345,26 @@ async fn watch(
     let subscribe = fill_subscribe(&c.subscribe, &candidates(api, vals)).map_err(usage)?;
     let request = handshake(req)?;
     let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE)).max_frame_size(Some(MAX_MESSAGE));
+    let connector =
+        if request.uri().scheme_str() == Some("wss") { Some(tls_connector().map_err(broken)?) } else { None };
+    // a secret that fills a message is hidden from what the follow keeps, even when the map did not know it
+    let mut known = known.clone();
+    for cand in candidates(api, vals) {
+        known.insert(exchange::fingerprint(bare(&cand)));
+    }
+    let known = &known;
     let mut out = format!("following {} (WebSocket {}{}) for {}s\n", c.id, c.origin, c.path, span.as_secs());
-    let (mut ws, _) =
-        tokio::time::timeout(TIMEOUT, async_tungstenite::tokio::connect_async_with_config(request, Some(config)))
-            .await
-            .map_err(|_| failed("the connection timed out".to_string()))?
-            .map_err(|e| failed(ws_error(e)))?;
-
+    // the window starts before the connection: connect, TLS and handshake are inside it, as for the event stream
     let started = Instant::now();
+    let (mut ws, _) = match tokio::time::timeout(
+        span,
+        async_tungstenite::tokio::connect_async_with_tls_connector_and_config(request, connector, Some(config)),
+    )
+    .await
+    {
+        Ok(r) => r.map_err(|e| broken(ws_error(e)))?,
+        Err(_) => return Err(broken("the server did not answer within the --for window".to_string())),
+    };
     let mut msgs: Vec<Msg> = Vec::new();
     let mut dropped = 0usize;
     let mut keep = |m: Msg, msgs: &mut Vec<Msg>| {
@@ -345,10 +376,11 @@ async fn watch(
     };
     for s in &subscribe {
         let text = s.reveal().to_string();
-        tokio::time::timeout(TIMEOUT, ws.send(Message::text(text.clone())))
+        let room = span.saturating_sub(started.elapsed()).min(TIMEOUT);
+        tokio::time::timeout(room, ws.send(Message::text(text.clone())))
             .await
-            .map_err(|_| failed("sending a subscribe message timed out".to_string()))?
-            .map_err(|e| failed(ws_error(e)))?;
+            .map_err(|_| broken("sending a subscribe message timed out".to_string()))?
+            .map_err(|e| broken(ws_error(e)))?;
         keep(sent(channel::redact_text(&text, known)), &mut msgs);
     }
 
@@ -369,7 +401,7 @@ async fn watch(
                 ended = true;
                 break;
             }
-            Ok(Some(Err(e))) => return Err(failed(ws_error(e))),
+            Ok(Some(Err(e))) => return Err(broken(ws_error(e))),
             Ok(Some(Ok(f))) => f,
         };
         if matches!(frame, Message::Close(_)) {
@@ -380,19 +412,23 @@ async fn watch(
         read += n;
         // a protocol ping is answered by the library; make sure the pong leaves now
         if m.opcode == 9 {
-            let _ = tokio::time::timeout(left, ws.flush()).await;
+            let _ = tokio::time::timeout(left, SinkExt::<Message>::flush(&mut ws)).await;
         }
         let reply = if m.opcode == 1 { pong_for(c, &m.text) } else { None };
         keep(m, &mut msgs);
         if let Some(p) = reply {
-            let sent_ok = tokio::time::timeout(TIMEOUT, ws.send(Message::text(p.clone()))).await;
+            let room = span.saturating_sub(started.elapsed()).min(TIMEOUT);
+            let sent_ok = tokio::time::timeout(room, ws.send(Message::text(p.clone()))).await;
             if matches!(sent_ok, Ok(Ok(()))) {
                 keep(sent(p), &mut msgs);
             }
         }
     }
     let secs = started.elapsed().as_secs_f64();
-    let _ = tokio::time::timeout(CLOSE_WAIT, ws.close(None)).await;
+    // a close the server does not answer in time is not waited for: the stream is dropped
+    let room = span.saturating_sub(started.elapsed()).min(CLOSE_WAIT);
+    let _ = tokio::time::timeout(room, ws.close(None)).await;
+    drop(ws);
 
     let live = channel::observe(Kind::Ws, &c.origin, &c.path, &msgs, Some(secs));
     out.push_str(&follow_report(c, &live, secs, ended));
@@ -555,16 +591,15 @@ mod tests {
             for m in [r#"{"type":"hello"}"#, r#"{"type":"tick","n":1}"#, r#"{"type":"tick","n":2}"#] {
                 ws.send(Message::text(m)).await.unwrap();
             }
-            ws.send(Message::Ping(Vec::new().into())).await.unwrap();
+            ws.send(Message::Ping(Vec::<u8>::new().into())).await.unwrap();
             tokio::time::sleep(Duration::from_secs(10)).await;
         });
-        let rec = live(&[
+        let mut rec = live(&[
             (true, r#"{"op":"sub","token":"<secret>"}"#),
             (false, r#"{"type":"hello"}"#),
             (false, r#"{"type":"tick","n":1}"#),
             (false, r#"{"type":"tick","n":2}"#),
         ]);
-        let mut rec = rec;
         rec.subscribe = vec![r#"{"op":"sub","token":"<secret>"}"#.to_string()];
         let api = Api {
             endpoints: Vec::new(),
@@ -582,7 +617,7 @@ mod tests {
             body: None,
         };
         let started = Instant::now();
-        let vals = vec![];
+        let vals: Vec<(usize, String)> = Vec::new();
         let cands = [Cand::new("bearer", "tok-1234567890")];
         // without a value for the placeholder nothing is opened
         let refused = watch(&api, &rec, &req, &vals, &HashSet::new(), Duration::from_secs(1)).await;
