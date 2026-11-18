@@ -120,6 +120,73 @@ fn covers(pieces: &[Piece], bytes: &[u8], view: Option<&HashSet<String>>) -> boo
     true
 }
 
+/// One file's part of the answer to a `read` of several: its name, where its body sits in the answer, and, when
+/// the body shows numbered lines from the first line asked for, that line, how many it shows, and their size
+/// (the text of the lines and a newline each, as the tool counts it).
+struct Section {
+    name: String,
+    body: (usize, usize),
+    shown: Option<(usize, usize, usize)>,
+    /// The text of those numbered lines, one entry each (without the number).
+    texts: Vec<String>,
+}
+
+/// The one file a `read` call names, however it is spelled (`path`, or `paths` with a single entry, whose answer
+/// has no `=== name ===` header either); None when it names none or several.
+pub(crate) fn one_read_path(args: &serde_json::Value) -> Option<String> {
+    let mut named = nexo_core::tool::call_paths(args);
+    if named.len() == 1 {
+        named.pop()
+    } else {
+        None
+    }
+}
+
+/// How many of the lines `shown`, taken as the lines of `file` from line `start` (1-based) on, are the file's own
+/// lines word for word. The tool shortens a line over its length limit, and that line, with those after it, is
+/// not what the file holds, so it ends the run.
+fn intact_lines<'a>(file: &str, start: usize, shown: impl Iterator<Item = &'a str>) -> usize {
+    file.lines().skip(start.max(1) - 1).zip(shown).take_while(|(a, b)| a == b).count()
+}
+
+/// The `=== name ===` sections of the answer to a `read` of several files. A section that failed or was not
+/// read shows nothing.
+fn sections(content: &str) -> Vec<Section> {
+    let mut out: Vec<Section> = Vec::new();
+    let mut at = 0;
+    for line in content.split_inclusive('\n') {
+        let t = line.trim_end();
+        if t.starts_with("=== ") && t.ends_with(" ===") && t.len() > 8 {
+            if let Some(s) = out.last_mut() {
+                s.body.1 = at;
+            }
+            let name = t[4..t.len() - 4].to_string();
+            let name = name.trim_end_matches(" (failed)").trim_end_matches(" (not read)").to_string();
+            out.push(Section { name, body: (at + line.len(), content.len()), shown: None, texts: Vec::new() });
+        } else if let Some(s) = out.last_mut() {
+            // the numbered lines, in order from the first one; the first line that breaks the run ends it
+            let numbered = line
+                .trim_end_matches('\n')
+                .split_once("│ ")
+                .and_then(|(n, text)| n.trim().parse::<usize>().ok().map(|n| (n, text)));
+            match (numbered, &mut s.shown) {
+                (Some((n, text)), None) if s.body.0 == at => {
+                    s.shown = Some((n, 1, text.chars().count() + 1));
+                    s.texts.push(text.to_string());
+                }
+                (Some((n, text)), Some((first, lines, printed))) if n == *first + *lines => {
+                    *lines += 1;
+                    *printed += text.chars().count() + 1;
+                    s.texts.push(text.to_string());
+                }
+                _ => {}
+            }
+        }
+        at += line.len();
+    }
+    out
+}
+
 impl Reads {
     pub fn clear(&mut self) {
         self.seen.clear();
@@ -211,6 +278,102 @@ impl Reads {
         self.after_lines(path, shown, Span::From(start, Some(end)), call_id, printed)
     }
 
+    /// After a `read` of one file that went well, `out` being its result: `after_read` for what the result shows.
+    /// The lines come from its `ToolDisplay::File` (where the first one is, and which they are), not from the
+    /// arguments: a `symbol` read shows lines from the item's first line with no `offset`, and a notebook shows
+    /// its cells as text, whose lines are not the file's, so that one registers nothing. `symbol` says the read
+    /// had one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn after_read_result(
+        &mut self,
+        path: &Path,
+        shown: &str,
+        offset: Option<u64>,
+        limit: u64,
+        symbol: bool,
+        call_id: &str,
+        out: &ToolOutput,
+    ) -> Option<String> {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipynb")) {
+            return None;
+        }
+        match &out.display {
+            ToolDisplay::File { text, start_line, .. } => {
+                // a symbol read asks for no span: what it shows is the span
+                let limit = if symbol { text.lines().count().max(1) as u64 } else { limit };
+                self.after_read_shown(path, shown, (*start_line).max(1), limit, call_id, printed(out), text)
+            }
+            _ if symbol => None,
+            _ => self.after_read(path, shown, offset, limit, call_id, printed(out)),
+        }
+    }
+
+    /// `after_read` for a read that shows the file's lines (the `ToolDisplay::File` of its result): `text` is what
+    /// it shows from line `start`, `limit` the lines it was asked for. A read the tool cut (at its size cap, or a
+    /// line over its length) still leaves the lines it did show with the model, so those are registered even
+    /// though `printed` falls short of the lines asked for, up to the first line that is not the file's own.
+    #[allow(clippy::too_many_arguments)]
+    pub fn after_read_shown(
+        &mut self,
+        path: &Path,
+        shown: &str,
+        start: usize,
+        limit: u64,
+        call_id: &str,
+        printed: usize,
+        text: &str,
+    ) -> Option<String> {
+        let start = start.max(1);
+        let end = start + limit.max(1) as usize - 1;
+        let bytes = read_regular(path)?;
+        let lines = intact_lines(&String::from_utf8_lossy(&bytes), start, text.lines());
+        self.lines_gated(path, &bytes, shown, Span::From(start, Some(end)), call_id, printed, None, Some(lines))
+    }
+
+    /// After a `read` of several files (`paths`), `content` being its answer: each file under a `=== name ===`
+    /// header with its lines numbered. Every section that shows lines is registered like a single `read` of the
+    /// file (from `offset`, `limit` of them), and one that repeats lines the model has in view is replaced by the
+    /// note a single read gets. The answer with those notes, None when no section was repeated.
+    pub fn after_paths(
+        &mut self,
+        cwd: &Path,
+        paths: &[String],
+        offset: Option<u64>,
+        limit: u64,
+        content: &str,
+        call_id: &str,
+    ) -> Option<String> {
+        let secs = sections(content);
+        if secs.len() != paths.len() {
+            return None;
+        }
+        let start = offset.unwrap_or(1).max(1) as usize;
+        let span = Span::From(start, Some(start + limit.max(1) as usize - 1));
+        let mut out = String::with_capacity(content.len());
+        let mut last = 0;
+        for (sec, p) in secs.iter().zip(paths) {
+            let Some((first, _, printed)) = sec.shown else { continue };
+            if first != start {
+                continue;
+            }
+            let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) };
+            let Some(bytes) = read_regular(&path) else { continue };
+            // a line the tool shortened is not registered: the model holds only its cut text
+            let lines = intact_lines(&String::from_utf8_lossy(&bytes), start, sec.texts.iter().map(String::as_str));
+            if let Some(note) = self.lines_gated(&path, &bytes, &sec.name, span, call_id, printed, None, Some(lines)) {
+                out.push_str(&content[last..sec.body.0]);
+                out.push_str(&note);
+                out.push('\n');
+                last = sec.body.1;
+            }
+        }
+        if last == 0 {
+            return None;
+        }
+        out.push_str(&content[last..]);
+        Some(out)
+    }
+
     /// After a call that printed `span` of `path`, in an output of `printed` characters: the note
     /// the model gets instead of the output when it has those lines already. An output shorter than
     /// the lines it was to hold was cut by the tool, and does not count as holding them.
@@ -223,7 +386,7 @@ impl Reads {
         printed: usize,
     ) -> Option<String> {
         let bytes = read_regular(path)?;
-        self.lines_gated(path, &bytes, shown, span, call_id, printed, None)
+        self.lines_gated(path, &bytes, shown, span, call_id, printed, None, None)
     }
 
     /// `after_lines`, where `gate` (when given) says whether the last ask for lines of this file was answered
@@ -238,6 +401,7 @@ impl Reads {
         call_id: &str,
         printed: usize,
         gate: Option<bool>,
+        cut: Option<usize>,
     ) -> Option<String> {
         let hash = digest(bytes);
         let text = String::from_utf8_lossy(bytes);
@@ -286,7 +450,16 @@ impl Reads {
         seen.noted = false;
         let need: usize = text.lines().skip(start - 1).take(end + 1 - start).map(|l| l.chars().count()).sum::<usize>()
             + (end - start);
-        if printed < need {
+        let short = cut.is_some_and(|n| n < end + 1 - start);
+        if printed < need || short {
+            // the tool cut the output (a size cap, a line over its length): the lines it did show are in the
+            // result, so those, not the unseen tail, are what gets registered. A line it shortened by a single
+            // character leaves `printed` at `need`, so the lines held are counted too.
+            let shown_end = (start + cut.unwrap_or(0)).saturating_sub(1).min(end);
+            if shown_end >= start {
+                seen.pieces.retain(|p| !(p.start == start && p.end == shown_end));
+                seen.pieces.push(Piece { start, end: shown_end, anchor: call_id.to_string() });
+            }
             return None;
         }
         seen.pieces.retain(|p| !(p.start == start && p.end == end));
@@ -337,7 +510,8 @@ impl Reads {
             let k = key(abs);
             let gate = *gates.entry(k.clone()).or_insert_with(|| self.seen.get(&k).is_some_and(|s| s.noted));
             let shown = p.path.to_string_lossy();
-            if let Some(note) = self.lines_gated(abs, bytes, &shown, p.span, call_id, want.chars().count(), Some(gate))
+            if let Some(note) =
+                self.lines_gated(abs, bytes, &shown, p.span, call_id, want.chars().count(), Some(gate), None)
             {
                 edits.push((from, to, note));
             }
@@ -1016,5 +1190,211 @@ mod tests {
         let (first, second) = sent.split_once('\n').unwrap();
         assert!(is_unchanged_note(first) && is_unchanged_note(&format!("{first}\n{first}\n")));
         assert!(!is_unchanged_note(second) && !is_unchanged_note(""));
+    }
+
+    /// What the tool shows of lines `from..=to` of `lines`: numbered, as `read` prints them.
+    fn shown_lines(lines: &[String], from: usize, to: usize) -> String {
+        (from..=to).map(|i| format!("{:>6}│ {}\n", i, lines[i - 1])).collect()
+    }
+
+    /// The `text` of the display of such a read: the lines themselves, a newline each.
+    fn raw_text(lines: &[String], from: usize, to: usize) -> String {
+        (from..=to).map(|i| format!("{}\n", lines[i - 1])).collect()
+    }
+
+    #[test]
+    fn a_read_cut_at_the_size_cap_still_registers_the_lines_it_showed() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("big.rs");
+        let lines: Vec<String> = (1..=1500).map(|i| format!("let value_{i} = {i};")).collect();
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let mut r = Reads::default();
+        // the tool stopped after 1000 lines: what it printed is less than the lines asked for
+        let head = raw_text(&lines, 1, 1000);
+        assert!(r.after_read_shown(&p, "big.rs", 1, 2000, "c1", head.chars().count(), &head).is_none());
+        // lines past the cut were never shown
+        r.note_view(&[result("c1", &shown_lines(&lines, 1, 1000))]);
+        assert!(r.after_read(&p, "big.rs", Some(990), 30, "c3", usize::MAX).is_none());
+        r.note_view(&[result("c1", &shown_lines(&lines, 1, 1000))]);
+        let note = r.after_read(&p, "big.rs", Some(200), 60, "c2", usize::MAX).expect("lines 200-259 are in view");
+        assert!(note.contains("not repeated"), "{note}");
+    }
+
+    #[test]
+    fn a_line_the_tool_shortened_is_not_registered() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("min.js");
+        let mut lines: Vec<String> = (1..=6).map(|i| format!("line {i}")).collect();
+        // one character over the limit: the tool prints 1999 of them and a `…`, so the printed size is still the asked size
+        lines[2] = "x".repeat(2001);
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let mut shown = lines.clone();
+        shown[2] = format!("{}…", "x".repeat(1999));
+        let text = raw_text(&shown, 1, 6);
+        let mut r = Reads::default();
+        assert!(r.after_read_shown(&p, "min.js", 1, 2000, "c1", text.chars().count(), &text).is_none());
+        r.note_view(&[result("c1", &shown_lines(&shown, 1, 6))]);
+        // the lines before the cut one are held
+        let note = r.after_read(&p, "min.js", Some(1), 2, "c2", usize::MAX).expect("in view");
+        assert!(note.contains("not repeated"), "{note}");
+        // the shortened line and what follows it are not: a print of them is sent in full
+        r.note_view(&[result("c1", &shown_lines(&shown, 1, 6))]);
+        assert!(r.after_read(&p, "min.js", Some(3), 1, "c3", usize::MAX).is_none());
+        r.note_view(&[result("c1", &shown_lines(&shown, 1, 6))]);
+        assert!(r.after_read(&p, "min.js", Some(4), 3, "c4", usize::MAX).is_none());
+    }
+
+    /// What `read` returns for `lines` from line `from` of a file, as its result.
+    fn read_out(lines: &[String], from: usize, to: usize) -> ToolOutput {
+        ToolOutput::ok(shown_lines(lines, from, to)).with_display(ToolDisplay::File {
+            path: "f".into(),
+            text: raw_text(lines, from, to),
+            start_line: from,
+        })
+    }
+
+    #[test]
+    fn a_symbol_read_registers_the_lines_of_the_symbol_not_the_top_of_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("big.rs");
+        let lines: Vec<String> = (1..=600).map(|i| format!("let value_{i} = {i};")).collect();
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let mut r = Reads::default();
+        // `symbol` has no offset: the display says where the item starts
+        let out = read_out(&lines, 500, 529);
+        assert!(r.after_read_result(&p, "big.rs", None, 2000, true, "c1", &out).is_none());
+        r.note_view(&[result("c1", &out.content)]);
+        // lines 1-30 were never shown
+        assert!(r.after_read(&p, "big.rs", Some(1), 30, "c2", usize::MAX).is_none());
+        // the symbol's own lines were
+        r.note_view(&[result("c1", &out.content)]);
+        let note = r.after_read(&p, "big.rs", Some(510), 10, "c3", usize::MAX).expect("510-519 are in view");
+        assert!(note.contains("not repeated"), "{note}");
+        // the same symbol again is a repeat (an ask right after a note gets the lines, so one goes in between)
+        assert!(r.after_read(&p, "big.rs", Some(1), 30, "c5", usize::MAX).is_none());
+        r.note_view(&[result("c1", &out.content)]);
+        let again = r.after_read_result(&p, "big.rs", None, 2000, true, "c4", &out).expect("the symbol repeats");
+        assert!(again.contains("not repeated"), "{again}");
+    }
+
+    #[test]
+    fn a_notebook_read_registers_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nb.ipynb");
+        // the file's lines are JSON; a read shows the cells as text, so even text that looks alike is not those lines
+        let json: Vec<String> = (1..=40).map(|i| format!("  \"key{i}\": {i},")).collect();
+        std::fs::write(&p, json.join("\n") + "\n").unwrap();
+        let out = read_out(&json, 1, 6);
+        let mut r = Reads::default();
+        assert!(r.after_read_result(&p, "nb.ipynb", None, 2000, false, "c1", &out).is_none());
+        r.note_view(&[result("c1", &out.content)]);
+        assert!(r.after_read(&p, "nb.ipynb", Some(1), 6, "c2", usize::MAX).is_none(), "JSON lines 1-6 were not shown");
+    }
+
+    #[test]
+    fn a_read_of_a_whole_file_is_registered_from_its_display() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.txt");
+        let lines: Vec<String> = (1..=12).map(|i| format!("alpha {i}")).collect();
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let out = read_out(&lines, 3, 12);
+        let mut r = Reads::default();
+        assert!(r.after_read_result(&p, "a.txt", Some(3), 2000, false, "c1", &out).is_none());
+        r.note_view(&[result("c1", &out.content)]);
+        assert!(r.after_read(&p, "a.txt", Some(1), 5, "c2", usize::MAX).is_none(), "lines 1-2 were not shown");
+        r.note_view(&[result("c1", &out.content)]);
+        let note = r.after_read(&p, "a.txt", Some(4), 5, "c3", usize::MAX).expect("4-8 are in view");
+        assert!(note.contains("not repeated"), "{note}");
+    }
+
+    #[test]
+    fn a_paths_call_of_one_file_is_a_read_of_that_file() {
+        let one = |v: serde_json::Value| one_read_path(&v);
+        assert_eq!(one(serde_json::json!({"path": "a.rs"})).as_deref(), Some("a.rs"));
+        assert_eq!(one(serde_json::json!({"paths": ["a.rs"]})).as_deref(), Some("a.rs"));
+        assert_eq!(one(serde_json::json!({"paths": ["a.rs"], "path": "a.rs"})).as_deref(), Some("a.rs"));
+        assert_eq!(one(serde_json::json!({"paths": ["a.rs", "b.rs"]})), None);
+        assert_eq!(one(serde_json::json!({"paths": ["a.rs"], "path": "b.rs"})), None);
+        assert_eq!(one(serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn the_sections_keep_the_text_of_their_lines() {
+        let la: Vec<String> = (1..=3).map(|i| format!("alpha {i}")).collect();
+        let secs = sections(&many(&[("a.txt", &la)]));
+        assert_eq!(secs.len(), 1);
+        assert_eq!(secs[0].texts, la);
+        assert_eq!(secs[0].shown.map(|(first, n, _)| (first, n)), Some((1, 3)));
+    }
+
+    #[test]
+    fn a_shortened_line_in_a_multi_file_read_is_not_registered() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a.txt"), d.path().join("b.txt"));
+        let mut la: Vec<String> = (1..=8).map(|i| format!("alpha {i}")).collect();
+        la[3] = "x".repeat(2001);
+        let lb: Vec<String> = (1..=8).map(|i| format!("beta {i}")).collect();
+        std::fs::write(&a, la.join("\n") + "\n").unwrap();
+        std::fs::write(&b, lb.join("\n") + "\n").unwrap();
+        let mut sa = la.clone();
+        sa[3] = format!("{}…", "x".repeat(1999));
+        let content = many(&[("a.txt", &sa), ("b.txt", &lb)]);
+        let paths = vec![a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()];
+        let mut r = Reads::default();
+        assert!(r.after_paths(d.path(), &paths, None, 2000, &content, "c1").is_none());
+        r.note_view(&[result("c1", &content)]);
+        assert!(r.after_read(&a, "a.txt", Some(5), 2, "c2", usize::MAX).is_none(), "past the shortened line");
+        r.note_view(&[result("c1", &content)]);
+        assert!(r.after_read(&a, "a.txt", Some(4), 1, "c3", usize::MAX).is_none(), "the shortened line itself");
+        r.note_view(&[result("c1", &content)]);
+        let note = r.after_read(&a, "a.txt", Some(1), 3, "c4", usize::MAX).expect("1-3 are in view");
+        assert!(note.contains("not repeated"), "{note}");
+    }
+
+    fn many(files: &[(&str, &[String])]) -> String {
+        files.iter().map(|(n, l)| format!("=== {n} ===\n{}", shown_lines(l, 1, l.len()))).collect()
+    }
+
+    #[test]
+    fn the_files_of_a_multi_file_read_are_registered() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a.txt"), d.path().join("b.txt"));
+        let la: Vec<String> = (1..=12).map(|i| format!("alpha {i}")).collect();
+        let lb: Vec<String> = (1..=12).map(|i| format!("beta {i}")).collect();
+        std::fs::write(&a, la.join("\n") + "\n").unwrap();
+        std::fs::write(&b, lb.join("\n") + "\n").unwrap();
+        let content = many(&[("a.txt", &la), ("b.txt", &lb)]);
+        let paths = vec![a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()];
+        let mut r = Reads::default();
+        // the answer itself is not touched: nothing of it was in view before
+        assert!(r.after_paths(d.path(), &paths, None, 2000, &content, "c1").is_none());
+        r.note_view(&[result("c1", &content)]);
+        let note = r.after_read(&a, "a.txt", Some(3), 2, "c2", usize::MAX).expect("a.txt is in view");
+        assert!(note.contains("not repeated"), "{note}");
+        // a repeated multi-file call gets a note in each section; the first one was asked on its own just now
+        r.note_view(&[result("c1", &content)]);
+        let again = r.after_paths(d.path(), &paths, None, 2000, &content, "c3").expect("sections repeat");
+        assert!(again.contains("=== b.txt ==="), "{again}");
+        assert!(again.contains("not repeated"), "{again}");
+        assert!(!again.contains("beta 7"), "{again}");
+    }
+
+    #[test]
+    fn a_file_read_alone_is_not_sent_again_in_a_later_multi_file_read() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a.txt"), d.path().join("b.txt"));
+        let la: Vec<String> = (1..=12).map(|i| format!("alpha {i}")).collect();
+        let lb: Vec<String> = (1..=12).map(|i| format!("beta {i}")).collect();
+        std::fs::write(&a, la.join("\n") + "\n").unwrap();
+        std::fs::write(&b, lb.join("\n") + "\n").unwrap();
+        let mut r = Reads::default();
+        assert!(r.after_read(&a, "a.txt", None, 2000, "c1", usize::MAX).is_none());
+        r.note_view(&[result("c1", &shown_lines(&la, 1, 12))]);
+        let content = many(&[("a.txt", &la), ("b.txt", &lb)]);
+        let paths = vec![a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()];
+        let out = r.after_paths(d.path(), &paths, None, 2000, &content, "c2").expect("a.txt repeats");
+        assert!(out.contains("a.txt: unchanged since shown above"), "{out}");
+        assert!(!out.contains("alpha 7"), "{out}");
+        assert!(out.contains("beta 7"), "b.txt was not seen: {out}");
     }
 }
