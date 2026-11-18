@@ -43,7 +43,8 @@ pub(super) fn todo_block(items: &[nexo_core::tool::TodoItem]) -> String {
 }
 
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
-/// so pausing or resuming does not cost the cached prefix. The person's own words come with the
+/// so pausing or resuming does not cost the cached prefix; what the state is reaches the model as a
+/// line in the person's next message (`goal_state_line`), not as a change here. The person's own words come with the
 /// request to restate them (`goal_brief`); once restated, the restatement is the goal.
 pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
     let Some(g) = goal else { return system.to_string() };
@@ -64,6 +65,18 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
          can decide or check yourself. A message the person sends while you work comes first: answer it plainly, \
          then go on; call `goal_brief` again when they change what they want."
     )
+}
+
+/// The one line a person's message carries when a goal exists and is not running (met, or paused with its
+/// reason), so the model does not take a finished goal for work in hand. None without a goal, for an active
+/// goal, and for a waiting one (the message answers it: `person_spoke` has already resumed it).
+pub(super) fn goal_state_line(st: &State) -> Option<String> {
+    st.goal.as_ref()?;
+    match &st.goal_state {
+        GoalState::Done => Some("[goal: met, not running; /goal resume reopens it]".to_string()),
+        GoalState::Paused(why) => Some(format!("[goal: paused ({why}), not running; /goal resume goes on]")),
+        GoalState::Active | GoalState::Waiting => None,
+    }
 }
 
 /// Whether a reply declares the goal met: its last non-empty line is `GOAL DONE`, or the words

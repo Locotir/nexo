@@ -401,3 +401,78 @@ async fn a_todo_call_shows_the_list_and_the_replay_keeps_it() {
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { output, .. } if matches!(output.display, nexo_core::ToolDisplay::Todo { .. }))));
     r.stop().await;
 }
+
+fn last_user_of(client: &Scripted, k: usize) -> String {
+    client.requests()[k].messages.last().unwrap().text()
+}
+
+#[tokio::test]
+async fn a_met_goal_adds_its_state_line_to_the_next_person_message() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("sure"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.send(AgentCommand::Submit { text: "something else".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let sent = last_user_of(&client, 1);
+    let line = "[goal: met, not running; /goal resume reopens it]";
+    assert!(sent.starts_with(line), "{sent}");
+    assert!(sent.ends_with(&format!("{}\nsomething else", nexo_core::agent::PERSON_MARK)), "{sent}");
+}
+
+#[tokio::test]
+async fn an_active_goal_adds_no_state_line() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("I need one thing.\nGOAL WAIT")), Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    // the answer resumes the waiting goal, so it is not labelled as not running
+    r.send(AgentCommand::Submit { text: "here it is".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    assert_eq!(last_user_of(&client, 1), "here it is");
+    assert!(!client.requests()[0].messages.last().unwrap().text().contains("not running"));
+}
+
+#[tokio::test]
+async fn a_paused_goal_shows_its_reason_in_the_next_person_message() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("I need one thing.\nGOAL WAIT")), Reply::Events(text("noted"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()) });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.send(AgentCommand::PauseGoal);
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.send(AgentCommand::Submit { text: "note this".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let sent = last_user_of(&client, 1);
+    assert!(sent.starts_with("[goal: paused (paused by you), not running; /goal resume goes on]"), "{sent}");
+    assert!(sent.ends_with("note this"), "{sent}");
+}
+
+#[tokio::test]
+async fn the_system_prompt_is_the_same_before_and_after_the_goal_is_met() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("sure"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.send(AgentCommand::Submit { text: "something else".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    assert!(reqs[0].system.contains("Goal, in the person's words: ship it"));
+    assert_eq!(reqs[0].system, reqs[1].system, "the cached prefix does not change when the goal is met");
+}

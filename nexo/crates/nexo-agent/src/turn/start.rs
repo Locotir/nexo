@@ -318,6 +318,13 @@ async fn prepare_turn(
                 format!("{text}\n\n{note}")
             }
         };
+        // a goal that is not running is said before the person's words, so an old one is not taken for the work
+        if person && !typed.starts_with(GOAL_CONTINUE_MARK) && !typed.starts_with(GOAL_SET_MARK) {
+            if let Some(line) = goal_state_line(&st) {
+                added.push(AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
+                first.push(line);
+            }
+        }
         if person {
             if !push_user_checked(
                 &mut st,
