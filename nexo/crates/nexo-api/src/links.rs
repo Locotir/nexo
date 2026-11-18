@@ -9,7 +9,7 @@
 //! page (not an endpoint) handed out.
 
 use crate::call::path_matches;
-use crate::exchange::{secret_name, secret_param, Exchange, Fp, Place as Spot, SECRET};
+use crate::exchange::{fingerprint, secret_name, secret_param, Exchange, Fp, Place as Spot, SECRET};
 use crate::graphql;
 use crate::noise;
 use crate::spec::{standard, Api, Endpoint};
@@ -30,8 +30,13 @@ pub const REASONS: [&str; 9] = [
     "other",
 ];
 
-/// How many scalar values of one body are looked at; the rest is counted as `over the cap`.
+/// How many scalar values of one body are looked at, and of the whole capture; the rest is counted as `over the cap`.
 const MAX_LEAVES: usize = 4000;
+const MAX_TOTAL: usize = 200_000;
+/// How many earlier places that hold the same value are weighed for one request value (more is `too common` anyway),
+/// and how many links a map keeps.
+const MAX_SCAN: usize = 32;
+const MAX_LINKS: usize = 5000;
 /// A text longer than this is not a value an id or a cursor is made of.
 const MAX_TEXT: usize = 512;
 /// A number under this is not a link unless its field name says it is an id.
@@ -156,17 +161,18 @@ struct Leaf {
     ty: Ty,
 }
 
-fn walk(v: &Value, path: &str, name: &str, out: &mut Vec<Leaf>, n: &mut usize, cut: &mut usize) {
+fn walk(v: &Value, path: &str, name: &str, out: &mut Vec<Leaf>, n: &mut usize, cut: &mut usize, max: usize) {
     let (text, ty) = match v {
         Value::Object(m) => {
             for (k, c) in m {
-                walk(c, &format!("{path}.{k}"), k, out, n, cut);
+                walk(c, &format!("{path}.{k}"), k, out, n, cut, max);
             }
             return;
         }
         Value::Array(a) => {
+            let inner = format!("{path}[]");
             for c in a {
-                walk(c, &format!("{path}[]"), name, out, n, cut);
+                walk(c, &inner, name, out, n, cut, max);
             }
             return;
         }
@@ -178,7 +184,7 @@ fn walk(v: &Value, path: &str, name: &str, out: &mut Vec<Leaf>, n: &mut usize, c
     if text == SECRET {
         return;
     }
-    if *n >= MAX_LEAVES || text.chars().count() > MAX_TEXT {
+    if *n >= max || text.chars().count() > MAX_TEXT {
         *cut += 1;
         return;
     }
@@ -186,11 +192,12 @@ fn walk(v: &Value, path: &str, name: &str, out: &mut Vec<Leaf>, n: &mut usize, c
     out.push(Leaf { path: path.to_string(), name: name.to_string(), text, ty });
 }
 
-/// The scalars of a body, `[3]` as `[]`.
-fn leaves(v: &Value, cut: &mut usize) -> Vec<Leaf> {
+/// The scalars of a body, `[3]` as `[]`; `budget` is what is left of the capture's total, and it shrinks.
+fn leaves(v: &Value, cut: &mut usize, budget: &mut usize) -> Vec<Leaf> {
     let mut out = Vec::new();
     let mut n = 0;
-    walk(v, "$", "", &mut out, &mut n, cut);
+    walk(v, "$", "", &mut out, &mut n, cut, (*budget).min(MAX_LEAVES));
+    *budget -= out.len();
     out
 }
 
@@ -287,7 +294,7 @@ fn endpoint_of(api: &Api, x: &Exchange) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-fn requests(e: &Endpoint, x: &Exchange, cut: &mut usize) -> Vec<Req> {
+fn requests(e: &Endpoint, x: &Exchange, cut: &mut usize, budget: &mut usize) -> Vec<Req> {
     let mut out = Vec::new();
     let t: Vec<&str> = e.path.split('/').collect();
     let c: Vec<&str> = x.url.path().split('/').collect();
@@ -309,7 +316,7 @@ fn requests(e: &Endpoint, x: &Exchange, cut: &mut usize) -> Vec<Req> {
         }
     }
     if let Some(v) = x.req_body.as_ref().and_then(|b| b.json.as_ref()) {
-        for l in leaves(v, cut) {
+        for l in leaves(v, cut, budget) {
             out.push(Req { place: Place::Body, param: short(&l.path), name: l.name, text: l.text, ty: l.ty });
         }
     }
@@ -386,6 +393,7 @@ fn pages(api: &Api, ep: usize, r: &Req) -> bool {
 /// same `hosts` filter). Returns the links and, by reason, how many candidate links were dropped.
 pub fn find(all: &[Exchange], api: &Api, hosts: &[String]) -> (Vec<Link>, IndexMap<&'static str, usize>) {
     let mut cut = 0usize;
+    let mut budget = MAX_TOTAL;
     let (kept, _) = noise::sift(all, hosts);
     let mut exs: Vec<Ex> = all.iter().map(|_| Ex { ep: None, reqs: Vec::new() }).collect();
     let mut index: HashMap<String, IndexMap<(usize, String), Src>> = HashMap::new();
@@ -393,12 +401,16 @@ pub fn find(all: &[Exchange], api: &Api, hosts: &[String]) -> (Vec<Link>, IndexM
         let x = &all[i];
         let Some(e) = endpoint_of(api, x) else { continue };
         exs[i].ep = Some(e);
-        exs[i].reqs = requests(&api.endpoints[e], x, &mut cut);
+        exs[i].reqs = requests(&api.endpoints[e], x, &mut cut, &mut budget);
         if !(200..400).contains(&x.status) {
             continue;
         }
-        let mut found =
-            x.resp_body.as_ref().and_then(|b| b.json.as_ref()).map(|v| leaves(v, &mut cut)).unwrap_or_default();
+        let mut found = x
+            .resp_body
+            .as_ref()
+            .and_then(|b| b.json.as_ref())
+            .map(|v| leaves(v, &mut cut, &mut budget))
+            .unwrap_or_default();
         found.extend(location_leaves(x, &api.endpoints[e]));
         for l in found {
             let path = general(&l.path);
@@ -414,26 +426,37 @@ pub fn find(all: &[Exchange], api: &Api, hosts: &[String]) -> (Vec<Link>, IndexM
         }
     }
 
+    // a value that is a known secret (by fingerprint) is never a plain link, wherever it sits
+    let fps: HashSet<Fp> = all.iter().flat_map(|x| x.sent.iter().chain(&x.got)).map(|s| s.fp).collect();
+    let mut secret: HashMap<&str, bool> = HashMap::new();
     // where each value that a response holds is sent
     let mut targets: HashMap<&str, HashSet<(usize, Place, &str)>> = HashMap::new();
     for ex in &exs {
         if let Some(e) = ex.ep {
             for r in &ex.reqs {
                 if index.contains_key(&r.text) {
-                    targets.entry(r.text.as_str()).or_default().insert((e, r.place, r.param.as_str()));
+                    let hidden = *secret.entry(r.text.as_str()).or_insert_with(|| fps.contains(&fingerprint(&r.text)));
+                    if !hidden {
+                        targets.entry(r.text.as_str()).or_default().insert((e, r.place, r.param.as_str()));
+                    }
                 }
             }
         }
     }
+    // the texts each request sends, to tell an echo in O(1)
+    let sent: Vec<HashSet<&str>> = exs.iter().map(|x| x.reqs.iter().map(|r| r.text.as_str()).collect()).collect();
 
     let mut accs: IndexMap<Key, Acc> = IndexMap::new();
     for &i in &kept {
         let Some(e) = exs[i].ep else { continue };
         for r in &exs[i].reqs {
             let Some(srcs) = index.get(&r.text) else { continue };
+            if secret.get(r.text.as_str()).copied().unwrap_or(false) {
+                continue;
+            }
             let places = srcs.len();
             let sent_to = targets.get(r.text.as_str()).map(HashSet::len).unwrap_or(0);
-            for s in srcs.values().filter(|s| s.seq < i) {
+            for s in srcs.values().filter(|s| s.seq < i).take(MAX_SCAN) {
                 let why = if s.ty == Ty::Bool || r.ty == Ty::Bool || r.text == "true" || r.text == "false" {
                     Some("boolean")
                 } else if r.text.trim().chars().count() < MIN_TEXT && !small_number(&r.text, s.ty) {
@@ -442,7 +465,7 @@ pub fn find(all: &[Exchange], api: &Api, hosts: &[String]) -> (Vec<Link>, IndexM
                     Some("small number")
                 } else if s.ep == e && !pages(api, e, r) {
                     Some("same endpoint")
-                } else if exs[s.seq].reqs.iter().any(|q| q.text == r.text) {
+                } else if sent[s.seq].contains(r.text.as_str()) {
                     Some("echo")
                 } else if places > MAX_SOURCES || sent_to > MAX_TARGETS {
                     Some("too common")
@@ -516,6 +539,10 @@ pub fn find(all: &[Exchange], api: &Api, hosts: &[String]) -> (Vec<Link>, IndexM
         }
     }
     links.sort_by_key(|l| l.first);
+    if links.len() > MAX_LINKS {
+        *counts.entry("over the cap").or_insert(0) += links.len() - MAX_LINKS;
+        links.truncate(MAX_LINKS);
+    }
     let mut ignored = IndexMap::new();
     for r in REASONS {
         if let Some(n) = counts.get(r).filter(|n| **n > 0) {
@@ -823,7 +850,7 @@ pub fn next(api: &Api, id: &str, body: Option<&Value>, location: Option<&str>) -
             steps.skipped += 1;
         }
     }
-    values.sort_by(|a, b| b.seen.cmp(&a.seen));
+    values.sort_by_key(|n| std::cmp::Reverse(n.seen));
     steps.list = values;
     steps.list.extend(auth.into_values());
     steps
@@ -1045,16 +1072,17 @@ mod tests {
         let (ok, resp) = (json!({}).to_string(), r#"{"ok":true}"#);
         let mut text: Value = serde_json::from_str(&har(&[
             ("POST", "https://app.test/api/notes", &[], Some(ok.as_str()), 201, resp),
-            ("GET", "https://app.test/api/notes/n-48213", &[], None, 200, r#"{"title":"hi"}"#),
-            ("GET", "https://app.test/api/notes/n-48214", &[], None, 200, r#"{"title":"yo"}"#),
+            ("GET", "https://app.test/api/notes/note-48213", &[], None, 200, r#"{"title":"hi"}"#),
+            ("GET", "https://app.test/api/notes/note-48214", &[], None, 200, r#"{"title":"yo"}"#),
         ]))
         .unwrap();
         text["log"]["entries"][0]["response"]["headers"] =
-            json!([{ "name": "Location", "value": "/api/notes/n-48213" }]);
+            json!([{ "name": "Location", "value": "/api/notes/note-48213" }]);
         let api = analyze(&text.to_string());
         let l = api.links.iter().find(|l| l.path.starts_with("header:location")).expect("a link from the location");
-        assert_eq!((l.from.as_str(), l.place, l.param.as_str()), ("post_api_notes", Place::Path, l.param.as_str()));
-        let steps = next(&api, "post_api_notes", None, Some("/api/notes/n-48299"));
-        assert_eq!(steps.list[0].params[0].1, "n-48299");
+        assert_eq!((l.from.as_str(), l.place, l.param.as_str()), ("post_api_notes", Place::Path, "note_id"));
+        assert_eq!(l.path, "header:location#2");
+        let steps = next(&api, "post_api_notes", None, Some("/api/notes/note-48299"));
+        assert_eq!(steps.list[0].params[0].1, "note-48299");
     }
 }
