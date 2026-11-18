@@ -1,6 +1,6 @@
 //! A bounded record of what ran, so "how did I get here" can be asked without a restart. One entry per single
-//! step: the pc it started at, the registers it changed and the memory it wrote. It only looks back; it never
-//! undoes anything. The ring is bounded (the last N instructions) and counts what it let go.
+//! step: the pc it started at, the registers it changed and the memory it wrote. `back` only looks; `rstepi` and
+//! `rcont` undo (the plan is in `undo.rs`). The ring is bounded (the last N instructions) and counts what it let go.
 //!
 //! This file holds the record and its questions, with no process in it, so the filters can be tested on a
 //! hand-built tape. The commands and the hooks into the run are in `cmds/record.rs`.
@@ -50,6 +50,9 @@ pub struct Entry {
     /// It may have written memory the entry does not hold (a write over `MAX_WRITE` bytes, an address that could not
     /// be worked out, code that could not be decoded): it cannot be undone.
     pub lossy: bool,
+    /// The signal that was waiting to be delivered when the instruction was stepped (0: none): the step went into the
+    /// kernel's signal frame and the handler, which the entry does not hold. The entry is `lossy` then.
+    pub signal: u64,
 }
 
 impl Entry {
@@ -57,6 +60,34 @@ impl Entry {
     pub fn changed(&self, name: &str) -> bool {
         matches!(name, "rip" | "eip") || self.regs.iter().any(|(n, _, _)| *n == name)
     }
+}
+
+/// The instruction (as `decode_live_in` writes it) may write memory that its memory operands do not show: a
+/// repeated string write (one operand, any number of elements), a frame or register dump, a far call, an interrupt.
+/// The record cannot hold what it writes, so its entry is marked `lossy`.
+pub fn unmodelled(text: &str) -> bool {
+    let mut words = text.split_whitespace();
+    let mut m = words.next().unwrap_or("");
+    let mut rep = false;
+    while matches!(
+        m,
+        "lock" | "rep" | "repe" | "repne" | "repz" | "repnz" | "xacquire" | "xrelease" | "bnd" | "notrack"
+    ) {
+        rep |= m.starts_with("rep");
+        m = words.next().unwrap_or("");
+    }
+    if rep && ["movs", "stos", "ins"].iter().any(|p| m.starts_with(p)) {
+        return true;
+    }
+    if m == "call" && (text.contains("far") || text.contains("fword")) {
+        return true;
+    }
+    [
+        "enter", "pusha", "int", "iret", "lcall", "xsave", "fxsave", "fnsave", "fsave", "fnstenv", "fstenv", "maskmov",
+        "vmaskmov",
+    ]
+    .iter()
+    .any(|p| m.starts_with(p))
 }
 
 #[derive(Default)]
@@ -79,6 +110,11 @@ pub struct Tape {
     pending: HashMap<Tid, Vec<(u64, Vec<u8>)>>,
     /// Threads whose next instruction may write more than `pending` holds.
     lossy: HashSet<Tid>,
+    /// The signal waiting for each thread's next step.
+    signal: HashMap<Tid, u64>,
+    /// Entries numbered up to this were made before the program was changed from outside the record (a `write`, a
+    /// hook's argument): undoing does not go back across them.
+    fence: u64,
 }
 
 impl Tape {
@@ -94,6 +130,7 @@ impl Tape {
         self.last.clear();
         self.pending.clear();
         self.lossy.clear();
+        self.signal.clear();
     }
 
     pub fn cap(&self) -> usize {
@@ -182,9 +219,34 @@ impl Tape {
         }
     }
 
-    /// The whole record, newest first.
+    /// The signal that will be delivered when the thread next runs (0: none).
+    pub fn set_signal(&mut self, tid: Tid, sig: u64) {
+        self.signal.insert(tid, sig);
+    }
+
+    /// The entries undoing may use, newest first: those since the program was last changed from outside the record.
     pub fn newest_first(&self) -> Vec<&Entry> {
-        self.ring.iter().rev().collect()
+        let fence = self.fence;
+        self.ring.iter().rev().take_while(|e| e.n > fence).collect()
+    }
+
+    /// How many entries sit behind the fence: kept for `back`, not for undoing.
+    pub fn fenced(&self) -> usize {
+        let fence = self.fence;
+        self.ring.iter().filter(|e| e.n <= fence).count()
+    }
+
+    /// The program was changed by something the record does not see (a memory write by a command or a hook): the
+    /// entries so far can no longer be undone, since the bytes they would put back are not what the program holds.
+    pub fn cut(&mut self) {
+        if self.on {
+            self.fence = self.total;
+        }
+    }
+
+    /// The registers the thread had at the last place the record saw it.
+    pub fn last_regs(&self, tid: Tid) -> Option<&Regs> {
+        self.last.get(&tid)
     }
 
     /// The newest `k` entries were undone and the thread is at `to`: they are let go (so a step forward records
@@ -195,6 +257,7 @@ impl Tape {
             self.total = self.total.saturating_sub(1);
         }
         self.run_kept = self.run_kept.saturating_sub(k as u64);
+        self.fence = self.fence.min(self.total);
         self.pending.remove(&tid);
         self.lossy.remove(&tid);
         self.last.insert(tid, *to);
@@ -213,17 +276,31 @@ impl Tape {
     ) {
         let pend = self.pending.remove(&tid).unwrap_or_default();
         let lossy = self.lossy.remove(&tid);
+        let signal = self.signal.remove(&tid).unwrap_or(0);
         match self.last.get(&tid).copied() {
             Some(p) if stepped && from.is_none_or(|f| f == p.rip) => {
-                let mem = pend
-                    .into_iter()
-                    .filter_map(|(addr, before)| {
-                        let after = read(addr, before.len());
-                        (after.len() == before.len()).then_some(MemWrite { addr, before, after })
-                    })
-                    .collect();
+                let mut lossy = lossy;
+                let mut mem = Vec::new();
+                for (addr, before) in pend {
+                    let after = read(addr, before.len());
+                    if after.len() == before.len() {
+                        mem.push(MemWrite { addr, before, after });
+                    } else {
+                        // the place cannot be read after the step: the write is not whole in the record
+                        lossy = true;
+                    }
+                }
                 let regs = now.changed(&p);
-                self.push(Entry { n: 0, tid, pc: p.rip, regs, mem, next: now.rip, lossy });
+                self.push(Entry {
+                    n: 0,
+                    tid,
+                    pc: p.rip,
+                    regs,
+                    mem,
+                    next: now.rip,
+                    lossy: lossy || signal != 0,
+                    signal,
+                });
             }
             // the same place seen again (a stop after the steps that got there): nothing ran in between
             Some(p) if !stepped && p.rip == now.rip => {
@@ -268,6 +345,7 @@ mod tests {
             regs: regs.to_vec(),
             next: pc + 4,
             lossy: false,
+            signal: 0,
             mem: mem.iter().map(|(a, b, n)| MemWrite { addr: *a, before: vec![*b], after: vec![*n] }).collect(),
         }
     }
@@ -382,6 +460,44 @@ mod tests {
         d.rip = 0x500004;
         t.observe(3, &d, true, Some(0x123), &mut none);
         assert_eq!((t.kept(), t.gaps), (1, 2));
+    }
+
+    #[test]
+    fn what_the_operands_do_not_show_is_unmodelled() {
+        for t in [
+            "rep stosb byte ptr [rdi], al",
+            "repne movsq qword ptr [rdi], qword ptr [rsi]",
+            "enter 0x10, 0",
+            "int 0x80",
+            "xsave [rsp]",
+            "fxsave [rax]",
+        ] {
+            assert!(unmodelled(t), "{t}");
+        }
+        for t in [
+            "push rbp",
+            "call 0x1000",
+            "mov [rax], rbx",
+            "lock cmpxchg [rdi], rsi",
+            "rep ret",
+            "stosb byte ptr [rdi], al",
+            "movsd xmm0, xmm1",
+        ] {
+            assert!(!unmodelled(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn a_cut_hides_the_older_entries_from_undoing_and_a_rewind_keeps_the_fence_in_range() {
+        let mut t = tape(10, 3);
+        t.cut();
+        t.push(entry(0x2000, &[], &[]));
+        t.push(entry(0x2004, &[], &[]));
+        assert_eq!((t.kept(), t.newest_first().len(), t.fenced()), (5, 2, 3));
+        t.rewind(1, 2, &Regs::default());
+        assert_eq!((t.kept(), t.newest_first().len(), t.fenced()), (3, 0, 3));
+        t.push(entry(0x3000, &[], &[]));
+        assert_eq!(t.newest_first().len(), 1);
     }
 
     #[test]

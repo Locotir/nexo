@@ -131,6 +131,60 @@ mod tests {
         }
     }
 
+    /// The commands that run the program, change it or replace the session's target, by their first name. The
+    /// curator's `DBG_MOVE` must hold each of them and every spelling.
+    const MOVES: &[&str] = &[
+        "run", "attach", "connect", "core", "cont", "step", "next", "finish", "until", "kill", "detach", "end",
+        "signal", "restart", "call", "setreg", "write", "stdin", "return", "jump", "rstepi", "rcont",
+    ];
+
+    fn curator_moves() -> Vec<String> {
+        let src = include_str!("../../nexo-curator/src/tools.rs");
+        let body = src.split("const DBG_MOVE").nth(1).expect("DBG_MOVE is there");
+        let body = body.split("];").next().expect("the list ends");
+        body.split('"').skip(1).step_by(2).map(String::from).collect()
+    }
+
+    /// `(spellings, target)` of each arm of the gdb alias table.
+    fn aliases() -> Vec<(Vec<String>, String)> {
+        let src = include_str!("gdbdialect.rs");
+        let body = src.split("pub fn alias(name: &str) -> &str {").nth(1).expect("alias is there");
+        let body = body.split("other => other").next().expect("the table ends");
+        let mut v = Vec::new();
+        for line in body.lines().map(str::trim) {
+            let Some((l, r)) = line.split_once("=>") else { continue };
+            let names = l.split('|').map(|n| n.trim().trim_matches('"').to_string()).collect();
+            v.push((names, r.trim().trim_matches(',').trim_matches('"').to_string()));
+        }
+        v
+    }
+
+    #[test]
+    fn the_curators_move_list_is_every_move_spelling_and_nothing_else() {
+        let list = curator_moves();
+        let mut want: Vec<String> = Vec::new();
+        for (names, _) in COMMANDS {
+            let first = names.split(' ').next().unwrap_or("");
+            if MOVES.contains(&first) {
+                want.extend(names.split(' ').map(String::from));
+            }
+        }
+        for (names, target) in aliases() {
+            if canonical(&target).is_some_and(|c| MOVES.contains(&c)) {
+                want.extend(names);
+            }
+        }
+        for m in MOVES {
+            assert!(canonical(m).is_some(), "{m} is not a command");
+        }
+        for w in &want {
+            assert!(list.contains(w), "{w} runs or changes the program but is not in the curator's DBG_MOVE");
+        }
+        for l in &list {
+            assert!(want.contains(l), "{l} is in the curator's DBG_MOVE but is not a move command or alias");
+        }
+    }
+
     #[test]
     fn a_spelling_finds_its_first_name() {
         assert_eq!(canonical("c"), Some("cont"));

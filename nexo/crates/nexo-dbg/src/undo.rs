@@ -48,7 +48,7 @@ pub fn is_syscall_bytes(b: &[u8]) -> bool {
 pub fn changes_bytes(m: &MemWrite, lo: u64, hi: u64) -> bool {
     m.before.iter().zip(&m.after).enumerate().any(|(i, (b, a))| {
         let at = m.addr + i as u64;
-        at >= lo && at < hi && b != a
+        (lo..hi).contains(&at) && b != a
     })
 }
 
@@ -113,6 +113,15 @@ pub fn plan(
                 e.n, e.pc, e.next
             ));
         }
+        if e.signal != 0 {
+            return Err(format!(
+                "instruction #{} at {:#x} was stepped with signal {} ({}) waiting: the step went into the signal frame and handler, which the record did not keep, so it cannot be undone",
+                e.n,
+                e.pc,
+                crate::engine::signal_name(e.signal as u32),
+                e.signal
+            ));
+        }
         if e.lossy {
             return Err(format!(
                 "instruction #{} at {:#x} may have written memory the record did not keep (more than {MAX_WRITE} bytes, an address it could not work out, or code it could not decode)",
@@ -166,6 +175,7 @@ mod tests {
             pc,
             next,
             lossy: false,
+            signal: 0,
             regs: regs.to_vec(),
             mem: mem.iter().map(|(a, b, x)| MemWrite { addr: *a, before: vec![*b], after: vec![*x] }).collect(),
         }
@@ -236,6 +246,11 @@ mod tests {
         l[1].lossy = true;
         let m = run(&l, 0x100c, 3, Goal::Count(2)).unwrap_err();
         assert!(m.contains("#2") && m.contains("did not keep"), "{m}");
+        let mut s = tape();
+        s[1].signal = 11;
+        s[1].lossy = true;
+        let m = run(&s, 0x100c, 3, Goal::Count(2)).unwrap_err();
+        assert!(m.contains("signal") && m.contains("(11)") && m.contains("#2"), "{m}");
     }
 
     #[test]

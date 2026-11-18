@@ -45,6 +45,10 @@ impl Session {
             self.tape.give_up();
             return;
         }
+        // a signal waiting is delivered by the next step: the step lands in its handler and the kernel writes a frame
+        let sig = self.t.take_signal(tid);
+        self.t.give_signal(tid, sig);
+        self.tape.set_signal(tid, sig);
         if !self.tape.has_pending(tid) {
             let bytes = self.read_vec(r.rip, 16);
             let Some(ins) = decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n)) else {
@@ -52,7 +56,8 @@ impl Session {
                 return;
             };
             let mut w = Vec::new();
-            let mut lossy = false;
+            // a byte that is not an instruction, or one whose writes the operands do not show (`rep stos`, `enter`)
+            let mut lossy = ins.invalid || crate::record::unmodelled(&ins.text);
             for m in ins.mem.iter().filter(|m| m.write) {
                 let Some(a) = m.addr else {
                     lossy = true;
@@ -213,7 +218,7 @@ impl Session {
     }
 
     /// The two commands: plan, check, then change the program (memory first, then registers).
-    fn rec_undo(&mut self, name: &str, count: Option<usize>) -> Result<Output> {
+    fn rec_undo(&mut self, name: &'static str, count: Option<usize>) -> Result<Output> {
         self.rec_linux(name)?;
         self.need_stopped()?;
         if !self.tape.on {
@@ -225,7 +230,19 @@ impl Session {
         let now = self.t.regs(cur)?;
         let bps: Vec<(u32, u64)> =
             self.bps.iter().filter(|b| b.enabled && b.addr != 0).map(|b| (b.id, b.addr)).collect();
-        let wps: Vec<(u32, u64, u64)> = self.wps.iter().map(|w| (w.id, w.addr, w.addr + w.len)).collect();
+        let wps: Vec<(u32, u64, u64)> = self.wps.iter().map(|w| (w.id, w.addr, w.addr.saturating_add(w.len))).collect();
+        // anything that changed the registers since the record last saw the thread (setreg, jump, return, a hook, a
+        // call) leaves the record describing a program that is not this one
+        if self.tape.last_regs(cur).is_none_or(|l| l.named() != now.named()) {
+            return fail(format!(
+                "{name}: the thread's registers are not what the record last saw: the program was changed outside it (setreg, jump, return, call, a hook) or ran without it, so nothing is undone"
+            ));
+        }
+        if self.tape.fenced() > 0 && self.tape.newest_first().is_empty() {
+            return fail(format!(
+                "{name}: the program's memory was changed outside the record since its last entry (write, a hook setting an argument): the entries before that cannot be undone"
+            ));
+        }
         let stop = |e: &Entry| {
             bps.iter().any(|(_, a)| *a == e.pc)
                 || e.mem.iter().any(|m| wps.iter().any(|(_, lo, hi)| undo::changes_bytes(m, *lo, *hi)))
@@ -246,7 +263,15 @@ impl Session {
                     let last = ring[p.undone - 1].clone();
                     (p, last)
                 }
-                Err(m) => return fail(format!("{name}: {m}")),
+                Err(m) => {
+                    let behind = tape.fenced();
+                    let more = if behind > 0 {
+                        format!(" ({behind} older entries are behind a change made outside the record: `back` still reads them)")
+                    } else {
+                        String::new()
+                    };
+                    return fail(format!("{name}: {m}{more}"));
+                }
             }
         };
         // every place must be readable before anything is written
@@ -261,15 +286,21 @@ impl Session {
         for (addr, bytes) in &plan.writes {
             self.t.write(*addr, bytes)?;
         }
-        self.t.set_regs(cur, &plan.regs)?;
-        self.tape.rewind(cur, plan.undone, &plan.regs);
+        // the thread is no longer stopped in a system call (the pc moved), and a signal that stopped it is not for the
+        // earlier place: both go as after a jump
+        let mut put = plan.regs;
+        put.orig_rax = u64::MAX;
+        self.t.set_regs(cur, &put)?;
+        self.t.take_signal(cur);
+        let after = self.t.regs(cur).unwrap_or(put);
+        self.tape.rewind(cur, plan.undone, &after);
         self.frame = 0;
         let spans: Vec<(u64, usize)> = self.wps.iter().map(|w| (w.addr, w.len as usize)).collect();
         for (i, (addr, len)) in spans.into_iter().enumerate() {
             let bytes = self.read_vec(addr, len);
             self.wps[i].last = bytes;
         }
-        self.rec_observe(cur, &plan.regs, false, None);
+        self.rec_observe(cur, &after, false, None);
         let label = self.mods.label(plan.pc_to, false).unwrap_or_default();
         let mut l = vec![format!(
             "undid {} instruction{}: pc {:#x} -> {:#x} {label}; {} memory write{} put back ({} bytes), {} register{} restored",
