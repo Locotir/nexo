@@ -583,11 +583,7 @@ fn entry_of(m: raw::Model) -> Entry {
             cache_read: num(&c.cache_read).unwrap_or(0.0),
             cache_write: num(&c.cache_write).unwrap_or(0.0),
             cache_write_1h: 0.0,
-            long: c
-                .context_over_200k
-                .0
-                .as_ref()
-                .and_then(|t| long_tier(t, num(&c.cache_read), num(&c.cache_write))),
+            long: c.context_over_200k.0.as_ref().and_then(|t| long_tier(t, num(&c.cache_read), num(&c.cache_write))),
         };
         // a free model is a price too: input and output present, both 0
         (p.is_known() || (c.input.present() && c.output.present())).then_some(p)

@@ -352,12 +352,8 @@ fn shared_memory_opens_the_picker_with_the_other_sessions_and_the_old_names_stil
 fn space_ticks_sessions_and_enter_shares_all_the_ticked_ones() {
     let (mut a, mut rx) = app();
     a.session_id = Some("here".into());
-    a.opts.sessions = vec![
-        row("here", "this one"),
-        row("s1", "the parser"),
-        row("s2", "the lexer"),
-        row("s3", "the docs"),
-    ];
+    a.opts.sessions =
+        vec![row("here", "this one"), row("s1", "the parser"), row("s2", "the lexer"), row("s3", "the docs")];
     a.input.set_text("/shared-memory");
     a.submit();
     press(&mut a, KeyCode::Char(' '));

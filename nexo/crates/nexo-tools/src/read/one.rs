@@ -7,7 +7,9 @@ use super::symbol::read_symbol;
 use super::{DEFAULT_LIMIT, FILE_CAP, LINE_CHARS};
 use crate::picture;
 use crate::program::{about, bin_offered};
-use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, utf16_text, Cuts, MAX_FILE_BYTES};
+use crate::util::{
+    cut_line, display_path, int_arg, is_binary, outside_note, resolve, utf16_text, Cuts, MAX_FILE_BYTES,
+};
 
 /// A compiled program shows nothing as text: the answer is what it is and the call that reads it.
 fn not_text(

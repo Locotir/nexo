@@ -83,7 +83,8 @@ impl Tool for Diagnostics {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Language-server errors and warnings of a file. Edit and write results already carry the changed \
+            description:
+                "Language-server errors and warnings of a file. Edit and write results already carry the changed \
                 file's compiler errors.",
             params: &[],
         })
