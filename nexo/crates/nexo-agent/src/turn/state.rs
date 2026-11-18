@@ -103,6 +103,8 @@ pub(super) struct State {
     pub(super) ask_told: bool,
     /// That line, when a compaction took it out of the history: the person's next message carries it again.
     pub(super) ask_again: Option<String>,
+    /// The programs and config the person's words named, and what of them this session showed (see `machine_map.rs`).
+    pub(super) machine: crate::machine_map::MachineMap,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
     pub(super) epoch: u64,
     /// The one-run slot of a workflow started by name: 0 when free, else the number of the start that holds it.

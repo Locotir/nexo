@@ -106,6 +106,10 @@ impl Runtime {
         emit(&events, limits.event(&provider, &model));
         let (usage, cost) = (session.usage(), session.cost());
         let max_cost = config.agent.max_cost;
+        // the machine map is indexed only where the request would carry from it
+        let machine = crate::machine_map::MachineMap::start(
+            config.agent.attach_named_files && config.agent.attach_budget > 0 && !config.agent.hermetic,
+        );
         let jobs = Jobs::new();
         let detach = nexo_core::jobs::Detach::default();
         let job_changes = jobs.changes();
@@ -168,6 +172,7 @@ impl Runtime {
             dbg_told,
             ask_told,
             ask_again: None,
+            machine,
             epoch: 0,
             flow_slot: Default::default(),
             plan,

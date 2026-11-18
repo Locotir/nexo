@@ -28,6 +28,7 @@ mod hint_cmd;
 mod history;
 pub mod hooks;
 pub mod limits;
+pub mod machine_map;
 mod missing;
 pub mod observe_remote;
 #[cfg(test)]

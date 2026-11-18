@@ -182,6 +182,9 @@ async fn prepare_turn(
     let text = if person { typed.clone() } else { text };
     // the project's check runs once, before the request is built, so its result comes with it
     let check = orient::start_check(state, cancel).await;
+    // what the machine has for the programs and config the person names (nothing while its index is not built)
+    let machine =
+        if person && !marked_by_nexo(&typed) { orient::machine_found(state, &typed).await } else { Vec::new() };
     {
         let mut st = state.lock().await;
         if let Some(item) = &item {
@@ -204,7 +207,11 @@ async fn prepare_turn(
             first.push(ultracode::facts(&st.config, &provider, &model, now));
         }
         // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
-        let (mut own, known) = named_files(&st, &text, &attachments);
+        let (mut own, mut known) = named_files(&st, &text, &attachments);
+        let named: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
+        let (mapped, lines) = orient::machine_files(&mut st, &text, &named, machine);
+        own.extend(mapped);
+        known.extend(lines);
         let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
         own.extend(orient::budget_files(&st, &text, &with));
         let included = orient::include(&own, &st.cwd);
@@ -280,9 +287,7 @@ async fn prepare_turn(
         // the person stopped the request before this one: the line that says so comes first, so the model reads
         // what happened before it reads anything this request brings; the goal's and the supervisor's marks are
         // read back as they are, so the request after them carries it
-        let marked = typed.trim() == SUPERVISOR_RESUME_MARK
-            || typed.starts_with(GOAL_SET_MARK)
-            || typed.starts_with(GOAL_CONTINUE_MARK);
+        let marked = marked_by_nexo(&typed);
         let stop = st.session.stop().filter(|_| person || !marked).map(str::to_string);
         let text = match stop {
             None => text,
@@ -379,6 +384,11 @@ fn person_clock_line(st: &State, typed: &str) -> Option<(Option<String>, SystemT
     }
     let gap = st.last_person_at.map(|t| now.duration_since(t).unwrap_or_default());
     Some((Some(nexo_core::agent::person_clock(&nexo_core::clock::local_hms(now), gap)), now))
+}
+
+/// Whether `typed` is a line nexo writes by itself (the supervisor's resume, a goal's start or continuation), not the person's words.
+fn marked_by_nexo(typed: &str) -> bool {
+    typed.trim() == SUPERVISOR_RESUME_MARK || typed.starts_with(GOAL_SET_MARK) || typed.starts_with(GOAL_CONTINUE_MARK)
 }
 
 /// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`), and again

@@ -80,6 +80,8 @@ async fn delegate(repo: &Path, replies: Vec<Vec<StreamEvent>>) -> String {
         .with(Arc::new(Files("grep", ToolKind::Search)))
         .with(Arc::new(Files("write", ToolKind::Write)));
     let mut cfg = Config::default();
+    // nothing of the real machine (its home, its PATH) is mapped: a run here never reads them
+    std::env::set_var("NEXO_MACHINE_MAP", "0");
     cfg.providers.insert("mock".into(), ProviderConfig::new("mock", "http://mock", None));
     cfg.permissions.mode = PermissionMode::Auto;
     cfg.context.policy = "plain".into();

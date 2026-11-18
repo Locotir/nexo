@@ -242,6 +242,8 @@ fn config(mode: PermissionMode) -> Config {
     // and every file they read is read on purpose: nothing comes attached on its own, nothing runs at the start
     cfg.agent.attach_budget = 0;
     cfg.agent.check_at_start = false;
+    // nothing of the real machine (its home, its PATH) is mapped: a run here never reads them
+    std::env::set_var("NEXO_MACHINE_MAP", "0");
     cfg
 }
 

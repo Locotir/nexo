@@ -235,6 +235,34 @@ pub fn holds_keys(p: &Path) -> bool {
         || p.extension().is_some_and(|e| EXTS.contains(&lower(e).as_str()))
 }
 
+/// A path nothing is to list, read or follow on the person's own account, beyond the files [`holds_keys`] names:
+/// the folders of other programs' agents and accounts (`.pki`, `.nexo`, `.codex`, `.grok`, `.claude`), the desktop key
+/// rings (`.local/share/keyrings`) and the profiles of web browsers (Chrome, Chromium, Brave, Firefox, Vivaldi, Opera,
+/// Edge), which hold logins and history. Names compare without case. The path as given.
+pub fn is_private(p: &Path) -> bool {
+    const DIRS: &[&str] =
+        &[".pki", ".nexo", ".codex", ".grok", ".claude", ".mozilla", "chromium", "bravesoftware", "brave-browser"];
+    // browsers that keep their profile below a vendor folder (macOS and Windows)
+    const PAIRS: &[[&str; 2]] = &[["google", "chrome"], ["microsoft", "edge"]];
+    // a folder that is the stem, or the stem and a version or a channel (`google-chrome-beta`, `opera_next`)
+    const FAMILIES: &[&str] =
+        &["google-chrome", "chromium", "vivaldi", "opera", "microsoft-edge", "mozilla", "firefox"];
+    let lower = |s: &std::ffi::OsStr| s.to_string_lossy().to_ascii_lowercase();
+    if holds_keys(p) {
+        return true;
+    }
+    let parts: Vec<String> = p.components().map(|c| lower(c.as_os_str())).collect();
+    parts
+        .windows(2)
+        .any(|w| (w[0] == "share" && w[1] == "keyrings") || PAIRS.iter().any(|[a, b]| w[0] == *a && w[1] == *b))
+        || parts.iter().any(|c| {
+            DIRS.contains(&c.as_str())
+                || FAMILIES
+                    .iter()
+                    .any(|f| c.strip_prefix(f).is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '_', ' '])))
+        })
+}
+
 /// True when nexo runs as root (effective uid 0).
 pub fn is_root() -> bool {
     #[cfg(unix)]
@@ -321,6 +349,37 @@ pub fn real_path(p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn other_agents_keyrings_and_browser_profiles_are_private() {
+        for p in [
+            "/home/a/.pki/nssdb",
+            "/home/a/.nexo/sessions",
+            "/home/a/.CODEX/auth.json",
+            "/home/a/.grok",
+            "/home/a/.claude/projects",
+            "/home/a/.local/share/keyrings/login.keyring",
+            "/home/a/.config/google-chrome/Default",
+            "/home/a/.config/google-chrome-beta",
+            "/home/a/.config/chromium",
+            "/home/a/.config/BraveSoftware",
+            "/home/a/.mozilla/firefox",
+            "/home/a/.config/vivaldi-snapshot",
+            "/home/a/.config/opera",
+            "/home/a/.config/microsoft-edge",
+            "/home/a/.ssh/config",
+        ] {
+            assert!(is_private(Path::new(p)), "{p}");
+        }
+        for p in [
+            "/home/a/.config/quickshell/shell.qml",
+            "/home/a/.local/share/applications",
+            "/home/a/.config/operator",
+            "/home/a/.zshrc",
+        ] {
+            assert!(!is_private(Path::new(p)), "{p}");
+        }
+    }
 
     #[test]
     fn a_shown_path_has_the_home_folder_as_a_tilde_and_only_a_whole_one() {

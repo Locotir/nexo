@@ -90,6 +90,8 @@ fn policy(text: &str) -> Arc<ManagedPolicy> {
 
 fn config(p: &Arc<ManagedPolicy>) -> Config {
     let mut cfg = Config::default();
+    // nothing of the real machine (its home, its PATH) is mapped: a run here never reads them
+    std::env::set_var("NEXO_MACHINE_MAP", "0");
     let mut m = ProviderConfig::new("mock", "http://mock", None);
     m.models = vec!["m1".into(), "m2".into()];
     cfg.providers.insert("mock".into(), m);
@@ -239,6 +241,8 @@ async fn user_hooks_are_off_when_disallowed_and_forced_hooks_run() {
         "allow_user_hooks = false\n[[forced_hooks]]\nevent = \"user_prompt_submit\"\ncommand = \"touch forced_ran\"",
     );
     let mut cfg = Config::default();
+    // nothing of the real machine (its home, its PATH) is mapped: a run here never reads them
+    std::env::set_var("NEXO_MACHINE_MAP", "0");
     let mut m = ProviderConfig::new("mock", "http://mock", None);
     m.models = vec!["m1".into()];
     cfg.providers.insert("mock".into(), m);
