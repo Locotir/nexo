@@ -84,6 +84,12 @@ impl Session {
         self.state = State::Exited;
         self.exit = Some("killed by the debugger".into());
         let mut l = vec!["program killed".to_string()];
+        // a watch on a local belongs to a frame of the program that is gone
+        let n = self.wps.len();
+        self.wps.retain(|w| w.scope.is_none());
+        if self.wps.len() < n {
+            l.push("watches on locals deleted: their frames are gone".to_string());
+        }
         l.extend(self.call_gone());
         l.extend(self.unhit_lines());
         Ok(rows("kill", l, json!({})))

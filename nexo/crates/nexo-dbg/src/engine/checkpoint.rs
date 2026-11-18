@@ -427,6 +427,11 @@ impl Session {
         if let Err(e) = self.apply_watches() {
             l.push(format!("the hardware watches could not be set in the restored process ({e})"));
         }
+        // the restored process has its own thread ids: the frame a watch on a local belongs to is in this one now
+        let now = self.cur;
+        for s in self.wps.iter_mut().filter_map(|w| w.scope.as_mut()) {
+            s.tid = now;
+        }
         let spans: Vec<(u64, usize)> = self.wps.iter().map(|w| (w.addr, w.len as usize)).collect();
         for (i, (addr, len)) in spans.into_iter().enumerate() {
             let bytes = self.read_vec(addr, len);
