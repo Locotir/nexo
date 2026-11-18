@@ -249,11 +249,11 @@ const PRESETS: &[Preset] = &[
         ],
         headers: &[],
     },
-    // xAI also serves `openai-responses` (its recommended API for reasoning
-    // models): set `protocol = "openai-responses"` to use it.
+    // xAI lists Chat Completions as deprecated and returns no reasoning there; on Responses grok returns
+    // its reasoning encrypted and nexo sends it back each round.
     Preset {
         name: "xai",
-        protocol: openai_chat::ID,
+        protocol: openai_responses::ID,
         base_url: "https://api.x.ai/v1",
         models: &[
             (

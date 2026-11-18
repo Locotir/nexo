@@ -9,7 +9,6 @@ fn t7_chat_url_of_every_preset_is_the_one_the_vendor_documents() {
     let want = [
         ("openai", "https://api.openai.com/v1/chat/completions"),
         ("deepseek", "https://api.deepseek.com/v1/chat/completions"),
-        ("xai", "https://api.x.ai/v1/chat/completions"),
         ("groq", "https://api.groq.com/openai/v1/chat/completions"),
         ("mistral", "https://api.mistral.ai/v1/chat/completions"),
         ("openrouter", "https://openrouter.ai/api/v1/chat/completions"),
@@ -35,6 +34,8 @@ fn t7_chat_url_of_every_preset_is_the_one_the_vendor_documents() {
         Gemini::url(&all["gemini"], "gemini-2.5-pro"),
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
     );
+    assert_eq!(all["xai"].protocol, "openai-responses");
+    assert_eq!(OpenAiResponses::url(&all["xai"]), "https://api.x.ai/v1/responses");
     assert_eq!(
         OpenAiResponses::url(&all["codex"]),
         format!("{}/responses", all["codex"].base_url.trim_end_matches('/'))

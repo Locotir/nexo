@@ -149,7 +149,7 @@ fn presets_hold_the_protocol_address_and_key_variable_they_held() {
         ("anthropic", "anthropic", "https://api.anthropic.com", Some("ANTHROPIC_API_KEY")),
         ("gemini", "gemini", "https://generativelanguage.googleapis.com", Some("GEMINI_API_KEY")),
         ("deepseek", "openai-chat", "https://api.deepseek.com", Some("DEEPSEEK_API_KEY")),
-        ("xai", "openai-chat", "https://api.x.ai/v1", Some("XAI_API_KEY")),
+        ("xai", "openai-responses", "https://api.x.ai/v1", Some("XAI_API_KEY")),
         ("groq", "openai-chat", "https://api.groq.com/openai/v1", Some("GROQ_API_KEY")),
         ("mistral", "openai-chat", "https://api.mistral.ai/v1", Some("MISTRAL_API_KEY")),
         ("openrouter", "openai-chat", "https://openrouter.ai/api/v1", Some("OPENROUTER_API_KEY")),

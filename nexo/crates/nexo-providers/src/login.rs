@@ -6,7 +6,7 @@
 //! |-----------|-----------------------------------|--------------------------------------------|
 //! | `copilot` | GitHub Copilot (Free, Pro, ...)   | `api.githubcopilot.com` (protocol `copilot`) |
 //! | `codex`   | ChatGPT Plus / Pro / Team         | `chatgpt.com/backend-api/codex` (openai-responses) |
-//! | `xai`     | SuperGrok / X Premium             | `api.x.ai/v1` (openai-chat)                  |
+//! | `xai`     | SuperGrok / X Premium             | `api.x.ai/v1` (openai-responses)            |
 //!
 //! [`login`] runs a flow, [`prepare`] turns a provider's configuration into
 //! the one a request goes out with: the key, refreshed when needed, and what
