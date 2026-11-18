@@ -239,7 +239,7 @@ impl Image {
         if self.arm64 {
             return Err(Error::Bad(format!(
                 "{what} does not read AArch64 code yet (info, overview, syms, funcs, fn, xref, calls, tree, path, strings, bytes, \
-                 find, cfg and patch --nop do); no output is better than a wrong one"
+                 find, cfg, slice and patch --nop do); no output is better than a wrong one"
             )));
         }
         if self.bits == 32 {
