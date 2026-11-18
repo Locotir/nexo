@@ -77,10 +77,12 @@ fn a_watch_on_a_local_ends_with_one_stop_when_its_function_returns() {
 fn a_deeper_call_of_the_same_function_returning_to_the_same_place_does_not_end_the_watch() {
     let Some((_d, mut s)) = session() else { return };
     run(&mut s, "break down");
+    // the frame of `down(1)`: its return address is inside `down`, where `down(0)` returns to as well
+    run(&mut s, "cont");
     run(&mut s, "cont");
     run(&mut s, "watch mine");
-    // the outer `mine` is written twice (20, then 21 after the inner calls came back); the inner frames write
-    // their own slots, and their returns land at the same address with the stack pointer lower
+    // `mine` of `down(1)` is written twice (10, then 11 after the inner call came back); `down(0)` writes its own
+    // slot, and its return lands at the same address with the stack pointer lower, which does not end the watch
     let (hits, end) = until_deleted(&mut s);
     let own = hits.iter().filter(|h| h.contains("watch #2")).count();
     assert_eq!(own, 2, "{hits:#?}");
@@ -103,7 +105,7 @@ fn an_element_and_a_cast_deref_are_worked_out_once_and_an_operator_is_refused() 
     run(&mut s, "break work");
     run(&mut s, "cont");
     let w = run(&mut s, "watch tab[2]");
-    assert!(w.contains("4 bytes") && w.contains("not worked out again") || w.contains("not again"), "{w}");
+    assert!(w.contains("4 bytes") && w.contains("not again"), "{w}");
     let addr = run(&mut s, "print &tab[2]");
     let hex = addr.split("0x").nth(1).and_then(|r| r.split_whitespace().next()).expect("an address").to_string();
     let w = run(&mut s, &format!("watch *(unsigned*)0x{hex}"));

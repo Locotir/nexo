@@ -916,7 +916,17 @@ impl Session {
                     continue;
                 }
                 match stop {
-                    Stop::Step | Stop::Watch(_) if self.run.step.is_some() => verdict = Some((tid, Why::Step)),
+                    Stop::Step | Stop::Watch(_) if self.run.step.is_some() => {
+                        // a single step that lands on the return address of a watched frame: no breakpoint was hit
+                        // there, so the watch ends here, and the stop stays the step's
+                        if self.wps.iter().any(|w| w.scope.is_some()) {
+                            let at = self.t.regs(tid)?.rip;
+                            if self.scope_ended(tid, at)?.is_some() {
+                                self.watch_lines_to_log();
+                            }
+                        }
+                        verdict = Some((tid, Why::Step));
+                    }
                     Stop::Fault(f) => {
                         if self.catch.contains(&f.number) || (self.t.os() == Os::Windows && !f.first_chance) {
                             verdict = Some((tid, Why::Signal(f)));
@@ -947,9 +957,9 @@ impl Session {
         if self.call_returned(tid, addr)? {
             return Ok(Some((tid, Why::Returned)));
         }
-        if let Some(why) = self.scope_ended(tid, addr)? {
-            return Ok(Some((tid, why)));
-        }
+        // a watch on a local ends here; a user breakpoint or a `finish` at the same address still gets its own stop,
+        // and the line about the watch goes to the log then
+        let scoped = self.scope_ended(tid, addr)?;
         // the loader's hook: libraries came or went, which may set breakpoints before the ones at this address
         let loaded = if self.libs.armed == Some(addr) { self.on_load(tid) } else { None };
         // the trace and the hooks see every pass, whatever a breakpoint there decides
@@ -1009,12 +1019,18 @@ impl Session {
         self.bps.retain(|b| !spent.contains(&b.id));
         if !stop_ids.is_empty() {
             self.bps.retain(|b| !(b.once && stop_ids.contains(&b.id)));
+            if scoped.is_some() {
+                self.watch_lines_to_log();
+            }
             return Ok(Some((tid, Why::Break(stop_ids))));
         }
         if let Some(t) = self.run.temp {
             if t.addr == addr {
                 let sp = self.t.regs(tid)?.rsp();
                 if sp >= t.min_sp {
+                    if scoped.is_some() {
+                        self.watch_lines_to_log();
+                    }
                     let why = match t.kind {
                         TempKind::Entry if self.t.os() == Os::MacOS => {
                             self.back_to_the_call_of(tid, addr);
@@ -1029,7 +1045,14 @@ impl Session {
                 }
             }
         }
-        Ok(traced)
+        Ok(scoped.map(|why| (tid, why)).or(traced))
+    }
+
+    /// The lines a watch stop would show go to the log instead: the stop is another one.
+    pub(crate) fn watch_lines_to_log(&mut self) {
+        for l in std::mem::take(&mut self.watch_lines) {
+            self.log_line(l);
+        }
     }
 
     /// macOS: a program's entry (LC_MAIN) is its `main`, which dyld calls once the libraries are loaded and their
@@ -1277,7 +1300,7 @@ impl Session {
         let n = self.wps.len();
         self.wps.retain(|w| w.how == WatchHow::Hardware && w.scope.is_none());
         if self.wps.len() < n {
-            gone.push("page and step watches");
+            gone.push("page, step and frame watches");
         }
         if self.t.os() == Os::Linux {
             if let Ok(path) = std::fs::read_link(format!("/proc/{}/exe", self.t.pid())) {

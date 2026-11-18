@@ -41,7 +41,7 @@ impl Session {
 
     /// How many words from the start make the place: `*(u32 *)(rdi + 8)` typed with spaces is one expression, so the
     /// words are taken until every `(` and `[` is closed.
-    fn spec_len(words: &[String]) -> usize {
+    pub(super) fn spec_len(words: &[String]) -> usize {
         let mut depth = 0i32;
         for (i, w) in words.iter().enumerate() {
             for c in w.chars() {

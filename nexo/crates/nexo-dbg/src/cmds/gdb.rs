@@ -99,9 +99,12 @@ impl Session {
             "info" if !rest.is_empty() => self.gdb_info(rest),
             // x86 debug registers cannot watch reads alone: both stop on a read or a write (`r`)
             "rwatch" | "awatch" => {
+                // the access goes right after the place: a trailing word would end up in an `if` or a `log` text
+                let at = Self::spec_len(rest).min(rest.len());
                 let mut w = vec!["watch".to_string()];
-                w.extend(rest.iter().cloned());
+                w.extend(rest[..at].iter().cloned());
                 w.push("r".to_string());
+                w.extend(rest[at..].iter().cloned());
                 self.exec(&w)
             }
             "break" | "tbreak" => {
