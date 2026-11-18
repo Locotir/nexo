@@ -202,19 +202,22 @@ pub(super) fn carried(history: &[Message]) -> HashSet<String> {
     out
 }
 
-/// The text files of the project nexo includes in a request by itself, after the ones it names:
-/// `agent.attach_budget` tokens in all, the named and the attached files counted. The files already in the
-/// conversation stay out, and so does an instruction file the system text carries.
-pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -> Vec<Attachment> {
+/// The tokens nexo may put in the first call of a request besides the conversation: `agent.attach_budget`, or what a
+/// long request leaves of the first call (it stays under FIRST_CALL tokens, or what the window's view leaves when that
+/// is less). 0 when nexo attaches nothing by itself.
+fn first_budget(st: &State, text: &str) -> u64 {
     let budget = u64::from(st.config.agent.attach_budget);
     if budget == 0 || !st.config.agent.attach_named_files {
-        return Vec::new();
+        return 0;
     }
-    // a long request leaves less room: the first call stays under FIRST_CALL tokens, or what the window's view leaves when that is less
     let tools = serde_json::to_string(&offered(st)).map_or(0, |t| t.len() as u64 / 4);
     let fixed = st.system.len() as u64 / 4 + tools + text.len() as u64 / 4 + CHECK_CHARS as u64 / 4;
     let room = room::first_call(st).saturating_sub(fixed + nexo_core::message::estimate_tokens(&st.history));
-    let budget = budget.min(room);
+    budget.min(room)
+}
+
+/// The real paths of `attachments` and the tokens they take already.
+fn counted(st: &State, attachments: &[Attachment]) -> (Vec<PathBuf>, u64) {
     let mut skip = Vec::new();
     let mut used = 0u64;
     for a in attachments {
@@ -224,6 +227,72 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
         }
         skip.push(p.canonicalize().unwrap_or(p));
     }
+    (skip, used)
+}
+
+/// What the machine map found for the person's words (see `machine_map.rs`), looked up off the runtime's threads and
+/// only when the index is built: nothing while it is not, and no wait for it.
+pub(super) async fn machine_found(state: &Shared, typed: &str) -> Vec<crate::machine_map::Found> {
+    let cell = {
+        let st = state.lock().await;
+        if !st.config.agent.attach_named_files || st.config.agent.attach_budget == 0 {
+            return Vec::new();
+        }
+        st.machine.cell()
+    };
+    if cell.get().is_none() {
+        return Vec::new();
+    }
+    let typed = typed.to_string();
+    tokio::task::spawn_blocking(move || cell.get().map(|i| i.find(&typed)).unwrap_or_default())
+        .await
+        .unwrap_or_default()
+}
+
+/// What the request carries of the machine map's matches: the listing lines (for the start note) and the small
+/// files of the config the person's words name, to be included whole like the project's own (so `reads.rs` treats
+/// them as read). They take their tokens from the same budget as the project files, before them; the listing counts
+/// too. `attachments` are the files the request carries already.
+pub(super) fn machine_files(
+    st: &mut State,
+    text: &str,
+    attachments: &[Attachment],
+    found: Vec<crate::machine_map::Found>,
+) -> (Vec<Attachment>, Vec<String>) {
+    let budget = first_budget(st, text);
+    if budget == 0 || found.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let (_, used) = counted(st, attachments);
+    let said = carried(&st.history);
+    let instructions = in_system_text(st);
+    let allowed = |path: &Path, real: &Path| {
+        !said.contains(&path.display().to_string())
+            && !st.reads.met_unchanged(path)
+            && !st.reads.met_unchanged(real)
+            && !made_in_work(&st.worked, real)
+            && !instructions.iter().any(|p| p == real)
+            && st.perm.decide(
+                "read",
+                ToolKind::Read,
+                &serde_json::json!({ "path": path.display().to_string() }),
+                &st.cwd,
+            ) == Decision::Allow
+    };
+    let mapped = st.machine.attach(found, budget.saturating_sub(used), &allowed);
+    let files = mapped.files.into_iter().map(|path| Attachment { path }).collect();
+    (files, mapped.lines)
+}
+
+/// The text files of the project nexo includes in a request by itself, after the ones it names:
+/// `agent.attach_budget` tokens in all, the named and the attached files counted. The files already in the
+/// conversation stay out, and so does an instruction file the system text carries.
+pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -> Vec<Attachment> {
+    let budget = first_budget(st, text);
+    if budget == 0 {
+        return Vec::new();
+    }
+    let (skip, used) = counted(st, attachments);
     let said = carried(&st.history);
     let instructions = in_system_text(st);
     // a file the model wrote or read in this session, unchanged since, is already known: it can ask for it

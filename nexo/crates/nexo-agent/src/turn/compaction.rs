@@ -72,6 +72,8 @@ pub(super) async fn compact_locked(st: &mut State, keep_from: usize, cancel: &Ca
                 st.ask_again = crate::ask_hint::said(&st.history);
             }
             st.history.replace(work);
+            // what the map showed may be in the part the summary replaced: the next match shows it again
+            st.machine.forget();
             // the failures it held are out of the history: a line pointing back at them would point at nothing
             st.repeats = Default::default();
             add_usage(st, &events, &done.model, done.usage, Usage::default(), UsageKind::Compact);

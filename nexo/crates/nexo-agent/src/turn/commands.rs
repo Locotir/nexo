@@ -59,6 +59,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.dbg_told = crate::dbg_hint::told(&st.history);
     st.ask_told = crate::ask_hint::told(&st.history);
     st.ask_again = None;
+    st.machine.forget();
     st.hidden.clear();
     st.hidden_told = 0;
     st.noticed.clear();
@@ -339,6 +340,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     st.dbg_told = crate::dbg_hint::told(&st.history);
     st.ask_told = crate::ask_hint::told(&st.history);
     st.ask_again = None;
+    st.machine.forget();
     st.hidden.clear();
     st.hidden_told = 0;
     st.noticed.clear();
@@ -469,6 +471,7 @@ pub(super) async fn clear(state: &Shared) {
     st.dbg_told = crate::dbg_hint::told(&st.history);
     st.ask_told = crate::ask_hint::told(&st.history);
     st.ask_again = None;
+    st.machine.forget();
     st.hidden.clear();
     st.hidden_told = 0;
     st.noticed.clear();
