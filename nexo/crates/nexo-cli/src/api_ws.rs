@@ -608,6 +608,8 @@ mod tests {
             total: 0,
             dropped: Default::default(),
             channels: Vec::new(),
+            links: Vec::new(),
+            links_ignored: Default::default(),
         };
         let req = call::Request {
             method: "GET".to_string(),

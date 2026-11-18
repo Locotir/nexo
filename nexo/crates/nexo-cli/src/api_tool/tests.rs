@@ -288,8 +288,8 @@ fn describe_honors_the_budget_like_analyze() {
     std::fs::write(dir.path().join("cap.har"), cap).unwrap();
     let map = dir.path().join("map.json");
     crate::api_cmd::analyze_text(&dir.path().join("cap.har"), &[], None, false, 6000, Some(&map)).unwrap();
-    let whole = crate::api_call::describe_out(&map, None, 6000).unwrap().text;
-    let small = crate::api_call::describe_out(&map, None, 300).unwrap().text;
+    let whole = crate::api_call::describe_out(&map, None, 6000, false).unwrap().text;
+    let small = crate::api_call::describe_out(&map, None, 300, false).unwrap().text;
     assert!(small.len() < whole.len(), "{} vs {}", small.len(), whole.len());
     assert!(small.contains("more endpoints") && !whole.contains("more endpoints"), "{small}");
     // the tool's own line takes the flag too

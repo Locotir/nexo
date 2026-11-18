@@ -113,6 +113,7 @@ fn operation(api: &Api, e: &Endpoint, multi: bool) -> Value {
         op.insert("requestBody".into(), json!({ "content": content(b, default) }));
     }
     let mut responses = Map::new();
+    let link_objects = crate::links::openapi(api, e);
     for (status, p) in &e.responses {
         let mut r = Map::new();
         r.insert("description".into(), json!(format!("HTTP {status}")));
@@ -120,7 +121,7 @@ fn operation(api: &Api, e: &Endpoint, multi: bool) -> Value {
             r.insert("content".into(), content(p, "application/json"));
         }
         let links: Map<String, Value> =
-            crate::links::openapi(api, e).into_iter().filter(|(s, _, _)| s == status).map(|(_, n, v)| (n, v)).collect();
+            link_objects.iter().filter(|(s, _, _)| s == status).map(|(_, n, v)| (n.clone(), v.clone())).collect();
         if !links.is_empty() {
             r.insert("links".into(), Value::Object(links));
         }

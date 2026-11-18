@@ -17,6 +17,11 @@ fn quote(s: &str) -> String {
     }
 }
 
+/// A name from the capture as one line of plain text (it ends up in a comment or a sentence, never in a command).
+fn line(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
 fn name_of(api: &Api, id: &str) -> String {
     api.endpoints
         .iter()
@@ -28,7 +33,7 @@ fn name_of(api: &Api, id: &str) -> String {
 /// `nexo api call MAP ENDPOINT -p name=value`, or for an auth link where the secret comes from.
 fn command(api: &Api, map: &Path, n: &Next) -> String {
     if n.kind == Kind::Auth {
-        return format!("auth from {} ({}) for {}", name_of(api, &n.source), n.from, n.to.join(", "));
+        return line(&format!("auth from {} ({}) for {}", name_of(api, &n.source), n.from, n.to.join(", ")));
     }
     let mut c = format!("nexo api call {} {}", quote(&map.display().to_string()), quote(&n.to[0]));
     for (name, value) in &n.params {
@@ -69,7 +74,7 @@ pub fn add(out: &mut Out, api: &Api, ep: &str, map: &Path, body: &str, location:
     }
     out.text.push_str("next:\n");
     for n in &shown {
-        out.text.push_str(&format!("  {}   # {}\n", command(api, map, n), n.from));
+        out.text.push_str(&format!("  {}   # {}\n", command(api, map, n), line(&n.from)));
     }
     if left > 0 {
         out.text.push_str(&format!("  ({left} more links not used: no value in this answer, or past {MAX_NEXT})\n"));
