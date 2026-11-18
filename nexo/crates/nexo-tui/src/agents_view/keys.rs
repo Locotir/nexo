@@ -415,7 +415,12 @@ impl AgentsView {
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let kept = text.trim_end().rfind(char::is_whitespace).map_or(0, |i| i + 1);
+                let kept = text
+                    .trim_end()
+                    .char_indices()
+                    .rev()
+                    .find(|(_, c)| c.is_whitespace())
+                    .map_or(0, |(i, c)| i + c.len_utf8());
                 text.truncate(kept);
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
