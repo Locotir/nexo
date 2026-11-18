@@ -178,3 +178,25 @@ fn a_latest_request_still_in_view_is_not_repeated_in_the_anchor() {
     assert!(e.start > 0, "nothing left the view");
     assert!(!e.base_map.contains("the one the work is on"), "{}", e.base_map);
 }
+
+#[test]
+fn the_request_list_quotes_the_persons_words_not_the_note_before_them() {
+    let mark = crate::msg::PERSON_MARK;
+    let asked =
+        format!("[project at the start of this request]\nGit: 3 files changed\n\n{mark}\nAdd retry to the CSV loader.");
+    let mut msgs = vec![json!({"role": "user", "content": "Map where each module of the realm is configured."})];
+    msgs.extend(tool(1, "read_file", json!({"path": "config/realm.toml"}), "modules: alpha, beta, gamma", false));
+    msgs.push(json!({"role": "assistant", "content": "Each module is configured in config/realm.toml."}));
+    msgs.push(json!({"role": "user", "content": asked}));
+    msgs.push(json!({"role": "assistant", "content": "Done."}));
+    msgs.push(json!({"role": "user", "content": "Now list the modules that retry."}));
+    for k in 0..40 {
+        let out = format!("the loader_{k} reads the rows of the csv file and checks every column of them in turn");
+        msgs.extend(tool(k + 2, "read_file", json!({"path": format!("src/{}.rs", word(k))}), &out, false));
+    }
+    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    e.sync(&msgs);
+    e.view();
+    assert!(e.base_map.contains("- Add retry to the CSV loader."), "{}", e.base_map);
+    assert!(!e.base_map.contains("[project at the start"), "{}", e.base_map);
+}

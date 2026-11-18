@@ -190,7 +190,7 @@ impl Engine {
                 } else if current.as_ref().is_some_and(|c| c.0 == r) {
                     "(the latest request, in progress: word for word below)".to_string()
                 } else {
-                    let s = textops::squash_ws(&self.unit_text_at(r, UKind::User));
+                    let s = textops::squash_ws(&crate::msg::request_words(&self.unit_text_at(r, UKind::User)));
                     if textops::len(&s) > 300 {
                         format!("{}…", textops::head(&s, 300))
                     } else {

@@ -471,3 +471,33 @@ fn a_cut_inside_the_current_turn_keeps_the_request_the_person_just_made() {
     assert!(all[mark + PERSON_MARK.len()..].trim_start().starts_with("Can you do this?"), "{}", &all[mark..mark + 80]);
     assert_eq!(provider_valid(&view), Ok(()), "{view:?}");
 }
+
+/// What nexo builds before a request: a start note with the project state, then the mark and the person's words.
+fn with_note(words: &str) -> String {
+    format!("[project at the start of this request]\nGit: 3 files changed\n\n{PERSON_MARK}\n{words}")
+}
+
+#[test]
+fn a_card_quotes_the_persons_words_not_the_note_before_them() {
+    let mut msgs: Vec<Value> = Vec::new();
+    for k in 0..6 {
+        if k > 0 {
+            msgs.push(
+                json!({"role": "assistant", "content": [{"type": "text", "text": format!("It is {}.", word(k + 50))}]}),
+            );
+        }
+        let words = if k == 1 {
+            "Add retry to the CSV loader.".to_string()
+        } else {
+            format!("What does {} stand for?", word(k))
+        };
+        msgs.push(json!({"role": "user", "content": with_note(&words)}));
+    }
+    let mut e = Engine::new(params("nudge=0;eoq=0;link=1;apart=0").unwrap());
+    e.p.cards = 10;
+    e.sync(&msgs);
+    e.view();
+    let text = e.cards_text();
+    assert!(text.contains("asked \"Add retry to the CSV loader.\""), "{text}");
+    assert!(!text.contains("project at the start"), "{text}");
+}
