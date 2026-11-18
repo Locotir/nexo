@@ -10,7 +10,8 @@ pub use self::simplify::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum Var {
-    /// A general register by number (0 rax, 1 rcx, 2 rdx, 3 rbx, 4 rsp, 5 rbp, 6 rsi, 7 rdi, 8..15).
+    /// A general register by number (0 rax, 1 rcx, 2 rdx, 3 rbx, 4 rsp, 5 rbp, 6 rsi, 7 rdi, 8..15). On AArch64 0..=30
+    /// are x0..x30 and 31 is sp.
     Reg(u8),
     Xmm(u8),
     /// A stack slot nothing takes the address of: offset from the stack pointer at entry.
