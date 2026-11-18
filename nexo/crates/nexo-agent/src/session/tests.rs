@@ -1102,6 +1102,7 @@ fn cut_the_last_line(p: &Path) -> Vec<u8> {
     std::fs::read(p).unwrap()
 }
 
+#[cfg(unix)]
 #[test]
 fn a_last_line_cut_by_a_crash_is_removed_at_the_claim_so_no_later_open_warns_about_it() {
     let d = tempfile::tempdir().unwrap();
