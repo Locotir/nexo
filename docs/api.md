@@ -171,6 +171,16 @@ With `--login`, nexo runs the endpoint that handed out the token in the capture,
 
 Exit code: 0; 1 if the answer status is 400 or more, or the call failed; 2 for bad arguments, an unknown endpoint, a missing parameter or an unset variable.
 
+## Links and flows
+
+`analyze` also finds where a request's values come from: a value that one response hands out (a JSON path, or a `Location` header) and a later request to another endpoint sends back (path, query, body field or header). The map keeps these as `links` (from endpoint and response path, to endpoint and parameter, times seen, first seen); old maps without them still load.
+
+- A secret that a response hands out and later requests send (a login's token) is a link of kind `auth`. No value is kept or printed anywhere: it says "auth from POST /api/login".
+- Dropped on purpose, and counted by reason in `links_ignored` and in the summary (`links: 4 found (1 auth), 3 ignored (2 small number, 1 echo)`): booleans, empty or short text, small numbers whose field name does not end in `id`, values an endpoint only echoes, values seen in many unrelated places, an endpoint feeding itself (except a paging cursor), a secret that no endpoint handed out.
+- `describe MAP --flows` prints the chains: login to token to calls, list to item, created to item, page to next page.
+- The summary gets one short line per endpoint (`links: item_id from GET /api/items items[].id`), and the OpenAPI export puts Link Objects on the source response (`operationId`, `parameters` as `$response.body#/items/0/id`).
+- After a successful `call`, up to three ready-to-run next commands with the value filled in are printed (`next:`); `--json` has a `next` array, and `next_ignored` counts the links that could not be used (no value in this answer, or past three).
+
 ## watch
 
 ```

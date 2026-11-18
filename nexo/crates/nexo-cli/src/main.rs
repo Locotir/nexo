@@ -7,6 +7,7 @@ mod acp;
 mod api_call;
 mod api_check;
 mod api_cmd;
+mod api_next;
 mod api_tool;
 mod audit_cmd;
 #[cfg(feature = "bench")]

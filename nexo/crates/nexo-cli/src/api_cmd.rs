@@ -56,6 +56,9 @@ pub enum ApiCmd {
         /// About how many characters the summary of the whole map may take (ignored with an endpoint).
         #[arg(long, default_value_t = 6000, value_name = "N")]
         budget: usize,
+        /// Print the chains instead: login to token to calls, list to item, page to next page, where each value comes from.
+        #[arg(long)]
+        flows: bool,
     },
     /// Call the safe endpoints of a saved map and say whether each live answer still has the recorded shape.
     ///
@@ -143,7 +146,9 @@ fn title(api: &nexo_api::spec::Api) -> String {
 pub async fn run(a: &ApiArgs) -> i32 {
     match &a.what {
         ApiCmd::Call { target, dry_run, json, reveal } => crate::api_call::call(target, *dry_run, *json, *reveal).await,
-        ApiCmd::Describe { map, endpoint, budget } => crate::api_call::describe(map, endpoint.as_deref(), *budget),
+        ApiCmd::Describe { map, endpoint, budget, flows } => {
+            crate::api_call::describe(map, endpoint.as_deref(), *budget, *flows)
+        }
         ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json } => {
             crate::api_check::check(map, endpoints, params, auth, *allow_unsafe, *json).await
         }

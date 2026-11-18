@@ -46,7 +46,7 @@ fn response_line(status: u16, p: &Payload, budget: usize) -> String {
     }
 }
 
-fn block(e: &Endpoint, multi: bool) -> String {
+fn block(api: &Api, e: &Endpoint, multi: bool) -> String {
     let host = if multi { e.origin.split("://").nth(1).unwrap_or(&e.origin) } else { "" };
     let refs: String = e.auth.iter().map(|i| format!(" a{}", i + 1)).collect();
     let gql = e.gql.as_ref().map(|g| format!(" {g}")).unwrap_or_default();
@@ -89,6 +89,9 @@ fn block(e: &Endpoint, multi: bool) -> String {
     }
     if let Some(p) = &e.paging {
         lines.push(format!("  paging: {}", p.describe()));
+    }
+    if let Some(l) = crate::links::endpoint_line(api, e) {
+        lines.push(l);
     }
     let mut s = lines.join("\n");
     s.push('\n');
@@ -182,6 +185,7 @@ pub fn render(api: &Api, budget: usize) -> String {
         }
         out.push_str(&format!("hosts: {}\n", hosts.join(", ")));
     }
+    out.push_str(&crate::links::header_line(api));
     if api.auth.is_empty() {
         out.push_str("auth: none seen\n");
     } else {
@@ -210,7 +214,7 @@ pub fn render(api: &Api, budget: usize) -> String {
     let total = api.endpoints.len();
     let mut shown = 0;
     for (i, e) in api.endpoints.iter().enumerate() {
-        let b = block(e, multi);
+        let b = block(api, e, multi);
         let tail = if i + 1 < total { tail_line(total - i - 1).chars().count() } else { 0 };
         if out.chars().count() + b.chars().count() + tail > budget {
             break;

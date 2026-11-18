@@ -89,6 +89,10 @@ pub struct Api {
     pub dropped: IndexMap<&'static str, usize>,
     /// The WebSocket and event-stream channels the capture held.
     pub channels: Vec<Channel>,
+    /// Values that one endpoint's response hands to another endpoint's request (see [`crate::links`]).
+    pub links: Vec<crate::links::Link>,
+    /// How many candidate links were dropped, by reason.
+    pub links_ignored: IndexMap<&'static str, usize>,
 }
 
 /// The GraphQL calls by method, origin, path and operation: each call with its operation and how many its request had.
@@ -107,7 +111,7 @@ struct Draft {
 }
 
 /// Request headers that every client sends; they say nothing about the API.
-fn standard(n: &str) -> bool {
+pub(crate) fn standard(n: &str) -> bool {
     n.starts_with("accept")
         || n.starts_with("content-")
         || n.starts_with("sec-")
@@ -343,5 +347,14 @@ pub fn build(all: &[Exchange], o: &Options) -> Api {
         }
         endpoints.push(ep);
     }
-    Api { endpoints, auth: auths, hosts, total: all.len(), dropped, channels: Vec::new() }
+    Api {
+        endpoints,
+        auth: auths,
+        hosts,
+        total: all.len(),
+        dropped,
+        channels: Vec::new(),
+        links: Vec::new(),
+        links_ignored: IndexMap::new(),
+    }
 }
