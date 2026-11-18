@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn num(v: u64) -> String {
+pub(super) fn num(v: u64) -> String {
     let s = v as i64;
     if v < 10 {
         format!("{v}")
@@ -25,7 +25,7 @@ pub(super) fn num_at(img: &Image, v: u64) -> String {
 }
 
 /// Printable runs of at least 4 bytes in `b`, as (offset, text).
-fn text_runs(b: &[u8]) -> Vec<(usize, String)> {
+pub(super) fn text_runs(b: &[u8]) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
@@ -89,6 +89,132 @@ fn flags_text(f: u64) -> String {
     ];
     let set: Vec<&str> = names.iter().filter(|(b, _)| f & b != 0).map(|(_, n)| *n).collect();
     format!("{f:#x} {}", if set.is_empty() { "(none set)".to_string() } else { set.join(" ") })
+}
+
+/// The rows both architectures share: library calls, hooks, program output, memory written and `--show`.
+pub(super) fn body_rows(img: &Image, spec: &EmuSpec, m: &Machine, rows: &mut Rows) {
+    // library and system calls
+    if m.calls_total > 0 {
+        rows.push(format!(
+            "calls     {} call(s): {} library, {} system",
+            m.calls_total,
+            m.calls_total - m.sys_total,
+            m.sys_total
+        ));
+        for c in &m.calls {
+            rows.push(format!("  {:#x}  {}", c.site, c.text));
+        }
+        if m.unlogged > 0 {
+            rows.push(format!(
+                "  ... {} more call(s) not listed ({} of them system calls): --max-calls {} lists them",
+                m.unlogged,
+                m.unlogged_sys,
+                m.calls_total.min(MAX_CALLS)
+            ));
+        }
+    }
+    if m.hooks.total > 0 {
+        rows.push(format!("hooks     {} hit(s)", m.hooks.total));
+        for h in &m.hooks.log {
+            let mut it = h.lines.iter();
+            if let Some(first) = it.next() {
+                rows.push(format!("  {:#x}  {first}", h.addr));
+            }
+            for l in it {
+                rows.push(l.clone());
+            }
+        }
+        if m.hooks.total > m.hooks.log.len() {
+            rows.push(format!(
+                "  ... {} more hit(s) not listed: --max-calls {} lists them",
+                m.hooks.total - m.hooks.log.len(),
+                m.hooks.total.min(MAX_CALLS)
+            ));
+        }
+    }
+    for (name, buf) in [("stdout", &m.stdout), ("stderr", &m.stderr)] {
+        if !buf.is_empty() {
+            rows.push(format!("{name:<9} \"{}\" ({} bytes)", escape(buf, 2000), buf.len()));
+        }
+    }
+    if m.dropped_output > 0 {
+        rows.push(format!("output    {} more bytes of output not kept", m.dropped_output));
+    }
+    // memory written
+    let stack = STACK_TOP - STACK_SIZE..STACK_TOP;
+    let (on_stack, off_stack): (Ranges, Ranges) = m.mem.written().partition(|(s, _)| stack.contains(s));
+    let total: u64 = off_stack.iter().map(|(s, e)| e - s).sum();
+    if off_stack.is_empty() {
+        rows.push("memory    nothing written outside the stack");
+    } else {
+        rows.push(format!("memory    {} range(s), {total} bytes written outside the stack", off_stack.len()));
+    }
+    let dump = spec.dump.clamp(16, MAX_DUMP);
+    let show_range = |rows: &mut Rows, s: u64, e: u64| {
+        let len = (e - s) as usize;
+        let mut b = vec![0u8; len.min(MAX_ARG_BUF)];
+        let _ = m.mem.read(s, &mut b);
+        let runs = text_runs(&b);
+        let item = json!({"addr": s, "len": len, "place": m.place(s),
+            "text": runs.iter().map(|(o, t)| json!({"addr": s + *o as u64, "text": t})).collect::<Vec<_>>()});
+        rows.item(format!("  {s:#x} +{len}  {}", m.place(s)), item);
+        for (o, t) in runs.iter().take(4) {
+            rows.push(format!("    text at {:#x}: \"{t}\"", s + *o as u64));
+        }
+        if runs.len() > 4 {
+            rows.push(format!("    ... {} more text runs", runs.len() - 4));
+        }
+        hexdump(m, s, len.min(dump), rows);
+        if len > dump {
+            rows.push(format!("    ... {} more bytes (see them: --show {:#x}:{len})", len - dump, s + dump as u64));
+        }
+    };
+    for &(s, e) in &off_stack {
+        show_range(rows, s, e);
+    }
+    let stack_bytes: u64 = on_stack.iter().map(|(s, e)| e - s).sum();
+    if stack_bytes > 0 {
+        if spec.stack {
+            rows.push(format!("stack     {} range(s), {stack_bytes} bytes written", on_stack.len()));
+            for &(s, e) in &on_stack {
+                show_range(rows, s, e);
+            }
+        } else {
+            let mut texts = Vec::new();
+            for &(s, e) in &on_stack {
+                let mut b = vec![0u8; (e - s) as usize];
+                let _ = m.mem.read(s, &mut b);
+                texts.extend(
+                    text_runs(&b)
+                        .into_iter()
+                        .map(|(o, t)| format!("{:#x} ({}) \"{t}\"", s + o as u64, m.place(s + o as u64))),
+                );
+            }
+            rows.push(format!(
+                "stack     {stack_bytes} bytes written in {} range(s) (show them: --stack){}",
+                on_stack.len(),
+                if texts.is_empty() { String::new() } else { "; text there:".into() }
+            ));
+            for t in texts.iter().take(8) {
+                rows.push(format!("    {t}"));
+            }
+            if texts.len() > 8 {
+                rows.push(format!("    ... {} more (--stack)", texts.len() - 8));
+            }
+        }
+    }
+    for s in &spec.show {
+        let parsed =
+            s.rsplit_once(':').and_then(|(a, l)| Some((crate::place::any_addr_in(img, a).ok()?, parse_addr(l).ok()?)));
+        match parsed {
+            Some((a, l)) => {
+                let l = (l as usize).clamp(1, MAX_DUMP);
+                rows.push(format!("show      {a:#x} +{l}  {}", m.place(a)));
+                hexdump(m, a, l, rows);
+            }
+            None => rows.push(format!("show      {s:?}: write ADDR:LEN, like --show 0x7e0000000010:64")),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -223,128 +349,7 @@ pub(super) fn report(
             }
         }
     }
-    // library and system calls
-    if m.calls_total > 0 {
-        rows.push(format!(
-            "calls     {} call(s): {} library, {} system",
-            m.calls_total,
-            m.calls_total - m.sys_total,
-            m.sys_total
-        ));
-        for c in &m.calls {
-            rows.push(format!("  {:#x}  {}", c.site, c.text));
-        }
-        if m.unlogged > 0 {
-            rows.push(format!(
-                "  ... {} more call(s) not listed ({} of them system calls): --max-calls {} lists them",
-                m.unlogged,
-                m.unlogged_sys,
-                m.calls_total.min(MAX_CALLS)
-            ));
-        }
-    }
-    if m.hooks.total > 0 {
-        rows.push(format!("hooks     {} hit(s)", m.hooks.total));
-        for h in &m.hooks.log {
-            let mut it = h.lines.iter();
-            if let Some(first) = it.next() {
-                rows.push(format!("  {:#x}  {first}", h.addr));
-            }
-            for l in it {
-                rows.push(l.clone());
-            }
-        }
-        if m.hooks.total > m.hooks.log.len() {
-            rows.push(format!(
-                "  ... {} more hit(s) not listed: --max-calls {} lists them",
-                m.hooks.total - m.hooks.log.len(),
-                m.hooks.total.min(MAX_CALLS)
-            ));
-        }
-    }
-    for (name, buf) in [("stdout", &m.stdout), ("stderr", &m.stderr)] {
-        if !buf.is_empty() {
-            rows.push(format!("{name:<9} \"{}\" ({} bytes)", escape(buf, 2000), buf.len()));
-        }
-    }
-    if m.dropped_output > 0 {
-        rows.push(format!("output    {} more bytes of output not kept", m.dropped_output));
-    }
-    // memory written
-    let stack = STACK_TOP - STACK_SIZE..STACK_TOP;
-    let (on_stack, off_stack): (Ranges, Ranges) = m.mem.written().partition(|(s, _)| stack.contains(s));
-    let total: u64 = off_stack.iter().map(|(s, e)| e - s).sum();
-    if off_stack.is_empty() {
-        rows.push("memory    nothing written outside the stack");
-    } else {
-        rows.push(format!("memory    {} range(s), {total} bytes written outside the stack", off_stack.len()));
-    }
-    let dump = spec.dump.clamp(16, MAX_DUMP);
-    let show_range = |rows: &mut Rows, s: u64, e: u64| {
-        let len = (e - s) as usize;
-        let mut b = vec![0u8; len.min(MAX_ARG_BUF)];
-        let _ = m.mem.read(s, &mut b);
-        let runs = text_runs(&b);
-        let item = json!({"addr": s, "len": len, "place": m.place(s),
-            "text": runs.iter().map(|(o, t)| json!({"addr": s + *o as u64, "text": t})).collect::<Vec<_>>()});
-        rows.item(format!("  {s:#x} +{len}  {}", m.place(s)), item);
-        for (o, t) in runs.iter().take(4) {
-            rows.push(format!("    text at {:#x}: \"{t}\"", s + *o as u64));
-        }
-        if runs.len() > 4 {
-            rows.push(format!("    ... {} more text runs", runs.len() - 4));
-        }
-        hexdump(m, s, len.min(dump), rows);
-        if len > dump {
-            rows.push(format!("    ... {} more bytes (see them: --show {:#x}:{len})", len - dump, s + dump as u64));
-        }
-    };
-    for &(s, e) in &off_stack {
-        show_range(&mut rows, s, e);
-    }
-    let stack_bytes: u64 = on_stack.iter().map(|(s, e)| e - s).sum();
-    if stack_bytes > 0 {
-        if spec.stack {
-            rows.push(format!("stack     {} range(s), {stack_bytes} bytes written", on_stack.len()));
-            for &(s, e) in &on_stack {
-                show_range(&mut rows, s, e);
-            }
-        } else {
-            let mut texts = Vec::new();
-            for &(s, e) in &on_stack {
-                let mut b = vec![0u8; (e - s) as usize];
-                let _ = m.mem.read(s, &mut b);
-                texts.extend(
-                    text_runs(&b)
-                        .into_iter()
-                        .map(|(o, t)| format!("{:#x} ({}) \"{t}\"", s + o as u64, m.place(s + o as u64))),
-                );
-            }
-            rows.push(format!(
-                "stack     {stack_bytes} bytes written in {} range(s) (show them: --stack){}",
-                on_stack.len(),
-                if texts.is_empty() { String::new() } else { "; text there:".into() }
-            ));
-            for t in texts.iter().take(8) {
-                rows.push(format!("    {t}"));
-            }
-            if texts.len() > 8 {
-                rows.push(format!("    ... {} more (--stack)", texts.len() - 8));
-            }
-        }
-    }
-    for s in &spec.show {
-        let parsed =
-            s.rsplit_once(':').and_then(|(a, l)| Some((crate::place::any_addr_in(img, a).ok()?, parse_addr(l).ok()?)));
-        match parsed {
-            Some((a, l)) => {
-                let l = (l as usize).clamp(1, MAX_DUMP);
-                rows.push(format!("show      {a:#x} +{l}  {}", m.place(a)));
-                hexdump(m, a, l, &mut rows);
-            }
-            None => rows.push(format!("show      {s:?}: write ADDR:LEN, like --show 0x7e0000000010:64")),
-        }
-    }
+    body_rows(img, spec, m, &mut rows);
     // trace tail
     if !trace.is_empty() {
         rows.push(format!("trace     last {} of {steps} steps", trace.len()));
@@ -391,7 +396,7 @@ pub(super) fn report(
     Output { op: "emu", meta, rows, tail: 0, command: crate::ops::command(img, "emu", &words.join(" ")) }
 }
 
-fn fault_text(m: &Machine, f: &Fault, at: &str, cur: &str) -> String {
+pub(super) fn fault_text(m: &Machine, f: &Fault, at: &str, cur: &str) -> String {
     let why = if f.access == Access::Exec {
         if f.mapped {
             "jumped into memory that is not code".to_string()

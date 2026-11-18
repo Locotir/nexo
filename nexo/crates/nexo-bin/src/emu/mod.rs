@@ -4,6 +4,7 @@
 //! emulator does not know, or a bad memory access stops the run and says where and why. One answer gives
 //! the return value, the reason it stopped, the memory written, the library calls and a short trace.
 
+mod a64;
 mod cpu;
 mod fma;
 mod fp;
@@ -14,6 +15,8 @@ mod sse;
 mod sys;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_a64;
 #[cfg(test)]
 mod tests_fp;
 #[cfg(test)]
@@ -213,6 +216,8 @@ pub(crate) struct Machine<'a> {
     pub mem: Mem,
     pub ms_abi: bool,
     heap_next: u64,
+    /// AArch64 runs: the argument registers and stack pointer the library stubs read their arguments from.
+    a64: Option<a64::Abi>,
     pub blocks: BTreeMap<u64, Block>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -348,18 +353,8 @@ fn reg_named(name: &str) -> Option<usize> {
     GPR_NAMES.iter().position(|r| r.eq_ignore_ascii_case(name.trim()))
 }
 
-/// Run the function or stretch of code `spec` names and describe what happened.
-pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
-    img.require_x86("emulate")?;
-    let t0 = Instant::now();
-    let ms_abi = match spec.abi.as_deref() {
-        None => img.format == Format::Pe,
-        Some("sysv") => false,
-        Some("ms") => true,
-        Some(o) => return Err(Error::Usage(format!("--abi {o:?}: write sysv or ms"))),
-    };
-    let start = start_of(img, &spec.target)?;
-    let mut m = Machine::new(img, ms_abi)?;
+/// The options both architectures share: stubs, limits, the clock and seed, stdin, breaks and memory presets.
+fn configure(img: &Image, spec: &EmuSpec, m: &mut Machine) -> Result<()> {
     for s in &spec.stubs {
         let (n, v) = s
             .split_once('=')
@@ -408,6 +403,25 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
         }
         let _ = m.mem.load(a, &bytes);
     }
+    Ok(())
+}
+
+/// Run the function or stretch of code `spec` names and describe what happened.
+pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
+    if img.arm64 {
+        return a64::emulate(img, spec);
+    }
+    img.require_x86("emulate")?;
+    let t0 = Instant::now();
+    let ms_abi = match spec.abi.as_deref() {
+        None => img.format == Format::Pe,
+        Some("sysv") => false,
+        Some("ms") => true,
+        Some(o) => return Err(Error::Usage(format!("--abi {o:?}: write sysv or ms"))),
+    };
+    let start = start_of(img, &spec.target)?;
+    let mut m = Machine::new(img, ms_abi)?;
+    configure(img, spec, &mut m)?;
     // arguments
     let regs: &[usize] = if ms_abi { &[1, 2, 8, 9] } else { &[7, 6, 2, 1, 8, 9] };
     let mut stack_args = Vec::new();
