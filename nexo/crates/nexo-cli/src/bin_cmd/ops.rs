@@ -182,7 +182,12 @@ pub enum BinOp {
         file: PathBuf,
         name: String,
         /// For example: 0:i32:id 8:ptr:next
-        #[arg(id = "struct_fields", value_name = "FIELDS", required_unless_present = "clear", conflicts_with = "clear")]
+        #[arg(
+            id = "struct_fields",
+            value_name = "FIELDS",
+            required_unless_present = "clear",
+            conflicts_with = "clear"
+        )]
         fields: Option<String>,
         #[arg(long)]
         clear: bool,
