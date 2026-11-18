@@ -399,17 +399,22 @@ pub async fn call_out(t: &Target, dry_run: bool, as_json: bool, reveal: bool) ->
     }
     let mut s = session(&p, t)?;
     let ans = s.once(ep, &p.inputs).await?;
-    Ok(answer_out(&ans, as_json, reveal))
+    let mut out = answer_out(&ans, as_json, reveal);
+    crate::api_next::add(&mut out, &p.api, &ep.id, &t.map, &ans.text, ans.location.as_deref(), as_json);
+    Ok(out)
 }
 
 /// `nexo api describe`.
-pub fn describe(map: &Path, endpoint: Option<&str>, budget: usize) -> i32 {
-    exit_of(describe_out(map, endpoint, budget))
+pub fn describe(map: &Path, endpoint: Option<&str>, budget: usize, flows: bool) -> i32 {
+    exit_of(describe_out(map, endpoint, budget, flows))
 }
 
 /// `nexo api describe`, as text. Without an endpoint the summary of the map takes about `budget` characters.
-pub fn describe_out(map: &Path, endpoint: Option<&str>, budget: usize) -> Result<Out, Fail> {
+pub fn describe_out(map: &Path, endpoint: Option<&str>, budget: usize, flows: bool) -> Result<Out, Fail> {
     let api = load_map(map)?;
+    if flows {
+        return Ok(Out { text: nexo_api::links::flows(&api), notes: Vec::new(), code: 0 });
+    }
     let mut text = String::new();
     match endpoint {
         Some(key) => {

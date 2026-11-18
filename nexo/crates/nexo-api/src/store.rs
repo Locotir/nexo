@@ -5,6 +5,7 @@
 
 use crate::auth::{Auth, Scheme};
 use crate::channel::{Beat, Channel, Kind, MsgType};
+use crate::links::{Kind as LinkKind, Link, Place as LinkPlace};
 use crate::paging::Paging;
 use crate::shape::{Fmt, Shape};
 use crate::spec::{Api, Endpoint, Param, Payload};
@@ -425,7 +426,40 @@ pub fn to_json(api: &Api) -> Value {
             o.insert("channels".to_string(), Value::Array(api.channels.iter().map(channel_json).collect()));
         }
     }
+    if !api.links.is_empty() || !api.links_ignored.is_empty() {
+        if let Some(o) = doc.as_object_mut() {
+            o.insert("links".to_string(), Value::Array(api.links.iter().map(link_json).collect()));
+            let ignored: Map<String, Value> =
+                api.links_ignored.iter().map(|(k, n)| (k.to_string(), json!(n))).collect();
+            o.insert("links_ignored".to_string(), Value::Object(ignored));
+        }
+    }
     doc
+}
+
+fn link_json(l: &Link) -> Value {
+    json!({
+        "kind": l.kind.name(), "from": l.from, "path": l.path, "status": l.status, "to": l.to,
+        "place": l.place.name(), "param": l.param, "seen": l.seen, "first": l.first,
+    })
+}
+
+/// A link back from its JSON; one that does not read is an error.
+fn link_of(v: &Value) -> Result<Link, String> {
+    let m = object(v, "a link")?;
+    let kind = LinkKind::of(&text(m, "kind")?).ok_or("a link has an unknown kind")?;
+    let place = LinkPlace::of(&text(m, "place")?).ok_or("a link has an unknown place")?;
+    Ok(Link {
+        kind,
+        from: text(m, "from")?,
+        path: text(m, "path")?,
+        status: m.get("status").and_then(Value::as_u64).unwrap_or(200) as u16,
+        to: text(m, "to")?,
+        place,
+        param: text(m, "param")?,
+        seen: count(m, "seen"),
+        first: count(m, "first"),
+    })
 }
 
 /// Reads a map back. Every error says what was wrong; a file that is not a map is refused.
@@ -460,7 +494,27 @@ pub fn from_json(v: &Value) -> Result<Api, String> {
             *dropped.entry(reason).or_insert(0) += n.as_u64().map(|n| n as usize).unwrap_or(0);
         }
     }
-    Ok(Api { endpoints, auth, hosts: texts(m, "hosts"), total: count(m, "total"), dropped, channels })
+    let mut links = Vec::new();
+    for l in m.get("links").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        links.push(link_of(l)?);
+    }
+    let mut links_ignored: IndexMap<&'static str, usize> = IndexMap::new();
+    if let Some(d) = m.get("links_ignored").and_then(Value::as_object) {
+        for (k, n) in d {
+            let reason = crate::links::REASONS.iter().copied().find(|r| r == k).unwrap_or("other");
+            *links_ignored.entry(reason).or_insert(0) += n.as_u64().map(|n| n as usize).unwrap_or(0);
+        }
+    }
+    Ok(Api {
+        endpoints,
+        auth,
+        hosts: texts(m, "hosts"),
+        total: count(m, "total"),
+        dropped,
+        channels,
+        links,
+        links_ignored,
+    })
 }
 
 /// The map as text, ready to write.

@@ -12,6 +12,7 @@ pub mod drift;
 pub mod exchange;
 pub mod graphql;
 pub mod har;
+pub mod links;
 pub mod noise;
 pub mod openapi;
 pub mod paging;
@@ -27,6 +28,9 @@ pub fn analyze_har(text: &str, o: &spec::Options) -> Result<spec::Api, String> {
     let (all, live) = har::read_all(text)?;
     let mut api = spec::build(&all, o);
     api.channels = channel::build(&all, &live, &api.auth);
+    let (links, ignored) = links::find(&all, &api, &o.hosts);
+    api.links = links;
+    api.links_ignored = ignored;
     if !o.hosts.is_empty() {
         let hosts = &o.hosts;
         api.channels.retain(|c| {

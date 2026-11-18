@@ -91,7 +91,7 @@ fn paging_json(e: &Endpoint) -> Option<Value> {
     Some(Value::Object(m))
 }
 
-fn operation(e: &Endpoint, multi: bool) -> Value {
+fn operation(api: &Api, e: &Endpoint, multi: bool) -> Value {
     let mut op = Map::new();
     op.insert("operationId".into(), json!(e.id));
     let mut params: Vec<Value> = Vec::new();
@@ -118,6 +118,11 @@ fn operation(e: &Endpoint, multi: bool) -> Value {
         r.insert("description".into(), json!(format!("HTTP {status}")));
         if p.shape.seen > 0 || !p.mime.is_empty() {
             r.insert("content".into(), content(p, "application/json"));
+        }
+        let links: Map<String, Value> =
+            crate::links::openapi(api, e).into_iter().filter(|(s, _, _)| s == status).map(|(_, n, v)| (n, v)).collect();
+        if !links.is_empty() {
+            r.insert("links".into(), Value::Object(links));
         }
         responses.insert(status.to_string(), Value::Object(r));
     }
@@ -222,7 +227,7 @@ pub fn to_openapi(api: &Api, title: &str) -> Value {
             continue;
         }
         let method = e.method.to_ascii_lowercase();
-        let op = operation(e, multi);
+        let op = operation(api, e, multi);
         let item = paths.entry(e.path.clone()).or_insert_with(|| json!({}));
         match item.as_object_mut() {
             Some(m) if !m.contains_key(&method) => {
