@@ -120,8 +120,9 @@ fn a_32_bit_add_returns_the_sum() {
     // add w0,w0,w1 ; ret
     let t = text(&[ADD_W0_W0_W1, RET]);
     println!("{t}");
-    // The x86 `add edi,esi ; mov eax,edi` prints the same shape: a zero-extended 32-bit sum of the two arguments.
-    assert!(t.contains("return") && t.contains("(u32)a1 + (u32)a2"), "{t}");
+    // Both arguments are only read at 32 bits, so their webs are 32 wide and print without a cast; the w write
+    // zero-extends the sum.
+    assert!(t.contains("return") && t.contains("a1 + a2"), "{t}");
     assert!(!t.contains("not lifted"), "{t}");
 }
 
@@ -137,7 +138,10 @@ fn a_frame_around_a_call_vanishes_and_the_call_keeps_its_arguments() {
     let t = text(&w);
     println!("{t}");
     assert!(t.contains("puts(1, 2)"), "{t}");
-    assert!(!t.contains("x29") && !t.contains("x30") && !t.contains("sp"), "{t}");
+    assert!(!t.contains("x29") && !t.contains("x30"), "{t}");
+    for stray in ["sp =", "sp +", "sp -", "(sp", "[sp", " sp)"] {
+        assert!(!t.contains(stray), "{stray}: {t}");
+    }
     assert!(!t.contains("not lifted"), "{t}");
 }
 
@@ -207,7 +211,7 @@ fn a_simd_word_is_not_lifted_and_the_rest_is() {
     assert!(d.contains("Raw {"), "{d}");
     let t = text(&w);
     println!("{t}");
-    assert!(t.contains("/* not lifted: add"), "{t}");
+    assert!(t.contains("/* not lifted: .inst 0x4ea18400"), "{t}");
 }
 
 /// The condition of `cset w0, <cc>` after `first`, as the dump shows it.

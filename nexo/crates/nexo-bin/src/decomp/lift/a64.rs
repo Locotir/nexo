@@ -1049,7 +1049,7 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
                     let target = i
                         .target
                         .or_else(|| i.ops.iter().find_map(|o| if let Opd::Target(t) = o { Some(*t) } else { None }));
-                    let tid = target.and_then(|t| id_of(t)).unwrap_or(0);
+                    let tid = target.and_then(id_of).unwrap_or(0);
                     let fid = ids.get(&pc.wrapping_add(4)).copied().unwrap_or(0);
                     succ_states.push((tid, lf.st));
                     succ_states.push((fid, lf.st));

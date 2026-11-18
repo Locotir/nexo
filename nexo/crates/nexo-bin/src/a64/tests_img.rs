@@ -91,13 +91,12 @@ fn xref_and_calls_follow_adrp_pairs_and_branches() {
 }
 
 #[test]
-fn commands_that_read_x86_only_say_so_with_the_address() {
+fn decomp_reads_arm64_and_names_the_callee() {
     let f = fixture::elf(true);
     let img = open(&f);
     let dir = std::env::temp_dir();
-    let e = decomp_window(&img, &dir, &["main".to_string()], false, None, usize::MAX).unwrap_err();
-    assert!(e.to_string().contains("does not read AArch64"), "{e}");
-    assert!(e.to_string().contains(&hex(f.a)), "{e}");
+    let d = decomp_window(&img, &dir, &["main".to_string()], false, None, usize::MAX).unwrap();
+    assert!(whole(&d).contains("helper"), "{}", whole(&d));
     assert!(import_sites(&img).is_empty());
 }
 
