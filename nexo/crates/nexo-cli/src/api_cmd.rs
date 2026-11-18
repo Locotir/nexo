@@ -114,6 +114,9 @@ pub enum ApiCmd {
         json: bool,
     },
     /// Call an endpoint on a schedule and print only what changed since the last answer.
+    ///
+    /// Exit code: 0; 1 if the last call failed; 2 for bad arguments; 3 if a stream broke; 4 if --when came true (or,
+    /// without --when, the selected values changed) and the watch stopped on that alert.
     Watch {
         #[command(flatten)]
         target: Target,
@@ -130,6 +133,15 @@ pub enum ApiCmd {
         /// came and what differs from the map. The endpoint argument is then the channel's id.
         #[arg(long = "for", value_name = "DURATION")]
         follow: Option<String>,
+        /// Alert when this is true of the selected values: `PATH OP VALUE` (OP is < <= > >= == !=, VALUE a number, a
+        /// quoted string or `prev`, the last poll's value) or `PATH changed`; join clauses with `and` / `or`, read left
+        /// to right. Prints one `alert:` line and exits 4. Without it, a change in the selected values is the alert.
+        #[arg(long, value_name = "EXPR")]
+        when: Option<String>,
+        /// Run this shell command on an alert. The values reach it only as the environment variables NEXO_API_ALERT
+        /// (JSON) and NEXO_API_PATHS (JSON), and on stdin; it is killed after 60s and its exit code is printed.
+        #[arg(long = "on-change", value_name = "CMD")]
+        on_change: Option<String>,
     },
 }
 
@@ -163,6 +175,11 @@ pub struct Target {
     /// one of several browsers.
     #[arg(long = "via-browser", value_name = "ID", num_args = 0..=1, require_equals = true, default_missing_value = "")]
     pub via_browser: Option<String>,
+    /// Print only these values of a JSON answer, as `path<TAB>value` lines: $.a.b, $.items[0].price, $.items[*].id,
+    /// $['odd key']. Separate with commas or repeat. A path that matches nothing prints `(none)`. On `watch` only the
+    /// selected values are compared and kept.
+    #[arg(long, value_name = "PATH[,PATH...]")]
+    pub select: Vec<String>,
 }
 
 /// The name of the API in the OpenAPI title: its first host.
@@ -194,8 +211,10 @@ pub async fn run(a: &ApiArgs) -> i32 {
         ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json } => {
             crate::api_check::check(map, endpoints, params, auth, *allow_unsafe, *json).await
         }
-        ApiCmd::Watch { target, every, times, state, follow } => {
-            crate::api_call::watch(target, every.as_deref(), *times, state.as_deref(), follow.as_deref()).await
+        ApiCmd::Watch { target, every, times, state, follow, when, on_change } => {
+            let sel =
+                crate::api_watch::Sel::build(&target.select, when.as_deref(), on_change.as_deref(), state.as_deref());
+            crate::api_call::watch(target, every.as_deref(), *times, state.as_deref(), follow.as_deref(), sel).await
         }
         ApiCmd::Analyze { har, host, openapi, json, budget, save } => {
             match analyze_text(har, host, openapi.as_deref(), *json, *budget, save.as_deref()) {
@@ -450,6 +469,44 @@ mod tests {
                 assert_eq!(state, Some(PathBuf::from("s.json")));
             }
             other => panic!("not parsed as nexo api watch: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_when_and_on_change_are_parsed() {
+        let w = crate::cli::Args::try_parse_from([
+            "nexo",
+            "api",
+            "watch",
+            "m.json",
+            "GET /p",
+            "--select",
+            "$.price,$.name",
+            "--select",
+            "$.a[*]",
+            "--when",
+            "$.price < prev",
+            "--on-change",
+            "echo hi",
+            "--times",
+            "2",
+        ])
+        .unwrap();
+        match w.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Watch { target, when, on_change, .. } })) => {
+                assert_eq!(target.select, ["$.price,$.name", "$.a[*]"]);
+                assert_eq!(when.as_deref(), Some("$.price < prev"));
+                assert_eq!(on_change.as_deref(), Some("echo hi"));
+            }
+            other => panic!("not parsed as nexo api watch: {other:?}"),
+        }
+        let c =
+            crate::cli::Args::try_parse_from(["nexo", "api", "call", "m.json", "GET /p", "--select", "$.x"]).unwrap();
+        match c.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Call { target, .. } })) => {
+                assert_eq!(target.select, ["$.x"])
+            }
+            other => panic!("not parsed as nexo api call: {other:?}"),
         }
     }
 

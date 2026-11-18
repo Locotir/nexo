@@ -3,7 +3,8 @@
 //! the one `nexo api` takes, parsed by the same clap definition, and the answer is the text the CLI prints (already
 //! scrubbed of secrets).
 //!
-//! What the model never gets: `watch` (it runs until stopped, the person runs it), `--reveal` (the raw answer with
+//! What the model never gets: a `watch` that is not bounded (`--times 1` to 3, inside one call's time, no
+//! `--on-change`, no channel), `check`, `--reveal` (the raw answer with
 //! its secrets), a secret value in the command (it names an environment variable instead: `--auth bearer=MY_TOKEN`,
 //! `-p password=@env:PW`), and a body read from a file.
 //!
@@ -16,6 +17,7 @@
 //! | `analyze --save/--openapi` | write | `edit` and `write` |
 //! | `call` of a GET or HEAD endpoint | network | `web_fetch` |
 //! | `call` of any other method, or with `--login` or `--via-browser` | exec | a shell command that changes things |
+//! | `watch --times N` of a GET or HEAD endpoint | network | `web_fetch` (exec with `--state`, which writes) |
 
 use async_trait::async_trait;
 use clap::error::ErrorKind;
@@ -38,12 +40,13 @@ const MAX_CHARS: usize = 12_000;
 const OPS: &str = "\
 analyze <har> [--save MAP] [--openapi FILE] [--host H] [--budget N] [--json]  read a HAR file: devtools Save all as HAR, or the browser tool's own capture (capture_start, browse, capture_stop, capture_save with a `path`; in the person's own Chrome it holds only URLs and statuses, so no shapes): one line per endpoint with its path params, JSON shapes, auth and paging; --save keeps the map for the ops below
 describe <map> [endpoint] [--budget N] [--flows]  (--flows: the chains, where each value of a call comes from) the endpoints of a map (the summary takes about N characters, default 6000), or one endpoint's params, body, auth and the environment variables it reads
-call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--via-browser[=ID]] [--dry-run] [--json]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>
+call <map> <endpoint> [-p name=value]... [--body 'JSON'] [--auth NAME=ENVVAR]... [--login] [--via-browser[=ID]] [--dry-run] [--json] [--select PATH,...]  call one endpoint (an id, or \"METHOD /path\" in quotes); secrets in the answer show as <secret>; --select prints only those values as `path<TAB>value` ($.a.b, $.items[0].price, $.items[*].id; no match prints (none))
+watch <map> <endpoint> --times 1..3 [--every 10s..] [--select PATH,...] [--when EXPR] [--state FILE]  poll a few times inside one call (at most 120s in all) and compare only the selected values; --when is `PATH OP VALUE` (OP < <= > >= == !=, VALUE a number like 1299, 1,299.00, $1,299.00, a \"string\" or prev) or `PATH changed`, joined by and/or; a true --when or a change prints one `alert:` line and the exit code 4 is added. A longer watch (every 10m, --on-change) is the person's: `nexo api watch`
 client <map> --lang ts|py|sh [--out FILE] [--only EP]... [--force] [--date YYYY-MM-DD]  write a small client for the map (one function per endpoint, paging in ts and py); secrets are read from environment variables when it runs and are never in the text; --out writes a file and never replaces one without --force
 Never write a token, key or password in a command: name an environment variable (--auth bearer=MY_TOKEN, -p password=@env:PW); a value that looks like a secret is refused. Start with --dry-run: it prints the request and sends nothing.
-GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE, --login and --via-browser (a signed-in browser sends it) like a shell command that changes things; --save, --openapi and client --out write a file. No watch (the person runs `nexo api watch`), no --reveal, no body from a file";
+GET and HEAD calls are asked like web_fetch; POST, PUT, PATCH, DELETE, --login and --via-browser (a signed-in browser sends it) like a shell command that changes things; --save, --openapi and client --out write a file. watch is bounded (--times 1 to 3, no --on-change, no live channel, --state under the session folder) and asked like call; no check, no --reveal, no body from a file";
 
-const COMPACT: &str = "The API behind a website: `analyze cap.har --save map.json`, `describe map.json [EP]`, `call map.json EP -p k=v --auth NAME=ENVVAR` (--dry-run first), `client map.json --lang ts --out c.ts`. Secrets by environment variable name only. `--help`";
+const COMPACT: &str = "The API behind a website: `analyze cap.har --save map.json`, `describe map.json [EP]`, `call map.json EP -p k=v --auth NAME=ENVVAR [--select $.a.b]` (--dry-run first), `client map.json --lang ts --out c.ts`, `watch map.json EP --times 2 --every 30s --select $.price --when \"$.price < prev\"`. Secrets by environment variable name only. `--help`";
 
 /// The tool. It holds nothing: every call parses its own line.
 pub struct Api;
@@ -83,9 +86,9 @@ pub(crate) fn parse(line: &str) -> Result<Parsed, String> {
 /// What the model may not ask for, and a value that looks like a secret. `Ok` means the call may go on.
 pub(crate) fn vet(cmd: &ApiCmd) -> Result<(), String> {
     match cmd {
-        ApiCmd::Watch { .. } => Err(
-            "watch runs until it is stopped, so the person runs it: `nexo api watch MAP ENDPOINT --every 5m`".into(),
-        ),
+        ApiCmd::Watch { target, every, times, state, follow, when, on_change } => {
+            vet_watch(target, every.as_deref(), *times, state.as_deref(), follow.as_deref(), when.as_deref(), on_change.as_deref())
+        }
         ApiCmd::Check { .. } => Err(
             "check calls many endpoints of a map in one go, so the person runs it: `nexo api check MAP`".into(),
         ),
@@ -96,6 +99,62 @@ pub(crate) fn vet(cmd: &ApiCmd) -> Result<(), String> {
         ApiCmd::Call { target, .. } => vet_target(target),
         ApiCmd::Analyze { .. } | ApiCmd::Describe { .. } | ApiCmd::Client { .. } => Ok(()),
     }
+}
+
+/// The most a watch of the tool may take in all: the polls, their pauses, and each call's own timeout.
+pub(crate) const WATCH_BUDGET_SECS: u64 = 120;
+/// Most polls of one watch of the tool.
+pub(crate) const WATCH_MAX_TIMES: u32 = 3;
+/// What one poll may take at most (the call timeout of `nexo api`).
+const POLL_SECS: u64 = 30;
+
+/// A watch the model may run: a few polls of a plain endpoint, inside the time one tool call has. Longer or
+/// open-ended watches, channels and `--on-change` are the person's.
+fn vet_watch(
+    target: &Target,
+    every: Option<&str>,
+    times: Option<u32>,
+    state: Option<&Path>,
+    follow: Option<&str>,
+    when: Option<&str>,
+    on_change: Option<&str>,
+) -> Result<(), String> {
+    const OWN: &str =
+        "the person runs a longer watch: `nexo api watch MAP EP --every 10m --select PATH --when EXPR --state FILE`";
+    if on_change.is_some() {
+        return Err(format!("--on-change runs a shell command, so only the person may use it; {OWN}"));
+    }
+    if follow.is_some() {
+        return Err(format!("--for follows a live channel for a while; {OWN}"));
+    }
+    let Some(n) = times else {
+        return Err(format!("watch needs --times 1 to {WATCH_MAX_TIMES} here (it would run until stopped); {OWN}"));
+    };
+    if !(1..=WATCH_MAX_TIMES).contains(&n) {
+        return Err(format!("--times {n}: the tool allows 1 to {WATCH_MAX_TIMES} polls; {OWN}"));
+    }
+    let pause = match every {
+        Some(e) => nexo_api::call::duration(e).map_err(|e| format!("--every: {e}"))?,
+        None if n == 1 => std::time::Duration::ZERO,
+        None => return Err("--every DURATION is needed with more than one poll (at least 10s)".to_string()),
+    };
+    if pause < nexo_api::call::MIN_EVERY && n > 1 {
+        return Err(format!("--every is too short: the least is {}s", nexo_api::call::MIN_EVERY.as_secs()));
+    }
+    let worst = pause.as_secs().saturating_mul(u64::from(n - 1)) + POLL_SECS * u64::from(n);
+    if worst > WATCH_BUDGET_SECS {
+        return Err(format!(
+            "{n} polls {}s apart can take {worst}s, more than the {WATCH_BUDGET_SECS}s one tool call has; use a shorter --every or fewer --times, or {OWN}",
+            pause.as_secs()
+        ));
+    }
+    if let Some(p) = state {
+        if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err("--state: no `..` in the path; keep the file under the session's folder".to_string());
+        }
+    }
+    crate::api_watch::Sel::build(&target.select, when, None, state)?;
+    vet_target(target)
 }
 
 fn vet_target(t: &Target) -> Result<(), String> {
@@ -197,8 +256,9 @@ pub(crate) fn kind_in(cmd: &ApiCmd, base: &Path) -> ToolKind {
         ApiCmd::Client { out: Some(_), .. } => ToolKind::Write,
         ApiCmd::Client { .. } => ToolKind::Read,
         ApiCmd::Call { dry_run: true, .. } => ToolKind::Read,
-        ApiCmd::Call { target, .. } => {
-            if target.login || target.via_browser.is_some() {
+        ApiCmd::Call { target, .. } | ApiCmd::Watch { target, .. } => {
+            // a watch that keeps a state file writes: asked like a command that changes things
+            if target.login || target.via_browser.is_some() || matches!(cmd, ApiCmd::Watch { state: Some(_), .. }) {
                 return ToolKind::Exec;
             }
             let map = if target.map.is_relative() { base.join(&target.map) } else { target.map.clone() };
@@ -208,7 +268,7 @@ pub(crate) fn kind_in(cmd: &ApiCmd, base: &Path) -> ToolKind {
                 _ => ToolKind::Exec,
             }
         }
-        ApiCmd::Watch { .. } | ApiCmd::Check { .. } => ToolKind::Exec,
+        ApiCmd::Check { .. } => ToolKind::Exec,
     }
 }
 
@@ -430,9 +490,40 @@ async fn run_cmd(cmd: &mut ApiCmd, ctx: &ToolContext) -> Result<String, String> 
                 Err((_, e)) => Err(format!("api: {e}")),
             }
         }
-        // `vet` refused it before
-        ApiCmd::Watch { .. } | ApiCmd::Check { .. } => {
-            Err("api: watch and check are not offered to the model".to_string())
+        ApiCmd::Watch { target, every, times, state, when, .. } => {
+            absolute(&ctx.cwd, &mut target.map);
+            may_read(ctx, &target.map)?;
+            if let Some(st) = state.as_mut() {
+                absolute(&ctx.cwd, st);
+                if !st.starts_with(&ctx.cwd) {
+                    return Err("api: --state must be a file under the session's folder".to_string());
+                }
+                may_write(ctx, st)?;
+            }
+            if let Ok((_, origin)) = crate::api_call::target_info(&target.map, &target.endpoint) {
+                if let Some(check) = &ctx.check {
+                    if check("web_fetch", ToolKind::Network, &json!({ "url": origin })) == Check::Deny {
+                        return Err(format!("api: a permission rule denies {origin}"));
+                    }
+                }
+            }
+            let sel = crate::api_watch::Sel::build(&target.select, when.as_deref(), None, state.as_deref())
+                .map_err(|e| format!("api: {e}"))?;
+            match crate::api_call::watch_out(target, every.as_deref(), *times, state.as_deref(), sel).await {
+                Ok(mut o) => {
+                    match o.code {
+                        0 => {}
+                        c if c == crate::api_watch::EXIT_ALERT => {
+                            o.notes.push("exit code 4: the alert came true".to_string())
+                        }
+                        c => o.notes.push(format!("exit code {c}: the last call failed")),
+                    }
+                    Ok(joined(o.text, o.notes))
+                }
+                Err((_, e)) => Err(format!("api: {e}")),
+            }
         }
+        // `vet` refused it before
+        ApiCmd::Check { .. } => Err("api: check is not offered to the model".to_string()),
     }
 }

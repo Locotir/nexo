@@ -453,6 +453,7 @@ mod tests {
             login_params: Vec::new(),
             login_body: None,
             via_browser: Some(String::new()),
+            select: Vec::new(),
         }
     }
 

@@ -173,7 +173,7 @@ pub(super) fn dbg_tools() -> Vec<Tool> {
 pub(super) fn api_tools() -> Vec<Tool> {
     vec![Tool {
         name: "api".into(),
-        description: "nexo api: find the API behind a website. One line: `analyze cap.har --save map.json`, `describe map.json [EP]`, `client map.json --lang ts|py|sh [--out FILE]` or `call map.json EP -p k=v --auth NAME=ENVVAR` (--dry-run first). Secrets go in environment variables and are passed by name (`@env:VAR`); a secret value is refused. Describe, analyze without --save and --dry-run always work; a call, --login, --via-browser (a signed-in browser sends it) and saving a file (also client --out) need --allow-changes. No watch, no --reveal.".into(),
+        description: "nexo api: find the API behind a website. One line: `analyze cap.har --save map.json`, `describe map.json [EP]`, `client map.json --lang ts|py|sh [--out FILE]`, `call map.json EP -p k=v --auth NAME=ENVVAR [--select $.a.b]` (--dry-run first) or a bounded `watch map.json EP --times 2 --every 30s --select $.price --when \"$.price < prev\"` (1 to 3 polls, exit code 4 when the alert is true; no --on-change). Secrets go in environment variables and are passed by name (`@env:VAR`); a secret value is refused. Describe, analyze without --save and --dry-run always work; a call, --login, --via-browser (a signed-in browser sends it) and saving a file (also client --out) need --allow-changes. No --on-change, no check, no --reveal.".into(),
         schema: json!({"type": "object", "properties": {
             "command": {"type": "string", "description": "the nexo api line without the word nexo, for example `call map.json \"GET /v1/items\" --dry-run`"}
         }, "required": ["command"]}),
