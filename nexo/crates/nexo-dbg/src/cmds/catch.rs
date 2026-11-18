@@ -28,7 +28,7 @@ impl Session {
         let mut lines = Vec::new();
         let mut ids = Vec::new();
         for n in found {
-            let words = vec![n.to_string()];
+            let words = [n.to_string()];
             let args = Args::new(&words)?;
             let before = self.bps.len();
             self.cmd_break(false, &words, &args)?;
