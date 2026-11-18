@@ -242,8 +242,14 @@ pub fn verdict(session: f64, day: f64, session_limit: Option<f64>, day_limit: Op
     for (what, spent, limit, key) in checks {
         if let Some(l) = limit.filter(|l| *l > 0.0) {
             if spent >= l {
+                // `/budget` only sets the session limit, so the daily stop must not promise it raises that one.
+                let advice = if key == "max_cost_day" {
+                    "`/budget` sets only this session's limit; the daily limit is [agent] max_cost_day in the configuration".to_string()
+                } else {
+                    format!("`/budget <dollars>` raises it for this session ([agent] {key} in the configuration)")
+                };
                 return Verdict::Stop(format!(
-                    "spend limit reached: ${spent:.4} of ${l:.2} {what}; no more model calls. `/budget <dollars>` raises it for this session ([agent] {key} in the configuration)"
+                    "spend limit reached: ${spent:.4} of ${l:.2} {what}; no more model calls. {advice}"
                 ));
             }
         }
@@ -356,6 +362,19 @@ mod tests {
         // a stop wins over a warning
         assert!(matches!(verdict(0.9, 5.0, Some(1.0), Some(5.0)), Verdict::Stop(_)));
         assert_eq!(verdict(9.0, 9.0, Some(0.0), None), Verdict::Go, "0 is no limit");
+    }
+
+    #[test]
+    fn the_daily_stop_does_not_say_budget_raises_it() {
+        // `/budget` sets only the session limit
+        let Verdict::Stop(day) = verdict(0.1, 3.0, Some(1.0), Some(3.0)) else { panic!("daily limit reached") };
+        assert!(
+            day.starts_with("spend limit reached") && day.contains("today") && day.contains("max_cost_day"),
+            "{day}"
+        );
+        assert!(!day.contains("raises it"), "{day}");
+        let Verdict::Stop(sess) = verdict(2.0, 0.0, Some(1.0), None) else { panic!("session limit reached") };
+        assert!(sess.contains("this session") && sess.contains("/budget") && sess.contains("raises it"), "{sess}");
     }
 
     #[test]
