@@ -229,6 +229,8 @@ async fn a_task_list_change_leaves_the_system_text_alone_and_the_list_rides_with
     ]);
     let mut cfg = config(PermissionMode::Ask);
     cfg.agent.check_at_start = false;
+    // a turn that ends with open items on the list would get the supervisor's check-in, one more request
+    cfg.agent.check_in = false;
     let mut r = start_with(client.clone(), cfg, None, d.path(), with_todo(d.path())).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });

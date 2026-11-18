@@ -247,6 +247,11 @@ fn compact_stops_are_one_line_with_displays_and_a_crash_stays_full() {
 #[test]
 fn heap_check_stops_on_a_double_free_and_lists_the_leak() {
     let (mut s, _) = start("heap");
+    // on at the start of the program's own allocations: the runtime's start-up ones (libc reads /proc for the
+    // stack bounds) are not part of what this checks
+    run(&mut s, "break dbg_heap_case");
+    let at = run(&mut s, "cont");
+    assert!(at.contains("dbg_heap_case"), "{at}");
     let t = run(&mut s, "heap on");
     assert!(t.contains("heap check on: malloc calloc realloc free"), "{t}");
     let stop = run(&mut s, "cont");

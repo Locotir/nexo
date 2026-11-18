@@ -19,6 +19,21 @@ pub extern "C" fn dbg_add(a: u64, b: u64) -> u64 {
     std::hint::black_box(a + b)
 }
 
+/// The `heap` mode: a block that is never freed and one that is freed twice. A function of its own so a test can
+/// stop at its start and turn the heap check on there, after the runtime's own start-up allocations.
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn dbg_heap_case() {
+    // SAFETY: the double free is the point; the process is stopped at it by the debugger under test.
+    unsafe {
+        let leaked = libc::malloc(std::hint::black_box(100));
+        let twice = libc::malloc(std::hint::black_box(50));
+        libc::free(twice);
+        libc::free(twice);
+        std::hint::black_box(leaked);
+    }
+}
+
 #[no_mangle]
 #[inline(never)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -60,16 +75,7 @@ fn main() {
             let p = std::hint::black_box(std::ptr::null::<u64>());
             println!("{}", dbg_crash(p));
         }
-        "heap" => {
-            // SAFETY: the double free is the point; the process is stopped at it by the debugger under test.
-            unsafe {
-                let leaked = libc::malloc(std::hint::black_box(100));
-                let twice = libc::malloc(std::hint::black_box(50));
-                libc::free(twice);
-                libc::free(twice);
-                std::hint::black_box(leaked);
-            }
-        }
+        "heap" => dbg_heap_case(),
         "echo" => {
             for line in std::io::stdin().lock().lines().map_while(Result::ok) {
                 println!("echo: {line}");

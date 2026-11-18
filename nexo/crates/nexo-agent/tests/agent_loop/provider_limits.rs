@@ -202,6 +202,13 @@ async fn the_same_window_named_again_gets_a_smaller_curated_view_and_no_summary(
                 t.chars().take(50).collect::<String>(),
                 at(6),
                 at(7)
+            ) + &format!(
+                "\n  lines in [..]: {:?}\n  last 120: {:?}",
+                t.lines()
+                    .filter(|l| l.starts_with('['))
+                    .map(|l| l.chars().take(90).collect::<String>())
+                    .collect::<Vec<_>>(),
+                t.chars().skip(t.chars().count().saturating_sub(120)).collect::<String>()
             )
         })
         .collect();

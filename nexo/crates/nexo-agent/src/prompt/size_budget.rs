@@ -177,8 +177,10 @@ fn a_compact_tool_keeps_its_parameter_names_types_and_required_list() {
                 shape(v, out, &format!("{at}.{k}"));
             }
         }
+        // the entries of an array are not compared: a small window gets bare objects for the typed entries of
+        // `edit` (be6a857b), and the array itself keeps its `items`
         if let Some(i) = o.get("items") {
-            shape(i, out, &format!("{at}[]"));
+            out.push(format!("{at}[]:{}", i.get("type").and_then(|t| t.as_str()).unwrap_or("-")));
         }
     }
     for (f, c) in full.iter().zip(&compact) {
