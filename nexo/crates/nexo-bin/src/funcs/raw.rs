@@ -78,11 +78,14 @@ impl X86Starts {
     }
 }
 
-/// Where the x86 function at `start` ends, at most `limit` (the next start or the end of the bytes).
+/// Where the x86 function at `start` ends, at most `limit` (the next start or the end of the bytes). The cases of a
+/// switch (an indirect `jmp` through a jump table, see `decomp::lift`) count as branch targets.
 pub(super) fn x86_code_end(img: &Image, start: u64, limit: u64) -> u64 {
     let Some(bytes) = img.read_at(start, (limit - start) as usize) else { return limit };
     let mut dec = Decoder::with_ip(img.bits, bytes, start, DecoderOptions::NONE);
     let mut ins = Instruction::default();
+    let env = crate::decomp::api::ImgEnv(img);
+    let mut seen: Vec<Instruction> = Vec::new();
     let mut reach = start;
     // just past the instruction that ended the code, while only padding has followed it
     let mut ended: Option<u64> = None;
@@ -99,6 +102,15 @@ pub(super) fn x86_code_end(img: &Image, start: u64, limit: u64) -> u64 {
                 continue;
             }
             return e;
+        }
+        seen.push(ins);
+        if ins.flow_control() == FlowControl::IndirectBranch {
+            // the finder looks back about 30 instructions (bound, load, add, lea): a window of 40 is enough
+            let from = seen.len().saturating_sub(40);
+            let tab = crate::decomp::lift::switch_targets(&env, &seen[from..], seen.len() - 1 - from, start, limit);
+            if let Some(t) = tab {
+                reach = t.into_iter().fold(reach, u64::max);
+            }
         }
         if matches!(ins.flow_control(), FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch) {
             if let Some((t, false)) = target(&ins) {
@@ -157,7 +169,7 @@ pub(super) fn a64_code_end(img: &Image, start: u64, limit: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::a64_code_end;
+    use super::{a64_code_end, x86_code_end};
     use crate::Image;
     use std::path::PathBuf;
 
@@ -199,5 +211,34 @@ mod tests {
         let mut w = SWITCH;
         w[0] = 0xd503_201f;
         assert_eq!(end_of(&w), 0x1028);
+    }
+
+    /// `cmp eax,1 ; ja def ; lea rdx,[rip+T] ; movsxd rax,[rdx+rax*4] ; add rax,rdx ; jmp rax ; def: xor eax,eax ; ret ;
+    /// case0: mov eax,1 ; ret ; case1: mov eax,2 ; ret ; T: two offsets`: only the table reaches the cases.
+    const X86_SWITCH: [u8; 0x2c] = [
+        0x83, 0xf8, 0x01, 0x77, 0x10, 0x48, 0x8d, 0x15, 0x18, 0x00, 0x00, 0x00, 0x48, 0x63, 0x04, 0x82, 0x48, 0x01,
+        0xd0, 0xff, 0xe0, 0x31, 0xc0, 0xc3, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3, 0xb8, 0x02, 0x00, 0x00, 0x00, 0xc3,
+        0xf4, 0xff, 0xff, 0xff, 0xfa, 0xff, 0xff, 0xff,
+    ];
+
+    fn x86_end_of(code: &[u8]) -> u64 {
+        let img = Image::from_raw(code.to_vec(), PathBuf::from("dump.bin"), 0x1000, Some("x86_64")).expect("raw image");
+        x86_code_end(&img, 0x1000, 0x1000 + code.len() as u64)
+    }
+
+    #[test]
+    fn the_cases_of_an_x86_jump_table_are_part_of_the_function() {
+        // the table is data: the function stops after the last case's `ret`
+        assert_eq!(x86_end_of(&X86_SWITCH), 0x1024);
+    }
+
+    #[test]
+    fn without_an_x86_bound_check_the_cases_are_not_found() {
+        // two more table words after the cases: one more case (in range) and one out of range, so that a table read
+        // without a bound would be found and extend the end to 0x1024
+        let mut c = X86_SWITCH.to_vec();
+        c.extend_from_slice(&[0xfa, 0xff, 0xff, 0xff, 0x00, 0x10, 0x00, 0x00]);
+        c[..5].fill(0x90);
+        assert_eq!(x86_end_of(&c), 0x1015);
     }
 }

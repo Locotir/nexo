@@ -172,6 +172,15 @@ fn decode(env: &dyn Env, start: u64, end: u64) -> Decoded {
     Decoded { ins, raw: Vec::new(), by_ip }
 }
 
+/// The case targets of the switch that the indirect `jmp` at `ins[k]` dispatches through, when it reads like one
+/// and a bound check (`cmp` + `ja`/`jae`) says how many cases it has; an unbounded table gives `None`. `ins` is
+/// the tail of the function's instructions up to the jump (the finder looks back at most about 30 of them);
+/// `start..end` bounds the targets.
+pub(crate) fn switch_targets(env: &dyn Env, ins: &[Instruction], k: usize, start: u64, end: u64) -> Option<Vec<u64>> {
+    let d = Decoded { ins: ins.to_vec(), raw: Vec::new(), by_ip: HashMap::new() };
+    find_switch(env, &d, k, start, end).filter(|sw| sw.bound.is_some()).map(|sw| sw.targets)
+}
+
 fn reg_num(r: Register) -> Option<(u8, Bits, bool)> {
     use Register::*;
     if r.is_gpr64() {
