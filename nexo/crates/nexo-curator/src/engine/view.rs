@@ -322,8 +322,23 @@ impl Engine {
                 } else {
                     format!("{MARK} … lines omitted …")
                 };
-                if kept.last() != Some(&mark) {
-                    kept.push(mark);
+                match self.trimmed.lines.get(&(i, j)).filter(|_| !copy(j)) {
+                    // a part the frontier trim took that held names of its own: the lines that hold them stay
+                    Some(stay) => {
+                        let mut next = at(c.start);
+                        for &l in stay.iter().filter(|&&l| l < lines.len()) {
+                            if l > next && kept.last() != Some(&mark) {
+                                kept.push(mark.clone());
+                            }
+                            kept.push(lines[l].to_string());
+                            next = l + 1;
+                        }
+                        if next < at(c.end) && kept.last() != Some(&mark) {
+                            kept.push(mark);
+                        }
+                    }
+                    None if kept.last() != Some(&mark) => kept.push(mark),
+                    None => {}
                 }
             } else {
                 let (a, b) = (at(c.start), at(c.end));

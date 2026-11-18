@@ -181,6 +181,27 @@ pub struct Params {
     pub lahead: f64,
     /// With `kept`: how many times its price a landing has to save before it is made.
     pub lmargin: f64,
+    /// The frontier trim: on the request after the agent replied to an output, the parts of it between
+    /// the first and the last that the reply named nothing of leave, while its message is still the last
+    /// one the cache holds, so the rewrite sends again only what stays of that message and the reply
+    /// behind it. 1: of what a process printed, the parts that name nothing the rest of the view does
+    /// not hold. 2: of what a process printed, those and the parts with names of their own, of which the
+    /// first line that holds each of those names stays. 3: the same of every output, a file read too
+    /// (0: off; `Engine::frontier_trim`).
+    pub trim: i64,
+    /// The names-kept rule (`engine/need.rs`): a part of an output leaves once the agent has written about the
+    /// output (text or a note after it), no name of the part was said in the last `need` replies, and each name
+    /// it holds has another place in the view, or stays on the first line of the part that holds it (the lines
+    /// are of the original text, the same hook as `trim=2`: no summary, no new kind of text). The parts wait in
+    /// a list by message, and each request takes the batch that pays: the cut at the message `k` where `ratio`
+    /// times the tokens that leave from `k` on, times the calls left (`lcalls`, `lahead`), is more than `1 -
+    /// ratio` times what is sent again from `k` on. An error, a failed output and the sticky set never leave.
+    /// 0: off, and the view is byte for byte what it is without the rule. N: on, a part idle for N replies.
+    /// Simulated, not replayed (`night-1110/need/STUDY.md`, the recorded sessions, priced like the replay, from
+    /// plain history): medium sessions cost 0.8519 of plain at 2 (0.7685 with no idle gate, 0.8860 at 4) and send
+    /// 0.7043 of its tokens; the forgotten words are 0 by construction and the copied lines lost 185 in 42
+    /// replies (80 replies at 0, 27 at 4). Not measured on the view as it is today.
+    pub need: i64,
 }
 
 impl Params {

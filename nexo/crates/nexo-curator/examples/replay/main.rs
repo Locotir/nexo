@@ -89,6 +89,7 @@ mod bank;
 mod belady;
 mod call_keys;
 mod chunks;
+mod copied_lines;
 mod failed_calls;
 mod lost_words;
 mod oracle;
@@ -101,6 +102,7 @@ use bank::*;
 use belady::*;
 use call_keys::*;
 use chunks::*;
+use copied_lines::*;
 use failed_calls::*;
 use lost_words::*;
 use oracle::*;
@@ -205,6 +207,7 @@ fn main() {
     let mut tally = nexo_curator::LostTally::default();
     let mut copied_words = 0;
     let (mut blind_tokens, mut open_tokens) = (0i64, 0i64);
+    let (mut copied_gone, mut copied_all, mut copied_replies, mut copying_replies) = (0i64, 0i64, 0i64, 0i64);
     let (mut denied_tokens, mut asked_tokens) = (0i64, 0i64);
     let (mut own_kept, mut own_all, mut own_recent_kept, mut own_recent_all) = (0usize, 0usize, 0usize, 0usize);
     let mut rereads = Rereads::default();
@@ -281,6 +284,13 @@ fn main() {
         }
         blind_tokens += missing;
         open_tokens += open;
+        if let Some(said) = reply_to(&requests, i) {
+            let (gone, all) = copied_lines(said, &r.messages, &reply.view);
+            copied_gone += gone;
+            copied_all += all;
+            copied_replies += (gone > 0) as i64;
+            copying_replies += (all > 0) as i64;
+        }
         max_view = max_view.max(reply.tokens + cur.head_tokens() as i64);
         // REPLAY_VIEW=N names each request whose view (head included) passes N tokens
         if let Some(n) = std::env::var("REPLAY_VIEW").ok().and_then(|v| v.parse::<i64>().ok()) {
@@ -553,6 +563,9 @@ fn main() {
     println!(
         "blind: {blind_tokens} of {open_tokens} tokens of results not yet written about or acted on were left out ({:.1}%)",
         share(blind_tokens, open_tokens)
+    );
+    println!(
+        "copied lines: {copied_gone} of {copied_all} lines of a result that a call wrote again were not in the view, in {copied_replies} of {copying_replies} replies"
     );
     // lines of a block a window cut took out that a reply written after the cut cites word for word
     let mut cited = 0usize;
