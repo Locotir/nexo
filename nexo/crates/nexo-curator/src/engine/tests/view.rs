@@ -389,3 +389,85 @@ fn opaque_reasoning_counts_in_the_view_only_for_the_turn_the_request_sends_back(
     e.sync(&msgs);
     assert!(with - e.tokens() >= 1900, "{with} -> {}", e.tokens());
 }
+
+/// What nexo writes before the person's words (`nexo_core::agent::PERSON_MARK`; this crate does not depend on it).
+const PERSON_MARK: &str = "[the person's message]";
+
+/// The rules a provider checks of a view: roles alternate, every tool_result answers a tool_use of the message
+/// before, and every tool_use is answered in the message after.
+fn provider_valid(view: &[Value]) -> Result<(), String> {
+    let role = |m: &Value| get_str(m, "role").to_string();
+    for w in view.windows(2) {
+        if role(&w[0]) == role(&w[1]) {
+            return Err(format!("two {} messages in a row", role(&w[0])));
+        }
+    }
+    for (k, m) in view.iter().enumerate() {
+        for b in blocks(m.get("content")).iter() {
+            match get_str(b, "type") {
+                "tool_result" => {
+                    let id = get_str(b, "tool_use_id");
+                    let asked = k > 0
+                        && blocks(view[k - 1].get("content"))
+                            .iter()
+                            .any(|c| get_str(c, "type") == "tool_use" && get_str(c, "id") == id);
+                    if !asked {
+                        return Err(format!("result of {id} without its call"));
+                    }
+                }
+                "tool_use" => {
+                    let id = get_str(b, "id");
+                    let answered = view.get(k + 1).is_some_and(|n| {
+                        blocks(n.get("content"))
+                            .iter()
+                            .any(|c| get_str(c, "type") == "tool_result" && get_str(c, "tool_use_id") == id)
+                    });
+                    if !answered {
+                        return Err(format!("call {id} without its result"));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_cut_inside_the_current_turn_keeps_the_request_the_person_just_made() {
+    // a session opened days ago with "hola", older turns, then a long request answered in many steps with big
+    // outputs: a window that cannot hold them all cuts inside the turn, and what the model must read last
+    // as the person's words is that request, not the greeting
+    let hola = format!("{PERSON_MARK}\nhola");
+    let mut msgs = vec![json!({"role": "user", "content": hola})];
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Hola."}]}));
+    for t in 0..3 {
+        msgs.push(
+            json!({"role": "user", "content": format!("{PERSON_MARK}\nShow me part {t} of the invoices report.")}),
+        );
+        msgs.extend(step(100 + t, &format!("cat invoices{t}.txt"), &listing(50 * t, 50 * t + 20)));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": format!("Part {t} shown.")}]}));
+    }
+    let plan: String = (0..60)
+        .map(|k| format!("{k}. Build the stitching module {} and wire it to {}.", word(k + 300), word(k + 400)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let live = format!("Can you do this? Here is the plan:\n{plan}");
+    msgs.push(json!({"role": "user", "content": format!("{PERSON_MARK}\n{live}")}));
+    let ask = msgs.len() - 1;
+    for k in 0..15 {
+        msgs.extend(step(k, &format!("cat module{k}.rs"), &super::window::big(k + 1, 2500)));
+    }
+    let mut e = Engine::new(params("nudge=0;fresh=0;eoq=0;target=0;cap=0;hard=0;protect=4").unwrap());
+    e.set_budget(12_000);
+    e.sync(&msgs);
+    let view = e.view();
+    assert!(e.start > ask, "the cut lands inside the current turn: start {} ask {ask} {:?}", e.start, e.stats);
+    let text = sent(&view);
+    let live_in_view = serde_json::to_string(&format!("{PERSON_MARK}\n{live}")).unwrap();
+    assert!(text.contains(&live_in_view[1..live_in_view.len() - 1]), "the live request is whole in the view");
+    let all: String = view.iter().map(|m| text_of(m.get("content")).into_owned()).collect::<Vec<_>>().join("\n");
+    let mark = all.rfind(PERSON_MARK).expect("a person-marked text");
+    assert!(all[mark + PERSON_MARK.len()..].trim_start().starts_with("Can you do this?"), "{}", &all[mark..mark + 80]);
+    assert_eq!(provider_valid(&view), Ok(()), "{view:?}");
+}

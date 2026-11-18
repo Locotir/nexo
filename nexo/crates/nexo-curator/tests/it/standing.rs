@@ -52,6 +52,8 @@ fn strings(v: &Value, out: &mut Vec<String>) {
 
 /// The view for ``msgs`` followed by ``task``: all its text, and the `Standing:` lines it carries.
 fn ask(cur: &mut Curator, mut msgs: Vec<Value>, task: &str) -> (String, Vec<String>) {
+    // (the work ended with a reply: the task opens a turn of its own)
+    msgs.push(said("Done."));
     msgs.push(user(task));
     let r = cur.answer(&json!({"op": "view", "system_tokens": 0, "messages": msgs}), 0.0);
     assert_eq!(r["ok"], true, "{r}");

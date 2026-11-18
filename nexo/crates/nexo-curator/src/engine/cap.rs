@@ -611,6 +611,10 @@ impl Engine {
                 *stay.entry(a).or_insert(0) += self.steps[i].tokens;
             }
         }
+        // the request of the current turn stays in the view whatever the cut (`live_ask`): its tokens do not leave
+        if let Some(ts) = self.goal.turns.last().map(|t| t.start).filter(|&ts| ts >= 1 && ts < t as usize) {
+            *stay.entry(ts).or_insert(0) += sizes[ts];
+        }
         while (mi as i64) < (t - self.p.protect).min(t - 1) && total as f64 > target {
             total -= sizes[mi] - stay.get(&mi).copied().unwrap_or(0).min(sizes[mi]);
             mi += 1;
