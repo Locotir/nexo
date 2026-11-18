@@ -333,7 +333,14 @@ fn words<'a>(text: &'a str, out: &mut Vec<&'a str>) {
 }
 
 fn is_request(text: &str) -> bool {
-    const NOT: &[&str] = &["<system-reminder>", "<local-command", "<command-", "Caveat:", "[Request interrupted"];
+    const NOT: &[&str] = &[
+        "<system-reminder>",
+        "<local-command",
+        "<command-",
+        "Caveat:",
+        "[Request interrupted",
+        "[background jobs ended]",
+    ];
     !py::strip(text).is_empty() && {
         let t = text.trim_start_matches(py::is_space);
         !NOT.iter().any(|p| t.starts_with(p))
