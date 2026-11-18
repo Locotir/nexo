@@ -54,6 +54,34 @@ pub enum ApiCmd {
         /// An endpoint id, or "METHOD /path".
         endpoint: Option<String>,
     },
+    /// Call the safe endpoints of a saved map and say whether each live answer still has the recorded shape.
+    ///
+    /// Calls every GET/HEAD endpoint that needs no parameter you did not give with -p (the others are listed as
+    /// skipped), or only the endpoints you name (an id, or "METHOD /path"). Other methods are never called unless
+    /// --unsafe is given; a login is never run. Per endpoint it prints the status (live against recorded), the
+    /// content type and the shape: a field that is gone, a changed type, a value that can be null now, a changed
+    /// status or a failed auth is drift or broken; a new field is only information. No secret value is printed.
+    ///
+    /// Exit code: 0 all ok (or skipped), 1 some drift, 2 some endpoint broken, 3 the map or the arguments are
+    /// unusable.
+    Check {
+        /// The map file written by `nexo api analyze --save`.
+        map: PathBuf,
+        /// Only these endpoints: an id, or "METHOD /path". Default: every safe one.
+        endpoints: Vec<String>,
+        /// A param given to each endpoint that has it: name=value (or name=@env:VAR). Repeat for more.
+        #[arg(short = 'p', long = "param", value_name = "NAME=VALUE")]
+        params: Vec<String>,
+        /// Read an auth scheme's value from this environment variable. Repeat for more.
+        #[arg(long, value_name = "NAME=ENVVAR")]
+        auth: Vec<String>,
+        /// Also call endpoints that are not GET or HEAD (they may change data).
+        #[arg(long = "unsafe")]
+        allow_unsafe: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Call an endpoint on a schedule and print only what changed since the last answer.
     Watch {
         #[command(flatten)]
@@ -109,6 +137,9 @@ pub async fn run(a: &ApiArgs) -> i32 {
     match &a.what {
         ApiCmd::Call { target, dry_run, json, reveal } => crate::api_call::call(target, *dry_run, *json, *reveal).await,
         ApiCmd::Describe { map, endpoint } => crate::api_call::describe(map, endpoint.as_deref()),
+        ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json } => {
+            crate::api_check::check(map, endpoints, params, auth, *allow_unsafe, *json).await
+        }
         ApiCmd::Watch { target, every, times, state } => {
             crate::api_call::watch(target, every.as_deref(), *times, state.as_deref()).await
         }
@@ -279,5 +310,44 @@ mod tests {
             }
             other => panic!("not parsed as nexo api watch: {other:?}"),
         }
+    }
+
+    #[test]
+    fn check_takes_endpoints_params_auth_unsafe_and_json() {
+        let c = crate::cli::Args::try_parse_from([
+            "nexo",
+            "api",
+            "check",
+            "m.json",
+            "get_api_items",
+            "GET /api/items/{item_id}",
+            "-p",
+            "item_id=3",
+            "--auth",
+            "bearer=MY_TOKEN",
+            "--unsafe",
+            "--json",
+        ])
+        .unwrap();
+        match c.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs {
+                what: ApiCmd::Check { map, endpoints, params, auth, allow_unsafe, json },
+            })) => {
+                assert_eq!(map, PathBuf::from("m.json"));
+                assert_eq!(endpoints, vec!["get_api_items".to_string(), "GET /api/items/{item_id}".to_string()]);
+                assert_eq!(params, vec!["item_id=3".to_string()]);
+                assert_eq!(auth, vec!["bearer=MY_TOKEN".to_string()]);
+                assert!(allow_unsafe && json);
+            }
+            other => panic!("not parsed as nexo api check: {other:?}"),
+        }
+        let bare = crate::cli::Args::try_parse_from(["nexo", "api", "check", "m.json"]).unwrap();
+        match bare.cmd {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Check { endpoints, allow_unsafe, json, .. } })) => {
+                assert!(endpoints.is_empty() && !allow_unsafe && !json);
+            }
+            other => panic!("not parsed as nexo api check: {other:?}"),
+        }
+        assert!(crate::cli::Args::try_parse_from(["nexo", "api", "check"]).is_err());
     }
 }
