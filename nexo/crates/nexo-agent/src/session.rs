@@ -253,7 +253,6 @@ impl Session {
         let empty = self.file.is_some()
             && self.locked
             && self.meta.messages == 0
-            && self.meta.title.is_empty()
             && self.meta.parent.is_none()
             && self.goal.is_none()
             && self.cost == 0.0;
