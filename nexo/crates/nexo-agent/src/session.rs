@@ -384,7 +384,8 @@ pub fn latest_for_in(dir: &Path, cwd: &Path) -> Option<SessionMeta> {
 
 /// The session `nexo -c` opens in `cwd`: [`latest_for`] without the sessions programs run (`nexo -p`, team lanes),
 /// which the person did not start and a lane's runner may hold. `nexo -c -p` keeps [`latest_for`]: a script
-/// continues the session of its own earlier run.
+/// continues the session of its own earlier run. Interactive `nexo -c` falls back to [`latest_for`] when this finds
+/// nothing (cli/dispatch.rs).
 pub fn latest_own_for(cwd: &Path) -> Option<SessionMeta> {
     latest_own_for_in(&dir(), cwd)
 }

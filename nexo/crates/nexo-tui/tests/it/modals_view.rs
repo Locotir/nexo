@@ -428,7 +428,11 @@ fn esc_on_the_session_picker_leaves_nothing_of_it_on_screen() {
     for animations in [false, true] {
         let mut a = app();
         a.opts.animations = animations;
-        a.opts.sessions = vec![("20261108-044309-7902".into(), "hello there".into())];
+        a.opts.sessions = vec![nexo_core::agent::SessionRow {
+            id: "20261108-044309-7902".into(),
+            title: "hello there".into(),
+            ..Default::default()
+        }];
         // well after the banner's intro, so nothing else keeps the clock running
         let t0 = Instant::now() + Duration::from_secs(10);
         a.fx.clock = Some(t0);

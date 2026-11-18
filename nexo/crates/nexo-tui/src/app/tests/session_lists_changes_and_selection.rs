@@ -103,7 +103,7 @@ fn a_session_is_deleted_with_two_presses_and_comes_back_with_undelete() {
 fn mem_shares_another_sessions_memory_and_shows_it_waiting() {
     let (mut a, mut rx) = app();
     a.session_id = Some("here".into());
-    a.opts.sessions = vec![("here".into(), "this one".into()), ("s1".into(), "the parser".into())];
+    a.opts.sessions = vec![row("here", "this one"), row("s1", "the parser")];
     a.input.set_text("/shared-memory");
     a.submit();
     let Some(Modal::Picker(p)) = &a.modal else { panic!("a picker") };
@@ -335,7 +335,7 @@ fn shared_memory_opens_the_picker_with_the_other_sessions_and_the_old_names_stil
     for line in ["/shared-memory", "/memory share", "/mem", "/share", "/memory-shared"] {
         let (mut a, _rx) = app();
         a.session_id = Some("here".into());
-        a.opts.sessions = vec![("here".into(), "this one".into()), ("s1".into(), "the parser".into())];
+        a.opts.sessions = vec![row("here", "this one"), row("s1", "the parser")];
         a.input.set_text(line);
         a.submit();
         let Some(Modal::Picker(p)) = &a.modal else { panic!("{line}: a picker") };
@@ -353,10 +353,10 @@ fn space_ticks_sessions_and_enter_shares_all_the_ticked_ones() {
     let (mut a, mut rx) = app();
     a.session_id = Some("here".into());
     a.opts.sessions = vec![
-        ("here".into(), "this one".into()),
-        ("s1".into(), "the parser".into()),
-        ("s2".into(), "the lexer".into()),
-        ("s3".into(), "the docs".into()),
+        row("here", "this one"),
+        row("s1", "the parser"),
+        row("s2", "the lexer"),
+        row("s3", "the docs"),
     ];
     a.input.set_text("/shared-memory");
     a.submit();
@@ -382,7 +382,7 @@ fn space_ticks_sessions_and_enter_shares_all_the_ticked_ones() {
 fn enter_with_nothing_ticked_takes_the_row_under_the_cursor() {
     let (mut a, mut rx) = app();
     a.session_id = Some("here".into());
-    a.opts.sessions = vec![("s1".into(), "the parser".into()), ("s2".into(), "the lexer".into())];
+    a.opts.sessions = vec![row("s1", "the parser"), row("s2", "the lexer")];
     a.input.set_text("/shared-memory");
     a.submit();
     press(&mut a, KeyCode::Down);
@@ -400,7 +400,7 @@ fn enter_with_nothing_ticked_takes_the_row_under_the_cursor() {
 #[test]
 fn ticks_survive_a_filter_and_a_later_tick_adds_to_them() {
     let (mut a, mut rx) = app();
-    a.opts.sessions = vec![("s1".into(), "the parser".into()), ("s2".into(), "the lexer".into())];
+    a.opts.sessions = vec![row("s1", "the parser"), row("s2", "the lexer")];
     a.input.set_text("/shared-memory");
     a.submit();
     press(&mut a, KeyCode::Char(' '));
