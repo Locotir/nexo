@@ -123,7 +123,7 @@ Ops are one per line or separated by `;`, `#` lines are comments. Each answer co
 | Code | Works | Refused |
 | --- | --- | --- |
 | x86-64 | Every op | |
-| arm64 (AArch64) | `info`, `overview`, `syms`, `funcs`, `fn`, `xref`, `calls`, `tree`, `path`, `strings`, `bytes`, `find` (bytes, `--imm`, `--str`), `cfg`, `patch --nop` | `decomp`, `emu`, `slice`, `diff`, `find --asm`/`--seq`, `patch --asm` |
+| arm64 (AArch64) | `info`, `overview`, `syms`, `funcs`, `fn`, `xref`, `calls`, `tree`, `path`, `strings`, `bytes`, `find` (bytes, `--imm`, `--str`), `cfg`, `diff`, `patch --nop` | `decomp`, `emu`, `slice`, `find --asm`/`--seq`, `patch --asm` |
 | x86-32 | `info`, `overview`, `funcs`, `fn`, `xref`, `calls`, `strings`, `bytes`, `find` | `decomp`, `emu`, `cfg`, `slice`, `diff`, nop and asm patches |
 
 The refused ops say so instead of printing a wrong answer. A bare x86-32 or arm64 dump: `--raw --arch x86-32` or `--raw --arch arm64`.
