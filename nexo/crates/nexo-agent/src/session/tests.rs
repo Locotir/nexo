@@ -484,6 +484,27 @@ fn a_released_session_leaves_no_lock_even_while_still_held() {
 }
 
 #[test]
+fn a_named_session_closed_without_a_message_is_removed_like_an_unnamed_one() {
+    let d = tempfile::tempdir().unwrap();
+    // `nexo --name x` and quit: the title line is written at start, no message follows
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.claim().unwrap();
+    s.set_title("x").unwrap();
+    let p = s.path().to_path_buf();
+    s.release();
+    assert!(!p.exists() && !lock_path(&p).exists(), "nothing was said, so nothing is kept");
+    assert!(list_in(d.path()).is_empty());
+    // a named session that did get a message stays
+    let mut kept = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    kept.claim().unwrap();
+    kept.set_title("x").unwrap();
+    kept.append(&Message::user("hi")).unwrap();
+    let q = kept.path().to_path_buf();
+    kept.release();
+    assert!(q.is_file(), "a named session with a message stays");
+}
+
+#[test]
 fn a_utf8_sequence_cut_by_a_crash_keeps_the_session() {
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
