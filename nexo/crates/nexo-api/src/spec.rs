@@ -88,6 +88,9 @@ pub struct Api {
     pub dropped: IndexMap<&'static str, usize>,
 }
 
+/// The GraphQL calls by method, origin, path and operation: each call with its operation and how many its request had.
+type GqlGroups<'a> = IndexMap<(String, String, String, String), Vec<(&'a Exchange, Op, usize)>>;
+
 /// One call of an endpoint; for GraphQL, the operation it holds and how many operations its request had.
 struct Call<'a> {
     x: &'a Exchange,
@@ -276,7 +279,7 @@ pub fn build(all: &[Exchange], o: &Options) -> Api {
     let auths = auth::detect(all);
 
     let mut plain: Vec<&Exchange> = Vec::new();
-    let mut gql: IndexMap<(String, String, String, String), Vec<(&Exchange, Op, usize)>> = IndexMap::new();
+    let mut gql: GqlGroups = IndexMap::new();
     for &i in &kept {
         let x = &all[i];
         let ops = graphql::ops(x);

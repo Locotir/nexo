@@ -232,7 +232,7 @@ pub fn of_call(x: &Exchange, auths: &[Auth]) -> Vec<usize> {
             Scheme::Csrf { header, .. } => sends(Place::Header, header),
             Scheme::Cookie { names } => {
                 let n = sent_cookies.iter().filter(|c| names.iter().any(|m| m.as_str() == **c)).count();
-                if n > 0 && best.map_or(true, |(b, _)| n > b) {
+                if n > 0 && best.is_none_or(|(b, _)| n > b) {
                     best = Some((n, i));
                 }
                 false

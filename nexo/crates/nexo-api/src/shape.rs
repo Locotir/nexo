@@ -215,7 +215,7 @@ impl Shape {
 
     /// Whether every object merged in here had this field.
     pub fn required(&self, field: &str) -> bool {
-        self.objects > 0 && self.fields.get(field).map_or(false, |f| f.seen == self.objects)
+        self.objects > 0 && self.fields.get(field).is_some_and(|f| f.seen == self.objects)
     }
 
     /// The enum values, when this place holds only a few distinct strings over many.
@@ -430,7 +430,7 @@ fn cut_example(s: &str) -> String {
 /// The format of one string; `Mixed` when it has none.
 fn fmt_of(s: &str) -> Fmt {
     let b = s.as_bytes();
-    let digits = |r: std::ops::Range<usize>| b.get(r).map_or(false, |x| x.iter().all(u8::is_ascii_digit));
+    let digits = |r: std::ops::Range<usize>| b.get(r).is_some_and(|x| x.iter().all(u8::is_ascii_digit));
     let date_at_start = b.len() >= 10 && digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10);
     if is_uuid(s) {
         Fmt::Uuid

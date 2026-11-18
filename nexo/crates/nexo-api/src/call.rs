@@ -145,7 +145,7 @@ pub fn auth_map(api: &Api, pairs: &[String]) -> Result<Vec<(usize, String)>, Str
         let by_label: Vec<usize> = (0..names.len()).filter(|i| names[*i].eq_ignore_ascii_case(name)).collect();
         let hits = if by_label.is_empty() {
             (0..names.len())
-                .filter(|i| names[*i].split_once(':').map_or(false, |(_, rest)| rest.eq_ignore_ascii_case(name)))
+                .filter(|i| names[*i].split_once(':').is_some_and(|(_, rest)| rest.eq_ignore_ascii_case(name)))
                 .collect()
         } else {
             by_label
@@ -313,7 +313,7 @@ fn slot(api: &Api, ep: &Endpoint, name: &str) -> Result<Slot, String> {
     if ep.query.iter().any(|p| p.name == name) {
         return Ok(Slot::Query(name.to_string()));
     }
-    if body_shape(ep).map_or(false, |s| shape_at(s, name).is_some()) {
+    if body_shape(ep).is_some_and(|s| shape_at(s, name).is_some()) {
         return Ok(Slot::Body(name.to_string()));
     }
     Err(format!("unknown parameter {name:?}: {}", known_names(api, ep)))

@@ -500,7 +500,7 @@ async fn watch_inner(t: &Target, every: Option<&str>, times: Option<u32>, state:
                 eprintln!("nexo api: call {n} failed: {msg}");
             }
         }
-        if times.map_or(false, |m| n >= m) {
+        if times.is_some_and(|m| n >= m) {
             break;
         }
         tokio::time::sleep(wait).await;

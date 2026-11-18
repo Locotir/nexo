@@ -235,7 +235,7 @@ mod tests {
         ])
         .unwrap();
         match parsed.cmd {
-            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Call { target, dry_run, json } })) => {
+            Some(crate::cli::Cmd::Api(ApiArgs { what: ApiCmd::Call { target, dry_run, json, .. } })) => {
                 assert_eq!(target.map, PathBuf::from("m.json"));
                 assert_eq!(target.endpoint, "get_api_items");
                 assert_eq!(target.params, vec!["id=3".to_string(), "query.q=a b".to_string()]);

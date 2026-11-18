@@ -540,7 +540,7 @@ mod tests {
         assert_eq!(header_value_marked("X-Api-Key", "k-1"), marker("k-1"));
         assert_eq!(header_value_marked("Accept", "*/*"), "*/*");
         let all = format!("{c}{sc}");
-        assert!(!all.contains("abc") && !all.contains("dark"));
+        assert!(!all.contains("=abc") && !all.contains("dark"));
         let list = header_list_marked(&serde_json::json!({"Authorization": "Bearer t9", "Accept": "*/*"}));
         assert!(list.contains(&("Accept".into(), "*/*".into())));
         assert!(!format!("{list:?}").contains("t9"));

@@ -17,7 +17,8 @@ pub const VERSION: u64 = 1;
 const MAX_DEPTH: usize = 64;
 
 /// The reasons a call can be dropped (see `noise.rs`); a file with another one reads as `other`.
-const REASONS: [&str; 5] = ["preflight", "tracker", "static file", "page", "other"];
+const REASONS: [&str; 9] =
+    ["not http", "other host", "preflight", "tracker", "static file", "page", "no response", "redirect", "other"];
 /// The paging styles (see `paging.rs`).
 const STYLES: [&str; 5] = ["cursor", "next url", "page", "offset", "link header"];
 

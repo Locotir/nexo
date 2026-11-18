@@ -148,7 +148,7 @@ fn find_page(params: &[Param]) -> Option<&Param> {
 
 fn link_has_next(calls: &[&Exchange]) -> bool {
     calls.iter().any(|x| {
-        x.resp_header("link").map_or(false, |l| {
+        x.resp_header("link").is_some_and(|l| {
             let l = l.to_ascii_lowercase();
             l.contains("rel=\"next\"") || l.contains("rel=next")
         })
