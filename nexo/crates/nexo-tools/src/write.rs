@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
-use crate::util::{
-    display_path, is_binary, outside_note, resolve, str_arg, text_encoding, utf16_text, write_atomic, MAX_FILE_BYTES,
-};
+use crate::util::{display_path, is_binary, outside_note, resolve, str_arg, utf16_text, write_atomic, MAX_FILE_BYTES};
 
 pub struct Write;
 
@@ -87,12 +85,7 @@ impl Tool for Write {
                 ));
             }
             Ok(b) if is_binary(&b) => {
-                return ToolOutput::error(match text_encoding(&b) {
-                    Some(enc) => format!(
-                        "write: {shown} is {enc} text with a BOM; not overwriting it, the new content would be UTF-8"
-                    ),
-                    None => format!("write: {shown} is a binary file; not overwriting it"),
-                })
+                return ToolOutput::error(format!("write: {shown} is a binary file; not overwriting it"));
             }
             Ok(_) if huge => Some(String::new()),
             Ok(b) => {
@@ -157,28 +150,13 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_utf16_file_with_a_bom_is_not_overwritten_and_says_which_encoding_it_is() {
+    async fn a_binary_file_is_not_overwritten() {
         let d = tempfile::tempdir().unwrap();
         let c = ToolContext::new(d.path().to_path_buf());
-        let mut le = vec![0xFF, 0xFE];
-        le.extend("a\r\n".encode_utf16().flat_map(u16::to_le_bytes));
-        std::fs::write(d.path().join("a.csv"), &le).unwrap();
-        let out = Write.run(json!({"path": "a.csv", "content": "b\n"}), &c).await;
-        assert_eq!(
-            out.content,
-            "write: a.csv is UTF-16 LE text with a BOM; not overwriting it, the new content would be UTF-8"
-        );
-        assert_eq!(std::fs::read(d.path().join("a.csv")).unwrap(), le);
-        let mut be = vec![0xFE, 0xFF];
-        be.extend("a\r\n".encode_utf16().flat_map(u16::to_be_bytes));
-        std::fs::write(d.path().join("b.csv"), &be).unwrap();
-        let out = Write.run(json!({"path": "b.csv", "content": "b\n"}), &c).await;
-        assert!(out.content.contains("UTF-16 BE text with a BOM"), "{}", out.content);
-        assert_eq!(std::fs::read(d.path().join("b.csv")).unwrap(), be);
-        // a real binary keeps the short answer
         std::fs::write(d.path().join("x.bin"), [1u8, 0, 2]).unwrap();
         let out = Write.run(json!({"path": "x.bin", "content": "b\n"}), &c).await;
         assert_eq!(out.content, "write: x.bin is a binary file; not overwriting it");
+        assert_eq!(std::fs::read(d.path().join("x.bin")).unwrap(), [1u8, 0, 2]);
     }
 
     #[tokio::test]

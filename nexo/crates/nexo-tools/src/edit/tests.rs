@@ -377,25 +377,11 @@ fn an_old_string_that_overlaps_itself_is_not_taken_for_unique() {
 }
 
 #[tokio::test]
-async fn a_utf16_file_with_a_bom_is_refused_by_name_and_left_byte_identical() {
+async fn a_binary_file_is_refused_and_left_byte_identical() {
     let d = tempfile::tempdir().unwrap();
     let c = ToolContext::new(d.path().to_path_buf());
-    let mut le = vec![0xFF, 0xFE];
-    le.extend("key=old\r\n".encode_utf16().flat_map(u16::to_le_bytes));
-    let mut be = vec![0xFE, 0xFF];
-    be.extend("key=old\r\n".encode_utf16().flat_map(u16::to_be_bytes));
-    for (name, bytes, enc) in [("le.reg", le, "UTF-16 LE"), ("be.reg", be, "UTF-16 BE")] {
-        std::fs::write(d.path().join(name), &bytes).unwrap();
-        let out = Edit.run(json!({"path": name, "old_string": "old", "new_string": "new"}), &c).await;
-        assert!(out.is_error);
-        assert_eq!(
-            out.content,
-            format!("edit: {name} is {enc} text with a BOM, not UTF-8; edit it with `bash` in its own encoding")
-        );
-        assert_eq!(std::fs::read(d.path().join(name)).unwrap(), bytes, "{name} was not touched");
-    }
-    // a real binary keeps the short answer
     std::fs::write(d.path().join("x.bin"), [1u8, 0, 2]).unwrap();
     let out = Edit.run(json!({"path": "x.bin", "old_string": "a", "new_string": "b"}), &c).await;
     assert_eq!(out.content, "edit: x.bin is a binary file");
+    assert_eq!(std::fs::read(d.path().join("x.bin")).unwrap(), [1u8, 0, 2]);
 }
