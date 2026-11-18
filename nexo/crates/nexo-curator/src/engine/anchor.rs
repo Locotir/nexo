@@ -16,7 +16,7 @@ const IN_PROGRESS_CHARS: usize = 6_000;
 /// What the loop sends in the person's place to go on with a goal or after a check-in: not a request of the person.
 const LOOP_MARKS: [&str; 2] = ["[goal: continue]", "[supervisor: continue]"];
 
-fn thousands(n: i64) -> String {
+pub(super) fn thousands(n: i64) -> String {
     let s = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (k, c) in s.chars().enumerate() {

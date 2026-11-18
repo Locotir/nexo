@@ -109,6 +109,56 @@ fn same_basename_in_two_dirs_keeps_both_writes_and_pins() {
 }
 
 #[test]
+fn an_asked_file_printed_among_other_commands_is_pinned() {
+    let mut msgs = vec![json!({"role": "user", "content": "Follow the brief in brief.md."})];
+    msgs.extend(step(1, "cat brief.md; cd sub && git log -3", &source(0, 10)));
+    let mut e = Engine::new(params("pin=4000").unwrap());
+    e.sync(&msgs);
+    e.harvest(0, msgs.len());
+    let pinned: Vec<&str> = e.pins.values().map(|p| p.1.as_str()).collect();
+    assert_eq!(pinned, ["brief.md"]);
+    // a file nobody asked about is not pinned, nor is a line that edits in place
+    let mut msgs = vec![json!({"role": "user", "content": "Follow the brief in brief.md."})];
+    msgs.extend(step(1, "cat other.md; git log -3", &source(0, 10)));
+    msgs.extend(step(2, "sed -i s/a/b/ x.rs; cat brief.md", &source(20, 10)));
+    let mut e = Engine::new(params("pin=4000").unwrap());
+    e.sync(&msgs);
+    e.harvest(0, msgs.len());
+    assert!(e.pins.is_empty(), "{:?}", e.pins);
+}
+
+#[test]
+fn a_pin_says_what_part_of_the_file_it_holds() {
+    let mut msgs = vec![json!({"role": "user", "content": "Study big.rs, page.rs and small.rs."})];
+    msgs.extend(tool(1, "read_file", json!({"path": "page.rs", "offset": 1, "limit": 300}), &source(0, 10), false));
+    msgs.extend(tool(2, "read_file", json!({"path": "big.rs"}), &source(100, 800), false));
+    msgs.extend(tool(3, "read_file", json!({"path": "small.rs"}), &source(300, 5), false));
+    let mut e = Engine::new(params("pin=4000").unwrap());
+    e.sync(&msgs);
+    e.harvest(0, msgs.len());
+    let label = |f: &str| e.pins.values().find(|p| p.1 == f).map(|p| p.3.clone()).unwrap();
+    assert_eq!(label("page.rs"), "lines 1-300 of a paged read");
+    assert_eq!(label("small.rs"), "whole");
+    let big = label("big.rs");
+    assert!(big.starts_with("first 8,000 of ") && big.ends_with("chars, cut"), "{big}");
+    let text = e.pins_text();
+    assert!(text.contains("page.rs (lines 1-300 of a paged read; read in m"), "{text}");
+    assert!(text.contains("small.rs (whole; read in m") && text.contains("characters cut"), "{text}");
+    assert!(!text.contains("read one again only if") && !text.contains("(whole; read one"), "{text}");
+}
+
+#[test]
+fn a_pin_of_no_characters_pins_nothing() {
+    let mut msgs = vec![json!({"role": "user", "content": "Follow the brief in brief.md."})];
+    msgs.extend(tool(1, "read_file", json!({"path": "brief.md"}), &source(0, 10), false));
+    let mut e = Engine::new(params("pin=1").unwrap());
+    e.sync(&msgs);
+    e.harvest(0, msgs.len());
+    assert!(e.pins.is_empty(), "{:?}", e.pins);
+    assert!(!e.pins_text().contains("brief.md"), "{}", e.pins_text());
+}
+
+#[test]
 fn failed_whole_write_keeps_the_earlier_version() {
     let mut msgs = vec![json!({"role": "user", "content": "Write the rates module."})];
     msgs.extend(tool(1, "write_file", json!({"path": "src/rates.rs", "content": source(0, 10)}), "ok", false));

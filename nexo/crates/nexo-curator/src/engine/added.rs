@@ -427,7 +427,7 @@ impl Engine {
                 }
             }
             let clip_at = 4 * self.p.pin.div_euclid(2);
-            for (_, path, text) in self.pins.values() {
+            for (_, path, text, _) in self.pins.values() {
                 let cut = clip_at > 0 && textops::len(text) >= clip_at as usize;
                 let state = if cut { AddedState::Trimmed } else { AddedState::In };
                 item(AddedKind::Start, label(None, Some(path), None, ""), est_str(text), state);

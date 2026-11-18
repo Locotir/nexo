@@ -73,7 +73,9 @@ pub struct Params {
     /// step to bring it back when it was needed, and saves in proportion to its size (0: they always leave).
     pub apart: i64,
     /// With `close`, a step that read a file the latest request names stays, whatever else would let it go:
-    /// the request is about that file (0: off).
+    /// the request is about that file (0: off). Up to this many tokens of such reads, and never more than
+    /// half the view budget when the host gave one (`set_budget`), so a file read in pages stays whole while
+    /// it fits and a small window is not flooded.
     pub named: i64,
     /// With `named`, a step that read a file the thread's first message names stays until a later request
     /// of the thread names that file, once a later request took up another file of that list: the list is

@@ -79,13 +79,14 @@ impl Engine {
     }
 
     /// Of the reads a request names (`cands`: the result units of each, newest first), the ones `named`
-    /// keeps or brings back, newest first up to `Params.named` tokens: none a later edit of its file made
-    /// out of date once a newer read of that file is taken (it shows what the file no longer holds; with
-    /// no newer read, it is still the best picture of the file, the edits on top), and none whose words a
-    /// newer one taken holds already (a second read of the same lines). The newest one still in the view
-    /// stays whatever its size (`in_view`): keeping it adds nothing to send. Whether each is taken.
+    /// keeps or brings back, newest first up to `Params.named` tokens (at most half the view budget when there
+    /// is one): none a later edit of its file made out of date once a newer read of that file is taken (it
+    /// shows what the file no longer holds; with no newer read, it is still the best picture of the file, the
+    /// edits on top), and none whose words a newer one taken holds already (a second read of the same lines).
+    /// The newest one still in the view stays whatever its size (`in_view`): keeping it adds nothing to send.
+    /// Whether each is taken.
     fn named_take(&self, cands: &[(Vec<usize>, bool)]) -> Vec<bool> {
-        let budget = self.p.named;
+        let budget = if self.budget > 0 { self.p.named.min(self.budget / 2) } else { self.p.named };
         let (mut spent, mut covered, mut fresh) = (0i64, FxHashSet::default(), PathSet::default());
         let mut out = Vec::with_capacity(cands.len());
         for (units, in_view) in cands {

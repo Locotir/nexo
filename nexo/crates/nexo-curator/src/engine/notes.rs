@@ -11,6 +11,7 @@ use crate::msg::{blocks, get_str};
 use crate::textops::{self, Re};
 use crate::tools::{partial_read, Kind};
 
+use super::anchor::thousands;
 use super::files::{basename, file_key, same_file, scratch};
 use super::{Engine, NOTE_TOOL, NUDGE, NUDGE_SAID};
 
@@ -120,32 +121,57 @@ impl Engine {
                     }
                 } else if kind == UKind::Result && self.p.pin != 0 {
                     let Some(info) = self.fz.info.get(&i) else { continue };
-                    let Some(path) = info.path.as_deref() else { continue };
-                    if info.kind != Kind::Read || path.is_empty() || info.error {
-                        continue;
-                    }
-                    let base = basename(path);
-                    if base.is_empty() {
+                    if info.error {
                         continue;
                     }
                     let asked = |s: &str| self.int.find(s).is_some_and(|w| self.asked.contains(&w));
-                    if !(asked(path) || asked(base)) {
-                        continue;
-                    }
+                    let ask = |path: &str| {
+                        let base = basename(path);
+                        !path.is_empty() && !base.is_empty() && (asked(path) || asked(base))
+                    };
+                    // a read of an asked file, or a shell line that printed one among other things
+                    let parts = self.shell_parts.get(&i);
+                    let (path, part) = match (info.kind, info.path.as_deref()) {
+                        (Kind::Read, Some(p)) if ask(p) => {
+                            let part = parts.and_then(|v| v.first()).map_or("", |x| x.1.as_str());
+                            (p.to_string(), part.to_string())
+                        }
+                        (Kind::Exec, _) => match parts.and_then(|v| v.iter().find(|x| ask(&x.0))) {
+                            Some((p, part)) => (p.clone(), part.clone()),
+                            None => continue,
+                        },
+                        _ => continue,
+                    };
+                    let path = path.as_str();
                     let text = self.tr.unit_text(i);
                     let text = textops::strip(&text);
                     if !text.is_empty() {
                         // the first n characters, n = 4 * floor(pin / 2); a negative n counts from the end
                         let n = 4 * self.p.pin.div_euclid(2);
                         let n = if n >= 0 { n as usize } else { (textops::len(text) as i64 + n).max(0) as usize };
-                        self.pins.insert(file_key(path), (mi, path.to_string(), textops::head(text, n).to_string()));
+                        // nothing of it fits: no pin, not an empty one
+                        if n == 0 {
+                            continue;
+                        }
+                        let have = textops::len(text);
+                        let (kept, label) = if have > n {
+                            let shown =
+                                format!("first {} of {} chars, cut", thousands(n as i64), thousands(have as i64));
+                            let label = if part.is_empty() { shown } else { format!("{part}; {shown}") };
+                            (format!("{}\n… {} characters cut …", textops::head(text, n), have - n), label)
+                        } else if part.is_empty() {
+                            (text.to_string(), "whole".to_string())
+                        } else {
+                            (text.to_string(), part)
+                        };
+                        self.pins.insert(file_key(path), (mi, path.to_string(), kept, label));
                     }
                 }
             }
         }
         // a file written after it was read is not as it was read: the pin goes (the next read pins it again)
         let written = &self.written;
-        self.pins.retain(|key, (mi, _, _)| !written.iter().any(|(k, w)| w > mi && same_file(k, key)));
+        self.pins.retain(|key, (mi, _, _, _)| !written.iter().any(|(k, w)| w > mi && same_file(k, key)));
         // the rules are never dropped: past their budget, the findings and then the pinned files yield
         let over = self.rules_excess();
         let (notes, pin) = (self.p.notes - over, self.p.pin - (over - self.p.notes).max(0));
@@ -211,13 +237,12 @@ impl Engine {
         if self.pins.is_empty() {
             return String::new();
         }
-        let mut parts = vec![format!(
-            "{MARK} Files the request names, as last read (whole; read one again only if it may have changed):"
-        )];
-        let mut pins: Vec<&(usize, String, String)> = self.pins.values().collect();
+        let mut parts =
+            vec![format!("{MARK} Files the request names, as last read (each entry shows its range or cut):")];
+        let mut pins: Vec<&(usize, String, String, String)> = self.pins.values().collect();
         pins.sort();
-        for (mi, path, text) in pins {
-            parts.push(format!("--- {path} (read in m{:05}) ---\n{text}", mi + 1));
+        for (mi, path, text, label) in pins {
+            parts.push(format!("--- {path} ({label}; read in m{:05}) ---\n{text}", mi + 1));
         }
         parts.join("\n")
     }

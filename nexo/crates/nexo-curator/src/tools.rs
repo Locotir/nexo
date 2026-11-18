@@ -378,6 +378,47 @@ fn shell_words(cmd: &str) -> Vec<String> {
     }
     out
 }
+/// Whether `first` is a program whose file arguments `print_args` can tell.
+fn is_file_printer(first: &str) -> bool {
+    matches!(
+        first,
+        "cat" | "head" | "tail" | "sed" | "nl" | "tac" | "less" | "more" | "grep" | "egrep" | "fgrep" | "rg"
+    )
+}
+
+/// The file arguments of one printer command (`words` as the shell splits them, the program first): no
+/// option, no option's value and no script or pattern.
+fn print_args<'a>(words: &[&'a str]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let first = words[0];
+    // the first bare word of `sed` and of a search is its script or pattern, unless `-e` gave it
+    let mut skip = matches!(first, "sed" | "grep" | "egrep" | "fgrep" | "rg") && !words.contains(&"-e");
+    let mut value = false;
+    for w in &words[1..] {
+        if value {
+            value = false;
+            continue;
+        }
+        if w.starts_with('-') {
+            // `-n 40`, `-e 's/a/b/'`, `-A 3`: an option whose value is the next word
+            value = match first {
+                "head" | "tail" => matches!(*w, "-n" | "-c"),
+                "sed" => matches!(*w, "-e" | "-f"),
+                "cat" | "nl" | "tac" | "less" | "more" => false,
+                _ => matches!(*w, "-e" | "-f" | "-A" | "-B" | "-C" | "-m" | "-g" | "-t"),
+            };
+            continue;
+        }
+        if std::mem::replace(&mut skip, false) {
+            continue;
+        }
+        if !w.is_empty() {
+            out.push(*w);
+        }
+    }
+    out
+}
+
 /// The files a shell command that only prints files (`prints_files`) prints, as they are on disk: the
 /// arguments of `cat`, `head`, `sed -n`, `grep`… that are no option, no option's value and no script or
 /// pattern. Empty for any other command, and for what reads a pipe.
@@ -390,42 +431,139 @@ pub fn printed_files(command: &str) -> Vec<String> {
         let words = shell_words(&cmd);
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
         let Some(&first) = words.first() else { continue };
-        if piped
-            || !matches!(
-                first,
-                "cat" | "head" | "tail" | "sed" | "nl" | "tac" | "less" | "more" | "grep" | "egrep" | "fgrep" | "rg"
-            )
-        {
+        if piped || !is_file_printer(first) {
             continue;
         }
-        // the first bare word of `sed` and of a search is its script or pattern, unless `-e` gave it
-        let mut skip = matches!(first, "sed" | "grep" | "egrep" | "fgrep" | "rg") && !words.contains(&"-e");
-        let mut value = false;
-        for w in &words[1..] {
-            if value {
-                value = false;
-                continue;
-            }
-            if w.starts_with('-') {
-                // `-n 40`, `-e 's/a/b/'`, `-A 3`: an option whose value is the next word
-                value = match first {
-                    "head" | "tail" => matches!(*w, "-n" | "-c"),
-                    "sed" => matches!(*w, "-e" | "-f"),
-                    "cat" | "nl" | "tac" | "less" | "more" => false,
-                    _ => matches!(*w, "-e" | "-f" | "-A" | "-B" | "-C" | "-m" | "-g" | "-t"),
-                };
-                continue;
-            }
-            if std::mem::replace(&mut skip, false) {
-                continue;
-            }
-            let p = *w;
-            if !p.is_empty() && !out.iter().any(|o| o == p) {
+        for p in print_args(&words) {
+            if !out.iter().any(|o| o == p) {
                 out.push(p.to_string());
             }
         }
     }
     out
+}
+
+/// The files the printing parts of any shell line print (`cat brief.md; cd x && git log -3` gives
+/// `brief.md`): each simple command that is a printer and reads no pipe contributes its file arguments, the
+/// other parts are skipped. Empty when a part edits in place or runs something on the files found, and when a
+/// printer's output is piped into something that is not a filter.
+pub fn files_printed_by_parts(command: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut after_printer = false;
+    for (cmd, piped) in simple_commands(command) {
+        let words = shell_words(&cmd);
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let Some(&first) = words.first() else { continue };
+        if (first == "sed" && words.iter().any(|w| w.starts_with("-i") || *w == "--in-place"))
+            || (first == "find"
+                && words.iter().any(|w| w.starts_with("-exec") || w.starts_with("-ok") || *w == "-delete"))
+        {
+            return Vec::new();
+        }
+        if piped && after_printer && !FILTERS.contains(&first) {
+            return Vec::new();
+        }
+        if piped {
+            // a filter keeps what feeds it a print; the rest is skipped
+            continue;
+        }
+        after_printer = PRINTERS.contains(&first);
+        if !is_file_printer(first) {
+            continue;
+        }
+        for p in print_args(&words) {
+            if !out.iter().any(|o| o == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// What a read call returns of its file when it asks for a part: the lines it asks for (`None` for the whole file).
+pub fn read_part(name: &str, args: Option<&Value>) -> Option<String> {
+    if !partial_read(name, args) {
+        return None;
+    }
+    Some(match read_range(args) {
+        (s, u64::MAX) => format!("from line {s} of a paged read"),
+        (s, e) => format!("lines {s}-{e} of a paged read"),
+    })
+}
+
+/// What one printer command (`words`, the program first) prints of each file: `None` for the whole of it,
+/// else the lines it keeps (`head -50`, `tail -n 40`, `sed -n 10,90p`, a search's matches, or just a part).
+fn print_part(words: &[&str]) -> Option<String> {
+    let part = || Some("part of the file".to_string());
+    let count = |w: &str| w.parse::<u64>().ok();
+    match words[0] {
+        "head" | "tail" => {
+            // a count, and whether it is `+N` (tail: from line N)
+            let num = |w: &str| match w.strip_prefix('+') {
+                Some(x) => count(x).map(|n| (n, true)),
+                None => count(w).map(|n| (n, false)),
+            };
+            let mut n = Some((10, false));
+            let mut k = 1;
+            while k < words.len() {
+                let w = words[k];
+                let v = if w == "-n" {
+                    k += 1;
+                    words.get(k).copied().and_then(num)
+                } else if let Some(x) = w.strip_prefix("-n") {
+                    num(x)
+                } else if w.starts_with("-c") || w.starts_with('+') || w.starts_with("--") {
+                    return part();
+                } else if let Some(x) = w.strip_prefix('-').and_then(count) {
+                    Some((x, false))
+                } else {
+                    k += 1;
+                    continue;
+                };
+                n = v;
+                k += 1;
+            }
+            let Some((n, plus)) = n else { return part() };
+            Some(match (words[0], plus) {
+                ("head", false) => format!("first {n} lines"),
+                ("tail", false) => format!("last {n} lines"),
+                ("tail", true) => format!("from line {n}"),
+                _ => return part(),
+            })
+        }
+        "sed" => {
+            let range = words[1..].iter().find_map(|w| {
+                let body = w.strip_suffix('p')?;
+                let (a, b) = body.split_once(',').unwrap_or((body, body));
+                Some((count(a)?, count(b)?))
+            });
+            match range {
+                Some((a, b)) => Some(format!("lines {a}-{b}")),
+                None => part(),
+            }
+        }
+        "grep" | "egrep" | "fgrep" | "rg" => Some("matching lines".to_string()),
+        _ => None,
+    }
+}
+
+/// What a shell line prints of `file`: `None` for the whole file, else which part (see `print_part`). A filter
+/// after the print (`| tail -40`) makes it a part.
+pub fn shell_part(command: &str, file: &str) -> Option<String> {
+    let mut found: Option<Option<String>> = None;
+    for (cmd, piped) in simple_commands(command) {
+        let words = shell_words(&cmd);
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let Some(&first) = words.first() else { continue };
+        if piped {
+            if let Some(f) = found.as_mut() {
+                f.get_or_insert_with(|| "part of the file".to_string());
+            }
+        } else if found.is_none() && is_file_printer(first) && print_args(&words).contains(&file) {
+            found = Some(print_part(&words));
+        }
+    }
+    found.flatten()
 }
 
 /// Arguments that hold the whole new text of a file.
@@ -754,6 +892,40 @@ mod tests {
         assert_eq!(files("cd src && nl -ba main.rs | tail -40"), ["main.rs"]);
         assert!(files("sed -i 's/a/b/' a.txt").is_empty());
         assert!(files("cargo test 2>&1 | tail -50").is_empty());
+    }
+
+    #[test]
+    fn the_printing_parts_of_any_line_are_found() {
+        let files = |c: &str| files_printed_by_parts(c);
+        assert_eq!(files("cat brief.md; cd x && git log"), ["brief.md"]);
+        assert_eq!(files("head -50 a.rs && cargo build"), ["a.rs"]);
+        assert!(files("sed -i s/a/b/ f.rs; cat f.rs").is_empty());
+        assert!(files("find . -name '*.rs' -exec cat {} +; cat a").is_empty());
+        assert!(files("cat a | wc -l").is_empty());
+        assert_eq!(files("cat a | grep x"), ["a"]);
+        assert!(files("cargo test 2>&1 | tail -50").is_empty());
+    }
+
+    #[test]
+    fn what_a_print_holds_of_a_file_is_told() {
+        let part = |c: &str, f: &str| shell_part(c, f);
+        assert_eq!(part("cat a.rs", "a.rs"), None);
+        assert_eq!(part("head -50 a.rs && cargo build", "a.rs").as_deref(), Some("first 50 lines"));
+        assert_eq!(part("head -n 7 a.rs", "a.rs").as_deref(), Some("first 7 lines"));
+        assert_eq!(part("head a.rs", "a.rs").as_deref(), Some("first 10 lines"));
+        assert_eq!(part("head -c 100 a.rs", "a.rs").as_deref(), Some("part of the file"));
+        assert_eq!(part("tail -c 100 a.rs", "a.rs").as_deref(), Some("part of the file"));
+        assert_eq!(part("tail -n +30 a.rs", "a.rs").as_deref(), Some("from line 30"));
+        assert_eq!(part("tail a.rs", "a.rs").as_deref(), Some("last 10 lines"));
+        assert_eq!(part("tail -n 40 a.rs", "a.rs").as_deref(), Some("last 40 lines"));
+        assert_eq!(part("sed -n 10,90p a.rs", "a.rs").as_deref(), Some("lines 10-90"));
+        assert_eq!(part("grep -n x a.rs", "a.rs").as_deref(), Some("matching lines"));
+        assert_eq!(part("cat a.rs | tail -5", "a.rs").as_deref(), Some("part of the file"));
+        assert_eq!(read_part("read_file", Some(&json!({"path": "a.rs"}))), None);
+        assert_eq!(
+            read_part("read_file", Some(&json!({"path": "a.rs", "offset": 1, "limit": 300}))).as_deref(),
+            Some("lines 1-300 of a paged read")
+        );
     }
 
     #[test]

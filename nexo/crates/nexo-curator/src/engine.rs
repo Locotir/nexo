@@ -196,7 +196,7 @@ pub struct Engine {
     /// The rules block as the anchor has it now.
     rules_shown: String,
     /// file path (`file_key`) -> (read in message, path, text)
-    pins: IndexMap<String, (usize, String, String)>,
+    pins: IndexMap<String, (usize, String, String, String)>,
     /// file path (`file_key`) -> last message that wrote it (a tool or a shell command)
     written: FxHashMap<String, usize>,
     /// file path (`file_key`) -> the agent's last whole write of it, oldest first
@@ -298,6 +298,9 @@ pub struct Engine {
     /// its result, then by result unit, so a later edit of one makes the output out of date as a read's.
     shell_read: FxHashMap<String, Vec<String>>,
     shell_reads: FxHashMap<usize, Vec<String>>,
+    /// The files a call prints or reads and what part of each (empty: whole), by call id and then by result unit.
+    shell_part: FxHashMap<String, Vec<(String, String)>>,
+    shell_parts: FxHashMap<usize, Vec<(String, String)>>,
     /// Debugger calls that look at the program's state (by call id), and their results (by unit): out of date once
     /// a later call moves the program.
     dbg_look: FxHashMap<String, String>,
@@ -455,6 +458,8 @@ impl Engine {
             edit_ok: FxHashMap::default(),
             shell_read: FxHashMap::default(),
             shell_reads: FxHashMap::default(),
+            shell_part: FxHashMap::default(),
+            shell_parts: FxHashMap::default(),
             dbg_look: Default::default(),
             dbg_looks: Default::default(),
             stale_gone: FxHashMap::default(),
