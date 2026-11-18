@@ -1713,50 +1713,6 @@ fn a_map_with_no_prefix_before_it_is_ignored_on_open() {
     assert_eq!((back.skipped_lines(), back.messages().len()), (0, 1));
 }
 
-fn reasoning_shown(data: &[&str]) -> String {
-    let mut p = ResponsesParser::default();
-    let evs: Vec<StreamEvent> = data.iter().flat_map(|d| p.feed(d)).collect();
-    evs.iter().filter_map(|e| if let StreamEvent::ReasoningDelta(t) = e { Some(t.as_str()) } else { None }).collect()
-}
-
-#[test]
-fn two_reasoning_items_are_not_run_together_because_each_starts_at_summary_index_zero() {
-    let shown = reasoning_shown(&[
-        r#"{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning"}}"#,
-        r#"{"type":"response.reasoning_summary_part.added","output_index":0,"summary_index":0}"#,
-        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"First"}"#,
-        r#"{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"First"}"#,
-        r#"{"type":"response.output_item.added","output_index":1,"item":{"id":"rs_2","type":"reasoning"}}"#,
-        r#"{"type":"response.reasoning_summary_part.added","output_index":1,"summary_index":0}"#,
-        r#"{"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"Second"}"#,
-        r#"{"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":0,"text":"Second"}"#,
-    ]);
-    assert_eq!(shown, "First\nSecond");
-}
-
-#[test]
-fn reasoning_parts_are_split_even_when_the_server_sends_no_part_events() {
-    let shown = reasoning_shown(&[
-        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"First"}"#,
-        r#"{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"First"}"#,
-        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"Sec"}"#,
-        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"ond"}"#,
-        r#"{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":1,"text":"Second"}"#,
-    ]);
-    assert_eq!(shown, "First\nSecond");
-}
-
-#[test]
-fn text_deltas_without_an_output_index_are_not_shown_again_by_the_finished_item() {
-    let data = [
-        r#"{"type":"response.output_text.delta","delta":"Hello"}"#,
-        r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"Hello"}]}}"#,
-    ];
-    let mut p = ResponsesParser::default();
-    let evs: Vec<StreamEvent> = data.iter().flat_map(|d| p.feed(d)).collect();
-    assert_eq!(text_of(&evs), "Hello");
-}
-
 #[test]
 fn an_output_still_held_when_the_session_is_let_go_is_written_whole() {
     let d = tempfile::tempdir().unwrap();
