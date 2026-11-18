@@ -34,6 +34,12 @@ pub(super) fn stopped(s: &CaptureStats, real: bool) -> String {
         "capture stopped: {kept} of {} requests kept, {} request bodies and {} response bodies ({} bytes).",
         s.requests, s.request_bodies, s.response_bodies, s.body_bytes
     );
+    if s.ws_sockets > 0 || s.sse_events > 0 {
+        text.push_str(&format!(
+            " Live channels: {} WebSockets with {} frames, {} event-stream messages.",
+            s.ws_sockets, s.ws_frames, s.sse_events
+        ));
+    }
     let left_out = [
         (s.dropped_requests, "requests dropped (the capture was full)"),
         (s.bodies_cut, "bodies cut at the size cap"),
@@ -41,6 +47,11 @@ pub(super) fn stopped(s: &CaptureStats, real: bool) -> String {
         (s.skipped_binary, "responses left out (not JSON or text)"),
         (s.skipped_too_large, "bodies left out (too large)"),
         (s.fetch_failed, "bodies the browser could not give"),
+        (s.ws_sockets_dropped, "WebSockets left out (too many)"),
+        (s.ws_frames_dropped, "WebSocket frames left out (frame or size cap)"),
+        (s.ws_frames_cut, "WebSocket frames cut at the size cap"),
+        (s.ws_frames_binary, "binary or control frames kept without payload (length and opcode only)"),
+        (s.sse_events_dropped, "event-stream messages left out"),
     ];
     let notes: Vec<String> = left_out.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect();
     if !notes.is_empty() {
@@ -117,6 +128,8 @@ mod tests {
         assert!(text.contains("1 bodies the browser could not give") && text.contains("capture_save"), "{text}");
         assert!(!text.contains("own browser"), "{text}");
         assert!(stopped(&CaptureStats::default(), false).contains("Nothing was captured"));
+        let live = stopped(&CaptureStats { ws_sockets: 1, ws_frames: 9, ws_frames_dropped: 2, ..stats() }, false);
+        assert!(live.contains("1 WebSockets with 9 frames") && live.contains("2 WebSocket frames left out"), "{live}");
     }
 
     #[test]

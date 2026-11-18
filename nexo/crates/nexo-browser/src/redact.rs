@@ -332,6 +332,19 @@ pub(crate) fn body_marked(text: &str, mime: &str) -> String {
     text_marked(text)
 }
 
+/// A WebSocket frame or an EventSource message for capture mode: [`body_marked`] (JSON of any depth, or `"key": "v"`
+/// pairs in other text), and in any text a `Bearer <token>` or `Basic <token>` has its token marked, so the token
+/// matches the one in the `Authorization` header it came from.
+pub(crate) fn frame_marked(text: &str) -> String {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let marked = body_marked(text, "");
+    let re = RE.get_or_init(|| Regex::new(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/=\-]{8,})").ok());
+    match re {
+        Some(re) => re.replace_all(&marked, |c: &regex::Captures| format!("{} {}", &c[1], marker(&c[2]))).into_owned(),
+        None => marked,
+    }
+}
+
 /// `a=b&c=d`: the value of a secret name, and any opaque value, becomes a marker.
 fn form_marked(text: &str) -> String {
     text.split('&')

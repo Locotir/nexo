@@ -26,7 +26,8 @@ mod tests;
 pub use any::AnyBrowser;
 pub use error::{Error, Result};
 pub use events::{
-    export_har, CaptureStats, CapturedRequest, ConsoleEntry, NetEntry, CAPTURE_BODY_CAP, CAPTURE_TOTAL_CAP,
+    export_har, export_har_with, CaptureStats, CapturedRequest, ConsoleEntry, NetEntry, SseEvent, WsCapture, WsFrame,
+    CAPTURE_BODY_CAP, CAPTURE_TOTAL_CAP,
 };
 pub use export::ExportOptions;
 pub use platform::{find_browser, installed_browsers, InstalledBrowser, OVERRIDE_VAR};
@@ -463,7 +464,7 @@ impl Browser {
 
     /// The capture as a HAR 1.2 file (JSON text); see [`export_har`].
     pub fn export_har(&self) -> String {
-        export_har(&self.buffers.captured())
+        export_har_with(&self.buffers.captured(), &self.buffers.capture_stats())
     }
 
     /// Everything known about one request of [`Browser::network`] (its `seq`): headers both ways, status, timing
