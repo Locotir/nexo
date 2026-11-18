@@ -93,10 +93,65 @@ fn the_line_is_read_as_nexo_api_reads_it() {
 #[test]
 fn watch_and_reveal_are_refused_with_a_reason() {
     let w = vet(&cmd("watch m.json \"GET /v1/items\" --every 30s")).unwrap_err();
-    assert!(w.contains("person runs it"), "{w}");
+    assert!(w.contains("--times") && w.contains("person runs"), "{w}");
     let r = vet(&cmd("call m.json \"GET /v1/items\" --reveal")).unwrap_err();
     assert!(r.contains("--reveal") && r.contains("never sees"), "{r}");
     assert!(vet(&cmd("call m.json \"GET /v1/items\"")).is_ok());
+}
+
+#[test]
+fn a_watch_is_allowed_only_in_a_bounded_form() {
+    let ok = [
+        "watch m.json EP --times 1 --select $.price",
+        "watch m.json EP --times 3 --every 30s --select $.price --when \"$.price < prev\" --state s.json",
+        "watch m.json EP --times 2 --every 10s",
+    ];
+    for l in ok {
+        assert!(vet(&cmd(l)).is_ok(), "{l}: {:?}", vet(&cmd(l)));
+    }
+    let bad = [
+        ("watch m.json EP --every 30s", "--times"),
+        ("watch m.json EP", "--times"),
+        ("watch m.json EP --times 4 --every 10s", "1 to 3"),
+        ("watch m.json EP --times 0", "1 to 3"),
+        ("watch m.json EP --times 2", "--every"),
+        ("watch m.json EP --times 2 --every 5s", "too short"),
+        ("watch m.json EP --times 3 --every 10m", "tool call"),
+        ("watch m.json EP --times 1 --on-change 'echo hi' --select $.a", "--on-change"),
+        ("watch m.json CH --times 1 --for 30s", "channel"),
+        ("watch m.json EP --times 1 --when '$.a <'", ""),
+        ("watch m.json EP --times 1 --state ../s.json --select $.a", ".."),
+        ("watch m.json EP --times 1 -p password=hunter2", "secret"),
+        ("check m.json", "person runs it"),
+    ];
+    for (l, why) in bad {
+        let e = vet(&cmd(l)).unwrap_err();
+        assert!(e.contains(why), "{l}: {e}");
+    }
+}
+
+#[test]
+fn a_watch_is_asked_like_a_call_and_a_state_file_makes_it_a_write() {
+    let dir = folder();
+    let get = format!("watch map.json \"{GET}\" --times 1 --select $.items");
+    assert_eq!(kind_in(&cmd(&get), dir.path()), ToolKind::Network);
+    assert_eq!(kind_in(&cmd(&format!("{get} --state s.json")), dir.path()), ToolKind::Exec);
+    assert_eq!(kind_in(&cmd(&format!("watch map.json \"{POST}\" --times 1")), dir.path()), ToolKind::Exec);
+}
+
+#[tokio::test]
+async fn on_change_and_an_unbounded_watch_stop_before_anything_runs() {
+    let dir = folder();
+    for line in [
+        format!("watch map.json \"{GET}\" --times 1 --select $.items --on-change 'touch hacked'"),
+        format!("watch map.json \"{GET}\" --every 30s --select $.items"),
+        format!("watch map.json \"{GET}\" --times 9 --every 30s"),
+        "check map.json".to_string(),
+    ] {
+        let o = run(dir.path(), &line).await;
+        assert!(o.is_error && o.content.starts_with("api: "), "{line}: {}", o.content);
+    }
+    assert!(!dir.path().join("hacked").exists());
 }
 
 #[test]
@@ -197,11 +252,22 @@ fn the_tool_is_offered_as_a_rare_strict_tool_with_a_short_text() {
     assert!(Api.rare());
     assert_eq!(Api.kind(), ToolKind::Exec);
     let d = Api.spec().description;
-    for w in ["analyze", "describe", "call", "--dry-run", "environment variable", "No watch", "--reveal"] {
+    for w in [
+        "analyze",
+        "describe",
+        "call",
+        "--dry-run",
+        "environment variable",
+        "watch",
+        "--times",
+        "--select",
+        "--on-change",
+        "--reveal",
+    ] {
         assert!(d.contains(w), "{w}");
     }
     let c = Api.compact().unwrap().description;
-    assert!(c.len() < 260 && c.contains("ENVVAR"), "{c}");
+    assert!(c.len() < 480 && c.contains("ENVVAR"), "{c}");
 }
 
 #[tokio::test]

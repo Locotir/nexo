@@ -157,6 +157,7 @@ nexo api call map.json "POST /api/items" --body '{"name":"demo"}'
 | `--login-param`, `--login-body` | Parameters and body for that login call. |
 | `--dry-run` | Print the request with `<secret>` for each auth value. Send nothing. |
 | `--json` | Print `status`, `content_type`, `location`, `body` and `bytes_not_read` as JSON. |
+| `--select PATH[,PATH...]` | Print only these values of a JSON answer, one `path<TAB>value` line each (see "Watch a value and alert"). |
 | `--reveal` | Print the answer unscrubbed. |
 
 **Parameters.** A `-p` name is matched to a path parameter, then a query parameter, then a body field. Prefix with `query.` or `body.` to say which, and use dots for nested body fields (`body.user.name`). Body values are typed from the map: a field seen only as numbers is sent as a number. GET and HEAD take no body. A missing required parameter is an error that lists all of them, with examples.
@@ -194,12 +195,39 @@ nexo api watch map.json get_api_items --times 1 --state items.json
 | --- | --- |
 | `--every DURATION` | Time between calls: `30s`, `5m`, `2h`, `1d`, or bare seconds. At least 10s. Needed unless `--times 1`. |
 | `--times N` | Stop after N calls. Without it, it runs until you stop it. |
-| `--state FILE` | Keep the last answer between runs. |
+| `--state FILE` | Keep the last answer between runs (with `--select`: only the selected values). |
+| `--select PATH[,PATH...]` | Compare and print only these values. Also works on `call` and with `--for`. |
+| `--when EXPR` | Alert when the condition is true of the selected values. |
+| `--on-change CMD` | Run a shell command on an alert. |
 | `--for DURATION` | Follow a live channel of the map instead (the endpoint argument is its id): see below. |
 
 The first tick prints `first answer: status 200`. After that it prints nothing when the answer is the same, and otherwise `# N changes` followed by lines for each added, removed or changed path, such as `~ $.body.count: 1 -> 2`. Lists whose items share an `id`-like field (`id`, `_id`, `uuid`, `guid`, `key`, `slug`, `code`) are matched by it, so a reordered list shows only what really changed. Changes of secret fields are not changes. A tick prints at most 100 changes.
 
 `--state` is written with mode 0600 and holds the status and the scrubbed body. A body that is not JSON is saved as its size and a fingerprint only. With `--times 1` and `--state`, `watch` suits cron: one call per run, a diff against the last run.
+
+### Watch a value and alert
+
+To watch a price every 10 minutes and know when it drops:
+
+```
+nexo api watch shop.json "GET /api/item" -p id=42 --every 10m --select '$.price' --when '$.price < prev' --state price.json
+```
+
+The first poll prints `$.price<TAB>99`. After that nothing is printed until the price moves (`~ $.price: 99 -> 120`). When it goes below the last value, `watch` prints one line and stops:
+
+```
+alert: $.price=89 (was 99) | when $.price < prev
+```
+
+and exits with code 4. Run it from cron with `--times 1 --state price.json` instead of `--every`: each run compares against the last one.
+
+**`--select PATH[,PATH...]`** (on `call` and `watch`, including a followed event stream or WebSocket). A path is `$.a.b`, `$.items[0].price`, `$.items[*].id` (every item), `$.data.*` (every field) or `$['odd key']`. Separate paths with commas or repeat the flag. Output is one `path<TAB>value` line per match (with `call --json`, an object). A path that matches nothing prints `path<TAB>(none)` and is not an error. The answer must be JSON, and secrets are scrubbed first, as everywhere. On `watch`, only the selected values are compared and saved: the state file holds the select list and those values, never the body, and a secret value is saved as `<secret>`. The file is written with mode 0600 through a temporary file and a rename. A state file made for another select list is ignored, as a first run.
+
+**`--when EXPR`** (on `watch`). `PATH OP VALUE`, with OP one of `<  <=  >  >=  ==  !=`, or `PATH changed`. Join clauses with `and` and `or`; they are read left to right, with no parentheses. VALUE is a number, a quoted string, or `prev` (the same path at the last poll; the first poll has no `prev`, so those clauses are false). A path that matches several values holds if any of them does. Numbers may be written `1299`, `1,299.00`, `$1,299.00`, `1299 EUR`, `12.5`; the same is read from the answer when it is a string such as `"$1,299.00"`. A form that could mean two things, such as `1.299,00` or `1.299`, is refused with a message: write plain digits. Without `--when`, any change in the selected values is the alert (never on the first poll). Paths read by `--when` are selected too.
+
+**Exit codes of `watch`:** 0 done; 1 the last call failed (or channel drift); 2 bad arguments; 3 a stream broke; **4 the alert came true** and the watch stopped there. `check` uses 0 to 3, so 4 is free.
+
+**`--on-change CMD`** runs CMD through the shell (`sh -c`, or `cmd /C` on Windows) when the alert is true, then `watch` exits 4. The alert reaches it only through the environment variable `NEXO_API_ALERT` (JSON: `when`, `line`, and `values` with `path`, `now`, `prev`), the variable `NEXO_API_PATHS` (JSON object of the selected values) and its standard input (the alert JSON and a newline). Nothing is put in the command text, so a value cannot inject a command. CMD is killed after 60 seconds, and `on-change: exit N` is printed. Example: `--on-change 'curl -s -d "$NEXO_API_ALERT" https://example.test/hook'`.
 
 ### Following a channel
 
@@ -207,7 +235,7 @@ The first tick prints `first answer: status 200`. After that it prints nothing w
 nexo api watch map.json sse_events --for 60s
 ```
 
-With `--for`, `watch` opens the channel's event stream with a plain streaming GET (auth read from environment variables as `call` does), reads for that long (1s to 1h) and prints the messages seen, one line per type with its count and rate, and what differs from the map: a message type that did not show is `drift:` (a type not seen in a short window is not proof it is gone), a new type is `new:`, and a changed field type or a missing field are reported like `check` does. At most 30 difference lines. Exit code 1 if there is drift.
+With `--for`, `watch` opens the channel's event stream with a plain streaming GET (auth read from environment variables as `call` does), reads for that long (1s to 1h) and prints the messages seen, one line per type with its count and rate, and what differs from the map: a message type that did not show is `drift:` (a type not seen in a short window is not proof it is gone), a new type is `new:`, and a changed field type or a missing field are reported like `check` does. At most 30 difference lines. Exit code 1 if there is drift. With `--select` a channel is read message by message instead: see below.
 
 A WebSocket channel is followed the same way, over `ws://` or `wss://` (TLS with the system's root certificates): the handshake carries the map's auth headers and cookies and the page's `Origin`, the subscribe messages the map recorded are sent in order, and pings are answered (protocol pings by the library, a recorded application-level ping with the recorded pong). A `<secret>` in a subscribe message is filled from the same auth values as the headers; if one cannot be filled, `watch` names the field and connects to nothing. The window is enforced even when the server sends nothing, a binary frame counts by length only, and the connection is closed at the deadline.
 
@@ -267,7 +295,7 @@ describe map.json get_api_items
 call map.json "GET /api/items" -p page=2 --dry-run
 ```
 
-The model can run `analyze`, `describe` and `call`. It cannot run `watch` or `check` (they run long or call many endpoints, so you run them), and it cannot use `--reveal` or `--body @file`. The answer is the text the CLI prints, cut at 12,000 characters.
+The model can run `analyze`, `describe`, `call` and a bounded `watch`. A watch from the tool needs `--times 1` to `3`, and the polls, their pauses (`--every`, at least 10s) and each call's 30s timeout must fit in 120 seconds, so a two-poll watch `--times 2 --every 30s --select '$.price' --when '$.price < prev'` is fine and `--every 10m` is not. It cannot use `--on-change`, `--for` (a live channel), a `--state` outside the session's folder, `check` (it calls many endpoints, so you run it), `--reveal` or `--body @file`. Exit code 4 is added to its answer as a note when the alert came true. The answer is the text the CLI prints, cut at 12,000 characters.
 
 Secrets stay out of the model's hands. The tool refuses a command when:
 
@@ -285,8 +313,8 @@ Each call is classified from the parsed command, and your permission rules decid
 | --- | --- | --- |
 | `analyze`, `describe`, `call --dry-run` | read | a file read |
 | `analyze` with `--save` or `--openapi` | write | `edit` and `write` |
-| `call` of a GET or HEAD endpoint | network | `web_fetch` |
-| `call` of any other method, or with `--login` | exec | a shell command that changes things |
+| `call` or `watch` of a GET or HEAD endpoint | network | `web_fetch` |
+| `call` or `watch` of any other method, or with `--login`, or `watch` with `--state` | exec | a shell command that changes things |
 
 More checks run per call:
 
@@ -300,7 +328,7 @@ The tool is listed as exec, so a sub-agent limited to reading does not get it.
 
 ## The MCP route
 
-`nexo re --mcp` serves the kit to other agents over MCP on stdio, and one of its tools is `api`, with the same `command` line and the same refusals as above (no `watch`, `check` or `--reveal`, no secret values).
+`nexo re --mcp` serves the kit to other agents over MCP on stdio, and one of its tools is `api`, with the same `command` line and the same refusals as above (`watch` only bounded and without `--on-change`, no `check` or `--reveal`, no secret values).
 
 Reading a map, `analyze` without `--save`, and `--dry-run` always work. A call that sends a request, `--login`, and anything that writes a file are refused unless the server was started with `--allow-changes`:
 

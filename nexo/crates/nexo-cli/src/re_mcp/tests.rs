@@ -342,7 +342,7 @@ fn api_needs_the_flag_for_a_call_or_a_save_but_not_for_a_dry_run_or_a_refusal() 
         ],
     );
     assert!(result_text(&a[0]).contains("--allow-changes"), "{}", result_text(&a[0]));
-    assert!(result_text(&a[1]).contains("person runs it"), "{}", result_text(&a[1]));
+    assert!(result_text(&a[1]).contains("--times"), "{}", result_text(&a[1]));
     assert!(result_text(&a[2]).contains("@env:VAR"), "{}", result_text(&a[2]));
     assert!(result_text(&a[3]).contains("needs"), "{}", result_text(&a[3]));
 }

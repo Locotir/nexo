@@ -324,8 +324,9 @@ pub async fn follow(
     vals: &[(usize, String)],
     known: &HashSet<Fp>,
     span: Duration,
+    sel: Option<&crate::api_watch::Sel>,
 ) -> Result<i32, Fail> {
-    let (report, code) = watch(api, c, req, vals, known, span).await?;
+    let (report, code) = watch(api, c, req, vals, known, span, sel).await?;
     print!("{report}");
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -340,6 +341,7 @@ async fn watch(
     vals: &[(usize, String)],
     known: &HashSet<Fp>,
     span: Duration,
+    sel: Option<&crate::api_watch::Sel>,
 ) -> Result<(String, i32), Fail> {
     // everything that can be refused is refused before anything is opened
     let subscribe = fill_subscribe(&c.subscribe, &candidates(api, vals)).map_err(usage)?;
@@ -430,6 +432,17 @@ async fn watch(
     let _ = tokio::time::timeout(room, ws.close(None)).await;
     drop(ws);
 
+    if let Some(sel) = sel {
+        // --select / --when: the picked values of each message, not the report on message types
+        let (mut text, code) = crate::api_watch::channel_report(sel, &msgs);
+        if dropped > 0 {
+            text.push_str(&format!(
+                "note: {dropped} more messages came after the first {} and were not read\n",
+                channel::MAX_FRAMES
+            ));
+        }
+        return Ok((text, code));
+    }
     let live = channel::observe(Kind::Ws, &c.origin, &c.path, &msgs, Some(secs));
     out.push_str(&follow_report(c, &live, secs, ended));
     if dropped > 0 {
@@ -620,15 +633,63 @@ mod tests {
         let vals: Vec<(usize, String)> = Vec::new();
         let cands = [Cand::new("bearer", "tok-1234567890")];
         // without a value for the placeholder nothing is opened
-        let refused = watch(&api, &rec, &req, &vals, &HashSet::new(), Duration::from_secs(1)).await;
+        let refused = watch(&api, &rec, &req, &vals, &HashSet::new(), Duration::from_secs(1), None).await;
         assert!(refused.is_err());
         assert!(fill_subscribe(&rec.subscribe, &cands).is_ok());
         assert!(started.elapsed() < Duration::from_secs(1));
         // the same channel with no placeholder: follows
         rec.subscribe = vec![r#"{"op":"sub"}"#.to_string()];
-        let (report, _code) = watch(&api, &rec, &req, &vals, &HashSet::new(), Duration::from_secs(1)).await.unwrap();
+        let (report, _code) =
+            watch(&api, &rec, &req, &vals, &HashSet::new(), Duration::from_secs(1), None).await.unwrap();
         assert_eq!(rx.await.unwrap(), r#"{"op":"sub"}"#);
         assert!(report.contains("tick x2"), "{report}");
         assert!(started.elapsed() < Duration::from_secs(8));
+    }
+
+    /// A local WebSocket server pushing prices: with --select and --when the report holds the picked values only and
+    /// stops at the first alert.
+    #[tokio::test]
+    async fn a_local_server_is_followed_with_select_and_when() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(sock).await.unwrap();
+            let _ = ws.next().await;
+            for m in [
+                r#"{"type":"hello"}"#,
+                r#"{"type":"tick","price":10,"volume":1}"#,
+                r#"{"type":"tick","price":10,"volume":2}"#,
+                r#"{"type":"tick","price":7,"volume":3}"#,
+            ] {
+                ws.send(Message::text(m)).await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+        let mut rec = live(&[(false, r#"{"type":"tick","price":1}"#)]);
+        rec.subscribe = vec![r#"{"op":"sub"}"#.to_string()];
+        let api = Api {
+            endpoints: Vec::new(),
+            auth: Vec::new(),
+            hosts: Vec::new(),
+            total: 0,
+            dropped: Default::default(),
+            channels: Vec::new(),
+        };
+        let req = call::Request {
+            method: "GET".to_string(),
+            url: format!("ws://{addr}/ws"),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: None,
+        };
+        let sel = crate::api_watch::Sel::build(&["$.price".to_string()], Some("$.price < prev"), None, None)
+            .unwrap()
+            .unwrap();
+        let vals: Vec<(usize, String)> = Vec::new();
+        let (report, code) =
+            watch(&api, &rec, &req, &vals, &HashSet::new(), Duration::from_secs(1), Some(&sel)).await.unwrap();
+        assert_eq!(code, crate::api_watch::EXIT_ALERT, "{report}");
+        assert_eq!(report, "$.price\t10\n~ $.price: 10 -> 7\nalert: $.price=7 (was 10) | when $.price < prev\n");
     }
 }

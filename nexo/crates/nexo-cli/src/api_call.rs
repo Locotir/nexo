@@ -399,6 +399,14 @@ pub async fn call_out(t: &Target, dry_run: bool, as_json: bool, reveal: bool) ->
     }
     let mut s = session(&p, t)?;
     let ans = s.once(ep, &p.inputs).await?;
+    if !t.select.is_empty() {
+        let mut out = answer_out(&ans, as_json, reveal);
+        out.text = crate::api_watch::select_text(&ans.text, &t.select, as_json, reveal).map_err(usage)?;
+        if ans.status >= 400 {
+            out.notes.push(format!("the answer was HTTP {}", ans.status));
+        }
+        return Ok(out);
+    }
     let mut out = answer_out(&ans, as_json, reveal);
     crate::api_next::add(&mut out, &p.api, &ep.id, &t.map, &ans.text, ans.location.as_deref(), as_json);
     Ok(out)
@@ -472,7 +480,7 @@ fn read_state(path: &Path) -> Option<Value> {
 }
 
 /// Writes a file only the owner can read, through a temporary file, so a cron never reads half of it.
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = format!("{}.tmp", path.display());
     {
         let mut opts = std::fs::OpenOptions::new();
@@ -488,33 +496,92 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// `nexo api watch`.
+/// Where a watch writes: straight to the terminal, or into buffers for the agent tool.
+struct Sink {
+    live: bool,
+    text: String,
+    notes: Vec<String>,
+}
+
+impl Sink {
+    fn new(live: bool) -> Sink {
+        Sink { live, text: String::new(), notes: Vec::new() }
+    }
+
+    fn out(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        if self.live {
+            print!("{s}");
+            let _ = std::io::stdout().flush();
+        } else {
+            self.text.push_str(s);
+        }
+    }
+
+    fn note(&mut self, s: &str) {
+        if self.live {
+            eprintln!("nexo api: {s}");
+        } else {
+            self.notes.push(s.to_string());
+        }
+    }
+}
+
+/// `nexo api watch`. `sel` is what `--select`, `--when` and `--on-change` asked for (or why they cannot run).
 pub async fn watch(
     t: &Target,
     every: Option<&str>,
     times: Option<u32>,
     state: Option<&Path>,
     follow: Option<&str>,
+    sel: Result<Option<crate::api_watch::Sel>, String>,
 ) -> i32 {
-    exit_of(watch_inner(t, every, times, state, follow).await.map(|code| Out {
-        text: String::new(),
-        notes: Vec::new(),
-        code,
-    }))
+    let sel = match sel {
+        Ok(s) => s,
+        Err(e) => return exit_of(Err(usage(e))),
+    };
+    let mut sink = Sink::new(true);
+    let r = watch_inner(t, every, times, state, follow, sel, false, &mut sink).await;
+    exit_of(r.map(|code| Out { text: String::new(), notes: Vec::new(), code }))
 }
 
+/// `nexo api watch` as the agent's tool runs it: a bounded poll of a plain endpoint (never a channel), its text and
+/// notes returned instead of printed. The caller has bounded `times` and `every` already.
+pub async fn watch_out(
+    t: &Target,
+    every: Option<&str>,
+    times: Option<u32>,
+    state: Option<&Path>,
+    sel: Option<crate::api_watch::Sel>,
+) -> Result<Out, Fail> {
+    let mut sink = Sink::new(false);
+    let code = watch_inner(t, every, times, state, None, sel, true, &mut sink).await?;
+    Ok(Out { text: sink.text, notes: sink.notes, code })
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn watch_inner(
     t: &Target,
     every: Option<&str>,
     times: Option<u32>,
     state: Option<&Path>,
     follow: Option<&str>,
+    sel: Option<crate::api_watch::Sel>,
+    tool: bool,
+    sink: &mut Sink,
 ) -> Result<i32, Fail> {
     {
         let api = load_map(&t.map)?;
         let key = t.endpoint.trim();
         if let Some(c) = api.channels.iter().find(|c| c.id == key) {
-            return follow_channel(&api, c, t, follow.unwrap_or("60s")).await;
+            if tool {
+                return Err(usage(
+                    "a live channel cannot be watched from the tool: use `nexo api watch --for` yourself".to_string(),
+                ));
+            }
+            return follow_channel(&api, c, t, follow.unwrap_or("60s"), sel.as_ref()).await;
         }
         if follow.is_some() {
             let ids: Vec<&str> = api.channels.iter().take(8).map(|c| c.id.as_str()).collect();
@@ -543,29 +610,69 @@ async fn watch_inner(
     let p = prepare(t)?;
     let ep = &p.api.endpoints[p.ep];
     let mut s = session(&p, t)?;
-    let mut prev = state.and_then(read_state);
+    let mut prev = if sel.is_some() { None } else { state.and_then(read_state) };
+    let mut prev_pick = sel.as_ref().and_then(|x| x.load());
     let mut n: u32 = 0;
     let mut last_failed = false;
     loop {
         n += 1;
         match s.once(ep, &p.inputs).await {
             Ok(ans) => {
-                last_failed = false;
-                let now = answer_value(&ans);
-                print!("{}", report(prev.as_ref(), &now));
-                let _ = std::io::stdout().flush();
-                if let Some(path) = state {
-                    let text = serde_json::to_string_pretty(&now).unwrap_or_default();
-                    if let Err(e) = write_private(path, &text) {
-                        eprintln!("nexo api: cannot write {}: {e}", path.display());
+                if let Some(sl) = &sel {
+                    let doc = if ans.status >= 400 {
+                        Err(format!("HTTP {}", ans.status))
+                    } else {
+                        serde_json::from_str::<Value>(&ans.text).map_err(|_| "the answer is not JSON".to_string())
+                    };
+                    match doc {
+                        Err(why) => {
+                            last_failed = true;
+                            sink.note(&format!("call {n} failed: {why}"));
+                        }
+                        Ok(mut doc) => {
+                            last_failed = false;
+                            exchange::scrub_json(&mut doc);
+                            let step = sl.step(&doc, prev_pick.as_ref());
+                            sink.out(&step.text);
+                            for x in &step.notes {
+                                sink.note(x);
+                            }
+                            if let Err(e) = sl.save(&step.picked) {
+                                sink.note(&e);
+                            }
+                            if let Some(a) = &step.alert {
+                                sink.out(&format!("{}\n", a.line));
+                                if let Some(cmd) = &sl.on_change {
+                                    let (cmd, aj, pk) = (cmd.clone(), a.json.clone(), step.picked.clone());
+                                    let r = tokio::task::spawn_blocking(move || {
+                                        crate::api_watch::run_on_change(&cmd, &aj, &pk)
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| format!("on-change: {e}"));
+                                    sink.out(&format!("{r}\n"));
+                                }
+                                return Ok(crate::api_watch::EXIT_ALERT);
+                            }
+                            prev_pick = Some(step.picked);
+                        }
                     }
+                } else {
+                    last_failed = false;
+                    let now = answer_value(&ans);
+                    sink.out(&report(prev.as_ref(), &now));
+                    if let Some(path) = state {
+                        let text = serde_json::to_string_pretty(&now).unwrap_or_default();
+                        if let Err(e) = write_private(path, &text) {
+                            sink.note(&format!("cannot write {}: {e}", path.display()));
+                        }
+                    }
+                    prev = Some(now);
                 }
-                prev = Some(now);
             }
             Err((code, msg)) if code == EXIT_USAGE => return Err((code, msg)),
             Err((_, msg)) => {
                 last_failed = true;
-                eprintln!("nexo api: call {n} failed: {msg}");
+                sink.note(&format!("call {n} failed: {msg}"));
             }
         }
         if times.is_some_and(|m| n >= m) {
@@ -603,7 +710,13 @@ fn stream_client() -> Result<reqwest::Client, Fail> {
 /// `nexo api watch MAP CHANNEL --for 60s`: follows one channel of the map for a while and says which message types
 /// came, how often, and what differs from the map. An event stream is followed with a plain streaming GET; a
 /// WebSocket by `api_ws`, with the same auth, report and exit code.
-async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, window: &str) -> Result<i32, Fail> {
+async fn follow_channel(
+    api: &Api,
+    c: &nexo_api::channel::Channel,
+    t: &Target,
+    window: &str,
+    sel: Option<&crate::api_watch::Sel>,
+) -> Result<i32, Fail> {
     use nexo_api::channel::{self, Kind};
     let span = call::duration(window).map_err(usage)?;
     if span.is_zero() || span > Duration::from_secs(3600) {
@@ -642,11 +755,13 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
     let mut req = call::build(api, &ep, &call::Inputs::default(), &vals).map_err(usage)?;
     let known: std::collections::HashSet<exchange::Fp> = vals.iter().map(|(_, v)| exchange::fingerprint(v)).collect();
     if c.kind == Kind::Ws {
-        return crate::api_ws::follow(api, c, &req, &vals, &known, span).await;
+        return crate::api_ws::follow(api, c, &req, &vals, &known, span, sel).await;
     }
     req.headers.push(("accept".to_string(), call::Val::plain("text/event-stream")));
     let client = stream_client()?;
-    println!("following {} (SSE {}{}) for {}s", c.id, c.origin, c.path, span.as_secs());
+    if sel.is_none() {
+        println!("following {} (SSE {}{}) for {}s", c.id, c.origin, c.path, span.as_secs());
+    }
     let started = std::time::Instant::now();
     let mut resp = match tokio::time::timeout(span, open(&client, &req)).await {
         Ok(r) => r.map_err(broken)?,
@@ -690,6 +805,12 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
     }
     let secs = started.elapsed().as_secs_f64();
     let live = channel::observe(Kind::Sse, &c.origin, &c.path, &msgs, Some(secs));
+    if let Some(sel) = sel {
+        let (text, code) = crate::api_watch::channel_report(sel, &msgs);
+        print!("{text}");
+        let _ = std::io::stdout().flush();
+        return Ok(code);
+    }
     print!("{}", follow_report(c, &live, secs, ended));
     let _ = std::io::stdout().flush();
     let drift = nexo_api::drift::channel(c, &live).iter().any(|f| f.drift);

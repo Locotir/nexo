@@ -16,11 +16,13 @@ pub mod links;
 pub mod noise;
 pub mod openapi;
 pub mod paging;
+pub mod select;
 pub mod shape;
 pub mod spec;
 pub mod store;
 pub mod summary;
 pub mod template;
+pub mod when;
 
 /// Reads the text of a HAR file and works out the API behind it: [`har::read_all`], then [`spec::build`] for the
 /// endpoints and [`channel::build`] for the WebSocket and event-stream channels.
