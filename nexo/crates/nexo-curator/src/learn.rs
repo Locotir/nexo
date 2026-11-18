@@ -155,15 +155,14 @@ pub const NOT_REQUEST: [&str; 7] = [
     "<session-message",
 ];
 
-/// User text written by the person. A message with a [`crate::msg::PERSON_MARK`] line carries their words, whatever
+/// User text written by the person. A message with a `PERSON_MARK` line carries their words, whatever
 /// nexo put before it.
 pub fn is_request(text: &str) -> bool {
     if textops::strip(text).is_empty() {
         return false;
     }
     let t = textops::lstrip(text);
-    let marked = t.starts_with(&format!("{}\n", crate::msg::PERSON_MARK))
-        || t.contains(&format!("\n{}\n", crate::msg::PERSON_MARK));
+    let marked = crate::msg::person_words(t).len() < t.len();
     marked || !NOT_REQUEST.iter().any(|p| t.starts_with(p))
 }
 
