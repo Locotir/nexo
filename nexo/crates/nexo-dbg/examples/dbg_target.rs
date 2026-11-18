@@ -28,8 +28,9 @@ pub extern "C" fn dbg_heap_case() {
     unsafe {
         let leaked = libc::malloc(std::hint::black_box(100));
         let twice = libc::malloc(std::hint::black_box(50));
-        libc::free(twice);
-        libc::free(twice);
+        // (black_box on the pointer: an optimizer may drop a second free of the same value)
+        libc::free(std::hint::black_box(twice));
+        libc::free(std::hint::black_box(twice));
         std::hint::black_box(leaked);
     }
 }

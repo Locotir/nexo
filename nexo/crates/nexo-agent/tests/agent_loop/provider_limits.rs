@@ -212,9 +212,15 @@ async fn the_same_window_named_again_gets_a_smaller_curated_view_and_no_summary(
             )
         })
         .collect();
+    // The second error names a count three times the estimate of the smaller view, so the second view is smaller than
+    // the person's newest message (about 3500 tokens). Their message stays the last one, with its time note, and what
+    // does not fit is named as left out with the way to get it (the curator's cut of a text that does not fit the window,
+    // never a summary): it is whole or it says what was left.
+    let last = reqs[9].messages.last().expect("a message").text();
     assert!(
-        reqs[9].messages.iter().any(|m| m.text().contains(&fat_message(7))),
-        "the person's words stay whole; the last request had:\n{}",
+        last.contains("after your previous message]")
+            && (last.contains(&fat_message(7)) || last.contains("left out here")),
+        "the person's newest message is the last of the view, whole or with its cut named; the last request had:\n{}",
         shape.join("\n")
     );
     r.stop().await;
