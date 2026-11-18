@@ -72,6 +72,8 @@ impl Session {
             return usage("write takes 1 to 4096 bytes");
         }
         self.t.write(addr, &bytes)?;
+        // the record does not hold this write: entries made before it cannot be undone across it
+        self.tape.cut();
         Ok(rows("write", vec![format!("wrote {} bytes at {addr:#x}", bytes.len())], json!({})))
     }
 

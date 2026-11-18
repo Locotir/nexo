@@ -758,6 +758,8 @@ impl Session {
     /// or its stack slot. The text says what was done.
     fn set_arg(&mut self, tid: Tid, sig: Option<&Sig>, r: &mut Regs, call_len: Option<u8>, n: usize, v: u64) -> String {
         let os = self.t.os();
+        // a stack slot written here is not in the record: entries before it cannot be undone across it
+        self.tape.cut();
         // `hook` takes `set` only for a scalar: past the prototype's arguments, an integer
         let ty = sig.and_then(|s| s.args.get(n)).and_then(Shape::scalar);
         let shown = match ty {
