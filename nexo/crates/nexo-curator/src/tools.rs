@@ -118,9 +118,30 @@ pub enum DbgEffect {
     Still,
 }
 
-const DBG_LOOK: [&str; 21] = [
-    "regs", "bt", "mem", "x", "print", "p", "args", "threads", "thread", "status", "info", "history", "out", "log",
-    "maps", "modules", "find", "watches", "breaks", "catches", "stack",
+const DBG_LOOK: [&str; 23] = [
+    "regs",
+    "bt",
+    "mem",
+    "x",
+    "print",
+    "p",
+    "args",
+    "threads",
+    "thread",
+    "status",
+    "info",
+    "history",
+    "out",
+    "log",
+    "maps",
+    "modules",
+    "find",
+    "watches",
+    "breaks",
+    "catches",
+    "stack",
+    "list",
+    "checkpoints",
 ];
 const DBG_MOVE: [&str; 21] = [
     "run", "attach", "cont", "c", "continue", "step", "s", "next", "n", "finish", "until", "kill", "detach", "end",
@@ -146,9 +167,11 @@ fn dbg_line(line: &str) -> DbgEffect {
             DbgEffect::Still
         };
     }
+    // `heap` and `heap leaks` list the blocks as they are now; `heap on` and `heap off` change what is watched
+    let heap_list = first == "heap" && matches!(w.next(), None | Some("leaks"));
     if DBG_MOVE.contains(&first) || first == "stop" || first == "wait" {
         DbgEffect::Move
-    } else if DBG_LOOK.contains(&first) {
+    } else if DBG_LOOK.contains(&first) || heap_list {
         DbgEffect::Look
     } else {
         DbgEffect::Still
@@ -567,6 +590,11 @@ mod tests {
         assert_eq!(e("do \"break f; bt\""), Some(DbgEffect::Look));
         assert_eq!(e("do \"break f; cont; bt\""), Some(DbgEffect::Move));
         assert_eq!(e("note crash: here"), Some(DbgEffect::Still));
+        assert_eq!(e("checkpoints"), Some(DbgEffect::Look));
+        assert_eq!(e("restart 1"), Some(DbgEffect::Move));
+        assert_eq!(e("heap"), Some(DbgEffect::Look));
+        assert_eq!(e("heap leaks"), Some(DbgEffect::Look));
+        assert_eq!(e("heap on"), Some(DbgEffect::Still));
         assert_eq!(debug_effect("bash", Some(&json!({"command": "cont"}))), None);
         assert_eq!(debug_effect("debug", None), None);
         assert_eq!(debug_session(Some(&json!({"command": "bt", "session": "s2"}))), "s2");

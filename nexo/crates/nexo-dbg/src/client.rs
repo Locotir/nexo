@@ -119,7 +119,6 @@ const CONTROL: &[&str] = &[
     "detach",
     "follow",
     "checkpoints",
-    "restart",
     "end",
     "stdin",
     "catch",
@@ -164,9 +163,10 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let Some(first) = rest.first() else { return DbgClass::Control };
     let head = crate::gdbdialect::base_name(first);
     match head {
-        "attach" | "connect" | "write" | "setreg" | "return" | "jump" | "gcore" | "call" | "dump" | "checkpoint" => {
-            DbgClass::Change
-        }
+        "attach" | "connect" | "write" | "setreg" | "return" | "jump" | "gcore" | "call" | "dump" | "checkpoint"
+        | "restart" => DbgClass::Change,
+        // kills a stored copy of the program
+        "delete" | "del" if deletes_checkpoint(&rest[1..]) => DbgClass::Change,
         // an expression that calls a function of the program runs that code
         "print" | "p" | "output" if crate::expr::has_call(&rest[1..].join(" ")) => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
@@ -204,6 +204,11 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
         c if CONTROL.contains(&c) => DbgClass::Control,
         _ => DbgClass::Other,
     }
+}
+
+/// `delete checkpoint N|all`: the words after `delete` name a checkpoint, not a breakpoint.
+fn deletes_checkpoint(rest: &[String]) -> bool {
+    rest.first().is_some_and(|w| w == "checkpoint" || w == "checkpoints")
 }
 
 enum SetEffect {
@@ -383,6 +388,9 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
             Some("`catch` with add, del, on, off or all changes how signals reach the program".to_string())
         }
         "cover" if rest.first().is_some_and(|w| w == "save") => Some("`cover save` saves a file".to_string()),
+        "delete" | "del" if deletes_checkpoint(rest) => {
+            Some("`delete checkpoint` kills a stored copy of the program".to_string())
+        }
         _ => None,
     }
 }

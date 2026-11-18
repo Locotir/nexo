@@ -52,16 +52,48 @@ pub struct Reaper(pub u32);
 
 impl Drop for Reaper {
     fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
         if self.0 != 0 {
-            let ours = std::fs::read_to_string(format!("/proc/{}/status", self.0)).is_ok_and(|s| {
-                s.lines()
-                    .any(|l| l.strip_prefix("TracerPid:").is_some_and(|v| v.trim() == std::process::id().to_string()))
-            });
-            if ours {
-                // SAFETY: the process is one this debugger traces, a fork it made.
-                unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
-            }
+            reap(self.0);
+        }
+    }
+}
+
+/// Kill `pid` when this debugger traces it.
+#[cfg(target_os = "linux")]
+fn reap(pid: u32) {
+    let ours = std::fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|s| {
+        s.lines().any(|l| l.strip_prefix("TracerPid:").is_some_and(|v| v.trim() == std::process::id().to_string()))
+    });
+    if ours {
+        // SAFETY: the process is one this debugger traces, a fork it made.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+}
+
+/// Checkpoints are Linux only: there is no process to kill elsewhere.
+#[cfg(not(target_os = "linux"))]
+fn reap(_pid: u32) {}
+
+/// Kill a process the program forked that the backend did not keep (the call made it, the debugger does not trace it).
+#[cfg(target_os = "linux")]
+fn kill_loose(pid: u32) {
+    if pid > 1 && pid <= i32::MAX as u32 {
+        // SAFETY: `pid` is what the program's own `fork()` returned in the call this debugger made.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn kill_loose(_pid: u32) {}
+
+/// The most checkpoints held at once: each is a whole process.
+pub const MAX_CHECKPOINTS: usize = 16;
+
+/// Kill every child a checkpoint's call kept.
+fn kill_forks(got: Vec<(Forked, Vec<Guard>)>) {
+    for (mut f, _) in got {
+        if let Some(mut t) = f.target.take() {
+            let _ = t.kill();
         }
     }
 }
@@ -184,14 +216,24 @@ impl Session {
         self.frame = frame;
         self.prev = prev;
         self.cur = cur;
-        let pid = match r? {
-            Called::Value(v) => v as u32 as i32,
-            Called::Told(o) => {
+        let pid = match r {
+            Ok(Called::Value(v)) => v as u32 as i32,
+            Ok(Called::Told(o)) => {
+                kill_forks(got);
                 let said: Vec<String> = o.rows.iter().map(|r| r.text.clone()).collect();
+                // stopped inside the call: the thread goes back as it was; still running: `stop`, `kill call`
+                if self.state == State::Stopped && self.call_under_way().is_some() {
+                    let _ = self.call_abort();
+                }
                 return fail(format!("fork() did not come back: {}", said.join(" | ")));
+            }
+            Err(e) => {
+                kill_forks(got);
+                return Err(e);
             }
         };
         if pid <= 0 {
+            kill_forks(got);
             return fail(format!("fork() failed in the program (it returned {pid})"));
         }
         let pid = pid as u32;
@@ -205,16 +247,14 @@ impl Session {
             }
         }
         // any other child the call made is not ours to keep
-        for mut o in others {
-            if let Some(mut t) = o.target.take() {
-                let _ = t.kill();
-            }
-        }
+        kill_forks(others.into_iter().map(|f| (f, Vec::new())).collect());
         let Some((f, guards)) = mine else {
-            return fail(format!("fork() returned pid {pid}, but the backend did not keep the child"));
+            kill_loose(pid);
+            return fail(format!("fork() returned pid {pid}, but the backend did not keep the child; it was killed"));
         };
         let Some(mut kid) = f.target else {
-            return fail(format!("fork() returned pid {pid}, but the backend did not keep the child"));
+            kill_loose(pid);
+            return fail(format!("fork() returned pid {pid}, but the backend did not keep the child; it was killed"));
         };
         let patches = f.patches;
         // clean it: our bytes out of its memory, then its registers as they were before the call
@@ -260,6 +300,11 @@ impl Session {
             None => {}
         }
         self.ckpt_base()?;
+        if self.checkpoints.len() >= MAX_CHECKPOINTS {
+            return fail(format!(
+                "{MAX_CHECKPOINTS} checkpoints are held, the most there can be (each is a whole process): `delete checkpoint N|all` frees some"
+            ));
+        }
         self.ckpt_thread_ok()?;
         let tid = self.t.threads().first().copied().unwrap_or(self.cur);
         let pc = self.t.regs(tid)?.rip;
@@ -320,8 +365,10 @@ impl Session {
         };
         let old_pid = self.t.pid();
         let old_cur = self.cur;
+        // out of the list while it stands in for the program, so nothing that ends the program can clear it
+        let mut ck = self.checkpoints.remove(i);
         // the checkpoint's process stands in for the program while it is forked again
-        std::mem::swap(&mut self.t, &mut self.checkpoints[i].t);
+        std::mem::swap(&mut self.t, &mut ck.t);
         let tid = self.t.threads().first().copied().unwrap_or(self.cur);
         self.cur = tid;
         self.prev.clear();
@@ -333,19 +380,32 @@ impl Session {
         let kept = match made {
             Ok(k) => k,
             Err(e) => {
-                std::mem::swap(&mut self.t, &mut self.checkpoints[i].t);
+                // the old process is the program again; the checkpoint stays unless its process did not survive
+                let broken = self.state != State::Stopped;
+                std::mem::swap(&mut self.t, &mut ck.t);
                 self.cur = old_cur;
                 self.prev.clear();
+                self.calling = None;
+                self.state = State::Stopped;
+                self.exit = None;
                 self.mods.refresh(&mut *self.t);
-                return Err(e);
+                let left = if broken {
+                    drop(ck);
+                    format!("checkpoint #{id} did not survive and was killed")
+                } else {
+                    self.checkpoints.insert(i.min(self.checkpoints.len()), ck);
+                    format!("checkpoint #{id} is as it was")
+                };
+                return fail(format!("restart {id} failed: {e}; pid {old_pid} is still the program, {left}"));
             }
         };
         // the copy takes N's place in the list; the process that was the program is the one left
-        let mut gone = std::mem::replace(&mut self.checkpoints[i].t, kept.kid);
+        let mut gone = std::mem::replace(&mut ck.t, kept.kid);
         let _ = gone.kill();
         drop(gone);
-        self.checkpoints[i].mark.pid = kept.pid;
-        let mark = self.checkpoints[i].mark.clone();
+        ck.mark.pid = kept.pid;
+        let mark = ck.mark.clone();
+        self.checkpoints.insert(i.min(self.checkpoints.len()), ck);
         self.reaper.0 = self.t.pid();
         self.t.set_follow(self.follow);
         // what belongs to the process, not the session
@@ -367,9 +427,10 @@ impl Session {
         if let Err(e) = self.apply_watches() {
             l.push(format!("the hardware watches could not be set in the restored process ({e})"));
         }
-        for i in 0..self.wps.len() {
-            let (addr, len) = (self.wps[i].addr, self.wps[i].len as usize);
-            self.wps[i].last = self.read_vec(addr, len);
+        let spans: Vec<(u64, usize)> = self.wps.iter().map(|w| (w.addr, w.len as usize)).collect();
+        for (i, (addr, len)) in spans.into_iter().enumerate() {
+            let bytes = self.read_vec(addr, len);
+            self.wps[i].last = bytes;
         }
         if self.tr.wants_syscalls() {
             if let Err(e) = self.t.trace_syscalls(true) {
@@ -455,7 +516,10 @@ mod tests {
         use crate::client::{dbg_class, DbgClass};
         let c = |w: &str| dbg_class(&[w.to_string()]);
         assert_eq!(c("checkpoint"), DbgClass::Change);
-        assert_eq!(c("restart"), DbgClass::Control);
+        assert_eq!(c("restart"), DbgClass::Change);
         assert_eq!(c("checkpoints"), DbgClass::Control);
+        let d = |w: &[&str]| dbg_class(&w.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(d(&["delete", "checkpoint", "1"]), DbgClass::Change);
+        assert_eq!(d(&["delete", "2"]), DbgClass::Control);
     }
 }
