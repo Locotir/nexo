@@ -67,7 +67,8 @@ impl OpenAiResponses {
         let mut include = Vec::new();
         match req.reasoning {
             Some(ReasoningConfig::Effort(e)) => {
-                let effort = e.as_str();
+                // OpenAI's ladder ends at xhigh; "max" is a 400 here.
+                let effort = if e == nexo_core::Effort::Max { "xhigh" } else { e.as_str() };
                 body["reasoning"] = json!({"effort": effort, "summary": "auto"});
                 include.push("reasoning.encrypted_content");
             }

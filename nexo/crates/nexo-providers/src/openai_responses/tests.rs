@@ -570,3 +570,13 @@ fn encrypted_reasoning_is_not_asked_for_where_the_model_may_not_reason_or_the_se
     let router = ProviderConfig::new(ID, "https://router.example.com/v1", None);
     assert!(!encrypted_asked_for(&router, "gpt-5", None, true));
 }
+
+#[test]
+fn the_top_levels_are_sent_as_the_highest_effort_openai_names() {
+    for (effort, sent) in [(nexo_core::Effort::Xhigh, "xhigh"), (nexo_core::Effort::Max, "xhigh")] {
+        let mut req = ModelRequest::new("gpt-5.2", "sys", vec![Message::user("hi")]);
+        req.reasoning = Some(ReasoningConfig::Effort(effort));
+        let b = OpenAiResponses::body(&ProviderConfig::new(ID, "https://api.openai.com/v1", None), &req);
+        assert_eq!(b["reasoning"]["effort"], sent);
+    }
+}
