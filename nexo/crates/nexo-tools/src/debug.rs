@@ -49,25 +49,28 @@ fn commands() -> String {
 }
 
 const COMMANDS: &str = "\
-run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] [--break SPEC] [--repeat N --until crash|exit|output~TEXT] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); env, folder, ASLR (off by default) and argv[0] as given; input is sent, then closed; --repeat starts it from scratch up to N times (most 1000) and stops at the first run that crashes, exits non-zero or prints TEXT, or hits a --break; that run stays live and the answer tallies the earlier ones
+run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] [--break SPEC] [--repeat N --until crash|exit|output~TEXT [--wait SECS]] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); env, folder, ASLR (off by default) and argv[0] as given; input is sent, then closed; --repeat reruns from scratch (N most 1000) until a run crashes, exits non-zero, prints TEXT or hits a --break; that run stays live, earlier ones are tallied
 a; b  several commands in one call (`run ./p <<< \"1 2\"; cont` runs to the crash)
 attach <pid>  attach (asks)
 break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once; a name no loaded file has is pending until a library with it loads
 breaks, delete <id>, enable|disable <id>
-cont|step|next|finish|until <addr>  [--wait N]  resume; a stop shows where, why, changed regs, next instructions
+cont|step|next|finish|until <addr>  [--wait N]  resume; a stop shows where, why, changed regs, next instructions; finish gives the returned value
+signal <SIG|N|0>  cont delivering it (0 drops the pending one); stops compact|full  one line per stop (display values as expr=value, a crash stays full), undisplay <n|all>
+return [V], jump <file:line|addr|fn> [--force] [--stay], gcore [FILE]  pop the function with V; move the pc; ELF core of the live process (asks)
 regs [name|xmm0 --as f64|f32|u32x4] [--all], setreg <reg> <v>, setreg xmm0 <lanes> [--as f32]  (asks)
 call f(1, \"text\"), print f(x) + 1  run a function of the stopped program with these arguments and give its value; every register is put back after; a stop inside it says so, `kill call` ends it (asks)
-mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T], ptype <type|var>, write <addr> <hex> (asks)
-bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
+mem <addr> [len] [--as u32|char[16]|ptr|str|item[4]|a struct], x, print <expr> [--as T|raw|string|vector] (Rust/C++/Go strings, vectors, Option shown as values), ptype <type|var>, write <addr> <hex> (asks)
+bt [N], frame [N], up [N], down [N] (regs, locals, args, print, mem, dis then read that frame), args, list [loc] [N], threads [--bt N], thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr|A..B> [len] [w|r|x] [hw|page|step] [if expr] [after N] [log [text]]  any length (debug registers, then guarded pages, then single steps; the answer says which and its cost); $old, $new, $at hold the change; a log watch writes a line per hit and does not stop
-catch <signal>, catch load|unload [NAME|off], stdin <text>, out, history
+catch <signal>, catch throw|panic|abort, catch load|unload [NAME|off], stdin <text>, out, history
 dump <A..B|A+LEN|fn> [path], dump module <name> [path]  memory to a file (a range raw at its address, a whole module rebuilt as ELF/PE); the answer names the `bin` call that reads it (asks)
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 ltrace [names], ltrace show [names], ltrace off  library calls with typed args (printf/scanf `...` read off the format) and result, written at return; a library loaded later adds its import calls
 hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args (ints, floats, stack ones), result, counters; set/ret change the program
+heap on|off|leaks, heap  malloc/free check: leaks, double or bad frees (where allocated, first freed); slows the program
 cover [funcs], cover show [func], cover save <A>, cover diff <A> <B>|now, cover off  basic blocks passed in the program's own code
 do \"c1; c2\"  several commands in one call
-gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info registers|breakpoints|frame|proc mappings, break *(f+0x10), `commands N ... end` (log, x, printf, continue at every hit, no round trip); a whole gdb script (newlines or `;`, `file p` or `run p args` last) is one call; `print a --as string|vector`
+gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info registers|breakpoints|frame|proc mappings, break *(f+0x10), `commands N ... end` (log, x, printf, continue at every hit, no round trip); a whole gdb script (newlines or `;`, `file p` or `run p args` last) is one call
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 follow parent|child|both  which side of a fork is kept; a kept child is a session of its own (`-s <id>`), breakpoints copied
 detach, kill, end, sessions, help";
