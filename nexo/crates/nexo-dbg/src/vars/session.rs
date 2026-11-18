@@ -235,6 +235,12 @@ impl Session {
         super::returned::returned_line(&got, &rr)
     }
 
+    /// Which register `return VALUE` fills for the function the stopped thread is in.
+    pub(crate) fn return_slot(&mut self) -> Result<super::returned::RetSlot> {
+        let got = self.with_vars(false, |vars, regs| vars.ret_slot(regs.rip.wrapping_sub(regs.bias)))?;
+        Ok(got.unwrap_or(super::returned::RetSlot::Int))
+    }
+
     /// The parameters of the function at the stop as `args` rows, with how many DWARF lists, whether the
     /// function is variadic, and which of them (by position) had no readable value; `None` without variable
     /// info for this function. Before the prologue ends they come from the argument registers.

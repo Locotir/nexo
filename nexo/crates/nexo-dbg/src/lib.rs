@@ -10,6 +10,7 @@ mod client;
 mod cmds;
 mod commands;
 mod corefile;
+mod coreout;
 mod cover;
 mod engine;
 mod expr;

@@ -17,9 +17,12 @@ mod calls;
 mod catch;
 mod dump;
 mod frame;
+mod gcore;
 mod gdb;
 mod help;
 mod io;
+mod jump;
+mod list;
 mod memory;
 mod quiet;
 mod record;
@@ -42,7 +45,7 @@ pub struct Args {
     flags: HashMap<String, String>,
 }
 
-const BOOL_FLAGS: [&str; 6] = ["all", "raw", "close", "keep-going", "once", "exact"];
+const BOOL_FLAGS: [&str; 8] = ["all", "raw", "close", "keep-going", "once", "exact", "force", "stay"];
 
 impl Args {
     pub fn new(words: &[String]) -> Result<Args> {
@@ -87,10 +90,10 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 34] = [
+pub const READ_ONLY: [&str; 35] = [
     "status", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
-    "name", "note", "ptype", "whatis", "frame", "up", "down", "back",
+    "name", "note", "ptype", "whatis", "frame", "up", "down", "back", "list",
 ];
 
 impl Session {
@@ -206,6 +209,10 @@ impl Session {
             "status" | "info" => self.status(),
             "regs" => self.cmd_regs(&a),
             "setreg" => self.cmd_setreg(&a),
+            "return" => self.cmd_return(&a),
+            "jump" => self.cmd_jump(&a),
+            "gcore" => self.cmd_gcore(&a),
+            "list" => self.cmd_list(&a),
             "calls" => self.cmd_calls(&a),
             "break" | "b" | "tbreak" => self.cmd_break(cmd == "tbreak", &words[1..], &a),
             "breaks" | "watches" => Ok(self.cmd_breaks()),

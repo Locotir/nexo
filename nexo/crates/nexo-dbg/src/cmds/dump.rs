@@ -166,7 +166,7 @@ impl Session {
 
     /// Where the file goes: the path given (relative to the debugger's folder), or one named after the program and
     /// the address in the debugger's own folder.
-    fn dump_target(&self, path: Option<&str>, name: String) -> Result<PathBuf> {
+    pub(super) fn dump_target(&self, path: Option<&str>, name: String) -> Result<PathBuf> {
         let p = match path {
             Some(p) => {
                 let p = PathBuf::from(p);

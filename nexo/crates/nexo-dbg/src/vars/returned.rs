@@ -183,6 +183,44 @@ impl Vars {
     }
 }
 
+/// Where a value handed back by `return VALUE` goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetSlot {
+    /// An integer, pointer or enum: rax (eax in a 32-bit program).
+    Int,
+    /// A `float` (4) or `double` (8): xmm0.
+    Float(usize),
+    /// A type that has no single register: the reason, as a sentence.
+    No(&'static str),
+}
+
+/// The register a return value of this (stripped) type goes in. `None` (no debug info for the function) is the
+/// integer register.
+fn slot_of(t: Option<&Ty>, void: bool, x32: bool) -> RetSlot {
+    if void {
+        return RetSlot::No("the function returns void: there is no value to give it");
+    }
+    match t {
+        Some(Ty::Base { enc: 4, size, .. }) if x32 || *size > 8 => {
+            RetSlot::No("a long double, or a float in a 32-bit program (x87), cannot be set here: set st0 with `setreg st0 <float>` and `return`")
+        }
+        Some(Ty::Base { enc: 4, size, .. }) => RetSlot::Float(*size as usize),
+        Some(Ty::Base { enc: 3, .. }) => RetSlot::No("a complex number has no single return register"),
+        Some(Ty::Record { .. } | Ty::Array { .. } | Ty::Func) => {
+            RetSlot::No("a struct, union or array return goes through memory or several registers: `return` alone, then `write` it")
+        }
+        _ => RetSlot::Int,
+    }
+}
+
+impl Vars {
+    /// Which register takes the value `return VALUE` gives for the function holding `pc` (a file address).
+    pub(crate) fn ret_slot(&self, pc: u64) -> RetSlot {
+        let Some(f) = self.func_at(pc) else { return RetSlot::Int };
+        slot_of(self.strip(f.ret), f.ret.is_none(), f.enc.address_size == 4)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +273,20 @@ mod tests {
         assert_eq!(int_bytes(&rr, false, false, 16).map(|b| b[8]), Some(0x00));
         assert_eq!(int_bytes(&rr, false, true, 16), None);
         assert_eq!(int_bytes(&rr, true, false, 8), Some(vec![0x88, 0x77, 0x66, 0x55, 0x00, 0xff, 0xee, 0xdd]));
+    }
+
+    #[test]
+    fn a_return_value_goes_to_xmm0_for_a_float_and_rax_for_the_rest() {
+        let base = |size, enc| Ty::Base { name: String::new(), size, enc };
+        assert_eq!(slot_of(Some(&base(8, 4)), false, false), RetSlot::Float(8));
+        assert_eq!(slot_of(Some(&base(4, 4)), false, false), RetSlot::Float(4));
+        assert!(matches!(slot_of(Some(&base(16, 4)), false, false), RetSlot::No(_)));
+        assert!(matches!(slot_of(Some(&base(4, 4)), false, true), RetSlot::No(_)));
+        assert_eq!(slot_of(Some(&base(4, 5)), false, false), RetSlot::Int);
+        assert_eq!(slot_of(Some(&Ty::Ptr { to: None }), false, false), RetSlot::Int);
+        assert_eq!(slot_of(None, false, false), RetSlot::Int);
+        assert!(matches!(slot_of(None, true, false), RetSlot::No(_)));
+        let rec = Ty::Record { name: String::new(), size: 8, members: Vec::new(), union: false };
+        assert!(matches!(slot_of(Some(&rec), false, false), RetSlot::No(_)));
     }
 }

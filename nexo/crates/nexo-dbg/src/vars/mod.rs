@@ -21,6 +21,7 @@ use serde_json::json;
 
 use crate::engine::{rows, Session};
 use nexo_bin::Output;
+pub(crate) use returned::RetSlot;
 
 use crate::{fail, Result};
 
