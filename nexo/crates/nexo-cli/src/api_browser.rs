@@ -15,6 +15,7 @@ use nexo_api::spec::{Api, Endpoint};
 use nexo_api::{auth::Scheme, call};
 use nexo_browser::AnyBrowser;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 /// An exit code and what to say (the one `api_call` uses).
 type Fail = (i32, String);
@@ -130,6 +131,12 @@ pub(crate) fn plan(api: &Api, ep: &Endpoint, inp: &call::Inputs, t: &crate::api_
     }
     let req = call::build(api, ep, inp, &vals)?;
     let mut url = url::Url::parse(&req.url).map_err(|e| format!("bad url: {e}"))?;
+    // the page sends it, so it must stay on the origin the page is on (a path param cannot move the host)
+    let origin =
+        origin_of(&ep.origin).ok_or_else(|| format!("the endpoint's origin {:?} is not http(s)", ep.origin))?;
+    if origin_of(url.as_str()).as_deref() != Some(origin.as_str()) {
+        return Err("--via-browser sends only to the endpoint's own origin".to_string());
+    }
     if !req.query.is_empty() {
         let mut q = url.query_pairs_mut();
         for (k, v) in &req.query {
@@ -150,7 +157,7 @@ pub(crate) fn plan(api: &Api, ep: &Endpoint, inp: &call::Inputs, t: &crate::api_
         headers.push((k.clone(), v.reveal().to_string()));
     }
     Ok(Plan {
-        origin: ep.origin.clone(),
+        origin,
         method: req.method.clone(),
         url: url.to_string(),
         headers,
@@ -165,6 +172,7 @@ pub(crate) fn plan(api: &Api, ep: &Endpoint, inp: &call::Inputs, t: &crate::api_
 const SCRIPT: &str = r#"(async () => {
   const spec = __SPEC__;
   if (location.origin !== spec.origin) return { refused: "origin", page: location.origin };
+  if (new URL(spec.url, location.href).origin !== spec.origin) return { refused: "origin", page: location.origin };
   const headers = new Headers();
   for (const [k, v] of spec.headers) headers.set(k, v);
   if (spec.tokens.length > 0) {
@@ -359,12 +367,12 @@ pub(crate) async fn run(plan: &Plan, id: &str, cap: usize, timeout_ms: u64) -> R
     let browser = AnyBrowser::connect_user(id, "nexo api").await.map_err(|e| {
         failed(format!("cannot reach your browser: {e} (the nexo extension must run, and you click Allow)"))
     })?;
-    let reply = in_tab(&browser, &plan.origin, &js).await;
+    let reply = in_tab(&browser, &plan.origin, &js, timeout_ms).await;
     let _ = browser.close().await;
     interpret(plan, &reply?)
 }
 
-async fn in_tab(browser: &AnyBrowser, origin: &str, js: &str) -> Result<String, Fail> {
+async fn in_tab(browser: &AnyBrowser, origin: &str, js: &str, timeout_ms: u64) -> Result<String, Fail> {
     let no = |e: nexo_browser::Error| failed(format!("the browser: {e}"));
     let tabs = browser.tabs().await.map_err(no)?;
     let mut opened = None;
@@ -374,17 +382,31 @@ async fn in_tab(browser: &AnyBrowser, origin: &str, js: &str) -> Result<String, 
                 browser.tab_switch(t.index).await.map_err(no)?;
             }
         }
-        None => opened = Some(browser.tab_new(&format!("{origin}/")).await.map_err(no)?),
-    }
-    let reply = browser.eval(js).await;
-    if let Some(i) = opened {
-        // the tab made for this call, then the empty one the connection started with
-        let _ = browser.tab_close(i).await;
-        for t in tabs.iter().rev().filter(|t| blank(&t.url) && t.index != i) {
-            let _ = browser.tab_close(t.index).await;
+        None => {
+            let open = browser.tab_new(&format!("{origin}/"));
+            match tokio::time::timeout(Duration::from_secs(60), open).await {
+                Ok(r) => opened = Some(r.map_err(no)?),
+                Err(_) => return Err(failed(format!("the browser did not open {origin} in time"))),
+            }
         }
     }
-    reply.map_err(|e| failed(format!("the page could not run the call: {e}")))
+    // the script times its own fetch out; this bound is for a page that never answers at all
+    let wait = Duration::from_millis(timeout_ms).saturating_add(Duration::from_secs(60));
+    let reply = match tokio::time::timeout(wait, browser.eval(js)).await {
+        Ok(r) => r.map_err(|e| failed(format!("the page could not run the call: {e}"))),
+        Err(_) => Err(failed("the page did not answer in time".to_string())),
+    };
+    if let Some(i) = opened {
+        // the tab made for this call; and, in a browser nexo launched, the empty one it started with (never a tab
+        // of the person's own browser)
+        let _ = browser.tab_close(i).await;
+        if matches!(browser, AnyBrowser::Headless(_)) {
+            for t in tabs.iter().rev().filter(|t| blank(&t.url) && t.index != i) {
+                let _ = browser.tab_close(t.index).await;
+            }
+        }
+    }
+    reply
 }
 
 #[cfg(test)]
@@ -469,8 +491,10 @@ mod tests {
         // the request travels as data: a quote or a line break in a param cannot end the literal
         let mut t = target();
         t.params = vec!["q=a\"; alert(1); \"\u{2028}".to_string()];
-        let mut inp = call::Inputs::default();
-        inp.params = vec![("q".to_string(), "a\"; alert(1); \"\u{2028}".to_string())];
+        let inp = call::Inputs {
+            params: vec![("q".to_string(), "a\"; alert(1); \"\u{2028}".to_string())],
+            ..call::Inputs::default()
+        };
         let ep = call::find(&a, "GET /v1/items").unwrap();
         if let Ok(p2) = plan(&a, ep, &inp, &t) {
             let js2 = script(&p2, 1024, 5000);
