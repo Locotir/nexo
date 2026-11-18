@@ -121,7 +121,7 @@ impl Tool for Write {
             }
             Ok(_) if huge => Some(String::new()),
             Ok(b) => {
-                // compared as bytes: a lossy text would call a file with invalid bytes the same as its U+FFFD form
+                // the file is valid UTF-8 here, so `same` is a plain byte compare
                 same = b == content.as_bytes();
                 format_note = format_change(&b, content).map(|n| format!("; {n}")).unwrap_or_default();
                 Some(String::from_utf8_lossy(&b).into_owned())
@@ -225,14 +225,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_file_with_invalid_bytes_is_not_taken_for_the_same_content() {
+    async fn a_file_with_invalid_bytes_is_refused_even_for_its_replacement_form() {
         let d = tempfile::tempdir().unwrap();
         let c = ToolContext::new(d.path().to_path_buf());
         let f = d.path().join("b.txt");
         std::fs::write(&f, [b'a', 0xFF, b'b']).unwrap();
         assert!(!crate::read::Read.run(json!({"path": "b.txt"}), &c).await.is_error);
         let out = Write.run(json!({"path": "b.txt", "content": "a\u{FFFD}b"}), &c).await;
-        assert!(!out.content.contains("already has this content"), "{}", out.content);
+        assert!(out.is_error && out.content.contains("not UTF-8"), "{}", out.content);
+        assert!(out.content.contains("invalid byte at offset 1"), "{}", out.content);
+        assert_eq!(std::fs::read(&f).unwrap(), [b'a', 0xFF, b'b']);
     }
 
     #[tokio::test]
