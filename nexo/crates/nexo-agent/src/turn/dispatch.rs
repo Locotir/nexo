@@ -388,6 +388,9 @@ async fn on_clear(rt: &mut Runtime) {
         }
         rt.cancel = CancellationToken::new();
         rt.run_queue = false;
+        // the end-of-turn path that takes these never runs for the turn waited for here
+        rt.stopped = None;
+        rt.stopper = None;
         rt.detach.clear();
         let mut st = rt.state.lock().await;
         if !st.inbox.is_empty() {
