@@ -81,10 +81,12 @@ impl Engine {
             // the first message, and from `start` on the ones not shut
             let from = self.start.max(1);
             let mut out = if key.0 > 0 { vec![0] } else { Vec::new() };
+            out.extend(self.live_ask());
             out.extend((from..key.0).filter(|mi| !self.shut_out.contains(mi)));
             out
         } else {
             let mut out = vec![0];
+            out.extend(self.live_ask());
             for &j in &g.members[g.active()] {
                 let (a, b) = g.span(j, key.0);
                 out.extend((a.max(self.start).max(1)..b).filter(|mi| !self.shut_out.contains(mi)));
@@ -94,6 +96,15 @@ impl Engine {
         let out = Arc::new(out);
         self.vis = Some((key, out.clone()));
         out
+    }
+
+    /// The message that opened the current turn when the cut has left it behind (`start` lies inside the turn):
+    /// the view keeps it, whole and in its place after the first message, so the person's live request is the last
+    /// of their words the model reads and not the first message's. It leaves no tool call without its result: it is
+    /// the person's message, and `start` is where an assistant message begins.
+    pub(super) fn live_ask(&self) -> Option<usize> {
+        let ts = self.goal.turns.last()?.start;
+        (ts >= 1 && ts < self.start && ts < self.tr.msgs.len()).then_some(ts)
     }
 
     fn key(&self, mi: usize) -> Vec<(usize, usize)> {

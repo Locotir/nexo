@@ -96,7 +96,7 @@ impl Engine {
             *at = Some(at.map_or(f, |a| a.max(f)));
         };
         // the whole message out of the view
-        let msg_out = if mi < self.start && mi != 0 {
+        let msg_out = if mi < self.start && mi != 0 && self.live_ask() != Some(mi) {
             Some(self.own.msgs.get(&mi).copied().unwrap_or((self.own.clock, "leave")))
         } else if self.shut_out.contains(&mi) {
             Some(self.own.msgs.get(&mi).copied().unwrap_or((self.own.clock, "apart")))

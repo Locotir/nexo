@@ -55,6 +55,8 @@ fn a_rule_given_early_is_in_the_view_hundreds_of_turns_later() {
         said("On it."),
         user("Never use unwrap in library code."),
         said("Understood."),
+        user("Now build the next part."),
+        said("On it."),
     ];
     let (anchor, stats) = session("", &opening, 250);
     assert!(stats["left_messages"].as_i64().unwrap() > 200, "{stats}");
@@ -98,6 +100,8 @@ fn a_later_rule_is_listed_after_an_earlier_one() {
         said("Ok."),
         user("never use unwrap in library code"),
         said("Ok."),
+        user("Now build the next part."),
+        said("On it."),
     ];
     let (anchor, _) = session("", &opening, 250);
     let rules = &anchor[anchor.find("Standing instructions").expect(&anchor)..];
@@ -117,6 +121,8 @@ fn a_big_set_of_rules_shrinks_the_ledger_instead_of_leaving() {
         opening.push(user(r));
         opening.push(said("Noted."));
     }
+    opening.push(user("Now build the next part."));
+    opening.push(said("On it."));
     let facts = |anchor: &str| anchor.lines().filter(|l| l.starts_with('m') && l[1..].starts_with("0")).count();
     let (with, _) = session("eoq=6000;rules=100", &opening, 200);
     let (without, _) = session("eoq=6000;rules=0", &opening, 200);

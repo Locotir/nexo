@@ -138,18 +138,16 @@ fn a_long_run_after(latest: &str, then: Option<&str>) -> (Vec<Value>, usize) {
 }
 
 #[test]
-fn the_latest_request_that_left_the_view_is_in_the_anchor_word_for_word() {
+fn the_latest_request_a_cut_passed_stays_whole_in_the_view_and_is_not_said_again_in_the_anchor() {
     let latest = "Now port the CSV loader to streaming, keep the column order and stop at the first bad row.";
     let (msgs, at) = a_long_run_after(latest, None);
     let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
     e.sync(&msgs);
     let view = e.view();
     assert!(e.start > at, "the request did not leave the view: start {} at {at}", e.start);
-    // the model sees it whole, marked as the one in progress, and the list no longer stands for it with a cut line
-    assert!(e
-        .base_map
-        .contains(&format!("the one the work is on, moved out with them; here it is word for word:\n{latest}")));
-    assert!(e.base_map.contains("- (the latest request, in progress: word for word below)"), "{}", e.base_map);
+    // the model sees it whole at its place in the view, and the anchor neither repeats it nor lists it as a past one
+    assert!(!e.base_map.contains("the one the work is on"), "{}", e.base_map);
+    assert!(!e.base_map.contains("stop at the first bad row"), "{}", e.base_map);
     let sent = serde_json::to_string(&view).unwrap();
     assert!(sent.contains("stop at the first bad row"), "the view sent lacks the request in progress");
 }

@@ -128,7 +128,8 @@ impl Engine {
             let w = crate::msg::person_words(&t).trim_start();
             !LOOP_MARKS.iter().any(|m| w.starts_with(m))
         })?;
-        if r == 0 || r >= self.start {
+        if r == 0 || r >= self.start || self.live_ask() == Some(r) {
+            // (a request the view keeps whole is not said again, word for word or as a line of the list)
             return None;
         }
         let t = self.unit_text_at(r, UKind::User);
@@ -162,7 +163,10 @@ impl Engine {
         let current = self.in_progress();
         let requests: Vec<usize> = (0..upto)
             .filter(|&x| {
-                reqs[x] > 0 || !self.outcome(0, end_of(x)).is_empty() || !self.fixes(0, end_of(x), None).is_empty()
+                Some(reqs[x]) != self.live_ask()
+                    && (reqs[x] > 0
+                        || !self.outcome(0, end_of(x)).is_empty()
+                        || !self.fixes(0, end_of(x), None).is_empty())
             })
             .collect();
         if !requests.is_empty() {
