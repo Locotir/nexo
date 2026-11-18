@@ -140,6 +140,8 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     // the cost, against the session's limit when there is one, coloured as it nears it
     let limit = app.budget.and_then(|(_, _, l, _)| l);
     let shown = if app.opts.animations { app.cost_shown } else { app.cost };
+    // the cost ("API value") is the one right-side piece the name is allowed to push off a narrow bar
+    let cost_at = right.len();
     if pieces.contains(&"cost") && app.on_plan() && app.cost > 0.0 {
         // a subscription: the price is what the API would have charged, not money spent
         let sep = if right.is_empty() { " " } else { " · " };
@@ -168,20 +170,29 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
         let style = if rolling || glow > 0.0 { base.fg(colour).add_modifier(Modifier::BOLD) } else { base.fg(colour) };
         right.push(Seg { text, style });
     }
+    let cost_end = right.len();
     right.push(Seg { text: " ".to_string(), style: base });
     let w = area.width as usize;
-    let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
-    let (notes, notes_w) = quiet_notes(app, w, right_w);
-    let avail = w.saturating_sub(right_w + notes_w);
-    // the name is the least useful part: it stays only when the bar loses nothing by making room for it
-    let label = label.filter(|l| {
-        let lw = width(l);
-        let room = avail.saturating_sub(lw);
+    let full_w: usize = right.iter().map(|s| width(&s.text)).sum();
+    let cost_w: usize = right[cost_at..cost_end].iter().map(|s| width(&s.text)).sum();
+    let (notes, notes_w) = quiet_notes(app, w, full_w);
+    // the name holds the bar's right end: before it yields, it pushes the cost ("API value") off,
+    // the one right-side piece ranked below it. It never costs a title segment, and shows whole or not at all.
+    let name_fits = |label: &str, dropped: usize, app: &App| -> bool {
+        let avail = w.saturating_sub((full_w - dropped) + notes_w);
+        let room = avail.saturating_sub(width(label));
         let with = segs_width(app, &title_segments(app, room));
         with <= room && with == segs_width(app, &title_segments(app, avail))
-    });
+    };
+    let fit_full = label.as_ref().is_some_and(|l| name_fits(l, 0, app));
+    let fit_nocost = !fit_full && cost_w > 0 && label.as_ref().is_some_and(|l| name_fits(l, cost_w, app));
+    let label = label.filter(|_| fit_full || fit_nocost);
+    if fit_nocost {
+        right.drain(cost_at..cost_end);
+    }
+    let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
     let label_w = label.as_ref().map_or(0, |l| width(l));
-    let avail = avail.saturating_sub(label_w);
+    let avail = w.saturating_sub(right_w + notes_w).saturating_sub(label_w);
     let groups = title_segments(app, avail);
     let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
     if app.root {
