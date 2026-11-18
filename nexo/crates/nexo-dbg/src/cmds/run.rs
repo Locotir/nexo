@@ -237,5 +237,5 @@ impl Session {
 }
 
 /// What a script may still run after the program ended: the commands that read what was kept.
-const AFTER_EXIT: [&str; 12] =
-    ["out", "log", "history", "back", "status", "info", "echo", "printf", "breaks", "help", "show", "heap"];
+const AFTER_EXIT: [&str; 13] =
+    ["out", "log", "history", "back", "status", "info", "echo", "printf", "breaks", "help", "show", "heap", "list"];

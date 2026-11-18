@@ -531,6 +531,11 @@ fn handle(dir: &Path, port: u16, slots: &mut Vec<Slot>, stream: TcpStream) -> Op
                 *pending = None;
                 sess.exec(&words)
             }
+            // a `jump` runs on from the new pc unless it only moves it
+            "jump" if !words.iter().any(|w| w == "--stay") => {
+                *pending = None;
+                sess.exec(&words)
+            }
             _ => sess.exec(&words),
         };
         match res {

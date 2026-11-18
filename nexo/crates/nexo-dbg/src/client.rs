@@ -254,6 +254,7 @@ const READ_ALLOWED: &[&str] = &[
     "log",
     "dis",
     "disasm",
+    "list",
     "sessions",
     "help",
     "catches",

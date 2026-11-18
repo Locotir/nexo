@@ -168,6 +168,9 @@ pub fn write_core(out: &mut dyn Write, c: &CoreIn, read: &mut dyn FnMut(u64, &mu
     }
     let notes = notes(c);
     let nph = 1 + c.maps.len() as u64;
+    if nph > u64::from(u16::MAX) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many mappings for an ELF core file"));
+    }
     let note_at = EHDR + PHDR * nph;
     let mut at = align(note_at + notes.len() as u64, PAGE);
     let mut heads: Vec<[u8; PHDR as usize]> = vec![phdr(PT_NOTE, 0, note_at, 0, notes.len() as u64, 0, 1)];
