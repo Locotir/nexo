@@ -49,7 +49,7 @@ fn commands() -> String {
 }
 
 const COMMANDS: &str = "\
-run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); env, folder, ASLR (off by default) and argv[0] as given; input is sent, then closed
+run [--main] [--env K=V] [--unset K] [--cwd DIR] [--aslr] [--argv0 NAME] [--break SPEC] [--repeat N --until crash|exit|output~TEXT] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); env, folder, ASLR (off by default) and argv[0] as given; input is sent, then closed; --repeat starts it from scratch up to N times (most 1000) and stops at the first run that crashes, exits non-zero or prints TEXT, or hits a --break; that run stays live and the answer tallies the earlier ones
 a; b  several commands in one call (`run ./p <<< \"1 2\"; cont` runs to the crash)
 attach <pid>  attach (asks)
 break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once; a name no loaded file has is pending until a library with it loads
@@ -343,7 +343,7 @@ impl Debug {
             while let Some(flag) = words.get(at).map(String::as_str) {
                 match flag {
                     "--main" | "--aslr" => at += 1,
-                    "--env" | "--unset" | "--argv0" => at += 2,
+                    "--env" | "--unset" | "--argv0" | "--repeat" | "--until" | "--wait" | "--break" => at += 2,
                     "--cwd" => {
                         if let Some(d) = words.get(at + 1).filter(|d| Path::new(d.as_str()).is_relative()).cloned() {
                             words[at + 1] = ctx.cwd.join(d).display().to_string();

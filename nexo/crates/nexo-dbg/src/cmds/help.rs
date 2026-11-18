@@ -52,7 +52,7 @@ pub fn split_words(s: &str) -> Vec<String> {
 
 pub fn help() -> Output {
     let l = [
-        "run: nexo dbg run <exe> [args]   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
+        "run: nexo dbg run [--break SPEC] [--repeat N --until crash|exit|output~TEXT [--wait SECS]] <exe> [args] (a flaky bug: up to N runs from scratch, 1000 most, stops at the first that crashes, exits non-zero or prints TEXT, or hits a --break; that run stays live, with a tally of the earlier ones)   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
         "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach | kill call | follow parent|child|both (a forked child kept as a session of its own, breakpoints copied)",
         "record: record [N] | record stop keeps the last N instructions (default 10000, most 1000000: pc, changed registers, memory writes up to 64 bytes) while you `step` and `cont` (cont then goes one instruction at a time: slow, Linux only) | back [N] | back --reg REG | back --mem ADDR read it, newest first; it looks back, it does not undo (`status` shows the record)",
         "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
