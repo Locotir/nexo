@@ -64,7 +64,7 @@ impl Session {
             Why::Hook(_, t) => format!("hook {t}"),
             Why::Heap(t) => t.clone(),
             Why::Returned => "a call returned".to_string(),
-            Why::Fork(t) | Why::LetGo(t) => t.clone(),
+            Why::Fork(t) | Why::LetGo(t) | Why::Restart(t) => t.clone(),
             Why::Exited(c) => format!("the program exited with code {c}"),
             Why::Killed(s) => {
                 format!("the program was killed by {}", crate::engine::signal_name_on(self.t.os(), *s as u32))
@@ -88,6 +88,7 @@ impl Session {
             Why::Heap(_) => "heap",
             Why::Returned => "call",
             Why::Fork(_) | Why::LetGo(_) => "fork",
+            Why::Restart(_) => "restart",
             Why::Exited(_) => "exit",
             Why::Killed(_) => "killed",
         };

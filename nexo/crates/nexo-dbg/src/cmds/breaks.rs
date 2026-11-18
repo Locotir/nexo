@@ -368,7 +368,10 @@ impl Session {
     }
 
     pub(super) fn cmd_delete(&mut self, a: &Args) -> Result<Output> {
-        let Some(w) = a.pos.first() else { return usage("delete <id>|all") };
+        let Some(w) = a.pos.first() else { return usage("delete <id>|all|checkpoint N|all") };
+        if w == "checkpoint" || w == "checkpoints" {
+            return self.ckpt_delete(&a.pos[1..]);
+        }
         if w == "all" {
             let n = self.bps.len() + self.wps.len();
             self.bps.clear();

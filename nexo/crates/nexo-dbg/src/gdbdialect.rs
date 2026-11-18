@@ -656,9 +656,8 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
         "start" | "starti" => "`run --main <path> [args]` starts and stops at main",
         "reverse-step" | "reverse-stepi" | "reverse-next" | "reverse-nexti" | "reverse-continue" | "reverse-finish"
         | "rs" | "rsi" | "rn" | "rni" | "rc" => {
-            "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record)"
+            "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record); to go back for real, `checkpoint` forks the program here and `restart N` returns to it"
         }
-        "checkpoint" | "restart" => "this debugger cannot go back in time: `cont` forward, `history` lists past stops",
         "valgrind" | "memcheck" | "leak-check" => {
             "`heap on`, then `cont`: a free of a bad pointer stops the program, and `heap leaks` lists the blocks never freed"
         }
@@ -996,6 +995,10 @@ mod tests {
             assert!(h.contains("back N") && h.contains("back --reg R") && h.contains("back --mem A"), "{c}: {h}");
             assert!(h.contains("does not undo"), "{c}: {h}");
         }
-        assert!(hint("checkpoint").unwrap().contains("cannot go back in time"));
+        assert_eq!(hint("checkpoint"), None);
+        assert_eq!(hint("restart"), None);
+        for c in ["reverse-step", "rc"] {
+            assert!(hint(c).unwrap().contains("checkpoint"), "{c}");
+        }
     }
 }

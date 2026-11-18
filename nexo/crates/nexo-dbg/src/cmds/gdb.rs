@@ -580,11 +580,12 @@ impl Session {
                 Ok(rows("info", vec![l], json!({"addr": a})))
             }
             "signals" | "signal" | "handle" => go(self, &["catches"]),
+            "checkpoints" | "checkpoint" => go(self, &["checkpoints"]),
             "line" | "source" | "functions" | "variables" | "types" | "scope" | "files" | "sources" => usage(
                 "no symbol tables are listed here: `find <text>` searches memory, `modules` and `maps` list what is loaded, `bt` and `dis` show where the program is",
             ),
             other => usage(format!(
-                "info {other}: this debugger answers info registers [REG], breakpoints, frame, sharedlibrary, proc mappings, threads, locals, args, symbol <addr>"
+                "info {other}: this debugger answers info registers [REG], breakpoints, frame, sharedlibrary, proc mappings, threads, locals, args, checkpoints, symbol <addr>"
             )),
         }
     }

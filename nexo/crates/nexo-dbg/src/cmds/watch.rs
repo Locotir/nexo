@@ -23,7 +23,7 @@ impl Session {
     }
 
     /// Put the debug registers as the watches say, and have the guarded pages worked out again at the next run.
-    pub(super) fn apply_watches(&mut self) -> Result<()> {
+    pub(crate) fn apply_watches(&mut self) -> Result<()> {
         if self.state == State::Exited {
             return Ok(());
         }

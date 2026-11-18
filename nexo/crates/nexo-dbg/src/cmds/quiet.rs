@@ -43,7 +43,7 @@ pub(crate) fn compact_why(why: &Why) -> String {
         Why::Interrupt => "interrupt".into(),
         Why::Exec => "exec (addresses are new)".into(),
         Why::Syscall(t) => format!("syscall {t}"),
-        Why::Load(t) | Why::Fork(t) | Why::LetGo(t) => t.clone(),
+        Why::Load(t) | Why::Fork(t) | Why::LetGo(t) | Why::Restart(t) => t.clone(),
         Why::Hook(_, t) => format!("hook {t}"),
         Why::Heap(_) => "heap".into(),
         Why::Returned => "call returned".into(),

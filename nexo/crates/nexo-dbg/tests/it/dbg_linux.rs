@@ -258,3 +258,39 @@ fn heap_check_stops_on_a_double_free_and_lists_the_leak() {
     assert!(t.contains("heap check off"), "{t}");
     run(&mut s, "kill");
 }
+
+fn counter(s: &mut Session) -> String {
+    run(s, "mem DBG_COUNTER 8 --as u64")
+}
+
+#[test]
+fn checkpoint_and_restart_bring_the_counter_back_and_kill_leave_no_process() {
+    let (mut s, _) = start("loop");
+    run(&mut s, "break dbg_add");
+    run(&mut s, "cont");
+    let made = run(&mut s, "checkpoint");
+    assert!(made.contains("checkpoint #1 made") && made.contains("not rewound"), "{made}");
+    let pid: u32 = made
+        .split("pid ")
+        .nth(1)
+        .and_then(|t| t.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no pid in {made}"));
+    assert_ne!(pid, s.t.pid());
+    assert!(run(&mut s, "checkpoints").contains("#1 pid"), "list");
+    run(&mut s, "cont");
+    run(&mut s, "cont");
+    let old = s.t.pid();
+    let back = run(&mut s, "restart 1");
+    assert!(back.contains("back at checkpoint #1") && back.contains("breakpoint"), "{back}");
+    assert!(gone(old), "the process left is still there");
+    let c = counter(&mut s);
+    assert!(c.contains("0x0") || c.contains(" 0"), "{c}");
+    // the checkpoint stays usable
+    let again = run(&mut s, "restart 1");
+    assert!(again.contains("back at checkpoint #1"), "{again}");
+    let stored = s.checkpoints[0].mark.pid;
+    run(&mut s, "kill");
+    assert!(gone(stored), "checkpoint process {stored} is still there");
+    assert!(s.checkpoints.is_empty());
+}
