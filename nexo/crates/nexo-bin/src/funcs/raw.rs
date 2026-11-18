@@ -120,11 +120,14 @@ pub(super) fn x86_code_end(img: &Image, start: u64, limit: u64) -> u64 {
 }
 
 /// Where the AArch64 function at `start` ends, at most `limit`. Words the decoder does not know (most SIMD) are
-/// still code here: only a branch that does not fall through, past every branch target, ends a function.
+/// still code here: only a branch that does not fall through, past every branch target, ends a function. The cases
+/// of a switch (`br` through a jump table, see `a64::switch`) count as branch targets: no jump need reach them.
 pub(super) fn a64_code_end(img: &Image, start: u64, limit: u64) -> u64 {
     let Some(bytes) = img.read_at(start, (limit - start) as usize) else { return limit };
+    let read = |a: u64, len: usize| img.read_at(a, len).map(<[u8]>::to_vec);
     let mut reach = start;
     let mut ended: Option<u64> = None;
+    let mut seen: Vec<crate::a64::Ins> = Vec::new();
     for (k, w) in bytes.as_chunks::<4>().0.iter().enumerate() {
         let pc = start + 4 * k as u64;
         let ins = crate::a64::decode(u32::from_le_bytes(*w), pc);
@@ -134,9 +137,15 @@ pub(super) fn a64_code_end(img: &Image, start: u64, limit: u64) -> u64 {
             }
             return e;
         }
+        seen.push(ins);
         if matches!(ins.flow, Flow::Jump | Flow::Cond) {
             if let Some(t) = ins.target.filter(|&t| t > reach && t < limit) {
                 reach = t;
+            }
+        }
+        if ins.flow == Flow::JumpReg {
+            if let Some(tab) = crate::a64::switch::find(&seen, k, start, limit, &read) {
+                reach = tab.targets.iter().copied().fold(reach, u64::max);
             }
         }
         if pc + 4 > reach && ins.ends_block() {
@@ -144,4 +153,51 @@ pub(super) fn a64_code_end(img: &Image, start: u64, limit: u64) -> u64 {
         }
     }
     limit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::a64_code_end;
+    use crate::Image;
+    use std::path::PathBuf;
+
+    /// `cmp w8,#1 ; b.hi def ; adrp ; add ; adr ; ldrb ; add ; br x10 ; def: mov w0,#0 ; ret ; case0 ; ret ; case1 ;
+    /// ret ; table`: no jump reaches the two cases, only the table does.
+    const SWITCH: [u32; 15] = [
+        0x7100_051f,
+        0x5400_00e8,
+        0x9000_0009,
+        0x9100_e129,
+        0x1000_00ca,
+        0x3868_692b,
+        0x8b0b_094a,
+        0xd61f_0140,
+        0x5280_0000,
+        0xd65f_03c0,
+        0x5280_0140,
+        0xd65f_03c0,
+        0x5280_0160,
+        0xd65f_03c0,
+        0x0000_0200,
+    ];
+
+    fn end_of(words: &[u32]) -> u64 {
+        let data: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let len = data.len() as u64;
+        let img = Image::from_raw(data, PathBuf::from("dump.bin"), 0x1000, Some("arm64")).expect("raw image");
+        a64_code_end(&img, 0x1000, 0x1000 + len)
+    }
+
+    #[test]
+    fn the_cases_of_a_jump_table_are_part_of_the_function() {
+        // the table's last word is data, not code: the function stops after the last case's `ret`
+        assert_eq!(end_of(&SWITCH), 0x1038);
+    }
+
+    #[test]
+    fn without_a_bound_check_the_cases_are_not_found() {
+        let mut w = SWITCH;
+        w[0] = 0xd503_201f;
+        assert_eq!(end_of(&w), 0x1028);
+    }
 }
