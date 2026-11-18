@@ -265,6 +265,7 @@ impl Session {
             "ltrace" => self.cmd_ltrace(&a),
             "hook" => self.cmd_hook(&words[1..]),
             "hooks" => self.cmd_hook(&[]),
+            "heap" => self.cmd_heap(&a),
             "cover" => self.cmd_cover(&words[1..]),
             "kill" => self.cmd_kill(&a),
             "detach" => self.cmd_detach(),

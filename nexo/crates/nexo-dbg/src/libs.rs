@@ -220,7 +220,7 @@ impl Session {
         let (stay, cut): (Vec<_>, Vec<_>) =
             std::mem::take(&mut self.tr.pending).into_iter().partition(|p| !inside(p.ret_addr));
         self.tr.pending = stay;
-        for p in cut {
+        for p in cut.into_iter().filter(|p| p.heap.is_none()) {
             self.tr.push(
                 p.kind,
                 &p.name,

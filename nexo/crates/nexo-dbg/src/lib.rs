@@ -14,6 +14,7 @@ mod cover;
 mod engine;
 mod expr;
 mod gdbdialect;
+mod heap;
 mod hooks;
 mod knowledge;
 mod libs;

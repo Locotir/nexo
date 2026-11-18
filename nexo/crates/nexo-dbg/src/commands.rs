@@ -32,6 +32,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("strace", "log the system calls the program makes"),
     ("ltrace", "log the library calls the program makes, libraries loaded later included; printf/scanf arguments read off the format string"),
     ("hook hooks", "run a note, a stop or a changed argument at a function; int, float and stack arguments, float results"),
+    ("heap", "find leaks, double frees and frees of bad pointers: heap on | heap | heap leaks | heap off; every malloc and free stops the process, so the program runs slower"),
     ("cover", "which functions ran; save and diff two runs"),
     ("regs", "registers [name]; xmm0|ymm0|st0 [--as f64|f32|u32x4]; --all adds xmm and x87"),
     ("bt", "the call stack [N]"),
