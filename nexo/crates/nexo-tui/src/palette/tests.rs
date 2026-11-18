@@ -200,6 +200,15 @@ fn knows_what_the_draft_wants() {
 }
 
 #[test]
+fn a_multibyte_blank_before_the_mention_does_not_panic() {
+    for blank in ['\u{a0}', '\u{3000}'] {
+        let draft = format!("a{blank}@sr");
+        let want = wanted(&draft, draft.len());
+        assert_eq!(want, Some((PaletteKind::Files, draft.len() - 2, "sr".into())), "blank {blank:?}");
+    }
+}
+
+#[test]
 fn the_file_picker_opens_only_at_the_start_of_a_word() {
     assert_eq!(wanted("ask me at bob@m", 15), None, "an email stays plain text");
     assert_eq!(wanted("git@github.com", 14), None, "user@host stays plain text");

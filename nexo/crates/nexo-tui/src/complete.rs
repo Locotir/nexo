@@ -202,7 +202,7 @@ impl WordIndex {
             }
             // no blank inside the slice: run on to the next one rather than split the word
             let cut = match text[..cut].rfind(char::is_whitespace) {
-                Some(i) => i + 1,
+                Some(i) => i + text[i..].chars().next().map_or(1, char::len_utf8),
                 None => text[cut..].find(char::is_whitespace).map_or(text.len(), |i| cut + i),
             };
             if cut == 0 {
@@ -843,6 +843,18 @@ mod tests {
         assert_eq!(w.suggest("configu").as_deref(), Some("ración"));
         assert_eq!(w.suggest("confi").as_deref(), Some("guración"));
         assert_eq!(w.suggest("guraci"), None, "no stray half word");
+    }
+
+    #[test]
+    fn pump_cuts_after_a_multibyte_blank() {
+        for blank in ['\u{a0}', '\u{3000}'] {
+            let mut w = WordIndex::new(true);
+            w.defer(true);
+            w.feed(&format!("{}{blank}deployment pipeline", "a".repeat(50)), Src::Other);
+            w.pump(60);
+            w.flush();
+            assert_eq!(w.suggest("deploy").as_deref(), Some("ment"), "blank {blank:?}");
+        }
     }
 
     #[test]

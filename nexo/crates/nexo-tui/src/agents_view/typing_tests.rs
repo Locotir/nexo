@@ -106,3 +106,13 @@ fn a_session_that_cannot_be_typed_into_still_needs_the_supervisor() {
     assert!(v.edit.is_none());
     assert!(v.note.as_deref().unwrap_or("").contains("supervisor"), "{:?}", v.note);
 }
+
+#[test]
+fn ctrl_w_after_a_multibyte_blank_keeps_the_blank_and_does_not_panic() {
+    for blank in ['\u{a0}', '\u{3000}'] {
+        let mut v = AgentsView::with_rows(vec![], 1_000, true);
+        v.edit = Some(format!("hola{blank}mundo"));
+        v.key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(v.edit, Some(format!("hola{blank}")), "blank {blank:?}");
+    }
+}
