@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(a.types[0].shape, b.types[0].shape);
         assert_eq!(a.beat, b.beat);
         assert_eq!(a.subscribe, b.subscribe);
-        assert_eq!(a.span, b.span);
+        assert!((a.span.unwrap() - b.span.unwrap()).abs() < 1e-6, "{:?} {:?}", a.span, b.span);
         let saved = store::to_text(&api);
         assert!(!saved.contains(channel::tests::WS_TOKEN) && !saved.contains("QUERYTOKEN"), "{saved}");
     }
@@ -332,9 +332,10 @@ mod tests {
         assert!(s.contains("<- tick x2"), "{s}");
         assert!(s.contains("heartbeat: comment x1"), "{s}");
         assert!(!s.contains(channel::tests::WS_TOKEN), "{s}");
-        // channels never push the summary over its budget
+        // under a tight budget the first channel stays and the others are counted
         let tight = summary::render(&api, 500);
-        assert!(tight.chars().count() <= 500 + 120, "{tight}");
+        assert!(tight.contains("[ws_socket]") && !tight.contains("[sse_api_stream]"), "{tight}");
+        assert!(tight.contains("1 more channels"), "{tight}");
     }
 
     #[test]

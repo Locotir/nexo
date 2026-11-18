@@ -188,11 +188,16 @@ pub fn redact_text(text: &str, known: &HashSet<Fp>) -> String {
         }
     }
     let mut out = String::with_capacity(text.len());
+    // the word after a secret's name (`token abc`, `Bearer abc`, `AUTH abc`) is the secret
+    let mut after_name = false;
     for (i, word) in text.split(' ').enumerate() {
         if i > 0 {
             out.push(' ');
         }
-        if word.len() >= 8 && (known.contains(&fingerprint(word)) || opaque(word)) {
+        let bare = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let named = !word.contains('=') && secret_name(bare);
+        if (word.len() >= 8 && (known.contains(&fingerprint(word)) || opaque(word))) || (after_name && !bare.is_empty())
+        {
             out.push_str(SECRET);
         } else if let Some((k, v)) = word.split_once('=') {
             if secret_name(k) && !v.is_empty() {
@@ -205,6 +210,7 @@ pub fn redact_text(text: &str, known: &HashSet<Fp>) -> String {
         } else {
             out.push_str(word);
         }
+        after_name = named;
     }
     out
 }
@@ -485,7 +491,7 @@ fn analyze(conns: &[&[Msg]]) -> Analysis {
         None
     } else {
         let mut list: Vec<(&String, &(usize, usize))> = beats.iter().collect();
-        list.sort_by(|a, b| (b.1 .0 + b.1 .1).cmp(&(a.1 .0 + a.1 .1)));
+        list.sort_by_key(|(_, c)| std::cmp::Reverse(c.0 + c.1));
         let name = list.iter().take(2).map(|(n, _)| n.as_str()).collect::<Vec<_>>().join("/");
         Some(Beat { name, sent: list.iter().map(|(_, c)| c.0).sum(), got: list.iter().map(|(_, c)| c.1).sum() })
     };
@@ -497,7 +503,12 @@ fn analyze(conns: &[&[Msg]]) -> Analysis {
         messages += 1;
         let m = it.m;
         let mut name = if let Some(e) = &m.event {
-            e.clone()
+            // an event name is the server's text: never a token, never long
+            if opaque(e) {
+                "(other)".to_string()
+            } else {
+                cut(e, 40)
+            }
         } else if m.opcode == 2 {
             "binary".to_string()
         } else {
@@ -526,7 +537,7 @@ fn analyze(conns: &[&[Msg]]) -> Analysis {
             t.shape.add(v);
         }
     }
-    let mut types: Vec<MsgType> = types.into_iter().map(|(_, t)| t).collect();
+    let mut types: Vec<MsgType> = types.into_values().collect();
     types.sort_by_key(|t| std::cmp::Reverse(t.total()));
 
     // what the client said right after the open
@@ -750,6 +761,7 @@ pub(crate) mod tests {
         known.insert(fingerprint("hunter2hunter2"));
         let out = redact_text("login ann hunter2hunter2 sid=abc12345 note=hi", &known);
         assert_eq!(out, "login ann <secret> sid=<secret> note=hi");
+        assert_eq!(redact_text("AUTH sh0rt Bearer abc123 hello", &known), "AUTH <secret> Bearer <secret> hello");
         let out = redact_text(r#"{"auth":"shortone","name":"x","echo":"hunter2hunter2"}"#, &known);
         assert!(!out.contains("shortone") && !out.contains("hunter2"), "{out}");
     }

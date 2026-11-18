@@ -577,6 +577,12 @@ async fn watch_inner(
 const FOLLOW_CAP: usize = 8 << 20;
 /// How many difference lines a follow prints.
 const MAX_FOLLOW_LINES: usize = 30;
+/// Exit code of a follow that could not read the stream (exit 1 is only drift).
+const EXIT_STREAM: i32 = 3;
+
+fn broken(e: String) -> Fail {
+    (EXIT_STREAM, e)
+}
 
 /// A client for a long answer: no total timeout, the follow keeps its own clock.
 fn stream_client() -> Result<reqwest::Client, Fail> {
@@ -586,7 +592,7 @@ fn stream_client() -> Result<reqwest::Client, Fail> {
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
     })
-    .map_err(failed)
+    .map_err(broken)
 }
 
 /// `nexo api watch MAP CHANNEL --for 60s`: follows one channel of the map for a while and says which message types
@@ -621,6 +627,12 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
         auth: c.auth.clone(),
         example: String::new(),
     };
+    if c.path.contains('{') {
+        return Err(usage(format!(
+            "{} has a path with parameters ({}); this follow cannot fill them in",
+            c.id, c.path
+        )));
+    }
     let explicit = call::auth_map(api, &t.auth).map_err(usage)?;
     let (vals, missing) = call::auth_values(api, &ep, &explicit, &BTreeMap::new(), &lookup);
     if !missing.is_empty() {
@@ -634,24 +646,32 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
     let known: std::collections::HashSet<exchange::Fp> = vals.iter().map(|(_, v)| exchange::fingerprint(v)).collect();
     let client = stream_client()?;
     println!("following {} (SSE {}{}) for {}s", c.id, c.origin, c.path, span.as_secs());
-    let mut resp = open(&client, &req).await.map_err(failed)?;
+    let started = std::time::Instant::now();
+    let mut resp = match tokio::time::timeout(span, open(&client, &req)).await {
+        Ok(r) => r.map_err(broken)?,
+        Err(_) => return Err(broken("the server did not answer within the --for window".to_string())),
+    };
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
-        return Err(failed(format!("the stream answered {status}")));
+        return Err(broken(format!("the stream answered {status}")));
     }
-    let started = std::time::Instant::now();
+    let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ctype.to_ascii_lowercase().starts_with("text/event-stream") {
+        let shown: String = ctype.chars().take(60).collect();
+        return Err(broken(format!("the answer is {shown:?}, not an event stream (text/event-stream)")));
+    }
     let mut parser = channel::SseParser::new();
     let mut msgs: Vec<channel::Msg> = Vec::new();
     let mut read = 0usize;
     let mut ended = false;
     loop {
         let left = span.saturating_sub(started.elapsed());
-        if left.is_zero() || read >= FOLLOW_CAP {
+        if left.is_zero() || read >= FOLLOW_CAP || msgs.len() >= channel::MAX_FRAMES {
             break;
         }
         match tokio::time::timeout(left, resp.chunk()).await {
             Err(_) => break,
-            Ok(Err(e)) => return Err(failed(net_error(e))),
+            Ok(Err(e)) => return Err(broken(net_error(e))),
             Ok(Ok(None)) => {
                 ended = true;
                 break;
@@ -663,6 +683,7 @@ async fn follow_channel(api: &Api, c: &nexo_api::channel::Channel, t: &Target, w
         }
     }
     msgs.extend(parser.finish());
+    msgs.truncate(channel::MAX_FRAMES);
     for m in &mut msgs {
         m.text = channel::redact_text(&m.text, &known);
     }
