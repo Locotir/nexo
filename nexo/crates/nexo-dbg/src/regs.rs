@@ -197,6 +197,24 @@ impl Regs {
         true
     }
 
+    /// Like [`Regs::set`], and also the segment registers and the segment bases: any name [`Regs::named`] gives.
+    pub fn put(&mut self, name: &str, v: u64) -> bool {
+        if self.set(name, v) {
+            return true;
+        }
+        let n = name.trim_start_matches('$').to_ascii_lowercase();
+        if let Some(i) = SEG.iter().position(|s| *s == n) {
+            self.seg[i] = v;
+            return true;
+        }
+        match n.as_str() {
+            "fs_base" => self.fs_base = v,
+            "gs_base" => self.gs_base = v,
+            _ => return false,
+        }
+        true
+    }
+
     /// Every register with its name, in the order they are shown; a 32-bit thread's by their 32-bit names.
     pub fn named(&self) -> Vec<(&'static str, u64)> {
         let mut v: Vec<(&'static str, u64)> = if self.x32 {

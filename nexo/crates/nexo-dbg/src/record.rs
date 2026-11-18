@@ -5,7 +5,7 @@
 //! This file holds the record and its questions, with no process in it, so the filters can be tested on a
 //! hand-built tape. The commands and the hooks into the run are in `cmds/record.rs`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::platform::Tid;
 use crate::regs::Regs;
@@ -45,6 +45,11 @@ pub struct Entry {
     /// The registers it changed (name, old, new); the pc is not among them.
     pub regs: Vec<(&'static str, u64, u64)>,
     pub mem: Vec<MemWrite>,
+    /// Where the thread was after it (the pc of the next instruction), so a chain of entries can be checked.
+    pub next: u64,
+    /// It may have written memory the entry does not hold (a write over `MAX_WRITE` bytes, an address that could not
+    /// be worked out, code that could not be decoded): it cannot be undone.
+    pub lossy: bool,
 }
 
 impl Entry {
@@ -72,6 +77,8 @@ pub struct Tape {
     pub gaps: u64,
     last: HashMap<Tid, Regs>,
     pending: HashMap<Tid, Vec<(u64, Vec<u8>)>>,
+    /// Threads whose next instruction may write more than `pending` holds.
+    lossy: HashSet<Tid>,
 }
 
 impl Tape {
@@ -86,6 +93,7 @@ impl Tape {
         self.slow = false;
         self.last.clear();
         self.pending.clear();
+        self.lossy.clear();
     }
 
     pub fn cap(&self) -> usize {
@@ -165,6 +173,33 @@ impl Tape {
         }
     }
 
+    /// Whether the instruction at the thread's pc may write more than the pending list holds.
+    pub fn set_lossy(&mut self, tid: Tid, lossy: bool) {
+        if lossy {
+            self.lossy.insert(tid);
+        } else {
+            self.lossy.remove(&tid);
+        }
+    }
+
+    /// The whole record, newest first.
+    pub fn newest_first(&self) -> Vec<&Entry> {
+        self.ring.iter().rev().collect()
+    }
+
+    /// The newest `k` entries were undone and the thread is at `to`: they are let go (so a step forward records
+    /// them again), and the place the next step starts from is `to`.
+    pub fn rewind(&mut self, tid: Tid, k: usize, to: &Regs) {
+        for _ in 0..k.min(self.ring.len()) {
+            self.ring.pop_back();
+            self.total = self.total.saturating_sub(1);
+        }
+        self.run_kept = self.run_kept.saturating_sub(k as u64);
+        self.pending.remove(&tid);
+        self.lossy.remove(&tid);
+        self.last.insert(tid, *to);
+    }
+
     /// The thread is at `now`. `stepped`: it got here by one single step (from `from` when that is known), so
     /// one entry is made; otherwise it is only noted as the new place (and counted as a gap when it moved).
     /// `read` gives the bytes at an address, for the "after" of the memory the step wrote.
@@ -177,6 +212,7 @@ impl Tape {
         read: &mut dyn FnMut(u64, usize) -> Vec<u8>,
     ) {
         let pend = self.pending.remove(&tid).unwrap_or_default();
+        let lossy = self.lossy.remove(&tid);
         match self.last.get(&tid).copied() {
             Some(p) if stepped && from.is_none_or(|f| f == p.rip) => {
                 let mem = pend
@@ -187,12 +223,15 @@ impl Tape {
                     })
                     .collect();
                 let regs = now.changed(&p);
-                self.push(Entry { n: 0, tid, pc: p.rip, regs, mem });
+                self.push(Entry { n: 0, tid, pc: p.rip, regs, mem, next: now.rip, lossy });
             }
             // the same place seen again (a stop after the steps that got there): nothing ran in between
             Some(p) if !stepped && p.rip == now.rip => {
                 if !pend.is_empty() {
                     self.pending.insert(tid, pend);
+                }
+                if lossy {
+                    self.lossy.insert(tid);
                 }
             }
             Some(_) => self.gaps += 1,
@@ -227,6 +266,8 @@ mod tests {
             tid: 1,
             pc,
             regs: regs.to_vec(),
+            next: pc + 4,
+            lossy: false,
             mem: mem.iter().map(|(a, b, n)| MemWrite { addr: *a, before: vec![*b], after: vec![*n] }).collect(),
         }
     }

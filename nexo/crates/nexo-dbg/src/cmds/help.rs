@@ -55,7 +55,7 @@ pub fn help() -> Output {
         "run: nexo dbg run [--break SPEC] [--repeat N --until crash|exit|output~TEXT [--wait SECS]] <exe> [args] (a flaky bug: up to N runs from scratch, 1000 most, stops at the first that crashes, exits non-zero or prints TEXT, or hits a --break; that run stays live, with a tally of the earlier ones)   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
         "go:    cont [--wait N] | step [N] | next [N] | finish (also prints the returned value and its type) | until <addr> | stop | wait [--wait N] | kill | detach | kill call | signal <SIG|N|0> (Linux: cont delivering that signal, 0 drops the pending one; gdb's `signal N`) | stops compact|full (compact: a stop is one line, why | where | `display` values as expr=value, a crash stays full; `display <expr>`, `display`, `undisplay <n|all>`) | follow parent|child|both (a forked child kept as a session of its own, breakpoints copied)",
         "checkpoint: checkpoint (the stopped program forks itself; the copy stays stopped and attached, Linux, one thread, not inside a system call) | checkpoints | restart N (the copy becomes the program, N stays usable, the process left is killed; breakpoints, watches, hooks and displays stay in force) | delete checkpoint N|all   a checkpoint is a fork: its pid differs, files opened before are shared (writes go to the same file), other processes and the network are not rewound",
-        "record: record [N] | record stop keeps the last N instructions (default 10000, most 1000000: pc, changed registers, memory writes up to 64 bytes) while you `step` and `cont` (cont then goes one instruction at a time: slow, Linux only) | back [N] | back --reg REG | back --mem ADDR read it, newest first; it looks back, it does not undo (`status` shows the record)",
+        "record: record [N] | record stop keeps the last N instructions (default 10000, most 1000000: pc, changed registers, memory writes up to 64 bytes) while you `step` and `cont` (cont then goes one instruction at a time: slow, Linux only) | back [N] | back --reg REG | back --mem ADDR read it, newest first; it looks back, it does not undo | rstepi [N] (gdb: reverse-stepi, rsi) undoes the last N recorded instructions of this thread: memory and registers go back, the entries are let go, `stepi` records them again | rcont (reverse-continue, rc) undoes back to an enabled breakpoint, a watched change, or the end of the record; both refuse across a system call (named), another thread, or an entry the record could not keep whole, before changing anything; files, other processes and the network are never rewound (asks; `status` shows the record)",
         "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
         "trace: strace [names|file|net|process|memory] | strace show [filter] | strace off | catch syscall <names|groups> | catch syscall off; ltrace [names] (printf/scanf `...` read off the format string; a library loaded later adds its import calls) | ltrace show [names] | ltrace off | hook <addr|name> [bt N] [stop] [set argN V] [ret V] (a float for a float argument or result; a name no loaded file has waits for a library that has it) | hook show [name] | hooks | hook del <id>|all; heap on | heap | heap leaks | heap off (leaks, double frees and frees of bad pointers without valgrind: follows malloc, calloc, realloc, free and the aligned forms, stops on a bad free with where the block was allocated and first freed, `heap` lists the live blocks by allocation site, `heap leaks` after the exit; every call stops the process, so the program runs much slower); cover [funcs] | cover show [func] | cover save <A> | cover diff <A> <B>|now | cover off",
         "break: break <addr|*addr|name|file:line|name+off|import> (a function stops after its prologue) [if <expr>] [after N] [log <text with {expr}>] [once] (a name no loaded file has is pending until a library that has it loads) | catch throw|panic|abort (a breakpoint on __cxa_throw, rust_begin_unwind and rust_panic or runtime.gopanic, abort; pending until a library has it) | catch load|unload [NAME|off] (a stop when a library whose file name holds NAME comes or goes) | breaks | delete <id>|all | enable/disable <id>",
@@ -79,7 +79,16 @@ mod tests {
     #[test]
     fn the_help_names_the_record_and_says_it_does_not_undo() {
         let text = help().text_all();
-        for w in ["record [N]", "record stop", "back [N]", "back --reg REG", "back --mem ADDR", "does not undo"] {
+        for w in [
+            "record [N]",
+            "record stop",
+            "back [N]",
+            "back --reg REG",
+            "back --mem ADDR",
+            "does not undo",
+            "rstepi [N]",
+            "rcont",
+        ] {
             assert!(text.contains(w), "help lacks {w:?}");
         }
     }

@@ -166,7 +166,7 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let head = crate::gdbdialect::base_name(first);
     match head {
         "attach" | "connect" | "write" | "setreg" | "return" | "jump" | "gcore" | "call" | "dump" | "checkpoint"
-        | "restart" => DbgClass::Change,
+        | "restart" | "rstepi" | "rcont" => DbgClass::Change,
         // kills a stored copy of the program
         "delete" | "del" if deletes_checkpoint(&rest[1..]) => DbgClass::Change,
         // an expression that calls a function of the program runs that code
@@ -364,7 +364,7 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
     }
     if !READ_ALLOWED.contains(&name) {
         return Some(match name {
-            "write" | "setreg" | "return" | "jump" => format!("`{name}` writes into the program"),
+            "write" | "setreg" | "return" | "jump" | "rstepi" | "rcont" => format!("`{name}` writes into the program"),
             "gcore" => "`gcore` writes a file".to_string(),
             "call" => "`call` runs code of the program".to_string(),
             "checkpoint" | "restart" => format!("`{name}` makes the program fork itself or replaces it with a copy"),
@@ -1458,6 +1458,10 @@ mod tests {
         assert_eq!(dbg_class(&crate::split_words("set pagination off")), DbgClass::Control);
         assert_eq!(dbg_class(&crate::split_words("backtrace 3")), DbgClass::Control);
         // the record only keeps what ran and `back` only reads it: neither writes into the program
+        // undoing writes memory and registers back: it is a change
+        for c in ["rstepi 3", "rcont", "reverse-stepi", "rsi 2", "rc", "reverse-continue"] {
+            assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Change, "{c}");
+        }
         for c in ["record", "record 500", "record stop", "back 3", "back --reg rax", "back --mem 0x1000"] {
             assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Control, "{c}");
         }

@@ -1,10 +1,13 @@
 //! `record` and `back`: a bounded record of the instructions that ran, and a way to read it. The record itself
 //! (the ring and its filters) is in `record.rs`; this file is the commands and the hooks the run calls.
-//! It looks back, it does not undo: the program is never moved.
+//! `back` looks back, it does not undo. `rstepi` and `rcont` do: they write the recorded "before" bytes back and
+//! set the registers to what they were (the plan is in `undo.rs`), and let the entries go, so a step forward
+//! records them again.
 
 use super::*;
 use crate::record::{Entry, DEFAULT_KEEP, MAX_KEEP, MAX_WRITE};
 use crate::regs::Regs;
+use crate::undo::{self, Goal};
 
 /// Registers one row of `back` writes before it says how many more there were.
 const BACK_REGS: usize = 6;
@@ -44,18 +47,29 @@ impl Session {
         }
         if !self.tape.has_pending(tid) {
             let bytes = self.read_vec(r.rip, 16);
-            let Some(ins) = decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n)) else { return };
+            let Some(ins) = decode_live_in(self.bits(), &bytes, r.rip, &|n| r.get(n)) else {
+                self.tape.set_lossy(tid, true);
+                return;
+            };
             let mut w = Vec::new();
+            let mut lossy = false;
             for m in ins.mem.iter().filter(|m| m.write) {
-                let Some(a) = m.addr else { continue };
+                let Some(a) = m.addr else {
+                    lossy = true;
+                    continue;
+                };
                 if m.size == 0 || m.size > MAX_WRITE {
+                    lossy = true;
                     continue;
                 }
                 let before = self.read_vec(a, m.size);
                 if before.len() == m.size {
                     w.push((a, before));
+                } else {
+                    lossy = true;
                 }
             }
+            self.tape.set_lossy(tid, lossy);
             self.tape.set_pending(tid, w);
         }
     }
@@ -150,7 +164,7 @@ impl Session {
             (format!("the last {n} instructions (newest first)"), self.tape.back(n).into_iter().cloned().collect())
         };
         let mut l = vec![format!(
-            "{title}; {} kept, {} dropped; this looks back, it does not undo",
+            "{title}; {} kept, {} dropped; this looks back, it does not undo (`rstepi N` and `rcont` do)",
             self.tape.kept(),
             self.tape.dropped
         )];
@@ -181,5 +195,117 @@ impl Session {
             l.push(row);
         }
         Ok(rows("back", l, json!({"kept": self.tape.kept(), "dropped": self.tape.dropped, "shown": picked.len()})))
+    }
+    /// `rstepi [N]`: undo the last N recorded instructions of this thread.
+    pub(super) fn cmd_rstepi(&mut self, a: &Args) -> Result<Output> {
+        let n = match a.pos.first() {
+            Some(x) => parse_addr(x).ok().filter(|v| (1..=MAX_KEEP as u64).contains(v)).ok_or_else(|| {
+                crate::Error::Usage(format!("rstepi [N] undoes the last N instructions: 1 to {MAX_KEEP}"))
+            })?,
+            None => 1,
+        } as usize;
+        self.rec_undo("rstepi", Some(n))
+    }
+
+    /// `rcont`: undo until an enabled breakpoint's address is the pc, a watched address changes, or the record ends.
+    pub(super) fn cmd_rcont(&mut self, _a: &Args) -> Result<Output> {
+        self.rec_undo("rcont", None)
+    }
+
+    /// The two commands: plan, check, then change the program (memory first, then registers).
+    fn rec_undo(&mut self, name: &str, count: Option<usize>) -> Result<Output> {
+        self.rec_linux(name)?;
+        self.need_stopped()?;
+        if !self.tape.on {
+            return fail(format!(
+                "{name}: recording is off, so nothing can be undone (`record` starts it; entries kept from an earlier record are for `back` only, the program has moved since)"
+            ));
+        }
+        let cur = self.cur;
+        let now = self.t.regs(cur)?;
+        let bps: Vec<(u32, u64)> =
+            self.bps.iter().filter(|b| b.enabled && b.addr != 0).map(|b| (b.id, b.addr)).collect();
+        let wps: Vec<(u32, u64, u64)> = self.wps.iter().map(|w| (w.id, w.addr, w.addr + w.len)).collect();
+        let stop = |e: &Entry| {
+            bps.iter().any(|(_, a)| *a == e.pc)
+                || e.mem.iter().any(|m| wps.iter().any(|(_, lo, hi)| undo::changes_bytes(m, *lo, *hi)))
+        };
+        let (plan, last) = {
+            let Session { t, tape, .. } = self;
+            let ring = tape.newest_first();
+            let goal = match count {
+                Some(n) => Goal::Count(n),
+                None => Goal::Until(&stop),
+            };
+            let plan = undo::plan(&ring, cur, &now, goal, &mut |pc| {
+                let mut b = [0u8; 2];
+                t.read(pc, &mut b) == 2 && undo::is_syscall_bytes(&b)
+            });
+            match plan {
+                Ok(p) => {
+                    let last = ring[p.undone - 1].clone();
+                    (p, last)
+                }
+                Err(m) => return fail(format!("{name}: {m}")),
+            }
+        };
+        // every place must be readable before anything is written
+        for (addr, bytes) in &plan.writes {
+            if self.read_vec(*addr, bytes.len()).len() != bytes.len() {
+                return fail(format!(
+                    "{name}: {addr:#x} cannot be read any more ({} bytes to put back), so nothing is undone",
+                    bytes.len()
+                ));
+            }
+        }
+        for (addr, bytes) in &plan.writes {
+            self.t.write(*addr, bytes)?;
+        }
+        self.t.set_regs(cur, &plan.regs)?;
+        self.tape.rewind(cur, plan.undone, &plan.regs);
+        self.frame = 0;
+        let spans: Vec<(u64, usize)> = self.wps.iter().map(|w| (w.addr, w.len as usize)).collect();
+        for (i, (addr, len)) in spans.into_iter().enumerate() {
+            let bytes = self.read_vec(addr, len);
+            self.wps[i].last = bytes;
+        }
+        self.rec_observe(cur, &plan.regs, false, None);
+        let label = self.mods.label(plan.pc_to, false).unwrap_or_default();
+        let mut l = vec![format!(
+            "undid {} instruction{}: pc {:#x} -> {:#x} {label}; {} memory write{} put back ({} bytes), {} register{} restored",
+            plan.undone,
+            if plan.undone == 1 { "" } else { "s" },
+            plan.pc_from,
+            plan.pc_to,
+            plan.writes.len(),
+            if plan.writes.len() == 1 { "" } else { "s" },
+            plan.bytes,
+            plan.regs_changed,
+            if plan.regs_changed == 1 { "" } else { "s" }
+        )];
+        if count.is_none() {
+            if plan.ran_out {
+                l.push(format!(
+                    "the record ran out: no enabled breakpoint or watched change in it; this is the oldest state it holds ({} older instructions were dropped)",
+                    self.tape.dropped
+                ));
+            } else if let Some((id, _)) = bps.iter().find(|(_, a)| *a == plan.pc_to) {
+                l.push(format!("stopped at breakpoint #{id}"));
+            } else if let Some((id, ..)) =
+                wps.iter().find(|(_, lo, hi)| last.mem.iter().any(|m| undo::changes_bytes(m, *lo, *hi)))
+            {
+                l.push(format!("stopped before the write that changed watch #{id}"));
+            }
+        }
+        l.push("never rewound: files, other processes and the network, what the kernel holds; vector and x87 registers are not in the record".into());
+        l.push(format!(
+            "{} entries stay in the record; `stepi` goes forward and records again, `back` reads what is left",
+            self.tape.kept()
+        ));
+        Ok(rows(
+            name,
+            l,
+            json!({"undone": plan.undone, "from": plan.pc_from, "to": plan.pc_to, "bytes": plan.bytes, "ran_out": plan.ran_out, "kept": self.tape.kept()}),
+        ))
     }
 }

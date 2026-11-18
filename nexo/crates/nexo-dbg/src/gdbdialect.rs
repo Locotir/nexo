@@ -10,6 +10,8 @@ pub fn alias(name: &str) -> &str {
         "tb" | "tbr" => "tbreak",
         "br" | "brea" | "bre" => "break",
         "si" | "stepi" => "step",
+        "reverse-stepi" | "rsi" => "rstepi",
+        "reverse-continue" | "rc" => "rcont",
         "ni" | "nexti" => "next",
         "fin" => "finish",
         "f" => "frame",
@@ -654,9 +656,8 @@ pub fn hint(cmd: &str) -> Option<&'static str> {
             "the program is chosen by `run <path> [args]`"
         }
         "start" | "starti" => "`run --main <path> [args]` starts and stops at main",
-        "reverse-step" | "reverse-stepi" | "reverse-next" | "reverse-nexti" | "reverse-continue" | "reverse-finish"
-        | "rs" | "rsi" | "rn" | "rni" | "rc" => {
-            "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record); to go back for real, `checkpoint` forks the program here and `restart N` returns to it"
+        "reverse-step" | "reverse-next" | "reverse-nexti" | "reverse-finish" | "rs" | "rn" | "rni" => {
+            "this debugger looks back with `back N`, `back --reg R`, `back --mem A`; it does not undo (`record` starts the record); `rstepi N` and `rcont` undo instructions; to go back for real, `checkpoint` forks the program here and `restart N` returns to it"
         }
         "valgrind" | "memcheck" | "leak-check" => {
             "`heap on`, then `cont`: a free of a bad pointer stops the program, and `heap leaks` lists the blocks never freed"
@@ -990,15 +991,19 @@ mod tests {
         // `record` has its own command now: no hint stands in its place
         assert_eq!(hint("record"), None);
         assert_eq!(base_name("record"), "record");
-        for c in ["reverse-step", "reverse-stepi", "reverse-next", "reverse-continue", "reverse-finish", "rc"] {
+        for c in ["reverse-step", "reverse-next", "reverse-finish", "rs"] {
             let h = hint(c).unwrap_or_else(|| panic!("{c} has no hint"));
             assert!(h.contains("back N") && h.contains("back --reg R") && h.contains("back --mem A"), "{c}: {h}");
             assert!(h.contains("does not undo"), "{c}: {h}");
         }
         assert_eq!(hint("checkpoint"), None);
         assert_eq!(hint("restart"), None);
-        for c in ["reverse-step", "rc"] {
+        for c in ["reverse-step", "rs"] {
             assert!(hint(c).unwrap().contains("checkpoint"), "{c}");
         }
+        // the two that undo are commands now
+        assert_eq!((base_name("reverse-stepi"), base_name("rsi")), ("rstepi", "rstepi"));
+        assert_eq!((base_name("reverse-continue"), base_name("rc")), ("rcont", "rcont"));
+        assert_eq!((hint("rsi"), hint("rc")), (None, None));
     }
 }
