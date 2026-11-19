@@ -229,7 +229,7 @@ pub fn parse_target_xml(xml: &str) -> (Option<String>, Layout) {
         let name = attr(tag, "name").unwrap_or_default();
         let bits = attr(tag, "bitsize").and_then(|b| b.parse().ok()).unwrap_or(0);
         let num = attr(tag, "regnum").and_then(|b| b.parse().ok()).unwrap_or(next);
-        next = num + 1;
+        next = num.saturating_add(1);
         regs.push((num, name, bits));
         rest = &rest[end..];
     }
@@ -564,5 +564,16 @@ mod tests {
         let l = legacy_layout();
         assert_eq!(l.slots.iter().find(|s| s.name == "rip").unwrap().off, 128);
         assert_eq!(l.slots.iter().find(|s| s.name == "gs").unwrap().off, 128 + 8 + 4 + 5 * 4);
+    }
+
+    #[test]
+    fn a_regnum_at_the_top_of_usize_does_not_overflow() {
+        let xml = format!(
+            r#"<target><reg name="a" bitsize="64" regnum="{}"/><reg name="b" bitsize="64"/></target>"#,
+            usize::MAX
+        );
+        let (_, l) = parse_target_xml(&xml);
+        assert_eq!(l.slots.len(), 2);
+        assert_eq!(l.len, 16);
     }
 }

@@ -296,7 +296,8 @@ impl Minidump {
         if let Some(r) = self.ranges.iter().find(|r| addr >= r.start && addr - r.start < r.len) {
             let rel = addr - r.start;
             let n = (out.len() as u64).min(r.len - rel) as usize;
-            let from = (r.at + rel) as usize;
+            let Some(from) = r.at.checked_add(rel) else { return 0 };
+            let from = from as usize;
             return match self.bytes.get(from..from.saturating_add(n)) {
                 Some(b) => {
                     out[..n].copy_from_slice(b);
@@ -314,13 +315,13 @@ impl Minidump {
             return 0;
         };
         let Some(img) = self.disk_image(&path) else { return 0 };
-        let va = addr - base + img.image_base;
+        let Some(va) = (addr - base).checked_add(img.image_base) else { return 0 };
         let Some(s) = img.section_at(va) else { return 0 };
         let bytes = img.section_bytes(s);
         let off = (va - s.addr) as usize;
         match bytes.get(off..) {
             Some(b) if !b.is_empty() => {
-                let n = b.len().min(out.len()).min((s.addr + s.size - va) as usize);
+                let n = b.len().min(out.len()).min((s.size - (va - s.addr)) as usize);
                 out[..n].copy_from_slice(&b[..n]);
                 n
             }
@@ -595,5 +596,13 @@ mod tests {
         // streams past the end of the file are left out, and a dump with no thread says so
         let e = Minidump::parse(whole[..100].to_vec()).err().unwrap().to_string();
         assert!(e.contains("no thread"), "{e}");
+    }
+
+    #[test]
+    fn a_range_whose_offset_overflows_reads_nothing() {
+        let mut d = Minidump::parse(sample()).unwrap();
+        d.ranges.push(Range { start: 0x9000, len: 0x100, at: u64::MAX - 4 });
+        let mut buf = [0u8; 16];
+        assert_eq!(d.read(0x9010, &mut buf), 0);
     }
 }

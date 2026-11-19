@@ -4,6 +4,9 @@
 //!
 //! Nothing here hides the debugger from the program it runs.
 
+#![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
 mod argshape;
 mod callargs;
 mod client;

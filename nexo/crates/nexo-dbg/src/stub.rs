@@ -114,7 +114,7 @@ impl Stub {
         let n = self.t.read(addr, &mut v);
         v.truncate(n);
         for (a, orig) in &self.bps {
-            if *a >= addr && *a < addr + n as u64 {
+            if *a >= addr && *a - addr < n as u64 {
                 v[(*a - addr) as usize] = *orig;
             }
         }
@@ -124,7 +124,7 @@ impl Stub {
     fn write_mem(&mut self, addr: u64, data: &[u8]) -> Result<()> {
         let mut d = data.to_vec();
         for (a, orig) in self.bps.iter_mut() {
-            if *a >= addr && *a < addr + d.len() as u64 {
+            if *a >= addr && *a - addr < d.len() as u64 {
                 let i = (*a - addr) as usize;
                 *orig = d[i];
                 d[i] = 0xcc;
