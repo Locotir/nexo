@@ -397,9 +397,11 @@ pub(crate) fn page(view: &mut [Value], over: i64) -> Vec<usize> {
         if left <= 0 {
             break;
         }
+        work!(PageCalls, 1);
         let mut best: Option<(usize, Vec<usize>, usize)> = None;
         for (i, m) in view.iter().enumerate() {
             longest(m, &mut Vec::new(), &mut |path, n| {
+                work!(PageByte, n);
                 if best.as_ref().is_none_or(|b| n > b.2) {
                     best = Some((i, path.to_vec(), n));
                 }

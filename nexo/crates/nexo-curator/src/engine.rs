@@ -33,6 +33,7 @@ mod cells;
 mod decide;
 mod dump;
 mod dups;
+mod edit_index;
 mod files;
 mod fixes;
 mod frontier;
@@ -307,6 +308,14 @@ pub struct Engine {
     /// each call's result came back without an error (`Params.stale`).
     edits: Vec<(String, usize, String)>,
     edit_ok: FxHashMap<String, bool>,
+    /// The call ids of `edits` (the first `.0` of them), so that «does this id name an edit» is one lookup. Not in a
+    /// snapshot: `sync_edit_caches` fills it again from `edits`. Shared, so that the copy an epoch try takes
+    /// shares them (it never ingests, so it never copies them).
+    #[serde(skip)]
+    edit_ids: Shared<(usize, FxHashSet<String>)>,
+    /// `edits` by file (`edit_index`). Not in a snapshot either.
+    #[serde(skip)]
+    edit_index: Shared<edit_index::EditIndex>,
     /// The files a shell command that only prints files read (`cat`, `sed -n`): by call id while it waits for
     /// its result, then by result unit, so a later edit of one makes the output out of date as a read's.
     shell_read: FxHashMap<String, Vec<String>>,
@@ -473,6 +482,8 @@ impl Engine {
             reads_made: FxHashMap::default(),
             edits: Vec::new(),
             edit_ok: FxHashMap::default(),
+            edit_ids: Default::default(),
+            edit_index: Default::default(),
             shell_read: FxHashMap::default(),
             shell_reads: FxHashMap::default(),
             shell_part: FxHashMap::default(),

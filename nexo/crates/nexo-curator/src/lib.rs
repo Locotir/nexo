@@ -6,6 +6,9 @@
 #[cfg(feature = "sim")]
 pub mod sim;
 
+#[macro_use]
+mod work;
+
 mod curator;
 mod engine;
 mod evidence;

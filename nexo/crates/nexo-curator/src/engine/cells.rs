@@ -91,6 +91,8 @@ impl Engine {
         // the cells: a message's zone (the topic of the turn that holds it) and its tokens as it arrived are
         // settled when it comes; its state changes only by entering or leaving the view, or by a cut while in it
         let seen: FxHashSet<usize> = vis.iter().copied().collect();
+        work!(CellCopy, c.cells.len() * usize::from(Arc::strong_count(&c.cells) > 1));
+        work!(CellCopies, usize::from(Arc::strong_count(&c.cells) > 1));
         let cells = Arc::make_mut(&mut c.cells);
         for &mi in c.vis.iter() {
             if cells[mi].state != State::Out && !seen.contains(&mi) {

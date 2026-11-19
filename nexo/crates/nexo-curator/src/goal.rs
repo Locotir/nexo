@@ -266,6 +266,7 @@ impl Threads {
         }
         let mut own = vec![0.0f64; n];
         for (j, (t, o)) in self.turns.iter().zip(&shared).enumerate() {
+            work!(TurnScored, 1);
             let asked = o.asked.unwrap_or(none);
             let prev = if j == n - 1 { 1.0 } else { 0.0 };
             // how likely the request goes on from the turn, when it shares these of the turn's words

@@ -162,7 +162,7 @@ pub(super) struct PathSet {
 }
 
 impl PathSet {
-    fn norm(path: &str) -> String {
+    pub(super) fn norm(path: &str) -> String {
         let p = slashes(path);
         p.strip_prefix("./").unwrap_or(&p).to_string()
     }

@@ -15,6 +15,7 @@ use crate::tools::{
     printed_files, prints_files, read_part, shell_part, shell_writes, DbgEffect, Kind,
 };
 
+use super::edit_index::sync_edit_caches;
 use super::files::{basename, command_of, edited, file_key, forget, head_and_tail, same_file, Wrote, WROTE_TOKENS};
 use super::notes::{note_text, NOTE_LINE};
 use super::params::Params;
@@ -347,7 +348,10 @@ impl Engine {
                 if let Some(session) = self.dbg_look.remove(&id) {
                     self.dbg_looks.insert(i, session);
                 }
-                if self.edits.iter().any(|e| e.2 == id) {
+                // the ids of the edits so far: a call pushes its edits when it comes, before its result
+                sync_edit_caches(&mut self.edit_ids, &mut self.edit_index, &self.edits);
+                work!(EditCmp, 1);
+                if self.edit_ids.1.contains(&id) {
                     self.edit_ok.insert(id.clone(), !info.is_some_and(|x| x.error));
                 }
                 if let Some(parts) = self.shell_part.remove(&id) {
@@ -358,6 +362,7 @@ impl Engine {
                 }
             }
         }
+        sync_edit_caches(&mut self.edit_ids, &mut self.edit_index, &self.edits);
     }
 
     /// The rules in message ``m`` as it arrives (before it is cut, and whatever topic it belongs to):
