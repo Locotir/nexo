@@ -91,6 +91,8 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.goal_cost0 = st.cost;
     st.goal_idle = GoalIdle::default();
     st.goal_counts = GoalCounts::new(st.cost);
+    st.goal_unread = false;
+    st.goal_pending = None;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
@@ -578,6 +580,8 @@ pub(super) async fn clear(state: &Shared) {
     st.goal_round = 0;
     st.goal_log = GoalLog::default();
     st.goal_state = GoalState::Active;
+    st.goal_unread = false;
+    st.goal_pending = None;
     if had_goal {
         emit_goal(&st);
     }

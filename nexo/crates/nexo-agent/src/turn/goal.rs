@@ -153,6 +153,9 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     st.goal_cost0 = st.cost;
     st.goal_idle = GoalIdle::default();
     st.goal_counts = GoalCounts::new(st.cost);
+    // a new goal owes nothing to an earlier one; one set during a turn asks for its own request (see `on_set_goal`)
+    st.goal_unread = false;
+    st.goal_pending = None;
     if let Err(e) = st.session.record_goal(text.as_deref()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -442,9 +445,17 @@ pub(super) fn person_spoke(st: &mut State) {
 /// What a turn's end does to an active goal, before anything else runs: met, waiting for the
 /// person, or paused because the turn did not end on its own (Esc, an error or spend limit, the
 /// tool-round limit). A goal that is not active stays as it is.
-pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
+///
+/// A goal set or resumed while the turn ran is not judged by that turn's reply, which was written before the model
+/// knew of it. Enter on a queued message (`run_queue`) stops the turn to run that message at once: the goal goes on
+/// after it, so it is not paused.
+pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd, run_queue: bool) {
     let mut st = state.lock().await;
+    let unread = std::mem::take(&mut st.goal_unread);
     if st.goal.is_none() || !st.goal_state.is_active() {
+        return;
+    }
+    if reason == TurnEnd::Interrupted && run_queue && !st.inbox.is_empty() {
         return;
     }
     let paused = |why: &str| GoalState::Paused(why.to_string());
@@ -463,6 +474,10 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
             ),
         },
         TurnEnd::Done => {
+            // a goal whose own request has not gone yet is not what any reply answers
+            if unread || st.goal_pending.is_some() {
+                return;
+            }
             let from = st.turn_start.min(st.history.len());
             let last = st.history[from..]
                 .iter()
@@ -484,12 +499,16 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
 
 /// After a turn that ended on its own, with nothing queued: what to submit to keep working towards
 /// an active goal, while rounds are left. A continuation round that called no tool did nothing
-/// new, so the goal pauses there instead of asking again; the first continuation always runs.
-pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
+/// new, so the goal pauses there instead of asking again; the first continuation always runs. A goal set during a
+/// turn has not been asked yet: its own request comes first, with its files, and is no continuation round.
+pub(super) async fn goal_follow_up(state: &Shared) -> Option<(String, Vec<Attachment>)> {
     let mut st = state.lock().await;
     st.goal.as_ref()?;
     if !st.goal_state.is_active() {
         return None;
+    }
+    if st.goal_pending.is_some() {
+        return Some(goal_request_now(&mut st));
     }
     let max = goal_rounds();
     // a round counts by its progress, not by its calls: a round that only got back what it had did nothing new
@@ -511,7 +530,19 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
     }
     st.goal_round += 1;
     emit_goal(&st);
-    Some(GOAL_CONTINUE.to_string())
+    Some((GOAL_CONTINUE.to_string(), Vec::new()))
+}
+
+/// The request that goes to the model for the goal now: the `[goal set]` request of a goal set during a turn, with the
+/// files the person attached to it (taken: it is asked once), else a continuation.
+pub(super) fn goal_request_now(st: &mut State) -> (String, Vec<Attachment>) {
+    match st.goal_pending.take() {
+        Some(attachments) => {
+            let words = st.goal_log.original.as_deref().or(st.goal.as_deref()).unwrap_or_default();
+            (format!("{GOAL_SET_MARK} {words}"), attachments)
+        }
+        None => (GOAL_CONTINUE.to_string(), Vec::new()),
+    }
 }
 
 /// Steps without progress after which the goal's work stops and the goal pauses, with the facts for the person:
@@ -669,21 +700,44 @@ pub(super) async fn pause_goal(state: &Shared, running: bool) {
     goal_to(&mut st, GoalState::Paused("paused by you".into()), say.into());
 }
 
-/// `/goal resume`: the goal is active again with all its rounds. True when nothing runs, so the
-/// caller starts a continuation now; a turn in progress is followed by one when it ends.
-pub(super) async fn resume_goal(state: &Shared, running: bool) -> bool {
+/// What `/goal resume` leaves to do (see [`resume_goal`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Resumed {
+    /// Nothing runs and nothing is kept: the goal's request starts now.
+    Start,
+    /// Nothing runs but messages are kept (Esc left them): they start now, and the goal goes on after them.
+    Queued,
+    /// A turn is running: the goal goes on when it ends.
+    Later,
+    /// No goal is set.
+    No,
+}
+
+/// `/goal resume`: the goal is active again with all its rounds. Nothing running starts the goal's request now, or
+/// the messages Esc kept (the goal goes on after them); a turn in progress is followed by a continuation when it ends,
+/// and its own reply says nothing about the goal (see [`goal_settle`]).
+pub(super) async fn resume_goal(state: &Shared, running: bool) -> Resumed {
     let mut st = state.lock().await;
     if st.goal.is_none() {
         notice(&st.events, Level::Info, "no goal set: /goal <text> sets one");
-        return false;
+        return Resumed::No;
     }
-    // the stop is lifted only when a continuation starts now
-    let start = !running && st.inbox.is_empty();
-    if start {
+    let was_active = st.goal_state.is_active();
+    let resumed = if running {
+        // a turn of a goal that was running is the goal's own: only a goal that was not running had no say in it
+        st.goal_unread |= !was_active;
+        Resumed::Later
+    } else {
+        // the stop is lifted only when something starts now
         st.held = false;
-    }
+        if st.inbox.is_empty() {
+            Resumed::Start
+        } else {
+            Resumed::Queued
+        }
+    };
     goal_to(&mut st, GoalState::Active, "goal resumed".into());
-    start
+    resumed
 }
 
 #[cfg(test)]

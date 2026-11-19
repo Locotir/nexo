@@ -152,6 +152,8 @@ impl Runtime {
             goal_cost0: cost,
             goal_idle: GoalIdle::default(),
             goal_counts: GoalCounts::new(cost),
+            goal_unread: false,
+            goal_pending: None,
             goal,
             goal_round: 0,
             goal_state,

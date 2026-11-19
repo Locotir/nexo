@@ -132,9 +132,9 @@ async fn a_goal_set_while_a_turn_runs_only_pins_it() {
     let t1 = r.turn().await;
     assert_eq!(user_texts(&t1), vec!["go"], "no second request while the turn runs");
     assert!(t1.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("from the next turn"))));
-    // the goal is checked when that turn ends: the first continuation runs
+    // that turn ended before the model knew of the goal: its own request follows, with the goal's words
     let t2 = r.turn().await;
-    assert!(user_texts(&t2).contains(&CONTINUE.to_string()));
+    assert_eq!(user_texts(&t2), vec!["[goal set] finish it"]);
     assert_eq!(client.requests().len(), 2);
     r.stop().await;
 }
@@ -145,7 +145,6 @@ async fn a_goal_continuation_leaves_the_round_to_the_interface() {
     let client = Scripted::new(vec![Reply::Events(text("first")), Reply::Events(text("GOAL DONE"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
     r.send(AgentCommand::SetGoal { text: Some("finish it".into()), attachments: vec![] });
     r.turn().await;
     let t2 = r.turn().await;
@@ -600,4 +599,161 @@ async fn each_person_message_carries_its_time_and_the_gap_since_the_previous_one
         && line[9..].starts_with(", ");
     assert!(ok, "{b}");
     assert!(b.ends_with(&format!("{}\nok, now the tests", nexo_core::agent::PERSON_MARK)), "{b}");
+}
+
+/// A goal set during a turn is judged by what comes after: the reply of that turn was written before the model knew
+/// of the goal, so a `GOAL DONE` in it does not meet the goal. The goal then gets its own `[goal set]` request.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_set_during_a_turn_is_not_judged_by_that_turns_reply() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 1"}))),
+        Reply::Events(text("done\nGOAL DONE")),
+        Reply::Events(text("on it")),
+        Reply::Events(text("all set\nGOAL DONE")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::ToolStart { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("write REPORT.md".into()), attachments: vec![] });
+    let t1 = r.turn().await;
+    assert_eq!(goal_state_of(&t1), Some(GoalState::Active));
+    // the goal is still active after that turn: its own request follows, in the history (not in the request, which
+    // a later step may shorten)
+    let t2 = r.turn().await;
+    assert_eq!(user_texts(&t2), vec!["[goal set] write REPORT.md"]);
+    // that request is the goal's first round: the continuation comes after it, and its reply meets the goal
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert!(user_texts(&evs).contains(&CONTINUE.to_string()), "{:?}", user_texts(&evs));
+    assert_eq!(client.requests().len(), 4);
+    r.stop().await;
+}
+
+/// The same for a goal resumed during a turn: the reply of that turn does not meet it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_resumed_during_a_turn_is_not_judged_by_that_turns_reply() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("I need one thing from you.\nGOAL WAIT")),
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 1"}))),
+        Reply::Events(text("all done\nGOAL DONE")),
+        Reply::Events(text("checked\nGOAL DONE")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()), attachments: vec![] });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Waiting, .. })).await;
+    r.send(AgentCommand::PauseGoal);
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
+    r.send(AgentCommand::Submit { text: "look at the logs".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::ToolStart { .. })).await;
+    r.send(AgentCommand::ResumeGoal);
+    let t2 = r.turn().await;
+    assert_eq!(goal_state_of(&t2), Some(GoalState::Active));
+    // the reply of that turn said GOAL DONE before the goal was back: the goal stays active and goes on
+    let t3 = r.turn().await;
+    assert_eq!(user_texts(&t3), vec![CONTINUE.to_string()]);
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert_eq!(client.requests().len(), 4);
+    r.stop().await;
+}
+
+/// The files the person attached to a goal set during a turn wait for that goal's own request and go with it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_set_during_a_turn_keeps_its_files_for_its_first_request() {
+    let dir = test_tmpdir().unwrap();
+    std::fs::write(dir.path().join("notes.md"), "the plan is to ship on friday").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 1"}))),
+        Reply::Events(text("ok")),
+        Reply::Events(text("noted\nGOAL DONE")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::ToolStart { .. })).await;
+    r.send(AgentCommand::SetGoal {
+        text: Some("summarise @notes.md into REPORT.md".into()),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("notes.md") }],
+    });
+    r.turn().await;
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(!reqs[0].messages[0].text().contains("ship on friday"), "the running turn did not get the file");
+    let sent = reqs[2].messages.last().unwrap().text();
+    let file = "@notes.md (attached in full, as it is now):\n```md\nthe plan is to ship on friday\n```";
+    assert!(sent.contains(file), "{sent}");
+    assert_eq!(sent.matches("the plan is to ship on friday").count(), 1, "the file comes once: {sent}");
+    assert!(sent.contains("[goal set] summarise @notes.md into REPORT.md"), "{sent}");
+}
+
+/// Enter on a queued message stops the turn to run that message at once: the goal is not paused by it, it goes on
+/// after the message.
+#[tokio::test]
+async fn enter_on_a_queued_message_keeps_the_goal_running() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Events(text("second")),
+        Reply::Events(text("all set\nGOAL DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Submit { text: "also check X".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::InterruptRun);
+    let t1 = r.turn().await;
+    assert_eq!(end_of(&t1), TurnEnd::Interrupted);
+    // the queued text runs
+    let t2 = r.turn().await;
+    assert_eq!(text_of(&t2), "second");
+    assert!(user_texts(&t2).iter().any(|t| t.contains("also check X")), "{:?}", user_texts(&t2));
+    let said: Vec<String> = notices(&t1).into_iter().chain(notices(&t2)).collect();
+    assert!(!said.iter().any(|n| n.starts_with("goal paused")), "{said:?}");
+    // then the goal goes on by itself
+    let t3 = r.turn().await;
+    assert!(user_texts(&t3).contains(&CONTINUE.to_string()), "{:?}", user_texts(&t3));
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Done));
+    r.stop().await;
+}
+
+/// Esc pauses the goal and keeps the queued messages for the person; `/goal resume` starts those messages and the
+/// goal goes on after them, where it used to say "goal resumed" and start nothing.
+#[tokio::test]
+async fn goal_resume_after_esc_runs_the_kept_messages() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Events(text("did X\nGOAL DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Submit { text: "also X".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::Interrupt);
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("queued request(s) kept"))).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("interrupted".into())));
+    r.send(AgentCommand::ResumeGoal);
+    let t2 = r.turn().await;
+    assert_eq!(goal_state_of(&t2), Some(GoalState::Active));
+    assert!(user_texts(&t2).iter().any(|t| t.contains("also X")), "{:?}", user_texts(&t2));
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert!(client.requests()[1].messages.last().unwrap().text().contains("also X"));
+    r.stop().await;
 }

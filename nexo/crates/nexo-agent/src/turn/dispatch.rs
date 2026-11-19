@@ -68,12 +68,14 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         }
         AgentCommand::SetGoal { text, attachments } => on_set_goal(rt, text, attachments).await,
         AgentCommand::PauseGoal => pause_goal(&rt.state, rt.turn.is_some()).await,
-        AgentCommand::ResumeGoal => {
-            if resume_goal(&rt.state, rt.turn.is_some()).await {
-                let text = GOAL_CONTINUE.to_string();
-                rt.turn = Some(start_turn(&rt.state, text, Vec::new(), rt.cancel.child_token()).await);
+        AgentCommand::ResumeGoal => match resume_goal(&rt.state, rt.turn.is_some()).await {
+            Resumed::Start => lifecycle::start_goal_request(rt).await,
+            // the messages Esc kept run now; the goal goes on when they end
+            Resumed::Queued => {
+                lifecycle::run_queued(rt).await;
             }
-        }
+            Resumed::Later | Resumed::No => {}
+        },
         AgentCommand::ShowPrompt => {
             let st = rt.state.lock().await;
             let text = full_system(&st);
@@ -418,11 +420,17 @@ async fn on_clear(rt: &mut Runtime) {
     }
 }
 
-/// `/goal`: a goal set while idle starts a turn towards it; one set during a turn is read from the next.
+/// `/goal`: a goal set while idle starts a turn towards it; one set during a turn gets its own request, with its
+/// files, when that turn ends, and the turn's reply does not judge it.
 async fn on_set_goal(rt: &mut Runtime, text: Option<String>, attachments: Vec<Attachment>) {
     if let Some(goal) = set_goal(&rt.state, text).await {
         let request = format!("{GOAL_SET_MARK} {goal}");
         if rt.turn.is_some() {
+            {
+                let mut st = rt.state.lock().await;
+                st.goal_unread = true;
+                st.goal_pending = Some(attachments);
+            }
             let text = format!(
                 "goal set: {} · checked when this turn ends; the model reads it from the next turn",
                 // set just now: the goal window holds these words

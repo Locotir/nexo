@@ -60,6 +60,12 @@ pub(super) struct State {
     pub(super) goal_idle: GoalIdle,
     /// What the goal's work counted since it was set or resumed (see `GoalCounts`).
     pub(super) goal_counts: GoalCounts,
+    /// The goal was set or resumed while a turn ran: that turn's reply says nothing about it, so its end does not
+    /// judge the goal (see `goal_settle`).
+    pub(super) goal_unread: bool,
+    /// A goal set while a turn ran, whose `[goal set]` request has not gone yet: the files the person attached to it,
+    /// which go with that request (see `goal_request_now`).
+    pub(super) goal_pending: Option<Vec<Attachment>>,
     /// What files looked like before the agent wrote them: `(history length at the time, file,
     /// its bytes then or None when it did not exist)`, so a rewind can put them back.
     pub(super) checkpoints: Vec<(usize, PathBuf, Option<Vec<u8>>)>,
