@@ -1,6 +1,7 @@
 use super::client::passed_env;
 use super::*;
 use nexo_core::config::McpServerConfig;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[tokio::test]
