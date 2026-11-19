@@ -31,7 +31,8 @@ const REQUESTS_TOKENS: u64 = 24_000;
 
 const HEADER: &str = "[summary] The conversation before this point was replaced by a summary. Below: the person's \
 messages in it word for word ([request]), the files touched ([files]), then what was done.";
-const REQUEST: &str = "[request] ";
+/// The head of a kept message of the person in a summary.
+pub(crate) const REQUEST: &str = "[request] ";
 const FILES: &str = "[files]";
 const WORK: &str = "[summary] What was done:";
 

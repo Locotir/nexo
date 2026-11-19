@@ -409,11 +409,16 @@ pub(super) fn goal_note(st: &State) -> Option<String> {
 /// `[goal set] <words>`, that request becomes `[goal set]`, and what nexo put around it (notes before, the start note
 /// and files after) stays. The system prompt holds the words for the goal's life (`goal_words`), so a request carries
 /// them once. Only the request changes: the history, the session file, compaction and the curator keep the words. An
-/// earlier goal's request has other words and stays whole.
+/// earlier goal's request has other words and stays whole. A compaction's summary keeps the request as a part of its
+/// own (`[request] [goal set] <words>`), which becomes `[request] [goal set]` the same way.
 pub(super) fn bare_goal_set(messages: &mut [Message], words: &str) {
     let whole = format!("{GOAL_SET_MARK} {words}");
     for part in messages.iter_mut().filter(|m| m.role == Role::User).flat_map(|m| m.content.iter_mut()) {
         let Part::Text { text } = part else { continue };
+        if text.strip_prefix(crate::compact::REQUEST) == Some(whole.as_str()) {
+            *text = format!("{}{GOAL_SET_MARK}", crate::compact::REQUEST);
+            continue;
+        }
         let found = nexo_core::agent::goal_mark_at(text.as_str()).zip(nexo_core::agent::goal_request(text.as_str()));
         if let Some((at, request)) = found.filter(|(_, request)| *request == whole) {
             let end = at + request.len();
@@ -938,6 +943,17 @@ mod goal_tests {
         let mut m = vec![Message::user("[goal set] fix x\n\nand then y\n\n[project at the start of this request]\nc")];
         bare_goal_set(&mut m, "fix x\n\nand then y");
         assert_eq!(m[0].text(), "[goal set]\n\n[project at the start of this request]\nc");
+        // a summary's kept request of the goal: the mark stays, the words go; another kept request stays whole
+        let mut m = vec![Message::new(
+            Role::User,
+            vec![
+                Part::text("[request] [goal set] make the tests pass"),
+                Part::text("[request] [goal set] an older goal"),
+            ],
+        )];
+        bare_goal_set(&mut m, "make the tests pass");
+        let texts: Vec<String> = m[0].content.iter().filter_map(|p| p.as_text().map(str::to_string)).collect();
+        assert_eq!(texts, ["[request] [goal set]", "[request] [goal set] an older goal"]);
     }
 
     #[test]
