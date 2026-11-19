@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: the agent loop (turns, tools, permissions, sessions, cost, context policies)"
 
 [dependencies]

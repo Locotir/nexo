@@ -26,6 +26,8 @@ edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/Locotir/nexo"
+# released as binaries on GitHub, never to crates.io; this also lets cargo-deny accept the version-less path deps between these crates
+publish = false
 
 # One version of everything, declared once. A crate takes what it needs with
 # `name = { workspace = true }` and never pins a version of its own.

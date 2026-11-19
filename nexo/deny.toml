@@ -1,0 +1,49 @@
+# cargo-deny policy for nexo. Run: cargo deny --manifest-path nexo/Cargo.toml --locked check
+# (the CI job `deny` in .github/workflows/ci.yml does the same).
+
+[advisories]
+# a RustSec vulnerability always fails the check (no switch exists for it in the current schema)
+# unmaintained crates fail only when the workspace depends on them directly; a transitive one is not ours to replace
+unmaintained = "workspace"
+# a yanked release only warns: it may still be what Cargo.lock needs until upstream moves on
+yanked = "warn"
+# no ignore entries: an advisory is fixed by updating the crate, never silenced here
+ignore = []
+
+[licenses]
+# only permissive licenses; GPL, LGPL, AGPL, SSPL and BUSL are deliberately absent
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "0BSD",
+    "Unlicense",
+    # Mozilla CA root list data (webpki-root-certs)
+    "CDLA-Permissive-2.0",
+    # file-level copyleft: nucleo-matcher and option-ext may be linked, but changes to their own files must be shared
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# two versions of one crate are common while the ecosystem moves; report them, do not fail
+multiple-versions = "warn"
+# a `*` version would take any release; path dependencies between the workspace crates have no version and pass
+# because every nexo crate is `publish = false` (allow-wildcard-paths only covers unpublished crates)
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# crates.io only: no other registry, no git dependency
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: protocol adapters (OpenAI chat completions, OpenAI responses, Anthropic messages, Gemini), vendor presets and a retrying client"
 
 [dependencies]

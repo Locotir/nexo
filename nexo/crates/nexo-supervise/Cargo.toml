@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: the supervisor that watches other agents' sessions (sources, classifying, rules, actions, socket)"
 
 [dependencies]
