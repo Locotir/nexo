@@ -2,10 +2,53 @@ use super::*;
 
 pub(super) enum End {
     Exited(i32),
-    Signalled,
+    /// Killed by this signal (0 where the system does not say which).
+    Signalled(i32),
     TimedOut,
     Cancelled,
+    /// The command could not be started.
     Failed(String),
+    /// The command started, but waiting for it failed: how it ended is not known.
+    Lost(String),
+}
+
+/// The name of a signal that commonly ends a command; empty for any other number.
+fn signal_name(n: i32) -> &'static str {
+    #[cfg(unix)]
+    {
+        match n {
+            libc::SIGHUP => "SIGHUP",
+            libc::SIGINT => "SIGINT",
+            libc::SIGQUIT => "SIGQUIT",
+            libc::SIGILL => "SIGILL",
+            libc::SIGABRT => "SIGABRT",
+            libc::SIGBUS => "SIGBUS",
+            libc::SIGFPE => "SIGFPE",
+            libc::SIGKILL => "SIGKILL",
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGPIPE => "SIGPIPE",
+            libc::SIGALRM => "SIGALRM",
+            libc::SIGTERM => "SIGTERM",
+            libc::SIGXCPU => "SIGXCPU",
+            libc::SIGXFSZ => "SIGXFSZ",
+            _ => "",
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = n;
+        ""
+    }
+}
+
+/// `killed by a signal: 9 SIGKILL`, `killed by a signal: 64` for a number with no name, and the
+/// bare words where the system gave no number.
+pub(super) fn signal_words(n: i32) -> String {
+    match (n, signal_name(n)) {
+        (0, _) => "killed by a signal".into(),
+        (n, "") => format!("killed by a signal: {n}"),
+        (n, name) => format!("killed by a signal: {n} {name}"),
+    }
 }
 
 pub(super) struct Outcome {

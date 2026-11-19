@@ -59,16 +59,16 @@ impl Tool for WebSearch {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("web_search: {e}")),
         };
-        if self.breaker.is_open() {
-            return ToolOutput::error(BREAKER_SAID);
+        if let Some((n, last, left)) = self.breaker.is_open() {
+            return ToolOutput::error(breaker_said(n, &last, left));
         }
         // Err carries the text and whether every backend tried for this call refused
         let work = async {
             match self.ask(backend, query, n, &domains).await {
-                Ok(h) => Ok(render_hits(query, backend.name(), &h, None)),
+                Ok((h, note)) => Ok(render_hits(query, backend.name(), &h, note.as_deref())),
                 Err(e) if fallback && backend != Backend::DuckDuckGo => {
                     match self.ask(Backend::DuckDuckGo, query, n, &domains).await {
-                        Ok(h) => Ok(render_hits(
+                        Ok((h, _)) => Ok(render_hits(
                             query,
                             "duckduckgo",
                             &h,
@@ -89,8 +89,8 @@ impl Tool for WebSearch {
                     ToolOutput::ok(text)
                 }
                 Err((e, true)) => {
-                    self.breaker.refused();
-                    ToolOutput::error(format!("web_search: {}. {NO_RETRY}", e.trim_end_matches('.')))
+                    let n = self.breaker.refused(&e);
+                    ToolOutput::error(refusal_said(&e, n, self.breaker.open_for))
                 }
                 Err((e, false)) => {
                     // the query's own trouble: not a refusal, and it ends the run of them

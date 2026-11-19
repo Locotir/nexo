@@ -411,3 +411,90 @@ fn a_small_window_gets_the_entries_as_bare_objects_that_still_have_items() {
     let (short, whole) = (json!(spec).to_string().len(), json!(Edit.spec()).to_string().len());
     assert!(short < 800 && short < whole - 400, "short {short}, whole {whole}");
 }
+
+/// A crate in a folder of its own, outside the project folder of the context under test.
+fn crate_outside(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    // A name of its own: crates of one name and version share a build under a shared CARGO_TARGET_DIR.
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = tempfile::tempdir().unwrap();
+    let name = format!("o{n}_{}", std::process::id());
+    let manifest = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    std::fs::write(d.path().join("Cargo.toml"), manifest).unwrap();
+    std::fs::create_dir(d.path().join("src")).unwrap();
+    let f = d.path().join("src/lib.rs");
+    std::fs::write(&f, body).unwrap();
+    (d, f)
+}
+
+#[tokio::test]
+async fn a_data_file_is_checked_even_when_the_step_check_runs() {
+    let _on = crate::edit_check::SWITCH.lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ToolContext::new(d.path().to_path_buf());
+    c.post_check = true;
+    std::fs::write(d.path().join("config.json"), "{\n  \"a\": 1\n}\n").unwrap();
+    let out = Edit.run(json!({"path": "config.json", "old_string": "\"a\": 1", "new_string": "\"a\": ,"}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("\ncheck: config.json | invalid JSON at line 2"), "{}", out.content);
+    // a source file inside the folder is left to the step check
+    std::fs::write(d.path().join("a.py"), "x = 1\n").unwrap();
+    let out = Edit.run(json!({"path": "a.py", "old_string": "x = 1", "new_string": "x = = 1"}), &c).await;
+    assert!(!out.content.contains("check:") && !out.content.contains("diagnostics:"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_file_outside_cwd_is_checked_even_when_the_step_check_runs() {
+    if !crate::checkers::program_ok("cargo") {
+        return;
+    }
+    let _on = crate::edit_check::SWITCH.lock().await;
+    let (_o, f) = crate_outside("pub fn a() -> u32 {\n    1\n}\n");
+    // build it once with room to spare, so the edit's own check is the quick one a real session gets
+    assert_eq!(crate::edit_check::report_within(&f, std::time::Duration::from_secs(120)).await, "");
+    let cwd = tempfile::tempdir().unwrap();
+    let mut c = ToolContext::new(cwd.path().to_path_buf());
+    c.post_check = true;
+    let args = json!({"path": f.to_string_lossy(), "old_string": "    1", "new_string": "    \"no\""});
+    let out = Edit.run(args, &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("\ndiagnostics:\n") && out.content.contains("error[E0308]"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_miss_across_mixed_line_ends_names_each_lines_end() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    std::fs::write(d.path().join("f.txt"), "x\r\na\r\nb\nc\n").unwrap();
+    let out = Edit.run(json!({"path": "f.txt", "old_string": "a\nb\nc", "new_string": "z"}), &c).await;
+    assert!(out.is_error);
+    assert!(out.content.contains("lines 2-4 match it except for line ends"), "{}", out.content);
+    assert!(out.content.contains("line 2 CRLF, lines 3-4 LF"), "{}", out.content);
+    // copying the shown lines would miss again, so the text does not tell to copy them
+    assert!(!out.content.contains("Copy this text"), "{}", out.content);
+    assert!(out.content.contains("`old_string` must end its lines the same way"), "{}", out.content);
+    assert!(!out.content.contains("spaces or tabs"), "{}", out.content);
+    assert_eq!(std::fs::read(d.path().join("f.txt")).unwrap(), b"x\r\na\r\nb\nc\n", "nothing written");
+}
+
+#[tokio::test]
+async fn a_failed_later_change_says_its_line_numbers_count_the_text_after_the_earlier_ones() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    std::fs::write(d.path().join("f.txt"), "a\nb\nc\n").unwrap();
+    let edits = json!([
+        {"old_string": "a", "new_string": "n1\nn2\nn3\nn4\nn5\na"},
+        {"old_string": "  b", "new_string": "z"}
+    ]);
+    let out = Edit.run(json!({"path": "f.txt", "edits": edits}), &c).await;
+    assert!(out.is_error);
+    assert!(out.content.contains("change 2 of 2"), "{}", out.content);
+    assert!(out.content.contains("line 7 matches it"), "{}", out.content);
+    assert!(out.content.contains("changes 1-1 left it in memory"), "{}", out.content);
+    assert!(out.content.contains("not the file on disk"), "{}", out.content);
+    assert_eq!(std::fs::read_to_string(d.path().join("f.txt")).unwrap(), "a\nb\nc\n", "nothing written");
+    // the first change failing has no earlier change to blame
+    let edits = json!([{"old_string": "  b", "new_string": "z"}, {"old_string": "c", "new_string": "d"}]);
+    let out = Edit.run(json!({"path": "f.txt", "edits": edits}), &c).await;
+    assert!(out.is_error && !out.content.contains("in memory"), "{}", out.content);
+}

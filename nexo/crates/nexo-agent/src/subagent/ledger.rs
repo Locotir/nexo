@@ -216,8 +216,15 @@ fn ended(answer: Option<&(String, bool)>) -> String {
     if text.contains("\n\n[cancelled]") {
         return "stopped".into();
     }
-    if text.contains("\n\n[killed by a signal]") {
-        return "killed by a signal".into();
+    if let Some(i) = text.find("\n\n[killed by a signal") {
+        // `[killed by a signal]` (a terminal that gives no number) or `[killed by a signal: 9 SIGKILL]`
+        let rest = &text[i + "\n\n[killed by a signal".len()..];
+        if rest.starts_with(']') {
+            return "killed by a signal".into();
+        }
+        if let Some(which) = rest.strip_prefix(": ").and_then(|r| r.split_once(']')).map(|(w, _)| w) {
+            return format!("killed by a signal: {which}");
+        }
     }
     if let Some(i) = text.rfind("\n\n[exit code ") {
         let code: String = text[i + "\n\n[exit code ".len()..].chars().take_while(|c| *c != ']').collect();

@@ -13,6 +13,15 @@ fn over_budget(st: &State) -> bool {
     limit_reached(st.cost, budget::spent_today(), st.budget, st.config.agent.max_cost_day)
 }
 
+/// The shell jobs a review looks at: the ones running, less those a foreground command left running (a server is
+/// silent by nature, and a STOP would kill the person's server).
+fn reviewable(jobs: &Jobs) -> Vec<nexo_core::jobs::JobInfo> {
+    jobs.list()
+        .into_iter()
+        .filter(|j| j.kind == nexo_core::jobs::JobKind::Shell && j.status.running() && !jobs.held(j.id))
+        .collect()
+}
+
 /// Asks the vendor for its model list in the background and fills what the
 /// limits still lack (context window, largest reply, prices).
 /// Weighs every background shell command that runs past `job_review` seconds with one tool-less request apart
@@ -47,11 +56,7 @@ pub(super) fn spawn_job_review(state: &Shared, jobs: Jobs) {
             if over {
                 continue;
             }
-            let running: Vec<_> = jobs
-                .list()
-                .into_iter()
-                .filter(|j| j.kind == nexo_core::jobs::JobKind::Shell && j.status.running())
-                .collect();
+            let running = reviewable(&jobs);
             due.retain(|id, _| running.iter().any(|j| j.id == *id));
             if first == 0 {
                 continue;
@@ -513,6 +518,19 @@ mod suggest_tests {
         assert!(limit_reached(0.0, 2.0, None, Some(2.0)));
         // either one is enough
         assert!(limit_reached(0.1, 3.0, Some(1.0), Some(2.0)));
+    }
+
+    /// A process a command left running is not judged by its silence: a review would stop the person's server.
+    #[test]
+    fn a_job_a_command_left_running_is_not_reviewed() {
+        use nexo_core::jobs::JobKind;
+        let jobs = Jobs::new();
+        let plain = jobs.start(JobKind::Shell, "sleep 100");
+        let kept = jobs.start_held(JobKind::Shell, "python3 -m http.server 8000 &");
+        let ids: Vec<u32> = reviewable(&jobs).iter().map(|j| j.id).collect();
+        assert_eq!(ids, vec![plain.id()]);
+        assert!(jobs.held(kept.id()) && !jobs.held(plain.id()));
+        assert!(jobs.get(kept.id()).unwrap().status.running(), "it is a running job all the same");
     }
 
     #[test]

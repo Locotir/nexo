@@ -3,9 +3,12 @@ use similar::{ChangeTag, TextDiff};
 use super::{DIFF_LINES, WHOLE_LINES};
 use crate::util::cut_line;
 
-/// Lines added and removed, and a unified diff cut to `DIFF_LINES` lines.
-pub fn unified(old: &str, new: &str, name: &str) -> (usize, usize, String) {
-    let diff = TextDiff::from_lines(old, new);
+/// Lines added and removed going from `old` to `new`, counted without rendering a diff.
+pub fn line_changes(old: &str, new: &str) -> (usize, usize) {
+    count_changes(&TextDiff::from_lines(old, new))
+}
+
+fn count_changes(diff: &TextDiff<'_, '_, str>) -> (usize, usize) {
     let (mut added, mut removed) = (0, 0);
     for c in diff.iter_all_changes() {
         match c.tag() {
@@ -14,6 +17,13 @@ pub fn unified(old: &str, new: &str, name: &str) -> (usize, usize, String) {
             ChangeTag::Equal => {}
         }
     }
+    (added, removed)
+}
+
+/// Lines added and removed, and a unified diff cut to `DIFF_LINES` lines.
+pub fn unified(old: &str, new: &str, name: &str) -> (usize, usize, String) {
+    let diff = TextDiff::from_lines(old, new);
+    let (added, removed) = count_changes(&diff);
     let text = diff.unified_diff().context_radius(3).header(&format!("a/{name}"), &format!("b/{name}")).to_string();
     let lines: Vec<&str> = text.lines().collect();
     let shown = if lines.len() > DIFF_LINES {

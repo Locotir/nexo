@@ -23,6 +23,8 @@ struct Entry {
     id: u32,
     kind: JobKind,
     label: String,
+    /// Left running by a foreground command (`Jobs::start_held`): no review judges it by its silence.
+    held: bool,
     started: Instant,
     ended: Mutex<Option<Instant>>,
     out: Mutex<Out>,
@@ -166,7 +168,7 @@ impl Drop for JobHandle {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobRead {
     pub info: JobInfo,
-    /// The output not read before (head and tail when long).
+    /// The output not read before: whole lines up to `READ_CHARS`, and when more remain, a note of how many.
     pub new: String,
 }
 
@@ -184,11 +186,27 @@ impl Jobs {
 
     /// A new job; the caller runs it (in a spawned task) and writes to the handle.
     pub fn start(&self, kind: JobKind, label: impl Into<String>) -> JobHandle {
+        self.start_as(kind, label.into(), false)
+    }
+
+    /// A new job for what a foreground command left running (a server, a watcher): it is silent by nature, so
+    /// the periodic review, which judges a job by its output, does not look at it (`held` tells it so).
+    pub fn start_held(&self, kind: JobKind, label: impl Into<String>) -> JobHandle {
+        self.start_as(kind, label.into(), true)
+    }
+
+    /// Whether job `id` was made by `start_held`.
+    pub fn held(&self, id: u32) -> bool {
+        self.entry(id).is_some_and(|e| e.held)
+    }
+
+    fn start_as(&self, kind: JobKind, label: String, held: bool) -> JobHandle {
         let id = self.0.next.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(Entry {
             id,
             kind,
-            label: label.into(),
+            label,
+            held,
             started: Instant::now(),
             ended: Mutex::new(None),
             out: Mutex::new(Out { lines: VecDeque::new(), chars: 0, dropped: 0, read: 0 }),
@@ -238,23 +256,55 @@ impl Jobs {
             }
         }
         let info = e.info();
-        let new = {
+        let (new, unread) = {
             let mut o = e.out.lock().unwrap();
             let from = o.read.max(o.dropped);
             let skipped = from - o.read;
-            let lines: Vec<&String> = o.lines.iter().skip(from - o.dropped).collect();
+            let start = from - o.dropped;
             let mut text = String::new();
             if skipped > 0 {
                 text.push_str(&format!("[{skipped} earlier lines no longer kept]\n"));
             }
-            for l in lines {
+            // whole lines while they fit one read (always at least one: a line is at most `LINE_CHARS`), so
+            // nothing is skipped: the next read goes on where this one stopped
+            let mut used = text.chars().count();
+            let mut taken = 0;
+            for l in o.lines.iter().skip(start) {
+                let n = l.chars().count() + 1;
+                if taken > 0 && used + n > READ_CHARS {
+                    break;
+                }
                 text.push_str(l);
                 text.push('\n');
+                used += n;
+                taken += 1;
             }
-            o.read = o.dropped + o.lines.len();
-            cap(&text, READ_CHARS)
+            let left = o.lines.len() - start - taken;
+            if left > 0 {
+                let chars: usize = o.lines.iter().skip(start + taken).map(|l| l.chars().count() + 1).sum();
+                let last = o
+                    .lines
+                    .iter()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| {
+                        let l = l.trim();
+                        match l.char_indices().nth(300) {
+                            Some((i, _)) => format!("{} …", &l[..i]),
+                            None => l.to_string(),
+                        }
+                    })
+                    .unwrap_or_default();
+                text.push_str(&format!(
+                    "[{left} more lines ({chars} chars) unread, the last of them: {last}; `jobs` with action \
+                     `output` and this id shows the next {READ_CHARS} chars]"
+                ));
+            }
+            o.read = from + taken;
+            (text, left > 0)
         };
-        if !info.status.running() {
+        // told only when the model has all of the output: a long job read in part stays to be noted
+        if !info.status.running() && !unread {
             *e.told.lock().unwrap() = true;
         }
         Some(JobRead { info, new })

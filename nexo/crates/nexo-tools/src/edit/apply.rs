@@ -12,12 +12,21 @@ pub fn apply(text: &str, changes: &[Change], shown: &str) -> Result<(String, Str
         match replace(&edited, old, new, *all, shown) {
             Ok((t, n)) => (edited, last) = (t, n),
             Err(e) if changes.len() > 1 => {
+                // the near-miss lines are numbered in the text the earlier changes made, which is not on disk
+                let numbers = if i > 0 && e.contains("The file has there:") {
+                    format!(
+                        ". Its line numbers count the text as changes 1-{i} left it in memory, not the file on disk; \
+                         the text shown is what `old_string` must match."
+                    )
+                } else {
+                    String::new()
+                };
                 return Err(format!(
-                    "edit: change {} of {}: {}; nothing was written",
+                    "edit: change {} of {}: {}; nothing was written{numbers}",
                     i + 1,
                     changes.len(),
                     e.trim_start_matches("edit: ")
-                ))
+                ));
             }
             Err(e) => return Err(e),
         }

@@ -37,7 +37,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         }
         if m.len() > MAX_FILE_BYTES {
             // all of it the model can be shown: enough to replace it on purpose
-            ctx.seen.mark(&path);
+            ctx.seen.whole(&path);
             if let Some(kind) = nexo_binmagic::kind_at(&path) {
                 return not_text(ctx, &shown, &path, &kind, m.len());
             }
@@ -54,19 +54,21 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         }
         Err(e) => return ToolOutput::error(format!("read: cannot read {shown}: {e}")),
     };
-    ctx.seen.mark(&path);
     if args.get("symbol").is_some() && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rs")) {
         return ToolOutput::error(
             "read: `symbol` currently supports Rust (.rs) files only; use line ranges for other files",
         );
     }
     if let Some(pic) = picture::sniff(&bytes) {
+        ctx.seen.whole(&path);
         return show_picture(&shown, pic, &bytes, ctx.vision);
     }
     if let Some(raster) = picture::decode_raster(&bytes) {
+        ctx.seen.whole(&path);
         return show_raster(&shown, raster, bytes.len(), ctx.vision);
     }
     if let Some((name, ext)) = picture::foreign(&bytes) {
+        ctx.seen.whole(&path);
         return ToolOutput::error(format!(
             "read: {shown} is a {name} image ({} bytes), which `read` cannot show; convert a copy to PNG with \
                  `bash`, e.g. `magick in.{ext} out.png`, and read that",
@@ -76,6 +78,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
     // UTF-16 text has a NUL in every other byte, so it passes the binary test; it is decoded here instead
     let wide = if is_binary(&bytes) { utf16_text(&bytes) } else { None };
     if wide.is_none() && is_binary(&bytes) {
+        ctx.seen.whole(&path);
         if let Some(kind) = nexo_binmagic::kind_of(&bytes) {
             return not_text(ctx, &shown, &path, &kind, bytes.len() as u64);
         }
@@ -87,7 +90,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
             Ok(text) if wide.is_none() => text,
             _ => return ToolOutput::error("read: Rust symbol lookup requires UTF-8"),
         };
-        return read_symbol(ctx, &shown, text, symbol);
+        return read_symbol(ctx, &path, &shown, text, symbol);
     }
     // where the bytes are not UTF-8 the text below has U+FFFD in place of them: the fact says so, with the
     // first bad byte (a U+FFFD that was in the file is valid UTF-8 and is not flagged)
@@ -104,6 +107,7 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
         None => text,
     };
     if text.is_empty() {
+        ctx.seen.whole(&path);
         return ToolOutput::ok(format!("{shown}: (empty file)")).with_display(ToolDisplay::File {
             path: shown,
             text: String::new(),
@@ -183,6 +187,8 @@ pub(super) async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Opt
     } else if n < total {
         out.push_str(&format!("… {} more lines (of {total}); read with offset {} to continue\n", total - n, n + 1));
     }
+    // what the model was shown of the file, for `write`: the lines up to `n`, and which of them were cut
+    ctx.seen.lines(&path, offset, n, total, cuts.numbers());
     // a line cut to LINE_CHARS says so, with its length, so the model knows the rest was not shown
     if let Some(note) = cuts.note(LINE_CHARS) {
         out.push_str(&format!("({note})\n"));

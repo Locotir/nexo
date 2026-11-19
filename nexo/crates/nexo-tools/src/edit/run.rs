@@ -79,6 +79,31 @@ pub(super) async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Resul
     Ok(Done { shown, path, note, added, removed, diff, now, old: text, new: edited })
 }
 
+/// The per-edit check of a written file: empty when the step-level check covers it (a source file inside
+/// the project folder), so a data file or a file outside the folder still gets its own.
+async fn diag_of(d: &Done, ctx: &ToolContext) -> String {
+    if crate::edit_check::step_covers(ctx, &d.path) {
+        String::new()
+    } else {
+        crate::edit_check::report(&d.path).await
+    }
+}
+
+/// The result text of the files written so far, one `edited …` block each. Their checks run here, one after
+/// another and in file order, after every write: a file that uses an item a later file adds is not checked
+/// before that file is written.
+async fn blocks(written: &[Done], ctx: &ToolContext) -> String {
+    let mut text = String::new();
+    for d in written {
+        let diag = diag_of(d, ctx).await;
+        text.push_str(&format!(
+            "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}\n",
+            d.shown, d.note, d.added, d.removed, d.diff, d.now
+        ));
+    }
+    text
+}
+
 pub(super) async fn run_one(args: &Value, ctx: &ToolContext) -> ToolOutput {
     let Some(p) = str_arg(args, "path") else {
         return ToolOutput::error("edit: `path` is required");
@@ -87,8 +112,7 @@ pub(super) async fn run_one(args: &Value, ctx: &ToolContext) -> ToolOutput {
         Ok(d) => d,
         Err(e) => return ToolOutput::error(e),
     };
-    // a step-level check after the whole step replaces the per-edit one
-    let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&d.path).await };
+    let diag = diag_of(&d, ctx).await;
     ToolOutput::ok(format!(
         "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}",
         d.shown, d.note, d.added, d.removed, d.diff, d.now
@@ -116,25 +140,21 @@ pub(super) async fn run_files(args: &Value, ctx: &ToolContext) -> ToolOutput {
         }
         entries.push((p, f));
     }
-    let mut done: Vec<String> = Vec::new();
-    let mut text = String::new();
+    let mut written: Vec<Done> = Vec::new();
     for (i, (p, f)) in entries.iter().enumerate() {
         match edit_file(p, f, ctx).await {
-            Ok(d) => {
-                let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&d.path).await };
-                text.push_str(&format!(
-                    "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}\n",
-                    d.shown, d.note, d.added, d.removed, d.diff, d.now
-                ));
-                done.push(d.shown);
-            }
+            Ok(d) => written.push(d),
             Err(e) => {
                 let rest: Vec<&str> = entries[i + 1..].iter().map(|(p, _)| *p).collect();
+                let done: Vec<&str> = written.iter().map(|d| d.shown.as_str()).collect();
                 let applied = if done.is_empty() { "none".to_string() } else { done.join(", ") };
                 let skipped = if rest.is_empty() { String::new() } else { format!("; not tried: {}", rest.join(", ")) };
+                let text = blocks(&written, ctx).await;
                 return ToolOutput::error(format!("{text}{e}\napplied before the failure: {applied}{skipped}"));
             }
         }
     }
-    ToolOutput::ok(format!("edited {} files: {}\n{text}", done.len(), done.join(", ")))
+    let names: Vec<&str> = written.iter().map(|d| d.shown.as_str()).collect();
+    let text = blocks(&written, ctx).await;
+    ToolOutput::ok(format!("edited {} files: {}\n{text}", written.len(), names.join(", ")))
 }

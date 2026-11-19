@@ -153,7 +153,15 @@ pub(super) async fn wait_until(
         {
             End::Exited(0) => return None,
             End::Cancelled => return Some(ToolOutput::error("[cancelled while waiting]")),
+            End::Lost(e) => {
+                return Some(ToolOutput::error(format!(
+                    "bash: the condition started, but waiting for it failed: {e}; whether it holds is not known"
+                )));
+            }
             End::Failed(e) => {
+                if let Some(missing) = no_cwd(&ctx.cwd) {
+                    return Some(ToolOutput::error(format!("bash: {missing}; the condition did not run")));
+                }
                 let label = nexo_core::shell::shell().label();
                 return Some(ToolOutput::error(format!("{label}: cannot run the condition: {e}")));
             }

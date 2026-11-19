@@ -304,10 +304,6 @@ impl Tool for Grep {
             if !multiline && (pattern.contains('\n') || pattern.contains("\\n")) {
                 s.push_str(". Patterns are matched line by line; set `multiline: true` to match across lines.");
             }
-            if let Some(note) = skipped_links.note() {
-                s.push('\n');
-                s.push_str(&note);
-            }
             s
         } else if !files_only && left > 0 {
             let matches = if left == 1 { "match" } else { "matches" };
@@ -338,6 +334,11 @@ impl Tool for Grep {
         } else {
             items.join("\n")
         };
+        // what a link leads to is missing from any answer, not only an empty one
+        if let Some(note) = skipped_links.note() {
+            content.push('\n');
+            content.push_str(&note);
+        }
         if let Some(line) = programs_line(&programs, &strings_grep, bin_offered(ctx)) {
             content.push('\n');
             content.push_str(&line);
@@ -403,6 +404,31 @@ enum FileOut {
 }
 
 impl Search {
+    /// A matching line for the answer. A line longer than `LINE_CHARS` whose match does not end inside the head cut
+    /// is shown as a window of `LINE_CHARS` chars centred on the match, with the line's length and the match's
+    /// 1-based char column; otherwise it keeps the head cut. In a multi-line search a line the pattern does not
+    /// match whole (it matched across lines) keeps the head cut too.
+    fn match_line(&self, l: &str) -> String {
+        let len = l.chars().count();
+        if len <= LINE_CHARS {
+            return cut_line(l, LINE_CHARS);
+        }
+        let Some(m) = self.re.find(l) else {
+            return cut_line(l, LINE_CHARS);
+        };
+        let col = l[..m.start()].chars().count();
+        let width = l[m.start()..m.end()].chars().count();
+        // the head cut shows the first LINE_CHARS - 1 chars: a match that ends within them is seen whole there
+        if col + width < LINE_CHARS {
+            return cut_line(l, LINE_CHARS);
+        }
+        let width = width.min(LINE_CHARS);
+        let start = col.saturating_sub((LINE_CHARS - width) / 2).min(len - LINE_CHARS);
+        let window: String = l.chars().skip(start).take(LINE_CHARS).collect();
+        let tail = if start + LINE_CHARS < len { "…" } else { "" };
+        format!("[{len} chars; match at char {}] …{window}{tail}", col + 1)
+    }
+
     fn file(&self, f: &Path) -> FileOut {
         match std::fs::metadata(f) {
             Ok(m) if m.len() > MAX_FILE_BYTES => return FileOut::TooBig,
@@ -482,7 +508,7 @@ impl Search {
                 }
                 let last = b.min(a + MAX_SPAN_LINES - 1);
                 for (j, l) in lines.iter().enumerate().take(last + 1).skip(a) {
-                    items.push(format!("{shown}:{}: {}", j + 1, cut_line(l, LINE_CHARS)));
+                    items.push(format!("{shown}:{}: {}", j + 1, self.match_line(l)));
                 }
                 if b > last {
                     items.push(format!("{shown}:… {} more lines in this match", b - last));
@@ -928,5 +954,57 @@ mod tests {
         );
         let out = Grep.run(json!({"pattern": "gamma", "path": "vendor"}), &c).await;
         assert!(out.content.contains("gamma"), "{}", out.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_match_answer_also_says_how_many_symlinks_were_not_followed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("b.txt"), "hit\n").unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::write(d.path().join("a.txt"), "hit\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), d.path().join("l")).unwrap();
+        let out = Grep.run(json!({"pattern": "hit"}), &c).await;
+        assert!(out.content.starts_with("a.txt:1: hit"), "{}", out.content);
+        assert_eq!(out.content.matches("a.txt:").count(), 1, "{}", out.content);
+        assert!(out.content.contains("symlink") && out.content.contains("not followed"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_match_far_into_a_long_line_is_shown_with_its_column() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let line = format!("{}NEEDLE{}", "x".repeat(900), "x".repeat(94));
+        assert_eq!(line.chars().count(), 1000);
+        std::fs::write(d.path().join("long.txt"), format!("{line}\n")).unwrap();
+        let out = Grep.run(json!({"pattern": "NEEDLE"}), &c).await;
+        assert!(out.content.contains("NEEDLE"), "{}", out.content);
+        assert!(out.content.contains("match at char 901"), "{}", out.content);
+        assert!(out.content.contains("1000 chars"), "{}", out.content);
+        // a match inside the head keeps the head cut
+        let near = format!("NEEDLE{}", "x".repeat(994));
+        std::fs::write(d.path().join("near.txt"), format!("{near}\n")).unwrap();
+        let out = Grep.run(json!({"pattern": "NEEDLE", "path": "near.txt"}), &c).await;
+        assert!(
+            out.content.starts_with("near.txt:1: NEEDLE") && !out.content.contains("match at char"),
+            "{}",
+            out.content
+        );
+        // a match that starts inside the head cut but ends beyond it is not shown cut in half
+        let straddle = format!("{}NEEDLE{}", "x".repeat(297), "x".repeat(700));
+        std::fs::write(d.path().join("straddle.txt"), format!("{straddle}\n")).unwrap();
+        let out = Grep.run(json!({"pattern": "NEEDLE", "path": "straddle.txt"}), &c).await;
+        assert!(out.content.contains("NEEDLE") && out.content.contains("match at char 298"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_multiline_search_also_windows_a_far_match_in_a_long_line() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let line = format!("{}NEEDLE{}", "x".repeat(900), "x".repeat(94));
+        std::fs::write(d.path().join("long.txt"), format!("{line}\n")).unwrap();
+        let out = Grep.run(json!({"pattern": "NEEDLE", "multiline": true}), &c).await;
+        assert!(out.content.contains("NEEDLE") && out.content.contains("match at char 901"), "{}", out.content);
     }
 }

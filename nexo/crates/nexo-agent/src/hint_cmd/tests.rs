@@ -131,7 +131,10 @@ fn small_helpers() {
     assert_eq!(tool_call("debug", "run \"a b\"; cont"), r#"debug {"command": "run \"a b\"; cont"}"#);
     assert!(ran("x\n\n[exit code 1]") && ran("[exit code -1]\n") && ran("x\n\n[exit code 127]\n\n[nexo: more]"));
     assert!(
-        ran("partial\n\n[killed: timed out after 120 s]") && ran("[killed by a signal]") && !ran("x\n\n[cancelled]")
+        ran("partial\n\n[killed: timed out after 120 s]")
+            && ran("[killed by a signal]")
+            && ran("[killed by a signal: 9 SIGKILL]")
+            && !ran("x\n\n[cancelled]")
     );
     assert!(!ran("Permission denied: [exit code ]") && !ran("[exit code 1] and more") && !ran("exit code 1"));
 }

@@ -134,4 +134,4 @@ mod tests;
 
 pub use apply::{apply, changes, match_line_ends, Change};
 use run::{run_files, run_one};
-pub use show::{around, now_text, unified, whole};
+pub use show::{around, line_changes, now_text, unified, whole};

@@ -133,7 +133,13 @@ impl WebSearch {
         base.trim_end_matches('/').to_string()
     }
 
-    pub(super) async fn ask(&self, b: Backend, query: &str, n: u64, domains: &[String]) -> Result<Vec<Hit>, Fail> {
+    pub(super) async fn ask(
+        &self,
+        b: Backend,
+        query: &str,
+        n: u64,
+        domains: &[String],
+    ) -> Result<(Vec<Hit>, Option<String>), Fail> {
         let base = self.base(b);
         let key = || self.key(b).ok_or_else(|| format!("{} needs a key in {}", b.name(), self.key_hint(b)));
         let site_query = with_sites(query, domains);
@@ -145,7 +151,7 @@ impl WebSearch {
                 }
                 let v =
                     self.json(self.http()?.post(format!("{base}/search")).bearer_auth(key()?).json(&body), b).await?;
-                Ok(hits(&v["results"], "title", "url", &["content"]))
+                Ok((hits(&v["results"], "title", "url", &["content"]), None))
             }
             Backend::Brave => {
                 let count = n.to_string();
@@ -155,7 +161,7 @@ impl WebSearch {
                     .header("Accept", "application/json")
                     .header("X-Subscription-Token", key()?);
                 let v = self.json(req, b).await?;
-                Ok(hits(&v["web"]["results"], "title", "url", &["description"]))
+                Ok((hits(&v["web"]["results"], "title", "url", &["description"]), None))
             }
             Backend::Exa => {
                 let mut body =
@@ -166,7 +172,7 @@ impl WebSearch {
                 let v = self
                     .json(self.http()?.post(format!("{base}/search")).header("x-api-key", key()?).json(&body), b)
                     .await?;
-                Ok(hits(&v["results"], "title", "url", &["highlights", "summary", "text"]))
+                Ok((hits(&v["results"], "title", "url", &["highlights", "summary", "text"]), None))
             }
             Backend::Searxng => {
                 if base.is_empty() {
@@ -177,7 +183,17 @@ impl WebSearch {
                 let req =
                     self.http()?.get(with_query(&format!("{base}/search"), &[("q", &site_query), ("format", "json")])?);
                 let v = self.json(req, b).await?;
-                Ok(hits(&v["results"], "title", "url", &["content"]))
+                let found = hits(&v["results"], "title", "url", &["content"]);
+                // SearXNG names the engines that failed: an empty list from the rest is not "no results"
+                let failed = unresponsive(&v["unresponsive_engines"]).join(", ");
+                if failed.is_empty() {
+                    return Ok((found, None));
+                }
+                if found.is_empty() {
+                    return Err(Fail::from(format!("searxng: no results; these engines did not answer: {failed}")));
+                }
+                let note = format!("searxng: these engines did not answer: {failed}; the results are from the others");
+                Ok((found, Some(note)))
             }
             Backend::DuckDuckGo => {
                 let resp = self
@@ -199,7 +215,7 @@ impl WebSearch {
                 }
                 let mut out = parse_ddg(&text);
                 out.truncate(n as usize);
-                Ok(out)
+                Ok((out, None))
             }
         }
     }

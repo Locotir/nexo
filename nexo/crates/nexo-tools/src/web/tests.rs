@@ -89,8 +89,6 @@ async fn duckduckgo_bot_check_is_explained() {
     assert!(out.content.contains("rate limit or a bot check"), "{}", out.content);
 }
 
-const SEARCH_DOWN: &str = "Web search is not available right now: do not retry it; go on with what you have, or open a URL you already know with web_fetch.";
-
 /// A search tool whose clock is a number of seconds the test moves.
 fn timed(t: &mut WebSearch) -> Arc<AtomicU64> {
     let secs = Arc::new(AtomicU64::new(0));
@@ -100,7 +98,7 @@ fn timed(t: &mut WebSearch) -> Arc<AtomicU64> {
 }
 
 #[tokio::test]
-async fn a_refused_search_says_not_to_retry() {
+async fn a_refused_search_says_how_many_refusals_in_a_row() {
     let s = MockServer::start_async().await;
     s.mock_async(|when, then| {
         when.method(POST).path("/html/");
@@ -111,11 +109,15 @@ async fn a_refused_search_says_not_to_retry() {
     let out = t.run(json!({"query": "x"}), &ctx()).await;
     assert!(out.is_error);
     assert!(out.content.contains("duckduckgo refused the search (HTTP 429"), "{}", out.content);
-    assert!(out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+    assert!(
+        out.content.contains("Refusal 1 in a row") && out.content.contains("web_fetch still opens"),
+        "{}",
+        out.content
+    );
     // an unreachable backend counts too
     let t = WebSearch::with_env(&cfg("searxng", Some("http://127.0.0.1:1".into())), env_of(&[]));
     let out = t.run(json!({"query": "x"}), &ctx()).await;
-    assert!(out.is_error && out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+    assert!(out.is_error && out.content.contains("Refusal 1 in a row"), "{}", out.content);
     // a bad request is the query's trouble, not a refusal
     let s = MockServer::start_async().await;
     s.mock_async(|when, then| {
@@ -125,7 +127,7 @@ async fn a_refused_search_says_not_to_retry() {
     .await;
     let t = WebSearch::with_env(&cfg("searxng", Some(s.base_url())), env_of(&[]));
     let out = t.run(json!({"query": "x"}), &ctx()).await;
-    assert!(out.is_error && !out.content.contains(SEARCH_DOWN), "{}", out.content);
+    assert!(out.is_error && !out.content.contains("Refusal"), "{}", out.content);
 }
 
 #[tokio::test]
@@ -139,14 +141,15 @@ async fn two_refusals_in_a_row_open_the_breaker_and_time_closes_it() {
         .await;
     let mut t = WebSearch::with_env(&cfg("duckduckgo", Some(s.base_url())), env_of(&[]));
     let secs = timed(&mut t);
-    for _ in 0..2 {
+    for i in 0..2 {
         let out = t.run(json!({"query": "x"}), &ctx()).await;
-        assert!(out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+        assert!(out.content.contains(&format!("Refusal {} in a row", i + 1)), "{}", out.content);
+        assert_eq!(out.content.contains("the next 120 s"), i == 1, "{}", out.content);
     }
     assert_eq!(m.calls_async().await, 2);
     let out = t.run(json!({"query": "x"}), &ctx()).await;
     assert!(out.is_error);
-    assert_eq!(out.content, BREAKER_SAID);
+    assert!(out.content.starts_with("web_search: not asked:"), "{}", out.content);
     assert!(out.content.contains("refused 2 requests in a row"));
     assert_eq!(m.calls_async().await, 2, "an open breaker makes no request");
     secs.store(119, Ordering::SeqCst);
@@ -155,7 +158,33 @@ async fn two_refusals_in_a_row_open_the_breaker_and_time_closes_it() {
     secs.store(121, Ordering::SeqCst);
     let out = t.run(json!({"query": "x"}), &ctx()).await;
     assert_eq!(m.calls_async().await, 3, "closed after 120 s");
-    assert!(out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+    assert!(out.content.contains("Refusal 3 in a row") && out.content.contains("the next 120 s"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn an_open_breaker_says_when_it_asks_again() {
+    let s = MockServer::start_async().await;
+    s.mock_async(|when, then| {
+        when.method(POST).path("/html/");
+        then.status(429).body("");
+    })
+    .await;
+    let mut t = WebSearch::with_env(&cfg("duckduckgo", Some(s.base_url())), env_of(&[]));
+    let secs = timed(&mut t);
+    for _ in 0..2 {
+        t.run(json!({"query": "x"}), &ctx()).await;
+    }
+    let out = t.run(json!({"query": "x"}), &ctx()).await;
+    assert!(out.is_error);
+    for want in ["the next 120 s", "last: duckduckgo", "asks it again"] {
+        assert!(out.content.contains(want), "{}", out.content);
+    }
+    for gone in ["this session", "Do not call"] {
+        assert!(!out.content.contains(gone), "{}", out.content);
+    }
+    secs.store(119, Ordering::SeqCst);
+    let out = t.run(json!({"query": "x"}), &ctx()).await;
+    assert!(out.content.contains("the next 1 s"), "{}", out.content);
 }
 
 #[tokio::test]
@@ -172,7 +201,7 @@ async fn a_good_search_resets_the_count() {
         let out = t.run(json!({"query": "x"}), &ctx()).await;
         // a refusal, a success, a refusal, a success: never two refusals in a row
         assert_eq!(out.is_error, code == 429, "{}", out.content);
-        assert_ne!(out.content, BREAKER_SAID);
+        assert!(!out.content.starts_with("web_search: not asked"), "{}", out.content);
         m.delete_async().await;
     }
 }
@@ -205,16 +234,17 @@ async fn with_two_backends_the_breaker_counts_only_when_both_refused() {
             then.status(429).body("");
         })
         .await;
-    for _ in 0..2 {
+    for i in 0..2 {
         let out = t.run(json!({"query": "x"}), &ctx()).await;
         assert!(
-            out.content.contains("the fallback failed too") && out.content.ends_with(SEARCH_DOWN),
+            out.content.contains("the fallback failed too")
+                && out.content.contains(&format!("Refusal {} in a row", i + 1)),
             "{}",
             out.content
         );
     }
     let out = t.run(json!({"query": "x"}), &ctx()).await;
-    assert_eq!(out.content, BREAKER_SAID);
+    assert!(out.content.starts_with("web_search: not asked:"), "{}", out.content);
     assert_eq!(both.calls_async().await, 2);
 }
 
@@ -339,6 +369,39 @@ async fn searxng_backend_and_its_address() {
     let none = WebSearch::with_env(&cfg("searxng", None), env_of(&[]));
     let out = none.run(json!({"query": "nexo"}), &ctx()).await;
     assert!(out.is_error && out.content.contains("[web] url"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn searxng_says_which_engines_failed_instead_of_no_results() {
+    let s = MockServer::start_async().await;
+    let none = s
+        .mock_async(|when, then| {
+            when.method(GET).path("/search").query_param("q", "nothing");
+            then.status(200).json_body(json!({"results": [], "unresponsive_engines": [["google", "CAPTCHA"]]}));
+        })
+        .await;
+    s.mock_async(|when, then| {
+        when.method(GET).path("/search").query_param("q", "some");
+        then.status(200).json_body(json!({
+            "results": [{"title": "Nexo", "url": "https://example.org/nexo", "content": "A harness."}],
+            "unresponsive_engines": [["bing", "timeout"]]
+        }));
+    })
+    .await;
+    let t = WebSearch::with_env(&cfg("searxng", Some(s.base_url())), env_of(&[]));
+    let out = t.run(json!({"query": "nothing"}), &ctx()).await;
+    none.assert_async().await;
+    assert!(out.is_error, "{}", out.content);
+    assert!(
+        out.content.contains("searxng: no results; these engines did not answer: google (CAPTCHA)"),
+        "{}",
+        out.content
+    );
+    assert!(!out.content.contains("no results for") && !out.content.contains("Refusal"), "{}", out.content);
+    let out = t.run(json!({"query": "some"}), &ctx()).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("A harness."), "{}", out.content);
+    assert!(out.content.contains("these engines did not answer: bing (timeout)"), "{}", out.content);
 }
 
 #[tokio::test]
@@ -688,28 +751,70 @@ async fn fetch_decodes_the_charset_a_meta_tag_names_when_the_header_does_not() {
 }
 
 #[test]
-fn decode_prefers_a_byte_order_mark_then_the_header_then_the_meta_and_falls_back_to_utf8() {
+fn decode_prefers_a_byte_order_mark_then_the_header_then_the_meta_and_falls_back_to_utf8_then_windows_1252() {
     // a UTF-16LE mark beats a header that says otherwise
-    let (text, name) = decode("text/plain; charset=iso-8859-1", b"\xFF\xFEh\0i\0", false);
+    let (text, name) = decode("text/plain; charset=iso-8859-1", b"\xFF\xFEh\0i\0", false, false);
     assert_eq!((&*text, name), ("hi", Some("UTF-16LE")));
     // the header beats the meta
-    let (text, _) = decode("text/html; charset=iso-8859-1", b"<meta charset=\"utf-8\">\xE9", true);
+    let (text, _) = decode("text/html; charset=iso-8859-1", b"<meta charset=\"utf-8\">\xE9", true, false);
     assert!(text.ends_with('é'), "{text}");
     // a meta is read only for HTML, and only in the first KiB
-    let (text, name) = decode("text/plain", b"<meta charset=\"iso-8859-1\">\xE9", false);
-    assert!(text.ends_with('\u{FFFD}') && name.is_none(), "{text}");
+    let (text, name) = decode("text/plain", b"<meta charset=\"iso-8859-1\">\xE9", false, false);
+    assert!(text.ends_with('é') && name.is_some(), "{text}");
     let late = [vec![b' '; 2000], b"<meta charset=\"iso-8859-1\">\xE9".to_vec()].concat();
-    assert!(decode("text/html", &late, true).1.is_none());
+    assert!(decode("text/html", &late, true, false).1.is_some());
+    // an unlabeled page that is valid UTF-8 stays UTF-8
+    assert_eq!(decode("text/plain", "café".as_bytes(), false, false).1, None);
     // a label nobody knows is ignored: the UTF-8 default reads the body
-    let (text, name) = decode("text/plain; charset=made-up-9", "café".as_bytes(), false);
+    let (text, name) = decode("text/plain; charset=made-up-9", "café".as_bytes(), false, false);
     assert_eq!((&*text, name), ("café", None));
     // a label that means the replacement encoding is ignored too: it would turn the page into one U+FFFD
-    let (text, name) = decode("text/plain; charset=iso-2022-kr", b"hello", false);
+    let (text, name) = decode("text/plain; charset=iso-2022-kr", b"hello", false, false);
     assert_eq!((&*text, name), ("hello", None));
-    let (text, name) = decode("text/html", b"<meta charset=\"hz-gb-2312\">hello", true);
+    let (text, name) = decode("text/html", b"<meta charset=\"hz-gb-2312\">hello", true, false);
     assert!(text.ends_with("hello") && name.is_none(), "{text}");
     // a page that says utf-8 stays on the borrowed fast path
-    assert!(matches!(decode("text/html; charset=\"UTF-8\"", b"<p>ok</p>", true).0, std::borrow::Cow::Borrowed(_)));
+    assert!(matches!(
+        decode("text/html; charset=\"UTF-8\"", b"<p>ok</p>", true, false).0,
+        std::borrow::Cow::Borrowed(_)
+    ));
+}
+
+#[test]
+fn fetch_decodes_an_unlabeled_page_that_is_not_utf8_as_windows_1252() {
+    let (text, note) = decode("text/html", b"caf\xE9", false, false);
+    assert_eq!(&*text, "café");
+    assert!(note.is_some_and(|n| n.contains("windows-1252")), "{note:?}");
+    // UTF-8 cut inside its last character is not windows-1252
+    let (text, note) = decode("text/html", b"caf\xC3\xA9 caf\xC3", false, true);
+    assert_eq!(&*text, "café caf");
+    assert_eq!(note, None);
+    // a whole page that ends in a lone lead byte is not UTF-8 cut short: it is a legacy page
+    let (text, note) = decode("text/html", b"caf\xC3\xA9 caf\xC3", false, false);
+    assert_eq!(&*text, "caf\u{c3}\u{a9} caf\u{c3}");
+    assert!(note.is_some_and(|n| n.contains("windows-1252")));
+}
+
+#[tokio::test]
+async fn a_body_cut_short_keeps_what_arrived() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\n";
+        sock.write_all(head.as_bytes()).await.unwrap();
+        sock.write_all(&[b'a'; 4096]).await.unwrap();
+        // the connection closes with the rest of the body unsent
+    });
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": format!("http://{addr}/part.txt")}), &ctx()).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains(&"a".repeat(4096)), "{}", out.content);
+    assert!(out.content.contains("connection ended after 4 KB"), "{}", out.content);
+    assert!(out.content.contains("only its start was read"), "{}", out.content);
 }
 
 #[tokio::test]
@@ -888,7 +993,7 @@ async fn the_page_copies_hold_four_pages_and_each_for_a_minute() {
             at,
             final_url: Url::parse("https://example.com/").unwrap(),
             text: key.into(),
-            cut: false,
+            cut: None,
             charset: None,
         })
     };
@@ -901,4 +1006,42 @@ async fn the_page_copies_hold_four_pages_and_each_for_a_minute() {
     assert_eq!(t.copies.lock().unwrap().len(), 4, "a page read again replaces its copy");
     keep("old", Instant::now() - Duration::from_secs(61));
     assert!(t.copy_of("old").is_none(), "a copy older than a minute is not used");
+}
+
+#[tokio::test]
+async fn a_body_cut_after_a_few_bytes_says_bytes_not_zero_kb() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\n";
+        sock.write_all(head.as_bytes()).await.unwrap();
+        sock.write_all(b"just a few bytes").await.unwrap();
+    });
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": format!("http://{addr}/few.txt")}), &ctx()).await;
+    assert!(out.content.contains("connection ended after 16 bytes"), "{}", out.content);
+    assert!(!out.content.contains("0 KB"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_body_cut_after_a_few_bytes_says_bytes_not_zero_kb() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\n";
+        sock.write_all(head.as_bytes()).await.unwrap();
+        sock.write_all(b"just a few bytes").await.unwrap();
+    });
+    let t = WebFetch::new(&WebConfig::default());
+    let out = t.run(json!({"url": format!("http://{addr}/few.txt")}), &ctx()).await;
+    assert!(out.content.contains("connection ended after 16 bytes"), "{}", out.content);
+    assert!(!out.content.contains("0 KB"), "{}", out.content);
 }
