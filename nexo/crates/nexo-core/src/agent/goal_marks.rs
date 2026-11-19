@@ -53,6 +53,30 @@ pub fn goal_mark_at(text: &str) -> Option<usize> {
     })
 }
 
+/// The first line of the note nexo puts at the head of a request (what changed in the project, what its check said).
+/// It is nexo's own text, never the person's. The curator has a copy (`nexo_curator::START_NOTE_HEAD`).
+pub const START_NOTE_HEAD: &str = "[project at the start of this request]";
+
+/// The goal request in the text of a message nexo sent: from the loop's goal mark ([`goal_mark_at`]) to the first blank
+/// line that is followed by the start note ([`START_NOTE_HEAD`]), a file nexo or the person put in the request
+/// ([`headed_file`]) or a `@path` line that says the file was an image or was not attached, else to the end; trimmed.
+/// What follows it (the start note and the files) is nexo's, not the goal's words. `None` when the message is no goal
+/// round. The curator has the same rule (`nexo_curator` msg.rs).
+pub fn goal_request(text: &str) -> Option<&str> {
+    let rest = &text[goal_mark_at(text)?..];
+    let end = rest
+        .match_indices("\n\n")
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let after = &rest[i + 2..];
+            let line = after.lines().next().unwrap_or("");
+            let not_in = line.contains(": attached as an image") || line.contains(": not attached");
+            after.starts_with(START_NOTE_HEAD) || headed_file(line).is_some() || (line.starts_with('@') && not_in)
+        })
+        .unwrap_or(rest.len());
+    Some(rest[..end].trim())
+}
+
 /// How the line starts that says a goal that was met is not running; the writer (`goal_state_line`) and the readers
 /// ([`goal_state_line_of`]) both use it. The curator has a copy (`nexo_curator` msg.rs).
 pub const GOAL_MET_HEAD: &str = "[goal: met, not running";

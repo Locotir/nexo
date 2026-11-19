@@ -37,7 +37,10 @@ mod words;
 pub use curator::{Curator, Reply};
 pub use engine::{keywords, label, Added, AddedKind, AddedState};
 pub use memory::{Cell, Memory, State, Zone};
-pub use msg::PERSON_MARK;
+pub use msg::{
+    goal_request, ATTACHED, GOAL_CONTINUE_MARK, GOAL_MET_HEAD, GOAL_PAUSED_HEAD, GOAL_SET_MARK, INCLUDED, PERSON_MARK,
+    START_NOTE_HEAD,
+};
 pub use params::D_SPEC;
 pub use words::{distinctive_words, word_kind, LostTally, WordKind};
 

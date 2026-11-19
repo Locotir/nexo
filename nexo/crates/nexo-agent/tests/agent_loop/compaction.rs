@@ -230,3 +230,40 @@ async fn a_cut_summary_is_not_asked_for_again_every_round() {
     assert_eq!(reqs.iter().filter(|r| is_summary(r)).count(), 1, "one failed summary, no retry each round");
     r.stop().await;
 }
+
+/// The curator has no nexo-core dependency, so it holds copies of the marks nexo writes and reads: they must agree.
+#[test]
+fn the_curators_goal_marks_match_nexos() {
+    use nexo_core::agent as ours;
+    assert_eq!(nexo_curator::GOAL_SET_MARK, ours::GOAL_SET_MARK);
+    assert_eq!(nexo_curator::GOAL_CONTINUE_MARK, ours::GOAL_CONTINUE_MARK);
+    assert_eq!(nexo_curator::START_NOTE_HEAD, ours::START_NOTE_HEAD);
+    assert_eq!(nexo_curator::GOAL_MET_HEAD, ours::GOAL_MET_HEAD);
+    assert_eq!(nexo_curator::GOAL_PAUSED_HEAD, ours::GOAL_PAUSED_HEAD);
+    assert_eq!(nexo_curator::ATTACHED, ours::ATTACHED);
+    assert_eq!(nexo_curator::INCLUDED, ours::INCLUDED);
+    assert_eq!(nexo_curator::PERSON_MARK, ours::PERSON_MARK);
+}
+
+/// The two cuts of a goal request (`goal_request`) read the same text the same way.
+#[test]
+fn the_curators_goal_request_matches_nexos() {
+    use nexo_core::agent as ours;
+    let note = format!("{}\nGit: clean", ours::START_NOTE_HEAD);
+    let file = format!("@notes.md {}\n```md\nx\n```", ours::ATTACHED);
+    let own = format!("src/lib.rs {}\n```rs\nx\n```", ours::INCLUDED);
+    let jobs = "[background jobs ended]\n- job 1 done";
+    let goal = "[goal set] write the report\n\nand cite the sources";
+    for text in [
+        goal.to_string(),
+        format!("{goal}\n\n{note}"),
+        format!("{goal}\n\n{file}\n\n{note}"),
+        format!("{jobs}\n\n{goal}\n\n{note}\n\n{own}"),
+        format!("{goal}\n\n@shot.png: attached as an image"),
+        format!("{}\n\n{note}", ours::GOAL_CONTINUE_MARK),
+        format!("{note}\n\nplease add {} to the docs", ours::GOAL_SET_MARK),
+        "write the report".to_string(),
+    ] {
+        assert_eq!(nexo_curator::goal_request(&text), ours::goal_request(&text), "{text}");
+    }
+}

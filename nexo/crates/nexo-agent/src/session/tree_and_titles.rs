@@ -27,7 +27,7 @@ pub fn tree(metas: &[SessionMeta]) -> Vec<(usize, SessionMeta)> {
 
 /// The first line of the note nexo puts at the head of a request (what changed in the project, what its check said).
 /// It is nexo's own text, never the person's, so no title is made from it.
-pub const START_NOTE_HEAD: &str = "[project at the start of this request]";
+pub const START_NOTE_HEAD: &str = nexo_core::agent::START_NOTE_HEAD;
 
 /// The title a session takes from the first message the person sent: their own words, never the note and
 /// the files nexo put before them. Empty when the message holds no words of theirs yet.

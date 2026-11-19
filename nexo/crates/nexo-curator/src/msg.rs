@@ -32,9 +32,9 @@ const JOINED_MARK: &str = "[messages typed one after another]";
 pub(crate) const REQUEST_WAS: &str = "; the request was \"";
 
 /// How the line starts that says a met goal is not running (`nexo_core::agent::GOAL_MET_HEAD`).
-const GOAL_MET_HEAD: &str = "[goal: met, not running";
+pub const GOAL_MET_HEAD: &str = "[goal: met, not running";
 /// How the line starts that says a goal is paused (`nexo_core::agent::GOAL_PAUSED_HEAD`).
-const GOAL_PAUSED_HEAD: &str = "[goal: paused (";
+pub const GOAL_PAUSED_HEAD: &str = "[goal: paused (";
 
 /// The goal-state line `text` starts with, if it starts with one: nexo puts it first in a request it starts by itself,
 /// after the stop line (`nexo_core::agent::goal_state_line_of`).
@@ -47,6 +47,53 @@ pub fn goal_state_line_of(text: &str) -> Option<&str> {
 /// `text` without the goal-state line it starts with ([`goal_state_line_of`]), and the blank lines after it.
 pub fn without_goal_line(text: &str) -> &str {
     goal_state_line_of(text).map_or(text, |line| text[line.len()..].trim_start())
+}
+
+/// What the loop sends in the person's place to start a goal (`nexo_core::agent::GOAL_SET_MARK`).
+pub const GOAL_SET_MARK: &str = "[goal set]";
+/// What the loop sends in the person's place to keep a goal going (`nexo_core::agent::GOAL_CONTINUE_MARK`).
+pub const GOAL_CONTINUE_MARK: &str = "[goal: continue]";
+/// The first line of the note nexo puts at the head of a request (`nexo_core::agent::START_NOTE_HEAD`).
+pub const START_NOTE_HEAD: &str = "[project at the start of this request]";
+/// The end of the line that heads a file the person attached with `@path` (`nexo_core::agent::ATTACHED`).
+pub const ATTACHED: &str = "(attached in full, as it is now):";
+/// The end of the line that heads a project file nexo included by itself (`nexo_core::agent::INCLUDED`).
+pub const INCLUDED: &str = "(project file, included in full by nexo, as it is now):";
+
+/// The path `line` heads when it is the first line of a file put whole in a request (`nexo_core::agent::headed_file`).
+fn headed_file(line: &str) -> Option<&str> {
+    let path = match line.strip_suffix(ATTACHED) {
+        Some(l) => l.strip_prefix('@')?,
+        None => line.strip_suffix(INCLUDED)?,
+    };
+    Some(path.trim_end()).filter(|p| !p.is_empty())
+}
+
+/// Where the loop's own goal mark begins in the text of a message nexo sent: at the start, or after a blank line
+/// (`nexo_core::agent::goal_mark_at`).
+fn goal_mark_at(text: &str) -> Option<usize> {
+    text.match_indices('[').map(|(i, _)| i).find(|&at| {
+        (at == 0 || text[..at].ends_with("\n\n"))
+            && [GOAL_SET_MARK, GOAL_CONTINUE_MARK].iter().any(|m| text[at..].starts_with(m))
+    })
+}
+
+/// The goal request in the text of a message nexo sent: from the goal mark to the blank line before the start note, a
+/// file put in the request or a `@path` line that says the file was an image or was not attached, else to the end;
+/// trimmed (`nexo_core::agent::goal_request`).
+pub fn goal_request(text: &str) -> Option<&str> {
+    let rest = &text[goal_mark_at(text)?..];
+    let end = rest
+        .match_indices("\n\n")
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let after = &rest[i + 2..];
+            let line = after.lines().next().unwrap_or("");
+            let not_in = line.contains(": attached as an image") || line.contains(": not attached");
+            after.starts_with(START_NOTE_HEAD) || headed_file(line).is_some() || (line.starts_with('@') && not_in)
+        })
+        .unwrap_or(rest.len());
+    Some(rest[..end].trim())
 }
 
 /// The time and the rest of a line `[HH:MM:SS...]`.
@@ -136,6 +183,10 @@ pub fn request_words(text: &str) -> Cow<'_, str> {
     let words = stop_line_of(words).map_or(words, |(line, _)| words[line.len()..].trim_start());
     // a request nexo started by itself has no mark for words: the goal line follows its stop line
     let words = if nexos { without_goal_line(words) } else { words };
+    // a goal request: the goal's words, not the start note and the files nexo put after them
+    if let Some(goal) = goal_request(words) {
+        return Cow::Borrowed(goal);
+    }
     let Some(parts) = headed_parts(words) else { return Cow::Borrowed(words) };
     let after: Vec<&str> = parts.iter().filter(|(h, _)| !h.contains(BEFORE_STOP)).map(|&(_, p)| p).collect();
     let asked = if after.is_empty() { parts.iter().map(|&(_, p)| p).collect() } else { after };
@@ -146,10 +197,14 @@ pub fn request_words(text: &str) -> Cow<'_, str> {
 }
 
 /// Whether nexo marked the text of a message: it starts with the line of a stop or the line of a goal that is not
-/// running, or the person's words are requests joined into one. Its request is then [`request_words`], not the whole
-/// text.
+/// running, the person's words are requests joined into one, or it is a goal request (the loop's goal mark, with the
+/// start note and files after it). Its request is then [`request_words`], not the whole text.
 pub fn is_marked(text: &str) -> bool {
-    stop_line_of(text).is_some() || goal_state_line_of(text).is_some() || joined_parts(person_words(text)).is_some()
+    let words = person_words(text);
+    stop_line_of(text).is_some()
+        || goal_state_line_of(text).is_some()
+        || joined_parts(words).is_some()
+        || goal_request(words).is_some()
 }
 
 /// The request in the whole text of a message the person sent, as the curator reads it: [`request_words`] when nexo
@@ -377,5 +432,40 @@ mod tests {
         assert_eq!(goal_state_line_of("[goal: met, not running"), None);
         assert_eq!(goal_state_line_of("[goal: set]"), None);
         assert!(!is_marked("fix it"));
+    }
+
+    const NOTE: &str = "[project at the start of this request]\nGit: clean";
+
+    #[test]
+    fn request_words_of_a_goal_stop_at_the_start_note() {
+        let file = format!("@notes.md {ATTACHED}\n```md\nx\n```");
+        let own = format!("src/lib.rs {INCLUDED}\n```rs\nfn f() {{}}\n```");
+        let goal = "[goal set] write the report\n\nand cite the sources";
+        for text in [
+            format!("{goal}\n\n{NOTE}"),
+            format!("{goal}\n\n{file}"),
+            format!("{goal}\n\n{NOTE}\n\n{own}\n\n{file}"),
+            format!("{goal}\n\n@shot.png: attached as an image"),
+            format!("[12:00:00 the person stopped the request above (Esc)]\n\n{goal}\n\n{NOTE}"),
+            format!("[background jobs ended]\n- job 1 done\n\n{goal}\n\n{NOTE}"),
+        ] {
+            assert_eq!(request_words(&text), goal, "{text}");
+            assert!(is_marked(&text), "{text}");
+        }
+        // the loop's continuation with a note after it is the mark alone
+        assert_eq!(request_words(&format!("{GOAL_CONTINUE_MARK}\n\n{NOTE}")), GOAL_CONTINUE_MARK);
+        // the person's words under their mark are theirs, whatever follows
+        assert_eq!(request_words(&format!("{NOTE}\n\n{PERSON_MARK}\nfix it")), "fix it");
+        // no goal mark, no cut
+        assert!(!is_marked("write the report"));
+        assert_eq!(goal_request("write the report"), None);
+        assert_eq!(goal_request(&format!("see {GOAL_SET_MARK} in the docs\n\n{NOTE}")), None);
+    }
+
+    #[test]
+    fn asked_now_of_a_goal_stops_at_the_start_note() {
+        assert_eq!(asked_now(&format!("{GOAL_SET_MARK} x\n\n{NOTE}")), "[goal set] x");
+        // a goal with no start note is read as it is
+        assert!(matches!(asked_now("[goal set] x"), Cow::Borrowed("[goal set] x")));
     }
 }

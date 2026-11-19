@@ -222,3 +222,65 @@ fn a_goal_state_line_before_a_mail_is_no_request() {
         assert_eq!(kept(&h).requests, ["fix it"]);
     }
 }
+
+#[test]
+fn a_goal_request_keeps_the_words_and_not_the_start_note() {
+    let note = "[project at the start of this request]\nGit: clean";
+    let file = format!("{}\n```csv\nid\n1\n```", crate::reads::attached_header("data/sales.csv"));
+    let text = format!("[goal set] write the report\n\n{note}\n\n{file}\n\n@shot.png: attached as an image");
+    let k = kept(&[Message::user(text)]);
+    assert_eq!(k.requests, ["[goal set] write the report"]);
+    assert_eq!(k.read, ["data/sales.csv"], "the file after the goal was seen");
+    // notes of jobs, hooks and memory go before the mark and are not the goal's
+    let jobs = "[background jobs ended]\n- job 1 `make` done (exit 0)\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+    let k = kept(&[Message::user(format!("{jobs}\n\n[goal set] write the report\n\n{note}"))]);
+    assert_eq!(k.requests, ["[goal set] write the report"]);
+    // a goal of several paragraphs stays whole
+    let k = kept(&[Message::user(format!("[goal set] write the report\n\nand cite the sources\n\n{note}"))]);
+    assert_eq!(k.requests, ["[goal set] write the report\n\nand cite the sources"]);
+}
+
+#[test]
+fn a_goal_continue_with_a_start_note_is_no_request() {
+    let note = "[project at the start of this request]\nGit: clean";
+    let continue_mark = nexo_core::agent::GOAL_CONTINUE_MARK;
+    assert!(kept(&[Message::user(format!("{continue_mark}\n\n{note}"))]).requests.is_empty());
+    let jobs = "[background jobs ended]\n- job 1 `make` done (exit 0)\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+    assert!(kept(&[Message::user(format!("{jobs}\n\n{continue_mark}\n\n{note}"))]).requests.is_empty());
+}
+
+#[test]
+fn a_long_current_goal_is_not_shortened() {
+    let goal = format!("[goal set] {}", "g".repeat(20_000));
+    let h =
+        vec![Message::user("fix x"), Message::assistant("ok"), Message::user(goal.clone()), Message::assistant("ok")];
+    let mut k = kept(&h);
+    assert_eq!(k.requests.len(), 2);
+    k.cap(24_000);
+    assert_eq!(k.requests[1], goal, "the goal the work is on reaches the summary whole");
+    // an older goal is held like any other request, and the current one is never the one dropped
+    let old = format!("[goal set] {}", "o".repeat(20_000));
+    let mut k = kept(&[
+        Message::user("fix x"),
+        Message::assistant("ok"),
+        Message::user(old),
+        Message::assistant("ok"),
+        Message::user(goal.clone()),
+        Message::assistant("ok"),
+    ]);
+    k.cap(24_000);
+    assert!(k.requests[1].chars().count() <= 8_100, "an older goal is shortened as any request");
+    assert_eq!(k.requests.last(), Some(&goal));
+    // past the budget the oldest after the first go, the current goal stays
+    let mut h = vec![Message::user("fix x")];
+    for i in 0..30 {
+        h.push(Message::assistant("ok"));
+        h.push(Message::user(format!("step {i}: {}", "c".repeat(3_000))));
+    }
+    h.insert(2, Message::user(goal.clone()));
+    h.insert(2, Message::assistant("ok"));
+    let mut k = kept(&h);
+    k.cap(24_000);
+    assert!(k.requests.contains(&goal), "the current goal is not dropped");
+    assert!(k.requests.iter().map(|r| r.chars().count()).sum::<usize>() <= 24_000 * 4 || k.requests.len() == 2);
+}
