@@ -81,7 +81,10 @@ fn commands_and_submissions_reach_the_agent() {
     a.input.set_text("/permissions auto");
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(PermissionMode::Auto))));
-    a.input.set_text("!ls -la");
+    // a typed `!` runs the shell (set_text is not typing)
+    for c in "!ls -la".chars() {
+        crate::event::handle(&mut a, crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+    }
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Shell { command }) if command == "ls -la"));
     a.input.set_text("/model");

@@ -608,12 +608,18 @@ impl Block {
                 // rest indented under it, in the text colour so the facts read as a list
                 let text = user_notice(text);
                 let mut parts = text.split('\n');
+                let head = parts.next().unwrap_or("");
+                // the task the main agent gave a sub-agent: its lines are drawn as written, so a `*`, a
+                // backtick or a `**` in it stays on the screen
+                let task = head == TASK_HEAD;
                 // a long first line wraps under its text, not under a second icon
-                let first = super::markdown::inline_runs(parts.next().unwrap_or(""), theme, style);
+                let first = super::markdown::inline_runs(head, theme, style);
                 let mut lines =
                     crate::render::wrap::wrap_runs(&first, w, &[Span::styled(icon, style)], &[Span::raw("  ")]);
                 for rest in parts {
-                    let runs = super::markdown::inline_runs(rest, theme, Style::default().fg(theme.fg));
+                    let fg = Style::default().fg(theme.fg);
+                    let runs =
+                        if task { vec![(rest.to_string(), fg)] } else { super::markdown::inline_runs(rest, theme, fg) };
                     lines.extend(crate::render::wrap::wrap_runs(&runs, w, &[Span::raw("  ")], &[Span::raw("  ")]));
                 }
                 lines

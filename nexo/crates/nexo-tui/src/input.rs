@@ -29,11 +29,19 @@ pub struct Input {
     pending: Option<char>,
     pub editor: TextArea<'static>,
     history: Vec<String>,
+    /// Parallel to `history`: the entry ran as a shell command (it was sent with a typed `!`).
+    history_shell: Vec<bool>,
     /// Where in the history ↑ is (None: at the draft).
     hist: Option<usize>,
     stash: String,
+    /// Whether the stashed draft had a typed `!` (see `typed_bang`).
+    stash_bang: bool,
+    /// The draft's leading `!` was typed as a key (or came with a shell mark): only then does it run a shell command.
+    bang: bool,
+    /// The draft up to and including its first non-blank char, when `bang` was last settled.
+    bang_seen: String,
     pub placeholder: String,
-    /// Where the history is kept between runs (one JSON string a line); None: not kept.
+    /// Where the history is kept between runs (one line each: a JSON string, or `{"shell":"..."}` for a shell command); None: not kept.
     history_file: Option<std::path::PathBuf>,
     /// Long pastes, shown in the draft as `[Pasted text #n +L lines]` and sent whole.
     pastes: Vec<(String, String)>,
@@ -52,6 +60,8 @@ pub struct Input {
 pub struct Draft {
     editor: TextArea<'static>,
     pastes: Vec<(String, String)>,
+    bang: bool,
+    bang_seen: String,
 }
 /// A paste longer than this many lines (or [`PASTE_CHARS`] characters) is folded in the draft.
 pub const PASTE_LINES: usize = 3;
@@ -79,8 +89,12 @@ impl Input {
             pending: None,
             editor: TextArea::default(),
             history: Vec::new(),
+            history_shell: Vec::new(),
             hist: None,
             stash: String::new(),
+            stash_bang: false,
+            bang: false,
+            bang_seen: String::new(),
             placeholder: placeholder.to_string(),
             history_file: None,
             pastes: Vec::new(),
@@ -143,6 +157,40 @@ impl Input {
         self.style();
         self.editor.move_cursor(CursorMove::Bottom);
         self.editor.move_cursor(CursorMove::End);
+        // text that did not come through a key has no typed `!`
+        self.bang = false;
+        self.bang_seen.clear();
+    }
+
+    /// The draft up to and including its first non-blank char, and the caret position right after that char.
+    fn lead(&self) -> Option<(String, (usize, usize))> {
+        let mut out = String::new();
+        for (row, line) in self.editor.lines().iter().enumerate() {
+            for (col, c) in line.chars().enumerate() {
+                out.push(c);
+                if !c.is_whitespace() {
+                    return Some((out, (row, col + 1)));
+                }
+            }
+            out.push('\n');
+        }
+        None
+    }
+
+    /// Whether the draft's leading `!` was typed as a key at the prompt (or recalled from a history entry that ran as
+    /// a shell command). A paste, a chip, `set_text` or any other change to the text before that `!` makes it false:
+    /// only a `!` the person typed runs a shell command.
+    pub(crate) fn typed_bang(&self) -> bool {
+        self.bang && self.lead().is_some_and(|(l, _)| l.ends_with('!') && l == self.bang_seen)
+    }
+
+    /// Puts `text` in the box as a recalled draft: `shell` is whether it ran as a shell command when it was sent.
+    pub(crate) fn recall(&mut self, text: &str, shell: bool) {
+        self.set_text(text);
+        if let Some((l, _)) = self.lead() {
+            self.bang = shell && l.ends_with('!');
+            self.bang_seen = l;
+        }
     }
 
     pub fn clear(&mut self) {
@@ -158,13 +206,17 @@ impl Input {
         let pastes = std::mem::take(&mut self.pastes);
         self.hist = None;
         self.style();
-        Draft { editor, pastes }
+        let bang = std::mem::take(&mut self.bang);
+        let bang_seen = std::mem::take(&mut self.bang_seen);
+        Draft { editor, pastes, bang, bang_seen }
     }
 
     /// Puts a draft from [`Input::take_draft`] back, as it was.
     pub fn put_draft(&mut self, d: Draft) {
         self.editor = d.editor;
         self.pastes = d.pastes;
+        self.bang = d.bang;
+        self.bang_seen = d.bang_seen;
         self.hist = None;
         self.style();
     }
@@ -176,7 +228,15 @@ impl Input {
         let start = start.min(cur);
         let new = format!("{}{}{}", &text[..start], with, &text[cur..]);
         let keep_tail = text.len() - cur;
+        // a completion after a typed `!` leaves that `!` as typed
+        let kept_bang = self.typed_bang().then(|| self.bang_seen.clone());
         self.set_text(&new);
+        if let (Some(seen), Some((l, _))) = (kept_bang, self.lead()) {
+            if l == seen {
+                self.bang = true;
+                self.bang_seen = l;
+            }
+        }
         // put the cursor right after the insertion
         let target = new.len() - keep_tail;
         self.editor.move_cursor(CursorMove::Top);
@@ -222,8 +282,41 @@ impl Input {
         self.editor.move_cursor(CursorMove::Jump(line as u16, at as u16));
     }
 
-    /// Handles a key the editor owns.
+    /// Handles a key the editor owns, and settles whether the draft's leading `!` was typed (see `typed_bang`).
     pub fn key(&mut self, key: KeyEvent) -> Edit {
+        let before = self.lead().map(|l| l.0).unwrap_or_default();
+        // the text before the first char changed without a key (a paste): the mark is gone
+        if self.bang && before != self.bang_seen {
+            self.bang = false;
+        }
+        let edit = self.key_inner(key);
+        // a recalled entry already carries its own mark
+        if edit == Edit::Recalled {
+            return edit;
+        }
+        let after = self.lead();
+        // AltGr arrives here without Ctrl or Alt (event::altgr_char), so a `!` typed with it counts
+        let plain = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let typed = edit == Edit::Changed
+            && plain
+            && key.code == KeyCode::Char('!')
+            && after.as_ref().is_some_and(|(l, end)| l.ends_with('!') && *end == self.editor.cursor());
+        let lead = after.map(|l| l.0).unwrap_or_default();
+        // a blank typed before a typed `!` moves it without changing it
+        let blank = edit == Edit::Changed
+            && plain
+            && matches!(key.code, KeyCode::Char(c) if c.is_whitespace())
+            && lead.trim_start() == before.trim_start();
+        if typed {
+            self.bang = true;
+        } else if before != lead && !blank {
+            self.bang = false;
+        }
+        self.bang_seen = lead;
+        edit
+    }
+
+    fn key_inner(&mut self, key: KeyEvent) -> Edit {
         self.after_paste = false;
         if self.vim == Some(VimMode::Normal) {
             return self.vim_key(key);

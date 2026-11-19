@@ -47,13 +47,15 @@ pub(super) async fn on_job_change(rt: &mut Runtime, change: Result<nexo_core::jo
     if let Err(RecvError::Closed) = change {
         return;
     }
-    emit(&rt.events, AgentEvent::Jobs { jobs: rt.jobs.list() });
     let ended = matches!(&change, Ok(c) if !c.0.status.running());
     // a job ended while the agent waited for the person: it goes on with the result
     if ended && rt.turn.is_none() && !rt.jobs.untold().is_empty() {
         let note = room::ended_note_now(&rt.state, &rt.jobs).await;
         rt.turn = Some(start_turn(&rt.state, note, Vec::new(), rt.cancel.child_token()).await);
     }
+    // The list goes out after the turn that follows an ended job has begun (its `Preparing` is sent first), so a reader that
+    // sees no job running and no turn open knows that nothing follows.
+    emit(&rt.events, AgentEvent::Jobs { jobs: rt.jobs.list() });
 }
 
 /// The running turn ended: the interface and the hooks are told, the goal takes the end, then what runs next

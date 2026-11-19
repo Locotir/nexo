@@ -413,7 +413,8 @@ impl App {
         if text.trim().is_empty() {
             return;
         }
-        self.input.set_text(text);
+        // written on the command line by the person: a leading `!` is typed
+        self.input.recall(text, text.trim_start().starts_with('!'));
         if !self.opts.provider.is_empty() {
             self.submit();
         }

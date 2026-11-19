@@ -106,6 +106,86 @@ fn schema_retry(errors: &str) -> String {
     )
 }
 
+/// The request is over (the agent went idle, or a stop ended the wait for background jobs): works out its code and
+/// result, prints what the format asks, and keeps the result as the last one. True when the run must stop now (it
+/// was interrupted); false when it goes on, with the retry the schema check queued or the next request.
+fn end_request(
+    run: &mut Run,
+    schema: Option<&Value>,
+    attempt: &mut u8,
+    inbox: &mut VecDeque<String>,
+    exit: &mut i32,
+    last: &mut Option<Value>,
+    more: bool,
+) -> bool {
+    let fmt = run.fmt;
+    run.waiting = false;
+    let mut code = run.r.code();
+    // the jobs are killed only when the run ends here; with another request coming they keep running
+    run.keeps_jobs = more && code != EXIT_INTERRUPTED;
+    let text = run.r.text.clone();
+    let mut structured = None;
+    let mut problem = run.r.error.clone();
+    if code == EXIT_DENIED {
+        // the refusal names the tool and what would allow it; a fixed text would hide both
+        problem = run.r.denied.clone().filter(|d| !d.is_empty());
+    }
+    if let (0, Some(s)) = (code, schema) {
+        let checked = crate::schema::extract(&text).and_then(|v| {
+            let errs = crate::schema::validate(s, &v);
+            if errs.is_empty() {
+                Ok(v)
+            } else {
+                Err(errs.join("; "))
+            }
+        });
+        match checked {
+            Ok(v) => structured = Some(v),
+            Err(e) if *attempt == 0 => {
+                // one more try, in the same session, told what was wrong
+                *attempt = 1;
+                inbox.push_back(schema_retry(&e));
+                return false;
+            }
+            Err(e) => {
+                code = EXIT_SCHEMA;
+                problem = Some(format!("the answer does not match the schema: {e}"));
+            }
+        }
+    }
+    if *exit == 0 {
+        *exit = code;
+    }
+    if fmt == Fmt::Text {
+        match (&structured, code) {
+            (Some(v), _) => println!("{v}"),
+            (None, EXIT_SCHEMA | EXIT_MAX_TURNS | EXIT_DENIED) => {
+                let why = match code {
+                    EXIT_SCHEMA => problem.clone().unwrap_or_default(),
+                    EXIT_MAX_TURNS => "stopped at the turn limit".to_string(),
+                    _ => problem.clone().unwrap_or_else(|| {
+                        "a tool call was refused: nobody can be asked in a non-interactive run".to_string()
+                    }),
+                };
+                eprintln!("nexo: {why}");
+            }
+            _ => {}
+        }
+        // the jobs this end kills, named: the shutdown that follows kills them
+        if let Some(k) = run.killed_line() {
+            eprintln!("nexo: {k}");
+        }
+    }
+    let result = run.result(code, &text, structured, problem);
+    run.last_kept = run.keeps_jobs;
+    if fmt == Fmt::StreamJson {
+        line(&result);
+    }
+    *last = Some(result);
+    *attempt = 0;
+    code == EXIT_INTERRUPTED
+}
+
 /// Tools the agent registers after the setup's tool set is built, so `--allowed-tools` and `--disallowed-tools`
 /// can name them although the set they are matched against does not hold them yet.
 const LATE_TOOLS: &[&str] =
@@ -278,6 +358,8 @@ pub async fn run(
                     }
                 }
                 run.r = Req::default();
+                // the jobs of an earlier request are named by this one's waiting line and, if it ends the run, killed
+                run.keeps_jobs = false;
                 sent_any = handle
                     .commands
                     .send(AgentCommand::Submit { text: msg, attachments: std::mem::take(&mut first_images) })
@@ -295,6 +377,14 @@ pub async fn run(
                 if interrupts > 1 {
                     nexo_agent::audit::close_all();
                     std::process::exit(EXIT_INTERRUPTED);
+                }
+                if run.waiting && !run.turn_open {
+                    // idle, waiting only for background jobs: nothing is running that a stop could cancel, so the
+                    // first signal ends the request here, and the shutdown below kills the jobs
+                    run.r.end.get_or_insert(TurnEnd::Interrupted);
+                    end_request(&mut run, schema.as_ref(), &mut attempt, &mut inbox, &mut exit, &mut last, false);
+                    exit = EXIT_INTERRUPTED;
+                    break 'main;
                 }
                 if busy {
                     let _ = handle.commands.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
@@ -316,68 +406,28 @@ pub async fn run(
                     continue;
                 }
                 busy = false;
-                let mut code = run.r.code();
-                let text = run.r.text.clone();
-                let mut structured = None;
-                let mut problem = run.r.error.clone();
-                if code == EXIT_DENIED {
-                    // the refusal names the tool and what would allow it; a fixed text would hide both
-                    problem = run.r.denied.clone().filter(|d| !d.is_empty());
-                }
-                if let (0, Some(s)) = (code, &schema) {
-                    let checked = crate::schema::extract(&text).and_then(|v| {
-                        let errs = crate::schema::validate(s, &v);
-                        if errs.is_empty() { Ok(v) } else { Err(errs.join("; ")) }
-                    });
-                    match checked {
-                        Ok(v) => structured = Some(v),
-                        Err(e) if attempt == 0 => {
-                            // one more try, in the same session, told what was wrong
-                            attempt = 1;
-                            inbox.push_back(schema_retry(&e));
-                            continue;
-                        }
-                        Err(e) => {
-                            code = EXIT_SCHEMA;
-                            problem = Some(format!("the answer does not match the schema: {e}"));
-                        }
-                    }
-                }
-                if exit == 0 {
-                    exit = code;
-                }
-                if fmt == Fmt::Text {
-                    match (&structured, code) {
-                        (Some(v), _) => println!("{v}"),
-                        (None, EXIT_SCHEMA | EXIT_MAX_TURNS | EXIT_DENIED) => {
-                            let why = match code {
-                                EXIT_SCHEMA => problem.clone().unwrap_or_default(),
-                                EXIT_MAX_TURNS => "stopped at the turn limit".to_string(),
-                                _ => problem.clone().unwrap_or_else(|| {
-                                    "a tool call was refused: nobody can be asked in a non-interactive run".to_string()
-                                }),
-                            };
-                            eprintln!("nexo: {why}");
-                        }
-                        _ => {}
-                    }
-                }
-                let result = run.result(code, &text, structured, problem);
-                if fmt == Fmt::StreamJson {
-                    line(&result);
-                }
-                last = Some(result);
-                attempt = 0;
-                if code == EXIT_INTERRUPTED {
+                let more = stdin_rx.is_some() || !inbox.is_empty();
+                if end_request(&mut run, schema.as_ref(), &mut attempt, &mut inbox, &mut exit, &mut last, more) {
                     break 'main;
                 }
             }
-            msg = async { stdin_rx.as_mut().expect("guarded").recv().await }, if !busy && stdin_rx.is_some() => {
+            msg = async { stdin_rx.as_mut().expect("guarded").recv().await }, if (!busy || (run.waiting && !run.turn_open)) && stdin_rx.is_some() => {
                 match msg {
+                    // the input ended while the request waits for jobs: it goes on waiting, and its end names them
                     None => stdin_rx = None,
                     Some(l) if l.trim().is_empty() => {}
                     Some(l) => match user_text(&l) {
-                        Ok(Some(t)) => inbox.push_back(t),
+                        Ok(Some(t)) => {
+                            if busy {
+                                // idle and waiting for jobs, and the next message is here: the request ends now
+                                // (its result goes out, the jobs keep running) and the message runs at once
+                                busy = false;
+                                if end_request(&mut run, schema.as_ref(), &mut attempt, &mut inbox, &mut exit, &mut last, true) {
+                                    break 'main;
+                                }
+                            }
+                            inbox.push_back(t);
+                        }
                         Ok(None) => {}
                         Err(e) => {
                             eprintln!("nexo: stdin: {e}: {l}");
@@ -386,6 +436,20 @@ pub async fn run(
                         }
                     },
                 }
+            }
+        }
+    }
+    // the shutdown that follows kills what still runs, whatever the last request said
+    run.keeps_jobs = false;
+    // the last result was built when more input could still come, so it said nothing of the jobs: it does now. Stream
+    // JSON printed that line already, so its stderr carries the word.
+    if run.last_kept {
+        if let Some(v) = last.as_mut() {
+            run.name_killed(v);
+        }
+        if matches!(fmt, Fmt::Text | Fmt::StreamJson) {
+            if let Some(k) = run.killed_line() {
+                eprintln!("nexo: {k}");
             }
         }
     }

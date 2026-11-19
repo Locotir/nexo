@@ -208,3 +208,31 @@ fn the_code_label_leaves_a_gap_before_the_scrollbar_at_80x24() {
 fn the_code_label_leaves_a_gap_before_the_scrollbar_at_40x12() {
     assert_gap(40, 12);
 }
+
+#[test]
+fn a_table_too_wide_for_the_screen_is_drawn_as_head_value_lines() {
+    let heads: Vec<String> = (1..=12).map(|i| format!("col{i:02}")).collect();
+    let row = |n: usize| (1..=12).map(|i| format!("value{i:02}{}", if n == 2 { "b" } else { "" })).collect::<Vec<_>>();
+    let line = |cells: &[String]| format!("| {} |", cells.join(" | "));
+    let md = format!("{}\n|{}\n{}\n{}\n", line(&heads), "---|".repeat(12), line(&row(1)), line(&row(2)));
+    let (lines, meta) = render_as_meta(&md, 60, &Theme::dark(), false);
+    let texts: Vec<String> = lines.iter().map(text_of).collect();
+    for t in &texts {
+        assert!(width(t) <= 60, "{t:?} is {} columns", width(t));
+    }
+    assert!(texts.iter().any(|t| t.trim_end() == "col12: value12"), "{texts:?}");
+    let region = meta.regions.iter().find(|r| r.kind == crate::regions::Kind::Table).expect("the table region");
+    let src = region.src.as_ref().expect("the table keeps its copy text");
+    assert_eq!(src.len(), (region.end - region.start + 1) as usize);
+    // the copy path drops the rows a region marks as skipped and joins the rest by a newline
+    let copy: Vec<&str> = src
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !region.skip.contains(&(region.start + *k as u32)))
+        .map(|(_, s)| s.as_str())
+        .collect();
+    let copy = copy.join("\n");
+    assert!(copy.starts_with("col01\tcol02"), "{copy:?}");
+    assert!(copy.contains("value01\tvalue02"), "{copy:?}");
+    assert!(copy.contains("value01b\tvalue02b"), "{copy:?}");
+}

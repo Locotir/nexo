@@ -49,13 +49,21 @@ pub fn usage(u: &Value) -> Usage {
     let written = count(&u["prompt_tokens_details"]["cache_write_tokens"])
         .or_else(|| count(&u["cache_creation_input_tokens"]))
         .unwrap_or(0);
+    let completion = count(&u["completion_tokens"]).unwrap_or(0);
+    let reasoning = count(&u["completion_tokens_details"]["reasoning_tokens"]).unwrap_or(0);
+    // xAI reports `completion_tokens` without its reasoning tokens and a `total_tokens` that adds them back, and
+    // bills them as output; OpenAI's `completion_tokens` already holds them (total == prompt + completion).
+    // (a server-sent count can be u64::MAX, so the sum is checked)
+    let reasoning_apart = reasoning > 0
+        && count(&u["total_tokens"])
+            .is_some_and(|t| prompt.checked_add(completion).and_then(|s| s.checked_add(reasoning)) == Some(t));
     Usage {
         input: prompt.saturating_sub(cached).saturating_sub(written),
-        output: count(&u["completion_tokens"]).unwrap_or(0),
+        output: if reasoning_apart { completion.saturating_add(reasoning) } else { completion },
         cache_read: cached,
         cache_write: written,
         cache_write_1h: 0,
         transformations: 0,
-        reasoning: count(&u["completion_tokens_details"]["reasoning_tokens"]).unwrap_or(0),
+        reasoning,
     }
 }

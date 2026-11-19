@@ -7,9 +7,16 @@ impl Input {
     /// which [`Input::full_text`] puts back.
     pub fn insert_paste(&mut self, text: &str) {
         self.after_paste = true;
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        // a paste that replaces the typed `!` or lands before it leaves a `!` the person did not type
+        if self.bang {
+            let at = self.editor.selection_range().map_or_else(|| self.editor.cursor(), |(start, _)| start);
+            if self.lead().is_none_or(|(_, end)| at < end) {
+                self.bang = false;
+            }
+        }
+        let raw = text.replace("\r\n", "\n").replace('\r', "\n");
         // escapes and other control characters out, tabs as spaces: the box draws the text as is
-        let text = crate::render::wrap::clean(&text).into_owned();
+        let text = crate::render::wrap::clean(&raw).into_owned();
         let lines = text.trim_end_matches('\n').lines().count();
         if lines <= PASTE_LINES && text.chars().count() <= PASTE_CHARS {
             // a pasted attachment is a chip too
@@ -25,6 +32,9 @@ impl Input {
             self.editor.insert_str(text);
             return;
         }
+        // a chip is sent as pasted: only escapes and control characters go, tabs and marks stay
+        let text = crate::render::wrap::strip_escapes(&raw).into_owned();
+        let lines = text.trim_end_matches('\n').lines().count();
         let n = self
             .pastes
             .iter()

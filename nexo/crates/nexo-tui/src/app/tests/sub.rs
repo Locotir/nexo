@@ -1,6 +1,7 @@
 //! A sub-agent's conversation in the transcript area: the way in, the view, writing, the way out, the race.
 
 use super::*;
+use crate::render::blocks::TASK_HEAD;
 use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
 use nexo_core::subs::{SubInfo, SubItem, SubState, SubTranscript};
 
@@ -81,6 +82,8 @@ fn texts(a: &App, wanted: &str) -> usize {
         .iter()
         .filter(|b| match b {
             Block::User { text, .. } | Block::Assistant { text, .. } => text == wanted,
+            // the main agent's task is a notice: its head, then the task as it was given
+            Block::Notice { text, .. } => text.strip_prefix(&format!("{TASK_HEAD}\n")).is_some_and(|t| t == wanted),
             _ => false,
         })
         .count()
@@ -147,6 +150,22 @@ fn the_view_draws_the_run_with_the_blocks_of_the_main_chat() {
     let (main_user, main_reply) = (find(&main, "and the lexer?"), find(&main, "The lexer is small."));
     assert_eq!(sub_reply - sub_user, main_reply - main_user, "same rows between the two items");
     assert_eq!(rows[sub_user], main[main_user]);
+}
+
+#[test]
+fn the_task_from_the_main_agent_is_not_drawn_as_the_persons_words() {
+    let task = "look at the parser\nfix *a* and `b` and **c**";
+    let (mut a, _rx) = opened(vec![SubItem::Task { text: task.into() }]);
+    assert!(!a.blocks.iter().any(|b| matches!(b, Block::User { .. })), "the task is not the person's text");
+    let held = a.blocks.iter().any(|b| match b {
+        Block::Notice { text, .. } => text == &format!("{TASK_HEAD}\n{task}"),
+        _ => false,
+    });
+    assert!(held, "a notice holds both lines of the task");
+    let rows = frame(&mut a, 100, 30);
+    for want in [TASK_HEAD, "look at the parser", "fix *a* and `b` and **c**"] {
+        assert!(on_screen(&rows, want), "{want} in\n{}", rows.join("\n"));
+    }
 }
 
 #[test]

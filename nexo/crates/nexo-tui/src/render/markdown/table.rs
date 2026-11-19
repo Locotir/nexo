@@ -53,7 +53,97 @@ fn truncate_hard(s: &str, w: usize) -> String {
     out
 }
 
+/// `s` cut to at most `w` columns, with the cut marked by an ellipsis when it is longer.
+fn cut_label(s: &str, w: usize) -> String {
+    if width(s) <= w {
+        return s.to_string();
+    }
+    let mut out = truncate_hard(s, w.saturating_sub(1).max(1));
+    out.push('…');
+    out
+}
+
 impl<'t> Renderer<'t> {
+    /// A table too wide for `avail` columns, drawn as one record per body row: a `head: value` line for each
+    /// column, a dim rule between records. `rows` holds the head row first when `has_head`. A table with a head
+    /// and no body is drawn as one record of its head cells, labelled `col N`.
+    fn stacked(
+        &mut self,
+        rows: &[Vec<String>],
+        has_head: bool,
+        cols: usize,
+        avail: usize,
+        prefix_w: usize,
+        rest: &[Span<'static>],
+    ) {
+        let cell = |r: &Vec<String>, ci: usize| r.get(ci).map_or("", |s| s.trim()).to_string();
+        let head: Vec<String> = if has_head { (0..cols).map(|ci| cell(&rows[0], ci)).collect() } else { Vec::new() };
+        let body: Vec<&Vec<String>> = rows.iter().skip(usize::from(has_head)).collect();
+        // a head with no body keeps its cells as the one record, so nothing the table held is lost
+        let (records, labelled): (Vec<&Vec<String>>, bool) =
+            if body.is_empty() { (rows.iter().collect(), false) } else { (body, has_head) };
+        let labels: Vec<String> = (0..cols)
+            .map(|ci| match head.get(ci) {
+                Some(h) if labelled && !h.is_empty() => format!("{h}:"),
+                _ => format!("col {}:", ci + 1),
+            })
+            .collect();
+        let label_w = labels.iter().map(|l| width(l)).max().unwrap_or(1).min(avail / 2).max(2);
+        let labels: Vec<String> = labels.iter().map(|l| cut_label(l, label_w)).collect();
+        let value_w = avail.saturating_sub(label_w + 1).max(1);
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let first_row = self.out.len();
+        let mut tsrc: Vec<String> = Vec::new();
+        let mut tskip: Vec<u32> = Vec::new();
+        for (ri, row) in records.iter().copied().enumerate() {
+            if ri > 0 {
+                let mut spans = rest.to_vec();
+                spans.push(Span::styled("╌".repeat(avail), self.theme.dim2()));
+                self.out.push(Line::from(spans));
+                tskip.push((self.out.len() - 1) as u32);
+                tsrc.push(String::new());
+            }
+            for ci in 0..cols {
+                let value = wrap_cell(&cell(row, ci), value_w);
+                for (li, text) in value.iter().enumerate() {
+                    let mut spans = rest.to_vec();
+                    if li == 0 {
+                        let pad = label_w.saturating_sub(width(&labels[ci]));
+                        spans.push(Span::styled(labels[ci].clone(), bold));
+                        if !text.is_empty() {
+                            spans.push(Span::raw(format!("{} {text}", " ".repeat(pad))));
+                        }
+                        if ci == 0 {
+                            let tsv = (0..cols).map(|c| cell(row, c)).collect::<Vec<_>>().join("\t");
+                            // the first record's copy starts with the head row
+                            if ri == 0 && labelled {
+                                tsrc.push(format!("{}\n{tsv}", head.join("\t")));
+                            } else {
+                                tsrc.push(tsv);
+                            }
+                        } else {
+                            tskip.push(self.out.len() as u32);
+                            tsrc.push(String::new());
+                        }
+                    } else {
+                        spans.push(Span::raw(format!("{}{text}", " ".repeat(label_w + 1))));
+                        tskip.push(self.out.len() as u32);
+                        tsrc.push(String::new());
+                    }
+                    self.out.push(Line::from(spans));
+                }
+            }
+        }
+        if self.out.len() > first_row {
+            let mut r = Region::new(Kind::Table, first_row, self.out.len() - 1, prefix_w);
+            if tsrc.len() == self.out.len() - first_row {
+                r.src = Some(std::sync::Arc::new(tsrc));
+                r.skip = tskip;
+            }
+            self.meta.regions.push(r);
+        }
+    }
+
     pub(super) fn table(&mut self, t: TableCtx) {
         self.block_start();
         let (_, rest) = self.prefixes();
@@ -84,6 +174,11 @@ impl<'t> Renderer<'t> {
             widths[i] -= 1;
         }
         let has_head = !t.head.is_empty();
+        if widths.iter().sum::<usize>() + sep > avail {
+            // even the narrowest columns do not fit: one record per row, one line per column
+            self.stacked(&rows, has_head, cols, avail, prefix_w, &rest);
+            return;
+        }
         let first_row = self.out.len();
         // a long cell wraps inside its column; the row grows to its tallest cell
         let wrapped: Vec<Vec<Vec<String>>> = rows

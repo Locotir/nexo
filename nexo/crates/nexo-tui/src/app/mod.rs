@@ -147,6 +147,8 @@ pub struct App {
     /// The text of each queued request, oldest first (the agent keeps the same order); may hold
     /// fewer than `queued` when the count came from the agent alone.
     pub queued_msgs: Vec<String>,
+    /// When the last Enter that queued a request, or that was ignored right after one, came (see `ENTER_AGAIN_WAIT`).
+    pub queued_at: Option<Instant>,
     /// The queued rows of the last frame, with the index of the request each one shows.
     pub queue_rows: Vec<(Rect, usize)>,
     /// The pieces of the keys row a click opens something from.
@@ -457,6 +459,7 @@ impl App {
             streamed_chars: 0,
             queued: 0,
             queued_msgs: Vec::new(),
+            queued_at: None,
             queue_rows: Vec::new(),
             hint_hits: Vec::new(),
             jobs: Vec::new(),
@@ -675,6 +678,7 @@ impl App {
         self.call_tokens.clear();
         self.queued = 0;
         self.queued_msgs.clear();
+        self.queued_at = None;
         self.dirty = true;
         self.push_welcome();
     }

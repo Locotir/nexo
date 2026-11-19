@@ -746,3 +746,150 @@ fn a_missing_cwd_names_the_path_and_a_missing_session_names_the_id() {
     assert!(err(&out).contains("no session nosuchid at"), "{}", err(&out));
     assert!(err(&out).contains("`nexo sessions` lists them"), "{}", err(&out));
 }
+
+// ---------------------------------------------------------------- background jobs end the request late
+
+/// A script whose first reply starts `command` as a background bash job, then says "started", then answers `last`.
+#[cfg(unix)]
+fn background_script(command: &str, last: &str) -> String {
+    let call =
+        serde_json::json!([{"tool": {"id": "b1", "name": "bash", "args": {"command": command, "background": true}}}]);
+    serde_json::json!([call, [{"text": "started"}], [{"text": last}]]).to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_background_job_is_waited_for_and_its_follow_up_is_the_result() {
+    let d = tempfile::tempdir().unwrap();
+    let script = background_script("sleep 1; echo bg-finished", "the job printed bg-finished");
+    let out = scripted(d.path(), &script, &["-p", "run it", "--permission-mode", "yolo", "--output-format", "json"]);
+    assert_eq!(out.status.code(), Some(0), "{} {}", String::from_utf8_lossy(&out.stdout), err(&out));
+    let r = &lines(&out)[0];
+    assert_eq!(r["result"], "the job printed bg-finished", "{r}");
+    assert_eq!(r["num_turns"], 2, "{r}");
+    assert!(r.get("killed_jobs").is_none(), "{r}");
+    assert!(err(&out).contains("waiting for 1 background job(s) to end"), "{}", err(&out));
+}
+
+#[cfg(unix)]
+#[test]
+fn one_sigterm_during_the_wait_ends_the_run_and_names_the_job() {
+    use std::io::{BufRead, Read};
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("script.json");
+    std::fs::write(&path, background_script("sleep 30", "never")).unwrap();
+    let cfg = format!(
+        "provider = \"mock\"\nmodel = \"mock\"\n[providers.mock]\nprotocol = \"mock\"\nmodels = [\"mock\"]\n\
+         [providers.mock.extra]\nscript = {:?}\n[context]\npolicy = \"plain\"\n",
+        path.to_string_lossy()
+    );
+    std::fs::write(d.path().join("config.toml"), cfg).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nexo"))
+        .args(["-p", "run it", "--permission-mode", "yolo", "--output-format", "json"])
+        .current_dir(d.path())
+        .env("NEXO_CONFIG_DIR", d.path())
+        .env("NEXO_DATA_DIR", d.path().join("data"))
+        .env("NEXO_CACHE_DIR", d.path().join("cache"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("nexo runs");
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        s
+    });
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+    let mut said = String::new();
+    let mut waiting = false;
+    loop {
+        let mut l = String::new();
+        if stderr.read_line(&mut l).unwrap_or(0) == 0 {
+            break;
+        }
+        said.push_str(&l);
+        if l.contains("waiting for 1 background job(s) to end") {
+            waiting = true;
+            break;
+        }
+    }
+    if waiting {
+        // SAFETY: the pid is this test's own child, signalled by pid and never by name
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    } else {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    let mut rest = String::new();
+    let _ = stderr.read_to_string(&mut rest);
+    said.push_str(&rest);
+    let out = reader.join().unwrap();
+    assert!(waiting, "the run never said it waits for the job: {said}");
+    assert_eq!(status.code(), Some(130), "{out} {said}");
+    let r: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let killed = r["killed_jobs"].as_array().unwrap_or_else(|| panic!("no killed_jobs: {r}"));
+    assert_eq!(killed.len(), 1, "{r}");
+    assert_eq!(killed[0]["id"], 1);
+    assert_eq!(killed[0]["kind"], "shell");
+    assert_eq!(killed[0]["label"], "sleep 30");
+    assert!(r["error"].as_str().is_some_and(|e| e.starts_with("killed: nexo -p ended")), "{r}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_message_on_the_input_stream_does_not_wait_for_the_job_of_the_first() {
+    let d = tempfile::tempdir().unwrap();
+    // the replies in order: the job's start, "started", the second message's answer, the answer to the job's end
+    let call =
+        serde_json::json!([{"tool": {"id": "b1", "name": "bash", "args": {"command": "sleep 3", "background": true}}}]);
+    let script =
+        serde_json::json!([call, [{"text": "started"}], [{"text": "it answered"}], [{"text": "job done"}]]).to_string();
+    let input =
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"start the server in the background\"}}\n\
+                 {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"now curl it\"}}\n";
+    let out = scripted_in(
+        d.path(),
+        &script,
+        &["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--permission-mode", "yolo"],
+        Some(input),
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", err(&out));
+    let v = lines(&out);
+    let results: Vec<&str> =
+        v.iter().filter(|e| e["type"] == "result").map(|e| e["result"].as_str().unwrap()).collect();
+    // the second message ran at once; had it waited for the job, the job's end would have taken "it answered"
+    assert_eq!(results, ["started", "it answered", "job done"], "{v:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_last_result_of_an_input_stream_names_the_jobs_the_end_kills() {
+    let d = tempfile::tempdir().unwrap();
+    let call = serde_json::json!([{"tool": {"id": "b1", "name": "bash", "args": {"command": "sleep 30", "background": true}}}]);
+    let more = serde_json::json!([{"tool": {"id": "c2", "name": "ls", "args": {}}}]);
+    let script = serde_json::json!([call, more, [{"text": "never"}]]).to_string();
+    let input = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"start it\"}}\n";
+    let out = scripted_in(
+        d.path(),
+        &script,
+        &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            "yolo",
+            "--max-turns",
+            "1",
+        ],
+        Some(input),
+    );
+    assert_eq!(out.status.code(), Some(4), "{}", err(&out));
+    let r = &lines(&out)[0];
+    assert_eq!(r["subtype"], "error_max_turns", "{r}");
+    assert_eq!(r["killed_jobs"][0]["label"], "sleep 30", "{r}");
+    assert!(r["error"].is_string(), "{r}");
+}

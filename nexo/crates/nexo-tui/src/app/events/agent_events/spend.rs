@@ -13,8 +13,10 @@ impl App {
             if let Some(c) = &mut self.context {
                 c.history_tokens += call.output;
             }
+            // only the main agent's calls report usage here (sub-agents, the reader, compaction and the like carry
+            // `Usage::default()` as `call`), so the step count agrees with the title bar's `call_inputs`
+            self.turn_tally.steps += 1;
         }
-        self.turn_tally.steps += 1;
         self.turn_usage += turn;
         self.session_usage = session;
         self.cost = cost_usd;
