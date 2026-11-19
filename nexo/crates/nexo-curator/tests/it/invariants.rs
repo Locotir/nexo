@@ -323,7 +323,7 @@ fn i6(p: &Reply, q: &Reply, t: &mut Tally) -> Result<(), String> {
     Ok(())
 }
 
-fn find_result<'a>(h: &'a [Value], id: &str) -> Option<(usize, Value)> {
+fn find_result(h: &[Value], id: &str) -> Option<(usize, Value)> {
     h.iter().enumerate().find_map(|(i, m)| {
         norm(m).into_iter().find(|b| kind(b) == "tool_result" && b["tool_use_id"].as_str() == Some(id)).map(|b| (i, b))
     })
