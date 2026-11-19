@@ -362,7 +362,11 @@ fn space_ticks_sessions_and_enter_shares_all_the_ticked_ones() {
     press(&mut a, KeyCode::Down);
     press(&mut a, KeyCode::Char(' '));
     let rows = frame(&mut a, 100, 24).join("\n");
-    assert!(rows.contains("[x] s1") && rows.contains("[ ] s2") && rows.contains("[x] s3"), "{rows}");
+    // the row shows the title; the id is the value, checked when Enter shares
+    assert!(
+        rows.contains("[x] the parser") && rows.contains("[ ] the lexer") && rows.contains("[x] the docs"),
+        "{rows}"
+    );
     assert!(rows.contains("2 ticked"), "the count shows: {rows}");
     assert!(rows.contains("Space tick"), "the keys row says how: {rows}");
     // a tick can be taken back
