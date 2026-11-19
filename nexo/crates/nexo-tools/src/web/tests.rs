@@ -1026,22 +1026,3 @@ async fn a_body_cut_after_a_few_bytes_says_bytes_not_zero_kb() {
     assert!(out.content.contains("connection ended after 16 bytes"), "{}", out.content);
     assert!(!out.content.contains("0 KB"), "{}", out.content);
 }
-
-#[tokio::test]
-async fn a_body_cut_after_a_few_bytes_says_bytes_not_zero_kb() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = [0u8; 1024];
-        let _ = sock.read(&mut buf).await;
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\n";
-        sock.write_all(head.as_bytes()).await.unwrap();
-        sock.write_all(b"just a few bytes").await.unwrap();
-    });
-    let t = WebFetch::new(&WebConfig::default());
-    let out = t.run(json!({"url": format!("http://{addr}/few.txt")}), &ctx()).await;
-    assert!(out.content.contains("connection ended after 16 bytes"), "{}", out.content);
-    assert!(!out.content.contains("0 KB"), "{}", out.content);
-}
