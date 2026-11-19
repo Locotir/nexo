@@ -672,7 +672,7 @@ pub fn case(seed: u64, opts: &Opts) -> Case {
     for t in 0..turns {
         if t == 0 {
             let mut m0 = g.request(true);
-            if seed % 3 == 0 {
+            if seed.is_multiple_of(3) {
                 let mut blocks = norm(&m0);
                 let n = g.rng.range(200, 400);
                 let data = alpha(&mut g.rng, n);

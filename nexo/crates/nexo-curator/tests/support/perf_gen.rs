@@ -170,7 +170,10 @@ impl Session {
                 let command = ["-s S1 run", "-s S2 step", "continue", "regs", "-s S1 bt"][self.rng.below(5)];
                 self.tool("debug", json!({"command": command}), &out, false)
             }
-            _ => self.tool("bash", json!({"command": "cargo test --workspace"}), &out, self.rng.below(5) == 0),
+            _ => {
+                let error = self.rng.below(5) == 0;
+                self.tool("bash", json!({"command": "cargo test --workspace"}), &out, error)
+            }
         }
     }
 
