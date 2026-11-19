@@ -57,7 +57,7 @@ fn before(t: &str, a: &str, b: &str) -> bool {
 /// The function bytes, `cc` padding up to a multiple of `align`, then the constant words (8 bytes each, low first).
 fn pool(code: &[u8], align: usize, words: &[u64]) -> Vec<u8> {
     let mut v = code.to_vec();
-    while v.len() % align != 0 {
+    while !v.len().is_multiple_of(align) {
         v.push(0xcc);
     }
     for w in words {

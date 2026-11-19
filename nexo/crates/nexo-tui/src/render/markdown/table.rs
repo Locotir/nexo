@@ -103,13 +103,13 @@ impl<'t> Renderer<'t> {
                 tskip.push((self.out.len() - 1) as u32);
                 tsrc.push(String::new());
             }
-            for ci in 0..cols {
+            for (ci, label) in labels.iter().enumerate() {
                 let value = wrap_cell(&cell(row, ci), value_w);
                 for (li, text) in value.iter().enumerate() {
                     let mut spans = rest.to_vec();
                     if li == 0 {
-                        let pad = label_w.saturating_sub(width(&labels[ci]));
-                        spans.push(Span::styled(labels[ci].clone(), bold));
+                        let pad = label_w.saturating_sub(width(label));
+                        spans.push(Span::styled(label.clone(), bold));
                         if !text.is_empty() {
                             spans.push(Span::raw(format!("{} {text}", " ".repeat(pad))));
                         }

@@ -232,7 +232,7 @@ fn replay(protocol: &str, data: &[String], i: usize, mutated: &str, nth: usize) 
     for (k, d) in data.iter().enumerate() {
         out.extend(p.feed(if k == i { mutated } else { d }));
     }
-    if nth % 2 == 0 {
+    if nth.is_multiple_of(2) {
         out.extend(p.fail("transport failed".into()));
     }
     out.extend(p.finish());
