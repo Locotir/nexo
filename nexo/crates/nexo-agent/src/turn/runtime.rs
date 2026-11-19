@@ -73,6 +73,7 @@ impl Runtime {
         let prefix = prefix::settle(&mut session, &cwd, &config.agent, &mut tools);
         let system = prompt::system_prompt_with(&cwd, &config.agent, &tools, window_of(&limits), &prefix.volatile);
         let policy = context::from_config(&config.context);
+        context::record(&mut session, policy.as_ref(), &config.context.policy);
         let perm = Policy::from_config(&config.permissions);
         let config_sandbox = (
             config.permissions.sandbox,
@@ -126,6 +127,7 @@ impl Runtime {
             policy,
             fit_view: None,
             last_view: (0, 0),
+            view_failed: false,
             last_sent: crate::history::Sent::default(),
             last_request: None,
             mended: HashSet::new(),

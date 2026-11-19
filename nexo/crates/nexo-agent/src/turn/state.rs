@@ -16,6 +16,8 @@ pub(super) struct State {
     pub(super) fit_view: Option<context::BuiltIn>,
     /// The tokens of the history and of the last view sent, for /status.
     pub(super) last_view: (u64, u64),
+    /// The last view failed and the whole history went with that call (the usage line says `fallback`).
+    pub(super) view_failed: bool,
     /// The messages of the last request, to tell which part of the next one repeats it (the cache).
     pub(super) last_sent: crate::history::Sent,
     /// The last request the conversation sent, which a prompt suggestion repeats (the provider's cache) with one message more.

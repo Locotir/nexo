@@ -892,8 +892,12 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     }
     st.policy.history_version(st.history.version());
     let mut view = match st.policy.view(system_tokens, &st.history).await {
-        Ok(v) => v,
+        Ok(v) => {
+            st.view_failed = false;
+            v
+        }
         Err(e) => {
+            st.view_failed = true;
             notice(&st.events, Level::Warn, format!("context policy failed ({e}); sending everything"));
             View { messages: st.history.to_vec(), tokens: st.history.tokens(), note: None, memory: None }
         }

@@ -232,6 +232,7 @@ impl Session {
             model: meta.model,
             kind: meta.kind,
             held: meta.held,
+            fallback: meta.fallback,
         })
     }
 
@@ -256,6 +257,21 @@ impl Session {
         self.goal = text.map(String::from);
         self.goal_state = GoalState::Active;
         self.write(&Line::Goal { text: self.goal.clone(), state: GoalState::Active })
+    }
+
+    /// The context setup last recorded.
+    pub fn context(&self) -> Option<&ContextRecord> {
+        self.context.as_ref()
+    }
+
+    /// The context setup that runs from here on. Nothing is written when it is the one last recorded, so a
+    /// resume with the same setup adds no line.
+    pub fn record_context(&mut self, rec: &ContextRecord) -> anyhow::Result<()> {
+        if self.context.as_ref() == Some(rec) {
+            return Ok(());
+        }
+        self.context = Some(rec.clone());
+        self.write(&Line::Context(rec.clone()))
     }
 
     /// The prefix this session sends before its messages, when one was saved.

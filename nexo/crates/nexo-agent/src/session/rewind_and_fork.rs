@@ -118,6 +118,7 @@ impl Session {
                         model: None,
                         kind: Some(UsageKind::Sum),
                         held: None,
+                        fallback: None,
                     })?
                 )?;
             }
@@ -127,6 +128,9 @@ impl Session {
                     "{}",
                     serde_json::to_string(&Line::Goal { text: self.goal.clone(), state: self.goal_state.clone() })?
                 )?;
+            }
+            if let Some(c) = &self.context {
+                writeln!(f, "{}", serde_json::to_string(&Line::Context(c.clone()))?)?;
             }
             if let Some(p) = &self.prefix {
                 writeln!(f, "{}", serde_json::to_string(&Line::Prefix(p.clone()))?)?;

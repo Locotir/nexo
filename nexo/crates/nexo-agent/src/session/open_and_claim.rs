@@ -58,6 +58,7 @@ impl Session {
             goal: None,
             goal_state: GoalState::Active,
             prefix: None,
+            context: None,
             stop: None,
             locked: true,
             touched: std::time::Instant::now(),
@@ -101,6 +102,7 @@ impl Session {
             goal: None,
             goal_state: GoalState::Active,
             prefix: None,
+            context: None,
             stop: None,
             locked: false,
             touched: std::time::Instant::now(),
@@ -146,6 +148,7 @@ impl Session {
         let mut goal = None;
         let mut goal_state = GoalState::Active;
         let mut prefix = None;
+        let mut context = None;
         let mut stop = None;
         let mut skipped = 0;
         // outputs whose line left the text to the tool-result message: filled in from it once the messages are read
@@ -183,6 +186,7 @@ impl Session {
                     goal_state = state;
                 }
                 Ok(Line::Prefix(p)) => prefix = Some(p),
+                Ok(Line::Context(c)) => context = Some(c),
                 // the map belongs to the prefix before it (one written after a rewrite already has the last)
                 Ok(Line::PrefixShown { shown }) => {
                     if let Some(p) = &mut prefix {
@@ -222,6 +226,7 @@ impl Session {
             goal,
             goal_state,
             prefix,
+            context,
             stop,
             locked: false,
             touched: std::time::Instant::now(),

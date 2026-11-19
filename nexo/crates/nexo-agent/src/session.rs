@@ -4,7 +4,7 @@
 //! Lines: `{"type":"meta",...}` first; then `message` (with its index),
 //! `tool_output` (its text left out when the tool-result message holds it), `usage`, `title`, `prefix_shown` (the project
 //! map alone, for a changed tree), `stop` (the person stopped the latest
-//! request), `headless` (a program took the session over), and `reset`
+//! request), `context` (the context policy that runs), `headless` (a program took the session over), and `reset`
 //! (the history was rewritten: what follows replaces what came before).
 
 use std::collections::BTreeMap;
@@ -107,6 +107,24 @@ pub struct UsageMeta {
     pub model: Option<String>,
     pub kind: Option<UsageKind>,
     pub held: Option<u64>,
+    /// The view failed at this call and the whole history was sent.
+    pub fallback: Option<bool>,
+}
+
+/// The context policy a session ran with, as a `context` line writes it: what was asked, what runs, and what of the
+/// ask was left out or replaced.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ContextRecord {
+    /// `ContextPolicy::name()` of the policy that runs.
+    pub policy: String,
+    /// `[context] policy` as configured, trimmed.
+    pub asked: String,
+    /// The curator spec that runs; empty for plain and compact.
+    #[serde(default)]
+    pub spec: String,
+    /// What was asked and left out or replaced, as the person sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caveat: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -142,6 +160,9 @@ enum Line {
         /// Tokens of the history the view left out at this call; old files have none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         held: Option<u64>,
+        /// The call's view failed and the whole history went; absent when it did not, and in old files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback: Option<bool>,
     },
     Title {
         title: String,
@@ -156,6 +177,8 @@ enum Line {
         #[serde(default, skip_serializing_if = "GoalState::is_active")]
         state: GoalState,
     },
+    /// The context setup in force from here on: the last such line wins. Old readers skip it.
+    Context(ContextRecord),
     /// The prefix in force from here on; the last such line wins.
     Prefix(Prefix),
     /// The project map the model was last shown, which is all a changed tree alters of the prefix: it replaces `shown` in
@@ -190,6 +213,8 @@ pub struct Session {
     goal: Option<String>,
     goal_state: GoalState,
     prefix: Option<Prefix>,
+    /// The context setup last written, so the same one is not written again.
+    context: Option<ContextRecord>,
     /// The person stopped the latest request and no request has carried the line that says so yet: that line.
     stop: Option<String>,
     /// Whether this session holds the lock next to its file (taken at the first write).

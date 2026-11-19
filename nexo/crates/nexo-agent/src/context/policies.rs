@@ -72,6 +72,8 @@ pub(super) const REPLAY: usize = 2000;
 /// it was last given, so each call converts only the messages that changed.
 pub struct BuiltIn {
     cur: nexo_curator::Curator,
+    /// The settings it was built with, as `Curator::new` took them.
+    spec: String,
     seen: Vec<Message>,
     values: Vec<serde_json::Value>,
     /// Messages the last view put in and took out.
@@ -97,6 +99,7 @@ impl BuiltIn {
     pub fn new(spec: &str) -> Result<BuiltIn, String> {
         Ok(BuiltIn {
             cur: nexo_curator::Curator::new(spec.trim())?,
+            spec: spec.trim().to_string(),
             seen: Vec::new(),
             values: Vec::new(),
             moved: (0, 0),
@@ -218,6 +221,10 @@ impl ContextPolicy for BuiltIn {
 
     fn caveat(&self) -> Option<String> {
         self.caveat.clone()
+    }
+
+    fn spec(&self) -> Option<String> {
+        Some(self.spec.clone())
     }
 
     async fn view(&mut self, system_tokens: u64, history: &[Message]) -> anyhow::Result<View> {
