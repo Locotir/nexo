@@ -79,13 +79,17 @@ impl App {
         self.flash(&format!("restored {name}"));
     }
 
-    /// The rows of the sessions list: a chip line after the id, see [`crate::palette::session_hint`].
+    /// The rows of the sessions list. The title leads; the id stays the value, so a filter can still find it.
     pub(in crate::app) fn session_items(&self) -> Vec<PickItem> {
-        let now = nexo_core::mailbox::now_ms();
+        let open = self.session_id.as_deref();
         self.opts
             .sessions
             .iter()
-            .map(|r| PickItem { label: r.id.clone(), value: r.id.clone(), hint: crate::palette::session_hint(r, now) })
+            .map(|r| PickItem {
+                label: crate::palette::session_label(r, open == Some(r.id.as_str())),
+                value: r.id.clone(),
+                hint: String::new(),
+            })
             .collect()
     }
 

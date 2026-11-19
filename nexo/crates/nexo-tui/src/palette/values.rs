@@ -102,6 +102,46 @@ pub fn session_hint(row: &nexo_core::agent::SessionRow, now_ms: i64) -> String {
     parts.join(" · ")
 }
 
+/// The text of one `/resume` row. The title leads. The day, the other folder and `this session` follow it.
+/// An empty title leads with `untitled` and the id, so two unnamed sessions stay distinct.
+pub fn session_label(row: &nexo_core::agent::SessionRow, open: bool) -> String {
+    let mut text =
+        if row.title.trim().is_empty() { format!("untitled {}", row.id) } else { row.title.trim().to_string() };
+    if let Some(day) = calendar_day(row.updated_ms) {
+        text.push_str("  ");
+        text.push_str(&day);
+    }
+    if !row.here {
+        if let Some(name) = row.cwd.file_name().filter(|n| !n.is_empty()) {
+            text.push_str("  ");
+            text.push_str(&name.to_string_lossy());
+        }
+    }
+    if open {
+        text.push_str("  this session");
+    }
+    text
+}
+
+/// `YYYY-MM-DD` in UTC from milliseconds since the epoch. `None` when the stamp is missing.
+fn calendar_day(updated_ms: i64) -> Option<String> {
+    if updated_ms <= 0 {
+        return None;
+    }
+    // Howard Hinnant, civil_from_days. `z` is days since 1970-01-01, shifted to the civil epoch.
+    let z = updated_ms / 86_400_000 + 719_468;
+    let era = z / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
 /// The folders `/add-dir` offers for what is typed so far: the folders inside the part before the
 /// last separator (from `cwd`, or home for `~/`), written the way the person started, each ending in
 /// a separator so picking one lists its own folders next. Hidden folders only once a `.` is typed.

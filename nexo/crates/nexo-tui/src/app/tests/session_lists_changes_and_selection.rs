@@ -412,6 +412,51 @@ fn ticks_survive_a_filter_and_a_later_tick_adds_to_them() {
 }
 
 #[test]
+fn the_resume_filter_finds_a_title_word_and_an_id_slice() {
+    let (mut a, mut rx) = app();
+    a.opts.sessions = vec![
+        nexo_core::agent::SessionRow {
+            id: "20261118-here".into(),
+            title: "Make resume list the session title first".into(),
+            here: true,
+            ..Default::default()
+        },
+        nexo_core::agent::SessionRow {
+            id: "20261102-away".into(),
+            title: "Ledgerpour export".into(),
+            cwd: "/work/meshpeek".into(),
+            ..Default::default()
+        },
+        nexo_core::agent::SessionRow { id: "20261110-9f3a".into(), ..Default::default() },
+    ];
+    a.run_command(Command::Sessions);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListSessions)));
+    for c in "Ledgerpour".chars() {
+        press(&mut a, KeyCode::Char(c));
+    }
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays") };
+    assert_eq!(p.current().map(|i| i.value.as_str()), Some("20261102-away"));
+    let (mut a, mut rx) = app();
+    a.opts.sessions = vec![
+        nexo_core::agent::SessionRow {
+            id: "20261118-here".into(),
+            title: "Make resume list the session title first".into(),
+            here: true,
+            ..Default::default()
+        },
+        nexo_core::agent::SessionRow { id: "20261110-9f3a".into(), ..Default::default() },
+    ];
+    a.run_command(Command::Sessions);
+    let _ = rx.try_recv();
+    for c in "9f3a".chars() {
+        press(&mut a, KeyCode::Char(c));
+    }
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays") };
+    assert_eq!(p.current().map(|i| i.value.as_str()), Some("20261110-9f3a"));
+    assert!(p.current().is_some_and(|i| i.label.starts_with("untitled 20261110-9f3a")));
+}
+
+#[test]
 fn the_sessions_list_waits_for_the_disk_when_nothing_is_known_and_refreshes_an_open_one() {
     let (mut a, mut rx) = app();
     a.run_command(Command::Sessions);
@@ -435,8 +480,10 @@ fn the_sessions_list_waits_for_the_disk_when_nothing_is_known_and_refreshes_an_o
     let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker opens when the list arrives") };
     assert_eq!(p.kind, PickKind::Session);
     assert_eq!(p.items.len(), 2);
-    assert!(p.items[1].hint.contains("site") && p.items[1].hint.contains("9 msg"), "{}", p.items[1].hint);
-    assert!(!p.items[0].hint.contains("site"), "this folder's sessions do not repeat the folder");
+    assert!(p.items[0].label.starts_with("parser fix"), "{}", p.items[0].label);
+    assert!(!p.items[0].label.contains("site"), "this folder's sessions do not repeat the folder");
+    assert!(p.items[1].label.starts_with("docs") && p.items[1].label.contains("site"), "{}", p.items[1].label);
+    assert!(!p.items[1].label.contains("s2"), "a titled row does not show its id");
     // an open picker takes a later list in place
     a.handle_agent(AgentEvent::SessionList { sessions: vec![elsewhere] });
     let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays open") };

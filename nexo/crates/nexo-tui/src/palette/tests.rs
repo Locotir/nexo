@@ -333,3 +333,45 @@ fn a_session_row_says_how_much_how_long_ago_and_where_only_when_elsewhere() {
     let bare = nexo_core::agent::SessionRow { id: "s2".into(), title: "docs".into(), ..Default::default() };
     assert_eq!(session_hint(&bare, now), "docs", "a row without counts or time shows the title alone");
 }
+
+#[test]
+fn a_resume_row_leads_with_the_title_then_the_day_and_the_other_folder() {
+    use crate::palette::session_label;
+    let day = 1_794_960_000_000; // 2026-11-18 00:00:00 UTC
+    let here = nexo_core::agent::SessionRow {
+        id: "20261118-here".into(),
+        title: "Make resume list the session title first".into(),
+        here: true,
+        updated_ms: day,
+        ..Default::default()
+    };
+    let away = nexo_core::agent::SessionRow {
+        id: "20261102-away".into(),
+        title: "Ledgerpour export".into(),
+        cwd: "/work/meshpeek".into(),
+        updated_ms: 1_793_577_600_000, // 2026-11-02 00:00:00 UTC
+        ..Default::default()
+    };
+    let open = nexo_core::agent::SessionRow {
+        id: "20261119-open".into(),
+        title: "Already open notes".into(),
+        here: true,
+        ..Default::default()
+    };
+    let bare = nexo_core::agent::SessionRow { id: "20261110-9f3a".into(), ..Default::default() };
+    let titled = session_label(&here, false);
+    assert!(titled.starts_with("Make resume list the session title first"));
+    assert!(titled.contains("2026-11-18"));
+    assert!(!titled.contains("20261118-here"));
+    assert!(!titled.contains("this session"));
+    let other = session_label(&away, false);
+    assert!(other.starts_with("Ledgerpour export"));
+    assert!(other.contains("2026-11-02") && other.contains("meshpeek"));
+    assert!(!other.contains("20261102-away"));
+    assert!(
+        session_label(&open, true).starts_with("Already open notes")
+            && session_label(&open, true).contains("this session")
+    );
+    let untitled = session_label(&bare, false);
+    assert!(untitled.starts_with("untitled 20261110-9f3a"), "{untitled}");
+}

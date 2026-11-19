@@ -114,7 +114,7 @@ impl Picker {
         if self.armed.as_deref() == Some(value) {
             self.armed = None;
         }
-        let labels: Vec<String> = self.items.iter().map(|i| format!("{} {}", i.label, i.hint)).collect();
+        let labels: Vec<String> = self.items.iter().map(|i| self.hay(i)).collect();
         self.ranked = fuzzy::rank(&self.query, &labels);
         self.selected = at.min(self.ranked.len().saturating_sub(1));
     }
@@ -136,9 +136,18 @@ impl Picker {
     }
 
     pub(crate) fn refilter(&mut self) {
-        let labels: Vec<String> = self.items.iter().map(|i| format!("{} {}", i.label, i.hint)).collect();
+        let labels: Vec<String> = self.items.iter().map(|i| self.hay(i)).collect();
         self.ranked = fuzzy::rank(&self.query, &labels);
         self.selected = 0;
+    }
+
+    /// What a typed filter matches. A session matches its title and its id; the id is not drawn.
+    fn hay(&self, item: &PickItem) -> String {
+        if matches!(self.kind, PickKind::Session | PickKind::Memory) {
+            format!("{} {} {}", item.label, item.hint, item.value)
+        } else {
+            format!("{} {}", item.label, item.hint)
+        }
     }
 
     pub fn current(&self) -> Option<&PickItem> {
