@@ -108,6 +108,10 @@ fn front<'a>(text: &'a str, out: &mut Vec<Piece>) -> &'a str {
         if let Some(line) = nexo_core::agent::stop_line_of(t) {
             out.push(Piece::Added(AddedPart::new(AddedKind::Stopped, "stop", line)));
             t = t[line.len()..].trim_start();
+        } else if let Some(line) = nexo_core::agent::goal_state_line_of(t) {
+            // before a request nexo started: it is no part of what follows, which is still nexo's (a mail, a start note)
+            out.push(Piece::Added(AddedPart::new(AddedKind::StartNote, "goal state", line)));
+            t = t[line.len()..].trim_start();
         } else if t.starts_with(JOBS_NOTE) {
             // a note whose jobs all came with their reports has no closing line: it is all nexo's
             let end = match t.find(JOBS_END) {
@@ -543,5 +547,33 @@ mod tests {
             split_user("what does [supervisor: continue] do?"),
             vec![Piece::Text("what does [supervisor: continue] do?".into())]
         );
+    }
+
+    #[test]
+    fn a_goal_state_line_before_a_mail_is_still_nexos() {
+        let met = "[goal: met, not running; /goal resume reopens it]";
+        let paused = "[goal: paused (paused by you), not running; /goal resume goes on]";
+        let mail = "<session-message id=\"m-1\" from=\"other\" from-id=\"s-2\" at=\"t\">please look at the parser</session-message>";
+        for line in [met, paused] {
+            // a mail: the line is a part, the mail is nexo's, nothing is the person's words
+            let p = split_user(&format!("{line}\n\n{mail}"));
+            assert!(!has_text(&p), "{p:?}");
+            assert!(p.iter().any(|x| matches!(x, Piece::Started(w) if w == "mail from another session")), "{p:?}");
+            assert_eq!(kinds(&p), [AddedKind::StartNote, AddedKind::Mention], "{p:?}");
+            // a start note and nothing else of nexo's
+            let p = split_user(&format!("{line}\n\n{START}"));
+            assert!(!has_text(&p), "{p:?}");
+            assert!(p.iter().any(|x| matches!(x, Piece::Started(w) if w == "started by nexo")), "{p:?}");
+            assert_eq!(kinds(&p), [AddedKind::StartNote, AddedKind::StartNote], "{p:?}");
+            // after a stop line and before a jobs note
+            let stop = "[10:00:00 the person stopped the request above (Esc)]";
+            let p = split_user(&format!("{stop}\n\n{line}\n\n{NOTE}\n\n{START}"));
+            assert!(!has_text(&p), "{p:?}");
+            assert_eq!(kinds(&p), [AddedKind::Stopped, AddedKind::StartNote, AddedKind::StartNote], "{p:?}");
+        }
+        // a line that only looks like the goal line, inside the person's words, stays theirs
+        let p = split_user("why does it say [goal: met, not running; /goal resume reopens it]?");
+        assert_eq!(p.len(), 1);
+        assert!(has_text(&p), "{p:?}");
     }
 }

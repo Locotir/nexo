@@ -163,7 +163,10 @@ pub fn is_request(text: &str) -> bool {
     }
     let t = textops::lstrip(text);
     let marked = crate::msg::person_words(t).len() < t.len();
-    marked || !NOT_REQUEST.iter().any(|p| t.starts_with(p))
+    // the line that says a goal is not running comes first in a request nexo started by itself: what follows it is
+    // judged as it is without it
+    let t = if marked { t } else { crate::msg::without_goal_line(t) };
+    marked || (!t.is_empty() && !NOT_REQUEST.iter().any(|p| t.starts_with(p)))
 }
 
 pub fn split_paragraphs(text: &str) -> Vec<(usize, usize)> {
@@ -880,5 +883,19 @@ mod request_tests {
         assert!(is_request("[background jobs ended]\n- job 3\n\n[the person's message]\nfix it"));
         assert!(is_request("[the person's message]\nfix it"));
         assert!(is_request("fix it"));
+    }
+
+    #[test]
+    fn a_goal_state_line_before_a_mail_or_a_note_is_no_request() {
+        let met = "[goal: met, not running; /goal resume reopens it]";
+        let paused = "[goal: paused (the turn failed), not running; /goal resume tries again]";
+        for line in [met, paused] {
+            assert!(!is_request(&format!("{line}\n\n<session-message id=\"m\" from=\"a\">x</session-message>")));
+            assert!(!is_request(&format!("{line}\n\n[background jobs ended]\n- job 3 `cargo build` done")));
+            assert!(!is_request(line));
+            // the person's words under the mark stay a request, and so does what no note names
+            assert!(is_request(&format!("{line}\n\n[the person's message]\nfix it")));
+            assert!(is_request(&format!("{line}\n\nfix it")));
+        }
     }
 }

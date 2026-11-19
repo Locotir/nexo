@@ -55,9 +55,9 @@ pub(super) const MEMORY_START: &str = "<memory from=\"";
 pub(super) const MEMORY_END: &str = "</memory>";
 
 /// What the person wrote in `text`, without what the harness adds to a request: notes of ended
-/// background jobs and memory shared by other sessions (before it), the files attached to it (after
-/// it; the paths of those attached whole go to `attached`), and the loop's own continuation of a
-/// goal. None when nothing of the person is left.
+/// background jobs, memory shared by other sessions and the line that says a goal is not running (before it), the
+/// files attached to it (after it; the paths of those attached whole go to `attached`), and the loop's own
+/// continuation of a goal. None when nothing of the person is left.
 pub(super) fn person_text(text: &str, attached: &mut Vec<String>) -> Option<String> {
     if text == crate::turn::GOAL_CONTINUE {
         return None;
@@ -75,7 +75,10 @@ pub(super) fn person_text(text: &str, attached: &mut Vec<String>) -> Option<Stri
     }
     let mut t = text.trim_start();
     loop {
-        if t.starts_with(JOBS_NOTE) {
+        if let Some(line) = nexo_core::agent::goal_state_line_of(t) {
+            // nexo's line in front of a request it started: not the person's
+            t = t[line.len()..].trim_start();
+        } else if t.starts_with(JOBS_NOTE) {
             let i = t.find(JOBS_NOTE_END)?;
             t = t[i..].split_once('\n').map_or("", |(_, after)| after).trim_start();
         } else if t.starts_with(MEMORY_START) {

@@ -174,3 +174,30 @@ async fn the_agent_owns_the_idle_flag_a_fresh_session_takes_mail_and_a_running_t
     assert_eq!(web.tick().deliver.len(), 1, "the mail that waited goes once the turn is over");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_turn_nexo_starts_after_the_goal_is_met_says_it_is_not_running() {
+    use nexo_core::mail::FromKind;
+    let d = test_tmpdir().unwrap();
+    let root = test_tmpdir().unwrap();
+    let (api, web) = sessions(root.path());
+    let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("on it"))]);
+    let mut r = start_mail(client.clone(), d.path(), web.clone()).await;
+    let AgentEvent::Ready { session_id: web_id, .. } = r.next().await else { panic!("no Ready") };
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    // the goal is met; a mail then starts a turn nobody typed
+    let m = api.send(&web_id, "please run the parser tests", None, FromKind::Agent).unwrap();
+    r.send(AgentCommand::Deliver { mails: vec![m] });
+    r.until(|e| matches!(e, AgentEvent::MailRead { .. })).await;
+    r.stop().await;
+    assert_eq!(client.requests().len(), 2, "the goal is met: only the mail's turn follows");
+    let sent = client.requests()[1].messages.last().unwrap().text();
+    let line = "[goal: met, not running; /goal resume reopens it]";
+    assert!(sent.starts_with(line), "{sent}");
+    assert!(sent[line.len()..].trim_start().starts_with("<session-message "), "{sent}");
+    assert!(sent.contains("please run the parser tests"), "{sent}");
+    // nothing of it is the person's words
+    assert!(!sent.contains(nexo_core::agent::PERSON_MARK), "{sent}");
+}

@@ -310,6 +310,25 @@ async fn prepare_turn(
                 format!("{}\n\n{text}", blocks.join("\n\n"))
             }
         };
+        // a goal that is not running is said on every request, so an old one is not taken for the work: the loop's own
+        // marks (a goal's start or continuation, the supervisor's resume) carry no such line. A request nexo starts by
+        // itself (a mail, a job's end) gets it in front, before the stop line goes in front of it; the person's
+        // message gets it in the layout of its notes below.
+        let goal_line = if typed.starts_with(GOAL_CONTINUE_MARK)
+            || typed.starts_with(GOAL_SET_MARK)
+            || typed.starts_with(SUPERVISOR_RESUME_MARK)
+        {
+            None
+        } else {
+            goal_state_line(&st)
+        };
+        let text = match goal_line.as_ref().filter(|_| !person) {
+            None => text,
+            Some(line) => {
+                added.insert(0, AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
+                format!("{line}\n\n{text}")
+            }
+        };
         // the person stopped the request before this one: the line that says so comes first, so the model reads
         // what happened before it reads anything this request brings; the goal's and the supervisor's marks are
         // read back as they are, so the request after them carries it
@@ -349,12 +368,10 @@ async fn prepare_turn(
                 format!("{text}\n\n{note}")
             }
         };
-        // a goal that is not running is said before the person's words, so an old one is not taken for the work
-        if person && !typed.starts_with(GOAL_CONTINUE_MARK) && !typed.starts_with(GOAL_SET_MARK) {
-            if let Some(line) = goal_state_line(&st) {
-                added.push(AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
-                first.push(line);
-            }
+        // for the person's message the goal line sits before their words, after the start note
+        if let Some(line) = goal_line.filter(|_| person) {
+            added.push(AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
+            first.push(line);
         }
         let clock = if person { person_clock_line(&st, &typed) } else { None };
         if let Some((Some(line), _)) = &clock {

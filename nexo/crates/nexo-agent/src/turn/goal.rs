@@ -75,8 +75,13 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
 pub(super) fn goal_state_line(st: &State) -> Option<String> {
     st.goal.as_ref()?;
     match &st.goal_state {
-        GoalState::Done => Some("[goal: met, not running; /goal resume reopens it]".to_string()),
-        GoalState::Paused(why) => Some(format!("[goal: paused ({why}), not running; /goal resume goes on]")),
+        GoalState::Done => Some(format!("{}; /goal resume reopens it]", nexo_core::agent::GOAL_MET_HEAD)),
+        // one line, so the readers find the whole of it (`goal_state_line_of`)
+        GoalState::Paused(why) => Some(format!(
+            "{}{}), not running; /goal resume goes on]",
+            nexo_core::agent::GOAL_PAUSED_HEAD,
+            nexo_core::agent::one_line(why, 300)
+        )),
         GoalState::Active | GoalState::Waiting => None,
     }
 }

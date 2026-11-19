@@ -80,5 +80,7 @@ pub(super) const NOT_REQUEST: &[&str] =
 
 pub(super) fn is_request(text: &str) -> bool {
     let t = text.trim_start();
+    // the line that says a goal is not running comes first in a request nexo started by itself
+    let t = nexo_core::agent::goal_state_line_of(t).map_or(t, |line| t[line.len()..].trim_start());
     !t.is_empty() && !NOT_REQUEST.iter().any(|p| t.starts_with(p))
 }

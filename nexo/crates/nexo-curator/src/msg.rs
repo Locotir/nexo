@@ -31,6 +31,24 @@ const JOINED_MARK: &str = "[messages typed one after another]";
 /// What a stop line says before the words of the request it names (`nexo_core::agent::REQUEST_WAS`).
 pub(crate) const REQUEST_WAS: &str = "; the request was \"";
 
+/// How the line starts that says a met goal is not running (`nexo_core::agent::GOAL_MET_HEAD`).
+const GOAL_MET_HEAD: &str = "[goal: met, not running";
+/// How the line starts that says a goal is paused (`nexo_core::agent::GOAL_PAUSED_HEAD`).
+const GOAL_PAUSED_HEAD: &str = "[goal: paused (";
+
+/// The goal-state line `text` starts with, if it starts with one: nexo puts it first in a request it starts by itself,
+/// after the stop line (`nexo_core::agent::goal_state_line_of`).
+pub fn goal_state_line_of(text: &str) -> Option<&str> {
+    let first = text.split('\n').next()?;
+    ((first.starts_with(GOAL_MET_HEAD) || first.starts_with(GOAL_PAUSED_HEAD)) && first.ends_with(']'))
+        .then_some(first)
+}
+
+/// `text` without the goal-state line it starts with ([`goal_state_line_of`]), and the blank lines after it.
+pub fn without_goal_line(text: &str) -> &str {
+    goal_state_line_of(text).map_or(text, |line| text[line.len()..].trim_start())
+}
+
 /// The time and the rest of a line `[HH:MM:SS...]`.
 fn timed(line: &str) -> Option<(&str, &str)> {
     let inner = line.strip_prefix('[')?.strip_suffix(']')?;
@@ -114,7 +132,10 @@ pub fn joined_parts(words: &str) -> Option<Vec<&str>> {
 /// them and now (or a stop made to run them at once), are each asked now, all of them.
 pub fn request_words(text: &str) -> Cow<'_, str> {
     let words = person_words(text);
+    let nexos = words.len() == text.len();
     let words = stop_line_of(words).map_or(words, |(line, _)| words[line.len()..].trim_start());
+    // a request nexo started by itself has no mark for words: the goal line follows its stop line
+    let words = if nexos { without_goal_line(words) } else { words };
     let Some(parts) = headed_parts(words) else { return Cow::Borrowed(words) };
     let after: Vec<&str> = parts.iter().filter(|(h, _)| !h.contains(BEFORE_STOP)).map(|&(_, p)| p).collect();
     let asked = if after.is_empty() { parts.iter().map(|&(_, p)| p).collect() } else { after };
@@ -124,10 +145,11 @@ pub fn request_words(text: &str) -> Cow<'_, str> {
     }
 }
 
-/// Whether nexo marked the text of a message: it starts with the line of a stop, or the person's words are requests
-/// joined into one. Its request is then [`request_words`], not the whole text.
+/// Whether nexo marked the text of a message: it starts with the line of a stop or the line of a goal that is not
+/// running, or the person's words are requests joined into one. Its request is then [`request_words`], not the whole
+/// text.
 pub fn is_marked(text: &str) -> bool {
-    stop_line_of(text).is_some() || joined_parts(person_words(text)).is_some()
+    stop_line_of(text).is_some() || goal_state_line_of(text).is_some() || joined_parts(person_words(text)).is_some()
 }
 
 /// The request in the whole text of a message the person sent, as the curator reads it: [`request_words`] when nexo
@@ -331,5 +353,29 @@ mod tests {
         assert_eq!(stopped_request(client), Some("list the files"));
         assert!(stop_line_of(client).is_some());
         assert_eq!(stopped_request("[16:13:08 the person stopped the request above (Esc) while you waited]"), None);
+    }
+
+    #[test]
+    fn a_goal_state_line_is_nexos_and_is_not_asked() {
+        let met = "[goal: met, not running; /goal resume reopens it]";
+        let paused = "[goal: paused (paused by you), not running; /goal resume goes on]";
+        let stop = "[16:13:08 the person stopped the request above (Esc)]";
+        let mail = "<session-message id=\"m\" from=\"a\">x</session-message>";
+        for line in [met, paused] {
+            assert_eq!(goal_state_line_of(&format!("{line}\n\n{mail}")), Some(line));
+            assert_eq!(without_goal_line(&format!("{line}\n\n{mail}")), mail);
+            // it marks the message: the request is what follows it, after a stop line too
+            assert!(is_marked(&format!("{line}\n\n{mail}")));
+            assert_eq!(asked_now(&format!("{line}\n\n{mail}")), mail);
+            assert_eq!(request_words(&format!("{stop}\n\n{line}\n\n{mail}")), mail);
+            // the person's words under the mark are theirs, whatever nexo put before them
+            assert_eq!(asked_now(&format!("{line}\n\n{PERSON_MARK}\nfix it")), "fix it");
+            // a line that is not the whole first line, or is not at the start, is no goal line
+            assert_eq!(goal_state_line_of(&format!("see {line}")), None);
+            assert_eq!(goal_state_line_of(&format!("x\n{line}")), None);
+        }
+        assert_eq!(goal_state_line_of("[goal: met, not running"), None);
+        assert_eq!(goal_state_line_of("[goal: set]"), None);
+        assert!(!is_marked("fix it"));
     }
 }

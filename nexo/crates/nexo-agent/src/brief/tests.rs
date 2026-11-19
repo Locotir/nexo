@@ -350,3 +350,13 @@ fn an_ended_jobs_note_is_neither_a_request_nor_a_constraint() {
     assert!(l.request.as_deref().is_none_or(|r| r.contains("Fix the parser")), "{:?}", l.request);
     assert!(!l.constraints.iter().any(|c| c.contains("Only one caller")), "{:?}", l.constraints);
 }
+
+#[test]
+fn a_goal_state_line_before_an_ended_jobs_note_is_not_a_request() {
+    let d = tempfile::tempdir().unwrap();
+    let jobs = "[goal: met, not running; /goal resume reopens it]\n\n[background jobs ended]\n- job 3 done\n\n--- report of job 3 ---\nOnly one caller.";
+    let h = vec![Message::user("Fix the parser"), Message::assistant("ok"), Message::user(jobs)];
+    let l = Ledger::of(&h, d.path(), false, "list callers of lex");
+    assert!(l.request.as_deref().is_none_or(|r| r.contains("Fix the parser")), "{:?}", l.request);
+    assert!(!l.constraints.iter().any(|c| c.contains("Only one caller")), "{:?}", l.constraints);
+}

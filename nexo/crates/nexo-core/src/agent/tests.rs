@@ -93,3 +93,22 @@ fn a_goal_logs_progress_is_what_is_saved_and_comes_back_with_the_words_untouched
     // a saved progress with fields missing reads as the default
     assert_eq!(serde_json::from_str::<GoalProgress>("{}").unwrap(), GoalProgress::default());
 }
+
+#[test]
+fn the_goal_state_line_is_found_only_as_the_first_line_nexo_wrote() {
+    let met = format!("{GOAL_MET_HEAD}; /goal resume reopens it]");
+    let paused = format!("{GOAL_PAUSED_HEAD}paused by you), not running; /goal resume goes on]");
+    for line in [&met, &paused] {
+        let mail = format!("{line}\n\n<session-message id=\"m\">x</session-message>");
+        assert_eq!(goal_state_line_of(&mail), Some(line.as_str()));
+        assert_eq!(goal_state_line_of(line), Some(line.as_str()));
+        // not at the start, not the whole line, or not ended
+        assert_eq!(goal_state_line_of(&format!("words\n{line}")), None);
+        assert_eq!(goal_state_line_of(&format!("see {line}")), None);
+        assert_eq!(goal_state_line_of(&format!("{line} and more")), None);
+    }
+    assert_eq!(goal_state_line_of("[goal: met, not running"), None);
+    assert_eq!(goal_state_line_of(&format!("{GOAL_SET_MARK} ship it")), None);
+    assert_eq!(goal_state_line_of(GOAL_CONTINUE_MARK), None);
+    assert_eq!(goal_state_line_of(""), None);
+}

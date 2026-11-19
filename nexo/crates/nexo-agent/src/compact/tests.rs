@@ -199,3 +199,26 @@ fn the_curator_knows_the_notes_nexo_writes_as_user_messages() {
     let person = format!("{jobs}\n\n{}\nSum the totals.", nexo_core::agent::PERSON_MARK);
     assert!(nexo_curator::is_request(&person));
 }
+
+#[test]
+fn a_goal_state_line_before_a_mail_is_no_request() {
+    let jobs = "[background jobs ended]\n- job 1 `make` done (exit 0)\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+    let mail = "<session-message id=\"m-1\" from=\"api\" from-id=\"s-2\" at=\"t\">hi</session-message>";
+    for line in [
+        "[goal: met, not running; /goal resume reopens it]",
+        "[goal: paused (paused by you), not running; /goal resume goes on]",
+    ] {
+        // a request nexo started by itself: none of it is the person's
+        let h = vec![Message::user(format!("{line}\n\n{jobs}"))];
+        assert!(kept(&h).requests.is_empty(), "{:?}", kept(&h).requests);
+        let h = vec![Message::user(line)];
+        assert!(kept(&h).requests.is_empty(), "{:?}", kept(&h).requests);
+        // what follows the line is read as it is without it
+        let with = kept(&[Message::user(format!("{line}\n\n{mail}"))]).requests;
+        assert_eq!(with, kept(&[Message::user(mail)]).requests);
+        assert!(!with.iter().any(|r| r.contains("not running")), "{with:?}");
+        // the person's words under the line and the mark are still theirs
+        let h = vec![Message::user(format!("{line}\n\n{}\nfix it", nexo_core::agent::PERSON_MARK))];
+        assert_eq!(kept(&h).requests, ["fix it"]);
+    }
+}

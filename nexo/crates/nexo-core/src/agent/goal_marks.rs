@@ -53,6 +53,21 @@ pub fn goal_mark_at(text: &str) -> Option<usize> {
     })
 }
 
+/// How the line starts that says a goal that was met is not running; the writer (`goal_state_line`) and the readers
+/// ([`goal_state_line_of`]) both use it. The curator has a copy (`nexo_curator` msg.rs).
+pub const GOAL_MET_HEAD: &str = "[goal: met, not running";
+/// How the line starts that says a goal is paused, with the reason after it.
+pub const GOAL_PAUSED_HEAD: &str = "[goal: paused (";
+
+/// The goal-state line `text` starts with, if it starts with one: the first line, when it begins with
+/// [`GOAL_MET_HEAD`] or [`GOAL_PAUSED_HEAD`] and ends with `]`. nexo puts it before a request it starts by itself
+/// (after the stop line), so that what it sits in front of is not read as the person's words.
+pub fn goal_state_line_of(text: &str) -> Option<&str> {
+    let first = text.split('\n').next()?;
+    ((first.starts_with(GOAL_MET_HEAD) || first.starts_with(GOAL_PAUSED_HEAD)) && first.ends_with(']'))
+        .then_some(first)
+}
+
 /// The most characters of a goal a line of the screen carries: a few lines, the rest is in the goal window.
 pub const GOAL_SHOWN: usize = 200;
 
