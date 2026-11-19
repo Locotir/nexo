@@ -134,10 +134,9 @@ async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
             );
         }
     }
-    if !waits && run_queued(rt).await {
-        // the queued request runs; what else is due waits for its end
-    } else if held {
-        // the person stopped: nothing below starts by itself
+    let queued = !waits && run_queued(rt).await;
+    if queued || held {
+        // a queued request runs (what else is due waits for its end), or the person stopped: nothing below starts
     } else if !rt.state.lock().await.mail_wait.is_empty() {
         let mails = std::mem::take(&mut rt.state.lock().await.mail_wait);
         rt.turn = Some(deliver_mails(&rt.state, mails, rt.cancel.child_token()).await);

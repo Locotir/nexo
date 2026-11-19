@@ -62,6 +62,8 @@ pub fn one_line(s: &str, max: usize) -> String {
 pub fn request_quote(text: &str) -> String {
     let words = person_words(text);
     let words = stop_line_of(words).map_or(words, |l| words[l.len()..].trim_start());
+    // the line that says a goal is not running, in front of a request nexo started, is not what was asked
+    let words = super::goal_state_line_of(words).map_or(words, |l| words[l.len()..].trim_start());
     let newest = joined_parts(words).and_then(|p| p.last().copied()).unwrap_or(words);
     one_line(&newest.replace('"', "'"), QUOTED)
 }
@@ -286,5 +288,8 @@ mod tests {
         let joined = format!("{JOINED_MARK}\n[16:13:05]\nold one\n\n[16:13:10]\nsay \"hi\"\nplease");
         assert_eq!(request_quote(&format!("note\n\n{PERSON_MARK}\n{joined}")), "say 'hi' please");
         assert!(request_quote(&"x ".repeat(100)).ends_with('…'));
+        // a request nexo started by itself is quoted by what it brought, not by the goal line in front of it
+        let goal = format!("{}; /goal resume reopens it]", crate::agent::GOAL_MET_HEAD);
+        assert_eq!(request_quote(&format!("{goal}\n\n[background jobs ended]")), "[background jobs ended]");
     }
 }

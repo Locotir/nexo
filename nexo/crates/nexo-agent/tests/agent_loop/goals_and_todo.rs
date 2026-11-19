@@ -621,8 +621,8 @@ async fn a_goal_set_during_a_turn_is_not_judged_by_that_turns_reply() {
     r.send(AgentCommand::SetGoal { text: Some("write REPORT.md".into()), attachments: vec![] });
     let t1 = r.turn().await;
     assert_eq!(goal_state_of(&t1), Some(GoalState::Active));
-    // the goal is still active after that turn: its own request follows, in the history (not in the request, which
-    // a later step may shorten)
+    // the goal is still active after that turn: its own request follows, in the history, which
+    // keeps the words whole whatever the request carries
     let t2 = r.turn().await;
     assert_eq!(user_texts(&t2), vec!["[goal set] write REPORT.md"]);
     // that request is the goal's first round: the continuation comes after it, and its reply meets the goal
@@ -685,8 +685,11 @@ async fn a_goal_set_during_a_turn_keeps_its_files_for_its_first_request() {
         attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("notes.md") }],
     });
     r.turn().await;
-    r.turn().await;
+    let t2 = r.turn().await;
     r.stop().await;
+    // the goal's words are read from the history, which keeps them whole whatever the request carries
+    let first = user_texts(&t2);
+    assert!(first.len() == 1 && first[0].starts_with("[goal set] summarise @notes.md into REPORT.md"), "{first:?}");
     let reqs = client.requests();
     assert_eq!(reqs.len(), 3);
     assert!(!reqs[0].messages[0].text().contains("ship on friday"), "the running turn did not get the file");
@@ -694,7 +697,7 @@ async fn a_goal_set_during_a_turn_keeps_its_files_for_its_first_request() {
     let file = "@notes.md (attached in full, as it is now):\n```md\nthe plan is to ship on friday\n```";
     assert!(sent.contains(file), "{sent}");
     assert_eq!(sent.matches("the plan is to ship on friday").count(), 1, "the file comes once: {sent}");
-    assert!(sent.contains("[goal set] summarise @notes.md into REPORT.md"), "{sent}");
+    assert!(sent.contains("[goal set]"), "{sent}");
 }
 
 /// Enter on a queued message stops the turn to run that message at once: the goal is not paused by it, it goes on
