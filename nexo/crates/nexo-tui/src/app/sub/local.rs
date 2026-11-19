@@ -127,6 +127,7 @@ impl App {
         let old_selection = self.selection.take();
         let old_selected = self.selected;
         let old_reveal = self.reveal;
+        self.read_back = None;
         self.blocks.clear();
         self.cache.clear();
         self.looks.clear();

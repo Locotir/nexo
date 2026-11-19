@@ -4,11 +4,11 @@
 //! (`check`), the snapshot that tells which files a step changed, and the memory that keeps a slow command
 //! from being run again at every step.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 
@@ -28,6 +28,14 @@ const SOURCE: &[&str] = &[
 /// Folders that hold build output, dependencies or tool state, never walked.
 const SKIP_DIRS: &[&str] =
     &["target", "node_modules", "dist", "build", "out", "__pycache__", "venv", "vendor", "coverage"];
+
+/// The longest a check may run before the first model call of a request (the project's check at the start). A
+/// command that went over it is not started at the start again until a run of it finishes under it.
+pub const START_CHECK_SECS: u64 = 20;
+/// How long a start check that went over its cap stays on record.
+const START_SLOW_DAYS: u64 = 14;
+/// The most records kept on disk.
+const START_SLOW_LINES: usize = 200;
 
 /// A file as a snapshot knows it: modified time (ns) and size.
 pub type Snapshot = BTreeMap<PathBuf, (u128, u64)>;
@@ -75,7 +83,8 @@ fn stamp(m: &std::fs::Metadata) -> (u128, u64) {
     (t, m.len())
 }
 
-fn is_source(p: &Path) -> bool {
+/// Whether `p` has the extension of a source file (the ones whose change makes a step "changed code").
+pub fn is_source(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| SOURCE.contains(&e))
 }
 
@@ -311,6 +320,11 @@ pub struct Guard {
 #[derive(Default)]
 struct GuardState {
     slow: HashSet<String>,
+    /// Start checks that ran over their cap: key to the unix second of the run. Kept apart from `slow` so a start
+    /// check killed at its cap never turns the post-write check off.
+    start_slow: HashMap<String, u64>,
+    /// Where `start_slow` is kept between processes, when it is.
+    store: Option<PathBuf>,
     last: Option<Recorded>,
     /// The output (hashed) of the last check reported in this turn.
     said: Option<u64>,
@@ -326,9 +340,119 @@ fn key(command: &str, dir: &Path) -> String {
     format!("{}\u{0}{}", dir.display(), command.trim())
 }
 
+/// The record of a start check: the folder and the command without the flags that only change how failures are
+/// collected (`cargo test -q` and `cargo test -q --no-fail-fast` are one command).
+fn start_key(command: &str, dir: &Path) -> String {
+    format!("{}\t{}", dir.display(), normal(command))
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The records in `path` that are not older than [`START_SLOW_DAYS`]; a line that does not parse is ignored.
+fn load_start_slow(path: &Path) -> HashMap<String, u64> {
+    let mut out = HashMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else { return out };
+    let oldest = now_secs().saturating_sub(START_SLOW_DAYS * 86_400);
+    for line in text.lines() {
+        let mut it = line.splitn(3, '\t');
+        let (Some(at), Some(dir), Some(command)) = (it.next(), it.next(), it.next()) else { continue };
+        let Ok(at) = at.parse::<u64>() else { continue };
+        if at >= oldest && !dir.is_empty() && !command.is_empty() {
+            out.insert(format!("{dir}\t{command}"), at);
+        }
+    }
+    out
+}
+
+/// Writes `records` (at most [`START_SLOW_LINES`], newest kept) through a temp file in the same folder and a
+/// rename; write errors are ignored (the record is a convenience).
+fn save_start_slow(path: &Path, records: &HashMap<String, u64>) {
+    let mut rows: Vec<(&u64, &String)> = records.iter().map(|(k, v)| (v, k)).collect();
+    rows.sort();
+    let skip = rows.len().saturating_sub(START_SLOW_LINES);
+    let text: String = rows.into_iter().skip(skip).map(|(at, k)| format!("{at}\t{k}\n")).collect();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let wrote = {
+        use std::io::Write;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        o.open(&tmp).and_then(|mut f| f.write_all(text.as_bytes()))
+    };
+    if wrote.is_ok() && std::fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
 impl Guard {
     pub fn new() -> Guard {
         Guard::default()
+    }
+
+    /// A guard that keeps the start checks that ran over their cap in the file `path`, so a new process does not run
+    /// the same command to its cap again. Records older than 14 days and lines that do not parse are ignored.
+    pub fn with_store(path: PathBuf) -> Guard {
+        let g = Guard::default();
+        {
+            let mut st = g.state.lock().unwrap_or_else(|e| e.into_inner());
+            st.start_slow = load_start_slow(&path);
+            st.store = Some(path);
+        }
+        g
+    }
+
+    /// Whether `command` is not to be started at the start of a request: its last start run went over its cap.
+    pub fn start_skip(&self, command: &str, dir: &Path) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).start_slow.contains_key(&start_key(command, dir))
+    }
+
+    /// Runs the project's check for the start of a request and reports it. It never touches the record the
+    /// post-write check keeps (`slow`): a run that timed out is noted for the start only, one that finished clears
+    /// that note, and a cancelled one changes nothing.
+    pub async fn run_start(
+        &self,
+        command: &str,
+        dir: &Path,
+        cap: Duration,
+        sandbox: &nexo_core::sandbox::SandboxSettings,
+        cancel: &CancellationToken,
+    ) -> String {
+        let p = crate::bash::prove(command, dir, sandbox, cap, cancel, None).await;
+        if !cancel.is_cancelled() {
+            self.set_start_slow(command, dir, p.timed_out);
+        }
+        self.report(command, p.exit, p.timed_out, p.secs, cap, &p.output)
+    }
+
+    /// Notes a run of the post-write check that did not time out: when it took less than the start check's cap, a
+    /// command that was slow once (a cold first build) may be started at the start again.
+    pub fn ran(&self, command: &str, dir: &Path, secs: f64) {
+        if secs < START_CHECK_SECS as f64 {
+            self.set_start_slow(command, dir, false);
+        }
+    }
+
+    fn set_start_slow(&self, command: &str, dir: &Path, slow: bool) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let k = start_key(command, dir);
+        let changed =
+            if slow { st.start_slow.insert(k, now_secs()).is_none() } else { st.start_slow.remove(&k).is_some() };
+        // a slow run renews the time of its record; a fast one writes only when it removed one
+        if changed || slow {
+            if let Some(path) = st.store.clone() {
+                save_start_slow(&path, &st.start_slow);
+            }
+        }
     }
 
     /// Why `command` is not run: it ran past the cap earlier in this session.
@@ -539,5 +663,68 @@ mod tests {
         // the same command with or without the flag finds the record
         g.remember("cargo test -q --no-fail-fast", 3, "R");
         assert_eq!(g.recorded("cargo test -q", 3).as_deref(), Some("R"));
+    }
+
+    #[tokio::test]
+    async fn a_start_check_over_the_cap_is_skipped_by_a_new_guard_on_the_same_store() {
+        if cfg!(windows) {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("state/start_slow");
+        let cap = Duration::from_secs(1);
+        let (sb, cancel) = (Default::default(), CancellationToken::new());
+        let g = Guard::with_store(store.clone());
+        assert!(!g.start_skip("cargo test -q", d.path()));
+        g.run_start("sleep 5", d.path(), cap, &sb, &cancel).await;
+        assert!(g.start_skip("sleep 5", d.path()));
+        let later = Guard::with_store(store);
+        assert!(later.start_skip("sleep 5", d.path()), "the record outlives the guard");
+        assert!(!later.start_skip("echo fine", d.path()));
+    }
+
+    #[tokio::test]
+    async fn a_start_check_over_the_cap_leaves_skip_note_empty() {
+        if cfg!(windows) {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let g = Guard::new();
+        let cap = Duration::from_secs(1);
+        g.run_start("sleep 5", d.path(), cap, &Default::default(), &CancellationToken::new()).await;
+        assert!(g.skip_note("sleep 5", d.path(), cap).is_none(), "the post-write record is a different one");
+    }
+
+    #[tokio::test]
+    async fn a_fast_run_clears_the_start_record() {
+        if cfg!(windows) {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("start_slow");
+        let g = Guard::with_store(store.clone());
+        g.set_start_slow("cargo test", d.path(), true);
+        assert!(
+            g.start_skip("cargo test --no-fail-fast", d.path()),
+            "flags that only change collection are one command"
+        );
+        g.ran("cargo test", d.path(), 30.0);
+        assert!(g.start_skip("cargo test", d.path()), "a run over the start cap keeps the record");
+        g.ran("cargo test", d.path(), 1.0);
+        assert!(!g.start_skip("cargo test", d.path()));
+        assert!(!Guard::with_store(store).start_skip("cargo test", d.path()), "the clearing is written");
+    }
+
+    #[test]
+    fn a_record_older_than_the_expiry_is_ignored_on_load() {
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("start_slow");
+        let old = now_secs() - 15 * 86_400;
+        let fresh = now_secs() - 86_400;
+        let text = format!("{old}\t{dir}\tcargo test\n{fresh}\t{dir}\tcargo build\n", dir = d.path().display());
+        std::fs::write(&store, text).unwrap();
+        let g = Guard::with_store(store);
+        assert!(!g.start_skip("cargo test", d.path()), "15 days old: the start check runs again");
+        assert!(g.start_skip("cargo build", d.path()), "1 day old: still kept");
     }
 }

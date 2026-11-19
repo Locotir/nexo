@@ -166,6 +166,19 @@ fn tools() -> ToolSet {
         .with(Arc::new(Fake { name: "bash", kind: ToolKind::Exec, slow: true }))
 }
 
+/// Compiles the test of the Cargo crate at `dir` before the timed turn, so the project's check at the start of a
+/// request runs warm and stays far under its cap on a loaded machine (a cold compile that went over the cap would
+/// leave a slow-start record in the cache folder every test of this binary shares).
+#[allow(dead_code)]
+fn prebuild_crate(dir: &std::path::Path) {
+    let _ = std::process::Command::new("cargo")
+        .args(["test", "--no-run", "-q"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 #[path = "../scratch/mod.rs"]
 mod scratch;
 

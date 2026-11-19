@@ -733,12 +733,12 @@ async fn the_same_hook_at_200k_is_sent_whole_as_before() {
     assert!(!at_200k.messages[0].text().contains("-token window"));
 }
 
-/// A project of `n` source files of about 1 000 characters each.
+/// A project of `n` source files of about 1 600 characters each.
 fn many_files(n: usize) -> tempfile::TempDir {
     let d = project();
     std::fs::create_dir_all(d.path().join("src")).unwrap();
     for i in 0..n {
-        let body: String = (0..14).map(|k| format!("fn f{i}_{k}(x: u32) -> u32 {{ x + {k} }} // padding\n")).collect();
+        let body: String = (0..30).map(|k| format!("fn f{i}_{k}(x: u32) -> u32 {{ x + {k} }} // padding\n")).collect();
         std::fs::write(d.path().join(format!("src/m{i:02}.rs")), body).unwrap();
     }
     d
@@ -748,7 +748,7 @@ fn many_files(n: usize) -> tempfile::TempDir {
 async fn the_files_nexo_attaches_by_itself_at_8k_fit_what_the_window_leaves_and_at_200k_are_as_before() {
     let _g = config_lock().lock().await;
     let attached = |r: &ModelRequest| r.messages[0].text().matches("(project file, included in full by nexo").count();
-    let d = many_files(40);
+    let d = many_files(13);
     let with_files = |w: u32| {
         let mut cfg = cfg_window(w);
         cfg.agent.attach_budget = 6_000;

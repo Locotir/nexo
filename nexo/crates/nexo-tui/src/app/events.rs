@@ -659,7 +659,7 @@ impl App {
 
     /// What nexo added to the message just shown: one folded line under it. Its mentions were put at the
     /// end of the person's text, so they leave it and are said in that line.
-    pub(super) fn added(&mut self, parts: Vec<nexo_core::agent::AddedPart>) {
+    pub(super) fn added(&mut self, index: usize, parts: Vec<nexo_core::agent::AddedPart>) {
         use nexo_core::agent::AddedKind;
         if parts.is_empty() {
             return;
@@ -667,6 +667,21 @@ impl App {
         // what a message told as it was built is exact: it takes the place of what was read back from its
         // text; what rides one request only is a line of its own where it came
         let (once, parts): (Vec<_>, Vec<_>) = parts.into_iter().partition(|p| p.request_only);
+        // the line `history()` read back from this very message is the one the live parts take over: a message
+        // nexo built itself (a goal) has no block of the person's to anchor on, and an earlier message's line stays
+        let parts = if parts.is_empty() {
+            parts
+        } else {
+            match self.replace_read_back(index, parts) {
+                Ok(()) => {
+                    if !once.is_empty() {
+                        self.push(Block::Added { parts: once, folded: true });
+                    }
+                    return;
+                }
+                Err(parts) => parts,
+            }
+        };
         if !parts.is_empty() {
             // the parts belong to the request just begun: the person's message, or the one nexo started, never
             // the Added line of an earlier message of the person
@@ -714,7 +729,44 @@ impl App {
         }
     }
 
+    /// Puts `parts` where `history()` drew the line it read back for message `index`, once. Gives the parts back
+    /// when that line is not there (a queued or joined message, a transcript that moved): the caller anchors them
+    /// on the person's block as before.
+    fn replace_read_back(
+        &mut self,
+        index: usize,
+        parts: Vec<nexo_core::agent::AddedPart>,
+    ) -> Result<(), Vec<nexo_core::agent::AddedPart>> {
+        use nexo_core::agent::AddedKind;
+        let Some((i, at)) = self.read_back else { return Err(parts) };
+        let drawn = i == index
+            && matches!(self.blocks.get(at), Some(Block::Added { parts: old, .. }) if !old.iter().all(|p| p.request_only));
+        if !drawn {
+            return Err(parts);
+        }
+        self.read_back = None;
+        // the mentions were put at the end of the person's text: they leave the block of the person's right before
+        // the line. A message nexo built (a goal) has no such block: the line stands after a notice, and an earlier
+        // message's text stays as it is.
+        if let Some(u) = at.checked_sub(1).filter(|&u| matches!(self.blocks[u], Block::User { .. })) {
+            if let Block::User { text, .. } = &mut self.blocks[u] {
+                for p in parts.iter().filter(|p| matches!(p.kind, AddedKind::Mention)) {
+                    let left = text.replacen(p.text.trim(), "", 1);
+                    if !left.trim().is_empty() {
+                        *text = left.trim_end().to_string();
+                    }
+                }
+            }
+            self.invalidate(u);
+        }
+        self.blocks[at] = Block::Added { parts, folded: true };
+        self.invalidate(at);
+        Ok(())
+    }
+
     pub(super) fn history(&mut self, index: usize, m: Message) {
+        // the line read back belongs to the message just before it; the live parts follow their message at once
+        self.read_back = None;
         match m.role {
             Role::User => {
                 if m.is_tool_results() {
@@ -829,6 +881,7 @@ impl App {
                             self.put_user(words.to_string(), None, &mut pending);
                         }
                         if !extra.is_empty() {
+                            self.read_back = Some((index, self.blocks.len()));
                             self.push(Block::Added { parts: extra, folded: true });
                         }
                     }

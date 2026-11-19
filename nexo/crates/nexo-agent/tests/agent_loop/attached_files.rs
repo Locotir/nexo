@@ -485,7 +485,9 @@ async fn a_request_naming_an_existing_file_attaches_it_once() {
     let second = reqs[1].messages.iter().filter(|m| m.role == Role::User).nth(1).unwrap().text();
     assert!(!second.contains("included") && !second.contains("attached in full"), "{second}");
     let third = reqs[2].messages.last().unwrap().text();
-    assert!(!third.contains("included") && !third.contains("attached in full") && !third.contains("xxxx"), "{third}");
+    // with no budget (legacy) the large file is not attached at all, never whole
+    assert!(!third.contains("included") && !third.contains("attached in full"), "{third}");
+    assert!(!third.contains(&"x".repeat(2_000)), "{third}");
     r.stop().await;
 }
 
@@ -516,4 +518,157 @@ async fn a_named_key_file_is_not_attached() {
         "{first}"
     );
     r.stop().await;
+}
+
+/// The first request of a session at `budget`, for one message sent at `dir`.
+async fn first_text(dir: &std::path::Path, budget: u32, words: &str) -> String {
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.attach_budget = budget;
+    let mut r = start(client.clone(), cfg, None, dir).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: words.into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    client.requests()[0].messages[0].text()
+}
+
+fn thirty_files(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    for i in 0..30 {
+        std::fs::write(dir.join(format!("src/m{i:02}.rs")), format!("pub fn f{i}() {{}}\n")).unwrap();
+    }
+}
+
+/// The case: a goal of business work, with a folder and a second file of the same name outside the project, the
+/// project a Cargo manifest with no source. It gets the paths, sizes and heads of both files and the listing of the
+/// folder; the 30 small files stay out, no check runs, and the goal has one line of what nexo added.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_of_business_work_gets_paths_and_heads_not_the_small_files_or_a_check() {
+    let d = test_tmpdir().unwrap();
+    let o = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("Cargo.toml"), "[package]\nname = \"biz\"\nversion = \"0.1.0\"\n").unwrap();
+    thirty_files(d.path());
+    let mine = format!("# project ideas\n{}", "an idea of mine\n".repeat(500));
+    std::fs::write(d.path().join("IDEAS_T4.md"), &mine).unwrap();
+    let store = o.path().join("StorePrep");
+    for dir in ["docs", "build", ".venv", "research/ideas"] {
+        std::fs::create_dir_all(store.join(dir)).unwrap();
+    }
+    std::fs::write(store.join("AGENTS.md"), "# agents\n").unwrap();
+    std::fs::write(store.join("README.md"), "# readme\n").unwrap();
+    std::fs::write(store.join(".venv/pyvenv.cfg"), "home = /usr\n").unwrap();
+    std::fs::write(
+        store.join("research/ideas/IDEAS_T4.md"),
+        format!("# outside ideas\nOUTSIDE-MARKER-7QX\n{}", "x\n".repeat(50_000)),
+    )
+    .unwrap();
+    let abs = store.canonicalize().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("noted\nGOAL DONE"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.check_at_start = true;
+    cfg.agent.attach_budget = 6000;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal {
+        text: Some(format!(
+            "app ideas, write them to IDEAS_T4.md, info in {}/ https://apps.microsoft.com/x",
+            abs.display()
+        )),
+    });
+    let evs = r.turn().await;
+    r.stop().await;
+    let sent = client.requests()[0].messages[0].text();
+    assert!(!sent.contains("included in full by nexo"), "{sent}");
+    assert!(sent.contains("IDEAS_T4.md ("), "{sent}");
+    assert!(sent.contains(&format!("{}/research/ideas/IDEAS_T4.md (", abs.display())), "{sent}");
+    assert!(sent.contains("# project ideas") && sent.contains("# outside ideas"), "{sent}");
+    assert!(sent.contains(&format!("{}/ (folder, ", abs.display())), "{sent}");
+    let folder = sent.lines().find(|l| l.contains("(folder, ")).expect(&sent);
+    assert!(folder.contains("build/") && folder.contains("docs/") && folder.contains("research/"), "{folder}");
+    assert!(!folder.contains(".venv"), "{folder}");
+    assert!(!sent.contains("\ncheck: "), "{sent}");
+    assert!(!sent.contains("src/m0"), "{sent}");
+    assert_eq!(sent.matches("OUTSIDE-MARKER-7QX").count(), 1, "the head of the outside file comes once: {sent}");
+    assert!(sent.matches("\nIDEAS_T4.md (").count() <= 1, "the project file is listed at most once: {sent}");
+    let added = evs.iter().filter(|e| matches!(e, AgentEvent::Added { .. })).count();
+    assert_eq!(added, 1, "one line of what nexo added to the goal");
+}
+
+/// A word that is only the stem of a file name or plain speech is no reference: nothing comes attached.
+#[tokio::test]
+async fn a_word_that_is_only_a_file_stem_attaches_nothing() {
+    let d = test_tmpdir().unwrap();
+    thirty_files(d.path());
+    std::fs::write(d.path().join("src/render.rs"), "pub fn draw() {}\n").unwrap();
+    std::fs::write(d.path().join("README.md"), "# readme\n").unwrap();
+    let sent = first_text(d.path(), 6000, "render the readme").await;
+    assert!(!sent.contains("project file") && !sent.contains("(folder,") && !sent.contains("defined at"), "{sent}");
+}
+
+/// An identifier the project defines comes with the line that defines it and the file, whole when it is small.
+#[tokio::test]
+async fn a_named_function_brings_its_definition_line_and_file() {
+    let d = test_tmpdir().unwrap();
+    thirty_files(d.path());
+    std::fs::write(d.path().join("src/parse.rs"), "use a;\n\npub(crate) async fn split_added() {}\n").unwrap();
+    let sent = first_text(d.path(), 6000, "arregla split_added").await;
+    assert!(sent.contains("split_added: defined at src/parse.rs:3"), "{sent}");
+    assert!(sent.contains("src/parse.rs (project file, included in full by nexo, as it is now):"), "{sent}");
+    assert!(!sent.contains("src/m0"), "{sent}");
+}
+
+/// A file too large to include comes as its path, size and first lines, never whole.
+#[tokio::test]
+async fn a_large_named_file_comes_as_path_size_and_head() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("big.md"), format!("first line\n{}", "y\n".repeat(50_000))).unwrap();
+    let sent = first_text(d.path(), 6000, "summarize big.md").await;
+    assert!(sent.contains("big.md (100 KB, 50001 lines; first 20 lines):"), "{sent}");
+    assert!(sent.contains("first line\ny\ny\n") && !sent.contains(&"y\n".repeat(100)), "{sent}");
+    assert!(!sent.contains("included in full by nexo"), "{sent}");
+}
+
+/// A name that exists nowhere is said so; the words that only look like names say nothing.
+#[tokio::test]
+async fn a_named_file_that_is_nowhere_says_so_and_noise_says_nothing() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("README.md"), "# readme\n").unwrap();
+    let sent = first_text(d.path(), 6000, "update nothere.md, e.g. 0.2.0 and/or Node.js").await;
+    assert!(sent.contains("nothere.md: no file of that name"), "{sent}");
+    for noise in ["e.g:", "0.2.0:", "and/or:", "Node.js:"] {
+        assert!(!sent.contains(noise), "{noise} in {sent}");
+    }
+}
+
+/// A source file the message names as a panic location is the file it names, whole, and the check runs.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_panic_location_names_its_file() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    std::fs::create_dir_all(d.path().join("src")).unwrap();
+    std::fs::write(
+        d.path().join("Cargo.toml"),
+        "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 3), 5);\n}\n",
+    )
+    .unwrap();
+    prebuild_crate(d.path());
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.check_at_start = true;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "thread 'main' panicked at src/lib.rs:2:5".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let sent = client.requests()[0].messages[0].text();
+    assert!(sent.contains("src/lib.rs (project file, included in full by nexo, as it is now):"), "{sent}");
+    assert!(sent.contains("\ncheck: cargo test"), "{sent}");
 }

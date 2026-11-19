@@ -69,7 +69,7 @@ async fn a_message_sent_while_a_goal_turn_is_prepared_is_queued_at_once() {
     cfg.agent.check_at_start = true;
     let mut r = start(client, cfg, None, d.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("restate the plan".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("make test_slow pass".into()) });
     let evs = raw_until(&mut r, |e| preparing(e).is_some_and(|w| w.starts_with("checking the project"))).await;
     let steps: Vec<&str> = evs.iter().filter_map(preparing).collect();
     assert_eq!(steps, vec!["starting the goal", "checking the project (pytest)"]);
@@ -81,4 +81,90 @@ async fn a_message_sent_while_a_goal_turn_is_prepared_is_queued_at_once() {
     assert!(matches!(evs.last(), Some(AgentEvent::Queued { pending: 1 })));
     assert!(!evs.iter().any(|e| matches!(e, AgentEvent::History { .. })), "the goal's request is not built yet");
     r.stop().await;
+}
+
+/// A Cargo crate with a failing test: its check always has something to say.
+fn failing_crate(dir: &std::path::Path, test_sleep_secs: u64) {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        format!(
+            "pub fn add(a: i32, b: i32) -> i32 {{\n    a - b\n}}\n\n#[test]\nfn adds() {{\n    \
+             std::thread::sleep(std::time::Duration::from_secs({test_sleep_secs}));\n    assert_eq!(add(2, 3), 5);\n}}\n"
+        ),
+    )
+    .unwrap();
+    prebuild_crate(dir);
+}
+
+/// Whether the first request of a fresh session at `dir` carries the project's check after `words`.
+async fn start_check_comes(dir: &std::path::Path, words: &str) -> bool {
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.check_at_start = true;
+    let mut r = start(client.clone(), cfg, None, dir).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: words.into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let sent = client.requests()[0].messages[0].text();
+    sent.contains("\ncheck: cargo test")
+}
+
+/// The check at the start needs a cause: code named in the message (a source file, an identifier the project
+/// defines, the check's own command) and a project of at most 200 source files.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_start_check_runs_only_on_code_evidence_in_a_small_tree() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    failing_crate(d.path(), 0);
+    assert!(!start_check_comes(d.path(), "hi").await);
+    assert!(start_check_comes(d.path(), "fix `add`").await);
+    assert!(start_check_comes(d.path(), "`cargo test` fails").await);
+    for i in 0..201 {
+        std::fs::write(d.path().join(format!("src/g{i:03}.rs")), format!("pub fn g{i}() {{}}\n")).unwrap();
+    }
+    assert!(!start_check_comes(d.path(), "fix `add`").await);
+}
+
+/// A check that was too slow at the start is not run at a start again, and it does not stop the check after a
+/// write: that one has its own record.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_start_check_over_its_cap_leaves_the_post_write_check_on() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    failing_crate(d.path(), 5);
+    let edit = json!({"path": "src/lib.rs", "old_string": "a - b", "new_string": "a + b"});
+    let client = Scripted::new(vec![Reply::Events(call("e1", "edit", edit)), Reply::Events(text("done"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.check_at_start = true;
+    cfg.tools.post_write_check = true;
+    cfg.tools.post_write_check_secs = 1;
+    let set = tools().with(Arc::new(nexo_tools::edit::Edit));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "fix `add` in src/lib.rs".into(), attachments: vec![] });
+    // the post-write check waits for the crate's slow test, so the turn takes longer than a plain one
+    loop {
+        let ev = r.raw_within(Duration::from_secs(90)).await;
+        if matches!(ev, AgentEvent::TurnEnd { .. }) {
+            break;
+        }
+    }
+    r.stop().await;
+    let reqs = client.requests();
+    let result: String = reqs[1]
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .filter_map(|p| if let Part::ToolResult { content, .. } = p { Some(text_of_parts(content)) } else { None })
+        .collect();
+    assert!(result.contains("\ncheck: cargo test"), "{result}");
+    assert!(!result.contains("| skipped |"), "the start check's slowness is not the post-write check's: {result}");
 }

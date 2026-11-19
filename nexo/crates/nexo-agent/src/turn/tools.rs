@@ -299,6 +299,9 @@ async fn step_check(
         let out = bash.run(serde_json::json!({"command": check.command, "timeout": before.secs.max(1)}), &ctx).await;
         let timed_out = out.content.contains("[killed: timed out after");
         guard.record_run(&check.command, &check.dir, timed_out);
+        if !timed_out {
+            guard.ran(&check.command, &check.dir, t0.elapsed().as_secs_f64());
+        }
         let exit = match &out.display {
             ToolDisplay::Shell { exit_code, .. } => *exit_code,
             _ => None,
