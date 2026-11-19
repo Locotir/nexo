@@ -220,7 +220,7 @@ pub(super) fn known_too_long(st: &State) -> bool {
 
 /// [`known_too_long`] of the session.
 pub(super) async fn refused_again(state: &Shared) -> bool {
-    known_too_long(&state.lock().await)
+    known_too_long(&*state.lock().await)
 }
 
 /// The sizes the not-fitting card gives, in the provider's tokens as far as they are known: this request, the
