@@ -132,27 +132,53 @@ pub enum GoalArg {
     Resume,
 }
 
-/// The subcommand a single word of `/goal` names: the whole word, or three letters or more that start exactly
-/// one of them (`res` is resume). None: the text is a goal.
+/// The subcommand a single word of `/goal` names, in English or Spanish: the whole word, or three letters or more
+/// that start only words of one subcommand (`res` is resume, `can` is pause). Case, a leading `¡` or `¿` and a
+/// trailing `.`, `!` or `?` do not matter. None: the text is a goal. Every stop-like word pauses, so a goal is
+/// never lost by a word that was meant to stop it.
 fn goal_word(word: &str) -> Option<GoalArg> {
-    const WORDS: [(&str, GoalArg); 6] = [
+    const WORDS: [(&str, GoalArg); 26] = [
         ("off", GoalArg::Clear),
         ("clear", GoalArg::Clear),
         ("none", GoalArg::Clear),
         ("done", GoalArg::Clear),
+        ("borrar", GoalArg::Clear),
+        ("limpiar", GoalArg::Clear),
+        ("quitar", GoalArg::Clear),
+        ("nada", GoalArg::Clear),
+        ("ninguno", GoalArg::Clear),
         ("pause", GoalArg::Pause),
+        ("pausa", GoalArg::Pause),
+        ("pausar", GoalArg::Pause),
+        ("stop", GoalArg::Pause),
+        ("para", GoalArg::Pause),
+        ("parar", GoalArg::Pause),
+        ("detener", GoalArg::Pause),
+        ("cancel", GoalArg::Pause),
+        ("cancelar", GoalArg::Pause),
+        ("end", GoalArg::Pause),
+        ("fin", GoalArg::Pause),
         ("resume", GoalArg::Resume),
+        ("reanudar", GoalArg::Resume),
+        ("continue", GoalArg::Resume),
+        ("continuar", GoalArg::Resume),
+        ("seguir", GoalArg::Resume),
+        ("sigue", GoalArg::Resume),
     ];
+    let word = word.to_lowercase();
+    let word = word.trim_start_matches(['¡', '¿']).trim_end_matches(['.', '!', '?']);
     if let Some((_, a)) = WORDS.iter().find(|(w, _)| *w == word) {
         return Some(a.clone());
     }
-    if word.len() < 3 {
+    if word.chars().count() < 3 {
         return None;
     }
-    let mut hits = WORDS.iter().filter(|(w, _)| w.starts_with(word));
-    match (hits.next(), hits.next()) {
-        (Some((_, a)), None) => Some(a.clone()),
-        _ => None,
+    let mut hits = WORDS.iter().filter(|(w, _)| w.starts_with(word)).map(|(_, a)| a);
+    let first = hits.next()?;
+    if hits.all(|a| a == first) {
+        Some(first.clone())
+    } else {
+        None
     }
 }
 
