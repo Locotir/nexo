@@ -343,7 +343,10 @@ fn is_request(text: &str) -> bool {
     ];
     !py::strip(text).is_empty() && {
         let t = text.trim_start_matches(py::is_space);
-        !NOT.iter().any(|p| t.starts_with(p))
+        // the line that says a goal is not running comes first in a request nexo started by itself
+        let t = nexo_core::agent::goal_state_line_of(t)
+            .map_or(t, |line| t[line.len()..].trim_start_matches(py::is_space));
+        !t.is_empty() && !NOT.iter().any(|p| t.starts_with(p))
     }
 }
 

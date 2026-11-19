@@ -1141,6 +1141,27 @@ impl Room {
         out.lines.push(block);
         true
     }
+
+    /// Adds `block` like [`Room::say`] but without the token and character limits: the line of a file the person
+    /// named that did not come, which is one short line and always said. The room left only goes down, to 0 at
+    /// the least. Still silent with no budget to attach with, and for a line the conversation has said already.
+    fn must(&mut self, out: &mut Admitted, texts: &[String], block: String) -> bool {
+        if self.legacy || repeated(texts, &block) {
+            return false;
+        }
+        let tokens = orient::attached_tokens(block.len());
+        self.chars += block.len();
+        self.left = self.left.saturating_sub(tokens);
+        out.spent += tokens;
+        out.lines.push(block);
+        true
+    }
+}
+
+/// The line of a named file that did not come, so the model still has its path and size: why it did not, and that
+/// it can read the file itself.
+fn bare_line(file: &FoundFile, why: &str) -> String {
+    format!("{} ({}): not attached, {why}. Read it if you need its lines.", file.shown, size_text(file.size))
 }
 
 /// The line of a folder: its path, how many entries it has and the first of them (at most [`FOLDER_ENTRIES`] and
@@ -1174,6 +1195,10 @@ fn folder_line(shown: &str, entries: &[String]) -> String {
 ///
 /// With no budget to attach with (`agent.attach_budget` of 0), only the project files the message wrote a path or
 /// a bare name for come, whole, as before: no heads, listings, definitions or missing lines.
+///
+/// A named file that does not come whole and whose head does not come either (no room, or no text to show) is never
+/// dropped without a trace: it gets one short line with its path and size ([`bare_line`]), outside the limits of
+/// the room.
 pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
     let mut out = Admitted::default();
     if !st.config.agent.attach_named_files {
@@ -1202,10 +1227,13 @@ pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
             && taken < NAMED_FILES
             && (legacy || tokens <= room.left);
         if whole {
-            let Ok(bytes) = std::fs::read(&file.real) else { continue };
-            if std::str::from_utf8(&bytes).is_err() {
-                continue;
-            }
+            let bytes = match std::fs::read(&file.real) {
+                Ok(b) if std::str::from_utf8(&b).is_ok() => b,
+                _ => {
+                    room.must(&mut out, &texts, bare_line(file, "not text"));
+                    continue;
+                }
+            };
             // the model holds the whole file (it wrote it, or its command made it and printed it) and it is unchanged
             let made = orient::made_in_work(&st.worked, &file.real);
             taken += 1;
@@ -1225,7 +1253,12 @@ pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
         if legacy {
             continue;
         }
-        let Some(head) = &file.head else { continue };
+        // a file found by a direct reach has no head yet: read it now, only for a file that gets here
+        let read = if file.head.is_none() { head_of(&file.real, file.size) } else { None };
+        let Some(head) = file.head.as_ref().or(read.as_ref()) else {
+            room.must(&mut out, &texts, bare_line(file, "not text"));
+            continue;
+        };
         let shown_lines = head.text.lines().count();
         let count = match head.lines {
             Some(n) if !head.cut => nexo_core::count(n, "line"),
@@ -1235,7 +1268,11 @@ pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
         };
         let header = format!("{} ({}, {count}):", file.shown, size_text(file.size));
         let block = if head.text.is_empty() { header } else { fenced(&header, &file.real, &head.text) };
-        room.say(&mut out, &texts, block);
+        // not the head: the file's path and size at least, unless the conversation has the head already
+        let said_before = repeated(&texts, &block);
+        if !room.say(&mut out, &texts, block) && !said_before {
+            room.must(&mut out, &texts, bare_line(file, "over what this request may carry"));
+        }
     }
     if legacy {
         return out;

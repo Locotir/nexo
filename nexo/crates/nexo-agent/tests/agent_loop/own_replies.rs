@@ -59,7 +59,7 @@ async fn long_goal(spec: &str) -> Vec<ModelRequest> {
     r.next().await;
     r.send(AgentCommand::Submit { text: "hola".into(), attachments: vec![] });
     r.turn().await;
-    r.send(AgentCommand::SetGoal { text: Some("go through the files".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("go through the files".into()), attachments: vec![] });
     for _ in 0..6 {
         r.turn().await;
     }

@@ -200,3 +200,26 @@ fn the_request_list_quotes_the_persons_words_not_the_note_before_them() {
     assert!(e.base_map.contains("- Add retry to the CSV loader."), "{}", e.base_map);
     assert!(!e.base_map.contains("[project at the start"), "{}", e.base_map);
 }
+
+#[test]
+fn a_long_goal_in_progress_is_kept_whole() {
+    // 7,000 characters of words the head and the tail of a 6,000-character cut would not hold: the middle is the goal's
+    let goal = format!("[goal set] HEADWORD {} MIDDLEWORD {} TAILWORD", "alpha ".repeat(600), "omega ".repeat(600));
+    assert!(goal.len() > 7_000);
+    let note = "[project at the start of this request]\nGit: 3 files changed";
+    let latest = format!("{goal}\n\n{note}");
+    let (msgs, _) = a_long_run_after(&latest, Some("[goal: continue]"));
+    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    e.sync(&msgs);
+    e.view();
+    assert!(e.base_map.contains(&format!("word for word:\n{goal}")), "{}", e.base_map);
+    assert!(!e.base_map.contains("middle left out"), "{}", e.base_map);
+    assert!(!e.base_map.contains("[project at the start"), "{}", e.base_map);
+    // a continuation with a note before it is the loop's, not the request in progress
+    let stop = "[12:00:00 the person stopped the request above (Esc)]";
+    let (msgs, _) = a_long_run_after(&latest, Some(&format!("{stop}\n\n[goal: continue]\n\n{note}")));
+    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    e.sync(&msgs);
+    e.view();
+    assert!(e.base_map.contains(&format!("word for word:\n{goal}")), "{}", e.base_map);
+}

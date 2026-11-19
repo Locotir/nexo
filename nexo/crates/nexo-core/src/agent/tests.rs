@@ -44,3 +44,94 @@ fn sub_events_are_marked_and_the_others_are_not() {
     assert!(!AgentEvent::Shutdown.is_sub());
     assert!(!AgentEvent::Jobs { jobs: vec![] }.is_sub());
 }
+
+#[test]
+fn a_goal_mark_is_found_at_the_start_or_after_the_notes_before_it() {
+    let at = goal_mark_at;
+    assert_eq!(at("[goal set] ship it"), Some(0));
+    assert_eq!(at("[goal: continue]"), Some(0));
+    let notes = "[background jobs ended]\njob 1 done\n\n";
+    assert_eq!(at(&format!("{notes}[goal: continue]\n\nnote")), Some(notes.len()));
+    assert_eq!(at(&format!("[stop line]\n\n{notes}[goal set] ship it")), Some("[stop line]\n\n".len() + notes.len()));
+    // a mark inside a line, or one the person quotes after a single newline, is not the loop's
+    assert_eq!(at("please add [goal set] to the docs"), None);
+    assert_eq!(at("see\n[goal: continue]"), None);
+    assert_eq!(at("[goal: met, not running; /goal resume reopens it]\n\nthanks"), None);
+    assert_eq!(at(""), None);
+}
+
+#[test]
+fn a_goal_line_is_cut_only_where_the_goal_window_holds_the_rest() {
+    let long = format!("make it fast {}", "and keep every test green ".repeat(12));
+    let one_line = long.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(one_line.chars().count() > GOAL_SHOWN);
+    let cut = goal_shown(&long, true);
+    assert!(cut.ends_with("· the rest is in the goal window") && cut.chars().count() < GOAL_SHOWN + 60, "{cut}");
+    // words the window does not hold stay whole, on one line
+    assert_eq!(goal_shown(&long, false), one_line);
+    assert_eq!(goal_shown("make it\nfast", false), "make it fast");
+    assert_eq!(goal_shown("make it\nfast", true), "make it fast");
+}
+
+#[test]
+fn a_goal_logs_progress_is_what_is_saved_and_comes_back_with_the_words_untouched() {
+    let stop = GoalStop { at_ms: 7, why: "Esc".into() };
+    let log = GoalLog {
+        original: Some("ship it".into()),
+        brief: Some("Want: ship".into()),
+        started_ms: 5,
+        steps: 3,
+        cost_usd: 1.5,
+        stops: vec![stop.clone()],
+        last: Some("on it".into()),
+    };
+    let p = log.progress();
+    assert_eq!(p, GoalProgress { started_ms: 5, steps: 3, stops: vec![stop] });
+    let back = GoalLog { original: Some("ship it".into()), ..GoalLog::default() }.with_progress(p.clone());
+    assert_eq!((back.original.as_deref(), back.started_ms, back.steps, back.stops.len()), (Some("ship it"), 5, 3, 1));
+    assert_eq!(back.progress(), p);
+    // a saved progress with fields missing reads as the default
+    assert_eq!(serde_json::from_str::<GoalProgress>("{}").unwrap(), GoalProgress::default());
+}
+
+#[test]
+fn the_goal_state_line_is_found_only_as_the_first_line_nexo_wrote() {
+    let met = format!("{GOAL_MET_HEAD}; /goal resume reopens it]");
+    let paused = format!("{GOAL_PAUSED_HEAD}paused by you), not running; /goal resume goes on]");
+    for line in [&met, &paused] {
+        let mail = format!("{line}\n\n<session-message id=\"m\">x</session-message>");
+        assert_eq!(goal_state_line_of(&mail), Some(line.as_str()));
+        assert_eq!(goal_state_line_of(line), Some(line.as_str()));
+        // not at the start, not the whole line, or not ended
+        assert_eq!(goal_state_line_of(&format!("words\n{line}")), None);
+        assert_eq!(goal_state_line_of(&format!("see {line}")), None);
+        assert_eq!(goal_state_line_of(&format!("{line} and more")), None);
+    }
+    assert_eq!(goal_state_line_of("[goal: met, not running"), None);
+    assert_eq!(goal_state_line_of(&format!("{GOAL_SET_MARK} ship it")), None);
+    assert_eq!(goal_state_line_of(GOAL_CONTINUE_MARK), None);
+    assert_eq!(goal_state_line_of(""), None);
+}
+
+#[test]
+fn a_goal_request_stops_where_the_start_note_and_the_files_begin() {
+    let note = format!("{START_NOTE_HEAD}\nGit: clean");
+    let file = format!("@notes.md {ATTACHED}\n```md\nx\n```");
+    let own = format!("src/lib.rs {INCLUDED}\n```rs\nfn f() {{}}\n```");
+    let goal = "[goal set] write the report\n\nand cite the sources";
+    // the goal's own paragraphs stay: only nexo's note and files end it
+    assert_eq!(goal_request(goal), Some(goal));
+    assert_eq!(goal_request(&format!("{goal}\n\n{note}")), Some(goal));
+    assert_eq!(goal_request(&format!("{goal}\n\n{file}")), Some(goal));
+    assert_eq!(goal_request(&format!("{goal}\n\n{note}\n\n{own}\n\n{file}")), Some(goal));
+    assert_eq!(goal_request(&format!("{goal}\n\n@shot.png: attached as an image")), Some(goal));
+    assert_eq!(goal_request(&format!("{goal}\n\n@big.bin: not attached (too large)")), Some(goal));
+    // notes before the mark are not part of it; a stop line and a jobs note go first
+    let before = "[12:00:00 the person stopped the request above (Esc)]\n\n[background jobs ended]\n- job 1 done";
+    assert_eq!(goal_request(&format!("{before}\n\n{goal}\n\n{note}")), Some(goal));
+    assert_eq!(goal_request(&format!("{GOAL_CONTINUE_MARK}\n\n{note}")), Some(GOAL_CONTINUE_MARK));
+    // no goal round, no goal request
+    assert_eq!(goal_request("write the report"), None);
+    assert_eq!(goal_request(&format!("{note}\n\nplease add {GOAL_SET_MARK} to the docs")), None);
+    assert_eq!(START_NOTE_HEAD, "[project at the start of this request]");
+}

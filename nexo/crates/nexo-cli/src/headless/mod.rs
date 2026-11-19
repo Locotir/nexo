@@ -236,10 +236,12 @@ pub async fn run(
     };
     // plain stdin is part of the request
     let mut inbox: VecDeque<String> = VecDeque::new();
+    let mut late_stdin: Option<Late> = None;
     if !stream_in {
         // a caller that left stdin open must not stall a run that already has its prompt
         let wait = (!prompt.trim().is_empty()).then(|| Duration::from_secs(3));
-        let piped = read_stdin(wait);
+        let (piped, late) = read_stdin(wait);
+        late_stdin = late;
         let text = match (prompt.trim().is_empty(), piped.trim().is_empty()) {
             (_, true) => prompt,
             (true, false) => piped,
@@ -330,6 +332,19 @@ pub async fn run(
         eprintln!("{w}");
     }
     let tools: Vec<String> = agent_setup.tools.names().map(String::from).collect();
+    // stdin that started after the wait: if it came while the run was set up it joins the request, else it is watched
+    if let Some(late) = late_stdin.take() {
+        match late.catch_up() {
+            Ok(more) if !more.trim().is_empty() => {
+                if let Some(first) = inbox.front_mut() {
+                    *first = format!("{}\n\n{}", first.trim_end(), more.trim_end());
+                    eprintln!("nexo: the input on stdin came before the request went out; it was added to the prompt");
+                }
+            }
+            Ok(_) => {}
+            Err(late) => late.watch(),
+        }
+    }
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
 
     let reach = config.providers.get(&picked.provider).map(|p| unreachable_note(&picked.provider, &p.base_url));
@@ -516,7 +531,7 @@ pub async fn run(
         let _ = writeln!(out, "{}", run.result(exit, "", None, None));
     }
     let _ = out.flush();
-    Ok(exit)
+    Ok(late_exit(exit))
 }
 
 #[cfg(test)]

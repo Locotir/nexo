@@ -36,7 +36,7 @@ async fn a_research_goal_that_reads_forty_files_and_reports_never_pauses() {
     let client = Scripted::new(replies);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("find why X fails and tell me".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("find why X fails and tell me".into()), attachments: vec![] });
     let t = r.turn().await;
     assert_eq!(end_of(&t), TurnEnd::Done);
     let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
@@ -67,7 +67,7 @@ async fn a_goal_that_reads_the_same_three_files_again_pauses_with_the_facts() {
     let client = Scripted::new(replies);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("make the store safe".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("make the store safe".into()), attachments: vec![] });
     let t = r.turn().await;
     assert_eq!(end_of(&t), TurnEnd::MaxTurns);
     let reqs = client.requests();
@@ -102,7 +102,7 @@ async fn a_goal_round_that_only_reads_again_pauses_the_goal() {
     let client = Scripted::new(replies);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("make the store safe".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("make the store safe".into()), attachments: vec![] });
     r.turn().await;
     r.turn().await;
     let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
@@ -124,7 +124,7 @@ async fn a_goal_that_reads_then_edits_keeps_its_tools() {
     let client = Scripted::new(replies);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("make the store safe".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("make the store safe".into()), attachments: vec![] });
     let t = r.turn().await;
     assert_eq!(end_of(&t), TurnEnd::Done);
     let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
@@ -188,7 +188,7 @@ async fn a_goal_run_shows_the_model_its_own_counts() {
     let set = tools().with(Arc::new(nexo_tools::bash::Bash));
     let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("find the leak".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("find the leak".into()), attachments: vec![] });
     let first = r.turn().await;
     assert_eq!(end_of(&first), TurnEnd::Done);
     let second = r.turn().await;
@@ -250,7 +250,7 @@ async fn a_resumed_goal_starts_its_counts_over() {
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("find the leak".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("find the leak".into()), attachments: vec![] });
     r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
     r.send(AgentCommand::Interrupt);
     assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
@@ -284,7 +284,7 @@ async fn a_supervisor_note_and_the_goal_counts_ride_as_one_text_part() {
     cfg.agent.stale_guard = 0;
     let mut r = start_with(client.clone(), cfg, None, dir.path(), set).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("read the file".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("read the file".into()), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;

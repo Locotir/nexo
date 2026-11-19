@@ -341,6 +341,54 @@ fn the_esc_that_interrupted_a_turn_does_not_also_open_the_rewind_picker() {
 }
 
 #[test]
+fn an_idle_esc_or_ctrl_c_holds_the_session() {
+    use nexo_core::agent::Stopper;
+    use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
+    let (mut a, mut rx) = app();
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("an ask") });
+    a.handle_agent(AgentEvent::History { index: 1, message: Message::assistant("ok") });
+    // an empty box: the Esc holds, a quick second one opens the rewind picker and sends nothing
+    a.esc();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)), "an idle Esc holds the session");
+    a.esc();
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Rewind));
+    // a draft stays on the first Esc, and the Esc holds all the same
+    let (mut a, mut rx) = app();
+    a.input.set_text("half a thought");
+    a.esc();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+    assert_eq!(a.input.full_text(), "half a thought");
+    // Ctrl+C holds with a draft and with an empty box
+    a.ctrl_c();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::StopBy(Stopper::CtrlC))));
+    assert!(a.input.is_empty());
+    a.last_ctrl_c = None;
+    a.ctrl_c();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::StopBy(Stopper::CtrlC))));
+    assert!(!a.should_quit);
+    // with a job running the person is told that nothing starts until they write
+    let (mut a, mut rx) = app();
+    a.jobs = vec![JobInfo {
+        id: 3,
+        kind: JobKind::Shell,
+        label: "sleep 9".into(),
+        status: JobStatus::Running,
+        elapsed_ms: 0,
+        lines: 0,
+    }];
+    a.esc();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+    assert!(a.status.as_ref().is_some_and(|(t, _)| t.contains("nothing starts until you write")), "{:?}", a.status);
+    // a busy turn still sends its one Interrupt, no second one
+    let (mut a, mut rx) = app();
+    a.busy = true;
+    a.esc();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
 fn the_rewind_picker_lists_the_persons_messages_newest_first_and_rewinds() {
     let (mut a, mut rx) = app();
     a.handle_agent(AgentEvent::History { index: 0, message: Message::user("first ask\nwith detail") });
@@ -348,7 +396,9 @@ fn the_rewind_picker_lists_the_persons_messages_newest_first_and_rewinds() {
     a.handle_agent(AgentEvent::History { index: 2, message: Message::user("second ask") });
     a.esc();
     assert!(a.modal.is_none(), "the first Esc only hints");
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)), "an idle Esc holds the session");
     a.esc();
+    assert!(rx.try_recv().is_err(), "the second Esc opens the picker and sends nothing");
     let Some(Modal::Picker(p)) = &a.modal else { panic!("no picker") };
     assert_eq!(p.kind, PickKind::Rewind);
     assert_eq!(p.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), vec!["second ask", "first ask"]);

@@ -197,9 +197,13 @@ pub enum AgentCommand {
     ShowModel,
     /// Set (or clear, with None) the goal the agent keeps working towards across turns: it is
     /// pinned in the system prompt and, when a turn ends without the model declaring the goal
-    /// done, the agent asks it to continue, up to a few rounds; answered with `Goal`.
+    /// done, the agent asks it to continue, up to a few rounds; answered with `Goal`. The files the person
+    /// attached to the goal's words (`@path`, a dropped image) come with the first request towards it,
+    /// as with `Submit`.
     SetGoal {
         text: Option<String>,
+        #[serde(default)]
+        attachments: Vec<Attachment>,
     },
     /// Hold the goal: the turn in progress finishes, no continuation starts after it; answered with `Goal`.
     PauseGoal,

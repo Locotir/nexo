@@ -689,6 +689,7 @@ async fn a_goal_of_business_work_gets_paths_and_heads_not_the_small_files_or_a_c
             "app ideas, write them to IDEAS_T4.md, info in {}/ https://apps.microsoft.com/x",
             abs.display()
         )),
+        attachments: vec![],
     });
     let evs = r.turn().await;
     r.stop().await;
@@ -784,4 +785,69 @@ async fn a_panic_location_names_its_file() {
     let sent = client.requests()[0].messages[0].text();
     assert!(sent.contains("src/lib.rs (project file, included in full by nexo, as it is now):"), "{sent}");
     assert!(sent.contains("\ncheck: cargo test"), "{sent}");
+}
+
+/// A goal set from `/goal summarise @notes.md` brings the file the person attached, as a message does: the first
+/// request towards it holds the file whole and once, and the goal's words are in the system prompt, once.
+#[tokio::test]
+async fn a_goal_brings_the_files_the_person_attached() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("notes.md"), "the plan is to ship on friday").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("noted\nGOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal {
+        text: Some("summarise @notes.md into REPORT.md".into()),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("notes.md") }],
+    });
+    r.turn().await;
+    r.stop().await;
+    let sent = client.requests()[0].messages[0].text();
+    let file = "@notes.md (attached in full, as it is now):\n```md\nthe plan is to ship on friday\n```";
+    assert!(sent.contains(file), "{sent}");
+    assert_eq!(sent.matches("the plan is to ship on friday").count(), 1, "the file comes once: {sent}");
+    // the words are in the system prompt, whole, and the request carries the mark (the history keeps them too)
+    assert!(sent.starts_with("[goal set]"), "{sent}");
+    assert!(!sent.contains("summarise @notes.md into REPORT.md"), "the words go once: {sent}");
+    let system = &client.requests()[0].system;
+    assert!(system.contains("Goal, in the person's words: summarise @notes.md into REPORT.md\n"), "{system}");
+}
+
+/// A message queued during a turn names two files of 14 KB each: the first fits the room whole, the second does
+/// not, and the model hears of it with its path, size and head, as in a first request.
+#[tokio::test]
+async fn a_queued_message_says_every_file_it_names_over_the_budget() {
+    let d = test_tmpdir().unwrap();
+    std::fs::create_dir_all(d.path().join("src")).unwrap();
+    for name in ["a", "b"] {
+        let body = format!("pub fn x() {{}}\n{}", "// padding\n".repeat(1270));
+        std::fs::write(d.path().join(format!("src/{name}.rs")), body).unwrap();
+    }
+    let client =
+        Scripted::new(vec![Reply::Events(call("w1", "write", json!({"path": "x.txt"}))), Reply::Events(text("done"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.attach_budget = 6000;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "write it".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    r.send(AgentCommand::Submit { text: "compare src/a.rs with src/b.rs".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::Permission { id: "w1".into(), decision: PermissionDecision::Allow });
+    r.turn().await;
+    r.stop().await;
+    let sent = client.requests()[1].messages.last().unwrap().text();
+    assert!(sent.contains("src/a.rs (project file, included in full by nexo"), "{sent}");
+    assert!(sent.contains("src/b.rs (14 KB, 1271 lines; first 20 lines):"), "{sent}");
+}
+
+/// A named file whose head does not fit what the request may carry is still said, with its path and size, and
+/// nothing of its text comes.
+#[tokio::test]
+async fn a_named_file_whose_head_does_not_fit_still_says_its_path_and_size() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("big.md"), format!("{}\n", "z".repeat(79)).repeat(400)).unwrap();
+    let sent = first_text(d.path(), 100, "summarize big.md").await;
+    assert!(sent.contains("big.md (32 KB): not attached, over what this request may carry"), "{sent}");
+    assert!(!sent.contains(&"z".repeat(79)) && !sent.contains("lines; first"), "{sent}");
 }

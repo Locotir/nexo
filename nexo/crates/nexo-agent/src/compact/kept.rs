@@ -31,18 +31,28 @@ pub(super) fn push_new(v: &mut Vec<String>, s: &str) {
 
 impl Kept {
     /// Keeps the person's messages within `tokens` (4 characters a token): the first (the task
-    /// statement) up to [`FIRST_REQUEST_CHARS`] or half of them, each other up to [`REQUEST_CHARS`],
-    /// and past that the oldest after the first are left out.
+    /// statement) up to [`FIRST_REQUEST_CHARS`] or half of them, each other up to [`REQUEST_CHARS`], except the last
+    /// goal request (the goal the work is on), which is held like the first. Past the budget the oldest after the
+    /// first are left out, never the current goal.
     pub fn cap(&mut self, tokens: u64) {
         let budget = usize::try_from(tokens.saturating_mul(4)).unwrap_or(usize::MAX);
+        let whole = FIRST_REQUEST_CHARS.min(budget / 2);
+        let mut current =
+            self.requests.iter().rposition(|r| r.starts_with(nexo_core::agent::GOAL_SET_MARK)).filter(|&i| i > 0);
         let Some((first, rest)) = self.requests.split_first_mut() else { return };
-        *first = shorten(first, FIRST_REQUEST_CHARS.min(budget / 2));
-        for r in rest.iter_mut() {
-            *r = shorten(r, REQUEST_CHARS);
+        *first = shorten(first, whole);
+        for (i, r) in rest.iter_mut().enumerate() {
+            *r = shorten(r, if current == Some(i + 1) { whole } else { REQUEST_CHARS });
         }
         let size = |v: &[String]| v.iter().map(|r| r.chars().count()).sum::<usize>();
         while self.requests.len() > 1 && size(&self.requests) > budget {
-            self.requests.remove(1);
+            // the oldest after the first, skipping the current goal
+            let at = if current == Some(1) { 2 } else { 1 };
+            if at >= self.requests.len() {
+                break;
+            }
+            self.requests.remove(at);
+            current = current.map(|c| if c > at { c - 1 } else { c });
         }
     }
 }
@@ -55,9 +65,9 @@ pub(super) const MEMORY_START: &str = "<memory from=\"";
 pub(super) const MEMORY_END: &str = "</memory>";
 
 /// What the person wrote in `text`, without what the harness adds to a request: notes of ended
-/// background jobs and memory shared by other sessions (before it), the files attached to it (after
-/// it; the paths of those attached whole go to `attached`), and the loop's own continuation of a
-/// goal. None when nothing of the person is left.
+/// background jobs, memory shared by other sessions and the line that says a goal is not running (before it), the
+/// files attached to it (after it; the paths of those attached whole go to `attached`), and the loop's own
+/// continuation of a goal. None when nothing of the person is left.
 pub(super) fn person_text(text: &str, attached: &mut Vec<String>) -> Option<String> {
     if text == crate::turn::GOAL_CONTINUE {
         return None;
@@ -75,7 +85,10 @@ pub(super) fn person_text(text: &str, attached: &mut Vec<String>) -> Option<Stri
     }
     let mut t = text.trim_start();
     loop {
-        if t.starts_with(JOBS_NOTE) {
+        if let Some(line) = nexo_core::agent::goal_state_line_of(t) {
+            // nexo's line in front of a request it started: not the person's
+            t = t[line.len()..].trim_start();
+        } else if t.starts_with(JOBS_NOTE) {
             let i = t.find(JOBS_NOTE_END)?;
             t = t[i..].split_once('\n').map_or("", |(_, after)| after).trim_start();
         } else if t.starts_with(MEMORY_START) {
@@ -102,6 +115,11 @@ pub(super) fn person_text(text: &str, attached: &mut Vec<String>) -> Option<Stri
             }
             None => {}
         }
+    }
+    // a goal request: its words up to nexo's start note and files (the paths of those went to `attached` above); the
+    // loop's own continuation is no request
+    if let Some(g) = nexo_core::agent::goal_request(text) {
+        return (!g.is_empty() && g != nexo_core::agent::GOAL_CONTINUE_MARK).then(|| g.to_string());
     }
     let t = t[..end].trim();
     (!t.is_empty()).then(|| t.to_string())

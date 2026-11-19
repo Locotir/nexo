@@ -89,20 +89,22 @@ impl Runtime {
         }
         announce_session(&events, &session, &provider, &model, &cwd, perm.mode);
         warn_setup(&events, &config, &tools);
-        if replay {
-            replay_history(&events, &session, &tools);
-        }
-        announce_model(&events, &config, &provider, &model);
-        let resumed_at = if replay { std::fs::metadata(session.path()).and_then(|m| m.modified()).ok() } else { None };
+        // the goal before the replay: the interface draws the replayed goal against the one it now has
+        let goal_log = reopened_goal(&mut session, &events);
         let goal = session.goal().map(String::from);
         let goal_state = session.goal_state().clone();
         if goal.is_some() {
-            emit(&events, AgentEvent::GoalLog(resumed_log(goal.as_deref())));
+            emit(&events, AgentEvent::GoalLog(goal_log.clone()));
             emit(
                 &events,
                 AgentEvent::Goal { text: goal.clone(), round: 0, max: goal_rounds(), state: goal_state.clone() },
             );
         }
+        if replay {
+            replay_history(&events, &session, &tools);
+        }
+        announce_model(&events, &config, &provider, &model);
+        let resumed_at = if replay { std::fs::metadata(session.path()).and_then(|m| m.modified()).ok() } else { None };
         // Marks the end of startup, including replay, for consumers such as ACP.
         emit(&events, limits.event(&provider, &model));
         let (usage, cost) = (session.usage(), session.cost());
@@ -128,6 +130,7 @@ impl Runtime {
             fit_view: None,
             last_view: (0, 0),
             view_failed: false,
+            fit_tokens: None,
             last_sent: crate::history::Sent::default(),
             last_request: None,
             mended: HashSet::new(),
@@ -144,12 +147,16 @@ impl Runtime {
             live: None,
             last_person_at: resumed_at,
             turn_start: 0,
+            person_at: 0,
             request_in: false,
             turns: 0,
-            goal_log: resumed_log(goal.as_deref()),
+            goal_log,
             goal_cost0: cost,
             goal_idle: GoalIdle::default(),
             goal_counts: GoalCounts::new(cost),
+            goal_unread: false,
+            goal_typed: false,
+            goal_pending: None,
             goal,
             goal_round: 0,
             goal_state,

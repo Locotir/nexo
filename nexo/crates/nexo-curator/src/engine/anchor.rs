@@ -126,18 +126,24 @@ impl Engine {
         let r = self.fz.requests.iter().rev().copied().find(|&r| {
             let t = self.unit_text_at(r, UKind::User);
             let w = crate::msg::person_words(&t).trim_start();
+            // (a continuation with a note before it is the loop's too)
             !LOOP_MARKS.iter().any(|m| w.starts_with(m))
+                && crate::msg::goal_request(w) != Some(crate::msg::GOAL_CONTINUE_MARK)
         })?;
         if r == 0 || r >= self.start || self.live_asks().contains(&r) {
             // (a request the view keeps whole is not said again, word for word or as a line of the list)
             return None;
         }
         let t = self.unit_text_at(r, UKind::User);
-        let w = textops::strip(crate::msg::person_words(&t));
+        let words = crate::msg::person_words(&t);
+        // a goal request is the goal's words as the person set them, whole: the start note and the files after them are
+        // not part of it, and the middle of a long goal is not left out
+        let goal = crate::msg::goal_request(words);
+        let w = textops::strip(goal.unwrap_or(words));
         if w.is_empty() {
             return None;
         }
-        let w = if textops::len(w) > IN_PROGRESS_CHARS {
+        let w = if goal.is_none() && textops::len(w) > IN_PROGRESS_CHARS {
             format!(
                 "{} [… middle left out …] {}",
                 textops::head(w, IN_PROGRESS_CHARS / 2),

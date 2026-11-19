@@ -81,7 +81,7 @@ async fn a_goal_round_after_a_guard_answer_is_not_told_its_tools_are_off() {
     cfg.agent.stale_guard = 3;
     let mut r = start(client.clone(), cfg, None, d.path()).await;
     r.next().await;
-    r.send(AgentCommand::SetGoal { text: Some("find out what a holds".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("find out what a holds".into()), attachments: vec![] });
     r.turn().await;
     r.turn().await;
     r.stop().await;

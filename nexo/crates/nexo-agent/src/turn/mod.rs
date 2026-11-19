@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
 use nexo_core::agent::{
-    AddedKind, AddedPart, AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalLog, GoalState, GoalStop,
-    Level, TurnEnd, GOAL_BRIEF_HEAD, GOAL_CONTINUE_MARK, GOAL_SET_MARK, GOAL_STOPS, SUPERVISOR_RESUME_MARK,
+    AddedKind, AddedPart, AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalLog, GoalProgress, GoalState,
+    GoalStop, Level, TurnEnd, GOAL_BRIEF_HEAD, GOAL_CONTINUE_MARK, GOAL_SET_MARK, GOAL_STOPS, SUPERVISOR_RESUME_MARK,
 };
 use nexo_core::config::{Config, OnLimit, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
@@ -120,8 +120,6 @@ const COMPACT_MARGIN: u64 = 10;
 const GOAL_ROUNDS: u32 = 5;
 /// What the agent submits by itself to keep working towards the goal.
 pub(crate) const GOAL_CONTINUE: &str = GOAL_CONTINUE_MARK;
-/// Characters at the end of a reply where `GOAL DONE` or `GOAL WAIT` counts even when it is not the last line.
-const GOAL_TAIL: usize = 200;
 
 /// A Stop hook may ask the agent to go on this many times in a row; then the request ends anyway.
 const STOP_HOOK_CAP: u32 = 3;

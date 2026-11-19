@@ -66,6 +66,9 @@ pub(super) async fn compact_locked(st: &mut State, keep_from: usize, cancel: &Ca
             }
             // the turn in progress starts where its first kept message now sits
             st.turn_start = if st.turn_start >= from { st.turn_start - from + shift } else { 0 };
+            // the person's last message moves the same way; one that went into the summary leaves 0, where the turn
+            // falls back to its own start
+            st.person_at = if st.person_at >= from { st.person_at - from + shift } else { 0 };
             // a summary of the message that held the line about compiled programs takes the line out of what the
             // model reads: the next message of the person's carries it again
             if st.ask_told && !crate::ask_hint::told(&work) {

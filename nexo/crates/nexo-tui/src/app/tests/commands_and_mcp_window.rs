@@ -266,3 +266,25 @@ fn the_branch_keeps_its_slashes_and_a_windows_cwd_shows_its_last_folder() {
     }];
     assert_eq!(a.peer_values(), vec![("api".to_string(), "api".to_string())]);
 }
+
+#[test]
+fn goal_set_sends_the_files_it_names() {
+    let d = tempfile::tempdir().unwrap();
+    let notes = d.path().join("notes.md");
+    std::fs::write(&notes, "the plan").unwrap();
+    let (mut a, mut rx) = app();
+    a.cwd = d.path().to_path_buf();
+    a.run_command(Command::Goal(GoalArg::Set("summarise @notes.md into REPORT.md".into())));
+    match rx.try_recv() {
+        Ok(AgentCommand::SetGoal { text, attachments }) => {
+            assert_eq!(text.as_deref(), Some("summarise @notes.md into REPORT.md"));
+            assert_eq!(attachments, vec![Attachment { path: notes }]);
+        }
+        other => panic!("{other:?}"),
+    }
+    // a goal that names nothing on disk, and a cleared goal, carry no files
+    a.run_command(Command::Goal(GoalArg::Set("summarise @missing.md".into())));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { attachments, .. }) if attachments.is_empty()));
+    a.run_command(Command::Goal(GoalArg::Clear));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: None, attachments }) if attachments.is_empty()));
+}

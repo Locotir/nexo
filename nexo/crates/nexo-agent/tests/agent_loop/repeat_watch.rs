@@ -181,3 +181,100 @@ async fn the_supervisor_asks_for_a_check_in_once_per_stopped_turn() {
     assert!(reqs[2].messages.last().unwrap().text().contains("nobody answered"));
     r.stop().await;
 }
+
+/// Every event that comes within `ms` (the agent is idle meanwhile, so nothing else is waited for).
+async fn events_within(r: &mut Running, ms: u64) -> Vec<AgentEvent> {
+    let end = tokio::time::Instant::now() + Duration::from_millis(ms);
+    let mut out = Vec::new();
+    while let Ok(ev) = tokio::time::timeout_at(end, r.next()).await {
+        out.push(ev);
+    }
+    out
+}
+
+/// A session whose goal is met: one request with a `write` call, then the reply that says GOAL DONE. `more` are the
+/// replies for whatever comes after.
+async fn met_goal(more: Vec<Reply>, dir: &std::path::Path) -> (Arc<Scripted>, Running) {
+    let mut all =
+        vec![Reply::Events(call("c1", "write", json!({"path": "a.rs"}))), Reply::Events(text("all set\nGOAL DONE"))];
+    all.extend(more);
+    let client = Scripted::new(all);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("write a.rs".into()), attachments: vec![] });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    (client, r)
+}
+
+#[tokio::test]
+async fn a_supervisor_check_in_leaves_a_goal_alone() {
+    let d = test_tmpdir().unwrap();
+    // the last two replies are what a check-in would get, if one were sent
+    let (client, mut r) =
+        met_goal(vec![Reply::Events(text("CONTINUE keep going")), Reply::Events(text("on it"))], d.path()).await;
+    assert_eq!(client.requests().len(), 2);
+    r.send(AgentCommand::CheckIn { evidence: "tests still fail".into() });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "the goal's own round is not checked on");
+    let said: String = reqs.iter().flat_map(|q| q.messages.iter().map(|m| m.text())).collect::<Vec<_>>().join("\n");
+    assert!(!said.contains(nexo_core::agent::SUPERVISOR_RESUME_MARK) && !said.contains("Everything OK?"), "{said}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_met_goal_leaves_check_ins_for_later_requests() {
+    let d = test_tmpdir().unwrap();
+    // a later request of the person, with a tool call of its own and nothing unfinished in its reply
+    let (client, mut r) = met_goal(
+        vec![
+            Reply::Events(call("c2", "write", json!({"path": "b.rs"}))),
+            Reply::Events(text("b.rs is written")),
+            Reply::Events(text("DONE")),
+        ],
+        d.path(),
+    )
+    .await;
+    r.send(AgentCommand::Submit { text: "also write b.rs".into(), attachments: vec![] });
+    r.turn().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(client.requests().len(), 4, "nothing looks unfinished: no check-in on its own");
+    r.send(AgentCommand::CheckIn { evidence: "tests still fail".into() });
+    r.until(|e| matches!(e, AgentEvent::Usage { .. })).await;
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "the check-in is sent: the goal is met and this request is not its round");
+    assert!(reqs[4].messages.last().unwrap().text().contains("tests still fail"));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_supervisor_check_in_is_told_only_when_it_runs() {
+    const TOLD: &str = "supervisor: checking in with this session";
+    let told = |evs: &[AgentEvent]| notices(evs).iter().filter(|t| t.as_str() == TOLD).count();
+    // no goal: the check-in runs, and the person is told once
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(text("finished")),
+        Reply::Events(text("DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let turn = r.turn().await;
+    assert_eq!(told(&turn), 0, "the automatic check-in found nothing to ask");
+    r.send(AgentCommand::CheckIn { evidence: "the session asked a question and nobody answered".into() });
+    let evs = events_within(&mut r, 300).await;
+    assert_eq!(client.requests().len(), 3);
+    assert_eq!(told(&evs), 1, "{:?}", notices(&evs));
+    r.stop().await;
+    // a met goal, in its own round: no check-in runs, so nothing is said
+    let d = test_tmpdir().unwrap();
+    let (client, mut r) = met_goal(vec![Reply::Events(text("DONE"))], d.path()).await;
+    r.send(AgentCommand::CheckIn { evidence: "tests still fail".into() });
+    let evs = events_within(&mut r, 300).await;
+    assert_eq!(client.requests().len(), 2);
+    assert_eq!(told(&evs), 0, "{:?}", notices(&evs));
+    r.stop().await;
+}

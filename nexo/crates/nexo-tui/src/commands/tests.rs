@@ -56,6 +56,36 @@ fn a_goal_word_of_three_letters_is_the_subcommand_it_starts() {
 }
 
 #[test]
+fn goal_words_in_spanish_and_english_pause_resume_or_clear() {
+    let goal = |t: &str| parse(&format!("/goal {t}"));
+    for w in ["stop", "Stop", "PAUSA", "para", "¡para!", "parar", "cancel", "cancelar", "detener", "fin"] {
+        assert_eq!(goal(w), Some(Command::Goal(GoalArg::Pause)), "{w}");
+    }
+    for w in ["¿continuar?", "continuar", "sigue", "reanudar", "Resume"] {
+        assert_eq!(goal(w), Some(Command::Goal(GoalArg::Resume)), "{w}");
+    }
+    for w in ["borrar", "quitar"] {
+        assert_eq!(goal(w), Some(Command::Goal(GoalArg::Clear)), "{w}");
+    }
+}
+
+#[test]
+fn a_short_goal_word_that_names_one_action_is_that_action() {
+    let goal = |t: &str| parse(&format!("/goal {t}"));
+    assert_eq!(goal("con"), Some(Command::Goal(GoalArg::Resume)));
+    assert_eq!(goal("par"), Some(Command::Goal(GoalArg::Pause)));
+    assert_eq!(goal("can"), Some(Command::Goal(GoalArg::Pause)));
+}
+
+#[test]
+fn a_sentence_starting_with_a_goal_word_is_a_goal() {
+    let goal = |t: &str| parse(&format!("/goal {t}"));
+    for t in ["para el servidor y escribe el informe", "stop the cron jobs"] {
+        assert_eq!(goal(t), Some(Command::Goal(GoalArg::Set(t.into()))), "{t}");
+    }
+}
+
+#[test]
 fn parses_names_aliases_and_arguments() {
     assert_eq!(parse("/model"), Some(Command::Model(None)));
     assert_eq!(parse("/model deepseek/deepseek-chat "), Some(Command::Model(Some("deepseek/deepseek-chat".into()))));

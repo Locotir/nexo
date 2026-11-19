@@ -71,7 +71,7 @@ pub(super) async fn on_turn_end(rt: &mut Runtime, res: Result<TurnEnd, tokio::ta
     let run_queue = std::mem::take(&mut rt.run_queue);
     stop::record(rt, reason, run_queue).await;
     // the goal takes the turn's end first (met, waiting, paused), then a queued message runs
-    goal_settle(&rt.state, reason).await;
+    goal_settle(&rt.state, reason, run_queue).await;
     start_next(rt, reason, run_queue).await;
     if rt.turn.is_none() {
         if let Some(m) = rt.state.lock().await.mail.clone() {
@@ -124,42 +124,36 @@ async fn fire_end_hooks(state: &Shared, events: &EventTx, reason: TurnEnd) {
 async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
     // what is left came after the turn's last model call
     let held = rt.state.lock().await.held;
-    let (next, joined) = {
-        let mut st = rt.state.lock().await;
-        // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
-        let waits = reason == TurnEnd::Interrupted && !run_queue;
-        let (next, joined) = if waits { (None, 0) } else { queue::take_queued(&mut st) };
-        if waits && !st.inbox.is_empty() {
+    // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
+    let waits = (reason == TurnEnd::Interrupted || held) && !run_queue;
+    if waits {
+        let st = rt.state.lock().await;
+        if !st.inbox.is_empty() {
             notice(
                 &rt.events,
                 Level::Info,
                 format!("{} queued request(s) kept; they join your next message", st.inbox.len()),
             );
         }
-        if next.is_some() {
-            emit(&rt.events, AgentEvent::Queued { pending: st.inbox.len() });
-            person_spoke(&mut st);
-        }
-        (next, joined)
+    }
+    // a round of an active goal that ended on its own: what was queued was typed during it (Enter, `run_queue`, asks
+    // for the goal to go on after the message)
+    let typed = reason == TurnEnd::Done && !run_queue && {
+        let st = rt.state.lock().await;
+        st.goal.is_some() && st.goal_state.is_active()
     };
-    if let Some(mut item) = next {
-        let text = std::mem::take(&mut item.text);
-        let attachments = std::mem::take(&mut item.attachments);
-        let what = if joined > 1 {
-            format!("running the {joined} queued requests as one")
-        } else {
-            "running the queued request".into()
-        };
-        notice(&rt.events, Level::Info, what);
-        rt.turn = start_prompt_item(&rt.state, text, attachments, false, rt.cancel.child_token(), Some(item)).await;
-    } else if held {
-        // the person stopped: nothing below starts by itself
+    let queued = !waits && run_queued(rt).await;
+    if queued && typed {
+        rt.state.lock().await.goal_typed = true;
+    }
+    if queued || held {
+        // a queued request runs (what else is due waits for its end), or the person stopped: nothing below starts
     } else if !rt.state.lock().await.mail_wait.is_empty() {
         let mails = std::mem::take(&mut rt.state.lock().await.mail_wait);
         rt.turn = Some(deliver_mails(&rt.state, mails, rt.cancel.child_token()).await);
     } else if reason == TurnEnd::Done {
-        if let Some(text) = goal_follow_up(&rt.state).await {
-            rt.turn = Some(start_turn(&rt.state, text, Vec::new(), rt.cancel.child_token()).await);
+        if let Some((text, attachments)) = goal_follow_up(&rt.state).await {
+            rt.turn = Some(start_turn(&rt.state, text, attachments, rt.cancel.child_token()).await);
         }
     }
     // a job that ended after the turn's last model call
@@ -167,4 +161,39 @@ async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
         let note = room::ended_note_now(&rt.state, &rt.jobs).await;
         rt.turn = Some(start_turn(&rt.state, note, Vec::new(), rt.cancel.child_token()).await);
     }
+}
+
+/// Starts the requests the person queued (joined into one when there are several) as their own request, by itself
+/// after a turn or for `/goal resume` after Esc kept them. False when none was queued.
+pub(super) async fn run_queued(rt: &mut Runtime) -> bool {
+    let (next, joined) = {
+        let mut st = rt.state.lock().await;
+        let (next, joined) = queue::take_queued(&mut st);
+        if next.is_some() {
+            emit(&rt.events, AgentEvent::Queued { pending: st.inbox.len() });
+            person_spoke(&mut st);
+        }
+        (next, joined)
+    };
+    let Some(mut item) = next else { return false };
+    let text = std::mem::take(&mut item.text);
+    let attachments = std::mem::take(&mut item.attachments);
+    let what = if joined > 1 {
+        format!("running the {joined} queued requests as one")
+    } else {
+        "running the queued request".into()
+    };
+    notice(&rt.events, Level::Info, what);
+    rt.turn = start_prompt_item(&rt.state, text, attachments, false, rt.cancel.child_token(), Some(item)).await;
+    true
+}
+
+/// Starts the goal's request by itself: its own `[goal set]` request when the goal was set during a turn and that
+/// request has not gone yet, else a continuation. The stop of the person is lifted by `resume_goal` before this runs.
+pub(super) async fn start_goal_request(rt: &mut Runtime) {
+    let (text, attachments) = {
+        let mut st = rt.state.lock().await;
+        goal_request_now(&mut st)
+    };
+    rt.turn = Some(start_turn(&rt.state, text, attachments, rt.cancel.child_token()).await);
 }

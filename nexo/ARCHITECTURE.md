@@ -168,13 +168,15 @@ queued it runs after them. The goal starts as the person's words, sent as
 `[goal set] <words>`; the pinned text asks the model to call `goal_brief` once
 (`want`, `why`, `how`, `done`), and from then on that restatement
 (`Want: …\nWhy: …\nHow: …\nDone when: …`) is the goal, in the system prompt,
-the session and the `Goal` event; the person's words are not kept as the goal.
+the session and the `Goal` event; the person's words stay beside it (`original` on the
+session's goal line, with the progress: when it was set, its steps and stops) and come
+back with it through compaction, rewind, fork and resume.
 The model calls `goal_brief` again when the person changes what they want.
 A goal is in one of four states (`GoalState`): `active`, `waiting`,
 `paused(why)` or `done`; only an active goal continues. When a turn ends the
 loop settles it (`goal_settle`, before the inbox): an interrupt or a failed
 turn pauses it, the tool-round limit pauses it, a reply that declares
-`GOAL DONE` (last non-empty line, or anywhere in its last 200 characters) marks
+`GOAL DONE` (a line of its own among the last three non-empty lines) marks
 it done, and a reply that asks (`GOAL WAIT`, or a last line ending in `?`)
 makes it wait. A waiting goal goes back to active with the person's next
 message, whether it starts a turn or joins one; a paused or done goal stays
@@ -197,7 +199,8 @@ with those facts for the person. Nothing tells the model that what came before
 `[goal set]` is answered; it sees its own earlier replies (see the curator's
 closed steps). On Anthropic the cache breakpoint sits on the block before such a
 trailing request-only text. The goal state persists in the session and comes
-back on resume. Queued requests run before a continuation.
+back on resume; one found active was running when the session closed and nothing
+runs it now, so it comes back paused (`session reopened`). Queued requests run before a continuation.
 
 Permission rules: `tool` (any call of it), `tool(glob)` where the glob is
 matched against the call's target: the command for `bash` (prefix globs such

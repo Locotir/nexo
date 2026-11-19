@@ -253,6 +253,7 @@ async fn prepare_turn(
         }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
+        st.person_at = st.turn_start;
         st.request_in = false;
         st.goal_idle.changed = false;
         st.noticed.clear();
@@ -310,6 +311,25 @@ async fn prepare_turn(
                 format!("{}\n\n{text}", blocks.join("\n\n"))
             }
         };
+        // a goal that is not running is said on every request, so an old one is not taken for the work: the loop's own
+        // marks (a goal's start or continuation, the supervisor's resume) carry no such line. A request nexo starts by
+        // itself (a mail, a job's end) gets it in front, before the stop line goes in front of it; the person's
+        // message gets it in the layout of its notes below.
+        let goal_line = if typed.starts_with(GOAL_CONTINUE_MARK)
+            || typed.starts_with(GOAL_SET_MARK)
+            || typed.starts_with(SUPERVISOR_RESUME_MARK)
+        {
+            None
+        } else {
+            goal_state_line(&st)
+        };
+        let text = match goal_line.as_ref().filter(|_| !person) {
+            None => text,
+            Some(line) => {
+                added.insert(0, AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
+                format!("{line}\n\n{text}")
+            }
+        };
         // the person stopped the request before this one: the line that says so comes first, so the model reads
         // what happened before it reads anything this request brings; the goal's and the supervisor's marks are
         // read back as they are, so the request after them carries it
@@ -349,12 +369,10 @@ async fn prepare_turn(
                 format!("{text}\n\n{note}")
             }
         };
-        // a goal that is not running is said before the person's words, so an old one is not taken for the work
-        if person && !typed.starts_with(GOAL_CONTINUE_MARK) && !typed.starts_with(GOAL_SET_MARK) {
-            if let Some(line) = goal_state_line(&st) {
-                added.push(AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
-                first.push(line);
-            }
+        // for the person's message the goal line sits before their words, after the start note
+        if let Some(line) = goal_line.filter(|_| person) {
+            added.push(AddedPart::new(AddedKind::StartNote, "goal state", line.clone()));
+            first.push(line);
         }
         let clock = if person { person_clock_line(&st, &typed) } else { None };
         if let Some((Some(line), _)) = &clock {
@@ -604,6 +622,8 @@ pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bo
         st.inbox.push_front(item);
     }
     if consumed {
+        // what the model does from here answers the person: a check-in looks only at that
+        st.person_at = st.history.len();
         person_spoke(&mut st);
     }
     // the message shows in the transcript where it joined: nothing else to say
@@ -801,12 +821,18 @@ pub(super) async fn prepare(
     }
     // what rides on this request only is worked out first, so the view's budget leaves room for it
     let hidden = (!st.hidden.is_empty()).then(|| nexo_supervise::watch::hidden_block(&st.hidden));
-    // an active goal: the counts of its run and, once its work brings nothing new, the facts of that (see `goal_note`)
+    // a goal: its restatement and, while it is active, the counts of its run and, once its work brings nothing new,
+    // the facts of that (see `goal_note`)
     let goal_facts = goal_note(st);
     // the task list, as it stands now: with this request only, so a change in it leaves the cached prefix alone
     let todo = todo_note(st);
     let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).chain(&todo).collect::<Vec<_>>());
-    let view = view_now(st, extra).await;
+    let mut view = view_now(st, extra).await;
+    // the goal's words are in the system prompt: the goal's request carries the mark and not the words a second time
+    // (the history and the session file keep them)
+    if let Some(words) = goal_words(st) {
+        bare_goal_set(&mut view.messages, words);
+    }
     let (_, cfg, model) = st.target.get();
     let effort = setup::effective_effort(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
@@ -978,6 +1004,7 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     let (same, view_bytes) = st.last_sent.follow(&view.messages);
     let history_tokens = st.history.tokens();
     let last = std::mem::replace(&mut st.last_view, (history_tokens, view.tokens));
+    st.fit_tokens = None;
     st.est_sent = system_tokens + view.tokens;
     let (label, detail) = crate::context::describe_since(st.policy.as_ref(), history_tokens, view.tokens, Some(last));
     emit(

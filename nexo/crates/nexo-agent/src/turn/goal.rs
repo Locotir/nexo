@@ -26,8 +26,16 @@ pub(super) fn full_system(st: &State) -> String {
         base = format!("{base}\n\n{directive}");
     }
     // the task list is not here: a change in it would change the system text and with it the cached
-    // conversation after it. It rides on each request instead (`todo_note`).
-    with_goal(&base, st.goal.as_deref())
+    // conversation after it. It rides on each request instead (`todo_note`). The same goes for the goal's
+    // restatement (`goal_note`): the words here are the person's, fixed for the goal's life.
+    with_goal(&base, goal_words(st))
+}
+
+/// The person's own words of the goal set, as they typed them: the ones the system prompt pins and the request
+/// leaves out (`bare_goal_set`). A goal the agent restated (`goal_brief`) keeps them beside the restatement.
+pub(super) fn goal_words(st: &State) -> Option<&str> {
+    st.goal.as_ref()?;
+    st.goal_log.original.as_deref().or(st.goal.as_deref())
 }
 
 /// The task list as it stands, for the request about to be sent. It rides with that request only, so a change
@@ -47,17 +55,14 @@ pub(super) fn todo_note(st: &State) -> Option<String> {
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
 /// so pausing or resuming does not cost the cached prefix; what the state is reaches the model as a
 /// line in the person's next message (`goal_state_line`), not as a change here. The person's own words come with the
-/// request to restate them (`goal_brief`); once restated, the restatement is the goal.
+/// request to restate them (`goal_brief`); the restatement, once made, rides with each request (`goal_note`), so
+/// this text stays the same for the goal's life.
 pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
     let Some(g) = goal else { return system.to_string() };
-    let head = if g.starts_with(GOAL_BRIEF_HEAD) {
-        format!("Goal, as the person means it:\n{g}")
-    } else {
-        format!(
-            "Goal, in the person's words: {g}\nBefore working on it, call `goal_brief` once to restate it as they \
-             mean it: what they want, why, how they expect it done, and when it counts as done."
-        )
-    };
+    let head = format!(
+        "Goal, in the person's words: {g}\nBefore working on it, call `goal_brief` once to restate it as they \
+         mean it: what they want, why, how they expect it done, and when it counts as done."
+    );
     format!(
         "{system}\n\n{head}\nKeep working towards this goal across turns. `{GOAL_CONTINUE_MARK}` comes from the loop, \
          not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
@@ -75,14 +80,18 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
 pub(super) fn goal_state_line(st: &State) -> Option<String> {
     st.goal.as_ref()?;
     match &st.goal_state {
-        GoalState::Done => Some("[goal: met, not running; /goal resume reopens it]".to_string()),
-        GoalState::Paused(why) => Some(format!("[goal: paused ({why}), not running; /goal resume goes on]")),
+        GoalState::Done => Some(format!("{}; /goal resume reopens it]", nexo_core::agent::GOAL_MET_HEAD)),
+        // one line, so the readers find the whole of it (`goal_state_line_of`)
+        GoalState::Paused(why) => Some(format!(
+            "{}{}), not running; /goal resume goes on]",
+            nexo_core::agent::GOAL_PAUSED_HEAD,
+            nexo_core::agent::one_line(why, 300)
+        )),
         GoalState::Active | GoalState::Waiting => None,
     }
 }
 
-/// Whether a reply declares the goal met: its last non-empty line is `GOAL DONE`, or the words
-/// appear in its last `GOAL_TAIL` characters (models add a closing sentence after the line).
+/// Whether a reply declares the goal met: `GOAL DONE` opens one of its last few non-empty lines (`signal`).
 pub(super) fn goal_done(text: &str) -> bool {
     signal(text, "GOAL DONE")
 }
@@ -98,17 +107,40 @@ pub(super) fn goal_wait(text: &str) -> bool {
     !last.starts_with("```") && (bare.ends_with('?') || bare.ends_with('？'))
 }
 
-/// `word` (upper case) as the last non-empty line of a reply, or in its last `GOAL_TAIL` characters.
+/// How many of a reply's last non-empty lines may hold `GOAL DONE` or `GOAL WAIT` (a closing sentence or two
+/// can follow the line).
+const SIGNAL_LINES: usize = 3;
+
+/// Words that, right after `GOAL DONE` or `GOAL WAIT` and its separator, make the line a promise or a condition
+/// and not the signal (`GOAL DONE, cuando acabe la build`), in English and Spanish.
+const SIGNAL_HEDGES: [&str; 15] = [
+    "yet", "once", "when", "if", "will", "not", "until", "after", "aún", "todavía", "cuando", "si", "no", "hasta",
+    "después",
+];
+
+/// `word` (upper case) as the start of one of the last `SIGNAL_LINES` non-empty lines of a reply, read last first.
+/// The line may carry markdown or quote marks in front and a short note after (`GOAL DONE — all tests pass`,
+/// `GOAL DONE (42 green)`, `GOAL DONE ✅`), but the word must stand apart: not the start of a longer word, not
+/// followed by plain words, and not by a hedge (`GOAL DONE, cuando acabe la build`).
 pub(super) fn signal(text: &str, word: &str) -> bool {
-    let last_line = text
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(|l| l.trim_end_matches(['.', '!']).trim().eq_ignore_ascii_case(word))
-        .unwrap_or(false);
-    let tail: String = text.chars().rev().take(GOAL_TAIL).collect::<Vec<_>>().into_iter().rev().collect();
-    last_line || tail.to_ascii_uppercase().contains(word)
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(SIGNAL_LINES).any(|l| signal_line(l, word))
+}
+
+/// Whether `line` opens with `word` as a signal; see [`signal`].
+fn signal_line(line: &str, word: &str) -> bool {
+    let line = line.trim_start_matches(['*', '_', '`', '"', '\'', '>', '#', '-', ' ']);
+    // `get` is None inside a multi-byte character, and `word` is ASCII
+    let Some(head) = line.get(..word.len()) else { return false };
+    if !head.eq_ignore_ascii_case(word) {
+        return false;
+    }
+    let rest = line[word.len()..].trim_start();
+    // plain words after the word (or a longer word, `GOAL DONEX`) are no signal: a separator or the end follows
+    if rest.chars().next().is_some_and(char::is_alphanumeric) {
+        return false;
+    }
+    let next: String = rest.chars().skip_while(|c| !c.is_alphanumeric()).take_while(|c| c.is_alphanumeric()).collect();
+    !SIGNAL_HEDGES.contains(&next.to_lowercase().as_str())
 }
 
 /// Pins (or clears) the goal; gives back the goal set, for the caller to start the work.
@@ -131,6 +163,9 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     st.goal_cost0 = st.cost;
     st.goal_idle = GoalIdle::default();
     st.goal_counts = GoalCounts::new(st.cost);
+    // a new goal owes nothing to an earlier one; one set during a turn asks for its own request (see `on_set_goal`)
+    st.goal_unread = false;
+    st.goal_pending = None;
     if let Err(e) = st.session.record_goal(text.as_deref()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -155,24 +190,71 @@ pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
     }
     st.goal = Some(brief.clone());
     st.goal_log.brief = Some(brief.clone());
-    if let Err(e) = st.session.record_goal(Some(&brief)) {
+    // the text only: a goal met or paused stays so on disk, and the person's words stay beside the restatement
+    let progress = st.goal_log.progress();
+    if let Err(e) = st.session.record_goal_text(&brief, progress) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
-    st.system = full_system(&st);
     emit_goal(&st);
     ToolOutput::ok("The goal now reads as restated. Go on with the work.")
 }
 
-/// The log of a goal found on disk: the person's words are not saved with the session, so a restated goal is
-/// shown as the restatement, and one never restated as the words themselves; the time it was set is not known.
-pub(super) fn resumed_log(goal: Option<&str>) -> GoalLog {
+/// Why a goal found active on disk is paused when its session opens: nothing runs for it until the person says so.
+const REOPENED: &str = "session reopened";
+
+/// The log of a goal found on disk. The person's own words are the ones saved with it; a file saved before they were
+/// kept has them as the goal itself, or, when the goal is a restatement, as the words of the last `[goal set]`
+/// message in `history`. A restated goal is the `brief`. The progress saved with the goal comes back as it was.
+fn resumed_log(goal: Option<&str>, original: Option<&str>, progress: GoalProgress, history: &[Message]) -> GoalLog {
     let mut log = GoalLog::default();
-    match goal {
-        Some(g) if g.starts_with(GOAL_BRIEF_HEAD) => log.brief = Some(g.to_string()),
-        Some(g) => log.original = Some(g.to_string()),
-        None => {}
+    if let Some(g) = goal {
+        let restated = g.starts_with(GOAL_BRIEF_HEAD);
+        log.original = match original {
+            Some(o) => Some(o.to_string()),
+            None if restated => goal_set_words(history),
+            None => Some(g.to_string()),
+        };
+        if restated {
+            log.brief = Some(g.to_string());
+        }
+    }
+    log.with_progress(progress)
+}
+
+/// The words of the latest `[goal set]` request in `history`: what follows the mark, up to the start note and the
+/// files nexo put after them (`goal_request`). None when no such request is left (a compaction removes it).
+fn goal_set_words(history: &[Message]) -> Option<String> {
+    history.iter().rev().filter(|m| m.role == Role::User).find_map(|m| {
+        let text = m.text();
+        let rest = nexo_core::agent::goal_request(&text)?.strip_prefix(GOAL_SET_MARK)?;
+        Some(rest.trim().to_string()).filter(|w| !w.is_empty())
+    })
+}
+
+/// The goal of a session just opened, for the loop that now holds it. One found active was running when the session
+/// closed and nothing runs it now, so it is paused (and saved so) instead of shown as working; one waiting, met or
+/// paused stays as it was. Read-only opens (lists, search) never come here, so they write nothing.
+pub(super) fn reopened_goal(session: &mut Session, events: &EventTx) -> GoalLog {
+    let (goal, original) = (session.goal(), session.goal_original());
+    let mut log = resumed_log(goal, original, session.goal_progress().clone(), session.messages());
+    // words found again in the history of an older file: the session keeps them, so a compaction does not lose them
+    if let Some(words) = &log.original {
+        session.adopt_goal_original(words);
+    }
+    if session.goal().is_some() && session.goal_state().is_active() {
+        remember_stop(&mut log.stops, REOPENED);
+        if let Err(e) = session.record_goal_state(GoalState::Paused(REOPENED.into()), log.progress()) {
+            notice(events, Level::Warn, format!("cannot save the goal: {e}"));
+        }
     }
     log
+}
+
+/// Adds a stop to a goal's list, which keeps the last [`GOAL_STOPS`].
+fn remember_stop(stops: &mut Vec<GoalStop>, why: &str) {
+    stops.push(GoalStop { at_ms: nexo_core::mailbox::now_ms(), why: why.to_string() });
+    let extra = stops.len().saturating_sub(GOAL_STOPS);
+    stops.drain(..extra);
 }
 
 /// What the goal panel shows now: the log, the spend since the goal was set and the latest reply's first line.
@@ -304,17 +386,40 @@ fn written_paths(args: &Value) -> Vec<String> {
     one.into_iter().chain(many).collect()
 }
 
-/// What rides on each request of an active goal, never in the saved conversation: the counts of its run so far
-/// (see [`GoalCounts::line`]) and, once its work brings nothing new, the facts of that (see [`GoalIdle::facts`]).
+/// What rides on each request of a goal, never in the saved conversation: the goal as the agent restated it
+/// (`goal_brief`), whatever the goal's state, as first line; then, only while the goal is active, the counts of its
+/// run so far (see [`GoalCounts::line`]) and, once its work brings nothing new, the facts of that (see
+/// [`GoalIdle::facts`]). The restatement rides here and not in the system prompt, so making it leaves the cached
+/// prefix alone.
 pub(super) fn goal_note(st: &State) -> Option<String> {
-    if st.goal.is_none() || !st.goal_state.is_active() {
-        return None;
-    }
-    let counts = st.goal_counts.line(st.goal_round, st.cost);
-    // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
-    let idle = st.goal_idle.facts().map(|f| format!("[nexo, not the person: goal work: {f}]"));
-    let lines: Vec<String> = counts.into_iter().chain(idle).collect();
+    st.goal.as_ref()?;
+    let brief = st.goal_log.brief.as_ref().map(|b| format!("Goal, as the person means it:\n{b}"));
+    let (counts, idle) = if st.goal_state.is_active() {
+        // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
+        let idle = st.goal_idle.facts().map(|f| format!("[nexo, not the person: goal work: {f}]"));
+        (st.goal_counts.line(st.goal_round, st.cost), idle)
+    } else {
+        (None, None)
+    };
+    let lines: Vec<String> = brief.into_iter().chain(counts).chain(idle).collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// Takes the person's words out of the goal request of `messages`: in each user text whose goal request is
+/// `[goal set] <words>`, that request becomes `[goal set]`, and what nexo put around it (notes before, the start note
+/// and files after) stays. The system prompt holds the words for the goal's life (`goal_words`), so a request carries
+/// them once. Only the request changes: the history, the session file, compaction and the curator keep the words. An
+/// earlier goal's request has other words and stays whole.
+pub(super) fn bare_goal_set(messages: &mut [Message], words: &str) {
+    let whole = format!("{GOAL_SET_MARK} {words}");
+    for part in messages.iter_mut().filter(|m| m.role == Role::User).flat_map(|m| m.content.iter_mut()) {
+        let Part::Text { text } = part else { continue };
+        let found = nexo_core::agent::goal_mark_at(text.as_str()).zip(nexo_core::agent::goal_request(text.as_str()));
+        if let Some((at, request)) = found.filter(|(_, request)| *request == whole) {
+            let end = at + request.len();
+            text.replace_range(at..end, GOAL_SET_MARK);
+        }
+    }
 }
 
 /// Tells the interface the goal, its round and its state.
@@ -344,12 +449,9 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
     }
     // every pause is remembered with its time and reason (Esc, a guard, a limit, an error), for the goal panel
     if let GoalState::Paused(why) = &to {
-        let stops = &mut st.goal_log.stops;
-        stops.push(GoalStop { at_ms: nexo_core::mailbox::now_ms(), why: why.clone() });
-        let extra = stops.len().saturating_sub(GOAL_STOPS);
-        stops.drain(..extra);
+        remember_stop(&mut st.goal_log.stops, why);
     }
-    if let Err(e) = st.session.record_goal_state(to) {
+    if let Err(e) = st.session.record_goal_state(to, st.goal_log.progress()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
     notice(&st.events, Level::Info, say);
@@ -373,9 +475,18 @@ pub(super) fn person_spoke(st: &mut State) {
 /// What a turn's end does to an active goal, before anything else runs: met, waiting for the
 /// person, or paused because the turn did not end on its own (Esc, an error or spend limit, the
 /// tool-round limit). A goal that is not active stays as it is.
-pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
+///
+/// A goal set or resumed while the turn ran is not judged by that turn's reply, which was written before the model
+/// knew of it. Enter on a queued message (`run_queue`) stops the turn to run that message at once: the goal goes on
+/// after it, so it is not paused.
+pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd, run_queue: bool) {
     let mut st = state.lock().await;
+    let unread = std::mem::take(&mut st.goal_unread);
+    let typed = std::mem::take(&mut st.goal_typed);
     if st.goal.is_none() || !st.goal_state.is_active() {
+        return;
+    }
+    if reason == TurnEnd::Interrupted && run_queue && !st.inbox.is_empty() {
         return;
     }
     let paused = |why: &str| GoalState::Paused(why.to_string());
@@ -394,6 +505,10 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
             ),
         },
         TurnEnd::Done => {
+            // a goal whose own request has not gone yet is not what any reply answers
+            if unread || st.goal_pending.is_some() {
+                return;
+            }
             let from = st.turn_start.min(st.history.len());
             let last = st.history[from..]
                 .iter()
@@ -405,6 +520,14 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
                 (GoalState::Done, "goal met · /goal resume reopens it, /goal off clears it".to_string())
             } else if goal_wait(&last) {
                 (GoalState::Waiting, "goal waiting for your answer: your next message resumes it".to_string())
+            } else if (typed || st.person_at > st.turn_start) && answered_in_words(&st) {
+                // the person wrote during the round (their words joined it, or ran right after it) and the model
+                // answered them in words (a stop, a question): a continuation would talk over them, so the goal
+                // waits for their next message
+                (
+                    GoalState::Waiting,
+                    "goal waiting: you wrote during the round · your next message resumes it".to_string(),
+                )
             } else {
                 return;
             }
@@ -415,12 +538,16 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
 
 /// After a turn that ended on its own, with nothing queued: what to submit to keep working towards
 /// an active goal, while rounds are left. A continuation round that called no tool did nothing
-/// new, so the goal pauses there instead of asking again; the first continuation always runs.
-pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
+/// new, so the goal pauses there instead of asking again; the first continuation always runs. A goal set during a
+/// turn has not been asked yet: its own request comes first, with its files, and is no continuation round.
+pub(super) async fn goal_follow_up(state: &Shared) -> Option<(String, Vec<Attachment>)> {
     let mut st = state.lock().await;
     st.goal.as_ref()?;
     if !st.goal_state.is_active() {
         return None;
+    }
+    if st.goal_pending.is_some() {
+        return Some(goal_request_now(&mut st));
     }
     let max = goal_rounds();
     // a round counts by its progress, not by its calls: a round that only got back what it had did nothing new
@@ -442,7 +569,19 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
     }
     st.goal_round += 1;
     emit_goal(&st);
-    Some(GOAL_CONTINUE.to_string())
+    Some((GOAL_CONTINUE.to_string(), Vec::new()))
+}
+
+/// The request that goes to the model for the goal now: the `[goal set]` request of a goal set during a turn, with the
+/// files the person attached to it (taken: it is asked once), else a continuation.
+pub(super) fn goal_request_now(st: &mut State) -> (String, Vec<Attachment>) {
+    match st.goal_pending.take() {
+        Some(attachments) => {
+            let words = goal_words(st).unwrap_or_default();
+            (format!("{GOAL_SET_MARK} {words}"), attachments)
+        }
+        None => (GOAL_CONTINUE.to_string(), Vec::new()),
+    }
 }
 
 /// Steps without progress after which the goal's work stops and the goal pauses, with the facts for the person:
@@ -600,21 +739,44 @@ pub(super) async fn pause_goal(state: &Shared, running: bool) {
     goal_to(&mut st, GoalState::Paused("paused by you".into()), say.into());
 }
 
-/// `/goal resume`: the goal is active again with all its rounds. True when nothing runs, so the
-/// caller starts a continuation now; a turn in progress is followed by one when it ends.
-pub(super) async fn resume_goal(state: &Shared, running: bool) -> bool {
+/// What `/goal resume` leaves to do (see [`resume_goal`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Resumed {
+    /// Nothing runs and nothing is kept: the goal's request starts now.
+    Start,
+    /// Nothing runs but messages are kept (Esc left them): they start now, and the goal goes on after them.
+    Queued,
+    /// A turn is running: the goal goes on when it ends.
+    Later,
+    /// No goal is set.
+    No,
+}
+
+/// `/goal resume`: the goal is active again with all its rounds. Nothing running starts the goal's request now, or
+/// the messages Esc kept (the goal goes on after them); a turn in progress is followed by a continuation when it ends,
+/// and its own reply says nothing about the goal (see [`goal_settle`]).
+pub(super) async fn resume_goal(state: &Shared, running: bool) -> Resumed {
     let mut st = state.lock().await;
     if st.goal.is_none() {
         notice(&st.events, Level::Info, "no goal set: /goal <text> sets one");
-        return false;
+        return Resumed::No;
     }
-    // the stop is lifted only when a continuation starts now
-    let start = !running && st.inbox.is_empty();
-    if start {
+    let was_active = st.goal_state.is_active();
+    let resumed = if running {
+        // a turn of a goal that was running is the goal's own: only a goal that was not running had no say in it
+        st.goal_unread |= !was_active;
+        Resumed::Later
+    } else {
+        // the stop is lifted only when something starts now
         st.held = false;
-    }
+        if st.inbox.is_empty() {
+            Resumed::Start
+        } else {
+            Resumed::Queued
+        }
+    };
     goal_to(&mut st, GoalState::Active, "goal resumed".into());
-    start
+    resumed
 }
 
 #[cfg(test)]
@@ -655,9 +817,48 @@ mod goal_tests {
     fn goal_done_reads_the_last_line() {
         assert!(goal_done("all fixed\n\nGOAL DONE\n"));
         assert!(goal_done("done.\ngoal done."));
-        assert!(goal_done("all set\nGOAL DONE. Thanks for the task!"), "the words in the tail count");
+        assert!(goal_done("all set\nGOAL DONE. Thanks for the task!"), "words after the line count");
         assert!(!goal_done(&format!("GOAL DONE is what I will say later\n{}", "still working. ".repeat(20))));
         assert!(!goal_done(""));
+    }
+
+    #[test]
+    fn a_goal_word_inside_a_sentence_is_no_signal() {
+        assert!(!goal_done("Not GOAL DONE yet: sections 3 and 4 remain."));
+        assert!(!goal_done("I'll write GOAL DONE once saved"));
+        assert!(!goal_done("GOAL DONE once the build passes"));
+        assert!(!goal_done("GOAL DONE, cuando acabe la build"));
+        assert!(!goal_done("Aún no: GOAL DONE cuando termine"));
+        assert!(!goal_wait("No GOAL WAIT needed, carrying on."));
+    }
+
+    #[test]
+    fn a_goal_word_far_from_the_end_is_no_signal() {
+        assert!(!goal_done("GOAL DONE\na\nb\nc\nd"));
+        assert!(!goal_wait("GOAL WAIT\na\nb\n\nc\nd"));
+        // blank lines do not count as lines
+        assert!(goal_done("GOAL DONE\n\n\na\n\nb"));
+    }
+
+    #[test]
+    fn a_goal_word_on_its_own_line_still_counts() {
+        assert!(goal_done("all set\nGOAL DONE. Thanks for the task!"));
+        assert!(goal_done("**GOAL DONE**"));
+        assert!(goal_done("done\nGOAL DONE\n\nLet me know if you need more."));
+        assert!(goal_wait("GOAL WAIT: which port should I use"));
+    }
+
+    #[test]
+    fn a_goal_word_with_a_dash_bracket_or_emoji_still_counts() {
+        assert!(goal_done("GOAL DONE — all tests pass"));
+        assert!(goal_done("GOAL DONE - summary"));
+        assert!(goal_done("GOAL DONE (42 green)"));
+        assert!(goal_done("GOAL DONE ✅"));
+        assert!(!goal_done("GOAL DONE once the build passes"));
+        assert!(!goal_done("GOAL DONE — once the build passes"));
+        assert!(!goal_done("GOAL DONE, aún no"));
+        assert!(!goal_done("GOAL DONEX"));
+        assert!(!goal_done("GOAL DONE2"));
     }
 
     #[test]
@@ -716,25 +917,83 @@ mod goal_tests {
         let s = with_goal("base", Some("ship it"));
         assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("single line GOAL DONE"));
         assert!(s.contains("single line GOAL WAIT") && s.contains("call `goal_brief` once"));
-        // once restated, the restatement is the goal and nothing asks for it again
-        let s = with_goal("base", Some("Want: a\nWhy: b\nHow: c\nDone when: d"));
-        assert!(
-            s.starts_with("base\n\nGoal, as the person means it:\nWant: a\n") && !s.contains("call `goal_brief` once")
-        );
         assert!(s.contains("`[goal: continue]` comes from the loop"));
     }
 
     #[test]
+    fn the_goals_request_carries_the_mark_and_not_the_words() {
+        let mut m = vec![Message::user("[goal set] make the tests pass")];
+        bare_goal_set(&mut m, "make the tests pass");
+        assert_eq!(m[0].text(), "[goal set]");
+        // what nexo put around the request stays: a note before it, the start note and a file after it
+        let around = "[background jobs ended]\njob 1 done\n\n[goal set] make the tests pass\n\n\
+                      [project at the start of this request]\nGit: clean\n\n\
+                      @notes.md (attached in full, as it is now):\n```md\nmake the tests pass\n```";
+        let mut m = vec![Message::user(around)];
+        bare_goal_set(&mut m, "make the tests pass");
+        let want = around.replacen("[goal set] make the tests pass", "[goal set]", 1);
+        assert_eq!(m[0].text(), want);
+        assert!(m[0].text().contains("```md\nmake the tests pass\n```"), "a file's own words are not the goal's");
+        // words of several paragraphs go whole
+        let mut m = vec![Message::user("[goal set] fix x\n\nand then y\n\n[project at the start of this request]\nc")];
+        bare_goal_set(&mut m, "fix x\n\nand then y");
+        assert_eq!(m[0].text(), "[goal set]\n\n[project at the start of this request]\nc");
+    }
+
+    #[test]
+    fn an_older_goals_request_and_other_messages_keep_their_words() {
+        let mut m = vec![
+            Message::user("[goal set] first goal"),
+            Message::assistant("[goal set] first goal"),
+            Message::user("please [goal set] first goal"),
+            Message::user("[goal: continue]"),
+            Message::user("[goal set] second goal"),
+        ];
+        bare_goal_set(&mut m, "second goal");
+        let texts: Vec<String> = m.iter().map(Message::text).collect();
+        let want = [
+            "[goal set] first goal",
+            "[goal set] first goal",
+            "please [goal set] first goal",
+            "[goal: continue]",
+            "[goal set]",
+        ];
+        assert_eq!(texts, want);
+        // the words of the goal must be the whole request: a request that only starts with them is another
+        let mut m = vec![Message::user("[goal set] fix the parser and the lexer")];
+        bare_goal_set(&mut m, "fix the parser");
+        assert_eq!(m[0].text(), "[goal set] fix the parser and the lexer");
+    }
+
+    #[test]
     fn a_goal_from_disk_shows_as_the_words_it_was_saved_in() {
-        assert_eq!(resumed_log(None), GoalLog::default());
-        let own = resumed_log(Some("tests green pls"));
+        let log = |goal, original, history: &[Message]| resumed_log(goal, original, GoalProgress::default(), history);
+        let want = "Want: green\nWhy: x\nHow: y\nDone when: z";
+        assert_eq!(log(None, None, &[]), GoalLog::default());
+        let own = log(Some("tests green pls"), None, &[]);
         assert_eq!((own.original.as_deref(), own.brief), (Some("tests green pls"), None));
-        let restated = resumed_log(Some("Want: green\nWhy: x\nHow: y\nDone when: z"));
-        assert_eq!(
-            (restated.original, restated.brief.as_deref()),
-            (None, Some("Want: green\nWhy: x\nHow: y\nDone when: z"))
-        );
-        assert_eq!(restated.started_ms, 0, "when it was set is not known");
+        // a restated goal: the person's words are the ones saved beside it
+        let saved = log(Some(want), Some("tests green pls"), &[]);
+        assert_eq!((saved.original.as_deref(), saved.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        // a file saved before the words were kept: the last `[goal set]` request holds them, without its start note
+        let note = crate::session::START_NOTE_HEAD;
+        let asked = |w: &str| Message::user(format!("{GOAL_SET_MARK} {w}\n\n{note}\nGit: 2 files"));
+        let history =
+            [asked("older goal"), Message::user("thanks"), asked("tests green pls"), Message::user(GOAL_CONTINUE_MARK)];
+        let old = log(Some(want), None, &history);
+        assert_eq!((old.original.as_deref(), old.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        // nor the files after them, with no start note between
+        let filed = format!("{GOAL_SET_MARK} sum it up\n\n@notes.md {}\n```md\nx\n```", nexo_core::agent::ATTACHED);
+        assert_eq!(log(Some(want), None, &[Message::user(filed)]).original.as_deref(), Some("sum it up"));
+        // nothing left of that request (a compaction took it): the restatement is all there is
+        let gone = log(Some(want), None, &[Message::user("thanks")]);
+        assert_eq!((gone.original, gone.brief.as_deref()), (None, Some(want)));
+        // the progress saved with the goal comes back
+        let stop = GoalStop { at_ms: 9, why: "Esc".into() };
+        let p = GoalProgress { started_ms: 5, steps: 3, stops: vec![stop] };
+        let back = resumed_log(Some("tests green pls"), None, p.clone(), &[]);
+        assert_eq!((back.started_ms, back.steps, back.progress()), (5, 3, p));
+        assert_eq!(own.started_ms, 0, "a file without progress does not know when it was set");
     }
 
     #[test]

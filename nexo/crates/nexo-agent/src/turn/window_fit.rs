@@ -58,7 +58,9 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     // a reply with room for an edit call: an eighth of the window, never under the floor nor over what was asked
     let useful = wanted.min(limits::REPLY_FLOOR.max(u32::try_from(window / 8).unwrap_or(u32::MAX)));
     if used + u64::from(useful) > window && !st.policy.fits_window() {
-        if let Some(messages) = curator_view(st, req, notes, extra, ratio).await {
+        if let Some((messages, tokens)) = curator_view(st, req, notes, extra, ratio).await {
+            // the usage line tells the request was cut here, and how much of the history it leaves out
+            st.fit_tokens = Some(tokens);
             st.reads.note_view(&messages);
             st.last_sent.follow(&messages);
             st.est_sent = fixed_tokens(&st.system, &req.tools) + nexo_core::message::estimate_tokens(&messages);
@@ -77,15 +79,16 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     }
 }
 
-/// `req`'s messages as the curator would send them under the window, with the room `req`'s reply asked for, or
-/// `None` when the curator fails or its view does not hold the person's newest message whole.
+/// `req`'s messages as the curator would send them under the window, with the room `req`'s reply asked for, and
+/// the tokens the curator counts them at, or `None` when the curator fails or its view does not hold the person's
+/// newest message whole.
 async fn curator_view(
     st: &mut State,
     req: &ModelRequest,
     notes: Option<&str>,
     extra: u64,
     ratio: Option<f64>,
-) -> Option<Vec<Message>> {
+) -> Option<(Vec<Message>, u64)> {
     let window = st.limits.context_window?;
     let reply = req.max_tokens;
     let names: Vec<String> = req.tools.iter().map(|s| s.name.clone()).collect();
@@ -109,6 +112,7 @@ async fn curator_view(
             return None;
         }
     };
+    let tokens = view.tokens;
     let (mut messages, _) = nexo_core::message::well_formed(view.messages);
     // the person's newest words always go as they wrote them
     if let Some(i) = nexo_core::message::latest_person(&st.history) {
@@ -119,7 +123,7 @@ async fn curator_view(
     if let Some(n) = notes {
         attach_hidden(&mut messages, n.to_string());
     }
-    Some(messages)
+    Some((messages, tokens))
 }
 
 /// The notice of a request that goes over the window: its parts in tokens against the window, and its largest part.

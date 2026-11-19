@@ -65,6 +65,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.cost = st.session.cost();
     st.policy.reset();
     st.view_failed = false;
+    st.fit_tokens = None;
     st.last_prompt = None;
     st.pauses = Default::default();
     st.last_call = None;
@@ -79,19 +80,22 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
-    st.held = false;
+    // `held` stays: only the person's own words lift a stop (a rewind, a /clear or a new session is not a message)
     st.invalidate_directed();
     st.epoch += 1;
     flow::release_slot(st);
     st.turn_start = 0;
+    st.person_at = 0;
     st.turns = 0;
+    st.goal_log = reopened_goal(&mut st.session, &st.events);
     st.goal = st.session.goal().map(String::from);
     st.goal_state = st.session.goal_state().clone();
     st.goal_round = 0;
-    st.goal_log = resumed_log(st.goal.as_deref());
     st.goal_cost0 = st.cost;
     st.goal_idle = GoalIdle::default();
     st.goal_counts = GoalCounts::new(st.cost);
+    st.goal_unread = false;
+    st.goal_pending = None;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
@@ -413,6 +417,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     session_opened(&st);
     st.policy.reset();
     st.view_failed = false;
+    st.fit_tokens = None;
     st.last_prompt = None;
     st.last_call = None;
     st.last_request = None;
@@ -426,10 +431,10 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
-    st.held = false;
     st.invalidate_directed();
     st.epoch += 1;
     st.turn_start = 0;
+    st.person_at = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
@@ -550,6 +555,7 @@ pub(super) async fn clear(state: &Shared) {
     st.checkpoints.clear();
     st.policy.reset();
     st.view_failed = false;
+    st.fit_tokens = None;
     st.last_prompt = None;
     st.pauses = Default::default();
     st.last_call = None;
@@ -564,7 +570,6 @@ pub(super) async fn clear(state: &Shared) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
-    st.held = false;
     st.invalidate_directed();
     st.epoch += 1;
     flow::release_slot(&st);
@@ -574,11 +579,14 @@ pub(super) async fn clear(state: &Shared) {
     st.usage = Usage::default();
     st.cost = 0.0;
     st.turn_start = 0;
+    st.person_at = 0;
     st.turns = 0;
     let had_goal = st.goal.take().is_some();
     st.goal_round = 0;
     st.goal_log = GoalLog::default();
     st.goal_state = GoalState::Active;
+    st.goal_unread = false;
+    st.goal_pending = None;
     if had_goal {
         emit_goal(&st);
     }

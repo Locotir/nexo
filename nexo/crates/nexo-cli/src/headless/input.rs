@@ -34,24 +34,74 @@ pub fn with_images(first: Option<String>, images: &[PathBuf]) -> Option<String> 
     })
 }
 /// The stdin of a run: what was piped in. With `first_byte`, a stdin that gives nothing in that time
-/// (a caller that left it open) is given up on, and one line on stderr says so.
-pub(super) fn read_stdin(first_byte: Option<Duration>) -> String {
+/// (a caller that left it open) is given up on, one line on stderr says so, and the `Late` that comes
+/// back still holds what may arrive afterwards.
+pub(super) fn read_stdin(first_byte: Option<Duration>) -> (String, Option<Late>) {
     if std::io::stdin().is_terminal() {
-        return String::new();
+        return (String::new(), None);
     }
-    let (text, gave_up) = read_piped(std::io::stdin(), first_byte);
-    if gave_up {
+    let (text, late) = read_piped(std::io::stdin(), first_byte);
+    if late.is_some() {
         eprintln!(
-            "nexo: nothing came on stdin in {} s; going on with the -p prompt alone (pipe the input, or add < /dev/null)",
+            "nexo: nothing came on stdin in {} s; going on with the -p prompt alone (input that comes after the request goes out is not used; pipe the input, or add < /dev/null)",
             first_byte.map_or(0, |d| d.as_secs())
         );
     }
-    text
+    (text, late)
+}
+
+/// Set when input came on stdin after the request went out without it: the run then exits 2.
+static LATE_STDIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `code`, or the usage exit when the run finished with 0 but stdin came late and was not used.
+pub(super) fn late_exit(code: i32) -> i32 {
+    if code == 0 && LATE_STDIN.load(std::sync::atomic::Ordering::SeqCst) {
+        EXIT_USAGE
+    } else {
+        code
+    }
+}
+
+/// The rest of a stdin that gave nothing in time: the reader thread stays alive and keeps its chunks here.
+pub(super) struct Late {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+}
+
+impl Late {
+    /// If something came in the meantime, all of it up to EOF; otherwise the handle back, to watch.
+    pub(super) fn catch_up(self) -> Result<String, Late> {
+        let Ok(first) = self.rx.try_recv() else {
+            return Err(self);
+        };
+        let mut bytes = first;
+        while let Ok(chunk) = self.rx.recv() {
+            bytes.extend(chunk);
+        }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Watches on a thread: the first input that is more than blank space is named once on stderr, not
+    /// used, and makes the run exit 2 (see `late_exit`); the rest is read and dropped.
+    pub(super) fn watch(self) {
+        std::thread::spawn(move || {
+            while let Ok(chunk) = self.rx.recv() {
+                if chunk.iter().all(u8::is_ascii_whitespace) {
+                    continue;
+                }
+                eprintln!(
+                    "nexo: input came on stdin after the request went out without it; it was not used (save it to a file first, or add < /dev/null)"
+                );
+                LATE_STDIN.store(true, std::sync::atomic::Ordering::SeqCst);
+                while self.rx.recv().is_ok() {}
+            }
+        });
+    }
 }
 
 /// Reads `r` to EOF on a thread. With `first_byte`, waits at most that long for the first chunk and
-/// then reads on without a limit. Returns the text and whether it gave up (the thread is left behind).
-pub(super) fn read_piped<R: Read + Send + 'static>(mut r: R, first_byte: Option<Duration>) -> (String, bool) {
+/// then reads on without a limit. If nothing came in time, the text is empty and the `Late` holds the
+/// thread's channel, so the thread keeps running and its chunks are kept.
+pub(super) fn read_piped<R: Read + Send + 'static>(mut r: R, first_byte: Option<Duration>) -> (String, Option<Late>) {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -70,14 +120,14 @@ pub(super) fn read_piped<R: Read + Send + 'static>(mut r: R, first_byte: Option<
     if let Some(wait) = first_byte {
         match rx.recv_timeout(wait) {
             Ok(chunk) => bytes.extend(chunk),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return (String::new(), true),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return (String::new(), false),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return (String::new(), Some(Late { rx })),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return (String::new(), None),
         }
     }
     while let Ok(chunk) = rx.recv() {
         bytes.extend(chunk);
     }
-    (String::from_utf8_lossy(&bytes).into_owned(), false)
+    (String::from_utf8_lossy(&bytes).into_owned(), None)
 }
 
 /// The text of one user message of the input stream. `Ok(None)`: a line that is not a user message.
@@ -234,11 +284,17 @@ mod piped_tests {
         }
     }
 
+    /// The text and whether the wait was given up on, the way the tests below compare them.
+    fn piped<R: Read + Send + 'static>(r: R, wait: Option<Duration>) -> (String, bool) {
+        let (text, late) = read_piped(r, wait);
+        (text, late.is_some())
+    }
+
     #[test]
     fn a_stdin_nobody_writes_to_is_given_up_on() {
         let (_keep, rx) = mpsc::channel();
         let t = Instant::now();
-        let (text, gave_up) = read_piped(Never(rx), Some(Duration::from_millis(100)));
+        let (text, gave_up) = piped(Never(rx), Some(Duration::from_millis(100)));
         assert!(text.is_empty() && gave_up);
         assert!(t.elapsed() < Duration::from_secs(2));
     }
@@ -246,20 +302,39 @@ mod piped_tests {
     #[test]
     fn the_wait_covers_only_the_first_byte() {
         let r = Slow(vec![(50, "abc"), (300, "def")]);
-        assert_eq!(read_piped(r, Some(Duration::from_millis(100))), ("abcdef".to_string(), false));
+        assert_eq!(piped(r, Some(Duration::from_millis(100))), ("abcdef".to_string(), false));
     }
 
     #[test]
     fn without_a_wait_slow_text_is_read_in_full() {
         let r = Slow(vec![(300, "late text")]);
-        assert_eq!(read_piped(r, None), ("late text".to_string(), false));
+        assert_eq!(piped(r, None), ("late text".to_string(), false));
     }
 
     #[test]
     fn an_empty_stdin_ends_at_once() {
         let t = Instant::now();
-        assert_eq!(read_piped(std::io::empty(), Some(Duration::from_secs(3))), (String::new(), false));
+        assert_eq!(piped(std::io::empty(), Some(Duration::from_secs(3))), (String::new(), false));
         assert!(t.elapsed() < Duration::from_secs(1));
-        assert_eq!(read_piped(std::io::empty(), None), (String::new(), false));
+        assert_eq!(piped(std::io::empty(), None), (String::new(), false));
+    }
+
+    #[test]
+    fn late_input_is_kept_and_caught_up_before_the_request() {
+        let r = Slow(vec![(300, "logs "), (100, "more")]);
+        let (text, late) = read_piped(r, Some(Duration::from_millis(100)));
+        assert_eq!(text, "");
+        let late = late.expect("gave up, so the handle comes back");
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(late.catch_up().ok(), Some("logs more".to_string()));
+    }
+
+    #[test]
+    fn nothing_late_gives_the_handle_back() {
+        let (_keep, rx) = mpsc::channel();
+        let (_, late) = read_piped(Never(rx), Some(Duration::from_millis(100)));
+        let t = Instant::now();
+        assert!(late.expect("gave up").catch_up().is_err());
+        assert!(t.elapsed() < Duration::from_millis(50), "it must not wait");
     }
 }

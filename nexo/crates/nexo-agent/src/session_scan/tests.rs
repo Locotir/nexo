@@ -667,8 +667,13 @@ fn a_compacted_session_keeps_its_calls_and_its_split_by_model() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(dir.path(), Path::new("/p"), "mock", "big").unwrap();
     s.append(&nexo_core::message::Message::user("a")).unwrap();
-    let main =
-        |model: &str| UsageMeta { model: Some(model.into()), kind: Some(UsageKind::Main), held: None, fallback: None };
+    let main = |model: &str| UsageMeta {
+        model: Some(model.into()),
+        kind: Some(UsageKind::Main),
+        held: None,
+        fallback: None,
+        fitted: None,
+    };
     let one = nexo_core::stream::Usage { input: 100, output: 10, ..Default::default() };
     s.record_usage_meta(one, 0.5, main("big")).unwrap();
     s.record_usage_meta(one, 0.5, main("big")).unwrap();

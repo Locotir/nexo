@@ -75,7 +75,7 @@ fn a_todo_result_fills_the_list_and_the_goal_follows_the_agent() {
     assert_eq!(a.todo, items);
     assert_eq!(crate::render::blocks::todo_counts(&a.todo), (1, 2));
     a.run_command(Command::Goal(GoalArg::Set("pass the tests".into())));
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: Some(t) }) if t == "pass the tests"));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: Some(t), .. }) if t == "pass the tests"));
     a.handle_agent(AgentEvent::Goal {
         text: Some("pass the tests".into()),
         round: 0,
@@ -109,7 +109,7 @@ fn a_todo_result_fills_the_list_and_the_goal_follows_the_agent() {
     a.handle_agent(goal(GoalState::Done));
     assert_eq!(a.status.as_ref().map(|s| s.0.clone()), Some("goal met ✓".into()));
     a.run_command(Command::Goal(GoalArg::Clear));
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: None })));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: None, .. })));
     a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 3, state: Default::default() });
     assert!(a.goal.is_none());
     a.handle_agent(AgentEvent::HistoryCleared);

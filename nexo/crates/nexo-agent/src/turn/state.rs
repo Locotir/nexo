@@ -18,6 +18,9 @@ pub(super) struct State {
     pub(super) last_view: (u64, u64),
     /// The last view failed and the whole history went with that call (the usage line says `fallback`).
     pub(super) view_failed: bool,
+    /// The tokens of the view the curator cut this request to in `window_fit.rs`, when it did (the usage line says
+    /// `fitted`); cleared with each new view.
+    pub(super) fit_tokens: Option<u64>,
     /// The messages of the last request, to tell which part of the next one repeats it (the cache).
     pub(super) last_sent: crate::history::Sent,
     /// The last request the conversation sent, which a prompt suggestion repeats (the provider's cache) with one message more.
@@ -44,6 +47,9 @@ pub(super) struct State {
     pub(super) last_person_at: Option<std::time::SystemTime>,
     /// Where the request in progress starts in `history`.
     pub(super) turn_start: usize,
+    /// Where the last message of the person that joined the request in progress ends in `history` (0: none did, or
+    /// a compaction took it): what the model did after their words is what a check-in may look at.
+    pub(super) person_at: usize,
     /// The request in progress is in `history`: a turn stopped before that has no request to say was stopped.
     pub(super) request_in: bool,
     pub(super) turns: u32,
@@ -60,6 +66,15 @@ pub(super) struct State {
     pub(super) goal_idle: GoalIdle,
     /// What the goal's work counted since it was set or resumed (see `GoalCounts`).
     pub(super) goal_counts: GoalCounts,
+    /// The goal was set or resumed while a turn ran: that turn's reply says nothing about it, so its end does not
+    /// judge the goal (see `goal_settle`).
+    pub(super) goal_unread: bool,
+    /// The request in progress is one the person typed while an active goal's round ran, which that round's tool
+    /// rounds did not take in and which ran by itself after it: their words came during the round (see `goal_settle`).
+    pub(super) goal_typed: bool,
+    /// A goal set while a turn ran, whose `[goal set]` request has not gone yet: the files the person attached to it,
+    /// which go with that request (see `goal_request_now`).
+    pub(super) goal_pending: Option<Vec<Attachment>>,
     /// What files looked like before the agent wrote them: `(history length at the time, file,
     /// its bytes then or None when it did not exist)`, so a rewind can put them back.
     pub(super) checkpoints: Vec<(usize, PathBuf, Option<Vec<u8>>)>,

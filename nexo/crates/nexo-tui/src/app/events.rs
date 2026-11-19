@@ -276,8 +276,8 @@ impl App {
                 self.send(AgentCommand::Submit { text: n.text, attachments: vec![] });
                 self.flash("your message was sent to this session");
             } else {
+                // the agent tells the person when the check-in runs: it may find nothing to ask
                 self.send(AgentCommand::CheckIn { evidence: n.text });
-                self.flash("supervisor: checking in with this session");
             }
         }
     }
@@ -866,10 +866,11 @@ impl App {
                                     });
                                 }
                                 Piece::Goal(words) => {
-                                    let text = format!(
-                                        "◎ goal set: {}",
-                                        nexo_core::agent::goal_shown(&words.unwrap_or_default())
-                                    );
+                                    let words = words.unwrap_or_default();
+                                    // the goal window holds the words of the goal it has now, not an earlier one's
+                                    let now = self.goal_log.original.as_deref().map(str::trim);
+                                    let shown = nexo_core::agent::goal_shown(&words, now == Some(words.trim()));
+                                    let text = format!("◎ goal set: {shown}");
                                     self.push(Block::Notice { level: Level::Info, text });
                                 }
                                 Piece::Started(_) => {}
