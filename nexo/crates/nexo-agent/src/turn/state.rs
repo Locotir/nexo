@@ -47,6 +47,9 @@ pub(super) struct State {
     pub(super) last_person_at: Option<std::time::SystemTime>,
     /// Where the request in progress starts in `history`.
     pub(super) turn_start: usize,
+    /// Where the last message of the person that joined the request in progress ends in `history` (0: none did, or
+    /// a compaction took it): what the model did after their words is what a check-in may look at.
+    pub(super) person_at: usize,
     /// The request in progress is in `history`: a turn stopped before that has no request to say was stopped.
     pub(super) request_in: bool,
     pub(super) turns: u32,

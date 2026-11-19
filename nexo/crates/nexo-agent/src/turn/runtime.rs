@@ -147,6 +147,7 @@ impl Runtime {
             live: None,
             last_person_at: resumed_at,
             turn_start: 0,
+            person_at: 0,
             request_in: false,
             turns: 0,
             goal_log,

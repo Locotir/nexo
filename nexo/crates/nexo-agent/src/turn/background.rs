@@ -38,7 +38,8 @@ pub(super) fn spawn_job_review(state: &Shared, jobs: Jobs) {
                     a.retries,
                     crate::review::request_of(&st.history),
                     st.events.clone(),
-                    over_budget(&st),
+                    // a stop of the person holds the reviews too: a job that runs on is judged when they write
+                    over_budget(&st) || st.held,
                 )
             };
             drop(state);
@@ -190,6 +191,13 @@ fn goal_round(turn: &[Message]) -> bool {
     turn.first().is_some_and(|m| m.role == Role::User && nexo_core::agent::goal_mark_at(&m.text()).is_some())
 }
 
+/// The model did no tool call since the person's latest words joined the request (or since it began): what it
+/// said answers them, and there is no work of its own to check.
+fn answered_in_words(st: &State) -> bool {
+    let from = st.turn_start.max(st.person_at).min(st.history.len());
+    !st.history[from..].iter().any(|m| m.role == Role::Assistant && m.tool_calls().next().is_some())
+}
+
 /// A stopped session whose work looks unfinished (or that the supervisor asks to look at itself): one background
 /// request to its own model, with the evidence, no tools offered to act on and no trace in the conversation.
 /// CONTINUE resumes the session through `tx`; DONE, or an answer that is not clear, changes nothing. At most one
@@ -204,10 +212,10 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         }
         // a request with no tool call of its own (the person said stop, asked a question) has nothing unfinished
         // to check, whatever the supervisor says about older work
-        let own = st.turn_start.min(st.history.len());
-        if !st.history[own..].iter().any(|m| m.role == Role::Assistant && m.tool_calls().next().is_some()) {
+        if answered_in_words(&st) {
             return;
         }
+        let own = st.turn_start.min(st.history.len());
         // a goal owns the turn that just ended when it is active, paused or waiting, or when the turn was one of its
         // rounds: the goal's own loop decides what comes next. A met goal stays set until `/goal off`, so a later
         // request of the person in that session is still checked
@@ -317,7 +325,7 @@ pub(super) fn spawn_suggest(state: &Shared) {
         let (req, cfg, client, retries, turns, events) = {
             let st = state.lock().await;
             // off in the configuration (the merged one, the managed policy included): nothing is asked, whoever asks
-            if !st.config.ui.suggest || over_budget(&st) {
+            if !st.config.ui.suggest || over_budget(&st) || st.held {
                 return;
             }
             let Some(last) = st.last_request.as_ref() else { return };

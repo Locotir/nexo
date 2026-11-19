@@ -123,7 +123,7 @@ async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
     // what is left came after the turn's last model call
     let held = rt.state.lock().await.held;
     // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
-    let waits = reason == TurnEnd::Interrupted && !run_queue;
+    let waits = (reason == TurnEnd::Interrupted || held) && !run_queue;
     if waits {
         let st = rt.state.lock().await;
         if !st.inbox.is_empty() {

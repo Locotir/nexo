@@ -253,6 +253,7 @@ async fn prepare_turn(
         }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
+        st.person_at = st.turn_start;
         st.request_in = false;
         st.goal_idle.changed = false;
         st.noticed.clear();
@@ -621,6 +622,8 @@ pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bo
         st.inbox.push_front(item);
     }
     if consumed {
+        // what the model does from here answers the person: a check-in looks only at that
+        st.person_at = st.history.len();
         person_spoke(&mut st);
     }
     // the message shows in the transcript where it joined: nothing else to say

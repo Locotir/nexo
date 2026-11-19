@@ -79,11 +79,12 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
-    st.held = false;
+    // `held` stays: only the person's own words lift a stop (a rewind, a /clear or a new session is not a message)
     st.invalidate_directed();
     st.epoch += 1;
     flow::release_slot(st);
     st.turn_start = 0;
+    st.person_at = 0;
     st.turns = 0;
     st.goal_log = reopened_goal(&mut st.session, &st.events);
     st.goal = st.session.goal().map(String::from);
@@ -429,10 +430,10 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
-    st.held = false;
     st.invalidate_directed();
     st.epoch += 1;
     st.turn_start = 0;
+    st.person_at = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
@@ -568,7 +569,6 @@ pub(super) async fn clear(state: &Shared) {
     st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
-    st.held = false;
     st.invalidate_directed();
     st.epoch += 1;
     flow::release_slot(&st);
@@ -578,6 +578,7 @@ pub(super) async fn clear(state: &Shared) {
     st.usage = Usage::default();
     st.cost = 0.0;
     st.turn_start = 0;
+    st.person_at = 0;
     st.turns = 0;
     let had_goal = st.goal.take().is_some();
     st.goal_round = 0;
