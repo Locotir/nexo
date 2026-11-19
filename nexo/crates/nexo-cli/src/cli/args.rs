@@ -119,7 +119,9 @@ fn theme_arg(s: &str) -> Result<String, String> {
     }
 }
 
+// Parsed once per run; boxing `ApiArgs` would break the by-value pattern `Cmd::Api(ApiArgs { what })` in api_tool.rs.
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Cmd {
     /// List the providers in use and where each one's key comes from.
     Providers {

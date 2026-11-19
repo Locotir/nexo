@@ -45,8 +45,8 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
       - run: cargo build --workspace
       - run: cargo test --workspace --no-fail-fast
-      # a failed test step must not hide clippy or the Intel check, so these two run after it either way
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # a failed test step must not hide clippy or the Intel check, so these two run after it either way; --keep-going so one failing target does not hide the lints of the others
+      - run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
         if: success() || failure()
       - name: the Intel Mac build still compiles (the release builds it natively)
         if: (success() || failure()) && matrix.os == 'macos-latest'
