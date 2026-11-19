@@ -617,19 +617,26 @@ async fn a_sub_agent_that_fails_for_good_hands_back_what_it_did() {
     r.stop().await;
 }
 
-#[tokio::test]
-async fn a_sub_agent_reply_cut_at_the_output_limit_is_a_failure_not_a_report() {
+/// A reply that broke off at the output limit after `said` (nothing: it was still reasoning).
+fn cut_reply(said: &str) -> Reply {
+    let mut evs = vec![StreamEvent::Start { response_id: None, model: None }];
+    if !said.is_empty() {
+        evs.push(StreamEvent::TextDelta(said.into()));
+    }
+    evs.push(StreamEvent::Finish(FinishReason::Length));
+    evs.push(StreamEvent::Done);
+    Reply::Events(evs)
+}
+
+/// What the main agent got back for a `task` whose sub-agent is answered by `sub`, and every request sent.
+async fn task_result(sub: Vec<Reply>, cfg: Config) -> (ToolOutput, Vec<ModelRequest>) {
     let d = test_tmpdir().unwrap();
-    let client = Scripted::new(vec![
-        Reply::Events(call("t1", "task", json!({"description": "map it", "prompt": "where is x kept?"}))),
-        Reply::Events(vec![
-            StreamEvent::TextDelta("x is kept in a.rs and the".into()),
-            StreamEvent::Finish(FinishReason::Length),
-            StreamEvent::Done,
-        ]),
-        Reply::Events(text("noted")),
-    ]);
-    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let mut script =
+        vec![Reply::Events(call("t1", "task", json!({"description": "map it", "prompt": "where is x kept?"})))];
+    script.extend(sub);
+    script.push(Reply::Events(text("noted")));
+    let client = Scripted::new(script);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "where is x?".into(), attachments: vec![] });
     let evs = r.turn().await;
@@ -640,7 +647,185 @@ async fn a_sub_agent_reply_cut_at_the_output_limit_is_a_failure_not_a_report() {
             _ => None,
         })
         .unwrap();
-    assert!(done.is_error && done.content.contains("cut off"), "{done:?}");
+    r.stop().await;
+    (done, client.requests())
+}
+
+#[tokio::test]
+async fn a_sub_agent_reply_cut_twice_at_the_output_limit_is_a_report_with_a_note() {
+    let (out, reqs) = task_result(
+        vec![cut_reply("x is kept in a.rs and the"), cut_reply("x is kept in a.rs and the loader in b.rs, which")],
+        config(PermissionMode::Ask),
+    )
+    .await;
+    assert!(!out.is_error, "{out:?}");
+    // the second text, whole, is the report; the first one is not
+    assert!(out.content.starts_with("x is kept in a.rs and the loader in b.rs, which"), "{}", out.content);
+    assert!(
+        out.content.contains(&format!("cut at the output limit of {} tokens", reqs[2].max_tokens)),
+        "{}",
+        out.content
+    );
+    assert_eq!(reqs.len(), 4, "the main agent's call, two asks of the sub-agent, the main answer");
+}
+
+#[tokio::test]
+async fn a_cut_reply_is_asked_again_with_twice_the_room() {
+    let (out, reqs) = task_result(
+        vec![cut_reply("x is kept in"), Reply::Events(text("x is kept in a.rs"))],
+        config(PermissionMode::Ask),
+    )
+    .await;
+    // the first ask is the size the main agent asks for, not a fixed one of the sub-agent's
+    assert_eq!(reqs[1].max_tokens, nexo_core::config::DEFAULT_MAX_TOKENS);
+    assert_eq!(reqs[2].max_tokens, 2 * reqs[1].max_tokens);
+    // the same conversation, asked again: nothing ran in between
+    assert_eq!(reqs[1].messages.len(), reqs[2].messages.len());
+    // a whole second reply stands alone
+    assert!(!out.is_error && out.content == "x is kept in a.rs", "{out:?}");
+}
+
+#[tokio::test]
+async fn a_cut_reply_with_no_room_to_grow_is_kept_without_a_second_ask() {
+    let mut cfg = config(PermissionMode::Ask);
+    // the model's largest reply is its first size: asking for twice that would get the same
+    cfg.providers.get_mut("mock").unwrap().max_output.insert("m1".into(), 8_000);
+    let (out, reqs) = task_result(vec![cut_reply("x is kept in a.rs and the")], cfg).await;
+    assert_eq!(reqs.len(), 3, "the main agent's call, one ask of the sub-agent, the main answer");
+    assert_eq!(reqs[1].max_tokens, 8_000);
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.content.starts_with("x is kept in a.rs and the"), "{}", out.content);
+    assert!(out.content.contains("cut at the output limit of 8000 tokens"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_cut_reply_whose_retry_fails_keeps_the_first_text() {
+    let (out, reqs) = task_result(
+        vec![
+            cut_reply("x is kept in a.rs and the"),
+            Reply::Err(ProviderError::new(ErrorKind::BadRequest, "the prompt is too long")),
+        ],
+        config(PermissionMode::Ask),
+    )
+    .await;
+    assert_eq!(reqs.len(), 4);
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.content.starts_with("x is kept in a.rs and the"), "{}", out.content);
+    assert!(out.content.contains("asking again with more room failed"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_cut_reply_with_no_text_says_it_was_cut_while_reasoning() {
+    let (out, reqs) = task_result(vec![cut_reply(""), cut_reply("")], config(PermissionMode::Ask)).await;
+    assert_eq!(reqs.len(), 4, "asked again once");
+    assert!(out.is_error, "{out:?}");
+    assert!(out.content.contains("while it was still reasoning"), "{}", out.content);
+    assert!(!out.content.contains("answered nothing"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_sub_agent_asks_for_the_reply_size_the_person_set() {
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_tokens = 3_000;
+    let (out, reqs) = task_result(vec![Reply::Events(text("x is kept in a.rs"))], cfg).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!((reqs[0].max_tokens, reqs[1].max_tokens), (3_000, 3_000));
+}
+
+#[tokio::test]
+async fn a_sub_agent_stopped_by_the_budget_says_what_it_did() {
+    let d = test_tmpdir().unwrap();
+    // its first round costs $0.0012 at m1's prices, past the $0.001 limit before a second one is asked
+    let round = vec![
+        StreamEvent::ToolCallStart { id: "s1".into(), name: "write".into() },
+        StreamEvent::ToolCallEnd { id: "s1".into(), name: "write".into(), args: json!({"path": "x.txt"}) },
+        StreamEvent::Usage(Usage { input: 1000, output: 100, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ];
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "write x.txt"}))),
+        Reply::Events(round),
+        Reply::Events(text("wrote x.txt")),
+        Reply::Events(text("noted")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.max_cost = Some(0.001);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let out = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(out.is_error && out.content.contains("spend limit reached"), "{out:?}");
+    // what it had done is handed back with the reason, as for any other failure of a round
+    assert!(
+        out.content.contains("in round 2/") && out.content.contains("- wrote x.txt\n"),
+        "{}",
+        out.content
+    );
+    assert_eq!(client.requests().len(), 2, "the second round was never asked");
+    r.stop().await;
+}
+
+/// [`start_with`] for a session whose main model is `model` of `provider`.
+async fn start_on(client: Arc<Scripted>, cfg: Config, provider: &str, model: &str, cwd: &std::path::Path) -> Running {
+    data_dir();
+    let (handle, ends) = channels();
+    let setup = AgentSetup {
+        config: cfg,
+        cwd: cwd.to_path_buf(),
+        provider: provider.into(),
+        model: model.into(),
+        tools: tools(),
+        client,
+        resume: None,
+        gate: None,
+        mail: None,
+        mcp: None,
+        model_pinned: false,
+    };
+    let task = tokio::spawn(nexo_agent::run(ends, setup));
+    Running { handle, task }
+}
+
+#[tokio::test]
+async fn a_sub_agent_on_another_model_of_the_main_provider_is_billed_at_preset_prices() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"prompt": "look", "model": "deepseek-chat"}))),
+        Reply::Events(text("found it")),
+        Reply::Events(text("done")),
+    ]);
+    // `deepseek-chat` is priced by the preset alone; the main model has no price anywhere
+    let mut cfg = config(PermissionMode::Ask);
+    let mut p = ProviderConfig::new("mock", "http://deepseek", None);
+    p.models = vec!["ds-unpriced".into(), "deepseek-chat".into()];
+    cfg.providers.insert("deepseek".into(), p);
+    let price = nexo_providers::presets()["deepseek"].pricing_for("deepseek-chat").expect("the preset prices it");
+    let want = price.cost(&Usage { input: 1000, output: 100, cache_read: 2000, ..Default::default() });
+    assert!(want > 0.0);
+    let mut r = start_on(client.clone(), cfg, "deepseek", "ds-unpriced", d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look with deepseek-chat".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let reqs = client.requests();
+    assert_eq!(
+        (reqs[0].model.as_str(), reqs[1].model.as_str(), reqs[2].model.as_str()),
+        ("ds-unpriced", "deepseek-chat", "ds-unpriced")
+    );
+    let cost = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::Usage { cost_usd, .. } = e { Some(*cost_usd) } else { None })
+        .next_back()
+        .unwrap();
+    assert!((cost - want).abs() < 1e-12, "{cost} against {want}");
     r.stop().await;
 }
 

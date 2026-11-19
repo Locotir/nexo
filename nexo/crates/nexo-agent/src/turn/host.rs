@@ -6,7 +6,7 @@ use super::*;
 /// attempt that answered, without the attempts the client retried, and empty for a side call (a
 /// sub-agent, the reader, a compaction) whose request is not the conversation's.
 pub(super) fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage, kind: UsageKind) {
-    add_usage_priced(st, events, model, usage, call, None, kind);
+    add_usage_priced(st, events, model, usage, call, None, false, kind);
 }
 
 /// What a model call cost at `p`. A long-prompt tier is chosen by the size of one request, so the attempt that
@@ -28,20 +28,22 @@ fn billed(p: &Pricing, usage: &Usage, call: &Usage) -> f64 {
     p.cost(call) + p.cost(&retried)
 }
 
-/// [`add_usage`] with the prices of another provider (a sub-agent sent there); none: the main agent's.
+/// [`add_usage`] with the prices a sub-agent was reserved at (`pricing`; none: the main agent's). `other`: it was
+/// sent to another provider than the main agent's, which the audit log says.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn add_usage_priced(
     st: &mut State,
     events: &EventTx,
     model: &str,
     usage: Usage,
     call: Usage,
-    other: Option<Pricing>,
+    pricing: Option<Pricing>,
+    other: bool,
     kind: UsageKind,
 ) -> f64 {
     st.usage += usage;
     let (prov, _, _) = st.target.get();
-    let sent_to_other = other.is_some();
-    let pricing = other.or_else(|| main_pricing(st, model));
+    let pricing = pricing.or_else(|| main_pricing(st, model));
     let cost = pricing.map(|p| billed(&p, &usage, &call)).unwrap_or(0.0);
     // A limit counts dollars, and a model with no price adds none: say so once instead of letting the limit sit
     // there never firing. A price of 0 is a price (a free or local model), so it does not count as missing.
@@ -73,7 +75,7 @@ pub(super) fn add_usage_priced(
             UsageKind::Review => "review",
             UsageKind::Sum => "sum",
         };
-        let provider = if sent_to_other { "other" } else { prov.as_str() };
+        let provider = if other { "other" } else { prov.as_str() };
         audit.request(RequestRecord {
             session: st.session.id(),
             cwd: &st.cwd,
@@ -183,11 +185,11 @@ impl crate::subagent::Host for StateHost {
         )
     }
 
-    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) -> f64 {
+    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>, other: bool) -> f64 {
         match self.state.upgrade() {
             Some(state) => {
                 let mut st = state.lock().await;
-                add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing, UsageKind::Sub)
+                add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing, other, UsageKind::Sub)
             }
             None => 0.0,
         }

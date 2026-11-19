@@ -4,15 +4,22 @@ use super::*;
 pub(super) const ROUND_RETRIES: u32 = 3;
 /// The longest wait before asking again, whatever the server said.
 pub(super) const MAX_WAIT: Duration = Duration::from_secs(60);
-/// The tokens a sub-agent asks for in a reply; its model's own limits (a quarter of the window, its largest
-/// reply) can lower it, as they do the main agent's.
-pub(super) const REPLY_TOKENS: u32 = 4096;
 
 /// Why a request of a round gave no reply.
 pub(super) enum Failure {
     /// The person stopped the sub-agent.
     Stopped,
     Model(ProviderError),
+    /// The reply broke off at the output limit with no call under way: what it wrote (maybe nothing, when it was
+    /// still reasoning), which `rounds` asks again with more room or keeps as the report.
+    Cut(String),
+}
+
+/// The line a report cut at the output limit ends with: `n` is the size asked for, `why` what stopped the ask
+/// again with more room, when there was one.
+fn cut_line(n: u32, why: Option<&str>) -> String {
+    let again = why.map_or_else(String::new, |w| format!("; asking again with more room failed: {w}"));
+    format!("[the report was cut at the output limit of {n} tokens; the rest was not written{again}]")
 }
 
 /// The least tokens of its task a sub-agent is given, however small its window.
@@ -139,6 +146,8 @@ pub(super) struct Run {
     pub(super) sub: Option<SubRun>,
     /// The session's context policy, run over this sub-agent's own messages (none: everything is sent).
     pub(super) context: Option<nexo_core::config::ContextConfig>,
+    /// The reply size it asks for (`[agent] max_tokens`), under its model's limits.
+    pub(super) max_tokens: u32,
 }
 
 impl Run {
@@ -197,7 +206,7 @@ impl Run {
             sub.target(name, &model);
         }
         let limits = crate::limits::resolve(name, &cfg, &model, None);
-        let pricing = if other { limits.pricing } else { None };
+        // one set of prices for the reserve and for the bill, so what is held back is what is spent
         let prices = limits.pricing.or_else(|| cfg.pricing_for(&model));
         if self.provider.is_some() || self.model.is_some() {
             say(format!("on {name}/{model}"));
@@ -235,8 +244,9 @@ impl Run {
         }
         let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
         let system_tokens = crate::turn::fixed_tokens(&system, &specs);
-        // the reply it asks for, under its model's own limits; the task is cut to what its window leaves
-        let reply = limits.max_tokens(REPLY_TOKENS);
+        // the reply it asks for: the main agent's size, under its model's own limits; the task is cut to what its
+        // window leaves
+        let reply = limits.reply_room(self.max_tokens, 1);
         let brief_tokens = brief.map_or(0, |b| b.tokens as u64);
         let (task, note) = fit_task(prompt, limits.context_window, reply, system_tokens, brief_tokens);
         if let Some(n) = &note {
@@ -315,20 +325,35 @@ impl Run {
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away
             let mut tries = 0u32;
+            // a reply cut at the output limit with no call: its text and the size it was cut at, kept while the
+            // same round is asked again with more room
+            let mut first_cut: Option<(String, u32)> = None;
+            // the report this round ends with was cut: the size asked for, and why it was not asked again
+            let mut cut_at: Option<(u32, Option<String>)> = None;
             let (text, calls) = loop {
                 // the spend limits hold for a sub-agent as for the main agent; the hold lasts until the call is billed
                 let hold = match &self.host {
-                    Some(h) => {
-                        let (cap, hold) = h.reserve(&model, prices, sent_tokens, req.max_tokens).await?;
-                        req.max_tokens = cap;
-                        Some(hold)
-                    }
+                    Some(h) => match h.reserve(&model, prices, sent_tokens, req.max_tokens).await {
+                        Ok((cap, hold)) => {
+                            req.max_tokens = cap;
+                            Some(hold)
+                        }
+                        // what it did stays with the failure, as for any other one of a round; a cut reply that
+                        // could not be asked again is the report instead
+                        Err(why) => match first_cut.take() {
+                            Some((kept, n)) => {
+                                cut_at = Some((n, Some(why)));
+                                break (kept, Vec::new());
+                            }
+                            None => return Err(format!("{why}{}", progress(&messages, round, rounds))),
+                        },
+                    },
                     None => None,
                 };
                 let (got, usage) = self.ask(&cfg, &req, ctx).await;
                 let mut cost = 0.0;
                 if let (Some(h), false) = (&self.host, usage.is_empty()) {
-                    cost = h.spent(&model, usage, pricing).await;
+                    cost = h.spent(&model, usage, prices, other).await;
                 }
                 drop(hold);
                 if let Some(s) = &self.sub {
@@ -346,6 +371,35 @@ impl Run {
                 match got {
                     Ok(reply) => break reply,
                     Err(Failure::Stopped) => return Err(stopped(&messages)),
+                    Err(Failure::Cut(t)) => {
+                        let n = req.max_tokens;
+                        match first_cut.take() {
+                            // cut again: the longer try is the report, or the first one when it wrote nothing
+                            Some((first, n1)) => {
+                                let (kept, at) = if t.trim().is_empty() && !first.trim().is_empty() {
+                                    (first, n1)
+                                } else {
+                                    (t, n)
+                                };
+                                cut_at = Some((at, None));
+                                break (kept, Vec::new());
+                            }
+                            None => {
+                                // twice the room, and no more than the window leaves after what is sent
+                                let fits = limits.context_window.map_or(u32::MAX, |w| {
+                                    u32::try_from(u64::from(w).saturating_sub(sent_tokens)).unwrap_or(u32::MAX)
+                                });
+                                let room = limits.reply_room(self.max_tokens, 2).min(fits);
+                                // (a reserve that lowered the first ask would lower this one too)
+                                if room <= n || n < reply {
+                                    cut_at = Some((n, None));
+                                    break (t, Vec::new());
+                                }
+                                first_cut = Some((t, n));
+                                req.max_tokens = room;
+                            }
+                        }
+                    }
                     Err(Failure::Model(e)) if e.is_retryable() && tries < ROUND_RETRIES => {
                         tries += 1;
                         let wait = e.retry_after.unwrap_or(Duration::from_secs(2u64 << tries)).min(MAX_WAIT);
@@ -355,13 +409,20 @@ impl Run {
                             _ = ctx.cancel.cancelled() => return Err(stopped(&messages)),
                         }
                     }
-                    Err(Failure::Model(e)) => {
-                        return Err(format!(
-                            "the sub-agent's model call failed: {}{}",
-                            e.human(),
-                            progress(&messages, round, rounds)
-                        ));
-                    }
+                    Err(Failure::Model(e)) => match first_cut.take() {
+                        // the ask for more room failed: the text it had is the report, and the note says why
+                        Some((kept, n)) => {
+                            cut_at = Some((n, Some(e.human())));
+                            break (kept, Vec::new());
+                        }
+                        None => {
+                            return Err(format!(
+                                "the sub-agent's model call failed: {}{}",
+                                e.human(),
+                                progress(&messages, round, rounds)
+                            ));
+                        }
+                    },
                 }
             };
             if !text.is_empty() {
@@ -379,7 +440,15 @@ impl Run {
             if calls.is_empty() || last {
                 let report = text.trim();
                 return if report.is_empty() {
-                    Err(if last {
+                    Err(if let Some((n, why)) = &cut_at {
+                        let again = why.as_ref().map(|w| format!(" (asking again with more room failed: {w})"));
+                        format!(
+                            "the sub-agent's reply was cut at the output limit of {n} tokens while it was still \
+                             reasoning; it wrote no report{}{}",
+                            again.unwrap_or_default(),
+                            progress(&messages, usize::MAX, 0)
+                        )
+                    } else if last {
                         format!(
                             "the sub-agent took {rounds} rounds without an answer; ask it something narrower{}",
                             progress(&messages, usize::MAX, 0)
@@ -391,6 +460,11 @@ impl Run {
                     let said = brief::compact_report(report, brief.map(|b| b.text.as_str()), brief::REPORT_TOKENS);
                     let did = ledger::Effects::of(&messages).block();
                     let said = if did.is_empty() { said } else { format!("{said}\n\n{did}") };
+                    // a report that broke off says so, with the size it was cut at
+                    let said = match &cut_at {
+                        Some((n, why)) => format!("{said}\n\n{}", cut_line(*n, why.as_deref())),
+                        None => said,
+                    };
                     // A report forced by the last round looks like a finished one; the parent is told, with the
                     // live round count, so it can tell what was settled from what was cut off.
                     Ok(if last { format!("{said}\n\n{}", cut_note(rounds)) } else { said })
@@ -520,10 +594,16 @@ impl Run {
                 Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) => usage += u,
                 Some(StreamEvent::Error(e)) => return (Err(Failure::Model(e)), usage),
                 Some(StreamEvent::Done) | None => {
-                    // a call cut off is dropped by the parser: what is left would pass as the report
-                    if cut && (calls.is_empty() || open > 0) {
-                        let e = ProviderError::new(ErrorKind::Parse, "the reply was cut off at the output limit");
-                        return (Err(Failure::Model(e)), usage);
+                    if cut {
+                        // a call cut off is dropped by the parser: what is left would pass as the report
+                        if open > 0 {
+                            let e = ProviderError::new(ErrorKind::Parse, "the reply was cut off at the output limit");
+                            return (Err(Failure::Model(e)), usage);
+                        }
+                        // text and no call: the round decides between asking again and keeping it as the report
+                        if calls.is_empty() {
+                            return (Err(Failure::Cut(text)), usage);
+                        }
                     }
                     return (Ok((text, calls)), usage);
                 }

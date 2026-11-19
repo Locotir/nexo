@@ -179,7 +179,8 @@ async fn a_sub_agent_on_a_4k_and_a_6k_window_asks_a_quarter_for_its_reply_and_ke
 async fn a_sub_agent_on_a_large_window_gets_its_whole_task_and_the_usual_reply() {
     let _g = config_lock().lock().await;
     let (req, task, result) = sub_agent_on_a_small_model(200_000, None).await;
-    assert_eq!(req.max_tokens, 4_096);
+    // the size the main agent asks for, as the person set it (the default here)
+    assert_eq!(req.max_tokens, nexo_core::config::DEFAULT_MAX_TOKENS);
     let first = req.messages[0].text();
     assert!(first.contains(&task) && !first.contains("task cut to"), "the task is whole");
     assert!(!result.contains("task cut to"), "{result}");

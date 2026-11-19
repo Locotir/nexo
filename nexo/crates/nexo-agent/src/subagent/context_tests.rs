@@ -99,7 +99,8 @@ async fn a_long_sub_agent_run_never_sends_more_than_the_window() {
     assert!(!out.is_error, "{out:?}");
     let seen = client.seen.lock().unwrap();
     assert_eq!(seen.len(), 17, "every round ran");
-    let room = u64::from(window - run::REPLY_TOKENS);
+    // the window less the reply the run asked for (the main agent's size, held to a quarter of this small window)
+    let room = u64::from(window - seen[0].max_tokens);
     let sent: Vec<u64> =
         seen.iter().map(|r| crate::turn::fixed_tokens(&r.system, &r.tools) + estimate_tokens(&r.messages)).collect();
     let plain = crate::turn::fixed_tokens(&seen[16].system, &seen[16].tools) + 16 * 2_500;
