@@ -185,7 +185,9 @@ fn the_curator_spec_can_be_given_for_one_run() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(all.contains("rule=lru"), "{all}");
-    let out = nexo_with(d.path(), &cfg, &["-p", "hi", "--json"]);
+    // a fresh project: the first run's session file sits in this folder and a small project is shown to the model in full
+    let d2 = tempfile::tempdir().unwrap();
+    let out = nexo_with(d2.path(), &cfg, &["-p", "hi", "--json"]);
     let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!all.contains("rule=lru"), "without the flag the file's spec holds: {all}");
 }
