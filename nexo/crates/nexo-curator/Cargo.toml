@@ -15,7 +15,7 @@ fancy-regex = { workspace = true }
 rustc-hash = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["rc"] }
-bincode = { workspace = true }
+postcard = { workspace = true }
 
 [dev-dependencies]
 # tests, examples and clippy --all-targets build with the simulator, so the default gate covers it; a

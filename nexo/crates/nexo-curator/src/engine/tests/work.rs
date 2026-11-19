@@ -4,7 +4,6 @@
 use super::*;
 use crate::work::{take, Work, K};
 use crate::Curator;
-use bincode::Options;
 
 #[path = "../../../tests/support/perf_gen.rs"]
 mod perf_gen;

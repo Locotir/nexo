@@ -49,7 +49,6 @@ mod tests {
     use super::*;
     use crate::curator::Curator;
     use crate::snapshot::options;
-    use bincode::Options;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
 

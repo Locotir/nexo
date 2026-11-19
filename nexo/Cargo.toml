@@ -65,8 +65,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros", "local-offset"] }
 base64 = "0.23"
 sha2 = "0.10"
-# the curator's saved state next to a session (pure Rust; already in the tree through syntect)
-bincode = "1.3"
+# the curator's saved state next to a session. postcard, not bincode: 1.3 is unmaintained
+# (RUSTSEC-2025-0141) and deny.toml fails a direct dependency. no heapless: that feature is unsound.
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 bytes = "1"
 
 # errors and logs

@@ -3,7 +3,7 @@
 //! (another engine, a history that is not the one the state covers, a cut or damaged file) rebuilds the state from
 //! the history as before, and an older build never reads the file.
 //!
-//! The file is a fixed header and then the engine, in `bincode`. The header holds the engine's format (a hash of
+//! The file is a fixed header and then the engine, in `postcard`. The header holds the engine's format (a hash of
 //! its source, `build.rs`), the settings, how many messages and views the state covers, a hash of those messages,
 //! and a hash of the rest of the file. The history itself is not in it: the engine's copy of the history is taken
 //! from the history again, with the messages it shortened when they came as they became.
@@ -11,12 +11,12 @@
 use std::hash::Hasher;
 use std::sync::{LazyLock, Mutex};
 
-use bincode::Options;
 use indexmap::IndexMap;
 use rustc_hash::FxHasher;
 
 use crate::sorted::{FxHashMap, FxHashSet};
-use serde::{Deserialize, Deserializer};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::curator::Curator;
@@ -127,8 +127,46 @@ fn payload_hash(b: &[u8]) -> u64 {
     h.finish()
 }
 
-pub(crate) fn options() -> impl Options {
-    bincode::DefaultOptions::new()
+/// The binary codec of a saved engine. A file this build cannot read is rebuilt from the history.
+pub(crate) struct Codec;
+
+pub(crate) fn options() -> Codec {
+    Codec
+}
+
+impl Codec {
+    pub(crate) fn serialize<T: Serialize + ?Sized>(self, value: &T) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_stdvec(value)
+    }
+
+    /// Tests round-trip one value. A saved file goes through `with_limit` and the header's length.
+    #[cfg(test)]
+    pub(crate) fn deserialize<T: DeserializeOwned>(self, bytes: &[u8]) -> Result<T, postcard::Error> {
+        self.with_limit(u64::MAX).deserialize(bytes)
+    }
+
+    /// Refuse a payload longer than `limit` bytes before reading it. The header's length is that limit.
+    pub(crate) fn with_limit(self, limit: u64) -> Limited {
+        Limited { limit }
+    }
+}
+
+pub(crate) struct Limited {
+    limit: u64,
+}
+
+impl Limited {
+    pub(crate) fn deserialize<T: DeserializeOwned>(self, bytes: &[u8]) -> Result<T, postcard::Error> {
+        if bytes.len() as u64 > self.limit {
+            return Err(postcard::Error::DeserializeUnexpectedEnd);
+        }
+        // one value, nothing after it: a cut file already failed the header, and trailing bytes are not a state
+        let (value, rest) = postcard::take_from_bytes(bytes)?;
+        if !rest.is_empty() {
+            return Err(postcard::Error::DeserializeUnexpectedEnd);
+        }
+        Ok(value)
+    }
 }
 
 /// What a saved state says of itself, read before the engine is.
