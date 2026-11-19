@@ -59,6 +59,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     prefix::adopt(st);
     st.checkpoints.clear();
     st.history.replace(st.session.messages().to_vec());
+    orient::adopt_attached(st);
     st.usage = st.session.usage();
     st.cost = st.session.cost();
     st.policy.reset();

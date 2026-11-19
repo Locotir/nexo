@@ -1007,7 +1007,7 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachme
             continue;
         }
         // attached to an earlier request, or included in one: the conversation holds it
-        if said.contains(word) {
+        if said.contains(word) && st.reads.shown_unchanged(&real, &bytes) {
             continue;
         }
         // the model holds the whole file (it wrote it, or its command made it and printed it) and it is unchanged

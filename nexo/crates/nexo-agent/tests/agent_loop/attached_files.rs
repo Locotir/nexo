@@ -168,6 +168,119 @@ async fn a_named_file_the_model_only_edited_is_attached() {
     r.stop().await;
 }
 
+/// A file attached at an earlier request and then edited by the model is attached again when named later:
+/// the old copy under its header is stale.
+#[tokio::test]
+async fn a_named_file_edited_after_it_was_attached_is_attached_again() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("old.rs"), "fn old() {}\n").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("e1", "edit", json!({"path": "old.rs", "old_string": "old", "new_string": "newer"}))),
+        Reply::Events(text("edited")),
+        Reply::Events(text("seen")),
+    ]);
+    let cfg = config(PermissionMode::Auto);
+    let set = tools().with(Arc::new(nexo_tools::edit::Edit));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "rename old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    assert_eq!(std::fs::read_to_string(d.path().join("old.rs")).unwrap(), "fn newer() {}\n");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    r.send(AgentCommand::Submit { text: "explain old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = client.requests().last().unwrap().messages.last().unwrap().text();
+    assert!(sent.contains("old.rs (project file, included in full by nexo, as it is now):"), "{sent}");
+    assert!(sent.contains("fn newer() {}"), "{sent}");
+    r.stop().await;
+}
+
+/// A file the person rewrote on disk between two requests that both name it is attached again.
+#[tokio::test]
+async fn a_named_file_rewritten_on_disk_is_attached_again() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("old.rs"), "fn old() {}\n").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("one")), Reply::Events(text("two"))]);
+    let cfg = config(PermissionMode::Auto);
+    let mut r = start_with(client.clone(), cfg, None, d.path(), tools()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look at old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    std::fs::write(d.path().join("old.rs"), "fn rewritten() {}\n").unwrap();
+    r.send(AgentCommand::Submit { text: "explain old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = client.requests().last().unwrap().messages.last().unwrap().text();
+    assert!(sent.contains("old.rs (project file, included in full by nexo, as it is now):"), "{sent}");
+    assert!(sent.contains("fn rewritten() {}"), "{sent}");
+    r.stop().await;
+}
+
+/// Two requests typed while a turn runs and joining it in one drain, both naming the same unchanged file:
+/// the file is attached once, not once per message.
+#[tokio::test]
+async fn a_file_named_by_two_queued_messages_is_attached_once() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("old.rs"), "fn old() {}\n").unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("w1", "write", json!({"path": "x.txt"}))), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "write it".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    r.send(AgentCommand::Submit { text: "look at old.rs".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::Submit { text: "and explain old.rs".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 2 })).await;
+    r.send(AgentCommand::Permission { id: "w1".into(), decision: PermissionDecision::Allow });
+    r.turn().await;
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "no turn of its own");
+    let header = "old.rs (project file, included in full by nexo, as it is now):";
+    let all: String = reqs[1].messages.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("look at old.rs") && all.contains("and explain old.rs"), "{all}");
+    assert_eq!(all.matches(header).count(), 1, "{all}");
+    assert_eq!(all.matches("fn old() {}").count(), 1, "{all}");
+    r.stop().await;
+}
+
+/// A session resumed from disk carries the files it attached: one that is unchanged is not attached again when
+/// named, one edited since is.
+#[tokio::test]
+async fn a_resumed_session_knows_its_attached_files_and_whether_they_changed() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("old.rs"), "fn old() {}\n").unwrap();
+    let header = "old.rs (project file, included in full by nexo, as it is now):";
+    let client = Scripted::new(vec![Reply::Events(text("one"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    let sid = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        e => panic!("{e:?}"),
+    };
+    r.send(AgentCommand::Submit { text: "look at old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    assert_eq!(client.requests().last().unwrap().messages.last().unwrap().text().matches(header).count(), 1);
+
+    let client = Scripted::new(vec![Reply::Events(text("two")), Reply::Events(text("three"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), Some(sid), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "explain old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    let all = |c: &Arc<Scripted>| -> String {
+        c.requests().last().unwrap().messages.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n")
+    };
+    assert_eq!(all(&client).matches(header).count(), 1, "unchanged: not attached again\n{}", all(&client));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    std::fs::write(d.path().join("old.rs"), "fn rewritten() {}\n").unwrap();
+    r.send(AgentCommand::Submit { text: "explain old.rs again".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = all(&client);
+    assert_eq!(sent.matches(header).count(), 2, "changed since: attached again\n{sent}");
+    assert!(sent.contains("fn rewritten() {}"), "{sent}");
+    r.stop().await;
+}
+
 /// A file the model's own command made during a request (generated data) is not attached again by the token
 /// budget at the next request; a file the person made between requests is.
 #[cfg(unix)]

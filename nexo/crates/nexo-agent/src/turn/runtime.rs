@@ -206,6 +206,8 @@ impl Runtime {
             let mut st = state.lock().await;
             session_opened(&st);
             st.system = full_system(&st);
+            // a resumed history already carries files put whole in earlier requests
+            orient::adopt_attached(&mut st);
             // with a limit set, the interface shows the spending against it from the start
             if st.budget.is_some() || st.config.agent.max_cost_day.is_some() {
                 emit(&st.events, budget_event(&st, budget::spent_today()));
