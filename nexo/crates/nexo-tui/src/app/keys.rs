@@ -216,7 +216,7 @@ impl App {
         self.flash("turn running, Ctrl+D again to quit");
     }
 
-    /// Ctrl+C: interrupt a turn, else clear the draft; twice within two seconds: quit.
+    /// Ctrl+C: stop the turn, or hold the idle session and clear the draft; twice within two seconds: quit.
     pub fn ctrl_c(&mut self) {
         let now = self.now();
         if self.last_ctrl_c.is_some_and(|t| now.duration_since(t).as_secs_f32() < 2.0) {
@@ -243,18 +243,32 @@ impl App {
         if self.busy {
             self.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
             self.flash("interrupting… (Ctrl+C again to quit)");
-        } else if !self.input.is_empty() {
-            self.keep_draft();
-            self.input.clear();
-            self.palette = None;
-            self.dirty = true;
-            self.flash("draft cleared, ↑ brings it back (Ctrl+C again to quit)");
         } else {
-            self.flash("Ctrl+C again to quit");
+            // idle, Ctrl+C is a stop all the same: the session holds until the person writes
+            self.send(AgentCommand::StopBy(nexo_core::agent::Stopper::CtrlC));
+            let held = self.held_note();
+            if !self.input.is_empty() {
+                self.keep_draft();
+                self.input.clear();
+                self.palette = None;
+                self.dirty = true;
+                self.flash(&format!("{held}draft cleared, ↑ brings it back (Ctrl+C again to quit)"));
+            } else {
+                self.flash(&format!("{held}Ctrl+C again to quit"));
+            }
         }
     }
 
-    /// Esc: close what is open, interrupt a turn, or clear the draft on a second press.
+    /// What an idle stop tells the person when background jobs run: nothing new starts until they write.
+    fn held_note(&self) -> &'static str {
+        if self.jobs.iter().any(|j| j.status.running()) {
+            "stopped: nothing starts until you write · "
+        } else {
+            ""
+        }
+    }
+
+    /// Esc: close what is open, interrupt a turn or hold the idle session, or clear the draft on a second press.
     pub fn esc(&mut self) {
         if self.selection.take().is_some() {
             self.press = None;
@@ -302,20 +316,30 @@ impl App {
             self.close_search();
             return;
         }
+        // idle, the first Esc is a stop too: the session holds until the person writes. It does not arm
+        // `esc_interrupted`, so Esc Esc still clears the draft or opens the rewind picker.
+        let held = if !self.busy && !again {
+            self.send(AgentCommand::Interrupt);
+            self.held_note()
+        } else {
+            ""
+        };
         if !self.input.is_empty() {
             if again {
                 self.keep_draft();
                 self.input.clear();
                 self.flash("draft cleared, ↑ brings it back");
             } else {
-                self.flash("Esc again to clear the draft");
+                self.flash(&format!("{held}Esc again to clear the draft"));
             }
         } else if again && !after_interrupt && !self.busy && !self.user_messages.is_empty() {
             self.open_rewind_picker();
         } else {
             self.selected = None;
             if !self.busy && !self.user_messages.is_empty() {
-                self.flash("Esc again to rewind to an earlier message");
+                self.flash(&format!("{held}Esc again to rewind to an earlier message"));
+            } else if !held.is_empty() {
+                self.flash(held.trim_end_matches(" · "));
             }
         }
         self.dirty = true;
