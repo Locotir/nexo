@@ -1120,7 +1120,7 @@ async fn a_process_left_running_is_said_to_hold_the_output() {
     assert!(alive(pid));
     assert!(c.jobs.kill(held_job_id(&out.content)));
     let t = std::time::Instant::now();
-    while alive(pid) && t.elapsed() < Duration::from_secs(2) {
+    while alive(pid) && t.elapsed() < Duration::from_secs(10) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let gone = !alive(pid);

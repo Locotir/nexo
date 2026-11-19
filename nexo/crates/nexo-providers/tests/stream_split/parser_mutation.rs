@@ -3,6 +3,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use nexo_core::{FinishReason, Part, StreamEvent};
 use serde_json::{json, Value};
 
 use crate::common::{collect, drive, fixture, parser, payloads, sse_events, Rng, PROTOCOLS};
@@ -22,7 +23,17 @@ fn assert_expected(label: &str, protocol: &str, data: &[String]) {
     let m = c.message();
     let (text, reasoning) = expected(protocol);
     assert_eq!(m.text(), text, "{label}: text");
-    assert_eq!(m.reasoning(), reasoning, "{label}: reasoning");
+    // the reasoning that has text: Gemini puts its thought signature on the call part, which comes
+    // back as a reasoning part with a signature and no text (opaque data for the next request)
+    let shown: Vec<&str> = m
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            Part::Reasoning { text, .. } if !text.is_empty() => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.join("\n"), reasoning, "{label}: reasoning");
     let calls: Vec<_> = m.tool_calls().map(|(_, n, a)| (n.to_string(), a.clone())).collect();
     assert_eq!(calls, vec![("read".to_string(), json!({"path": "src/main.rs"}))], "{label}: tool calls");
     assert!(c.error.is_none(), "{label}: no error: {:?}", c.error);
@@ -358,4 +369,22 @@ fn no_parser_panics_on_a_stream_with_events_dropped_repeated_or_shuffled() {
         );
         report(protocol, "shuffle", failures);
     }
+}
+
+/// Regression: a Gemini usage chunk whose candidate count is `u64::MAX` (any server can send it) made
+/// `candidatesTokenCount + thoughtsTokenCount` overflow; the output count now saturates.
+#[test]
+fn regression_gemini_usage_with_a_count_at_u64_max_saturates_instead_of_overflowing() {
+    let data = vec![concat!(
+        r#"{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP","index":0}],"#,
+        r#""usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":18446744073709551615,"thoughtsTokenCount":12}}"#
+    )
+    .to_string()];
+    let events = drive("gemini", &data);
+    let output = events.iter().find_map(|e| match e {
+        StreamEvent::Usage(u) => Some(u.output),
+        _ => None,
+    });
+    assert_eq!(output, Some(u64::MAX), "{events:?}");
+    assert!(events.contains(&StreamEvent::Finish(FinishReason::Stop)), "{events:?}");
 }

@@ -168,7 +168,7 @@ async fn a_review_that_says_continue_leaves_the_command_running() {
 async fn a_job_that_ends_while_idle_starts_its_turn_before_the_list_shows_it_ended() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![
-        Reply::Events(call("b1", "bash", json!({"command": "sleep 1; echo hi", "background": true}))),
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 3; echo hi", "background": true}))),
         Reply::Events(text("started")),
         Reply::Events(text("saw it")),
     ]);
