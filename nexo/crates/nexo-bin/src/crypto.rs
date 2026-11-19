@@ -254,6 +254,34 @@ fn crc_table_normal(poly: u32) -> Vec<u32> {
         .collect()
 }
 
+const CRC64_ECMA: u64 = 0x42F0_E1EB_A9EA_3693;
+const CRC64_ECMA_REFLECTED: u64 = 0xC96C_5795_D787_0F42;
+
+/// CRC-64 table for a reflected polynomial.
+fn crc64_table_reflected(poly: u64) -> Vec<u64> {
+    (0..256u64)
+        .map(|i| {
+            let mut c = i;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { (c >> 1) ^ poly } else { c >> 1 };
+            }
+            c
+        })
+        .collect()
+}
+/// CRC-64 table for a normal (MSB-first) polynomial.
+fn crc64_table_normal(poly: u64) -> Vec<u64> {
+    (0..256u64)
+        .map(|i| {
+            let mut c = i << 56;
+            for _ in 0..8 {
+                c = if c & (1 << 63) != 0 { (c << 1) ^ poly } else { c << 1 };
+            }
+            c
+        })
+        .collect()
+}
+
 fn patterns() -> Vec<Pattern> {
     let mut v: Vec<Pattern> = Vec::new();
     let mut add = |id, what, bytes: Vec<u8>, prefix| v.push(Pattern { id, what, bytes, prefix });
@@ -284,6 +312,11 @@ fn patterns() -> Vec<Pattern> {
     let t = crc_table_normal(0x04C1_1DB7);
     add("crc32_msb_table", "CRC-32 table, MSB first (poly 0x04C11DB7)", be32(&t), 32);
     add("crc32_msb_table", "CRC-32 table, MSB first (poly 0x04C11DB7)", le32(&t), 32);
+    let t = crc64_table_reflected(CRC64_ECMA_REFLECTED);
+    add("crc64_table", "CRC-64/ECMA-182 table, reflected (poly 0xC96C5795D7870F42)", le64(&t), 32);
+    let t = crc64_table_normal(CRC64_ECMA);
+    add("crc64_msb_table", "CRC-64/ECMA-182 table, MSB first (poly 0x42F0E1EBA9EA3693)", be64(&t), 32);
+    add("crc64_msb_table", "CRC-64/ECMA-182 table, MSB first (poly 0x42F0E1EBA9EA3693)", le64(&t), 32);
     add("chacha_sigma", "ChaCha/Salsa constant \"expand 32-byte k\"", b"expand 32-byte k".to_vec(), 16);
     add("chacha_tau", "ChaCha/Salsa constant \"expand 16-byte k\"", b"expand 16-byte k".to_vec(), 16);
     add(
@@ -309,11 +342,21 @@ fn patterns() -> Vec<Pattern> {
 struct ImmSet {
     id: &'static str,
     what: &'static str,
-    values: &'static [u32],
+    values: &'static [u64],
     need: usize,
 }
 
-const IMM_SETS: [ImmSet; 3] = [
+const IMM_SETS: [ImmSet; 6] = [
+    // a bitwise CRC has no table, only its polynomial: one number is the whole evidence, and a 32-bit number
+    // appearing by chance in code is about one in four billion per position
+    ImmSet { id: "crc32_imm", what: "CRC-32 polynomial", values: &[0xedb8_8320, 0x04c1_1db7], need: 1 },
+    ImmSet { id: "crc32c_imm", what: "CRC-32C polynomial", values: &[0x82f6_3b78, 0x1edc_6f41], need: 1 },
+    ImmSet {
+        id: "crc64_ecma_imm",
+        what: "CRC-64/ECMA-182 polynomial",
+        values: &[CRC64_ECMA, CRC64_ECMA_REFLECTED],
+        need: 1,
+    },
     ImmSet {
         id: "sha1_K",
         what: "SHA-1 round constants",
@@ -457,11 +500,13 @@ pub fn scan(img: &Image) -> Vec<CryptoHit> {
     hits.dedup_by(|b, a| a.addr == b.addr && a.id == b.id);
     // immediates in code
     for set in &IMM_SETS {
-        let mut per_fn: BTreeMap<u64, BTreeMap<u32, u64>> = BTreeMap::new();
+        let mut per_fn: BTreeMap<u64, BTreeMap<u64, u64>> = BTreeMap::new();
         for s in img.sections.iter().filter(|s| s.exec && s.file_size > 0) {
             let bytes = img.section_bytes(s);
             for &v in set.values {
-                for off in find_all(bytes, &v.to_le_bytes(), 4096) {
+                let le = v.to_le_bytes();
+                let width = if v > u64::from(u32::MAX) { 8 } else { 4 };
+                for off in find_all(bytes, &le[..width], 4096) {
                     let addr = s.addr + off as u64;
                     if let Some(f) = img.func_at(addr) {
                         per_fn.entry(f.start).or_default().entry(v).or_insert(addr);
@@ -653,5 +698,46 @@ mod tests {
         assert_eq!((c[1], c[255]), (0x7707_3096, 0x2d02_ef8d));
         assert_eq!(crc_table_reflected(0x82F6_3B78)[1], 0xf26b_8303);
         assert_eq!(crc_table_normal(0x04C1_1DB7)[1], 0x04c1_1db7);
+        assert_eq!(crc64_table_normal(CRC64_ECMA)[1], CRC64_ECMA);
+        assert_eq!(crc64_table_reflected(CRC64_ECMA_REFLECTED)[128], CRC64_ECMA_REFLECTED);
+    }
+
+    fn raw_scan(bytes: Vec<u8>) -> Vec<CryptoHit> {
+        let img = Image::from_raw(bytes, std::path::PathBuf::from("c.bin"), 0x1000, None).unwrap();
+        scan(&img)
+    }
+
+    #[test]
+    fn a_bitwise_crc_is_named_from_the_polynomial_in_code() {
+        // and eax, imm32; xor eax, imm32; mov rax, imm64
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("crc32_imm", vec![0x25, 0x20, 0x83, 0xb8, 0xed, 0xc3]),
+            ("crc32_imm", vec![0x35, 0xb7, 0x1d, 0xc1, 0x04, 0xc3]),
+            ("crc32c_imm", vec![0x81, 0xe2, 0x78, 0x3b, 0xf6, 0x82, 0xc3]),
+            ("crc64_ecma_imm", [&[0x48, 0xb8][..], &CRC64_ECMA_REFLECTED.to_le_bytes(), &[0xc3]].concat()),
+        ];
+        for (id, code) in cases {
+            let hits = raw_scan(code);
+            assert!(hits.iter().any(|h| h.id == id && h.strength == "immediates"), "{id}: {hits:?}");
+        }
+        assert!(raw_scan(vec![0x25, 0x21, 0x83, 0xb8, 0xed, 0xc3]).iter().all(|h| !h.id.starts_with("crc")));
+    }
+
+    #[test]
+    fn crc_tables_are_named_whole_from_their_polynomials() {
+        let tables: [(&str, Vec<u8>); 5] = [
+            ("crc32_table", le32(&crc_table_reflected(0xEDB8_8320))),
+            ("crc32c_table", le32(&crc_table_reflected(0x82F6_3B78))),
+            ("crc32_msb_table", be32(&crc_table_normal(0x04C1_1DB7))),
+            ("crc64_table", le64(&crc64_table_reflected(CRC64_ECMA_REFLECTED))),
+            ("crc64_msb_table", be64(&crc64_table_normal(CRC64_ECMA))),
+        ];
+        for (id, bytes) in tables {
+            let hits = raw_scan(bytes);
+            assert!(hits.iter().any(|h| h.id == id && h.strength == "full"), "{id}: {hits:?}");
+        }
+        // CRC-32C is its own polynomial: the CRC-32 table is not named as it
+        let hits = raw_scan(le32(&crc_table_reflected(0xEDB8_8320)));
+        assert!(hits.iter().all(|h| h.id != "crc32c_table" && h.id != "crc64_table"), "{hits:?}");
     }
 }
