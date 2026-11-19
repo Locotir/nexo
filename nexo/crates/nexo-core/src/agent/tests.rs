@@ -59,3 +59,24 @@ fn a_goal_mark_is_found_at_the_start_or_after_the_notes_before_it() {
     assert_eq!(at("[goal: met, not running; /goal resume reopens it]\n\nthanks"), None);
     assert_eq!(at(""), None);
 }
+
+#[test]
+fn a_goal_logs_progress_is_what_is_saved_and_comes_back_with_the_words_untouched() {
+    let stop = GoalStop { at_ms: 7, why: "Esc".into() };
+    let log = GoalLog {
+        original: Some("ship it".into()),
+        brief: Some("Want: ship".into()),
+        started_ms: 5,
+        steps: 3,
+        cost_usd: 1.5,
+        stops: vec![stop.clone()],
+        last: Some("on it".into()),
+    };
+    let p = log.progress();
+    assert_eq!(p, GoalProgress { started_ms: 5, steps: 3, stops: vec![stop] });
+    let back = GoalLog { original: Some("ship it".into()), ..GoalLog::default() }.with_progress(p.clone());
+    assert_eq!((back.original.as_deref(), back.started_ms, back.steps, back.stops.len()), (Some("ship it"), 5, 3, 1));
+    assert_eq!(back.progress(), p);
+    // a saved progress with fields missing reads as the default
+    assert_eq!(serde_json::from_str::<GoalProgress>("{}").unwrap(), GoalProgress::default());
+}

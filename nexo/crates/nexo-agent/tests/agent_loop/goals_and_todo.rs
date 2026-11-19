@@ -104,7 +104,9 @@ async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&evs).and_then(|g| g.0), Some(want.to_string()));
     let log = last_goal_log(&evs).expect("a resumed goal sends its log");
-    assert_eq!((log.original, log.brief.as_deref()), (None, Some(want)), "the restatement is all that was saved");
+    assert_eq!(log.original.as_deref(), Some("tests green pls"), "the person's words are saved beside it");
+    assert_eq!(log.brief.as_deref(), Some(want));
+    assert!(log.steps >= 1 && log.started_ms > 0, "the progress is saved too: {log:?}");
     r.stop().await;
 }
 
@@ -238,6 +240,76 @@ async fn a_resumed_session_brings_its_goal_back() {
     assert_eq!(goal_of(&evs), Some((Some("keep it green".into()), 0, 5)));
     assert_eq!(goal_state_of(&evs), Some(GoalState::Done), "a met goal is still met after a resume");
     r.stop().await;
+}
+
+#[tokio::test]
+async fn a_session_closed_mid_goal_reopens_paused() {
+    let d = test_tmpdir().unwrap();
+    data_dir();
+    // the session was closed while the goal ran: the file ends with the goal active
+    let mut s = nexo_agent::session::Session::create(d.path(), "mock", "m1").unwrap();
+    s.append(&Message::user("[goal set] ship it")).unwrap();
+    s.record_goal(Some("ship it")).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let paused = GoalState::Paused("session reopened".into());
+    for round in 0..2 {
+        let mut r = start(Scripted::new(vec![]), config(PermissionMode::Auto), Some(id.clone()), d.path()).await;
+        let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+        assert_eq!(goal_of(&evs).and_then(|g| g.0).as_deref(), Some("ship it"));
+        assert_eq!(goal_state_of(&evs), Some(paused.clone()), "start {round}: shown as paused, not as working");
+        let log = last_goal_log(&evs).expect("the log is sent");
+        assert_eq!(log.original.as_deref(), Some("ship it"));
+        let whys: Vec<&str> = log.stops.iter().map(|s| s.why.as_str()).collect();
+        assert_eq!(whys, ["session reopened"], "start {round}: one stop, not one per start");
+        r.stop().await;
+        let s = nexo_agent::session::Session::open(&id).unwrap();
+        assert_eq!(s.goal_state(), &paused, "it is saved paused");
+    }
+}
+
+#[tokio::test]
+async fn a_goal_waiting_or_met_stays_so_when_the_session_reopens() {
+    let d = test_tmpdir().unwrap();
+    data_dir();
+    let mut s = nexo_agent::session::Session::create(d.path(), "mock", "m1").unwrap();
+    s.append(&Message::user("[goal set] ask me")).unwrap();
+    s.record_goal(Some("ask me")).unwrap();
+    s.record_goal_state(GoalState::Waiting, nexo_core::agent::GoalProgress::default()).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let mut r = start(Scripted::new(vec![]), config(PermissionMode::Auto), Some(id), d.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting));
+    assert!(last_goal_log(&evs).expect("the log is sent").stops.is_empty());
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_restatement_keeps_a_met_goal_met_on_disk() {
+    let d = test_tmpdir().unwrap();
+    let brief = json!({"want": "ship it", "why": "w", "how": "h", "done": "d"});
+    let client = Scripted::new(vec![
+        Reply::Events(text("GOAL DONE")),
+        Reply::Events(call("g1", "goal_brief", brief)),
+        Reply::Events(text("ok")),
+    ]);
+    let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.turn().await;
+    let met = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&met), Some(GoalState::Done));
+    r.send(AgentCommand::Submit { text: "and the docs".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let s = nexo_agent::session::Session::open(&id).unwrap();
+    assert_eq!(s.goal(), Some("Want: ship it\nWhy: w\nHow: h\nDone when: d"), "the restatement is saved");
+    assert_eq!(s.goal_original(), Some("ship it"));
+    assert_eq!(s.goal_state(), &GoalState::Done, "and the goal stays met");
 }
 
 #[tokio::test]

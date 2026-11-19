@@ -177,7 +177,9 @@ pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
     }
     st.goal = Some(brief.clone());
     st.goal_log.brief = Some(brief.clone());
-    if let Err(e) = st.session.record_goal(Some(&brief)) {
+    // the text only: a goal met or paused stays so on disk, and the person's words stay beside the restatement
+    let progress = st.goal_log.progress();
+    if let Err(e) = st.session.record_goal_text(&brief, progress) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
     st.system = full_system(&st);
@@ -185,16 +187,60 @@ pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
     ToolOutput::ok("The goal now reads as restated. Go on with the work.")
 }
 
-/// The log of a goal found on disk: the person's words are not saved with the session, so a restated goal is
-/// shown as the restatement, and one never restated as the words themselves; the time it was set is not known.
-pub(super) fn resumed_log(goal: Option<&str>) -> GoalLog {
+/// Why a goal found active on disk is paused when its session opens: nothing runs for it until the person says so.
+const REOPENED: &str = "session reopened";
+
+/// The log of a goal found on disk. The person's own words are the ones saved with it; a file saved before they were
+/// kept has them as the goal itself, or, when the goal is a restatement, as the words of the last `[goal set]`
+/// message in `history`. A restated goal is the `brief`. The progress saved with the goal comes back as it was.
+fn resumed_log(goal: Option<&str>, original: Option<&str>, progress: GoalProgress, history: &[Message]) -> GoalLog {
     let mut log = GoalLog::default();
-    match goal {
-        Some(g) if g.starts_with(GOAL_BRIEF_HEAD) => log.brief = Some(g.to_string()),
-        Some(g) => log.original = Some(g.to_string()),
-        None => {}
+    if let Some(g) = goal {
+        let restated = g.starts_with(GOAL_BRIEF_HEAD);
+        log.original = match original {
+            Some(o) => Some(o.to_string()),
+            None if restated => goal_set_words(history),
+            None => Some(g.to_string()),
+        };
+        if restated {
+            log.brief = Some(g.to_string());
+        }
+    }
+    log.with_progress(progress)
+}
+
+/// The words of the latest `[goal set]` request in `history`: what follows the mark, up to the start note nexo put
+/// after them. None when no such request is left (a compaction removes it).
+fn goal_set_words(history: &[Message]) -> Option<String> {
+    history.iter().rev().filter(|m| m.role == Role::User).find_map(|m| {
+        let text = m.text();
+        let at = nexo_core::agent::goal_mark_at(&text)?;
+        let rest = text[at..].strip_prefix(GOAL_SET_MARK)?;
+        let rest = rest.split(&format!("\n\n{}", crate::session::START_NOTE_HEAD)).next().unwrap_or(rest);
+        Some(rest.trim().to_string()).filter(|w| !w.is_empty())
+    })
+}
+
+/// The goal of a session just opened, for the loop that now holds it. One found active was running when the session
+/// closed and nothing runs it now, so it is paused (and saved so) instead of shown as working; one waiting, met or
+/// paused stays as it was. Read-only opens (lists, search) never come here, so they write nothing.
+pub(super) fn reopened_goal(session: &mut Session, events: &EventTx) -> GoalLog {
+    let (goal, original) = (session.goal(), session.goal_original());
+    let mut log = resumed_log(goal, original, session.goal_progress().clone(), session.messages());
+    if session.goal().is_some() && session.goal_state().is_active() {
+        remember_stop(&mut log.stops, REOPENED);
+        if let Err(e) = session.record_goal_state(GoalState::Paused(REOPENED.into()), log.progress()) {
+            notice(events, Level::Warn, format!("cannot save the goal: {e}"));
+        }
     }
     log
+}
+
+/// Adds a stop to a goal's list, which keeps the last [`GOAL_STOPS`].
+fn remember_stop(stops: &mut Vec<GoalStop>, why: &str) {
+    stops.push(GoalStop { at_ms: nexo_core::mailbox::now_ms(), why: why.to_string() });
+    let extra = stops.len().saturating_sub(GOAL_STOPS);
+    stops.drain(..extra);
 }
 
 /// What the goal panel shows now: the log, the spend since the goal was set and the latest reply's first line.
@@ -366,12 +412,9 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
     }
     // every pause is remembered with its time and reason (Esc, a guard, a limit, an error), for the goal panel
     if let GoalState::Paused(why) = &to {
-        let stops = &mut st.goal_log.stops;
-        stops.push(GoalStop { at_ms: nexo_core::mailbox::now_ms(), why: why.clone() });
-        let extra = stops.len().saturating_sub(GOAL_STOPS);
-        stops.drain(..extra);
+        remember_stop(&mut st.goal_log.stops, why);
     }
-    if let Err(e) = st.session.record_goal_state(to) {
+    if let Err(e) = st.session.record_goal_state(to, st.goal_log.progress()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
     notice(&st.events, Level::Info, say);
@@ -787,15 +830,30 @@ mod goal_tests {
 
     #[test]
     fn a_goal_from_disk_shows_as_the_words_it_was_saved_in() {
-        assert_eq!(resumed_log(None), GoalLog::default());
-        let own = resumed_log(Some("tests green pls"));
+        let log = |goal, original, history: &[Message]| resumed_log(goal, original, GoalProgress::default(), history);
+        let want = "Want: green\nWhy: x\nHow: y\nDone when: z";
+        assert_eq!(log(None, None, &[]), GoalLog::default());
+        let own = log(Some("tests green pls"), None, &[]);
         assert_eq!((own.original.as_deref(), own.brief), (Some("tests green pls"), None));
-        let restated = resumed_log(Some("Want: green\nWhy: x\nHow: y\nDone when: z"));
-        assert_eq!(
-            (restated.original, restated.brief.as_deref()),
-            (None, Some("Want: green\nWhy: x\nHow: y\nDone when: z"))
-        );
-        assert_eq!(restated.started_ms, 0, "when it was set is not known");
+        // a restated goal: the person's words are the ones saved beside it
+        let saved = log(Some(want), Some("tests green pls"), &[]);
+        assert_eq!((saved.original.as_deref(), saved.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        // a file saved before the words were kept: the last `[goal set]` request holds them, without its start note
+        let note = crate::session::START_NOTE_HEAD;
+        let asked = |w: &str| Message::user(format!("{GOAL_SET_MARK} {w}\n\n{note}\nGit: 2 files"));
+        let history =
+            [asked("older goal"), Message::user("thanks"), asked("tests green pls"), Message::user(GOAL_CONTINUE_MARK)];
+        let old = log(Some(want), None, &history);
+        assert_eq!((old.original.as_deref(), old.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        // nothing left of that request (a compaction took it): the restatement is all there is
+        let gone = log(Some(want), None, &[Message::user("thanks")]);
+        assert_eq!((gone.original, gone.brief.as_deref()), (None, Some(want)));
+        // the progress saved with the goal comes back
+        let stop = GoalStop { at_ms: 9, why: "Esc".into() };
+        let p = GoalProgress { started_ms: 5, steps: 3, stops: vec![stop] };
+        let back = resumed_log(Some("tests green pls"), None, p.clone(), &[]);
+        assert_eq!((back.started_ms, back.steps, back.progress()), (5, 3, p));
+        assert_eq!(own.started_ms, 0, "a file without progress does not know when it was set");
     }
 
     #[test]

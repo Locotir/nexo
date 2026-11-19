@@ -252,11 +252,52 @@ impl Session {
         &self.goal_state
     }
 
-    /// A new goal (or none): it starts active.
+    /// The person's own words of the goal, when `goal` is the agent's restatement of them; None for a file saved
+    /// before they were kept.
+    pub fn goal_original(&self) -> Option<&str> {
+        self.goal_original.as_deref()
+    }
+
+    /// What the goal has run so far, as last recorded.
+    pub fn goal_progress(&self) -> &GoalProgress {
+        &self.goal_progress
+    }
+
+    /// A new goal (or none): it starts active, with these words as the person's own and no progress yet.
     pub fn record_goal(&mut self, text: Option<&str>) -> anyhow::Result<()> {
-        self.goal = text.map(String::from);
-        self.goal_state = GoalState::Active;
-        self.write(&Line::Goal { text: self.goal.clone(), state: GoalState::Active })
+        let started_ms = if text.is_some() { nexo_core::mailbox::now_ms() } else { 0 };
+        let progress = GoalProgress { started_ms, ..GoalProgress::default() };
+        self.record_goal_all(text.map(String::from), GoalState::Active, text.map(String::from), progress)
+    }
+
+    /// The goal's words replaced (the agent restated it), its state and the person's own words as they were.
+    pub fn record_goal_text(&mut self, text: &str, progress: GoalProgress) -> anyhow::Result<()> {
+        self.record_goal_all(Some(text.to_string()), self.goal_state.clone(), self.goal_original.clone(), progress)
+    }
+
+    /// Everything about the goal at once, as it is kept: a fork copies it from the session it comes from.
+    pub(super) fn record_goal_all(
+        &mut self,
+        text: Option<String>,
+        state: GoalState,
+        original: Option<String>,
+        progress: GoalProgress,
+    ) -> anyhow::Result<()> {
+        self.goal = text;
+        self.goal_state = state;
+        self.goal_original = original;
+        self.goal_progress = progress;
+        self.write(&self.goal_line())
+    }
+
+    /// The line that holds the goal as it stands.
+    pub(super) fn goal_line(&self) -> Line {
+        Line::Goal {
+            text: self.goal.clone(),
+            state: self.goal_state.clone(),
+            original: self.goal_original.clone(),
+            progress: Some(self.goal_progress.clone()),
+        }
     }
 
     /// The context setup last recorded.
@@ -307,10 +348,9 @@ impl Session {
         self.write(&Line::Stop { ts: now(), line: line.to_string() })
     }
 
-    /// The same goal, standing elsewhere (paused, waiting, met, active again).
-    pub fn record_goal_state(&mut self, state: GoalState) -> anyhow::Result<()> {
-        self.goal_state = state.clone();
-        self.write(&Line::Goal { text: self.goal.clone(), state })
+    /// The same goal, standing elsewhere (paused, waiting, met, active again), with what it has run by then.
+    pub fn record_goal_state(&mut self, state: GoalState, progress: GoalProgress) -> anyhow::Result<()> {
+        self.record_goal_all(self.goal.clone(), state, self.goal_original.clone(), progress)
     }
 
     pub fn set_title(&mut self, title: &str) -> anyhow::Result<()> {

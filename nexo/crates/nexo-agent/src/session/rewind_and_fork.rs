@@ -123,11 +123,8 @@ impl Session {
                 )?;
             }
             if self.goal.is_some() {
-                writeln!(
-                    f,
-                    "{}",
-                    serde_json::to_string(&Line::Goal { text: self.goal.clone(), state: self.goal_state.clone() })?
-                )?;
+                // the words and the progress too: a compaction or a rewind must not lose them
+                writeln!(f, "{}", serde_json::to_string(&self.goal_line())?)?;
             }
             if let Some(c) = &self.context {
                 writeln!(f, "{}", serde_json::to_string(&Line::Context(c.clone()))?)?;
@@ -195,10 +192,14 @@ impl Session {
             f.set_title(&format!("{} (fork)", self.meta.title))?;
         }
         if self.goal.is_some() {
-            f.record_goal(self.goal.as_deref())?; // on disk too, so a resumed fork keeps it
-            if !self.goal_state.is_active() {
-                f.record_goal_state(self.goal_state.clone())?;
-            }
+            // as it stands, on disk too, so a resumed fork keeps it: the person's words and the progress are the
+            // original's, not the restatement's text and the time of the fork
+            f.record_goal_all(
+                self.goal.clone(),
+                self.goal_state.clone(),
+                self.goal_original.clone(),
+                self.goal_progress.clone(),
+            )?;
         }
         if let Some(p) = &self.prefix {
             f.record_prefix(p)?; // the fork goes on with the same prefix, so the same cache

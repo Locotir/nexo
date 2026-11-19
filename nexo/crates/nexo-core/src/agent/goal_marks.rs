@@ -99,6 +99,29 @@ pub struct GoalLog {
 /// How many stops a goal remembers.
 pub const GOAL_STOPS: usize = 20;
 
+/// What a goal has run so far, the part of [`GoalLog`] that is saved with the session: when it was set, the tool calls
+/// made for it and the times it stopped short. The spend and the latest reply are not kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GoalProgress {
+    /// When the goal was set (unix ms); 0 when unknown.
+    pub started_ms: i64,
+    pub steps: u32,
+    pub stops: Vec<GoalStop>,
+}
+
+impl GoalLog {
+    /// The part of this log that is saved with the session.
+    pub fn progress(&self) -> GoalProgress {
+        GoalProgress { started_ms: self.started_ms, steps: self.steps, stops: self.stops.clone() }
+    }
+
+    /// This log with the progress saved earlier put back (the words and the restatement stay as they are).
+    pub fn with_progress(self, p: GoalProgress) -> GoalLog {
+        GoalLog { started_ms: p.started_ms, steps: p.steps, stops: p.stops, ..self }
+    }
+}
+
 /// Where a goal stands, which says what happens when a turn ends.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state", content = "why")]

@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 // Sessions hold tool outputs, which can hold secrets: their folder and files are the user's alone (on unix).
+use nexo_core::agent::GoalProgress;
 use nexo_core::fsmode::{create_private_dir, private_file};
 use nexo_core::message::{Message, Part, Role};
 use nexo_core::paths;
@@ -176,6 +177,12 @@ enum Line {
         text: Option<String>,
         #[serde(default, skip_serializing_if = "GoalState::is_active")]
         state: GoalState,
+        /// The person's own words, kept when `text` is the agent's restatement of them; old files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original: Option<String>,
+        /// What the goal has run so far (when it was set, its steps, its stops); old files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<GoalProgress>,
     },
     /// The context setup in force from here on: the last such line wins. Old readers skip it.
     Context(ContextRecord),
@@ -212,6 +219,10 @@ pub struct Session {
     file: Option<File>,
     goal: Option<String>,
     goal_state: GoalState,
+    /// The person's own words of the goal, when `goal` is the agent's restatement; None for a file saved before.
+    goal_original: Option<String>,
+    /// What the goal has run so far, as last recorded.
+    goal_progress: GoalProgress,
     prefix: Option<Prefix>,
     /// The context setup last written, so the same one is not written again.
     context: Option<ContextRecord>,

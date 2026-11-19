@@ -724,6 +724,86 @@ fn a_fork_keeps_the_goal_on_disk() {
     assert_eq!(g.goal(), Some("ship it"));
 }
 
+/// A goal of a session as the loop keeps it after a restatement: the person's words, the agent's text, three steps
+/// and one stop.
+fn restated_goal_session(dir: &Path) -> (Session, GoalProgress) {
+    let mut s = Session::create_in(dir, Path::new("/p"), "mock", "m").unwrap();
+    for t in ["one", "two", "three"] {
+        s.append(&Message::user(t)).unwrap();
+    }
+    s.record_goal(Some("ship it")).unwrap();
+    let progress = GoalProgress {
+        started_ms: s.goal_progress().started_ms,
+        steps: 3,
+        stops: vec![nexo_core::agent::GoalStop { at_ms: 42, why: "Esc".into() }],
+    };
+    s.record_goal_text("Want: ship it", progress.clone()).unwrap();
+    s.record_goal_state(GoalState::Paused("Esc".into()), progress.clone()).unwrap();
+    (s, progress)
+}
+
+#[test]
+fn an_old_goal_line_reads_with_no_words_or_progress() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    let p = s.path().to_path_buf();
+    drop(s);
+    let mut f = OpenOptions::new().append(true).open(&p).unwrap();
+    f.write_all(b"{\"type\":\"goal\",\"text\":\"x\"}\n").unwrap();
+    drop(f);
+    let s = Session::open_path(&p).unwrap();
+    assert_eq!((s.goal(), s.goal_original()), (Some("x"), None));
+    assert_eq!((s.goal_state(), s.goal_progress()), (&GoalState::Active, &GoalProgress::default()));
+}
+
+#[test]
+fn opening_a_session_to_list_it_writes_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let (s, _) = restated_goal_session(d.path());
+    let path = s.path().to_path_buf();
+    drop(s);
+    let before = std::fs::read(&path).unwrap();
+    for _ in 0..2 {
+        let s = Session::open_path(&path).unwrap();
+        assert_eq!(s.goal_state(), &GoalState::Paused("Esc".into()));
+        drop(s);
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn a_goals_words_and_progress_survive_compaction_and_rewind() {
+    let d = tempfile::tempdir().unwrap();
+    let (mut s, progress) = restated_goal_session(d.path());
+    let kept = |s: &Session| {
+        let o = Session::open_path(s.path()).unwrap();
+        let (goal, original) = (o.goal().map(String::from), o.goal_original().map(String::from));
+        (goal, original, o.goal_state().clone(), o.goal_progress().clone())
+    };
+    let paused = GoalState::Paused("Esc".into());
+    let want = (Some("Want: ship it".to_string()), Some("ship it".to_string()), paused, progress);
+    assert_eq!(kept(&s), want);
+    // a compaction: the history is replaced by a summary and the tail, so any `[goal set]` request is gone with it
+    s.reset_with(&[Message::user("summary"), Message::user("three")]).unwrap();
+    assert_eq!(kept(&s), want, "a rewrite for a compaction keeps them");
+    s.rewind(1).unwrap();
+    assert_eq!(kept(&s), want, "a rewrite for a rewind keeps them");
+}
+
+#[test]
+fn a_fork_of_a_restated_goal_keeps_the_persons_words() {
+    let d = tempfile::tempdir().unwrap();
+    let (s, progress) = restated_goal_session(d.path());
+    let f = s.fork(2).unwrap();
+    let g = Session::open_path(f.path()).unwrap();
+    assert_eq!((g.goal(), g.goal_original()), (Some("Want: ship it"), Some("ship it")));
+    assert_eq!(g.goal_state(), &GoalState::Paused("Esc".into()));
+    assert_eq!(g.goal_progress(), &progress);
+    assert_eq!(g.goal_progress().started_ms, s.goal_progress().started_ms, "the fork did not start the goal again");
+    assert!(g.goal_progress().started_ms > 0);
+}
+
 #[test]
 fn the_list_counts_past_a_line_cut_inside_a_utf8_sequence() {
     let d = tempfile::tempdir().unwrap();

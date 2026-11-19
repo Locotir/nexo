@@ -57,6 +57,8 @@ impl Session {
             file: Some(file),
             goal: None,
             goal_state: GoalState::Active,
+            goal_original: None,
+            goal_progress: GoalProgress::default(),
             prefix: None,
             context: None,
             stop: None,
@@ -101,6 +103,8 @@ impl Session {
             file: None,
             goal: None,
             goal_state: GoalState::Active,
+            goal_original: None,
+            goal_progress: GoalProgress::default(),
             prefix: None,
             context: None,
             stop: None,
@@ -147,6 +151,8 @@ impl Session {
         let mut cost = 0.0;
         let mut goal = None;
         let mut goal_state = GoalState::Active;
+        let mut goal_original = None;
+        let mut goal_progress = GoalProgress::default();
         let mut prefix = None;
         let mut context = None;
         let mut stop = None;
@@ -181,9 +187,11 @@ impl Session {
                     meta.provider = provider;
                     meta.model = model;
                 }
-                Ok(Line::Goal { text, state }) => {
+                Ok(Line::Goal { text, state, original, progress }) => {
                     goal = text;
                     goal_state = state;
+                    goal_original = original;
+                    goal_progress = progress.unwrap_or_default();
                 }
                 Ok(Line::Prefix(p)) => prefix = Some(p),
                 Ok(Line::Context(c)) => context = Some(c),
@@ -225,6 +233,8 @@ impl Session {
             file: Some(file),
             goal,
             goal_state,
+            goal_original,
+            goal_progress,
             prefix,
             context,
             stop,
