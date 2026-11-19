@@ -157,6 +157,9 @@ async fn a_start_check_over_its_cap_leaves_the_post_write_check_on() {
     }
     r.stop().await;
     let reqs = client.requests();
+    // the start check ran, and the cap killed it: without that the post-write asserts below prove nothing
+    let first = reqs[0].messages[0].text();
+    assert!(first.contains("killed at the 1 s cap"), "{first}");
     let result: String = reqs[1]
         .messages
         .last()
@@ -167,4 +170,6 @@ async fn a_start_check_over_its_cap_leaves_the_post_write_check_on() {
         .collect();
     assert!(result.contains("\ncheck: cargo test"), "{result}");
     assert!(!result.contains("| skipped |"), "the start check's slowness is not the post-write check's: {result}");
+    // a real outcome of the check (an exit or the cap's kill), not a note that it was left out
+    assert!(result.contains("| exit "), "{result}");
 }
