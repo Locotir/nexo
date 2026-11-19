@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: a debugger an agent drives one bounded call at a time (Linux ptrace, Windows Debug API)"
 
 [dependencies]

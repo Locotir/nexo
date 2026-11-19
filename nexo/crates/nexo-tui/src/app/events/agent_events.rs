@@ -133,7 +133,17 @@ impl App {
             AgentEvent::Retrying { attempt, retries, wait_secs, reason, .. } => {
                 self.on_retrying(attempt, retries, wait_secs, reason)
             }
-            AgentEvent::Compacted { .. } | AgentEvent::TodoChanged { .. } => {}
+            // the history is now the summary: the last call's size no longer describes it, so the gauge falls back
+            // to the view, which is set to the compacted size until the curator counts again
+            AgentEvent::Compacted { after_tokens, .. } => {
+                self.last_call_input = 0;
+                self.last_call_cached = 0;
+                if let Some(c) = &mut self.context {
+                    c.view_tokens = u64::from(after_tokens);
+                    c.history_tokens = u64::from(after_tokens);
+                }
+            }
+            AgentEvent::TodoChanged { .. } => {}
             // handled before this match (see `handle_sub`)
             AgentEvent::Sub { .. }
             | AgentEvent::SubDelta { .. }

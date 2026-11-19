@@ -76,6 +76,7 @@ const SIZES: [(u16, u16); 3] = [(80, 24), (40, 12), (24, 10)];
 fn waiting_requests_say_how_to_take_one_back_and_the_short_form_fits_narrow_screens() {
     for (w, h) in SIZES {
         let mut a = app();
+        a.busy = true;
         a.queued_msgs.push("fix the build".into());
         a.queued = 1;
         let r = rows(&mut a, w, h);
@@ -86,6 +87,28 @@ fn waiting_requests_say_how_to_take_one_back_and_the_short_form_fits_narrow_scre
         let row = r.iter().find(|l| l.starts_with('›')).unwrap();
         assert!(!row.contains('…'), "{w}x{h}: nothing cut with an ellipsis in the box: {r:#?}");
     }
+}
+
+#[test]
+fn idle_queued_requests_say_they_join_the_next_message() {
+    // an Esc left the requests waiting: Enter on the empty box sends nothing, the next message takes them along
+    for w in 30..60u16 {
+        let mut a = app();
+        a.busy = false;
+        a.queued_msgs.push("x".into());
+        a.queued = 1;
+        let r = rows(&mut a, w, 30);
+        let row = r.iter().find(|l| l.starts_with('›')).unwrap();
+        // the box has the width less the mark and its margins (4 columns); the long form is 39
+        assert_eq!(row.contains("joins your next message"), w >= 43, "{w}: {r:#?}");
+        assert!(!row.contains("Enter sends now"), "{w}: Enter does nothing while idle: {r:#?}");
+    }
+    let mut a = app();
+    a.queued_msgs.push("x".into());
+    a.queued = 1;
+    let r = rows(&mut a, 100, 30);
+    assert!(has(&r, "1 queued for next message"), "{r:#?}");
+    assert!(!has(&r, "Enter send now"), "{r:#?}");
 }
 
 #[test]
@@ -121,7 +144,7 @@ fn typing_replaces_the_hint_and_the_draft_is_never_covered() {
         nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         let r = rows(&mut a, w, h);
         assert!(r.iter().any(|l| l.contains("› hi")), "{w}x{h}: {r:#?}");
-        assert!(!has(&r, "edit queued messages") && !has(&r, "tip:") && !has(&r, "ask anything"), "{w}x{h}: {r:#?}");
+        assert!(!has(&r, "edit queued") && !has(&r, "tip:") && !has(&r, "ask anything"), "{w}x{h}: {r:#?}");
     }
 }
 
@@ -138,7 +161,7 @@ fn busy_and_hints_off_say_nothing_extra() {
     a.queued_msgs.push("x".into());
     a.queued = 1;
     let r = rows(&mut a, 100, 30);
-    assert!(!has(&r, "tip:") && !has(&r, "edit queued messages"), "{r:#?}");
+    assert!(!has(&r, "tip:") && !has(&r, "edit queued"), "{r:#?}");
 }
 
 #[test]

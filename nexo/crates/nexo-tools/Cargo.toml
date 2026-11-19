@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: the built-in tools (read, write, edit, bash, glob, grep, ls, todo, web_search, web_fetch) and the MCP client"
 
 [dependencies]

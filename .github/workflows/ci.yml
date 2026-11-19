@@ -66,3 +66,21 @@ jobs:
           workspaces: nexo
       # check, not test: the stable Linux job already runs the suite, and --all-targets keeps the test code covered by the oldest compiler
       - run: cargo check --workspace --locked --all-targets
+
+  deny:
+    # dependency policy in nexo/deny.toml. A new advisory appears without any change of ours, so it reports but must not block a
+    # release; the bans, licenses and sources checks only change when the dependencies change, so they gate like any other job
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [advisories, bans licenses sources]
+    steps:
+      - uses: actions/checkout@v5
+      # pinned to a full commit SHA: this action runs a downloaded binary, so a moved tag must not change what runs
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
+        with:
+          manifest-path: nexo/Cargo.toml
+          command: check ${{ matrix.checks }}
+          arguments: --all-features --locked

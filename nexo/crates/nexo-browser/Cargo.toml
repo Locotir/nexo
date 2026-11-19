@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: drives the installed Chrome, Chromium or Edge over the DevTools Protocol with snapshot refs an LLM can act on"
 
 [dependencies]

@@ -97,9 +97,10 @@ pub trait Host: Send + Sync {
     ) -> Result<(u32, crate::budget::Flight), String> {
         Ok((max_tokens, crate::budget::Flight::default()))
     }
-    /// Bills a sub-agent's model call to the session and says what it cost. `pricing`: the prices of another
-    /// provider the sub-agent ran on; none: priced as the main agent prices `model`.
-    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) -> f64;
+    /// Bills a sub-agent's model call to the session and says what it cost. `pricing`: the prices the call was
+    /// reserved at; none: priced as the main agent prices `model`. `other`: it ran on another provider than the
+    /// main agent's (the audit log says so).
+    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>, other: bool) -> f64;
     /// The conversation so far, to brief the sub-agent from.
     async fn history(&self) -> Vec<Message> {
         Vec::new()
@@ -194,6 +195,8 @@ pub struct SubAgent {
     worktree_setup: Vec<String>,
     /// The session's context policy (`[context]`), which each sub-agent runs over its own messages (none: plain).
     context: Option<nexo_core::config::ContextConfig>,
+    /// The reply size a sub-agent asks for, as the main agent's (`[agent] max_tokens`), under its model's limits.
+    max_tokens: u32,
     launch_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
@@ -232,6 +235,7 @@ impl SubAgent {
             hooks: Vec::new(),
             worktree_setup: Vec::new(),
             context: None,
+            max_tokens: nexo_core::config::DEFAULT_MAX_TOKENS,
             launch_gate: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
@@ -240,6 +244,12 @@ impl SubAgent {
     /// does (without it, everything).
     pub fn with_context(mut self, cfg: nexo_core::config::ContextConfig) -> SubAgent {
         self.context = Some(cfg);
+        self
+    }
+
+    /// The reply size each sub-agent asks for: the main agent's `[agent] max_tokens`.
+    pub fn with_max_tokens(mut self, n: u32) -> SubAgent {
+        self.max_tokens = n;
         self
     }
 
@@ -533,6 +543,7 @@ impl SubAgent {
             id: String::new(),
             sub: None,
             context: self.context.clone(),
+            max_tokens: self.max_tokens,
             label: own_words.lines().next().unwrap_or("").chars().take(60).collect(),
         };
         let writes = self.can_write(&run.profile);

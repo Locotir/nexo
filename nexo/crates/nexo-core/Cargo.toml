@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: the contracts every other crate is written against (messages, stream events, protocols, tools, agent events, configuration)"
 
 [dependencies]

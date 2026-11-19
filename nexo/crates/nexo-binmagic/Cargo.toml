@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: tells from a file's first bytes whether it is a program nexo bin reads, without the disassembler behind it"
 
 [dependencies]

@@ -66,8 +66,11 @@ pub(super) fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
             vec![Span::styled(
                 if app.quiet() {
                     format!(" ◷ {} queued", app.queued)
-                } else {
+                } else if app.busy {
                     format!(" ◷ {} queued · Enter send now", app.queued)
+                } else {
+                    // as short as the busy form, so it keeps its place beside the idle keys at 100 columns
+                    format!(" ◷ {} queued for next message", app.queued)
                 },
                 base.fg(theme.warn).add_modifier(lit(HintHit::Queued)),
             )],

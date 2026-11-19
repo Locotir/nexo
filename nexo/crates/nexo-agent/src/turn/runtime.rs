@@ -302,7 +302,8 @@ fn add_subagents(
         .with_parallel(config.agent.parallel_tasks)
         .with_hooks(config.hooks.clone())
         .with_worktree_setup(config.agent.worktree_setup.clone())
-        .with_context(config.context.clone());
+        .with_context(config.context.clone())
+        .with_max_tokens(config.agent.max_tokens);
     let sub = Arc::new(sub);
     tools.add(sub.clone());
     let flow_sub = Some(sub.clone());

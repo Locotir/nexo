@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: reads ELF and PE x86-64 files as bytes and answers questions about them in bounded pieces"
 
 [features]

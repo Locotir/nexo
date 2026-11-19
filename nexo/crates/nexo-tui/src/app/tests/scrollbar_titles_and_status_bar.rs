@@ -551,3 +551,50 @@ fn nothing_answers_a_click_while_the_too_small_screen_is_shown() {
     pointer(&mut a, K::Down(MouseButton::Left), col, row);
     assert!(a.modal.is_none(), "the old model piece opened a picker nobody can see");
 }
+
+#[test]
+fn compacting_moves_the_gauge_down() {
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::ModelLimits {
+        provider: "p".into(),
+        model: "m".into(),
+        pricing: None,
+        context_window: Some(100_000),
+        max_output: None,
+        source: "config".into(),
+    });
+    a.handle_agent(AgentEvent::Context {
+        view_tokens: 92_000,
+        history_tokens: 95_000,
+        history_bytes: 380_000,
+        view_bytes: 368_000,
+        messages_in_view: 40,
+        messages_total: 42,
+        policy: "curator".into(),
+        note: None,
+        label: "curator".into(),
+        detail: None,
+    });
+    a.handle_agent(AgentEvent::Usage {
+        turn: Usage { input: 92_000, ..Default::default() },
+        call: Usage { input: 12_000, cache_read: 80_000, ..Default::default() },
+        session: Usage { input: 92_000, ..Default::default() },
+        cost_usd: 0.0,
+    });
+    assert_eq!(a.gauge(), Some((92_000, 100_000)));
+    let calls = a.call_inputs.clone();
+    a.handle_agent(AgentEvent::Compacted { before_tokens: 95_000, after_tokens: 30_000 });
+    assert_eq!(a.gauge(), Some((30_000, 100_000)), "the bar shows the compacted size, not the last call's");
+    assert_eq!((a.last_call_input, a.last_call_cached), (0, 0));
+    assert_eq!(a.call_inputs, calls, "the call history stays");
+    let c = a.context.as_ref().expect("the view is still known");
+    assert_eq!((c.view_tokens, c.history_tokens), (30_000, 30_000));
+    // the next call's real input takes over again
+    a.handle_agent(AgentEvent::Usage {
+        turn: Usage { input: 31_000, ..Default::default() },
+        call: Usage { input: 31_000, ..Default::default() },
+        session: Usage { input: 123_000, ..Default::default() },
+        cost_usd: 0.0,
+    });
+    assert_eq!(a.gauge(), Some((31_000, 100_000)));
+}

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "nexo: turns captured web traffic into an API an agent can read and call, without keeping a secret"
 
 [dependencies]
