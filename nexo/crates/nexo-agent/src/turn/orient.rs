@@ -438,7 +438,7 @@ pub(super) async fn start_check(
     if perm.decide("bash", ToolKind::Exec, &serde_json::json!({"command": check.command}), &cwd) != Decision::Allow {
         return None;
     }
-    let cap = Duration::from_secs(secs.max(1).min(nexo_tools::postcheck::START_CHECK_SECS));
+    let cap = Duration::from_secs(secs.clamp(1, nexo_tools::postcheck::START_CHECK_SECS));
     if guard.start_skip(&check.command, &check.dir) {
         return None;
     }
