@@ -32,17 +32,24 @@ pub struct AgentConfig {
     /// Title for the session this run opens or resumes (`--name`); never read from a file.
     #[serde(skip)]
     pub session_title: Option<String>,
-    /// Files a request names by path (a word with a `/` or an extension) that exist under the working
-    /// directory, are text and at most 24 KB, up to three, are included in it in full, so the model needs no
-    /// step to read them. They go under nexo's own header (`path (project file, included in full by nexo, as it
-    /// is now):`), never under the `@path` header of a file the person attached.
+    /// What a request names comes with it: a path or file name (a word with a `/` or an extension), a folder, an
+    /// identifier the project defines. A text file of at most 24 KB that the message points at alone is included in
+    /// full (up to three), under nexo's own header (`path (project file, included in full by nexo, as it is
+    /// now):`), never under the `@path` header of a file the person attached. A larger or ambiguous file comes as
+    /// its path, size and first 20 lines, a folder as its listing, an identifier as the line that defines it, within
+    /// `attach_budget`. Files and folders outside the project (the home folder, a path the message writes) count too,
+    /// except keys, credentials and other programs' account folders, which are never read or listed.
     pub attach_named_files: bool,
-    /// Tokens of the project's small text files included whole in each request, under that same header, the
-    /// named ones counted, smallest first (nothing in `target/`, `node_modules/`, `.git/`, binaries, files over
-    /// 2000 lines). 0: none.
+    /// Tokens of the first call that nexo fills by itself, under that same header: the files the request names,
+    /// their heads, listings and definitions, then the project's small text files, smallest first, only when all of
+    /// them fit (nothing in `target/`, `node_modules/`, `.git/`, binaries, files over 2000 lines). 0: no heads,
+    /// listings or definitions, and only the project files a message writes a path or bare name for.
     pub attach_budget: u32,
-    /// Runs the project's check (its tests) once at the start of each request, when the policy lets commands
-    /// run and the files changed since the last result, and puts the failing tests in the request.
+    /// Runs the project's check (its tests) once at the start of a request that is about code (it names a source file
+    /// or folder, an identifier the project defines, or the check's own command), the project has at most 200
+    /// source files and the policy lets commands run, when the files changed since the last result, for at most 20
+    /// seconds; a check that was slower than that at a start is not run at a start again until a run of it finishes
+    /// faster. The failing tests go in the request.
     pub check_at_start: bool,
     /// Retries on retryable provider errors.
     pub retries: u32,

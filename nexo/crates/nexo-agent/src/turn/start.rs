@@ -180,8 +180,31 @@ async fn prepare_turn(
         }
     }
     let text = if person { typed.clone() } else { text };
+    // what the message names, looked up on disk before the lock (the file system only): the files, folders and
+    // definitions that come with it, and whether it is about code, which decides the project's check
+    let (cwd, check_words) = {
+        let st = state.lock().await;
+        (st.cwd.clone(), check_words_of(&st.cwd))
+    };
+    let found = {
+        let (text, files) = (text.clone(), attachments.clone());
+        tokio::task::spawn_blocking(move || {
+            let home = nexo_core::paths::user_home();
+            named::find(
+                &text,
+                &cwd,
+                home.as_deref(),
+                &files,
+                &check_words,
+                named::Reach::Search,
+                Instant::now() + named::FIND_TIME,
+            )
+        })
+        .await
+        .unwrap_or_default()
+    };
     // the project's check runs once, before the request is built, so its result comes with it
-    let check = orient::start_check(state, cancel).await;
+    let check = orient::start_check(state, cancel, found.code, found.sources).await;
     // what the machine has for the programs and config the person names (nothing while its index is not built)
     let machine =
         if person && !marked_by_nexo(&typed) { orient::machine_found(state, &typed).await } else { Vec::new() };
@@ -207,13 +230,16 @@ async fn prepare_turn(
             first.push(ultracode::facts(&st.config, &provider, &model, now));
         }
         // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
-        let (mut own, mut known) = named_files(&st, &text, &attachments);
+        let budget = orient::first_budget(&st, &text).saturating_sub(orient::counted(&st, &attachments).1);
+        let admitted = named::admit(&st, found, budget);
+        let (mut own, mut known, mut spent) = (admitted.whole, admitted.lines, admitted.spent);
         let named: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
-        let (mapped, lines) = orient::machine_files(&mut st, &text, &named, machine);
+        let (mapped, lines) = orient::machine_files(&mut st, &text, &named, machine, spent);
         own.extend(mapped);
+        spent += lines.iter().map(|l| orient::attached_tokens(l.len())).sum::<u64>();
         known.extend(lines);
         let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
-        own.extend(orient::budget_files(&st, &text, &with));
+        own.extend(orient::budget_files(&st, &text, &with, spent));
         let included = orient::include(&own, &st.cwd);
         // a server changed its tools since the last turn: they take effect now, not in the middle of one
         if let Some(h) = st.mcp.clone() {
@@ -532,7 +558,18 @@ pub(super) async fn take_inbox(state: &Shared, cancel: &CancellationToken) -> bo
         let text = std::mem::take(&mut item.text);
         let attachments = std::mem::take(&mut item.attachments);
         // the files the message names come as in a first request: under nexo's own header, counted by a note
-        let (named, known) = named_files(&st, &text, &attachments);
+        let home = nexo_core::paths::user_home();
+        let found = named::find(
+            &text,
+            &st.cwd,
+            home.as_deref(),
+            &attachments,
+            &[],
+            named::Reach::Direct,
+            Instant::now() + named::DIRECT_TIME,
+        );
+        let admitted = named::admit(&st, found, u64::from(st.config.agent.attach_budget));
+        let (named, known) = (admitted.whole, admitted.lines);
         let included = orient::include(&named, &st.cwd);
         let ask = ask_line(&mut st, true, &text);
         let note = orient::start_note(&included, &known, None, None, ask.as_deref());
@@ -945,82 +982,15 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     view
 }
 
-/// The largest file a request attaches by naming it.
-const NAMED_FILE_BYTES: u64 = 24_000;
-/// The most files one request attaches by naming them.
-const NAMED_FILES: usize = 3;
-
-/// The files a request names (a word with a `/` or an extension) that exist under the working
-/// directory, are text of at most 24 KB and are not in the conversation already: up to three, which nexo
-/// includes under its own header (never as the person's `@path`), so the model starts with them and needs no
-/// step to read them.
-///
-/// A named file the view already holds whole and unchanged (a `write` of it, not an `edit`) is not attached again:
-/// it comes back as a line saying so, for the start note.
-fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachment>, Vec<String>) {
-    if !st.config.agent.attach_named_files {
-        return (Vec::new(), Vec::new());
+/// The words of the project's check command up to its first flag, at most two (`cargo test`); none when there is no
+/// check.
+fn check_words_of(cwd: &Path) -> Vec<String> {
+    match nexo_tools::project::check_command_within(cwd, Some(cwd)) {
+        Some(c) => {
+            c.command.split_whitespace().take_while(|w| !w.starts_with('-')).take(2).map(str::to_string).collect()
+        }
+        None => Vec::new(),
     }
-    let root = st.cwd.canonicalize().unwrap_or_else(|_| st.cwd.clone());
-    let mut seen: Vec<PathBuf> = explicit
-        .iter()
-        .map(|a| {
-            let p = if a.path.is_absolute() { a.path.clone() } else { st.cwd.join(&a.path) };
-            p.canonicalize().unwrap_or(p)
-        })
-        .collect();
-    let said = orient::carried(&st.history);
-    let mut out = Vec::new();
-    let mut known = Vec::new();
-    for word in text.split_whitespace() {
-        if out.len() + known.len() >= NAMED_FILES {
-            break;
-        }
-        let word = word.trim_matches(|c: char| {
-            matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?')
-        });
-        let word = word.trim_end_matches('.');
-        let looks_like_path = !word.is_empty()
-            && !word.starts_with('@')
-            && !word.contains("://")
-            && !word.contains('*')
-            && (word.contains('/')
-                || Path::new(word).extension().is_some_and(|e| !e.is_empty()) && !word.starts_with('.'));
-        if !looks_like_path {
-            continue;
-        }
-        let p = if Path::new(word).is_absolute() { PathBuf::from(word) } else { st.cwd.join(word) };
-        let Ok(real) = p.canonicalize() else { continue };
-        if !real.starts_with(&root) || seen.contains(&real) || image_type(&real).is_some() {
-            continue;
-        }
-        let Ok(meta) = std::fs::metadata(&real) else { continue };
-        if !meta.is_file() || meta.len() > NAMED_FILE_BYTES {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(&real) else { continue };
-        if std::str::from_utf8(&bytes).is_err() {
-            continue;
-        }
-        // the same policy as `read`: key files ask, denied paths stay out
-        if st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": word }), &st.cwd) != Decision::Allow {
-            continue;
-        }
-        // attached to an earlier request, or included in one: the conversation holds it
-        if said.contains(word) {
-            continue;
-        }
-        // the model holds the whole file (it wrote it, or its command made it and printed it) and it is unchanged
-        let made = orient::made_in_work(&st.worked, &real);
-        if let Some(how) = st.reads.held_whole(&real, &bytes, made) {
-            known.push(format!("{word}: {how}, unchanged since; not attached again. Read it if you need its lines."));
-            seen.push(real);
-            continue;
-        }
-        seen.push(real);
-        out.push(Attachment { path: PathBuf::from(word) });
-    }
-    (out, known)
 }
 
 #[cfg(test)]

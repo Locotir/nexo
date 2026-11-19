@@ -63,6 +63,7 @@ mod hook_calls;
 mod host;
 mod lesson;
 mod lifecycle;
+mod named;
 mod notices;
 mod orient;
 mod prefix;

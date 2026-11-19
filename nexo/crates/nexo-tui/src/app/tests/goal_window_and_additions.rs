@@ -260,6 +260,88 @@ fn sent_asks_the_agent_and_the_answer_opens_a_window_with_the_sections() {
     assert!(a.modal.is_none());
 }
 
+/// The goal message nexo built itself: the goal's words and the start note under them.
+fn goal_message(words: &str) -> nexo_core::message::Message {
+    nexo_core::message::Message::user(format!(
+        "[goal set] {words}\n\n[project at the start of this request]\nattached: 1 files"
+    ))
+}
+
+fn added_blocks(a: &App) -> Vec<&Vec<nexo_core::agent::AddedPart>> {
+    a.blocks.iter().filter_map(|b| if let Block::Added { parts, .. } = b { Some(parts) } else { None }).collect()
+}
+
+#[test]
+fn a_goal_nexo_started_has_one_added_line_when_its_parts_come_live() {
+    use nexo_core::agent::{AddedKind::*, AddedPart};
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::History { index: 0, message: goal_message("find app ideas") });
+    a.handle_agent(AgentEvent::Added {
+        index: 0,
+        parts: vec![
+            AddedPart::new(StartNote, "project", "[project at the start of this request]\nattached: 1 files"),
+            AddedPart::new(File, "a.rs", "a.rs (project file, included in full by nexo, as it is now):\n```rs\n```"),
+        ],
+    });
+    let lines = added_blocks(&a);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].len(), 2, "the live parts are the line's: {lines:?}");
+}
+
+#[test]
+fn a_goal_after_a_persons_message_leaves_that_messages_line_alone() {
+    use nexo_core::agent::{AddedKind::*, AddedPart};
+    let (mut a, _rx) = app();
+    said_with_additions(&mut a);
+    a.handle_agent(AgentEvent::History { index: 1, message: nexo_core::message::Message::assistant("done") });
+    a.handle_agent(AgentEvent::History { index: 2, message: goal_message("find app ideas") });
+    a.handle_agent(AgentEvent::Added {
+        index: 2,
+        parts: vec![AddedPart::new(StartNote, "project", "[project at the start of this request]\nattached: 1 files")],
+    });
+    let lines = added_blocks(&a);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let labels: Vec<&str> = lines[0].iter().map(|p| p.label.as_str()).collect();
+    assert_eq!(labels, ["hook context", "project", "a.rs", "b.rs"], "the person's message keeps its line");
+    assert_eq!(lines[1].len(), 1);
+}
+
+#[test]
+fn a_goals_mentions_never_cut_the_text_of_an_earlier_plain_message() {
+    use nexo_core::agent::{AddedKind::*, AddedPart};
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::History { index: 0, message: nexo_core::message::Message::user("keep @notes.md tidy") });
+    a.handle_agent(AgentEvent::History { index: 1, message: nexo_core::message::Message::assistant("done") });
+    a.handle_agent(AgentEvent::History { index: 2, message: goal_message("find app ideas") });
+    a.handle_agent(AgentEvent::Added {
+        index: 2,
+        parts: vec![
+            AddedPart::new(StartNote, "project", "[project at the start of this request]\nattached: 1 files"),
+            AddedPart::new(Mention, "notes.md", "@notes.md"),
+        ],
+    });
+    let person: Vec<&str> = a
+        .blocks
+        .iter()
+        .filter_map(|b| if let Block::User { text, .. } = b { Some(text.as_str()) } else { None })
+        .collect();
+    assert_eq!(person, ["keep @notes.md tidy"], "the earlier message keeps its words");
+    assert_eq!(added_blocks(&a).len(), 1);
+}
+
+/// Guards the path a replayed session takes: the line `history()` drew stays when no live parts match it.
+#[test]
+fn a_replayed_goal_still_reads_back_one_line() {
+    use nexo_core::agent::{AddedKind::*, AddedPart};
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::History { index: 0, message: goal_message("find app ideas") });
+    assert_eq!(added_blocks(&a).len(), 1);
+    // parts for a later message with no read-back line of its own take the path they always took
+    a.handle_agent(AgentEvent::History { index: 1, message: nexo_core::message::Message::assistant("done") });
+    a.handle_agent(AgentEvent::Added { index: 5, parts: vec![AddedPart::new(Hook, "hook context", "it is monday")] });
+    assert_eq!(added_blocks(&a).len(), 2);
+}
+
 /// A resumed session's message as it was stored: the words, the start note and a file, all in one text.
 fn stored_with_additions(a: &mut App) {
     let t = "Hola cómo estás?\n\n[project at the start of this request]\nattached: 1 files, 1883 tokens\n\n\

@@ -32,7 +32,7 @@ impl App {
                 self.on_ready(session_id, provider, model, cwd, permission_mode)
             }
             AgentEvent::History { index, message } => self.on_history(index, message),
-            AgentEvent::Added { parts, .. } => self.added(parts),
+            AgentEvent::Added { index, parts } => self.added(index, parts),
             AgentEvent::Sent { model, sections } => self.on_sent(model, sections),
             AgentEvent::Preparing { what } => self.on_preparing(what),
             AgentEvent::TurnStart { .. } => self.on_turn_start(),

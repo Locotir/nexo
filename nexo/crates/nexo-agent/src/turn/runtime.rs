@@ -166,7 +166,7 @@ impl Runtime {
             claims: Default::default(),
             detach: detach.clone(),
             seen: Default::default(),
-            post: Default::default(),
+            post: Arc::new(nexo_tools::postcheck::Guard::with_store(nexo_core::paths::cache_dir().join("slow-checks"))),
             repeats: Default::default(),
             bin_told,
             dbg_told,

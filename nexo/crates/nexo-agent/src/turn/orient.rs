@@ -1,15 +1,15 @@
 //! Part of the agent loop; see the parent module.
 //!
-//! The first context of a request: the small files of the project whole, within a token budget, and the
-//! project's own check already run, so the first model call can already change something instead of
-//! spending steps on reading files and running the tests. Nothing here knows a language, a task or a
-//! benchmark: only the shape of a project folder and the manifests' check command.
+//! The first context of a request: the small files of the project whole when all of them fit a token budget, and the
+//! project's own check already run when the request is about code, so the first model call can already change
+//! something instead of spending steps on reading files and running the tests. Nothing here knows a language, a
+//! task or a benchmark: only the shape of a project folder and the manifests' check command.
 
 use super::*;
 
 /// Folders that hold build output, dependencies, tool state, or test data and generated files (captured screens,
 /// snapshots, fixtures, golden outputs), never attached from.
-const SKIP_DIRS: &[&str] = &[
+pub(super) const SKIP_DIRS: &[&str] = &[
     "target",
     "node_modules",
     ".git",
@@ -38,7 +38,7 @@ const MAX_LINES: usize = 2000;
 /// The most files attached by the budget in one request.
 const MAX_FILES: usize = 24;
 /// The most entries looked at while choosing.
-const WALK_CAP: usize = 4000;
+pub(super) const WALK_CAP: usize = 4000;
 /// The most characters of a check result put in the request.
 const CHECK_CHARS: usize = 1500;
 /// The size, in estimated tokens, the first model call of a request stays under (a margin below the 20k target, for the estimate) with what is attached: the
@@ -93,13 +93,15 @@ fn test_data(rel: &str) -> bool {
 }
 
 /// Whether `root` is no project folder: the person's home folder or a filesystem root.
-fn outside_project(root: &Path, home: Option<&Path>) -> bool {
+pub(super) fn outside_project(root: &Path, home: Option<&Path>) -> bool {
     let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     real.parent().is_none() || home.is_some_and(|h| h.canonicalize().is_ok_and(|h| h == real))
 }
 
-/// The text files under `root` to attach: smallest first, until `budget` tokens are spent (at most
-/// [`MAX_FILES`]). `skip` holds the real paths already attached; `allowed` is asked about each candidate.
+/// The text files under `root` to attach, all or none: when every candidate (at most [`MAX_FILES`], `budget` tokens
+/// in all, none alone over `budget`) fits, they come smallest first; when the project holds more than that, nothing
+/// comes. A project shown whole needs no guess about what matters, and in a larger one the smallest files say nothing
+/// about the request. `skip` holds the real paths already attached; `allowed` is asked about each candidate.
 /// Returns each file's path relative to `root` (forward slashes) with its tokens.
 pub(super) fn pick(
     root: &Path,
@@ -134,6 +136,8 @@ fn pick_in(
         .build();
     let mut found: Vec<(usize, String)> = Vec::new();
     let mut seen = 0usize;
+    // every candidate counts, the ones over the budget too: the project's files come whole or not at all
+    let (mut count, mut total, mut too_big) = (0usize, 0u64, false);
     for e in walk.flatten().take(WALK_CAP) {
         seen += 1;
         if !e.file_type().is_some_and(|t| t.is_file()) || dull(&e.file_name().to_string_lossy()) {
@@ -142,17 +146,27 @@ fn pick_in(
         let Ok(rel) = e.path().strip_prefix(root) else { continue };
         let Ok(meta) = e.metadata() else { continue };
         let len = meta.len() as usize;
-        // an empty file says nothing; a file over the budget could never be attached
-        if len == 0 || attached_tokens(len) > budget {
+        // an empty file says nothing
+        if len == 0 {
             continue;
         }
         let rel = rel.to_string_lossy().replace('\\', "/");
         if test_data(&rel) {
             continue;
         }
+        // a file attached already is not part of what is left
+        if !skip.is_empty() && e.path().canonicalize().is_ok_and(|r| skip.contains(&r)) {
+            continue;
+        }
+        count += 1;
+        total += attached_tokens(len);
+        if attached_tokens(len) > budget {
+            too_big = true;
+            continue;
+        }
         found.push((len, rel));
     }
-    if seen >= WALK_CAP {
+    if seen >= WALK_CAP || too_big || count > MAX_FILES || total > budget {
         return Vec::new();
     }
     found.sort();
@@ -205,7 +219,7 @@ pub(super) fn carried(history: &[Message]) -> HashSet<String> {
 /// The tokens nexo may put in the first call of a request besides the conversation: `agent.attach_budget`, or what a
 /// long request leaves of the first call (it stays under FIRST_CALL tokens, or what the window's view leaves when that
 /// is less). 0 when nexo attaches nothing by itself.
-fn first_budget(st: &State, text: &str) -> u64 {
+pub(super) fn first_budget(st: &State, text: &str) -> u64 {
     let budget = u64::from(st.config.agent.attach_budget);
     if budget == 0 || !st.config.agent.attach_named_files {
         return 0;
@@ -217,7 +231,7 @@ fn first_budget(st: &State, text: &str) -> u64 {
 }
 
 /// The real paths of `attachments` and the tokens they take already.
-fn counted(st: &State, attachments: &[Attachment]) -> (Vec<PathBuf>, u64) {
+pub(super) fn counted(st: &State, attachments: &[Attachment]) -> (Vec<PathBuf>, u64) {
     let mut skip = Vec::new();
     let mut used = 0u64;
     for a in attachments {
@@ -258,6 +272,7 @@ pub(super) fn machine_files(
     text: &str,
     attachments: &[Attachment],
     found: Vec<crate::machine_map::Found>,
+    spent: u64,
 ) -> (Vec<Attachment>, Vec<String>) {
     let budget = first_budget(st, text);
     if budget == 0 || found.is_empty() {
@@ -279,15 +294,16 @@ pub(super) fn machine_files(
                 &st.cwd,
             ) == Decision::Allow
     };
-    let mapped = st.machine.attach(found, budget.saturating_sub(used), &allowed);
+    let mapped = st.machine.attach(found, budget.saturating_sub(used + spent), &allowed);
     let files = mapped.files.into_iter().map(|path| Attachment { path }).collect();
     (files, mapped.lines)
 }
 
-/// The text files of the project nexo includes in a request by itself, after the ones it names:
-/// `agent.attach_budget` tokens in all, the named and the attached files counted. The files already in the
-/// conversation stay out, and so does an instruction file the system text carries.
-pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -> Vec<Attachment> {
+/// The text files of the project nexo includes in a request by itself, after the ones it names, only when all of
+/// them fit: `agent.attach_budget` tokens in all, the named and the attached files and the lines about the named
+/// items (`spent`) counted. The files already in the conversation stay out, and so does an instruction file the
+/// system text carries.
+pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment], spent: u64) -> Vec<Attachment> {
     let budget = first_budget(st, text);
     if budget == 0 {
         return Vec::new();
@@ -304,7 +320,7 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
             && !instructions.iter().any(|p| p == real)
             && st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": rel }), &st.cwd) == Decision::Allow
     };
-    pick(&st.cwd, budget.saturating_sub(used), &skip, &allowed)
+    pick(&st.cwd, budget.saturating_sub(used + spent), &skip, &allowed)
         .into_iter()
         .map(|(rel, _)| Attachment { path: PathBuf::from(rel) })
         .collect()
@@ -387,10 +403,20 @@ pub(super) fn start_note(
     format!("{}\n{}", crate::session::START_NOTE_HEAD, lines.join("\n"))
 }
 
-/// The project's check, run once for the request when the policy lets commands run and the tree changed since
-/// the last result: its report, short. None where no check exists, the policy asks or denies, or the
-/// check ran past its cap before.
-pub(super) async fn start_check(state: &Shared, cancel: &CancellationToken) -> Option<String> {
+/// The most source files a project may have for its check to run at the start of a request: a test build of a tree
+/// larger than that is never started before the model's first call.
+pub(super) const START_CHECK_SOURCES: usize = 200;
+
+/// The project's check, run once for the request when the request gives evidence of code work (`code`), the project
+/// has `sources` source files or fewer, the policy lets commands run and the tree changed since the last result: its
+/// report, short, from a run of at most `START_CHECK_SECS` seconds. None where no check exists, the policy asks or
+/// denies, or the same command ran past its cap at a start before and no run of it has finished under the cap since.
+pub(super) async fn start_check(
+    state: &Shared,
+    cancel: &CancellationToken,
+    code: bool,
+    sources: usize,
+) -> Option<String> {
     let (guard, perm, sandbox, cwd, secs, on, has_bash) = {
         let st = state.lock().await;
         (
@@ -405,15 +431,15 @@ pub(super) async fn start_check(state: &Shared, cancel: &CancellationToken) -> O
     };
     // a new request starts a new account of what was said about the check output
     guard.new_turn();
-    if !on || !has_bash {
+    if !on || !has_bash || !code || sources > START_CHECK_SOURCES {
         return None;
     }
     let check = nexo_tools::project::check_command_within(&cwd, Some(&cwd))?;
     if perm.decide("bash", ToolKind::Exec, &serde_json::json!({"command": check.command}), &cwd) != Decision::Allow {
         return None;
     }
-    let cap = Duration::from_secs(secs.max(1));
-    if guard.skip_note(&check.command, &check.dir, cap).is_some() {
+    let cap = Duration::from_secs(secs.max(1).min(nexo_tools::postcheck::START_CHECK_SECS));
+    if guard.start_skip(&check.command, &check.dir) {
         return None;
     }
     let root = cwd.clone();
@@ -425,7 +451,7 @@ pub(super) async fn start_check(state: &Shared, cancel: &CancellationToken) -> O
             // the one step here that can take long (a test run): the person sees it
             let events = state.lock().await.events.clone();
             preparing(&events, check_words(&check.command));
-            let t = guard.run(&check.command, &check.dir, cap, &sandbox, &cancel.child_token()).await;
+            let t = guard.run_start(&check.command, &check.dir, cap, &sandbox, &cancel.child_token()).await;
             guard.remember(&check.command, print, &t);
             t
         }
@@ -538,6 +564,26 @@ mod tests {
         for i in 0..WALK_CAP + 100 {
             std::fs::write(d.path().join(format!("f{i}.txt")), "x\n").unwrap();
         }
+        assert!(pick_in(d.path(), 6000, &[], &|_, _| true, None).is_empty());
+    }
+
+    #[test]
+    fn a_project_whose_small_files_do_not_all_fit_attaches_none() {
+        // 30 small files: more than MAX_FILES, so none of them is attached
+        let files: Vec<(String, String)> =
+            (0..30).map(|i| (format!("src/m{i:02}.rs"), format!("fn f{i}() {{}}\n"))).collect();
+        let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+        let d = tree(&refs);
+        assert!(pick_in(d.path(), 6000, &[], &|_, _| true, None).is_empty());
+        // 12 of them fit
+        let few = tree(&refs[..12]);
+        assert_eq!(pick_in(few.path(), 6000, &[], &|_, _| true, None).len(), 12);
+        // 10 small files and one over the whole budget: all or none, so none
+        let mut mixed: Vec<(String, String)> =
+            (0..10).map(|i| (format!("src/s{i}.rs"), format!("fn s{i}() {{}}\n"))).collect();
+        mixed.push(("src/huge.rs".into(), "x\n".repeat(40_000)));
+        let refs: Vec<(&str, String)> = mixed.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+        let d = tree(&refs);
         assert!(pick_in(d.path(), 6000, &[], &|_, _| true, None).is_empty());
     }
 }

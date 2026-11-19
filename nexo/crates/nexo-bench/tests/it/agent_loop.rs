@@ -206,7 +206,7 @@ fn calc_task(id: &'static str, files: Vec<(String, String)>) -> nexo_bench::task
     // its own id: the working directory of a run is named after it, and the tests run side by side
     task.id = id;
     task.files = files;
-    task.turns = vec![(0, "fix add".into())];
+    task.turns = vec![(0, "fix add in src/lib.rs".into())];
     task.setup = None;
     task.sealed = false;
     task.mask = &[];
