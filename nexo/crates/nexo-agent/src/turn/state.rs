@@ -69,6 +69,9 @@ pub(super) struct State {
     /// The goal was set or resumed while a turn ran: that turn's reply says nothing about it, so its end does not
     /// judge the goal (see `goal_settle`).
     pub(super) goal_unread: bool,
+    /// The request in progress is one the person typed while an active goal's round ran, which that round's tool
+    /// rounds did not take in and which ran by itself after it: their words came during the round (see `goal_settle`).
+    pub(super) goal_typed: bool,
     /// A goal set while a turn ran, whose `[goal set]` request has not gone yet: the files the person attached to it,
     /// which go with that request (see `goal_request_now`).
     pub(super) goal_pending: Option<Vec<Attachment>>,

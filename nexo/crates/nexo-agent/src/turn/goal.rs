@@ -482,6 +482,7 @@ pub(super) fn person_spoke(st: &mut State) {
 pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd, run_queue: bool) {
     let mut st = state.lock().await;
     let unread = std::mem::take(&mut st.goal_unread);
+    let typed = std::mem::take(&mut st.goal_typed);
     if st.goal.is_none() || !st.goal_state.is_active() {
         return;
     }
@@ -519,6 +520,14 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd, run_queue: bool
                 (GoalState::Done, "goal met · /goal resume reopens it, /goal off clears it".to_string())
             } else if goal_wait(&last) {
                 (GoalState::Waiting, "goal waiting for your answer: your next message resumes it".to_string())
+            } else if (typed || st.person_at > st.turn_start) && answered_in_words(&st) {
+                // the person wrote during the round (their words joined it, or ran right after it) and the model
+                // answered them in words (a stop, a question): a continuation would talk over them, so the goal
+                // waits for their next message
+                (
+                    GoalState::Waiting,
+                    "goal waiting: you wrote during the round · your next message resumes it".to_string(),
+                )
             } else {
                 return;
             }

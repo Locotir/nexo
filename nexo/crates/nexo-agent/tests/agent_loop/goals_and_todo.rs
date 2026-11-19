@@ -816,3 +816,69 @@ async fn goal_resume_after_esc_runs_the_kept_messages() {
     assert!(client.requests()[1].messages.last().unwrap().text().contains("also X"));
     r.stop().await;
 }
+
+/// The person types "stop" while a goal round runs: it joins the round after the read, the model answers it in words,
+/// and that reply is neither GOAL DONE nor GOAL WAIT. The goal waits for the person's next message instead of sending
+/// `[goal: continue]` over their stop.
+#[tokio::test]
+async fn a_stop_typed_during_a_goal_round_leaves_the_goal_waiting() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    {
+        let mut replies = client.replies.lock().unwrap();
+        replies.push_back(Reply::Midway(
+            r.handle.commands.clone(),
+            Box::new(AgentCommand::Submit { text: "stop".into(), attachments: vec![] }),
+            call("c1", "read", json!({"path": "a.rs"})),
+        ));
+        replies.push_back(Reply::Events(text("OK, stopping")));
+        // what the base sends next: the goal's continuation
+        replies.push_back(Reply::Events(call("c2", "read", json!({"path": "b.rs"}))));
+        replies.push_back(Reply::Events(text("went on\nGOAL DONE")));
+    }
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("fix the bug".into()), attachments: vec![] });
+    r.turn().await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting), "{:?}", notices(&evs));
+    assert!(notices(&evs).iter().any(|n| n.contains("goal waiting: you wrote during the round")));
+    super::person_stop::no_turn_within(&mut r, 600).await;
+    assert_eq!(client.requests().len(), 2, "the read and the answer to the stop: no continuation");
+    // the next message resumes the goal
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let t = r.turn().await;
+    assert_eq!(goal_state_of(&t), Some(GoalState::Active));
+    r.stop().await;
+}
+
+/// The same "stop" typed while the round's last reply streams: no tool round takes it in, so it runs as its own
+/// request right after the round. Answered in words, it leaves the goal waiting too, instead of a `[goal: continue]`.
+#[tokio::test]
+async fn a_stop_typed_as_a_goal_round_ends_leaves_the_goal_waiting() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    {
+        let mut replies = client.replies.lock().unwrap();
+        replies.push_back(Reply::Midway(
+            r.handle.commands.clone(),
+            Box::new(AgentCommand::Submit { text: "stop".into(), attachments: vec![] }),
+            text("looked at the logs"),
+        ));
+        replies.push_back(Reply::Events(text("OK, stopping")));
+        // what the base sends next: the goal's continuation
+        replies.push_back(Reply::Events(text("went on\nGOAL DONE")));
+    }
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("fix the bug".into()), attachments: vec![] });
+    r.turn().await;
+    let t2 = r.turn().await;
+    let said = user_texts(&t2);
+    assert!(said.iter().any(|t| t.contains("stop")), "the stop runs as its own request: {said:?}");
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting), "{:?}", notices(&evs));
+    super::person_stop::no_turn_within(&mut r, 600).await;
+    assert_eq!(client.requests().len(), 2, "the round and the answer to the stop: no continuation");
+    r.stop().await;
+}

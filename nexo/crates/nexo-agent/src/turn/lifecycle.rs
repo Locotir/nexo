@@ -134,7 +134,16 @@ async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
             );
         }
     }
+    // a round of an active goal that ended on its own: what was queued was typed during it (Enter, `run_queue`, asks
+    // for the goal to go on after the message)
+    let typed = reason == TurnEnd::Done && !run_queue && {
+        let st = rt.state.lock().await;
+        st.goal.is_some() && st.goal_state.is_active()
+    };
     let queued = !waits && run_queued(rt).await;
+    if queued && typed {
+        rt.state.lock().await.goal_typed = true;
+    }
     if queued || held {
         // a queued request runs (what else is due waits for its end), or the person stopped: nothing below starts
     } else if !rt.state.lock().await.mail_wait.is_empty() {

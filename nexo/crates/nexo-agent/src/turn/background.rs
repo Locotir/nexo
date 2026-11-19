@@ -193,7 +193,7 @@ fn goal_round(turn: &[Message]) -> bool {
 
 /// The model did no tool call since the person's latest words joined the request (or since it began): what it
 /// said answers them, and there is no work of its own to check.
-fn answered_in_words(st: &State) -> bool {
+pub(super) fn answered_in_words(st: &State) -> bool {
     let from = st.turn_start.max(st.person_at).min(st.history.len());
     !st.history[from..].iter().any(|m| m.role == Role::Assistant && m.tool_calls().next().is_some())
 }
