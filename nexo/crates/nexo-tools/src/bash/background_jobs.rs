@@ -15,11 +15,23 @@ pub(super) fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::s
         }
         match end {
             End::Exited(c) => job.finish(c == 0, format!("exit {c}")),
-            End::Signalled => job.finish(false, "killed by a signal"),
-            End::Failed(e) => {
-                job.line(&format!("cannot run the command: {e}"));
-                job.finish(false, "failed to start")
+            End::Signalled(n) => job.finish(false, signal_words(n)),
+            End::Lost(e) => {
+                let said = format!("waiting for it failed: {e}; its exit status is not known");
+                job.line(&said);
+                job.finish(false, said)
             }
+            End::Failed(e) => match no_cwd(&cwd) {
+                Some(missing) => {
+                    let said = format!("{missing}; the command did not run");
+                    job.line(&said);
+                    job.finish(false, said)
+                }
+                None => {
+                    job.line(&format!("cannot run the command: {e}"));
+                    job.finish(false, "failed to start")
+                }
+            },
             // killed: the registry already says so
             End::TimedOut | End::Cancelled => drop(job),
         }
@@ -31,6 +43,40 @@ pub(super) fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::s
         one_line(command, 100)
     );
     ToolOutput::ok(content)
+}
+
+/// A command whose shell exited while a process it started still holds its output pipes: a job of the
+/// session from now on, fed from those pipes, so `jobs` reads what that process prints and stops it.
+/// Returns the job's number and the group id of the command.
+pub(super) fn hold_as_job(command: &str, ctx: &ToolContext, held: Held) -> (u32, u32) {
+    // held: no review stops it for being silent, which a server is
+    let job = ctx.jobs.start_held(JobKind::Shell, command);
+    let id = job.id();
+    let Held { pgid, mut rx, readers } = held;
+    tokio::spawn(async move {
+        let cancel = job.cancel();
+        loop {
+            tokio::select! {
+                // a `jobs` kill or the end of the session: the pipes are still open, so a member of the
+                // group may still exist
+                _ = cancel.cancelled() => {
+                    kill_group(Some(pgid));
+                    for r in &readers {
+                        r.abort();
+                    }
+                    // the registry already says it was killed
+                    drop(job);
+                    return;
+                }
+                line = rx.recv() => match line {
+                    Some(l) => job.line(&l),
+                    None => break,
+                },
+            }
+        }
+        job.finish(true, "its output closed; the exit status of what the command left running is not known");
+    });
+    (id, pgid)
 }
 
 /// Starts `command` on its own, in a session of its own, with its output in a log file, and leaves it
@@ -65,9 +111,7 @@ pub(super) fn detached(command: &str, ctx: &ToolContext, sandbox: &nexo_core::sa
     };
     let mut cmd = match build_command(command, &ctx.cwd, sandbox, true) {
         Ok(c) => c,
-        Err(e) => {
-            return ToolOutput::error(format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label()))
-        }
+        Err(e) => return ToolOutput::error(cannot_start(&ctx.cwd, &e)),
     };
     // no kill_on_drop: the child is left to itself
     cmd.current_dir(&ctx.cwd).stdin(Stdio::null()).stdout(out).stderr(err);
@@ -87,9 +131,7 @@ pub(super) fn detached(command: &str, ctx: &ToolContext, sandbox: &nexo_core::sa
     }
     let child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => {
-            return ToolOutput::error(format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label()))
-        }
+        Err(e) => return ToolOutput::error(cannot_start(&ctx.cwd, &e.to_string())),
     };
     let Some(pid) = child.id() else {
         return ToolOutput::error("bash: the detached command ended before it could be followed");
@@ -102,6 +144,14 @@ pub(super) fn detached(command: &str, ctx: &ToolContext, sandbox: &nexo_core::sa
         one_line(command, 100),
         log.display()
     ))
+}
+
+/// Why a detached command did not start: its working folder is gone, or the shell said `why`.
+fn cannot_start(cwd: &std::path::Path, why: &str) -> String {
+    match no_cwd(cwd) {
+        Some(missing) => format!("bash: {missing}; the command did not run"),
+        None => format!("{}: cannot run the command: {why}", nexo_core::shell::shell().label()),
+    }
 }
 
 /// The command that ends a detached process and what it started, spelled for the shell the model

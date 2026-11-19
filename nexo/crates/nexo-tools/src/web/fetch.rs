@@ -23,7 +23,8 @@ pub(super) struct PageCopy {
     pub(super) at: Instant,
     pub(super) final_url: Url,
     pub(super) text: String,
-    pub(super) cut: bool,
+    /// Why only the start of the page was read, when that is so.
+    pub(super) cut: Option<String>,
     pub(super) charset: Option<&'static str>,
 }
 
@@ -100,9 +101,16 @@ pub(super) fn kind_of(content_type: &str, body: &[u8]) -> Kind {
 }
 
 /// The page text in the charset the page declares: a byte order mark first, then the `charset` of the Content-Type,
-/// then (for HTML) a `<meta>` in the first KiB, as browsers do; UTF-8 when none names a charset this knows.
-/// The second value is the charset name when it was not UTF-8, so the model can be told.
-pub(super) fn decode<'a>(content_type: &str, body: &'a [u8], html: bool) -> (Cow<'a, str>, Option<&'static str>) {
+/// then (for HTML) a `<meta>` in the first KiB, as browsers do. When none names a charset this knows, UTF-8 if the
+/// bytes are UTF-8, else windows-1252, as browsers read an unlabeled legacy page.
+/// `cut` says the body was cut short (the end of the page is missing): only then may it end inside a UTF-8 character.
+/// The second value is the charset name (and why) when it was not UTF-8, so the model can be told.
+pub(super) fn decode<'a>(
+    content_type: &str,
+    body: &'a [u8],
+    html: bool,
+    cut: bool,
+) -> (Cow<'a, str>, Option<&'static str>) {
     static HEADER: OnceLock<regex::bytes::Regex> = OnceLock::new();
     static META: OnceLock<regex::bytes::Regex> = OnceLock::new();
     let (found, text) = match Encoding::for_bom(body) {
@@ -132,7 +140,16 @@ pub(super) fn decode<'a>(content_type: &str, body: &'a [u8], html: bool) -> (Cow
     };
     match found {
         Some(enc) if enc != encoding_rs::UTF_8 => (enc.decode_without_bom_handling(text).0, Some(enc.name())),
-        _ => (String::from_utf8_lossy(text), None),
+        Some(_) => (String::from_utf8_lossy(text), None),
+        None => match std::str::from_utf8(text) {
+            Ok(_) => (String::from_utf8_lossy(text), None),
+            // the bytes end inside a character because the body was cut: what is whole is UTF-8
+            Err(e) if cut && e.error_len().is_none() => (String::from_utf8_lossy(&text[..e.valid_up_to()]), None),
+            Err(_) => (
+                encoding_rs::WINDOWS_1252.decode_without_bom_handling(text).0,
+                Some("windows-1252, as the page names no charset and is not UTF-8"),
+            ),
+        },
     }
 }
 
@@ -142,7 +159,7 @@ fn error_body(content_type: &str, raw: &[u8], base: &Url) -> Option<String> {
     if content_type.trim().is_empty() || raw.is_empty() {
         return None;
     }
-    let (text, _) = decode(content_type, raw, true);
+    let (text, _) = decode(content_type, raw, true, raw.len() >= ERROR_BODY_READ);
     let text = match kind_of(content_type, raw) {
         Kind::Html => html_to_markdown(&text, Some(base)),
         Kind::Text => text.into_owned(),
@@ -350,12 +367,28 @@ impl Tool for WebFetch {
                 return Err(refused_text(&final_url, &what, size));
             }
             let mut body: Vec<u8> = Vec::new();
-            let mut cut = false;
-            while let Some(chunk) = resp.chunk().await.map_err(|e| net_error(&e))? {
-                body.extend_from_slice(&chunk);
+            let mut cut: Option<String> = None;
+            loop {
+                match resp.chunk().await {
+                    Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+                    Ok(None) => break,
+                    // what arrived before the connection broke is kept; with nothing received it is the error
+                    Err(e) if body.is_empty() => return Err(net_error(&e)),
+                    Err(e) => {
+                        let got = match body.len() {
+                            n if n < 1024 => format!("{n} bytes"),
+                            n => format!("{} KB", (n + 512) / 1024),
+                        };
+                        cut = Some(format!(
+                            "the connection ended after {got} of the body ({}); only its start was read",
+                            net_error(&e)
+                        ));
+                        break;
+                    }
+                }
                 if body.len() > MAX_BODY {
                     body.truncate(MAX_BODY);
-                    cut = true;
+                    cut = Some("the page is over 5 MB; only its start was read".into());
                     break;
                 }
             }
@@ -376,11 +409,11 @@ impl Tool for WebFetch {
                 };
                 let (text, charset) = match kind_of(&ct, &body) {
                     Kind::Html => {
-                        let (html, charset) = decode(&ct, &body, true);
+                        let (html, charset) = decode(&ct, &body, true, cut.is_some());
                         (html_to_markdown(&html, Some(&final_url)), charset)
                     }
                     Kind::Text => {
-                        let (text, charset) = decode(&ct, &body, false);
+                        let (text, charset) = decode(&ct, &body, false, cut.is_some());
                         (text.into_owned(), charset)
                     }
                     Kind::Refused(what) => {
@@ -395,8 +428,8 @@ impl Tool for WebFetch {
         if final_url != url {
             out.push_str(&format!("(redirected from {url})\n"));
         }
-        if cut {
-            out.push_str("(the page is over 5 MB; only its start was read)\n");
+        if let Some(why) = &cut {
+            out.push_str(&format!("({why})\n"));
         }
         if let Some(name) = charset {
             out.push_str(&format!("(decoded as {name})\n"));

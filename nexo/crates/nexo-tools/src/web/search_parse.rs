@@ -32,6 +32,30 @@ pub(super) fn with_sites(query: &str, domains: &[String]) -> String {
     }
 }
 
+/// The engines a SearXNG answer says did not answer, as `name (reason)`: its `unresponsive_engines` is a list of
+/// `[name, reason]` pairs.
+pub(super) fn unresponsive(list: &Value) -> Vec<String> {
+    let Some(items) = list.as_array() else { return Vec::new() };
+    items
+        .iter()
+        .filter_map(|it| {
+            let (name, reason) = match it {
+                Value::Array(a) => (a.first()?.as_str()?, a.get(1).and_then(Value::as_str)),
+                Value::String(s) => (s.as_str(), None),
+                _ => return None,
+            };
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(match reason.map(str::trim).filter(|r| !r.is_empty()) {
+                Some(r) => format!("{name} ({r})"),
+                None => name.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Hits out of a JSON list: the first non-empty snippet field wins (a list of strings is joined).
 pub(super) fn hits(list: &Value, title: &str, url: &str, snippet: &[&str]) -> Vec<Hit> {
     let Some(items) = list.as_array() else { return Vec::new() };

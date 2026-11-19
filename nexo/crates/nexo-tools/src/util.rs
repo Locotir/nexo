@@ -26,61 +26,22 @@ pub fn bool_arg(args: &Value, key: &str) -> bool {
     }
 }
 
-/// `p` against `cwd`: absolute paths as they are, `~` expanded, the rest joined to `cwd`.
+/// `p` against `cwd`: the one set of rules every tool and agent check uses for a path the model wrote
+/// (`nexo_core::paths::tool_path`): `~`, `$HOME` and `${HOME}` are the home folder, an absolute path stays as it
+/// is, the rest is joined to `cwd`, and `.` and `..` parts are removed.
 pub fn resolve(cwd: &Path, p: &str) -> PathBuf {
-    let p = p.trim();
-    if let Some(rest) = home_prefix_rest(p, cfg!(windows)) {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    if p == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    }
-    if cfg!(windows) {
-        if let Some(native) = from_git_bash(p, &std::env::temp_dir()) {
-            return normalize(&native);
-        }
-    }
-    let path = Path::new(p);
-    if path.is_absolute() {
-        normalize(path)
-    } else {
-        normalize(&cwd.join(path))
-    }
+    nexo_core::paths::tool_path(cwd, p)
 }
 
 /// A path as Git Bash prints it, in Windows form: `/c/Users/x` is `C:/Users/x`, `/tmp/x` is
 /// under `temp`. The model copies these from `pwd` and `ls` into the file tools.
 pub fn from_git_bash(p: &str, temp: &Path) -> Option<PathBuf> {
-    let rest = p.strip_prefix('/')?;
-    let (head, tail) = rest.split_once('/').unwrap_or((rest, ""));
-    if head == "tmp" {
-        return Some(temp.join(tail));
-    }
-    match head.as_bytes() {
-        [d] if d.is_ascii_alphabetic() => Some(PathBuf::from(format!("{}:/{tail}", d.to_ascii_uppercase() as char))),
-        _ => None,
-    }
+    nexo_core::paths::from_git_bash(p, temp)
 }
 
 /// Removes `.` and `..` components without touching the file system.
 pub fn normalize(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if !out.pop() {
-                    out.push(c);
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
+    nexo_core::paths::normalize(p)
 }
 
 /// `path` relative to `cwd` when inside it, else absolute.
@@ -186,6 +147,8 @@ pub struct Cuts {
     /// Line number and length in characters of the first line cut.
     first: Option<(usize, usize)>,
     count: usize,
+    /// The number of every line cut, in the order they were seen.
+    numbers: Vec<usize>,
 }
 
 impl Cuts {
@@ -197,7 +160,13 @@ impl Cuts {
             return;
         }
         self.count += 1;
+        self.numbers.push(number);
         self.first.get_or_insert_with(|| (number, line.chars().count()));
+    }
+
+    /// The numbers of the lines cut, for `Seen::lines`.
+    pub fn numbers(&self) -> &[usize] {
+        &self.numbers
     }
 
     /// The fact for the end of the answer, when a line was cut.
@@ -208,12 +177,6 @@ impl Cuts {
             "line {number} cut at {max} of {len} chars{all}; `bash` with `grep -o`, `cut -c` or `sed -n` shows the rest"
         ))
     }
-}
-
-/// What follows the home prefix of `p`: `~/` everywhere, and `~\` on Windows only, where a
-/// backslash separates directories (on Linux it is a legal file-name character).
-fn home_prefix_rest(p: &str, windows: bool) -> Option<&str> {
-    p.strip_prefix("~/").or_else(|| if windows { p.strip_prefix("~\\") } else { None })
 }
 
 /// Whether a failed rename looks like Windows holding the target open for a moment: access denied
@@ -243,6 +206,37 @@ async fn rename_over(tmp: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Whether this user may write the file `target`, which exists: `access(2)` looks at the owner, the group, the
+/// access lists and a read-only file system, not at the owner bit alone. The error says which it was.
+#[cfg(unix)]
+fn check_writable(target: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let Ok(c) = std::ffi::CString::new(target.as_os_str().as_bytes()) else { return Ok(()) };
+    // SAFETY: `c` is a NUL-terminated path that lives through the call.
+    if unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::EACCES | libc::EPERM) => match std::fs::metadata(target) {
+            Ok(m) => {
+                let mode = m.mode() & 0o7777;
+                // SAFETY: `geteuid` has no arguments and cannot fail.
+                let mine = m.uid() == unsafe { libc::geteuid() };
+                let what = if mine && mode & 0o200 == 0 { "read-only" } else { "not writable by this user" };
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("the file is {what} (owner uid {}, mode {mode:o})", m.uid()),
+                ))
+            }
+            Err(_) => Err(e),
+        },
+        Some(libc::EROFS) => Err(std::io::Error::new(e.kind(), format!("the file system is read-only: {e}"))),
+        _ => Err(e),
+    }
+}
+
 /// Writes `data` to `path` whole or not at all: into a new file beside it, then renamed over it
 /// (`rename` replaces an existing file on Windows too). A link is followed, so the file it points
 /// to is the one replaced; an existing file keeps its permissions, and a read-only one is refused.
@@ -263,6 +257,10 @@ pub async fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     }
     let target = tokio::fs::canonicalize(&target).await.unwrap_or(target);
     let perms = tokio::fs::metadata(&target).await.ok().map(|m| m.permissions());
+    #[cfg(unix)]
+    if perms.is_some() {
+        check_writable(&target)?;
+    }
     if perms.as_ref().is_some_and(|p| p.readonly()) {
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only"));
     }
@@ -271,7 +269,15 @@ pub async fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!(".{name}.nexo-{}-{n}.tmp", std::process::id()));
     let written = async {
-        let mut f = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).await?;
+        let mut f = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).await.map_err(|e| match e
+            .kind()
+        {
+            std::io::ErrorKind::PermissionDenied => std::io::Error::new(
+                e.kind(),
+                format!("the folder {} is not writable: {e}", nexo_core::shell::slashed(dir)),
+            ),
+            _ => e,
+        })?;
         f.write_all(data).await?;
         f.sync_all().await?;
         drop(f);
@@ -336,15 +342,6 @@ mod tests {
         assert_eq!(from_git_bash("/etc/hosts", temp), None);
         assert_eq!(from_git_bash("src/a.rs", temp), None);
         assert_eq!(from_git_bash("C:/x", temp), None);
-    }
-
-    #[test]
-    fn a_backslash_home_prefix_is_home_only_on_windows() {
-        assert_eq!(home_prefix_rest("~\\notes.txt", true), Some("notes.txt"));
-        assert_eq!(home_prefix_rest("~/notes.txt", true), Some("notes.txt"));
-        assert_eq!(home_prefix_rest("~/notes.txt", false), Some("notes.txt"));
-        assert_eq!(home_prefix_rest("~\\notes.txt", false), None, "a backslash is a file-name character on Linux");
-        assert_eq!(home_prefix_rest("~", true), None);
     }
 
     #[test]

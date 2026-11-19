@@ -3,7 +3,13 @@ use nexo_core::{ToolContext, ToolDisplay, ToolOutput};
 use super::{FILE_CAP, LINE_CHARS};
 use crate::util::{cut_line, Cuts};
 /// Parse Rust rather than guessing brace boundaries in comments, strings or macros.
-pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str) -> ToolOutput {
+pub(super) fn read_symbol(
+    ctx: &ToolContext,
+    path: &std::path::Path,
+    shown: &str,
+    text: &str,
+    name: &str,
+) -> ToolOutput {
     use syn::spanned::Spanned;
     use syn::visit::{self, Visit};
     struct Find<'a> {
@@ -78,6 +84,10 @@ pub(super) fn read_symbol(ctx: &ToolContext, shown: &str, text: &str, name: &str
                 chars += len;
                 cuts.seen(i + 1, whole, LINE_CHARS);
                 last = i + 1;
+            }
+            // the lines shown are all the model knows of the file: `write` must not take it for a whole read
+            if last >= start {
+                ctx.seen.lines(path, start, last, text.lines().count(), cuts.numbers());
             }
             if last < end {
                 let rest = format!("read with offset {} and limit {} to continue", last + 1, end - last);

@@ -139,6 +139,83 @@ pub fn own_home() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+/// Where a path the model wrote in a tool call points: `p` against `cwd`. This one function turns every such path
+/// into a file (`read`, `write`, `edit`, `ls`, `glob`, `grep` and the checks of the agent), so they all agree:
+/// the text is trimmed; `~`, `$HOME` and `${HOME}`, alone or before a `/`, mean the person's home folder (and
+/// before a `\` on Windows only, where a backslash separates folders; on Linux it is a file-name character);
+/// on Windows Git Bash forms (`/c/x`, `/tmp/x`) are Windows paths; an absolute path is kept and every other is
+/// joined to `cwd`; then `.` and `..` parts are removed without touching the file system (no link is followed,
+/// nothing is refused). Other variables (`$USERPROFILE`, `%USERPROFILE%`, `$PWD`) and `~user` are not expanded.
+pub fn tool_path(cwd: &Path, p: &str) -> PathBuf {
+    tool_path_with(cwd, p, own_home().as_deref(), cfg!(windows), &std::env::temp_dir())
+}
+
+/// [`tool_path`] with the home folder (None when unknown: the text is then a relative path), the system and the
+/// temp folder given (tests).
+pub fn tool_path_with(cwd: &Path, p: &str, home: Option<&Path>, windows: bool, temp: &Path) -> PathBuf {
+    let p = p.trim();
+    if let (Some(home), Some(rest)) = (home, home_prefix_rest(p, windows)) {
+        return normalize(&home.join(rest));
+    }
+    if windows {
+        if let Some(native) = from_git_bash(p, temp) {
+            return normalize(&native);
+        }
+    }
+    let path = Path::new(p);
+    if path.is_absolute() {
+        normalize(path)
+    } else {
+        normalize(&cwd.join(path))
+    }
+}
+
+/// What follows the home prefix of `p`, empty for the home folder itself: `~`, `$HOME` and `${HOME}`, alone or
+/// before `/`, and before `\` on Windows only. Separators right after the prefix are dropped, so the rest is
+/// never absolute. `~user`, `$HOMEDIR` and the like are not a home prefix.
+pub fn home_prefix_rest(p: &str, windows: bool) -> Option<&str> {
+    ["~", "$HOME", "${HOME}"].iter().find_map(|prefix| {
+        let rest = p.strip_prefix(prefix)?;
+        let sep = |c: char| c == '/' || (windows && c == '\\');
+        if !rest.is_empty() && !rest.starts_with(sep) {
+            return None;
+        }
+        Some(rest.trim_start_matches(sep))
+    })
+}
+
+/// A path as Git Bash prints it, in Windows form: `/c/Users/x` is `C:/Users/x`, `/tmp/x` is
+/// under `temp`. The model copies these from `pwd` and `ls` into the file tools.
+pub fn from_git_bash(p: &str, temp: &Path) -> Option<PathBuf> {
+    let rest = p.strip_prefix('/')?;
+    let (head, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    if head == "tmp" {
+        return Some(temp.join(tail));
+    }
+    match head.as_bytes() {
+        [d] if d.is_ascii_alphabetic() => Some(PathBuf::from(format!("{}:/{tail}", d.to_ascii_uppercase() as char))),
+        _ => None,
+    }
+}
+
+/// Removes `.` and `..` components without touching the file system. A `..` with nothing before it to remove
+/// (at the root) is kept: the system reads `/..` as `/`.
+pub fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c);
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Whether `dir` is the person's `home` (compared resolved). A home kept in git is still the
 /// person's own folder, never a project's.
 pub fn is_home(dir: &Path, home: Option<&Path>) -> bool {
@@ -528,5 +605,61 @@ mod tests {
         let c = canonical(&d).unwrap();
         assert!(!c.to_string_lossy().starts_with(r"\\?\"), "{c:?}");
         assert_eq!(c.canonicalize().unwrap(), d.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn tool_paths_follow_one_set_of_rules() {
+        let (cwd, home, temp) = (Path::new("/w/p"), Path::new("/h"), Path::new("/t"));
+        let at = |p: &str, windows: bool| tool_path_with(cwd, p, Some(home), windows, temp);
+        for (given, want) in [
+            ("~", "/h"),
+            ("~/a", "/h/a"),
+            ("$HOME", "/h"),
+            ("$HOME/a", "/h/a"),
+            ("${HOME}", "/h"),
+            ("${HOME}/a", "/h/a"),
+            ("  ~/a/b.md\n", "/h/a/b.md"),
+            ("~//a", "/h/a"),
+            ("$HOME/a/../b", "/h/b"),
+            ("~user/a", "/w/p/~user/a"),
+            ("$HOMEDIR/a", "/w/p/$HOMEDIR/a"),
+            ("$USERPROFILE/a", "/w/p/$USERPROFILE/a"),
+            ("%USERPROFILE%\\a", "/w/p/%USERPROFILE%\\a"),
+            ("~\\a", "/w/p/~\\a"),
+            ("/c/x", "/c/x"),
+            ("a/../b", "/w/p/b"),
+            ("./a/./b.rs", "/w/p/a/b.rs"),
+            ("/etc/hosts", "/etc/hosts"),
+            ("/../x", "/../x"),
+        ] {
+            assert_eq!(at(given, false), PathBuf::from(want), "{given:?} on Linux");
+        }
+        // Windows: a backslash after the home prefix, and the Git Bash forms
+        assert_eq!(at("~\\a", true), PathBuf::from("/h/a"));
+        assert_eq!(at("$HOME\\a", true), PathBuf::from("/h/a"));
+        assert_eq!(at("${HOME}\\", true), PathBuf::from("/h"));
+        assert_eq!(at("~user\\a", true), PathBuf::from("/w/p/~user\\a"));
+        assert_eq!(at("/c/x", true), PathBuf::from("C:/x"));
+        assert_eq!(at("/tmp/a", true), PathBuf::from("/t/a"));
+        assert_eq!(at("/etc/hosts", true), PathBuf::from("/etc/hosts"));
+        // no home known: the text is a relative path
+        assert_eq!(tool_path_with(cwd, "~/a", None, false, temp), PathBuf::from("/w/p/~/a"));
+        assert_eq!(tool_path_with(cwd, "$HOME/a", None, false, temp), PathBuf::from("/w/p/$HOME/a"));
+        assert_eq!(home_prefix_rest("~\\notes.txt", false), None, "a backslash is a file-name character on Linux");
+        assert_eq!(home_prefix_rest("~\\notes.txt", true), Some("notes.txt"));
+        assert_eq!(home_prefix_rest("~", true), Some(""));
+        assert_eq!(home_prefix_rest("~x", true), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tool_paths_take_the_drive_of_cwd_and_the_temp_folder() {
+        let (cwd, temp) = (Path::new(r"C:\p"), Path::new(r"T:\temp"));
+        let at = |p: &str| tool_path_with(cwd, p, Some(Path::new(r"C:\h")), true, temp);
+        assert_eq!(at("/tmp"), PathBuf::from(r"T:\temp"));
+        assert_eq!(at("/tmp/a"), PathBuf::from(r"T:\temp\a"));
+        assert_eq!(at(r"\xy"), PathBuf::from(r"C:\xy"));
+        assert_eq!(at("/xy"), PathBuf::from(r"C:\xy"));
+        assert_eq!(at(r"~\a"), PathBuf::from(r"C:\h\a"));
     }
 }

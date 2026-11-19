@@ -39,6 +39,27 @@ fn format_change(old: &[u8], content: &str) -> Option<String> {
     Some(format!("the file it replaced used {}; the new content has {}", was.join(" and "), now.join(" and ")))
 }
 
+/// How to see what `read` cut from the lines `cut` of `path`: the part past its first `read::LINE_CHARS` chars, from a
+/// shell. At most five lines are named in the command; the others need the same.
+fn cut_how(cut: &[usize], path: &std::path::Path, cwd: &std::path::Path) -> String {
+    const NAMED: usize = 5;
+    let named: Vec<String> = cut.iter().take(NAMED).map(|n| format!("{n}p")).collect();
+    let script = format!("'{}'", named.join(";"));
+    let more = if cut.len() > NAMED {
+        format!(", and the same for the other {} lines", cut.len() - NAMED)
+    } else {
+        String::new()
+    };
+    let of = if cut.len() == 1 { "that line" } else { "those lines" };
+    format!(
+        "`read` shows no more of {of}; `bash` shows the rest: `sed -n {} {} | cut -c{}-`{more}. \
+         `edit` changes part of the file without replacing it",
+        script,
+        crate::program::shell_quoted(&display_path(cwd, path)),
+        crate::read::LINE_CHARS + 1
+    )
+}
+
 #[async_trait]
 impl Tool for Write {
     fn name(&self) -> &str {
@@ -128,43 +149,91 @@ impl Tool for Write {
             }
             Err(_) => None,
         };
+        // the size of what is replaced (a huge file was read only in part: its size is the file's own)
+        let old_bytes = match &old {
+            Some(_) if huge => tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0),
+            Some(o) => o.len() as u64,
+            None => 0,
+        };
         if same {
             return ToolOutput::error(format!("write: {shown} already has this content; nothing to write"));
         }
         if let Some(why) = ctx.seen.unseen(&path) {
+            // lines `read` cut stay cut however often it is called: reading again would only repeat the refusal
+            let how = match ctx.seen.cut_only(&path) {
+                Some(cut) => cut_how(&cut, &path, &ctx.cwd),
+                None => "`read` it first, or use `edit` to change part of it".to_string(),
+            };
             return ToolOutput::error(format!(
-                "write: {shown} already exists and {why}; replacing it would lose what is there. \
-                 `read` it first, or use `edit` to change part of it"
+                "write: {shown} already exists and {why}; replacing it would lose what is there. {how}"
             ));
         }
+        // the folders this write creates: the highest one that is missing, and how many there are, so a stray
+        // folder (a path the model spelled wrongly) is told with where it was made
+        let mut new_dirs = 0usize;
+        let mut top_new = None;
         if let Some(parent) = path.parent() {
+            for a in parent.ancestors().take_while(|a| !a.as_os_str().is_empty()) {
+                if tokio::fs::metadata(a).await.is_ok() {
+                    break;
+                }
+                new_dirs += 1;
+                top_new = Some(a);
+            }
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return ToolOutput::error(format!("write: cannot create {}: {e}", parent.display()));
             }
         }
+        let made = match (top_new, new_dirs) {
+            (Some(top), 1) => format!("new folder: {}", nexo_core::shell::slashed(top)),
+            (Some(top), n) => format!("new folders: {} and {} below it", nexo_core::shell::slashed(top), n - 1),
+            _ => String::new(),
+        };
+        let new_folders = if made.is_empty() { String::new() } else { format!("; {made}") };
         if let Err(e) = write_atomic(&path, content.as_bytes()).await {
-            return ToolOutput::error(format!("write: cannot write {shown}: {e}"));
+            // the folders made for this file stay, empty: the model is told, not left to find them
+            let left =
+                if made.is_empty() { String::new() } else { format!("; made before it failed and left empty: {made}") };
+            return ToolOutput::error(format!("write: cannot write {shown}: {e}{left}"));
         }
         if tokio::fs::read(&path).await.ok().as_deref() != Some(content.as_bytes()) {
             return ToolOutput::error(format!(
                 "write: {shown} is not as intended after the write; read it before going on"
             ));
         }
-        ctx.seen.mark(&path);
+        // all of it is the model's own text now
+        ctx.seen.whole(&path);
         let lines = content.lines().count();
         let what = if old.is_some() { "replaced" } else { "created" };
+        // what was there before: its size and what the new text changes
+        let was = match &old {
+            Some(_) if huge => format!("was {old_bytes} bytes (too large to count its lines), "),
+            Some(o) => {
+                let (added, removed) = crate::edit::line_changes(o, content);
+                format!(
+                    "was {} ({old_bytes} bytes), +{added} −{removed} lines, ",
+                    nexo_core::count(o.lines().count(), "line")
+                )
+            }
+            None => String::new(),
+        };
         let now = match &old {
             Some(o) if !huge => crate::edit::now_text(o, content),
             _ => crate::edit::whole(content).unwrap_or_default(),
         };
         let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
-        let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&path).await };
+        // a step-level check after the whole step covers a source file inside the project folder only
+        let diag = if crate::edit_check::step_covers(ctx, &path) {
+            String::new()
+        } else {
+            crate::edit_check::report(&path).await
+        };
         let proof = match str_arg(&args, "check").filter(|c| !c.trim().is_empty()) {
             Some(c) => crate::postcheck::run_own(c, ctx).await,
             None => String::new(),
         };
         ToolOutput::ok(format!(
-            "{what} {shown}: file now has {} ({} bytes), {}{format_note}{now}{diag}{proof}",
+            "{what} {shown}: file now has {} ({} bytes), {was}{}{format_note}{new_folders}{now}{diag}{proof}",
             nexo_core::count(lines, "line"),
             content.len(),
             crate::edit::VERIFIED
@@ -269,7 +338,8 @@ mod tests {
         let out = Write.run(json!({"path": "n.txt", "content": "a\nB\nc\nd\n"}), &c).await;
         assert!(
             out.content.starts_with(
-                "replaced n.txt: file now has 4 lines (8 bytes), applied and verified on disk\nfile now:\n"
+                "replaced n.txt: file now has 4 lines (8 bytes), was 3 lines (6 bytes), +2 −1 lines, \
+                 applied and verified on disk\nfile now:\n"
             ),
             "{}",
             out.content
@@ -331,6 +401,174 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new\n");
         assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o751);
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    /// A file of `n` lines, `line 1` to `line {n}`: each numbered row is under 20 characters, so a default
+    /// `read` of 2000 of them is far under the size cap.
+    fn numbered_file(d: &std::path::Path, name: &str, n: usize) {
+        let text: String = (1..=n).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(d.join(name), text).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_file_read_in_part_is_not_replaced() {
+        use crate::read::Read;
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        numbered_file(d.path(), "STATUS.md", 3000);
+        let r = Read.run(json!({"path": "STATUS.md"}), &c).await;
+        assert!(!r.is_error && r.content.contains("2000│ line 2000"), "{}", r.content);
+        let out = Write.run(json!({"path": "STATUS.md", "content": "new\n"}), &c).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("you were shown only lines 1-2000 of its 3000 lines"), "{}", out.content);
+        assert!(out.content.contains("offset 2001"), "{}", out.content);
+        // the rest read: nothing is left unseen, and the result says what was there
+        assert!(!Read.run(json!({"path": "STATUS.md", "offset": 2001}), &c).await.is_error);
+        let out = Write.run(json!({"path": "STATUS.md", "content": "new\n"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("was 3000 lines"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_part_read_then_edited_file_is_not_replaced_after_a_short_read() {
+        use crate::{edit::Edit, read::Read};
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        numbered_file(d.path(), "big.md", 3000);
+        assert!(!Read.run(json!({"path": "big.md"}), &c).await.is_error);
+        // lines 10-1009 go: the file has 2000 lines now, and the old line numbers mean something else
+        let old: String = (10..=1009).map(|i| format!("line {i}\n")).collect();
+        let e = Edit.run(json!({"path": "big.md", "old_string": old, "new_string": ""}), &c).await;
+        assert!(!e.is_error, "{}", e.content);
+        let out = Write.run(json!({"path": "big.md", "content": "new\n"}), &c).await;
+        assert!(out.is_error && out.content.contains("before your last change"), "{}", out.content);
+        assert!(!Read.run(json!({"path": "big.md", "offset": 1, "limit": 10}), &c).await.is_error);
+        let out = Write.run(json!({"path": "big.md", "content": "new\n"}), &c).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("lines 1-10 of its 2000 lines"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("big.md")).unwrap().lines().count(), 2000);
+    }
+
+    #[tokio::test]
+    async fn a_file_with_a_cut_line_is_not_replaced() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::write(d.path().join("w.txt"), format!("a\n{}\nc\n", "x".repeat(3000))).unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "w.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "w.txt", "content": "new\n"}), &c).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("line 2") && out.content.contains("longer than 2000 chars"), "{}", out.content);
+        // reading again cannot show more of the line: the refusal says so and names how to see the rest
+        assert!(!out.content.contains("`read` it first"), "{}", out.content);
+        assert!(out.content.contains("`read` shows no more of that line"), "{}", out.content);
+        assert!(out.content.contains("`sed -n '2p' w.txt | cut -c2001-`"), "{}", out.content);
+        // lines unseen as well as cut: reading is still the way
+        std::fs::write(d.path().join("v.txt"), format!("{}\n{}\nc\n", "y".repeat(3000), "z".repeat(3000))).unwrap();
+        let r = crate::read::Read.run(json!({"path": "v.txt", "limit": 1}), &c).await;
+        assert!(!r.is_error, "{}", r.content);
+        let out = Write.run(json!({"path": "v.txt", "content": "new\n"}), &c).await;
+        assert!(out.content.contains("`read` it first"), "{}", out.content);
+        // several cut lines: all of them are in the command, up to five
+        std::fs::write(d.path().join("m.txt"), format!("{0}\n{0}\n", "q".repeat(2500))).unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "m.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "m.txt", "content": "new\n"}), &c).await;
+        assert!(out.content.contains("those lines") && out.content.contains("sed -n '1p;2p' m.txt"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_symbol_read_is_not_a_whole_read() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::write(d.path().join("a.rs"), "fn one() {\n}\nfn two() {\n}\nfn three() {\n}\n").unwrap();
+        let r = crate::read::Read.run(json!({"path": "a.rs", "symbol": "one"}), &c).await;
+        assert!(!r.is_error, "{}", r.content);
+        let out = Write.run(json!({"path": "a.rs", "content": "fn other() {}\n"}), &c).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("you were shown only lines 1-2 of its 6 lines"), "{}", out.content);
+        assert!(out.content.contains("offset 3"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_home_variable_path_names_the_home_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(crate::util::resolve(d.path(), "$HOME/n.md"), home.join("n.md"));
+        assert_eq!(crate::util::resolve(d.path(), "${HOME}/n.md"), home.join("n.md"));
+        // the real home is never written: the folders below are in the temp dir
+        let out = Write.run(json!({"path": "sub/deeper/x.md", "content": "x\n"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("; new folders: "), "{}", out.content);
+        assert!(out.content.contains("and 1 below it"), "{}", out.content);
+        let out = Write.run(json!({"path": "sub/deeper/y.md", "content": "y\n"}), &c).await;
+        assert!(!out.content.contains("new folder"), "{}", out.content);
+        let out = Write.run(json!({"path": "one/z.md", "content": "z\n"}), &c).await;
+        assert!(out.content.contains("; new folder: ") && !out.content.contains("below it"), "{}", out.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_this_user_cannot_write_is_not_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("f.txt");
+        std::fs::write(&f, "old\n").unwrap();
+        // the group may write, the owner may not: for this owner the file is read-only, and the mode says the rest
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o464)).unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "f.txt"}), &c).await.is_error);
+        let out = Write.run(json!({"path": "f.txt", "content": "new\n"}), &c).await;
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(out.is_error && out.content.contains("the file is read-only"), "{}", out.content);
+        assert!(out.content.contains("mode 464"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "old\n");
+    }
+
+    #[test]
+    fn changed_lines_are_counted_without_a_diff() {
+        assert_eq!(crate::edit::line_changes("a\nb\nc\n", "a\nB\nc\nd\n"), (2, 1));
+        assert_eq!(crate::edit::line_changes("a\n", "a\n"), (0, 0));
+        assert_eq!(crate::edit::line_changes("", "x\ny\n"), (2, 0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_write_names_the_folders_it_had_made() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        // the temporary file's name is longer than the file's: a 250 char name is valid, its sibling is not
+        let name = "n".repeat(250);
+        let out = Write.run(json!({"path": format!("fresh/deeper/{name}"), "content": "x\n"}), &c).await;
+        assert!(out.is_error && out.content.contains("cannot write"), "{}", out.content);
+        assert!(out.content.contains("made before it failed and left empty: new folders: "), "{}", out.content);
+        assert!(out.content.contains("and 1 below it"), "{}", out.content);
+        assert!(d.path().join("fresh/deeper").is_dir());
+        // a folder that existed is not claimed
+        let out = Write.run(json!({"path": format!("fresh/deeper/{name}"), "content": "x\n"}), &c).await;
+        assert!(out.is_error && !out.content.contains("left empty"), "{}", out.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unwritable_folder_is_named_as_the_cause() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/f.txt"), "old\n").unwrap();
+        assert!(!crate::read::Read.run(json!({"path": "sub/f.txt"}), &c).await.is_error);
+        std::fs::set_permissions(d.path().join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let out = Write.run(json!({"path": "sub/f.txt", "content": "new\n"}), &c).await;
+        std::fs::set_permissions(d.path().join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("the folder") && out.content.contains("is not writable"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("sub/f.txt")).unwrap(), "old\n");
     }
 }
 

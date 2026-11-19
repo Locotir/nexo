@@ -19,9 +19,21 @@ const MAX_CHARS: usize = 600;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Held by a test that runs the `edit` tool through a real check, or that turns the check off: the switch is
+/// one per process, so those tests would otherwise race.
+#[cfg(test)]
+pub(crate) static SWITCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Turns the check on or off for this process (`[tools] edit_diagnostics`).
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// Whether the project's step-level check, run after the whole step in the project folder, covers `file`:
+/// it does not cover a data file (JSON, TOML, YAML, CSV) or a file outside the folder, which keep their own
+/// per-edit check.
+pub fn step_covers(ctx: &nexo_core::ToolContext, file: &Path) -> bool {
+    ctx.post_check && file.starts_with(&ctx.cwd) && !crate::data_check::is_data(file)
 }
 
 /// The text to append to an edit or write result: empty when the file is clean, the check is off or
@@ -146,7 +158,35 @@ async fn found(file: &Path, limit: Duration) -> Option<Result<Vec<String>, Strin
     if !exited_ok && lines.is_empty() && !text.lines().any(positioned) {
         return Some(Err(no_diagnostic(name)));
     }
+    // Errors only in another crate (an upstream one that failed to build) stopped cargo before this file was
+    // compiled: nothing was checked, which is not a clean file.
+    if ext == "rs" && !exited_ok && lines.is_empty() {
+        if let Some((path, line)) = only_other_crates(&text, &dir) {
+            return Some(Err(format!(
+                "cargo check stopped at errors in another crate (first: {path}:{line}); this file was not checked"
+            )));
+        }
+    }
     Some(Ok(lines))
+}
+
+/// The first positioned `error` of cargo's short output when every one of them is in a file of another crate
+/// than the one in `dir`: its path (forward slashes) and line. `None` when there is none, when one is in `dir`'s
+/// crate, or when the crate of one cannot be told (its path is not found), so the claim is never a guess.
+fn only_other_crates(text: &str, dir: &Path) -> Option<(String, String)> {
+    let mut first = None;
+    for l in text.lines().map(str::trim).filter(|l| l.contains(": error") && positioned(l)) {
+        let (path, n) = l.match_indices(':').find_map(|(i, _)| {
+            let n = l[i + 1..].split(':').next().filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))?;
+            Some((l[..i].replace('\\', "/"), n))
+        })?;
+        let found = dir.ancestors().map(|a| a.join(&path)).find(|f| f.is_file())?;
+        if ancestor_with(&found, "Cargo.toml").as_deref() == Some(dir) {
+            return None;
+        }
+        first.get_or_insert((path, n.to_string()));
+    }
+    first
 }
 
 /// The fact line for a checker that gave no result: `name | did not finish in 20 s (no result)` or
@@ -291,6 +331,7 @@ mod tests {
             return;
         }
         use nexo_core::{Tool, ToolContext};
+        let _on = SWITCH.lock().await;
         let (d, f) = crate_with("pub fn a() -> u32 {\n    1\n}\n");
         // The first check of a new crate builds it from nothing, which a loaded machine (a full gate) can stretch past
         // LIMIT; build it once with room to spare, so the edit's own check is the quick one a real session gets.
@@ -380,5 +421,58 @@ mod tests {
         assert!(about("src/lib.ts(3,5): error TS1: x", "/p/src/lib.ts"));
         assert!(about("./main.go:3:5: undefined: x", "/p/main.go"));
         assert!(!about("error: could not compile `t`", f));
+    }
+
+    #[tokio::test]
+    async fn a_broken_upstream_crate_is_named_and_this_file_is_said_unchecked() {
+        if !program_ok("cargo") {
+            return;
+        }
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (a, b) = (format!("ua{n}_{}", std::process::id()), format!("ub{n}_{}", std::process::id()));
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n").unwrap();
+        let member = |dir: &str, name: &str, deps: &str, body: &str| {
+            std::fs::create_dir_all(root.join(dir).join("src")).unwrap();
+            let manifest = format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{deps}"
+            );
+            std::fs::write(root.join(dir).join("Cargo.toml"), manifest).unwrap();
+            std::fs::write(root.join(dir).join("src/lib.rs"), body).unwrap();
+        };
+        member("a", &a, "", "pub fn f() -> u32 {\n    \"no\"\n}\n");
+        member("b", &b, &format!("{a} = {{ path = \"../a\" }}\n"), "pub fn g() {}\n");
+        let r = report_within(&root.join("b/src/lib.rs"), Duration::from_secs(120)).await;
+        assert!(r.starts_with("\ncheck: cargo check stopped at errors in another crate (first: a/src/lib.rs:2"), "{r}");
+        assert!(r.ends_with("); this file was not checked"), "{r}");
+        // an error in the checked file's own crate is reported as a diagnostic, not as a stop
+        std::fs::write(root.join("a/src/lib.rs"), "pub fn f() -> u32 {\n    1\n}\n").unwrap();
+        std::fs::write(root.join("b/src/lib.rs"), "pub fn g() -> u32 {\n    \"no\"\n}\n").unwrap();
+        let r = report_within(&root.join("b/src/lib.rs"), Duration::from_secs(120)).await;
+        assert!(r.starts_with("\ndiagnostics:\n") && !r.contains("another crate"), "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_multi_file_edit_checks_each_file_after_all_were_written() {
+        if !program_ok("cargo") {
+            return;
+        }
+        use nexo_core::{Tool, ToolContext};
+        let _on = SWITCH.lock().await;
+        let (d, f) = crate_with("mod a;\nmod b;\n");
+        std::fs::write(d.path().join("src/a.rs"), "pub fn x() {}\n").unwrap();
+        std::fs::write(d.path().join("src/b.rs"), "pub fn y() {}\n").unwrap();
+        // build it once with room to spare, so the edit's own checks are the quick ones a real session gets
+        assert_eq!(report_within(&f, Duration::from_secs(120)).await, "");
+        let c = ToolContext::new(d.path().to_path_buf());
+        let args = serde_json::json!({"files": [
+            {"path": "src/a.rs", "edits": [{"old_string": "pub fn x() {}", "new_string": "pub fn x() {\n    crate::b::new_fn();\n}"}]},
+            {"path": "src/b.rs", "edits": [{"old_string": "pub fn y() {}", "new_string": "pub fn y() {}\npub fn new_fn() {}"}]}
+        ]});
+        let out = crate::edit::Edit.run(args, &c).await;
+        assert!(!out.is_error && out.content.starts_with("edited 2 files: src/a.rs, src/b.rs\n"), "{}", out.content);
+        assert!(!out.content.contains("E0425"), "{}", out.content);
     }
 }

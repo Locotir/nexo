@@ -148,7 +148,7 @@ impl Tool for Bash {
             ),
             Err(e) => (None, Some(e.to_string()), None),
         };
-        let end = run_command_logged(
+        let (end, held) = run_command_logged(
             command,
             &ctx.cwd,
             &sandbox,
@@ -162,6 +162,8 @@ impl Tool for Bash {
             log.clone(),
         )
         .await;
+        // the shell is gone but something it started holds its output: that is a job from now on
+        let held = held.map(|h| hold_as_job(command, ctx, h));
         let truncated = output.truncated();
         let highlights = output.highlights();
         let not_found = output.not_found();
@@ -217,8 +219,8 @@ impl Tool for Bash {
                 content.push_str(&format!("\n\n[exit code {code}]"));
                 nexo_core::shell::exit_is_failure(code)
             }
-            End::Signalled => {
-                content.push_str("\n\n[killed by a signal]");
+            End::Signalled(n) => {
+                content.push_str(&format!("\n\n[{}]", signal_words(n)));
                 true
             }
             End::TimedOut => {
@@ -229,11 +231,27 @@ impl Tool for Bash {
                 content.push_str("\n\n[cancelled]");
                 true
             }
+            End::Lost(ref e) => {
+                content.push_str(&format!(
+                    "\n\n[the command started, but waiting for it failed: {e}; its exit status is not known]"
+                ));
+                true
+            }
             End::Failed(ref e) => {
-                content = format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label());
+                content = match no_cwd(&ctx.cwd) {
+                    Some(missing) => format!("bash: {missing}; the command did not run"),
+                    None => format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label()),
+                };
                 true
             }
         };
+        if let Some((id, pgid)) = held {
+            content.push_str(&format!(
+                "\n\n[a process the command started (process group {pgid}) still holds its output; it now runs as \
+                 background job {id}: jobs {{\"action\": \"output\", \"id\": {id}}} reads its output, \
+                 {{\"action\": \"kill\", \"id\": {id}}} stops it]"
+            ));
+        }
         if !missing.is_empty() {
             // the status is the last command's: say that an earlier one was not found
             content.push_str(&format!("\n[note: a command in this script was not found: {}]", missing.join(", ")));
@@ -271,6 +289,13 @@ impl Tool for Bash {
         };
         ToolOutput { content, is_error, display, images: Vec::new() }
     }
+}
+
+/// The working folder when it no longer exists: why a command cannot start in it.
+fn no_cwd(cwd: &std::path::Path) -> Option<String> {
+    // only a folder the system says is not there: one it cannot look at (no access to a parent), or a file, is not "gone"
+    matches!(cwd.try_exists(), Ok(false))
+        .then(|| format!("the working folder {} does not exist (it was removed or moved)", cwd.display()))
 }
 
 mod tmp_files;

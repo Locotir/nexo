@@ -141,3 +141,16 @@ fn a_run_with_no_calls_has_no_ledger() {
     assert!(Effects::of(&m).block().is_empty());
     assert!(progress(&m, 0, 4).is_empty());
 }
+
+#[test]
+fn a_named_signal_is_still_a_kill() {
+    let m = log(&[&[
+        ("bash", json!({"command": "run a"}), "x\n\n[killed by a signal: 9 SIGKILL]", true),
+        ("bash", json!({"command": "run b"}), "x\n\n[killed by a signal]", true),
+        ("bash", json!({"command": "run c"}), "x\n\n[killed by a signal: 64]", true),
+    ]]);
+    let lines = Effects::of(&m).lines();
+    assert!(lines.contains(&"ran `run a`: killed by a signal: 9 SIGKILL".to_string()), "{lines:?}");
+    assert!(lines.contains(&"ran `run b`: killed by a signal".to_string()), "{lines:?}");
+    assert!(lines.contains(&"ran `run c`: killed by a signal: 64".to_string()), "{lines:?}");
+}

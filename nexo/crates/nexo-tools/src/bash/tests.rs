@@ -666,7 +666,8 @@ async fn the_call_ends_when_the_shell_exits_even_if_a_child_holds_the_pipes() {
     let out = Bash.run(json!({"command": "sleep 20 & echo $!", "timeout": 30}), &c).await;
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     assert!(!out.is_error, "{}", out.content);
-    let pid: i32 = out.content.trim().parse().unwrap();
+    // the first line is the pid; the rest says the process holds the output
+    let pid: i32 = out.content.lines().next().unwrap().trim().parse().unwrap();
     // SAFETY: a signal to the child this test started
     unsafe {
         libc::kill(pid, libc::SIGKILL);
@@ -1074,4 +1075,126 @@ fn the_stop_hint_for_a_detached_process_is_spelled_for_the_shell_that_runs_it() 
     assert_eq!(stop_hint(true, "powershell", 42), "taskkill /T /F /PID 42");
     assert_eq!(stop_hint(false, "bash", 42), "kill -- -42");
     assert_eq!(stop_hint(false, "sh", 42), "kill -- -42");
+}
+
+/// The number of the background job a result says a command left behind.
+#[cfg(unix)]
+fn held_job_id(content: &str) -> u32 {
+    let after = content.split("it now runs as background job ").nth(1).unwrap_or_else(|| panic!("{content}"));
+    after.split(':').next().unwrap().parse().unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_process_left_running_is_said_to_hold_the_output() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let out = Bash.run(json!({"command": "(sleep 2; echo late) & echo $!", "timeout": 30}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.contains("still holds its output") && out.content.contains("background job"),
+        "{}",
+        out.content
+    );
+    let id = held_job_id(&out.content);
+    assert!(out.content.contains(&format!("{{\"action\": \"output\", \"id\": {id}}}")), "{}", out.content);
+    // the process kept a reader: its write did not fail, and it is in the job's output
+    let r = c.jobs.read(id, Duration::from_secs(5), &CancellationToken::new()).await.unwrap();
+    assert!(r.new.contains("late"), "{}", r.new);
+    assert!(!r.info.status.running(), "{:?}", r.info.status);
+
+    // stopping the job stops the process the command left
+    let out = Bash.run(json!({"command": "sleep 20 & echo $!", "timeout": 30}), &c).await;
+    let pid: i32 = out.content.lines().next().unwrap().trim().parse().unwrap();
+    assert!(out.content.contains("still holds its output"), "{}", out.content);
+    assert!(alive(pid));
+    assert!(c.jobs.kill(held_job_id(&out.content)));
+    let t = std::time::Instant::now();
+    while alive(pid) && t.elapsed() < Duration::from_secs(2) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let gone = !alive(pid);
+    if !gone {
+        // SAFETY: a signal to the child this test started
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+    assert!(gone, "killing the job left the process running");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_command_that_leaves_nothing_behind_starts_no_job() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let out = Bash.run(json!({"command": "echo hi"}), &c).await;
+    assert_eq!(out.content.trim(), "hi");
+    assert!(c.jobs.list().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_signal_kill_names_the_signal() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let out = Bash.run(json!({"command": "kill -9 $$"}), &c).await;
+    assert!(out.is_error);
+    assert!(out.content.contains("[killed by a signal: 9 SIGKILL]"), "{}", out.content);
+    assert_eq!(signal_words(64), "killed by a signal: 64");
+    assert_eq!(signal_words(15), "killed by a signal: 15 SIGTERM");
+    assert_eq!(signal_words(0), "killed by a signal");
+}
+
+#[tokio::test]
+async fn a_missing_working_folder_is_named() {
+    let d = tempfile::tempdir().unwrap();
+    let gone = d.path().to_path_buf();
+    let c = ToolContext::new(gone.clone());
+    drop(d);
+    assert!(!gone.exists());
+    let out = Bash.run(json!({"command": "echo hi"}), &c).await;
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("the working folder") && out.content.contains("does not exist"), "{}", out.content);
+    assert!(out.content.contains(&gone.display().to_string()), "{}", out.content);
+    assert!(!out.content.contains("cannot run the command"), "{}", out.content);
+
+    // a detached command meets the same folder at `detached()`
+    let d = tempfile::tempdir().unwrap();
+    let gone = d.path().to_path_buf();
+    let c = ToolContext::new(gone.clone());
+    drop(d);
+    let out = Bash.run(json!({"command": "sleep 1", "background": true, "detach": true}), &c).await;
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("the working folder") && out.content.contains("does not exist"), "{}", out.content);
+    assert!(!out.content.contains("cannot run the command"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn a_working_folder_that_is_not_a_folder_is_not_called_missing() {
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("not-a-folder");
+    std::fs::write(&file, "x").unwrap();
+    let c = ToolContext::new(file.clone());
+    let out = Bash.run(json!({"command": "echo hi"}), &c).await;
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("cannot run the command"), "{}", out.content);
+    assert!(!out.content.contains("does not exist") && !out.content.contains("did not run"), "{}", out.content);
+
+    // a folder the system cannot look into (no access to its parent) is not "gone" either
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let inner = d.path().join("shut").join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::set_permissions(d.path().join("shut"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let c = ToolContext::new(inner);
+        let out = Bash.run(json!({"command": "echo hi"}), &c).await;
+        std::fs::set_permissions(d.path().join("shut"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // as root nothing is shut: the command runs
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(out.is_error, "{}", out.content);
+            assert!(!out.content.contains("does not exist") && !out.content.contains("did not run"), "{}", out.content);
+        }
+    }
 }

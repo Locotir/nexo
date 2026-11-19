@@ -93,13 +93,67 @@ fn long_output_keeps_the_end() {
     let info = jobs.get(1).unwrap();
     assert_eq!(info.lines, 50_000);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let r = rt.block_on(jobs.read(1, Duration::ZERO, &CancellationToken::new())).unwrap();
+    let c = CancellationToken::new();
+    let r = rt.block_on(jobs.read(1, Duration::ZERO, &c)).unwrap();
     assert!(r.new.starts_with('['), "{}", &r.new[..60]);
-    assert!(r.new.trim_end().ends_with("line 49999"));
-    assert!(r.new.chars().count() < READ_CHARS + 200);
+    assert!(
+        r.new.contains("unread, the last of them: line 49999;"),
+        "the first read says how it ends: {}",
+        &r.new[r.new.len() - 200..]
+    );
+    assert!(r.new.chars().count() < READ_CHARS + 300);
+    // the tail arrives in full on the last read
+    let mut last = r.new;
+    while last.contains(" more lines (") {
+        last = rt.block_on(jobs.read(1, Duration::ZERO, &c)).unwrap().new;
+    }
+    assert!(last.trim_end().ends_with("line 49999"), "{}", &last[last.len().saturating_sub(100)..]);
     drop(h);
     assert_eq!(jobs.get(1).unwrap().status, JobStatus::Killed, "a dropped runner ends the job");
     assert_eq!(duration(65_000), "1 min 5 s");
+}
+
+#[test]
+fn a_long_output_is_read_in_pages_and_nothing_is_skipped() {
+    let jobs = Jobs::new();
+    let h = jobs.start(JobKind::Shell, "make");
+    // 3 000 lines of 40 characters: 120 000 characters, under KEEP_CHARS
+    for i in 1..=3000 {
+        if i == 1500 {
+            h.line(&format!("FIRST ERROR{}", "x".repeat(40 - 11)));
+        } else {
+            h.line(&format!("{i:0>5}{}", "-".repeat(35)));
+        }
+    }
+    h.finish(true, "exit 0");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let c = CancellationToken::new();
+    let first = rt.block_on(jobs.read(1, Duration::ZERO, &c)).unwrap();
+    assert!(first.new.contains(" more lines ("), "{}", &first.new[first.new.len() - 250..]);
+    assert!(first.new.contains(" chars) unread"));
+    assert!(first.new.contains("the last of them: 03000"), "{}", &first.new[first.new.len() - 250..]);
+    assert!(!first.new.contains("characters omitted"));
+    assert_eq!(jobs.untold().len(), 1, "a job read in part is not yet told");
+    let mut all = String::new();
+    let mut read = first;
+    loop {
+        let mut text = read.new;
+        let more = text.contains(" more lines (");
+        if more {
+            let at = text.rfind('[').unwrap();
+            text.truncate(at);
+        }
+        all.push_str(&text);
+        if !more {
+            break;
+        }
+        read = rt.block_on(jobs.read(1, Duration::ZERO, &c)).unwrap();
+    }
+    let lines: Vec<&str> = all.lines().collect();
+    assert_eq!(lines.len(), 3000, "every line once");
+    assert!(lines[1499].starts_with("FIRST ERROR"));
+    assert!(lines[0].starts_with("00001") && lines[2999].starts_with("03000"));
+    assert!(jobs.untold().is_empty() && jobs.take_ended().is_empty(), "told once all of it was read");
 }
 
 #[test]

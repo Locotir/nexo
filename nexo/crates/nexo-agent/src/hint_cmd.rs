@@ -102,7 +102,7 @@ pub fn ran(text: &str) -> bool {
     text.lines().map(str::trim).any(|l| {
         let code = l.strip_prefix("[exit code ").and_then(|r| r.strip_suffix(']'));
         code.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit() || b == b'-'))
-            || l == "[killed by a signal]"
+            || (l.starts_with("[killed by a signal") && l.ends_with(']'))
             || (l.starts_with("[killed: timed out after ") && l.ends_with(" s]"))
     })
 }

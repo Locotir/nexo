@@ -63,9 +63,18 @@ impl Tool for Ls {
             Err(e) => return ToolOutput::error(format!("ls: cannot list {shown}: {e}")),
         };
         let mut dirs = Vec::new();
-        // name, size (None for a broken link), may be a program, where a symlink points
-        let mut files: Vec<(String, Option<u64>, bool, Option<String>)> = Vec::new();
-        while let Ok(Some(entry)) = rd.next_entry().await {
+        // name, size, may be a program, where a symlink points
+        let mut files: Vec<(String, Size, bool, Option<String>)> = Vec::new();
+        let mut stopped: Option<String> = None;
+        loop {
+            let entry = match rd.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(e) => {
+                    stopped = Some(stopped_note(&e));
+                    break;
+                }
+            };
             let name = entry.file_name().to_string_lossy().into_owned();
             match entry.metadata().await {
                 // `DirEntry::metadata` does not follow symlinks, so a link is looked through here: the
@@ -79,17 +88,21 @@ impl Tool for Ls {
                         Ok(t) if t.is_dir() => dirs.push(format!("{name}/ -> {target}")),
                         Ok(t) => {
                             let program = may_be_program(&name, &t);
-                            files.push((name, Some(t.len()), program, Some(target)))
+                            files.push((name, Size::Known(t.len()), program, Some(target)))
                         }
-                        Err(_) => files.push((name, None, false, Some(target))),
+                        Err(_) => files.push((name, Size::BrokenLink, false, Some(target))),
                     }
                 }
                 Ok(m) if m.is_dir() => dirs.push(format!("{name}/")),
                 Ok(m) => {
                     let program = may_be_program(&name, &m);
-                    files.push((name, Some(m.len()), program, None))
+                    files.push((name, Size::Known(m.len()), program, None))
                 }
-                Err(_) => files.push((name, Some(0), false, None)),
+                // the entry's own type needs no stat, so a folder is still told from a file
+                Err(e) => match entry.file_type().await {
+                    Ok(t) if t.is_dir() => dirs.push(format!("{name}/ (cannot stat: {e})")),
+                    _ => files.push((name, Size::Unknown(e.to_string()), false, None)),
+                },
             }
         }
         dirs.sort();
@@ -98,8 +111,10 @@ impl Tool for Ls {
         let kinds = files.len() <= KINDS_UP_TO;
         let mut items: Vec<String> = dirs;
         items.extend(files.into_iter().map(|(n, size, program, link)| {
-            let Some(size) = size else {
-                return format!("{n} -> {} (broken link)", link.unwrap_or_default());
+            let size = match size {
+                Size::Known(size) => size,
+                Size::BrokenLink => return format!("{n} -> {} (broken link)", link.unwrap_or_default()),
+                Size::Unknown(why) => return format!("{n} (size unknown: {why})"),
             };
             let to = link.map(|t| format!(" -> {t}")).unwrap_or_default();
             match (kinds && program).then(|| listed_kind(&path.join(&n))).flatten() {
@@ -114,10 +129,32 @@ impl Tool for Ls {
             content.push_str(&format!("\n… {more} more entries"));
         }
         if total == 0 {
-            content = format!("{shown}: (empty directory)");
+            content = match stopped {
+                Some(_) => format!("{shown}: no entries read"),
+                None => format!("{shown}: (empty directory)"),
+            };
+        }
+        if let Some(note) = stopped {
+            content.push('\n');
+            content.push_str(&note);
         }
         ToolOutput::ok(content).with_display(ToolDisplay::List { items })
     }
+}
+
+/// What a listed file's size slot holds.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Size {
+    Known(u64),
+    /// A symlink whose target does not exist.
+    BrokenLink,
+    /// The entry could not be stat'ed; the error says why.
+    Unknown(String),
+}
+
+/// The line that ends a listing the OS stopped reading.
+fn stopped_note(e: &std::io::Error) -> String {
+    format!("[listing stopped: {e}; entries after this point are not shown]")
 }
 
 fn human(n: u64) -> String {
@@ -171,6 +208,36 @@ mod tests {
             out.content,
             ".: 5 entries\ndirlink/ -> real\nreal/\ndangling -> gone (broken link)\nfilelink  (5 B) -> real.txt\nreal.txt  (5 B)"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_that_cannot_be_statted_is_not_shown_as_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let sub = d.path().join("d");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("f"), "12345").unwrap();
+        std::fs::create_dir(sub.join("s")).unwrap();
+        // read without search: the names can be listed, the entries cannot be stat'ed
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let can_stat = std::fs::metadata(sub.join("f")).is_ok();
+        let out = Ls.run(json!({"path": "d"}), &c).await;
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if can_stat {
+            return; // root: the mode does not stop the stat
+        }
+        assert!(out.content.contains("f (size unknown:"), "{}", out.content);
+        assert!(out.content.contains("s/ (cannot stat:"), "{}", out.content);
+        assert!(!out.content.contains("(0 B)"), "{}", out.content);
+    }
+
+    #[test]
+    fn stopped_note_names_the_error() {
+        let note = stopped_note(&std::io::Error::other("boom"));
+        assert!(note.contains("listing stopped: boom"), "{note}");
+        assert!(note.contains("entries after this point are not shown"), "{note}");
     }
 
     #[tokio::test]

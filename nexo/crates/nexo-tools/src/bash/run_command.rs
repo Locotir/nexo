@@ -12,7 +12,25 @@ pub(super) async fn run_command(
     tmp: Option<&std::path::Path>,
     on_line: impl FnMut(&str),
 ) -> End {
-    run_command_logged(command, cwd, sandbox, timeout, cancel, tmp, on_line, None).await
+    let (end, held) = run_command_logged(command, cwd, sandbox, timeout, cancel, tmp, on_line, None).await;
+    if let Some(held) = held {
+        // this caller wants the call to end with the shell, and nothing left reading
+        for r in held.readers {
+            r.abort();
+        }
+    }
+    end
+}
+
+/// What a command left running behind it: the shell exited, but a process it started holds the output
+/// pipes. The readers are kept, so the process keeps its output and is not killed by SIGPIPE on its
+/// next write.
+pub(super) struct Held {
+    /// The group id of the shell's session: the shell's pid, as it made the session itself.
+    pub(super) pgid: u32,
+    /// The lines the readers send, until every holder of the pipes has closed them.
+    pub(super) rx: mpsc::UnboundedReceiver<String>,
+    pub(super) readers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -25,10 +43,10 @@ pub(super) async fn run_command_logged(
     tmp: Option<&std::path::Path>,
     mut on_line: impl FnMut(&str),
     log: Option<RawLog>,
-) -> End {
+) -> (End, Option<Held>) {
     let mut cmd = match build_command(command, cwd, sandbox, false) {
         Ok(c) => c,
-        Err(e) => return End::Failed(e),
+        Err(e) => return (End::Failed(e), None),
     };
     cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     if let Some(tmp) = tmp {
@@ -49,7 +67,7 @@ pub(super) async fn run_command_logged(
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return End::Failed(e.to_string()),
+        Err(e) => return (End::Failed(e.to_string()), None),
     };
     let pid = child.id();
     // declared after `child`: dropped before it, while the group's leader is still there
@@ -76,9 +94,9 @@ pub(super) async fn run_command_logged(
             status = child.wait() => break match status {
                 Ok(s) => match s.code() {
                     Some(c) => End::Exited(c),
-                    None => End::Signalled,
+                    None => End::Signalled(signal_of(&s)),
                 },
-                Err(e) => End::Failed(e.to_string()),
+                Err(e) => End::Lost(e.to_string()),
             },
             line = rx.recv(), if open => match line {
                 Some(l) => on_line(&l),
@@ -107,14 +125,35 @@ pub(super) async fn run_command_logged(
             },
         }
     }
-    for r in readers {
-        r.abort();
+    // the shell exited and a process it started still holds the pipes: the readers go on, for a job
+    // (process groups are a unix thing: elsewhere the pid is only the shell's, which has exited and may be reused)
+    let pgid = pid.filter(|_| cfg!(unix) && matches!(end, End::Exited(_)) && open);
+    if pgid.is_none() {
+        for r in &readers {
+            r.abort();
+        }
     }
-    // lines already read when the readers stopped
+    // lines already read when the readers stopped (for a held command: the ones queued now)
     while let Ok(l) = rx.try_recv() {
         on_line(&l);
     }
-    end
+    match pgid {
+        Some(pgid) => (end, Some(Held { pgid, rx, readers })),
+        None => (end, None),
+    }
+}
+
+/// The signal that ended a process, 0 where the system does not say.
+fn signal_of(status: &std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        std::os::unix::process::ExitStatusExt::signal(status).unwrap_or(0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        0
+    }
 }
 
 /// How a command that proves a change ended.
@@ -144,10 +183,18 @@ pub(crate) async fn prove(
         End::Exited(c) => (Some(c), false),
         End::TimedOut => (None, true),
         End::Failed(e) => {
-            text = format!("cannot run the command: {e}");
+            text = match no_cwd(cwd) {
+                Some(missing) => format!("{missing}; the command did not run"),
+                None => format!("cannot run the command: {e}"),
+            };
             (None, false)
         }
-        End::Signalled | End::Cancelled => (None, false),
+        End::Lost(e) => {
+            text =
+                format!("{text}\n[the command started, but waiting for it failed: {e}; its exit status is not known]");
+            (None, false)
+        }
+        End::Signalled(_) | End::Cancelled => (None, false),
     };
     Proof { exit, timed_out, secs: t0.elapsed().as_secs_f64(), output: text }
 }
