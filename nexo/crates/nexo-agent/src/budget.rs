@@ -379,6 +379,7 @@ mod tests {
 
     #[test]
     fn the_days_spending_adds_up_in_its_file() {
+        let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         std::env::set_var("NEXO_DATA_DIR", d.path());
         assert_eq!(spent_today(), 0.0);

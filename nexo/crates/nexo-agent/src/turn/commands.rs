@@ -56,12 +56,14 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     nexo_tools::bash::wipe_tmp(st.session.id());
     st.session = session;
     session_opened(st);
+    crate::context::record(&mut st.session, st.policy.as_ref(), &st.config.context.policy);
     prefix::adopt(st);
     st.checkpoints.clear();
     st.history.replace(st.session.messages().to_vec());
     st.usage = st.session.usage();
     st.cost = st.session.cost();
     st.policy.reset();
+    st.view_failed = false;
     st.last_prompt = None;
     st.pauses = Default::default();
     st.last_call = None;
@@ -408,6 +410,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     // the task list is the one the kept messages left: one set by what was dropped no longer holds
     session_opened(&st);
     st.policy.reset();
+    st.view_failed = false;
     st.last_prompt = None;
     st.last_call = None;
     st.last_request = None;
@@ -534,11 +537,16 @@ pub(super) async fn clear(state: &Shared) {
         let s = &mut *st;
         s.prefix = prefix::fresh(&mut s.session, &s.cwd, &s.config.agent, &s.tools);
     }
+    {
+        let s = &mut *st;
+        crate::context::record(&mut s.session, s.policy.as_ref(), &s.config.context.policy);
+    }
     session_opened(&st);
     st.system = full_system(&st);
     st.history.clear();
     st.checkpoints.clear();
     st.policy.reset();
+    st.view_failed = false;
     st.last_prompt = None;
     st.pauses = Default::default();
     st.last_call = None;

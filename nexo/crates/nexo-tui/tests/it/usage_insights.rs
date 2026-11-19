@@ -222,7 +222,7 @@ fn write_session(dir: &std::path::Path) {
     let mut s = Session::create_in(dir, &PathBuf::from("/tmp/project"), "mock", "m1").unwrap();
     s.append(&Message::user("hello there")).unwrap();
     for input in [10_000u64, 180_000, 190_000] {
-        let meta = UsageMeta { model: Some("m1".into()), kind: Some(UsageKind::Main), held: None };
+        let meta = UsageMeta { model: Some("m1".into()), kind: Some(UsageKind::Main), held: None, fallback: None };
         s.record_usage_meta(Usage { input, output: 100, ..Default::default() }, 0.5, meta).unwrap();
     }
 }

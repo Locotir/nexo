@@ -104,6 +104,10 @@ pub trait ContextPolicy: Send {
     fn caveat(&self) -> Option<String> {
         None
     }
+    /// The curator spec that runs (what was asked less what it cannot run); `None` for a policy with no spec.
+    fn spec(&self) -> Option<String> {
+        None
+    }
     async fn shutdown(&mut self) {}
     /// The policy's state, saved next to the session so that a resume starts from it instead of rebuilding it
     /// from the whole history (`restore`): a job that encodes it, to run off the agent's lock, or `None` when
@@ -124,3 +128,20 @@ pub mod saved;
 pub use describe::{describe, describe_since, saving};
 pub use directives::{CURATOR_DIRECTIVES, CURATOR_DIRECTIVES_SAID};
 pub use policies::{from_config, working_set_spec, BuiltIn, Compact, Plain, POLICY_NAMES};
+
+/// What the session file says of the policy that runs: `asked` is `[context] policy` as configured.
+pub fn record_of(policy: &dyn ContextPolicy, asked: &str) -> crate::session::ContextRecord {
+    crate::session::ContextRecord {
+        policy: policy.name().to_string(),
+        asked: asked.trim().to_string(),
+        spec: policy.spec().unwrap_or_default(),
+        caveat: policy.caveat().or_else(|| policy.detail()),
+    }
+}
+
+/// Writes the setup of `policy` to `session` (nothing when it is the one the file already ends with).
+pub fn record(session: &mut crate::session::Session, policy: &dyn ContextPolicy, asked: &str) {
+    if let Err(e) = session.record_context(&record_of(policy, asked)) {
+        tracing::warn!("context: the setup was not recorded: {e}");
+    }
+}

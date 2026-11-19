@@ -55,6 +55,8 @@ mod chrome;
 mod commands;
 mod compaction;
 mod connect;
+#[cfg(test)]
+mod context_record_tests;
 mod dispatch;
 mod flow;
 mod goal;

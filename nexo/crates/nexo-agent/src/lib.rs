@@ -92,3 +92,7 @@ pub struct AgentSetup {
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     turn::run(ends, setup).await
 }
+
+/// Unit tests that point the data folder at a temp dir take turns on this.
+#[cfg(test)]
+pub(crate) static DATA_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

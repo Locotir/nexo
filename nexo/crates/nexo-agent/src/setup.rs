@@ -485,11 +485,9 @@ mod tests {
         assert_eq!((mode(&old), mode(&old.join("k"))), (0o700, 0o600));
     }
 
-    static DATA: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Tests that point the data folder at a temp dir take turns.
     fn in_temp_data<R>(f: impl FnOnce(&Path) -> R) -> R {
-        let _g = DATA.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         std::env::set_var("NEXO_DATA_DIR", d.path());
         f(d.path())
@@ -517,7 +515,7 @@ mod tests {
 
     #[test]
     fn a_check_stopped_midway_removes_its_key_file() {
-        let _g = DATA.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(stopped_midway());
     }
 

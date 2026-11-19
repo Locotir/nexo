@@ -804,3 +804,85 @@ async fn a_large_session_resumed_from_its_saved_state_sends_what_a_full_replay_s
         assert_eq!(r.replayed, r.kept, "a full replay that took every reply");
     }
 }
+
+/// The `context` lines of a session file, as JSON.
+fn context_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "context")
+        .collect()
+}
+
+fn new_session(dir: &std::path::Path) -> crate::session::Session {
+    crate::session::Session::create_in(dir, std::path::Path::new("/p"), "mock", "m1").unwrap()
+}
+
+#[test]
+fn a_setting_the_curator_cannot_run_is_on_the_record_with_the_spec_that_runs() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = new_session(d.path());
+    let cfg = ContextConfig {
+        policy: " curator ".into(),
+        curator_spec: "directives=1;rule=lru".into(),
+        ..Default::default()
+    };
+    let p = from_config(&cfg);
+    record(&mut s, p.as_ref(), &cfg.policy);
+    let lines = context_lines(s.path());
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let l = &lines[0];
+    assert_eq!((l["policy"].as_str(), l["asked"].as_str()), (Some("curator"), Some("curator")));
+    assert_eq!(l["spec"], "directives=1", "the setting it cannot run is not in the spec that runs");
+    assert!(l["caveat"].as_str().unwrap().contains("rule=lru"), "{l}");
+}
+
+#[test]
+fn plain_has_no_spec_and_no_caveat_and_an_unknown_name_runs_plain_with_one() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = new_session(d.path());
+    let mut cfg = ContextConfig { policy: "plain".into(), ..Default::default() };
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    let l = context_lines(s.path()).pop().unwrap();
+    assert_eq!(
+        (l["policy"].as_str(), l["asked"].as_str(), l["spec"].as_str()),
+        (Some("plain"), Some("plain"), Some(""))
+    );
+    assert!(l.get("caveat").is_none(), "{l}");
+    cfg.policy = "nonsense".into();
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    let lines = context_lines(s.path());
+    assert_eq!(lines.len(), 2);
+    let l = &lines[1];
+    assert_eq!((l["policy"].as_str(), l["asked"].as_str()), (Some("plain"), Some("nonsense")));
+    assert!(l["caveat"].as_str().unwrap().contains("nonsense"), "{l}");
+    cfg.policy = "compact".into();
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    let l = context_lines(s.path()).pop().unwrap();
+    assert_eq!((l["policy"].as_str(), l["spec"].as_str()), (Some("compact"), Some("")));
+}
+
+#[test]
+fn the_same_setup_is_written_once_and_a_changed_spec_again() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = new_session(d.path());
+    let mut cfg = ContextConfig { curator_spec: "directives=1".into(), ..Default::default() };
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    assert_eq!(context_lines(s.path()).len(), 1, "the same setup twice");
+    // a resume that sets up the same policy adds nothing, and reads the last line back
+    let mut again = crate::session::Session::open_path(s.path()).unwrap();
+    assert_eq!(again.context(), s.context());
+    record(&mut again, from_config(&cfg).as_ref(), &cfg.policy);
+    assert_eq!(context_lines(s.path()).len(), 1, "a resume with the same setup");
+    cfg.curator_spec = "directives=1;eoq=1".into();
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    let lines = context_lines(s.path());
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1]["spec"], "directives=1;eoq=1");
+    // a rewrite of the file keeps the last one
+    s.reset_with(&[Message::user("a")]).unwrap();
+    let lines = context_lines(s.path());
+    assert_eq!((lines.len(), lines[0]["spec"].as_str()), (1, Some("directives=1;eoq=1")));
+}
