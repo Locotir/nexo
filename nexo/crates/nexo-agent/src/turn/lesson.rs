@@ -81,7 +81,9 @@ pub(super) async fn tell_not_fitting(state: &Shared, events: &EventTx, e: Option
             let views = if refits == 1 { "1 smaller view".to_string() } else { format!("{refits} smaller views") };
             let (sizes, bare) = {
                 let st = state.lock().await;
-                (refused_sizes(&st), st.refused.is_some())
+                // an error that names a window was not a refusal with no number, whatever an earlier one set
+                let numbered = e.is_some_and(|e| hints::context_window(&e.message).is_some());
+                (refused_sizes(&st), st.refused.is_some() && !numbered)
             };
             // a request refused with no number did not fail a window the provider named: it was refused as too long
             let why = match e {
