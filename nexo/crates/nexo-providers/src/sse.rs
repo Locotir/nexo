@@ -57,7 +57,9 @@ impl SseParser {
     /// Dispatches what is pending at the end of the stream.
     pub fn finish(&mut self) -> Option<SseEvent> {
         if !self.buf.is_empty() {
-            let line = String::from_utf8_lossy(&self.buf).into_owned();
+            // a final lone `\r` is the terminator of the last line (`next_line` held it back for a `\n`)
+            let bytes = self.buf.strip_suffix(b"\r").unwrap_or(&self.buf);
+            let line = String::from_utf8_lossy(bytes).into_owned();
             self.buf.clear();
             if let Some(ev) = self.line(&line) {
                 return Some(ev);
