@@ -30,6 +30,33 @@ fn bound(n: usize) -> f64 {
     4.0 * ((4 * n) as f64).log2() / (n as f64).log2() * 1.25
 }
 
+/// Every work counter at about 4n messages (`big`) is at most `bound(n)` times what it was at n (`small`), plus 64
+/// for the constants of small counts; one with an event counter (`Work::per`) is compared per event. The ones of
+/// `must` have to be counted at n; the ones of `pinned` are quadratic and kept so: at most 16 · 1.25 times.
+/// A counter that is zero at n is skipped, and said so.
+fn assert_grows_at_most(what: &str, n: usize, small: &[u64; K], big: &[u64; K], must: &[Work], pinned: &[Work]) {
+    for w in Work::ALL {
+        if w.is_event() {
+            continue;
+        }
+        if small[w as usize] == 0 {
+            assert!(!must.contains(&w), "{what}: {w:?} is not counted at {n} messages");
+            eprintln!("{what}: {w:?} is not counted at {n} messages ({} at 4n), skipped", big[w as usize]);
+            continue;
+        }
+        let at = |c: &[u64; K]| {
+            let x = c[w as usize] as f64;
+            w.per().map_or(x, |e| x / c[e as usize].max(1) as f64)
+        };
+        let (s, b) = (at(small), at(big));
+        let limit = if pinned.contains(&w) { 16.0 * 1.25 } else { bound(n) };
+        assert!(
+            b <= limit * s + 64.0,
+            "{what}: {w:?} grows from {s:.1} at {n} messages to {b:.1} at 4n, more than {limit:.2} times"
+        );
+    }
+}
+
 /// The history up to `len` messages as a curator is asked for views, one more view every 16 messages.
 struct Feed<'a> {
     cur: Curator,
