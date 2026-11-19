@@ -881,8 +881,50 @@ fn the_same_setup_is_written_once_and_a_changed_spec_again() {
     let lines = context_lines(s.path());
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[1]["spec"], "directives=1;eoq=1");
-    // a rewrite of the file keeps the last one
+    // a rewrite of the file keeps each one, in its place
     s.reset_with(&[Message::user("a")]).unwrap();
     let lines = context_lines(s.path());
-    assert_eq!((lines.len(), lines[0]["spec"].as_str()), (1, Some("directives=1;eoq=1")));
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["spec"], "directives=1");
+    assert_eq!(lines[1]["spec"], "directives=1;eoq=1");
+}
+
+/// The `context` and `usage` lines of a session file, in file order, as `context:<policy>:<spec>` and `usage`.
+fn context_and_usage_order(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| match v["type"].as_str() {
+            Some("context") => Some(format!("context:{}:{}", v["policy"].as_str()?, v["spec"].as_str()?)),
+            Some("usage") => Some("usage".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_rewrite_keeps_each_context_line_before_the_calls_it_ran() {
+    use crate::session::{UsageKind, UsageMeta};
+    let d = tempfile::tempdir().unwrap();
+    let mut s = new_session(d.path());
+    let call = nexo_core::stream::Usage { input: 10, output: 1, ..Default::default() };
+    let meta = UsageMeta { model: Some("m1".into()), kind: Some(UsageKind::Main), ..Default::default() };
+    let mut cfg = ContextConfig { policy: "plain".into(), ..Default::default() };
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    s.record_usage_meta(call, 0.0, meta.clone()).unwrap();
+    s.record_usage_meta(call, 0.0, meta.clone()).unwrap();
+    cfg = ContextConfig { policy: "curator".into(), curator_spec: "directives=1".into(), ..Default::default() };
+    record(&mut s, from_config(&cfg).as_ref(), &cfg.policy);
+    s.record_usage_meta(call, 0.0, meta).unwrap();
+    s.append(&Message::user("a")).unwrap();
+    let want = ["context:plain:", "usage", "usage", "context:curator:directives=1", "usage"];
+    assert_eq!(context_and_usage_order(s.path()), want, "as written");
+    s.reset_with(&[Message::user("a")]).unwrap();
+    assert_eq!(context_and_usage_order(s.path()), want, "after a compaction");
+    s.rewind(0).unwrap();
+    assert_eq!(context_and_usage_order(s.path()), want, "after a rewind");
+    // a session opened again reads the last one back
+    let again = crate::session::Session::open_path(s.path()).unwrap();
+    assert_eq!(again.context(), s.context());
 }

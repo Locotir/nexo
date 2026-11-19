@@ -110,6 +110,8 @@ pub struct UsageMeta {
     pub held: Option<u64>,
     /// The view failed at this call and the whole history was sent.
     pub fallback: Option<bool>,
+    /// The curator fitted this request to the window after the session's own policy left it over.
+    pub fitted: Option<bool>,
 }
 
 /// The context policy a session ran with, as a `context` line writes it: what was asked, what runs, and what of the
@@ -164,6 +166,10 @@ enum Line {
         /// The call's view failed and the whole history went; absent when it did not, and in old files.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fallback: Option<bool>,
+        /// The request was cut by the curator to fit the window although the session's policy does not cut; absent
+        /// when it was not, and in old files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fitted: Option<bool>,
     },
     Title {
         title: String,

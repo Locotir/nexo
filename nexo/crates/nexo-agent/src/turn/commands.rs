@@ -64,6 +64,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.cost = st.session.cost();
     st.policy.reset();
     st.view_failed = false;
+    st.fit_tokens = None;
     st.last_prompt = None;
     st.pauses = Default::default();
     st.last_call = None;
@@ -414,6 +415,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     session_opened(&st);
     st.policy.reset();
     st.view_failed = false;
+    st.fit_tokens = None;
     st.last_prompt = None;
     st.last_call = None;
     st.last_request = None;
@@ -551,6 +553,7 @@ pub(super) async fn clear(state: &Shared) {
     st.checkpoints.clear();
     st.policy.reset();
     st.view_failed = false;
+    st.fit_tokens = None;
     st.last_prompt = None;
     st.pauses = Default::default();
     st.last_call = None;

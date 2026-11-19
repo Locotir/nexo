@@ -130,6 +130,7 @@ impl Runtime {
             fit_view: None,
             last_view: (0, 0),
             view_failed: false,
+            fit_tokens: None,
             last_sent: crate::history::Sent::default(),
             last_request: None,
             mended: HashSet::new(),

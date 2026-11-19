@@ -44,8 +44,8 @@ impl Session {
         }
     }
 
-    /// Writes the whole file again from memory, except the usage and model lines, which are copied from the file
-    /// as it stands: to a temporary file next to it, renamed over it.
+    /// Writes the whole file again from memory, except the usage, model and context lines, which are copied from
+    /// the file as it stands: to a temporary file next to it, renamed over it.
     pub(super) fn rewrite(&mut self) -> anyhow::Result<()> {
         self.meta.messages = self.messages.len();
         self.meta.updated = now();
@@ -66,8 +66,8 @@ impl Session {
             // a result this file holds as the output printed it carries the text for the output line too
             let results = result_texts(&self.messages);
             // the calls already paid keep their line (time, model, kind, held tokens), so what was spent
-            // before a compaction or a rewind can still be told call by call
-            let (copied, copied_cost) = copy_detail(&self.path, &mut f)?;
+            // before a compaction or a rewind can still be told call by call, and each setup stays before them
+            let (copied, copied_cost, last_ctx) = copy_detail(&self.path, &mut f)?;
             let mut written = std::collections::BTreeSet::new();
             for (index, m) in self.messages.iter().enumerate() {
                 writeln!(
@@ -119,6 +119,7 @@ impl Session {
                         kind: Some(UsageKind::Sum),
                         held: None,
                         fallback: None,
+                        fitted: None,
                     })?
                 )?;
             }
@@ -126,7 +127,8 @@ impl Session {
                 // the words and the progress too: a compaction or a rewind must not lose them
                 writeln!(f, "{}", serde_json::to_string(&self.goal_line())?)?;
             }
-            if let Some(c) = &self.context {
+            // the setup in force is written again only when the copied lines do not end with it
+            if let Some(c) = self.context.as_ref().filter(|c| Some(*c) != last_ctx.as_ref()) {
                 writeln!(f, "{}", serde_json::to_string(&Line::Context(c.clone()))?)?;
             }
             if let Some(p) = &self.prefix {
@@ -230,19 +232,20 @@ fn copy_todo(dir: &Path, from: &str, to: &str) {
     }
 }
 
-/// Copies the `usage` and `model` lines of the file as it stands to `out`, trimmed of surrounding whitespace and
-/// in order, and returns what the usage lines add up to. A line is told by how it starts (the writer puts `type`
-/// first, as `read_meta` relies on) and kept only when it still parses, so a line cut by a crash is not carried
-/// along. Lines of an earlier `sum` are copied like the others, so a second rewrite folds nothing. A file that
-/// cannot be read copies nothing: the caller then sums from memory.
-fn copy_detail(path: &Path, out: &mut impl Write) -> anyhow::Result<(Usage, f64)> {
+/// Copies the `usage`, `model` and `context` lines of the file as it stands to `out`, trimmed of surrounding
+/// whitespace and in order, and returns what the usage lines add up to and the last context line copied. A line is
+/// told by how it starts (the writer puts `type` first, as `read_meta` relies on) and kept only when it still
+/// parses, so a line cut by a crash is not carried along. Lines of an earlier `sum` are copied like the others, so
+/// a second rewrite folds nothing. A file that cannot be read copies nothing: the caller then sums from memory.
+fn copy_detail(path: &Path, out: &mut impl Write) -> anyhow::Result<(Usage, f64, Option<ContextRecord>)> {
     const USAGE: &[u8] = br#"{"type":"usage""#;
     const MODEL: &[u8] = br#"{"type":"model""#;
-    let (mut total, mut cost) = (Usage::default(), 0.0);
-    let Ok(file) = File::open(path) else { return Ok((total, cost)) };
+    const CONTEXT: &[u8] = br#"{"type":"context""#;
+    let (mut total, mut cost, mut context) = (Usage::default(), 0.0, None);
+    let Ok(file) = File::open(path) else { return Ok((total, cost, context)) };
     for line in BufReader::new(file).split(b'\n').map_while(Result::ok) {
         let line = line.trim_ascii();
-        if !line.starts_with(USAGE) && !line.starts_with(MODEL) {
+        if !line.starts_with(USAGE) && !line.starts_with(MODEL) && !line.starts_with(CONTEXT) {
             continue;
         }
         match serde_json::from_slice::<Line>(line) {
@@ -251,10 +254,11 @@ fn copy_detail(path: &Path, out: &mut impl Write) -> anyhow::Result<(Usage, f64)
                 cost += cost_usd;
             }
             Ok(Line::Model { .. }) => {}
+            Ok(Line::Context(c)) => context = Some(c),
             _ => continue,
         }
         out.write_all(line)?;
         out.write_all(b"\n")?;
     }
-    Ok((total, cost))
+    Ok((total, cost, context))
 }

@@ -217,7 +217,13 @@ fn usage_lines_say_when_whose_and_how_much_was_held_and_old_readers_still_read_t
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), &PathBuf::from("/p"), "mock", "m1").unwrap();
     s.append(&Message::user("hello there")).unwrap();
-    let meta = UsageMeta { model: Some("m1".into()), kind: Some(UsageKind::Main), held: Some(42), fallback: None };
+    let meta = UsageMeta {
+        model: Some("m1".into()),
+        kind: Some(UsageKind::Main),
+        held: Some(42),
+        fallback: None,
+        fitted: None,
+    };
     s.record_usage_meta(Usage { input: 5, ..Default::default() }, 0.5, meta).unwrap();
     s.record_usage(Usage { input: 1, ..Default::default() }, 0.25).unwrap();
     let text = std::fs::read_to_string(s.path()).unwrap();
@@ -257,8 +263,13 @@ fn a_compaction_keeps_the_line_of_every_call_paid_before_it() {
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
     s.append(&Message::user("hello there")).unwrap();
-    let main =
-        |model: &str, held| UsageMeta { model: Some(model.into()), kind: Some(UsageKind::Main), held, fallback: None };
+    let main = |model: &str, held| UsageMeta {
+        model: Some(model.into()),
+        kind: Some(UsageKind::Main),
+        held,
+        fallback: None,
+        fitted: None,
+    };
     s.record_usage_meta(Usage { input: 5, ..Default::default() }, 0.5, main("m1", Some(42))).unwrap();
     s.record_model("mock", "m2").unwrap();
     s.record_usage_meta(Usage { input: 7, ..Default::default() }, 0.25, main("m2", None)).unwrap();
@@ -2081,7 +2092,13 @@ fn a_file_without_a_context_line_or_a_fallback_reads_as_before() {
     s.record_usage_meta(
         Usage { input: 100, output: 10, ..Default::default() },
         0.2,
-        UsageMeta { model: Some("m1".into()), kind: Some(UsageKind::Main), held: Some(7), fallback: None },
+        UsageMeta {
+            model: Some("m1".into()),
+            kind: Some(UsageKind::Main),
+            held: Some(7),
+            fallback: None,
+            fitted: None,
+        },
     )
     .unwrap();
     // a usage line as the code before the `context` line wrote it

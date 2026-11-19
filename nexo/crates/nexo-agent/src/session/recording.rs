@@ -233,6 +233,7 @@ impl Session {
             kind: meta.kind,
             held: meta.held,
             fallback: meta.fallback,
+            fitted: meta.fitted,
         })
     }
 

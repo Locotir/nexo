@@ -57,9 +57,12 @@ pub(super) fn add_usage_priced(
     }
     st.cost += cost;
     // what the view left out of the history at this call (the conversation's own calls only)
-    let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(st.last_view.1));
+    // and, when the curator cut the request to the window, what it left out: its view's tokens, not the policy's
+    let sent = st.fit_tokens.unwrap_or(st.last_view.1);
+    let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(sent));
     let fallback = (kind == UsageKind::Main && st.view_failed).then_some(true);
-    let meta = UsageMeta { model: Some(model.to_string()), kind: Some(kind), held, fallback };
+    let fitted = (kind == UsageKind::Main && st.fit_tokens.is_some()).then_some(true);
+    let meta = UsageMeta { model: Some(model.to_string()), kind: Some(kind), held, fallback, fitted };
     let _ = st.session.record_usage_meta(usage, cost, meta);
     saving(st);
     if let Some(audit) = &st.audit {
