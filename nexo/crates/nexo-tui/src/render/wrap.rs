@@ -112,30 +112,61 @@ pub fn clean(s: &str) -> std::borrow::Cow<'_, str> {
                     out.truncate(out.rfind('\n').map_or(0, |i| i + 1));
                 }
             }
-            '\x1b' => match it.next() {
-                // CSI: parameters up to a final byte in @..~
-                Some('[') => {
-                    for d in it.by_ref() {
-                        if ('@'..='~').contains(&d) {
-                            break;
-                        }
-                    }
-                }
-                // OSC and other strings: up to BEL or ESC \\
-                Some(']' | 'P' | '_' | '^') => {
-                    while let Some(d) = it.next() {
-                        if d == '\x07' {
-                            break;
-                        }
-                        if d == '\x1b' {
-                            it.next_if_eq(&'\\');
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            },
+            '\x1b' => skip_escape(&mut it),
             c if unsafe_char(c) => {}
+            c => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// The rest of an escape sequence whose ESC was just read: CSI up to its final byte, OSC and
+/// other strings up to BEL or ST.
+fn skip_escape(it: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match it.next() {
+        // CSI: parameters up to a final byte in @..~
+        Some('[') => {
+            for d in it.by_ref() {
+                if ('@'..='~').contains(&d) {
+                    break;
+                }
+            }
+        }
+        // OSC and other strings: up to BEL or ESC \\
+        Some(']' | 'P' | '_' | '^') => {
+            while let Some(d) = it.next() {
+                if d == '\x07' {
+                    break;
+                }
+                if d == '\x1b' {
+                    it.next_if_eq(&'\\');
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `s` with only what a terminal must not receive taken out: escape sequences (CSI, OSC, DCS and
+/// the like) and control characters other than '\n' and '\t'. CRLF and a lone CR become '\n'.
+/// Tabs, joiners, presentation selectors, skin tones, BOM and bidirectional marks stay: this is
+/// text that is sent on, not text that is drawn (see [`clean`] for that).
+pub fn strip_escapes(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.chars().any(|c| c == '\x1b' || c == '\r' || (c.is_control() && c != '\n' && c != '\t')) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\r' => {
+                it.next_if_eq(&'\n');
+                out.push('\n');
+            }
+            '\x1b' => skip_escape(&mut it),
+            '\n' | '\t' => out.push(c),
+            c if c.is_control() => {}
             c => out.push(c),
         }
     }
@@ -315,7 +346,8 @@ pub fn wrap_plain_ex(
     let mut out = Vec::new();
     let mut conts = Vec::new();
     for raw in text.split('\n') {
-        let runs = [(raw.to_string(), style)];
+        // chip text can hold tabs and marks (it is sent as pasted); the rows draw it clean
+        let runs = [(clean(raw).into_owned(), style)];
         let (lines, cs) = wrap_runs_ex(&runs, max_w, prefix, prefix);
         conts.extend(cs.into_iter().map(|c| Cont { line: c.line + out.len() as u32, ..c }));
         out.extend(lines);
@@ -326,6 +358,20 @@ pub fn wrap_plain_ex(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_escapes_keeps_tabs_and_marks_and_drops_csi_and_osc() {
+        assert!(matches!(strip_escapes("a\tb 👩\u{200D}💻 ❤\u{FE0F}\nc"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(strip_escapes("a\tb"), "a\tb");
+        assert_eq!(
+            strip_escapes("👩\u{200D}💻 ❤\u{FE0F} \u{202B}x\u{FEFF}"),
+            "👩\u{200D}💻 ❤\u{FE0F} \u{202B}x\u{FEFF}"
+        );
+        assert_eq!(strip_escapes("\x1b[31mred\x1b[0m\tok"), "red\tok");
+        assert_eq!(strip_escapes("\x1b]8;;http://x\x07link\x1b]8;;\x1b\\"), "link");
+        assert_eq!(strip_escapes("a\x07b\x00c\x7fd"), "abcd");
+        assert_eq!(strip_escapes("a\r\nb\rc\n"), "a\nb\nc\n");
+    }
 
     #[test]
     fn clean_takes_out_what_the_terminal_draws_differently() {

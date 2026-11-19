@@ -162,3 +162,39 @@ async fn a_review_that_says_continue_leaves_the_command_running() {
     assert!(told.contains("done (exit 0)"), "{told}");
     r.stop().await;
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_job_that_ends_while_idle_starts_its_turn_before_the_list_shows_it_ended() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 1; echo hi", "background": true}))),
+        Reply::Events(text("started")),
+        Reply::Events(text("saw it")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client, config(PermissionMode::Auto), None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
+    let mut evs = Vec::new();
+    loop {
+        let ev = r.raw_within(Duration::from_secs(30)).await;
+        let done = matches!(ev, AgentEvent::Idle { running_jobs: 0 });
+        evs.push(ev);
+        if done {
+            break;
+        }
+    }
+    // the first turn ended with the job still running; what comes after is the job's end
+    let idle =
+        evs.iter().position(|e| matches!(e, AgentEvent::Idle { running_jobs: 1 })).expect("idle with the job running");
+    let after = &evs[idle..];
+    let follow_up =
+        after.iter().position(|e| matches!(e, AgentEvent::Preparing { .. })).expect("a turn for the ended job");
+    let shown_ended = after
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Jobs { jobs } if jobs.iter().any(|j| j.id == 1 && !j.status.running())))
+        .expect("the list shows the job ended");
+    assert!(follow_up < shown_ended, "the list showed the job ended before the turn that tells the model began");
+    r.stop().await;
+}

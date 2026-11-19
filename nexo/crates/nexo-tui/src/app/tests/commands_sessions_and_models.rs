@@ -81,7 +81,10 @@ fn commands_and_submissions_reach_the_agent() {
     a.input.set_text("/permissions auto");
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(PermissionMode::Auto))));
-    a.input.set_text("!ls -la");
+    // a typed `!` runs the shell (set_text is not typing)
+    for c in "!ls -la".chars() {
+        crate::event::handle(&mut a, crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+    }
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Shell { command }) if command == "ls -la"));
     a.input.set_text("/model");
@@ -174,6 +177,8 @@ fn enter_on_an_empty_draft_with_a_queue_sends_it_now() {
     a.submit();
     assert_eq!(a.queued, 1);
     while rx.try_recv().is_ok() {}
+    // a deliberate Enter, after the pause that tells it from a double or held one (see double_enter.rs)
+    a.fx.clock = Some(a.queued_at.expect("the queueing Enter is timed") + std::time::Duration::from_secs(1));
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::InterruptRun)));
     // nothing waiting: an empty Enter does not stop the turn

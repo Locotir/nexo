@@ -2,16 +2,46 @@
 
 use super::*;
 
+/// One line of the history file: a JSON string (a request, or an older run's entry, which never ran as a shell
+/// command) or `{"shell":"<text>"}` (a command that ran in the shell).
+fn parse_line(line: &str) -> Option<(String, bool)> {
+    if let Ok(s) = serde_json::from_str::<String>(line) {
+        return Some((s, false));
+    }
+    let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    Some((v.get("shell")?.as_str()?.to_string(), true))
+}
+
+fn write_line(text: &str, shell: bool) -> String {
+    if shell {
+        serde_json::json!({ "shell": text }).to_string()
+    } else {
+        serde_json::to_string(text).unwrap_or_default()
+    }
+}
+
 impl Input {
     pub fn push_history(&mut self, text: &str) {
-        if self.history.last().map(String::as_str) != Some(text) {
+        self.push_entry(text, false);
+    }
+
+    /// Like [`Input::push_history`], for a command that ran in the shell: recalled, it runs as a shell command again.
+    pub fn push_shell_history(&mut self, text: &str) {
+        self.push_entry(text, true);
+    }
+
+    fn push_entry(&mut self, text: &str, shell: bool) {
+        let same = self.history.last().map(String::as_str) == Some(text) && self.history_shell.last() == Some(&shell);
+        if !same {
             self.history.push(text.to_string());
+            self.history_shell.push(shell);
             if self.history.len() > MAX_HISTORY {
                 self.history.remove(0);
+                self.history_shell.remove(0);
             }
             if let Some(f) = &self.history_file {
                 use std::io::Write;
-                let line = serde_json::to_string(text).unwrap_or_default();
+                let line = write_line(text, shell);
                 if let Ok(mut out) = open_private(f, true) {
                     let _ = writeln!(out, "{line}");
                 }
@@ -35,11 +65,12 @@ impl Input {
             }
         }
         let text = std::fs::read_to_string(&file).unwrap_or_default();
-        let all: Vec<String> = text.lines().filter_map(|l| serde_json::from_str::<String>(l).ok()).collect();
+        let all: Vec<(String, bool)> = text.lines().filter_map(parse_line).collect();
         let from = all.len().saturating_sub(MAX_HISTORY);
-        self.history = all[from..].to_vec();
+        self.history = all[from..].iter().map(|(t, _)| t.clone()).collect();
+        self.history_shell = all[from..].iter().map(|(_, s)| *s).collect();
         if all.len() > 2 * MAX_HISTORY {
-            let kept: Vec<String> = self.history.iter().map(|h| serde_json::to_string(h).unwrap_or_default()).collect();
+            let kept: Vec<String> = all[from..].iter().map(|(t, s)| write_line(t, *s)).collect();
             if let Ok(mut out) = open_private(&file, false) {
                 use std::io::Write;
                 let _ = out.write_all((kept.join("\n") + "\n").as_bytes());
@@ -51,6 +82,11 @@ impl Input {
     /// Every request sent, oldest first.
     pub fn history(&self) -> &[String] {
         &self.history
+    }
+
+    /// The history entry `i` and whether it ran as a shell command.
+    pub(crate) fn history_entry(&self, i: usize) -> Option<(&str, bool)> {
+        Some((self.history.get(i)?.as_str(), self.history_shell.get(i).copied().unwrap_or(false)))
     }
 
     pub(super) fn history_step(&mut self, up: bool) -> Edit {
@@ -68,13 +104,15 @@ impl Input {
         let next = match self.hist {
             None => {
                 self.stash = self.text();
+                self.stash_bang = self.typed_bang();
                 self.history.len() - 1
             }
             Some(0) => return Edit::Ignored,
             Some(i) => i - 1,
         };
         let text = self.history[next].clone();
-        self.set_text(&text);
+        let shell = self.history_shell.get(next).copied().unwrap_or(false);
+        self.recall(&text, shell);
         self.hist = Some(next);
         Edit::Recalled
     }
@@ -84,13 +122,14 @@ impl Input {
             None => Edit::Ignored,
             Some(i) if i + 1 < self.history.len() => {
                 let text = self.history[i + 1].clone();
-                self.set_text(&text);
+                let shell = self.history_shell.get(i + 1).copied().unwrap_or(false);
+                self.recall(&text, shell);
                 self.hist = Some(i + 1);
                 Edit::Recalled
             }
             Some(_) => {
                 let s = self.stash.clone();
-                self.set_text(&s);
+                self.recall(&s, self.stash_bang);
                 self.hist = None;
                 Edit::Recalled
             }

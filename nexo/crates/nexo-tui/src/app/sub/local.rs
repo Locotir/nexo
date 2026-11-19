@@ -2,6 +2,7 @@
 //! actions while a local run is open.
 
 use super::*;
+use crate::render::blocks::TASK_HEAD;
 use nexo_core::subs::{SubInfo, SubItem, SubTranscript};
 
 impl App {
@@ -199,9 +200,10 @@ impl App {
     /// One item of the run's conversation, drawn by the blocks the main chat uses.
     pub(super) fn sub_apply(&mut self, item: SubItem) {
         match item {
+            // the main agent's task, not the person's words: a notice with the task under its head
             SubItem::Task { text } => {
                 self.close_streaming();
-                self.push(Block::User { text, at: None });
+                self.push(Block::Notice { level: Level::Info, text: format!("{TASK_HEAD}\n{text}") });
             }
             SubItem::Person { text } => {
                 self.close_streaming();

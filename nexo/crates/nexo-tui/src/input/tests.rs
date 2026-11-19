@@ -1,18 +1,38 @@
 use super::*;
 
 #[test]
-fn a_paste_or_a_recalled_draft_never_carries_escapes_or_tabs() {
+fn a_short_paste_and_a_recalled_draft_are_clean_and_a_long_paste_keeps_its_tabs() {
     let mut i = Input::new("");
     i.insert_paste("a\tb\x1b[2Jc\x07\nd");
     assert_eq!(i.text(), "a    bc\nd", "escapes and controls out, tabs as spaces, line breaks kept");
     let long: String = (1..=40).map(|n| format!("\x1b[31mline\t{n}\n")).collect();
     i.clear();
     i.insert_paste(&long);
-    assert!(!i.full_text().contains(['\x1b', '\t']), "{:?}", i.full_text());
+    assert!(!i.full_text().contains('\x1b'), "{:?}", i.full_text());
+    assert!(i.full_text().contains('\t'), "a long paste is sent as pasted: {:?}", i.full_text());
     i.set_text("x\x1b]0;title\x07y\tz");
     assert_eq!(i.text(), "xy    z");
     let (rows, _) = wrapped_rows(&i, 20);
     assert!(rows.iter().all(|r| !r.chars().any(char::is_control)), "{rows:?}");
+}
+
+#[test]
+fn a_long_paste_keeps_joiners_selectors_and_bidi_marks() {
+    let paste: String = (1..=40).map(|_| "👩\u{200D}💻 ❤\u{FE0F} \u{202B}abc\t1\n").collect();
+    let mut i = Input::new("");
+    i.insert_paste(&paste);
+    assert_eq!(i.chip_labels().len(), 1, "a long paste is a chip");
+    assert_eq!(i.full_text(), paste);
+    let (rows, _) = wrapped_rows(&i, 40);
+    assert!(rows.iter().all(|r| !r.chars().any(char::is_control)), "{rows:?}");
+}
+
+#[test]
+fn a_recalled_emoji_request_stays_editable_text() {
+    let mut i = Input::new("");
+    i.set_text("❤\u{FE0F} ok");
+    assert!(i.chip_labels().is_empty());
+    assert_eq!(i.text(), i.full_text());
 }
 
 #[test]

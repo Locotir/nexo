@@ -170,3 +170,27 @@ async fn t4_chat_cache_read_and_write_tokens_both_leave_the_plain_input() {
     let s = play("openai-chat", &sse(&[d(json!({"content":"x"})), fin("stop"), usage_chunk(u)])).await;
     assert_eq!(s.usage, Usage { input: 100, output: 4, cache_read: 120, cache_write: 80, ..Usage::default() });
 }
+
+#[tokio::test]
+async fn t4_chat_xai_usage_whose_total_counts_reasoning_apart_bills_it_as_output() {
+    let text = sse(&[
+        d(json!({"content":"x"})),
+        fin("stop"),
+        usage_chunk(json!({"prompt_tokens":100,"completion_tokens":30,"total_tokens":150,
+            "completion_tokens_details":{"reasoning_tokens":20}})),
+    ]);
+    let s = play("openai-chat", &text).await;
+    assert_eq!((s.usage.input, s.usage.output, s.usage.reasoning), (100, 50, 20));
+}
+
+#[tokio::test]
+async fn t4_chat_usage_with_a_count_of_u64_max_does_not_overflow() {
+    let text = sse(&[
+        d(json!({"content":"x"})),
+        fin("stop"),
+        usage_chunk(json!({"prompt_tokens":u64::MAX,"completion_tokens":30,"total_tokens":u64::MAX,
+            "completion_tokens_details":{"reasoning_tokens":20}})),
+    ]);
+    let s = play("openai-chat", &text).await;
+    assert_eq!((s.usage.output, s.usage.reasoning), (30, 20));
+}

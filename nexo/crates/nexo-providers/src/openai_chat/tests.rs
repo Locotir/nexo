@@ -79,12 +79,17 @@ fn the_cache_key_goes_only_to_openai_itself() {
 }
 
 #[test]
-fn the_end_of_the_stream_without_a_finish_is_read_from_what_came() {
+fn content_without_a_finish_is_a_truncation() {
     let mut p = ChatParser::default();
     assert!(matches!(&p.finish()[0], StreamEvent::Error(e) if e.kind == ErrorKind::Parse), "nothing read at all");
     let mut p = ChatParser::default();
     p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{"content":"partial"}}]}"#);
-    assert_eq!(p.finish(), vec![StreamEvent::Finish(FinishReason::Stop)], "content without a finish is complete");
+    let end = p.finish();
+    assert!(
+        matches!(&end[..], [StreamEvent::Error(e)] if e.kind == ErrorKind::Network
+            && e.message == "the connection closed before the reply was complete (truncated)"),
+        "content without a finish is a truncation: {end:?}"
+    );
     let mut p = ChatParser::default();
     p.feed(r#"{"id":"x","choices":[{"index":0,"delta":{"role":"assistant"}}]}"#);
     assert!(matches!(&p.finish()[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network), "a start without content");

@@ -16,7 +16,9 @@ async fn t6_chat_stream_ends_without_done_and_without_finish_reason() {
     let text = format!("data: {}\n\n", d(json!({"content":"hi"})));
     let (c, evs) = run("openai-chat", &text, 0).await;
     assert_eq!(c.message().text(), "hi");
-    assert!(c.error.is_none(), "{:?}", c.error);
+    let e = c.error.expect("a stream with content and no finish is a truncation");
+    assert_eq!(e.kind, ErrorKind::Network);
+    assert!(e.message.contains("truncated"), "{}", e.message);
     assert!(matches!(evs.last(), Some(StreamEvent::Done)));
 }
 

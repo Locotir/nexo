@@ -391,6 +391,17 @@ pub fn key(app: &mut App, k: KeyEvent) {
         }
     }
     match app.input.key(k) {
+        // a held Enter (kind Repeat) on an empty draft with a request queued never stops the turn: it only renews the
+        // wait that the next deliberate Enter is measured from
+        Edit::Submit
+            if k.kind == KeyEventKind::Repeat
+                && app.input.is_empty()
+                && app.busy
+                && app.queued > 0
+                && !app.in_sub() =>
+        {
+            app.queued_at = Some(app.now());
+        }
         Edit::Submit => app.submit(),
         Edit::Changed => app.refresh_palette(),
         // a recalled history entry: the palette stays shut so the next Up keeps browsing

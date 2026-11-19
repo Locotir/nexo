@@ -101,6 +101,14 @@ With `--input-format stream-json`, each stdin line is a user message. Accepted s
 
 Blank lines are skipped, and lines whose `type` is not `user` are ignored. Messages run one after another in one session, each waiting for the previous answer. The run ends when stdin closes. If `-p` has text, it is the first message. `--json-schema` cannot be combined with an input stream (exit 2).
 
+## Background jobs
+
+A request does not end while a background job (`bash` with `background: true`, or a sub-agent) is still running: the end of a job gives the model its result in a follow-up turn, and that reply is the answer. While it waits, stderr says `nexo: waiting for N background job(s) to end (job 3 shell: ...) · no time limit · Ctrl+C ends the run and kills them`. There is no time limit: a job that never ends (a dev server, `tail -f`) keeps `nexo -p` running until the job ends, the job review of the agent stops it, or the run gets Ctrl+C or SIGTERM. A script that must not wait forever runs `nexo -p` under `timeout`.
+
+- One Ctrl+C or SIGTERM during the wait ends the run with exit 130 and kills the jobs.
+- With an input stream, the next message ends the wait for the previous request (its result goes out, the jobs keep running) and runs at once. Later requests do not wait for those jobs: the reply to the end of one is a result of its own. When stdin closes during a wait, or while such a job still runs, the run goes on waiting.
+- A run that ends with jobs still running names them. `json`: `killed_jobs` (`[{"id":3,"kind":"shell","label":"sleep 60"}]`, the whole label) and, when there is no other error, `error` (`killed: nexo -p ended · job 3 (shell) sleep 60`, each label cut to one line); text mode prints that line on stderr. With `stream-json` output a result line is final once printed: when the last one went out before the input closed, its jobs are named on stderr only.
+
 ## Schema
 
 `--json-schema` takes a file path or inline JSON (anything starting with `{`). The model is asked to answer with only JSON matching the schema. If the answer does not validate, it is sent back once, in the same session, with the errors. A second miss exits 3. The checker covers `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `anyOf`, `oneOf`, `allOf`, `not` and local `$ref`; other keywords (such as `pattern` and `format`) are ignored.

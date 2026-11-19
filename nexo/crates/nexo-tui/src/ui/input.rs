@@ -227,6 +227,8 @@ pub(super) fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
         let r = Rect { y: area.y + y as u16, height: 1, ..area };
         y += 1;
         let line = text.lines().next().unwrap_or("");
+        // a queued text can hold tabs and marks: the row draws it clean
+        let line = crate::render::wrap::clean(line);
         let line = truncate(&format!(" ◷ {line}"), r.width as usize);
         let mut row = Line::from(Span::styled(line, app.theme.dim()));
         let seen = app.fx.queue_seen.iter().find(|(t, _)| t == text).map(|(_, at)| *at);

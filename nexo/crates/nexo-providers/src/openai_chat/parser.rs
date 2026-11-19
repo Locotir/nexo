@@ -203,12 +203,13 @@ impl Feed for ChatParser {
 
     fn finish(&mut self) -> Vec<StreamEvent> {
         // calls still open without a finish_reason or [DONE]: their arguments may be cut
+        // content with no finish_reason and no [DONE] is a truncation (at_end_strict), not a finish
         let open = !self.calls.is_empty();
         self.calls.clear();
         let held = self.think.flush();
         let mut out = Vec::new();
         self.say(&mut out, held);
-        out.extend(self.prog.at_end_with_calls(open));
+        out.extend(self.prog.at_end_strict(open));
         out.extend(self.usage.take().map(StreamEvent::Usage));
         out
     }

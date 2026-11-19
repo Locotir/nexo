@@ -5,10 +5,39 @@ use super::*;
 /// How long a sent request may go unechoed before the screen says so.
 const UNECHOED_AFTER: Duration = Duration::from_secs(3);
 
+/// An empty-draft Enter this soon after the Enter that queued a request (or after a later ignored one) does not stop
+/// the turn: a double press or a held key only queues. It is longer than the system's key-repeat delay (660 ms on
+/// X11), because a held Enter's first repeat comes after it and only the repeats after that are measured from the
+/// last Enter.
+const ENTER_AGAIN_WAIT: Duration = Duration::from_millis(700);
+
 #[cfg(test)]
 thread_local! {
     /// The blocks `close_streaming` and `close_reasoning` went over on this thread, for the tests that bound the work.
     pub(super) static BLOCKS_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether a draft, as the box draws it (leading blanks off), is a '/' command: the '/' is followed by the end of
+/// the text, a blank, an ASCII letter or digit, '-' or '_' (so `/**`, `/*` and `/=` are text), and its first word
+/// is not a path (`/home/u/a.rs has a bug`).
+fn is_command(drawn: &str) -> bool {
+    let Some(rest) = drawn.strip_prefix('/') else { return false };
+    let named =
+        rest.chars().next().is_none_or(|c| c.is_whitespace() || c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    named && !starts_with_path(drawn)
+}
+
+/// The text of a request as it is sent: leading blank lines out (the first line keeps its indentation), trailing
+/// space out.
+fn request_body(text: &str) -> &str {
+    let mut rest = text;
+    while let Some(nl) = rest.find('\n') {
+        if !rest[..nl].trim().is_empty() {
+            break;
+        }
+        rest = &rest[nl + 1..];
+    }
+    rest.trim_end()
 }
 
 impl App {
@@ -179,11 +208,21 @@ impl App {
         if self.in_sub() {
             return self.submit_sub();
         }
+        // read before the draft is cleared: whether its leading `!` was typed, and the draft as the box draws it
+        let typed = self.input.typed_bang();
+        let drawn = self.input.text();
         let text = self.input.full_text();
         let trimmed = text.trim();
         if trimmed.is_empty() {
             // Enter again with a request waiting: stop the turn and run the queued request now
             if self.busy && self.queued > 0 {
+                let now = self.now();
+                if self.queued_at.is_some_and(|t| now.saturating_duration_since(t) < ENTER_AGAIN_WAIT) {
+                    // too soon after the last Enter to be a decision: wait for a deliberate one
+                    self.queued_at = Some(now);
+                    return;
+                }
+                self.queued_at = None;
                 self.send(AgentCommand::InterruptRun);
                 self.flash("sending your queued request now");
                 return;
@@ -195,8 +234,12 @@ impl App {
         }
         self.suggestion = None;
         self.palette = None;
+        // a '/' draft is a command only as the person sees it: a long paste is drawn as a chip, so what starts
+        // with `/clear` inside one is text, and so is a pasted `/** license */`. A submission that is not typed
+        // (`record` false: a skill or custom command's expansion) is never a command.
+        let cmd = record && is_command(drawn.trim_start());
         // a command of one's own sends its text as the request
-        if let Some(rest) = trimmed.strip_prefix('/') {
+        if let Some(rest) = trimmed.strip_prefix('/').filter(|_| cmd) {
             let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             let name = name.to_ascii_lowercase();
             // a file written or edited since the palette last opened is what runs, and it comes before a skill or
@@ -231,7 +274,7 @@ impl App {
                 return self.submit_expanded(&c.expand(args), false);
             }
         }
-        if trimmed.starts_with('/') && !starts_with_path(trimmed) {
+        if cmd {
             if let Some(cmd) = commands::parse(trimmed) {
                 if let Command::Unknown(_) = cmd {
                     // warn, but the draft stays to be fixed
@@ -245,17 +288,23 @@ impl App {
                 return;
             }
         }
-        if let Some(cmd) = trimmed.strip_prefix('!') {
+        // a shell command runs only from a `!` the person typed at the prompt (or recalled from one that ran): a
+        // paste, a chip or an expansion that starts with `!` is text for the model
+        let bang_text = trimmed.starts_with('!');
+        if let Some(cmd) = trimmed.strip_prefix('!').filter(|_| record && typed) {
             let cmd = cmd.trim();
             if !cmd.is_empty() {
-                self.input.push_history(trimmed);
+                self.input.push_shell_history(trimmed);
                 self.input.clear();
                 self.send(AgentCommand::Shell { command: cmd.to_string() });
             }
             return;
         }
+        // what is sent keeps the first line's indentation: leading blank lines out, trailing space out. The same
+        // body goes in every field below, because the agent's echo is matched against it with ==.
+        let body = request_body(&text);
         if record {
-            self.input.push_history(trimmed);
+            self.input.push_history(body);
         }
         // the agent is gone (its end of the channel is closed): nothing would take the request, so the draft stays
         if !self.locked && self.commands.is_closed() {
@@ -271,27 +320,34 @@ impl App {
             crate::trace::note("submit: locked, setup opens");
             return self.open_setup();
         }
-        let attachments = self.attachments_in(trimmed);
+        let attachments = self.attachments_in(body);
         if self.busy {
             self.queued += 1;
-            self.queued_msgs.push(trimmed.to_string());
+            self.queued_msgs.push(body.to_string());
+            self.queued_at = Some(self.now());
             self.flash("queued: joins the turn at its next step · Enter again to stop the turn");
         }
-        self.pending_stamps.push_back(trimmed.to_string());
+        self.pending_stamps.push_back(body.to_string());
         if self.pending_stamps.len() > 20 {
             self.pending_stamps.pop_front();
         }
         // shown at once, dim, until the agent echoes it back: a sent message never vanishes (a queued one has its own line)
         if !self.busy {
-            self.unechoed.push((trimmed.to_string(), self.now(), false));
-            self.push(Block::Pending { text: trimmed.to_string() });
+            self.unechoed.push((body.to_string(), self.now(), false));
+            self.push(Block::Pending { text: body.to_string() });
         }
-        let text = trimmed.to_string();
+        let text = body.to_string();
         self.send(if ultracode {
             AgentCommand::Ultracode { text, attachments }
         } else {
             AgentCommand::Submit { text, attachments }
         });
+        if bang_text {
+            self.notice(
+                Level::Info,
+                "sent to the model as text: its first ! was not typed at the prompt (a paste, a recall or an expansion) · type ! yourself to run a shell command",
+            );
+        }
         self.scroll_to_end();
     }
 

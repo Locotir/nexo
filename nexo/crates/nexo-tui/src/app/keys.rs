@@ -6,16 +6,16 @@ impl App {
     /// `/prompt edit`: the prompt file opens in the editor (the run loop does the opening).
     /// Ctrl+R: the requests sent before, newest first, to search and take one back.
     pub fn open_history_search(&mut self) {
+        // newest first; a request and a shell command with the same text are two rows
         let mut seen = std::collections::HashSet::new();
-        let items: Vec<PickItem> = self
-            .input
-            .history()
-            .iter()
+        let items: Vec<PickItem> = (0..self.input.history().len())
             .rev()
-            .filter(|h| seen.insert(h.as_str()))
-            .map(|h| PickItem {
-                label: h.lines().next().unwrap_or("").chars().take(120).collect(),
-                value: h.clone(),
+            .filter_map(|i| self.input.history_entry(i).map(|(h, shell)| (i, h, shell)))
+            .filter(|(_, h, shell)| seen.insert((*h, *shell)))
+            .map(|(i, h, _)| PickItem {
+                label: crate::render::wrap::clean(h.lines().next().unwrap_or("")).chars().take(120).collect(),
+                // the history index: the entry comes back with its shell mark
+                value: i.to_string(),
                 hint: if h.lines().count() > 1 { format!("+{} lines", h.lines().count() - 1) } else { String::new() },
             })
             .collect();
@@ -181,7 +181,11 @@ impl App {
     pub(super) fn keep_draft(&mut self) {
         let text = self.input.full_text();
         if !text.trim().is_empty() {
-            self.input.push_history(&text);
+            if self.input.typed_bang() {
+                self.input.push_shell_history(&text);
+            } else {
+                self.input.push_history(&text);
+            }
         }
     }
 
@@ -544,8 +548,16 @@ impl App {
                         }
                     }
                     PickKind::History => {
+                        // read the entry first: keeping the draft can drop the oldest one and shift the indexes
+                        // (the picker's value is the entry's index; any other value is the request itself, not a shell command)
+                        let entry = match value.parse::<usize>() {
+                            Ok(i) => self.input.history_entry(i).map(|(t, s)| (t.to_string(), s)),
+                            Err(_) => Some((value, false)),
+                        };
                         self.keep_draft();
-                        self.input.set_text(&value);
+                        if let Some((text, shell)) = entry {
+                            self.input.recall(&text, shell);
+                        }
                         self.refresh_palette();
                     }
                     PickKind::Effort => {

@@ -105,6 +105,10 @@ pub(super) fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'sta
 /// How the agent starts its note that the curator trimmed the context.
 pub(super) const CURATOR_PREFIX: &str = "the curator kept the view at ";
 
+/// The first line of the notice that shows the task the main agent gave a sub-agent: the lines under it
+/// are the task, drawn as written (no markdown), and not as words the person typed.
+pub const TASK_HEAD: &str = "task from the main agent:";
+
 pub(super) fn user_notice(text: &str) -> std::borrow::Cow<'_, str> {
     match text.strip_prefix(CURATOR_PREFIX) {
         Some(rest) => format!("context trimmed to {rest}").into(),
