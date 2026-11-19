@@ -5,7 +5,8 @@
 //!   echo            copy lines from standard input to standard output until it closes
 //!   thread          a second thread runs `dbg_add` in a loop
 //!   attach          allow any process of this user to attach, then sleep until killed
-//!   heap            leak one 100-byte block, free another twice (the heap check's test)
+//!   heap            leak one 100-byte block, free another twice (the heap check's test, on Linux; built on Unix,
+//!                   where libc is a dependency)
 
 use std::io::BufRead;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +22,7 @@ pub extern "C" fn dbg_add(a: u64, b: u64) -> u64 {
 
 /// The `heap` mode: a block that is never freed and one that is freed twice. A function of its own so a test can
 /// stop at its start and turn the heap check on there, after the runtime's own start-up allocations.
+#[cfg(unix)]
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn dbg_heap_case() {
@@ -76,6 +78,7 @@ fn main() {
             let p = std::hint::black_box(std::ptr::null::<u64>());
             println!("{}", dbg_crash(p));
         }
+        #[cfg(unix)]
         "heap" => dbg_heap_case(),
         "echo" => {
             for line in std::io::stdin().lock().lines().map_while(Result::ok) {

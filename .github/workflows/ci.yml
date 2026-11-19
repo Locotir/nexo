@@ -38,6 +38,11 @@ jobs:
           workspaces: nexo
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      # the debugger's 32-bit tests build their programs with `gcc -m32`; without the multilib headers they return early
+      # and check nothing
+      - name: 32-bit C headers and libraries for the debugger's 32-bit tests
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
       - run: cargo build --workspace
       - run: cargo test --workspace --no-fail-fast
       # a failed test step must not hide clippy or the Intel check, so these two run after it either way

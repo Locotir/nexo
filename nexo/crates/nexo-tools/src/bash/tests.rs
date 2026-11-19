@@ -339,9 +339,19 @@ async fn a_foreground_command_runs_in_its_own_session_without_a_controlling_term
     }
     let d = tempfile::tempdir().unwrap();
     let c = ToolContext::new(d.path().to_path_buf());
-    // Opening the terminal of the user (as a TIOCSTI injection must) fails: ENXIO.
+    // Opening the terminal of the user (as a TIOCSTI injection must) fails: ENXIO. The failed redirection's status is
+    // the shell's own (bash says 1, dash, Ubuntu's /bin/sh, says 2), so any status but 0 is the refusal.
     let out = Bash.run(json!({"command": "(echo x > /dev/tty) 2>&1; echo status $?"}), &c).await;
-    assert!(out.content.contains("status 1"), "{}", out.content);
+    let status = out.content.lines().find_map(|l| l.strip_prefix("status ")).unwrap_or("");
+    assert!(!status.is_empty() && status != "0", "{}", out.content);
+    assert!(out.content.contains("/dev/tty"), "the shell names the file it could not open: {}", out.content);
+    // That refusal only shows the detach where this test process itself has a terminal to lose; without one (a CI
+    // runner) it holds either way, and the session check below (Linux) is what proves the command was detached.
+    if std::fs::OpenOptions::new().write(true).open("/dev/tty").is_err() {
+        eprintln!(
+            "this test process has no controlling terminal: the /dev/tty refusal above proves nothing alone here"
+        );
+    }
     // The shell leads its session (its session id is its pid), so no terminal is attached to it.
     #[cfg(target_os = "linux")]
     {
