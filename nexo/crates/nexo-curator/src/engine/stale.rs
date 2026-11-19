@@ -23,19 +23,39 @@ impl Engine {
 
     /// As `superseded_by`; with `shell`, a shell command that only printed files counts as a read of them.
     pub(super) fn read_superseded(&self, i: usize, shell: bool) -> Option<(String, usize)> {
+        // an engine just read back from a snapshot has not indexed its edits yet (`take_history` does it): until
+        // then the search goes over them all, with the same answer
+        self.superseded_with(i, shell, self.edit_index.at() == self.edits.len())
+    }
+
+    /// `read_superseded` by a search over every edit, as it was before the index: what the index must answer.
+    #[cfg(test)]
+    pub(super) fn read_superseded_linear(&self, i: usize, shell: bool) -> Option<(String, usize)> {
+        self.superseded_with(i, shell, false)
+    }
+
+    /// `read_superseded`, finding the first later edit through `edit_index` or by a search over every edit.
+    fn superseded_with(&self, i: usize, shell: bool, indexed: bool) -> Option<(String, usize)> {
         let u = self.tr.units.get(i)?;
         let info = self.fz.info.get(&i)?;
         if u.kind != UKind::Result || info.error {
             return None;
         }
+        let ok = |id: &str| self.edit_ok.get(id) == Some(&true);
         if let Some(session) = self.dbg_looks.get(&i) {
             // a move names a session or none; none could be any, so it ages every look, and a look naming none
             // could be of any session, so every move ages it
-            return self.edits.iter().find_map(|(p, mi, id)| {
-                let moved = p.strip_prefix(DEBUG_STATE)?;
-                let same = moved.is_empty() || session.is_empty() || moved == session;
-                (*mi > u.msg && same && self.edit_ok.get(id) == Some(&true)).then(|| (DEBUG_STATE.to_string(), *mi))
-            });
+            let pos = if indexed {
+                self.edit_index.first_debug(&self.edits, session, u.msg, &ok)
+            } else {
+                self.edits.iter().position(|(p, mi, id)| {
+                    work!(StaleCmp, 1);
+                    p.strip_prefix(DEBUG_STATE).is_some_and(|moved| {
+                        *mi > u.msg && (moved.is_empty() || session.is_empty() || moved == session) && ok(id)
+                    })
+                })
+            };
+            return pos.map(|pos| (DEBUG_STATE.to_string(), self.edits[pos].1));
         }
         let paths: Vec<&str> = match info.kind {
             Kind::Read => info.path.as_deref().filter(|p| !p.is_empty()).into_iter().collect(),
@@ -43,10 +63,15 @@ impl Engine {
             _ => return None,
         };
         paths.into_iter().find_map(|path| {
-            self.edits
-                .iter()
-                .find(|(p, mi, id)| *mi > u.msg && same_file(path, p) && self.edit_ok.get(id) == Some(&true))
-                .map(|(_, mi, _)| (path.to_string(), *mi))
+            let pos = if indexed {
+                self.edit_index.first_file(&self.edits, path, u.msg, &ok)
+            } else {
+                self.edits.iter().position(|(p, mi, id)| {
+                    work!(StaleCmp, 1);
+                    *mi > u.msg && same_file(path, p) && ok(id)
+                })
+            };
+            pos.map(|pos| (path.to_string(), self.edits[pos].1))
         })
     }
 

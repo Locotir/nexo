@@ -73,6 +73,7 @@ impl Engine {
                 return v.clone();
             }
         }
+        work!(VisibleScan, key.0);
         let g = &self.goal;
         let apart = self.apart();
         let out: Vec<usize> = if g.turns.is_empty() {
@@ -385,7 +386,10 @@ impl Engine {
 
     pub(super) fn sizes_now(&mut self) -> Vec<i64> {
         let mut out = vec![0; self.tr.msgs.len()];
-        for &mi in self.visible().iter() {
+        let vis = self.visible();
+        work!(SizesCell, out.len() + vis.len());
+        work!(SizesCalls, 1);
+        for &mi in vis.iter() {
             out[mi] = self.message(mi).1;
         }
         out

@@ -7,6 +7,20 @@ use serde_json::Value;
 use super::Engine;
 
 impl Engine {
+    /// Entries of the per-message maps a copy of the engine takes (the work an epoch try costs).
+    #[cfg(test)]
+    fn clone_weight(&self) -> usize {
+        self.sizes.len()
+            + self.dropped.len()
+            + self.shown.len()
+            + self.dups.len()
+            + self.steps.len()
+            + self.raw_fp.len()
+            + self.built.len()
+            + self.edits.len()
+            + self.edit_ok.len()
+    }
+
     pub fn decide(&mut self) {
         self.own.clock += 1;
         if self.t0.is_none() {
@@ -28,6 +42,8 @@ impl Engine {
             // (the context of this step is set before the copy, so neither of the two has to copy the featurizer
             // to set it)
             self.context_at(self.tr.msgs.len());
+            work!(CloneUnit, self.clone_weight());
+            work!(CloneCalls, 1);
             let mut tried = self.clone();
             tried.decide_as(true);
             self.decide_as(false);
@@ -49,6 +65,8 @@ impl Engine {
             // (`calls_to_size_epoch`) is `margin` times what it sends again, the price the size rule asks
             // (`fire_point`); its window cut waits for that rule (`window_cut`)
             self.context_at(self.tr.msgs.len());
+            work!(CloneUnit, self.clone_weight());
+            work!(CloneCalls, 1);
             let mut tried = self.clone();
             for i in std::mem::take(&mut tried.turn_keep) {
                 tried.steps[i].idle = None;
@@ -67,6 +85,8 @@ impl Engine {
             // which lands one past the ceiling whatever it costs); else the view grows as it is, under the window guard
             // (`fit`), and the next look waits for `check` tokens of growth
             self.context_at(self.tr.msgs.len());
+            work!(CloneUnit, self.clone_weight());
+            work!(CloneCalls, 1);
             let mut tried = self.clone();
             tried.decide_as(true);
             self.decide_as(false);

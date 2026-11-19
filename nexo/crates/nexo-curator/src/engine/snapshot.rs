@@ -38,6 +38,8 @@ impl Engine {
         }
         self.last_raw = msgs.last().map(strip_cc).unwrap_or(Value::Null);
         self.tr.mt().msgs = out;
+        // the edits and their ids are in the state; the caches built from them are not
+        super::edit_index::sync_edit_caches(&mut self.edit_ids, &mut self.edit_index, &self.edits);
         Ok(())
     }
 }
