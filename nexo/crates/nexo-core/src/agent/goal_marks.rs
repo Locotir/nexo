@@ -43,6 +43,16 @@ pub const GOAL_CONTINUE_MARK: &str = "[goal: continue]";
 /// What the loop sends in the person's place to resume a session after the supervisor's check-in said CONTINUE;
 /// what to do next travels as hidden context of that request.
 pub const SUPERVISOR_RESUME_MARK: &str = "[supervisor: continue]";
+/// Where the loop's own goal mark ([`GOAL_SET_MARK`] or [`GOAL_CONTINUE_MARK`]) begins in the text of a message
+/// nexo sent: at the start, or after a blank line (the notes for jobs, hooks, memory and a stop line go before the
+/// mark). `None` when the message is no goal round. The first such mark counts.
+pub fn goal_mark_at(text: &str) -> Option<usize> {
+    text.match_indices('[').map(|(i, _)| i).find(|&at| {
+        (at == 0 || text[..at].ends_with("\n\n"))
+            && [GOAL_SET_MARK, GOAL_CONTINUE_MARK].iter().any(|m| text[at..].starts_with(m))
+    })
+}
+
 /// The most characters of a goal a line of the screen carries: a few lines, the rest is in the goal window.
 pub const GOAL_SHOWN: usize = 200;
 

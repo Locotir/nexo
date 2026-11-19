@@ -276,8 +276,8 @@ impl App {
                 self.send(AgentCommand::Submit { text: n.text, attachments: vec![] });
                 self.flash("your message was sent to this session");
             } else {
+                // the agent tells the person when the check-in runs: it may find nothing to ask
                 self.send(AgentCommand::CheckIn { evidence: n.text });
-                self.flash("supervisor: checking in with this session");
             }
         }
     }

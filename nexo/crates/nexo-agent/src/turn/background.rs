@@ -184,11 +184,18 @@ pub(super) async fn watch_round(state: &Shared) -> u32 {
     added
 }
 
+/// Whether the request in `turn` (the slice of the history from its start) is one of a goal's own rounds: the loop
+/// sent it, so its message carries the goal's mark.
+fn goal_round(turn: &[Message]) -> bool {
+    turn.first().is_some_and(|m| m.role == Role::User && nexo_core::agent::goal_mark_at(&m.text()).is_some())
+}
+
 /// A stopped session whose work looks unfinished (or that the supervisor asks to look at itself): one background
 /// request to its own model, with the evidence, no tools offered to act on and no trace in the conversation.
 /// CONTINUE resumes the session through `tx`; DONE, or an answer that is not clear, changes nothing. At most one
 /// per request of the person, and none when something else will wake the session.
 pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::sync::mpsc::UnboundedSender<Resume>) {
+    let asked = extra.is_some();
     let (req, cfg, client, retries, events, stamp, flight) = {
         let mut st = state.lock().await;
         let a = &st.config.agent;
@@ -201,8 +208,13 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         if !st.history[own..].iter().any(|m| m.role == Role::Assistant && m.tool_calls().next().is_some()) {
             return;
         }
-        if (st.goal.is_some() && st.goal_state.is_active())
-            || !st.inbox.is_empty()
+        // a goal owns the turn that just ended when it is active, paused or waiting, or when the turn was one of its
+        // rounds: the goal's own loop decides what comes next. A met goal stays set until `/goal off`, so a later
+        // request of the person in that session is still checked
+        if st.goal.is_some() && (st.goal_state != GoalState::Done || goal_round(&st.history[own..])) {
+            return;
+        }
+        if !st.inbox.is_empty()
             || !st.mail_wait.is_empty()
             || st.jobs.running() > 0
             || !st.jobs.untold().is_empty()
@@ -250,6 +262,9 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         };
         req.max_tokens = cap;
         st.checked_in = true;
+        if asked {
+            notice(&st.events, Level::Info, "supervisor: checking in with this session");
+        }
         (req, cfg, st.client.clone(), st.config.agent.retries, st.events.clone(), (st.turns, st.epoch), flight)
     };
     let state = state.clone();

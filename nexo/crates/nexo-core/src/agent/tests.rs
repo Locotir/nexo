@@ -44,3 +44,18 @@ fn sub_events_are_marked_and_the_others_are_not() {
     assert!(!AgentEvent::Shutdown.is_sub());
     assert!(!AgentEvent::Jobs { jobs: vec![] }.is_sub());
 }
+
+#[test]
+fn a_goal_mark_is_found_at_the_start_or_after_the_notes_before_it() {
+    let at = goal_mark_at;
+    assert_eq!(at("[goal set] ship it"), Some(0));
+    assert_eq!(at("[goal: continue]"), Some(0));
+    let notes = "[background jobs ended]\njob 1 done\n\n";
+    assert_eq!(at(&format!("{notes}[goal: continue]\n\nnote")), Some(notes.len()));
+    assert_eq!(at(&format!("[stop line]\n\n{notes}[goal set] ship it")), Some("[stop line]\n\n".len() + notes.len()));
+    // a mark inside a line, or one the person quotes after a single newline, is not the loop's
+    assert_eq!(at("please add [goal set] to the docs"), None);
+    assert_eq!(at("see\n[goal: continue]"), None);
+    assert_eq!(at("[goal: met, not running; /goal resume reopens it]\n\nthanks"), None);
+    assert_eq!(at(""), None);
+}
