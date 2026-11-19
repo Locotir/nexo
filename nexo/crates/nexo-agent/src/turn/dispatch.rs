@@ -32,7 +32,7 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         }
         AgentCommand::Interrupt | AgentCommand::InterruptRun | AgentCommand::StopBy(_) => {
             let by = if let AgentCommand::StopBy(by) = cmd { by } else { Stopper::Esc };
-            on_interrupt(rt, matches!(cmd, AgentCommand::InterruptRun), by)
+            on_interrupt(rt, matches!(cmd, AgentCommand::InterruptRun), by).await
         }
         AgentCommand::Permission { id, decision } => {
             if !rt.chan_gate.resolve(&id, decision) {
@@ -307,8 +307,9 @@ async fn on_deliver(rt: &mut Runtime, mails: Vec<Mail>) {
     if mails.is_empty() {
         return;
     }
-    if rt.turn.is_some() {
-        // never in the middle of a turn: it goes when this one ends
+    let held = rt.state.lock().await.held;
+    if rt.turn.is_some() || held {
+        // never in the middle of a turn, and never after a stop of the person: it goes with their next request
         rt.state.lock().await.mail_wait.extend(mails);
     } else {
         rt.turn = Some(deliver_mails(&rt.state, mails, rt.cancel.child_token()).await);
@@ -360,7 +361,12 @@ async fn on_unqueue(rt: &mut Runtime, index: usize, text: String) {
 }
 
 /// Esc (or Enter on a queued request, `run_queue`): the running turn is cancelled with its open questions.
-fn on_interrupt(rt: &mut Runtime, run_queue: bool, by: Stopper) {
+async fn on_interrupt(rt: &mut Runtime, run_queue: bool, by: Stopper) {
+    // a stop by the person holds the session, running or not; Enter on a queued request (`run_queue`) starts the
+    // person's own request instead, and the run's time limit is not the person
+    if !run_queue && by != Stopper::TimeLimit {
+        rt.state.lock().await.held = true;
+    }
     if rt.turn.is_some() {
         rt.run_queue = run_queue;
         if rt.stopped.is_none() {

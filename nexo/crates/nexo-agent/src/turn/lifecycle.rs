@@ -18,7 +18,7 @@ pub(super) async fn on_resume(rt: &mut Runtime, r: Resume) {
     // the answer comes while the session is still stopped and nothing else has started since
     let current = {
         let st = rt.state.lock().await;
-        (st.turns, st.epoch) == (r.turns, r.epoch) && st.inbox.is_empty()
+        (st.turns, st.epoch) == (r.turns, r.epoch) && st.inbox.is_empty() && !st.held
     };
     if rt.turn.is_none() && current {
         rt.state.lock().await.hidden.push(r.text);
@@ -50,7 +50,8 @@ pub(super) async fn on_job_change(rt: &mut Runtime, change: Result<nexo_core::jo
     emit(&rt.events, AgentEvent::Jobs { jobs: rt.jobs.list() });
     let ended = matches!(&change, Ok(c) if !c.0.status.running());
     // a job ended while the agent waited for the person: it goes on with the result
-    if ended && rt.turn.is_none() && !rt.jobs.untold().is_empty() {
+    // after a stop of the person it stays untold and rides their next request
+    if ended && rt.turn.is_none() && !rt.jobs.untold().is_empty() && !rt.state.lock().await.held {
         let note = room::ended_note_now(&rt.state, &rt.jobs).await;
         rt.turn = Some(start_turn(&rt.state, note, Vec::new(), rt.cancel.child_token()).await);
     }
@@ -120,6 +121,7 @@ async fn fire_end_hooks(state: &Shared, events: &EventTx, reason: TurnEnd) {
 /// turn ended done, the note of jobs that ended after its last model call starts one.
 async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
     // what is left came after the turn's last model call
+    let held = rt.state.lock().await.held;
     let (next, joined) = {
         let mut st = rt.state.lock().await;
         // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
@@ -148,6 +150,8 @@ async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
         };
         notice(&rt.events, Level::Info, what);
         rt.turn = start_prompt_item(&rt.state, text, attachments, false, rt.cancel.child_token(), Some(item)).await;
+    } else if held {
+        // the person stopped: nothing below starts by itself
     } else if !rt.state.lock().await.mail_wait.is_empty() {
         let mails = std::mem::take(&mut rt.state.lock().await.mail_wait);
         rt.turn = Some(deliver_mails(&rt.state, mails, rt.cancel.child_token()).await);
@@ -157,7 +161,7 @@ async fn start_next(rt: &mut Runtime, reason: TurnEnd, run_queue: bool) {
         }
     }
     // a job that ended after the turn's last model call
-    if rt.turn.is_none() && reason == TurnEnd::Done && !rt.jobs.untold().is_empty() {
+    if rt.turn.is_none() && reason == TurnEnd::Done && !held && !rt.jobs.untold().is_empty() {
         let note = room::ended_note_now(&rt.state, &rt.jobs).await;
         rt.turn = Some(start_turn(&rt.state, note, Vec::new(), rt.cancel.child_token()).await);
     }

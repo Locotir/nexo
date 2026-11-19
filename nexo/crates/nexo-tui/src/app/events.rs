@@ -90,7 +90,7 @@ impl App {
 
     /// A failure as a card. The same one again in the same turn is counted on the card it repeats.
     fn push_problem(&mut self, problem: Box<nexo_core::Problem>) {
-        let turn = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).map_or(0, |i| i + 1);
+        let turn = self.blocks.iter().rposition(Block::starts_request).map_or(0, |i| i + 1);
         let same = (turn..self.blocks.len())
             .rev()
             .find(|&i| matches!(&self.blocks[i], Block::Problem { problem: p, .. } if **p == *problem));
@@ -555,7 +555,7 @@ impl App {
     /// Whether a block of the current turn still moves by itself (PF3: only the
     /// tail after the last user message is scanned, never the whole session).
     pub(super) fn tail_is_live(&self) -> bool {
-        self.blocks.iter().rev().take_while(|b| !matches!(b, Block::User { .. })).any(|b| b.is_live())
+        self.blocks.iter().rev().take_while(|b| !b.starts_request()).any(|b| b.is_live())
     }
 
     /// The turn has waited 15 s or more on a provider that runs on this machine.
@@ -668,7 +668,9 @@ impl App {
         // text; what rides one request only is a line of its own where it came
         let (once, parts): (Vec<_>, Vec<_>) = parts.into_iter().partition(|p| p.request_only);
         if !parts.is_empty() {
-            if let Some(i) = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })) {
+            // the parts belong to the request just begun: the person's message, or the one nexo started, never
+            // the Added line of an earlier message of the person
+            if let Some(i) = self.blocks.iter().rposition(Block::starts_request) {
                 if let Block::User { text, .. } = &mut self.blocks[i] {
                     for p in parts.iter().filter(|p| matches!(p.kind, AddedKind::Mention)) {
                         let left = text.replacen(p.text.trim(), "", 1);
@@ -677,13 +679,24 @@ impl App {
                         }
                     }
                 }
+                if let Block::Started { parts: have, .. } = &mut self.blocks[i] {
+                    // a request nexo started keeps its notes behind its own line: what was told as it was built
+                    // replaces what was read back of the same kind
+                    have.retain(|h| !parts.iter().any(|p| p.kind == h.kind));
+                    have.extend(parts);
+                    self.invalidate(i);
+                    if !once.is_empty() {
+                        self.push(Block::Added { parts: once, folded: true });
+                    }
+                    return;
+                }
                 let block = Block::Added { parts, folded: true };
                 // the line read back from the message's text, when the history drew one: not always the
                 // block next to the message (a message that waited has the warning and the agent's notices
                 // under its dim line, which is where it was put back), so it is looked for up to the next message
                 let read_back = self.blocks[i + 1..]
                     .iter()
-                    .take_while(|b| !matches!(b, Block::User { .. }))
+                    .take_while(|b| !b.starts_request())
                     .position(|b| matches!(b, Block::Added { parts, .. } if !parts.iter().all(|p| p.request_only)));
                 if let Some(at) = read_back.map(|k| i + 1 + k) {
                     self.blocks[at] = block;
@@ -727,38 +740,71 @@ impl App {
                         }
                     }
                 } else {
+                    use crate::replay::Piece;
                     let text = m.text();
-                    for p in crate::replay::split_user(&text) {
-                        if let crate::replay::Piece::Text(t) = p {
-                            self.words.feed(&t, crate::complete::Src::User);
+                    let pieces = crate::replay::split_user(&text);
+                    // a message is the person's only when some of its words are: what nexo started by itself
+                    // (a resume, a goal round, jobs ended, mail) has none, and is not theirs to rewind to or repeat
+                    let person = pieces.iter().any(|p| matches!(p, Piece::Text(t) if !t.trim().is_empty()));
+                    let started = pieces.iter().any(|p| matches!(p, Piece::Started(_) | Piece::Goal(None)));
+                    for p in &pieces {
+                        if let Piece::Text(t) = p {
+                            self.words.feed(t, crate::complete::Src::User);
                         }
                     }
                     self.user_messages.retain(|(i, _)| *i != index);
-                    // the loop's own goal requests are not the person's: nothing to rewind to or repeat
-                    if !text.starts_with(nexo_core::agent::GOAL_SET_MARK)
-                        && text.trim() != nexo_core::agent::GOAL_CONTINUE_MARK
-                        && text.trim() != nexo_core::agent::SUPERVISOR_RESUME_MARK
-                    {
+                    if person {
                         // /undo puts back, and the pickers list, what the person wrote, not what nexo put with it:
                         // nor the times it wrote before each part of requests it joined into one
                         let typed = nexo_core::agent::as_typed(nexo_core::agent::person_words(&text)).into_owned();
                         self.user_messages.push((index, typed));
                     }
                     let words = nexo_core::agent::person_words(&text);
-                    let at = self.take_stamps(words).then(|| self.stamp_now());
-                    let mut pending = self.take_pending(words);
-                    let pieces = crate::replay::split_user(&text);
-                    if pieces.len() == 1 && matches!(&pieces[0], crate::replay::Piece::Text(t) if *t == text) {
+                    // a request nexo started echoes no send of ours: it takes no stamp and no dim line
+                    let at = if !started && self.take_stamps(words) { Some(self.stamp_now()) } else { None };
+                    let mut pending = if started { None } else { self.take_pending(words) };
+                    if pieces.len() == 1 && matches!(&pieces[0], Piece::Text(t) if *t == text) {
                         self.put_user(text, at, &mut pending);
+                    } else if started {
+                        // one dim line that says why nexo began this request, its notes folded behind it
+                        let mut why = String::from("started by nexo");
+                        let mut parts = Vec::new();
+                        for p in pieces {
+                            match p {
+                                Piece::JobNote(n) => parts.push(nexo_core::agent::AddedPart::new(
+                                    nexo_core::agent::AddedKind::Jobs,
+                                    "background jobs",
+                                    n,
+                                )),
+                                Piece::Added(part) => parts.push(part),
+                                Piece::Started(w) => why = w,
+                                Piece::Goal(None) => {
+                                    why = match self.goal_round_said.take() {
+                                        Some((round, max)) => format!("◎ goal · round {round}/{max} · continuing"),
+                                        None => "◎ goal · continuing".to_string(),
+                                    };
+                                }
+                                Piece::Summary(_) | Piece::Goal(Some(_)) | Piece::Text(_) => {}
+                            }
+                        }
+                        self.push(Block::Started { why, parts, folded: true });
                     } else {
                         let mut at = at;
                         // what nexo put around the words stays behind one folded line, not in the message
                         let mut extra = Vec::new();
                         for p in pieces {
-                            use crate::replay::Piece;
                             match p {
                                 Piece::JobNote(n) => {
-                                    self.push(Block::User { text: n, at: None });
+                                    let part = nexo_core::agent::AddedPart::new(
+                                        nexo_core::agent::AddedKind::Jobs,
+                                        "background jobs",
+                                        n,
+                                    );
+                                    self.push(Block::Started {
+                                        why: "background jobs ended".into(),
+                                        parts: vec![part],
+                                        folded: true,
+                                    });
                                 }
                                 Piece::Added(part) => extra.push(part),
                                 Piece::Summary(n) => {
@@ -768,15 +814,13 @@ impl App {
                                     });
                                 }
                                 Piece::Goal(words) => {
-                                    let text = match words {
-                                        Some(w) => format!("◎ goal set: {}", nexo_core::agent::goal_shown(&w)),
-                                        None => match self.goal_round_said.take() {
-                                            Some((round, max)) => format!("◎ goal · round {round}/{max} · continuing"),
-                                            None => "◎ goal · continuing".to_string(),
-                                        },
-                                    };
+                                    let text = format!(
+                                        "◎ goal set: {}",
+                                        nexo_core::agent::goal_shown(&words.unwrap_or_default())
+                                    );
                                     self.push(Block::Notice { level: Level::Info, text });
                                 }
+                                Piece::Started(_) => {}
                                 Piece::Text(t) => self.put_user(t, at.take(), &mut pending),
                             }
                         }
@@ -921,7 +965,7 @@ impl App {
             return;
         }
         let now = self.now();
-        let from = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).unwrap_or(0);
+        let from = self.blocks.iter().rposition(Block::starts_request).unwrap_or(0);
         // a tool after the text means the turn stopped inside that tool, not in the text
         if let Some(i) = (from..self.blocks.len())
             .rev()

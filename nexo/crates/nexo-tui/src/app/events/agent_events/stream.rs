@@ -208,7 +208,7 @@ impl App {
                 .blocks
                 .iter()
                 .rev()
-                .take_while(|b| !matches!(b, Block::User { .. }))
+                .take_while(|b| !b.starts_request())
                 .any(|b| matches!(b, Block::Assistant { .. }));
         self.close_streaming();
         if !streamed_text {

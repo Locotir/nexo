@@ -41,7 +41,7 @@ pub fn settled_count(app: &App) -> usize {
     if !app.busy {
         return app.blocks.len();
     }
-    app.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).unwrap_or(0)
+    app.blocks.iter().rposition(Block::starts_request).unwrap_or(0)
 }
 
 /// The rows of the blocks that settled since the last call, wrapped for `width` columns with the

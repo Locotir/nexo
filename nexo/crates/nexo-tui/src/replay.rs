@@ -24,6 +24,8 @@ pub enum Piece {
     Summary(usize),
     /// The loop's own request for a goal: the person's words when it was set, None when it keeps it going.
     Goal(Option<String>),
+    /// A request nexo started by itself, and why in a few words: nothing of it is the person's.
+    Started(String),
     /// What the person wrote, attachments shortened to a line each.
     Text(String),
 }
@@ -49,17 +51,55 @@ pub fn split_user(text: &str) -> Vec<Piece> {
         let (words, parts) = split_added(rest.trim());
         out.push(Piece::Goal(Some(words.trim().to_string())));
         out.extend(parts.into_iter().map(Piece::Added));
-    } else if t.trim_end() == GOAL_CONTINUE_MARK {
+    } else if let Some(rest) = after_mark(t, GOAL_CONTINUE_MARK) {
+        // a request nexo started: its start note may follow the mark, none of it is the person's
         out.push(Piece::Goal(None));
-    } else if t.trim_end() == SUPERVISOR_RESUME_MARK {
-        out.push(Piece::JobNote("supervisor: continuing after a check-in".into()));
+        out.extend(parts_of(rest).into_iter().map(Piece::Added));
+    } else if let Some(rest) = after_mark(t, SUPERVISOR_RESUME_MARK) {
+        out.push(Piece::Started("supervisor: continuing after a check-in".into()));
+        out.extend(parts_of(rest).into_iter().map(Piece::Added));
+    } else if t.starts_with(MAIL_START) {
+        out.push(Piece::Started("mail from another session".into()));
+        out.extend(mail_parts(t));
+    } else if t.starts_with(START_NOTE) {
+        // no words of the person's before the note (they would sit under the mark): nexo started this request
+        let jobs = out.iter().any(|p| matches!(p, Piece::JobNote(_)));
+        out.push(Piece::Started(if jobs { "background jobs ended" } else { "started by nexo" }.into()));
+        out.extend(parts_of(t).into_iter().map(Piece::Added));
     } else if !t.is_empty() {
         let (typed, parts) = split_added(t);
-        out.push(Piece::Text(typed));
+        if !typed.is_empty() {
+            out.push(Piece::Text(typed));
+        }
         out.extend(parts.into_iter().map(Piece::Added));
+    }
+    // a jobs note that nexo started a request with, nothing else of its own: still nexo's
+    if !out.iter().any(|p| matches!(p, Piece::Text(_) | Piece::Started(_) | Piece::Goal(_) | Piece::Summary(_)))
+        && out.iter().any(|p| matches!(p, Piece::JobNote(_)))
+    {
+        out.insert(0, Piece::Started("background jobs ended".into()));
     }
     out
 }
+
+/// What follows `mark` when the text starts with it as a line of its own.
+fn after_mark<'a>(t: &'a str, mark: &str) -> Option<&'a str> {
+    t.strip_prefix(mark).filter(|r| r.trim().is_empty() || r.starts_with('\n'))
+}
+
+/// A mail delivery as a part: the text nexo-core built for the model, its sender in the label.
+fn mail_parts(t: &str) -> Vec<Piece> {
+    let end = t.find(START_NOTE).unwrap_or(t.len());
+    let mail = t[..end].trim_end();
+    let from =
+        mail.split_once("from=\"").and_then(|(_, r)| r.split_once('"')).map_or("another session", |(name, _)| name);
+    let mut out = vec![Piece::Added(AddedPart::new(AddedKind::Mention, format!("mail from {from}"), mail))];
+    out.extend(parts_of(&t[end..]).into_iter().map(Piece::Added));
+    out
+}
+
+/// The text of a mail delivery starts with this (`nexo_core::mail::render`).
+const MAIL_START: &str = "<session-message ";
 
 /// Takes the job notes, hook context and shared memory at the start of ``text`` into ``out``; the rest.
 fn front<'a>(text: &'a str, out: &mut Vec<Piece>) -> &'a str {
@@ -69,8 +109,11 @@ fn front<'a>(text: &'a str, out: &mut Vec<Piece>) -> &'a str {
             out.push(Piece::Added(AddedPart::new(AddedKind::Stopped, "stop", line)));
             t = t[line.len()..].trim_start();
         } else if t.starts_with(JOBS_NOTE) {
-            let Some(i) = t.find(JOBS_END) else { break };
-            let end = t[i..].find('\n').map_or(t.len(), |n| i + n);
+            // a note whose jobs all came with their reports has no closing line: it is all nexo's
+            let end = match t.find(JOBS_END) {
+                Some(i) => t[i..].find('\n').map_or(t.len(), |n| i + n),
+                None => t.len(),
+            };
             out.push(Piece::JobNote(t[..end].to_string()));
             t = t[end..].trim_start();
         } else if t.starts_with(HOOK_CONTEXT_START) {
@@ -165,7 +208,9 @@ pub fn split_added(text: &str) -> (String, Vec<AddedPart>) {
     let starts = |i: usize| lines[i].trim_end() == START_NOTE || attached_at(&lines, i).is_some();
     let Some(first) = (0..lines.len()).find(|&i| starts(i)) else { return (text.to_string(), Vec::new()) };
     let typed = lines[..first].join("\n").trim_end().to_string();
-    if typed.is_empty() {
+    // nothing before a start note is nothing of the person's (nexo started the request); nothing before a file
+    // is a message of the person that is only attachments
+    if typed.is_empty() && lines[first].trim_end() != START_NOTE {
         return (collapse_attachments(text), Vec::new());
     }
     let mut parts = Vec::new();
@@ -400,5 +445,103 @@ mod tests {
         assert_eq!(tool_label("mcp__github__create_issue"), "github · create_issue");
         assert_eq!(tool_label("read"), "read");
         assert_eq!(tool_label("mcp__broken"), "mcp__broken");
+    }
+
+    const START: &str = "[project at the start of this request]\nProject (changes since you last saw it; the rest as before):\n- src/ (3 files)\n  - src/c.rs";
+
+    fn has_text(p: &[Piece]) -> bool {
+        p.iter().any(|x| matches!(x, Piece::Text(_)))
+    }
+
+    fn kinds(p: &[Piece]) -> Vec<AddedKind> {
+        p.iter().filter_map(|x| if let Piece::Added(a) = x { Some(a.kind) } else { None }).collect()
+    }
+
+    #[test]
+    fn what_nexo_starts_by_itself_has_no_words_of_the_persons() {
+        let mail = nexo_core::mail::render(&[nexo_core::mail::Mail {
+            v: nexo_core::mail::MAIL_VERSION,
+            id: "m-1-abcd".into(),
+            from: nexo_core::mail::PeerInfo { id: "s-2".into(), name: "other".into(), ..Default::default() },
+            from_kind: nexo_core::mail::FromKind::Agent,
+            to: "s-1".into(),
+            summary: "hi".into(),
+            text: "please look at the parser".into(),
+            at: 1_700_000_000_000,
+            reply_to: None,
+        }]);
+        // the bare resume mark: one line
+        let p = split_user(SUPERVISOR_RESUME_MARK);
+        assert_eq!(p, vec![Piece::Started("supervisor: continuing after a check-in".into())]);
+        // the mark and a start note with a tree delta
+        let p = split_user(&format!("{SUPERVISOR_RESUME_MARK}\n\n{START}"));
+        assert!(!has_text(&p), "{p:?}");
+        assert!(matches!(&p[0], Piece::Started(w) if w.starts_with("supervisor")), "{p:?}");
+        assert_eq!(kinds(&p), [AddedKind::StartNote]);
+        let Piece::Added(note) = &p[1] else { panic!("{p:?}") };
+        assert!(note.text.contains("- src/ (3 files)\n  - src/c.rs"), "{note:?}");
+        // a jobs note and a start note
+        let p = split_user(&format!("{NOTE}\n\n{START}"));
+        assert!(!has_text(&p), "{p:?}");
+        assert_eq!(p.iter().filter(|x| matches!(x, Piece::JobNote(n) if n == NOTE)).count(), 1, "{p:?}");
+        assert!(p.iter().any(|x| matches!(x, Piece::Started(w) if w == "background jobs ended")), "{p:?}");
+        assert_eq!(kinds(&p), [AddedKind::StartNote]);
+        // the jobs note alone
+        let p = split_user(NOTE);
+        assert!(!has_text(&p) && p.iter().any(|x| matches!(x, Piece::Started(_))), "{p:?}");
+        // the goal continue mark and a start note
+        let p = split_user(&format!("{GOAL_CONTINUE_MARK}\n\n{START}"));
+        assert!(!has_text(&p), "{p:?}");
+        assert_eq!(p[0], Piece::Goal(None));
+        assert_eq!(kinds(&p), [AddedKind::StartNote]);
+        // a mail and a start note
+        let p = split_user(&format!("{mail}\n\n{START}"));
+        assert!(!has_text(&p), "{p:?}");
+        assert!(matches!(&p[0], Piece::Started(w) if w.starts_with("mail")), "{p:?}");
+        let Piece::Added(m) = &p[1] else { panic!("{p:?}") };
+        assert!(m.label.contains("other") && m.text.contains("please look at the parser"), "{m:?}");
+        assert!(!m.text.contains("[project at the start"), "the mail part ends where the note begins: {m:?}");
+        assert_eq!(kinds(&p), [AddedKind::Mention, AddedKind::StartNote]);
+    }
+
+    #[test]
+    fn a_start_note_with_no_words_before_it_gives_the_parts_and_empty_words() {
+        let (words, parts) = split_added(START);
+        assert_eq!(words, "");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].kind, AddedKind::StartNote);
+        // files after it are parts too
+        let own = "a.md (project file, included in full by nexo, as it is now):\n```md\nx\n```";
+        let (words, parts) = split_added(&format!("{START}\n\n{own}"));
+        assert_eq!(words, "");
+        assert_eq!(parts.iter().map(|a| a.kind).collect::<Vec<_>>(), [AddedKind::StartNote, AddedKind::File]);
+    }
+
+    #[test]
+    fn messages_of_older_versions_and_of_the_person_read_as_before() {
+        // plain typed text
+        assert_eq!(split_user("fix the bug"), vec![Piece::Text("fix the bug".into())]);
+        // typed words, then the start note, no mark (old format)
+        let p = split_user(&format!("fix the bug\n\n{START}"));
+        assert_eq!(p[0], Piece::Text("fix the bug".into()), "{p:?}");
+        assert_eq!(kinds(&p), [AddedKind::StartNote]);
+        assert_eq!(p.len(), 2);
+        // typed words after a jobs note, no mark (old format)
+        assert_eq!(
+            split_user(&format!("{NOTE}\n\nnow fix it")),
+            vec![Piece::JobNote(NOTE.into()), Piece::Text("now fix it".into())]
+        );
+        // only attachments
+        let only = "@a.md (attached in full, as it is now):\n```md\nx\n```";
+        assert_eq!(split_user(only), vec![Piece::Text("@a.md · 1 line".into())]);
+        // a message with the mark
+        let p = split_user(&format!("{START}\n\n{PERSON_MARK}\nwhat is 418?"));
+        assert_eq!(p.last(), Some(&Piece::Text("what is 418?".into())), "{p:?}");
+        assert_eq!(kinds(&p), [AddedKind::StartNote]);
+        // the person quoting a mark in the middle of their words stays theirs
+        assert_eq!(
+            split_user("what does [supervisor: continue] do?"),
+            vec![Piece::Text("what does [supervisor: continue] do?".into())]
+        );
     }
 }

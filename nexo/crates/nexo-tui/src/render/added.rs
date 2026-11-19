@@ -53,7 +53,20 @@ pub fn head(parts: &[AddedPart], folded: bool, w: usize) -> String {
 
 /// The block at `w` columns.
 pub fn lines(parts: &[AddedPart], folded: bool, w: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut out = vec![Line::from(Span::styled(head(parts, folded, w), theme.dim()))];
+    with_head(head(parts, folded, w), parts, folded, w, theme)
+}
+
+/// A request nexo started: `+ background jobs ended · 340 tokens`, open the same texts as `lines`.
+pub fn started_lines(why: &str, parts: &[AddedPart], folded: bool, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let tokens: u64 = parts.iter().map(AddedPart::tokens).sum();
+    let sign = if folded { "+" } else { "-" };
+    let text =
+        if parts.is_empty() { format!("{sign} {why}") } else { format!("{sign} {why} · {} tokens", fmt_k(tokens)) };
+    with_head(truncate(&text, w), parts, folded, w, theme)
+}
+
+fn with_head(head: String, parts: &[AddedPart], folded: bool, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut out = vec![Line::from(Span::styled(head, theme.dim()))];
     if folded {
         return out;
     }

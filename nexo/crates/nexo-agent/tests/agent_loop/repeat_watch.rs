@@ -87,7 +87,10 @@ async fn the_watch_can_be_switched_off() {
     assert!(client.requests().iter().all(|r| !texts_of(r).contains(NOTICE)));
 }
 
-async fn unfinished(replies: Vec<Reply>, cfg: Config) -> (Arc<Scripted>, Running, Vec<AgentEvent>, tempfile::TempDir) {
+pub(super) async fn unfinished(
+    replies: Vec<Reply>,
+    cfg: Config,
+) -> (Arc<Scripted>, Running, Vec<AgentEvent>, tempfile::TempDir) {
     let dir = test_tmpdir().unwrap();
     let mut all = vec![
         Reply::Events(call(
@@ -158,18 +161,23 @@ async fn the_check_in_can_be_switched_off() {
 #[tokio::test]
 async fn the_supervisor_asks_for_a_check_in_once_per_stopped_turn() {
     let d = test_tmpdir().unwrap();
-    let client = Scripted::new(vec![Reply::Events(text("finished")), Reply::Events(text("DONE"))]);
+    // a request with a tool call of its own: one with words only has nothing of its own to check
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(text("finished")),
+        Reply::Events(text("DONE")),
+    ]);
     let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
     r.turn().await;
-    assert_eq!(client.requests().len(), 1, "nothing looks unfinished: no check-in on its own");
+    assert_eq!(client.requests().len(), 2, "nothing looks unfinished: no check-in on its own");
     r.send(AgentCommand::CheckIn { evidence: "the session asked a question and nobody answered".into() });
     r.until(|e| matches!(e, AgentEvent::Usage { .. })).await;
     r.send(AgentCommand::CheckIn { evidence: "again".into() });
     tokio::time::sleep(Duration::from_millis(300)).await;
     let reqs = client.requests();
-    assert_eq!(reqs.len(), 2, "the second ask is let go");
-    assert!(reqs[1].messages.last().unwrap().text().contains("nobody answered"));
+    assert_eq!(reqs.len(), 3, "the second ask is let go");
+    assert!(reqs[2].messages.last().unwrap().text().contains("nobody answered"));
     r.stop().await;
 }

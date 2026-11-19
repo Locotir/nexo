@@ -406,7 +406,7 @@ impl App {
         // doing and takes effect at once.
         // the turn starts at the last message of the person: calls and thinking come and go after it,
         // so nothing before it is running and only the tail needs a look
-        let turn = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).unwrap_or(0);
+        let turn = self.blocks.iter().rposition(Block::starts_request).unwrap_or(0);
         let live = self.blocks[turn..].iter().any(|b| b.is_live());
         let held = (self.follow && self.busy)
             .then_some(self.held)
@@ -787,6 +787,7 @@ impl App {
                 | Block::Reasoning { folded, .. }
                 | Block::Group { folded, .. }
                 | Block::Added { folded, .. }
+                | Block::Started { folded, .. }
                 | Block::Usage { folded, .. }
                 | Block::Problem { folded, .. },
             ) => *folded,

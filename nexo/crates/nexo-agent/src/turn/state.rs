@@ -149,6 +149,9 @@ pub(super) struct State {
     pub(super) mcp_told: String,
     /// A check-in was made for this request of the person (at most one; the person speaking opens it again).
     pub(super) checked_in: bool,
+    /// The person stopped the session (Esc, Ctrl+C, a client's cancel) and has not written since: nothing starts by
+    /// itself (a job's end, a check-in, mail) until they do, so a stop is final.
+    pub(super) held: bool,
     /// How many times `agent.max_tokens` a reply may take in this request: doubled (up to 4) when a reply
     /// was cut at max_tokens while still thinking, as the reasoning had no room left for an answer or a call.
     pub(super) reply_boost: u32,

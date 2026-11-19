@@ -16,7 +16,10 @@ fn a_replayed_message_with_a_note_memory_and_text_becomes_cards_and_a_bubble() {
     let mem = "<memory from=\"s-1\" title=\"parser\">\nShared.\n</memory>";
     a.history(0, Message::user(format!("{mem}\n\n{note}\n\nfix it")));
     a.history(1, Message::user("[summary] The conversation before this point was replaced\n[files]"));
-    assert!(matches!(&a.blocks[base], Block::User { text, .. } if crate::render::blocks::is_job_note(text)));
+    assert!(
+        matches!(&a.blocks[base], Block::Started { why, parts, folded: true } if why == "background jobs ended" && parts.len() == 1 && parts[0].text == note),
+        "the jobs note is a dim line of nexo's, never a message of the person"
+    );
     assert!(matches!(&a.blocks[base + 1], Block::User { text, .. } if text == "fix it"));
     // the memory is a folded line under the words, not a card of its own
     assert!(
@@ -28,15 +31,18 @@ fn a_replayed_message_with_a_note_memory_and_text_becomes_cards_and_a_bubble() {
 }
 
 #[test]
-fn a_live_job_report_enters_the_transcript_as_rendered_markdown() {
+fn a_live_job_report_enters_the_transcript_behind_a_line_of_nexo_that_opens_to_it() {
     let (mut a, _rx) = app();
     let base = a.blocks.len();
     let note = "[background jobs ended]\n- job 16 sub-agent \"review\" done (reported) after 23 s, 28 lines of output\n\n--- report of job 16 ---\n### Findings\n\n**Important**: the last words remain visible";
     a.history(0, Message::user(note));
+    assert!(a.user_messages.is_empty(), "the jobs note is not a message of the person");
+    assert!(matches!(&a.blocks[base], Block::Started { .. }), "{:?}", a.blocks[base]);
+    assert_eq!(a.lines(base, 24).len(), 1, "folded: one line");
+    a.toggle_block(base);
     let rendered = a.lines(base, 24);
     let text = rendered.iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
     assert!(text.contains("Findings") && text.contains("Important") && text.contains("visible"), "{text}");
-    assert!(!text.contains("###") && !text.contains("**"), "{text}");
 }
 
 #[test]
