@@ -7,7 +7,7 @@ use super::*;
 
 /// What a request takes, in the provider's tokens as far as they are known: `est` estimated tokens (4 characters a
 /// token) through the ratio learned from the provider's counts.
-fn provider_tokens(est: u64, ratio: Option<f64>) -> u64 {
+pub(super) fn provider_tokens(est: u64, ratio: Option<f64>) -> u64 {
     match ratio {
         Some(r) => (est as f64 * r).ceil() as u64,
         None => est,
@@ -41,7 +41,12 @@ pub(super) fn room_left(st: &State, window: u64, wanted: u32) -> bool {
 /// `limits::REPLY_FLOOR`; and when it still does not fit, the request goes as it is and the person is told once a
 /// turn what it holds, so the provider's answer (and the lesson the loop takes from an error) decides what follows.
 /// `notes` is the text this request alone carries on its last message, and `extra` its estimated tokens.
+/// A request the loop will not send ([`known_too_long`]) is left as it is, with no notice.
 pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&str>, extra: u64) {
+    // a request the loop will not send (`known_too_long`) gets no shorter reply and no notice that it goes as it is
+    if known_too_long(st) {
+        return;
+    }
     let Some(window) = st.limits.context_window.map(u64::from) else { return };
     let wanted = req.max_tokens;
     let ratio = fit_ratio(st.tok_ratio, window);

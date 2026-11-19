@@ -151,6 +151,8 @@ pub fn is_context_error(status: Option<u16>, code: &str, message: &str) -> bool 
         "prompt is too long",
         "exceeds the model",
         "exceeds the maximum number of tokens",
+        // AWS Bedrock's whole message ("Input is too long for requested model."), with no number
+        "input is too long",
     ]
     .iter()
     .any(|k| m.contains(k))
@@ -219,6 +221,12 @@ mod tests {
             "",
             "the request (9000 tokens) exceeds the available context size (8192 tokens)"
         ));
+        // AWS Bedrock says only this, with no number
+        assert!(is_context_error(None, "", "Input is too long for requested model."));
+        assert_eq!(
+            ProviderError::from_http(400, r#"{"message":"Input is too long for requested model."}"#).kind,
+            ErrorKind::ContextLength
+        );
         assert!(is_context_error(Some(413), "", "Request Entity Too Large"));
         assert!(!is_context_error(None, "invalid_request_error", "max_tokens: 65536 > 8192"));
         assert!(!is_context_error(Some(400), "", "bad json"));

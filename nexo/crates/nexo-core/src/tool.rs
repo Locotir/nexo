@@ -192,7 +192,7 @@ pub struct ToolContext {
 pub struct ResultRoom {
     /// Characters one result may carry.
     pub chars: usize,
-    /// The model's window, in tokens, as the cut line says it.
+    /// The limit in tokens the cut line names: the model's window, or the smaller ceiling a refused request set.
     pub window: u64,
 }
 

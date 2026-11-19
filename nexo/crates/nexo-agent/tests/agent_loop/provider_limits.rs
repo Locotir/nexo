@@ -153,6 +153,15 @@ fn estimate(r: &ModelRequest) -> u64 {
     fixed + nexo_core::message::estimate_tokens(&r.messages)
 }
 
+/// Tokens by which `estimate` (core's count of the request as sent) may pass the curator's own count of the same
+/// request, which the view's ceiling bounds: each message's rounding and the per-call notes counted apart.
+const COUNT_GAP: u64 = 64;
+
+/// Whether `after` is under three quarters of `before`, both by `estimate`, but for [`COUNT_GAP`].
+fn under_three_quarters(after: u64, before: u64) -> bool {
+    after.saturating_sub(COUNT_GAP) * 4 <= before * 3
+}
+
 fn no_summary(client: &Scripted) -> bool {
     !client.requests().iter().any(is_summary)
 }
@@ -250,11 +259,13 @@ async fn an_error_that_names_the_requests_tokens_makes_the_next_view_fit_them() 
     let (before, after) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 1]));
     // the provider's count of the retried request is under the window
     assert!(after < before && (after * said) / before < u64::from(WINDOW), "{before} then {after}");
+    // an error that gives numbers sets no bound of its own
+    assert!(!notices(&evs).iter().any(|n| n.contains("did not say its window")), "{:?}", notices(&evs));
     r.stop().await;
 }
 
 #[tokio::test]
-async fn an_error_with_no_numbers_under_a_known_window_shrinks_the_view_and_raises_the_ratio() {
+async fn an_error_with_no_numbers_under_a_known_window_retries_under_three_quarters_of_the_refused_request() {
     let _g = config_lock().lock().await;
     let d = test_tmpdir().unwrap();
     let mut script = answers(FAT_TURNS);
@@ -266,11 +277,86 @@ async fn an_error_with_no_numbers_under_a_known_window_shrinks_the_view_and_rais
     assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("after", TurnEnd::Done));
     assert!(no_summary(&client), "no summary request");
     let reqs = client.requests();
+    assert_eq!(reqs.len(), FAT_TURNS + 2);
     let (before, after) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 1]));
-    assert!(after < before, "{before} then {after}");
-    // a ratio 15 % higher takes the view window (0.95 of the room for the request over the ratio) down to this
-    let room = f64::from(WINDOW - reqs[FAT_TURNS].max_tokens);
-    assert!(after as f64 <= room * 0.95 / 1.15, "{after} over {}", room * 0.95 / 1.15);
+    // an error with no number teaches no ratio: the retry stays under three quarters of the request refused
+    assert!(under_three_quarters(after, before), "{before} then {after}");
+    let told = notices(&evs).into_iter().filter(|n| n.contains("did not say its window")).count();
+    assert_eq!(told, 1, "{:?}", notices(&evs));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn the_bound_from_a_refusal_with_no_number_keeps_the_next_turn_under_three_quarters() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let mut script = answers(FAT_TURNS);
+    script.extend([
+        too_long("context length exceeded"),
+        // the answers after the refusal carry usage (3000 tokens for a request of over 10 000 estimated): the ratio
+        // learned from them must not lift the bound
+        Reply::Events(text("after")),
+        Reply::Events(text("next")),
+    ]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, Some(WINDOW), FAT_TURNS, d.path()).await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("after", TurnEnd::Done));
+    r.send(AgentCommand::Submit { text: fat_message(FAT_TURNS), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("next", TurnEnd::Done));
+    assert!(no_summary(&client), "no summary request");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), FAT_TURNS + 3);
+    let (refused, next) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 2]));
+    assert!(under_three_quarters(next, refused), "{refused} then {next}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_request_not_smaller_than_one_refused_is_not_sent() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![too_long("context length exceeded"), Reply::Events(bare(text("never asked")))]);
+    // a known window over 32k: a guessed one under it would shorten the prompt and the tools and let a smaller
+    // retry go
+    let mut r = fat_session(&client, Some(WINDOW), 0, d.path()).await;
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    // the system prompt and the tools alone pass three quarters of the request refused: the retry is not sent
+    assert_eq!(client.requests().len(), 1);
+    let told: Vec<String> =
+        notices(&evs).into_iter().filter(|n| n.contains("/model") && n.contains("was not sent")).collect();
+    assert_eq!(told.len(), 1, "{:?}", notices(&evs));
+    assert!(!told[0].contains("/compact") && !told[0].contains("/clear"), "{}", told[0]);
+    assert!(told[0].contains("was not sent") && told[0].contains("smallest refused"), "{}", told[0]);
+    assert_eq!(notices(&evs).iter().filter(|n| n.contains("did not say its window")).count(), 1);
+    assert!(no_summary(&client), "no summary request");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_bedrock_refusal_with_no_number_gets_a_smaller_view() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let mut script = answers(6);
+    script.extend([
+        // AWS Bedrock's whole message: no window, no size
+        Reply::Err(ProviderError::from_http(400, r#"{"message":"Input is too long for requested model."}"#)),
+        Reply::Events(bare(text("after"))),
+    ]);
+    let client = Scripted::new(script);
+    let mut r = fat_session(&client, None, 6, d.path()).await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("after", TurnEnd::Done));
+    assert!(no_summary(&client), "no summary request");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 8);
+    let (refused, retry) = (estimate(&reqs[6]), estimate(&reqs[7]));
+    assert!(under_three_quarters(retry, refused), "{refused} then {retry}");
     r.stop().await;
 }
 
@@ -331,6 +417,15 @@ async fn four_context_errors_in_a_row_end_the_turn_with_a_notice_and_no_summary(
     assert!(!notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
     // one request and three smaller views, none after
     assert_eq!(client.requests().len(), FAT_TURNS + 4);
+    assert!(told[0].contains("smallest refused"), "{}", told[0]);
+    // once a turn
+    assert_eq!(notices(&evs).iter().filter(|n| n.contains("did not say its window")).count(), 1);
+    let reqs = client.requests();
+    // every view sent after a refusal is smaller than the request refused before it
+    for pair in reqs[FAT_TURNS..].windows(2) {
+        let (refused, next) = (estimate(&pair[0]), estimate(&pair[1]));
+        assert!(next < refused, "{refused} then {next}");
+    }
     r.stop().await;
 }
 

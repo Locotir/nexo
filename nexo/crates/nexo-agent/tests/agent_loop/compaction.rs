@@ -2,13 +2,24 @@ use super::*;
 
 #[tokio::test]
 async fn a_context_length_error_compacts_once_and_retries() {
+    compacts_once_and_retries(ProviderError::new(ErrorKind::ContextLength, "too long")).await;
+}
+
+#[tokio::test]
+async fn a_bare_bedrock_refusal_compacts_once_and_retries() {
+    // AWS Bedrock's whole message, with no number: plain answers it as any context error
+    let refusal = ProviderError::from_http(400, r#"{"message":"Input is too long for requested model."}"#);
+    compacts_once_and_retries(refusal).await;
+}
+
+/// The test config runs the plain policy, which answers a context error with a compaction (the curator answers
+/// with a smaller view, see provider_limits.rs): `refusal` on the third request, then the summary and the request.
+async fn compacts_once_and_retries(refusal: ProviderError) {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![
         Reply::Events(text("first answer")),
         Reply::Events(text("second answer")),
-        // the test config runs the plain policy, which answers a context error with a compaction (the curator answers
-        // with a smaller view, see provider_limits.rs)
-        Reply::Err(ProviderError::new(ErrorKind::ContextLength, "too long")),
+        Reply::Err(refusal),
         Reply::Events(text("SUMMARY OF ALL")),
         Reply::Events(text("third answer")),
     ]);

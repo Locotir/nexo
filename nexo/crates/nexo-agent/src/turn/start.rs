@@ -860,6 +860,30 @@ pub(crate) fn view_window(room: u32, ratio: Option<f64>) -> u64 {
     }
 }
 
+/// The ceiling of every view once a request of `refused` estimated tokens was refused as too long with no number:
+/// three quarters of it. The estimate counts 4 characters a token and dense text (code, logs, Chinese) runs about 3
+/// (`FIRST_RATIO` in window_fit.rs), so a later request under it takes no more of the provider's tokens than the
+/// refused one did, whatever its mix. At least 1: a window of 0 means no limit to the curator.
+pub(super) fn refused_cap(refused: u64) -> u64 {
+    (refused * 3 / 4).max(1)
+}
+
+/// The most estimated tokens a request may take under the model's window alone: what it leaves after the reply
+/// (`view_window`). None when the window is not known, or the reply takes all of it.
+pub(super) fn window_ceiling(st: &State) -> Option<u64> {
+    let reply = reply_tokens(st);
+    st.limits.context_window.filter(|w| *w > reply).map(|w| view_window(w - reply, st.tok_ratio))
+}
+
+/// The most estimated tokens a request may take, the system prompt and tools included: what the model's window
+/// leaves after the reply (`window_ceiling`), and under the curator `refused_cap` of the smallest request refused
+/// without a number. None when neither is known.
+pub(super) fn view_ceiling(st: &State) -> Option<u64> {
+    // only the curator learns from a refusal with no number (`lesson::refit`); the other policies keep their rooms
+    let refused = st.refused.filter(|_| st.policy.fits_window()).map(refused_cap);
+    window_ceiling(st).into_iter().chain(refused).min()
+}
+
 /// The ratio of provider tokens to estimated tokens after a request of `est` estimated tokens the
 /// provider counted as `real`: the largest of the last ones weighs most, so a request of code after
 /// one of prose does not pass the window; small requests, whose count is mostly framing, teach nothing.
@@ -917,12 +941,10 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     let system_tokens = fixed_tokens(&st.system, &specs) + extra_tokens;
     let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     st.policy.tools(&names);
-    // the view never passes the model's window: what it takes less the reply, in estimated tokens
-    // through the ratio learned from the provider's counts
-    let reply = reply_tokens(st);
-    if let Some(w) = st.limits.context_window.filter(|w| *w > reply) {
-        st.policy.window(view_window(w - reply, st.tok_ratio));
-    }
+    // the view never passes the model's window (what it takes less the reply, in estimated tokens through the ratio
+    // learned from the provider's counts), nor three quarters of a request refused as too long without a number
+    // (0 is no limit: a model switch to one with no ceiling must not keep the last one the policy was given)
+    st.policy.window(view_ceiling(st).unwrap_or(0));
     let (_, cfg, model) = st.target.get();
     if let Some(p) = st.limits.pricing.or_else(|| cfg.pricing_for(&model)) {
         st.policy.prices(p.input, p.cache_read);

@@ -127,6 +127,11 @@ pub(super) struct State {
     /// next automatic one waits until the history has grown past that by the same margin.
     pub(super) compact_failed_at: Option<u64>,
     pub(super) tok_ratio: Option<f64>,
+    /// The estimate (4 characters a token, as `est_sent`) of the smallest request the provider refused as too long
+    /// without a number (neither its window nor the request's size), under the curator: every view stays under three
+    /// quarters of it (`refused_cap`) and a request not smaller than it is not sent (`known_too_long`). Kept for the
+    /// model, not the conversation: `/clear`, resume, fork and rewind keep it, a model switch clears it; never saved.
+    pub(super) refused: Option<u64>,
     /// The last call the provider billed in this session: a call cut before its usage event is estimated from it.
     pub(super) last_call: Option<Usage>,
     /// The mailbox other sessions write to, and the mails that reached the model: those waiting for the turn
