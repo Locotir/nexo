@@ -285,7 +285,7 @@ async fn a_stop_at_a_checkpoint_pauses_the_goal() {
     ]);
     let mut r = start(client.clone(), ck_config(2), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     assert!(matches!(goal_state_of(&evs), Some(GoalState::Paused(w)) if w.starts_with("stopped at a checkpoint")));
@@ -392,7 +392,7 @@ async fn a_goal_stopped_for_lack_of_progress_says_so() {
     let client = Scripted::new(repeating_script(|_| "same".into(), "write"));
     let mut r = start(client.clone(), ck_config(2), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::MaxTurns);
     let rest = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;

@@ -104,8 +104,12 @@ impl App {
                 self.flash(if self.timestamps { "timestamps on" } else { "timestamps off" });
             }
             Command::ContextLive => self.toggle_live(self.term_width),
-            Command::Goal(GoalArg::Set(text)) => self.send(AgentCommand::SetGoal { text: Some(text) }),
-            Command::Goal(GoalArg::Clear) => self.send(AgentCommand::SetGoal { text: None }),
+            Command::Goal(GoalArg::Set(text)) => {
+                // the files the goal names go with it, as they do with a message
+                let attachments = self.attachments_in(&text);
+                self.send(AgentCommand::SetGoal { text: Some(text), attachments })
+            }
+            Command::Goal(GoalArg::Clear) => self.send(AgentCommand::SetGoal { text: None, attachments: vec![] }),
             Command::Goal(GoalArg::Pause) => self.send(AgentCommand::PauseGoal),
             Command::Goal(GoalArg::Resume) => self.send(AgentCommand::ResumeGoal),
             Command::Goal(GoalArg::Show) => match &self.goal {

@@ -201,7 +201,7 @@ async fn met_goal(more: Vec<Reply>, dir: &std::path::Path) -> (Arc<Scripted>, Ru
     let client = Scripted::new(all);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("write a.rs".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("write a.rs".into()), attachments: vec![] });
     r.turn().await;
     r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
     (client, r)

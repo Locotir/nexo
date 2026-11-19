@@ -40,7 +40,7 @@ async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("  make the tests pass ".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("  make the tests pass ".into()), attachments: vec![] });
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&evs), Some((Some("make the tests pass".into()), 0, 5)));
     // /goal starts the work by itself: the goal is the first request
@@ -80,7 +80,7 @@ async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
         AgentEvent::Ready { session_id, .. } => session_id,
         other => panic!("{other:?}"),
     };
-    r.send(AgentCommand::SetGoal { text: Some("tests green pls".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("tests green pls".into()), attachments: vec![] });
     let t1 = r.turn().await;
     let want =
         "Want: every test in the workspace passes\nWhy: the release is blocked on red tests\nHow: fix the code, \
@@ -128,7 +128,7 @@ async fn a_goal_set_while_a_turn_runs_only_pins_it() {
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
     r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
-    r.send(AgentCommand::SetGoal { text: Some("finish it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("finish it".into()), attachments: vec![] });
     let t1 = r.turn().await;
     assert_eq!(user_texts(&t1), vec!["go"], "no second request while the turn runs");
     assert!(t1.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("from the next turn"))));
@@ -146,7 +146,7 @@ async fn a_goal_continuation_leaves_the_round_to_the_interface() {
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
     r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
-    r.send(AgentCommand::SetGoal { text: Some("finish it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("finish it".into()), attachments: vec![] });
     r.turn().await;
     let t2 = r.turn().await;
     assert!(user_texts(&t2).contains(&CONTINUE.to_string()));
@@ -164,7 +164,7 @@ async fn a_continuation_without_tool_calls_ends_the_goal_loop() {
     let client = Scripted::new(vec![Reply::Events(text("working")), Reply::Events(text("nothing more to do"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()), attachments: vec![] });
     r.turn().await;
     // the first continuation always runs; it made no call, so the loop stops there
     let t2 = r.turn().await;
@@ -195,7 +195,7 @@ async fn the_goal_stops_after_its_rounds_and_when_cleared() {
     let client = Scripted::new(replies);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("never done".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("never done".into()), attachments: vec![] });
     r.turn().await;
     for round in 1..=5u32 {
         let t = r.turn().await;
@@ -209,7 +209,7 @@ async fn the_goal_stops_after_its_rounds_and_when_cleared() {
     assert_eq!(goal_state_of(&reset), Some(GoalState::Paused("5 rounds without GOAL DONE".into())));
     assert_eq!(client.requests().len(), 11, "the first turn and five continuations of two requests each");
     // clearing the goal: a turn ends and nothing follows
-    r.send(AgentCommand::SetGoal { text: None });
+    r.send(AgentCommand::SetGoal { text: None, attachments: vec![] });
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&evs), Some((None, 0, 5)));
     r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
@@ -230,7 +230,7 @@ async fn a_resumed_session_brings_its_goal_back() {
         AgentEvent::Ready { session_id, .. } => session_id,
         other => panic!("{other:?}"),
     };
-    r.send(AgentCommand::SetGoal { text: Some("keep it green".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("keep it green".into()), attachments: vec![] });
     r.turn().await;
     r.stop().await;
 
@@ -323,7 +323,7 @@ async fn a_restatement_keeps_a_met_goal_met_on_disk() {
         AgentEvent::Ready { session_id, .. } => session_id,
         other => panic!("{other:?}"),
     };
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     r.turn().await;
     let met = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_state_of(&met), Some(GoalState::Done));
@@ -347,7 +347,7 @@ async fn a_reply_that_asks_waits_for_the_answer_and_the_answer_resumes_the_goal(
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("fix the bug".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("fix the bug".into()), attachments: vec![] });
     r.turn().await;
     // the question stops the loop: no continuation answers it in the person's place
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
@@ -375,7 +375,7 @@ async fn a_met_goal_is_not_restarted_by_the_next_message() {
     let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("you're welcome"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     r.turn().await;
     r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     r.send(AgentCommand::Submit { text: "thanks".into(), attachments: vec![] });
@@ -397,7 +397,7 @@ async fn esc_and_a_failed_turn_pause_the_goal_and_resume_goes_on() {
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()), attachments: vec![] });
     r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
     r.send(AgentCommand::Interrupt);
     assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
@@ -439,7 +439,7 @@ async fn a_paused_goal_holds_through_messages_until_resume() {
         AgentEvent::Ready { session_id, .. } => session_id,
         other => panic!("{other:?}"),
     };
-    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()), attachments: vec![] });
     r.turn().await;
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting), "GOAL WAIT waits as a question does");
@@ -508,7 +508,7 @@ async fn a_met_goal_adds_its_state_line_to_the_next_person_message() {
     let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("sure"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     r.turn().await;
     r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     r.send(AgentCommand::Submit { text: "something else".into(), attachments: vec![] });
@@ -526,7 +526,7 @@ async fn an_active_goal_adds_no_state_line() {
     let client = Scripted::new(vec![Reply::Events(text("I need one thing.\nGOAL WAIT")), Reply::Events(text("ok"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     r.turn().await;
     r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     // the answer resumes the waiting goal, so it is not labelled as not running
@@ -543,7 +543,7 @@ async fn a_paused_goal_shows_its_reason_in_the_next_person_message() {
     let client = Scripted::new(vec![Reply::Events(text("I need one thing.\nGOAL WAIT")), Reply::Events(text("noted"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()), attachments: vec![] });
     r.turn().await;
     r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     r.send(AgentCommand::PauseGoal);
@@ -562,7 +562,7 @@ async fn the_system_prompt_is_the_same_before_and_after_the_goal_is_met() {
     let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("sure"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()), attachments: vec![] });
     r.turn().await;
     r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     r.send(AgentCommand::Submit { text: "something else".into(), attachments: vec![] });

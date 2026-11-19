@@ -576,6 +576,7 @@ async fn a_goal_of_business_work_gets_paths_and_heads_not_the_small_files_or_a_c
             "app ideas, write them to IDEAS_T4.md, info in {}/ https://apps.microsoft.com/x",
             abs.display()
         )),
+        attachments: vec![],
     });
     let evs = r.turn().await;
     r.stop().await;
@@ -671,4 +672,26 @@ async fn a_panic_location_names_its_file() {
     let sent = client.requests()[0].messages[0].text();
     assert!(sent.contains("src/lib.rs (project file, included in full by nexo, as it is now):"), "{sent}");
     assert!(sent.contains("\ncheck: cargo test"), "{sent}");
+}
+
+/// A goal set from `/goal summarise @notes.md` brings the file the person attached, as a message does: the first
+/// request towards it holds the file whole and once, with the goal's words in full.
+#[tokio::test]
+async fn a_goal_brings_the_files_the_person_attached() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("notes.md"), "the plan is to ship on friday").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("noted\nGOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal {
+        text: Some("summarise @notes.md into REPORT.md".into()),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("notes.md") }],
+    });
+    r.turn().await;
+    r.stop().await;
+    let sent = client.requests()[0].messages[0].text();
+    let file = "@notes.md (attached in full, as it is now):\n```md\nthe plan is to ship on friday\n```";
+    assert!(sent.contains(file), "{sent}");
+    assert_eq!(sent.matches("the plan is to ship on friday").count(), 1, "the file comes once: {sent}");
+    assert!(sent.contains("[goal set] summarise @notes.md into REPORT.md"), "the words stay whole: {sent}");
 }

@@ -69,7 +69,7 @@ async fn a_message_sent_while_a_goal_turn_is_prepared_is_queued_at_once() {
     cfg.agent.check_at_start = true;
     let mut r = start(client, cfg, None, d.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
-    r.send(AgentCommand::SetGoal { text: Some("make test_slow pass".into()) });
+    r.send(AgentCommand::SetGoal { text: Some("make test_slow pass".into()), attachments: vec![] });
     let evs = raw_until(&mut r, |e| preparing(e).is_some_and(|w| w.starts_with("checking the project"))).await;
     let steps: Vec<&str> = evs.iter().filter_map(preparing).collect();
     assert_eq!(steps, vec!["starting the goal", "checking the project (pytest)"]);

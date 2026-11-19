@@ -66,7 +66,7 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
             let (p, _, m) = st.target.get();
             emit(&rt.events, st.limits.event(&p, &m));
         }
-        AgentCommand::SetGoal { text } => on_set_goal(rt, text).await,
+        AgentCommand::SetGoal { text, attachments } => on_set_goal(rt, text, attachments).await,
         AgentCommand::PauseGoal => pause_goal(&rt.state, rt.turn.is_some()).await,
         AgentCommand::ResumeGoal => {
             if resume_goal(&rt.state, rt.turn.is_some()).await {
@@ -419,7 +419,7 @@ async fn on_clear(rt: &mut Runtime) {
 }
 
 /// `/goal`: a goal set while idle starts a turn towards it; one set during a turn is read from the next.
-async fn on_set_goal(rt: &mut Runtime, text: Option<String>) {
+async fn on_set_goal(rt: &mut Runtime, text: Option<String>, attachments: Vec<Attachment>) {
     if let Some(goal) = set_goal(&rt.state, text).await {
         let request = format!("{GOAL_SET_MARK} {goal}");
         if rt.turn.is_some() {
@@ -430,7 +430,7 @@ async fn on_set_goal(rt: &mut Runtime, text: Option<String>) {
             );
             notice(&rt.events, Level::Info, text);
         } else {
-            rt.turn = Some(start_turn(&rt.state, request, Vec::new(), rt.cancel.child_token()).await);
+            rt.turn = Some(start_turn(&rt.state, request, attachments, rt.cancel.child_token()).await);
         }
     }
 }

@@ -179,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(AgentCommand::ShowModel) => {
                     let _ = events.send(limits(pricing, "preset"));
                 }
-                Some(AgentCommand::SetGoal { text }) => {
+                Some(AgentCommand::SetGoal { text, .. }) => {
                     // scripted runs (NEXO_DEMO_GOAL): "/goal next round" and "/goal goal met" move the goal along
                     let scripted = std::env::var_os("NEXO_DEMO_GOAL").is_some();
                     let kept = Some("make the weight tests pass".to_string());
