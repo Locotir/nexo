@@ -712,7 +712,8 @@ impl<'a> Lifter<'a> {
             {
                 let single = matches!(m, M::Xorps | M::Andps | M::Andnps);
                 let w: Bits = if single { 32 } else { 64 };
-                let (neg_mask, abs_mask) = if single { (0x8000_0000u64, 0x7fff_ffffu64) } else { (1u64 << 63, !(1u64 << 63)) };
+                let (neg_mask, abs_mask) =
+                    if single { (0x8000_0000u64, 0x7fff_ffffu64) } else { (1u64 << 63, !(1u64 << 63)) };
                 let lane = self.fconst(ins, 1, 16).map(|v| (v as u64) & mask(w));
                 let dst = ins.op0_register();
                 let a = Expr::Var(Var::Xmm(dst.number() as u8), w);

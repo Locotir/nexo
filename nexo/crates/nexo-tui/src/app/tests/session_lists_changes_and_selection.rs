@@ -14,6 +14,7 @@ fn the_argument_list_offers_running_jobs_and_deleted_sessions() {
             status: JobStatus::Running,
             elapsed_ms: 0,
             lines: 0,
+            held: false,
         }],
     });
     a.input.set_text("/jobs k");

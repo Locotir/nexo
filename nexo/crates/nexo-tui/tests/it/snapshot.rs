@@ -873,6 +873,7 @@ fn the_jobs_window_lists_running_then_ended_jobs_with_their_output_and_opens_one
         status,
         elapsed_ms,
         lines: 3,
+        held: false,
     };
     let mut a = app();
     fill(&mut a);

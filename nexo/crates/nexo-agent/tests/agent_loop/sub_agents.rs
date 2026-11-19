@@ -764,11 +764,7 @@ async fn a_sub_agent_stopped_by_the_budget_says_what_it_did() {
         .unwrap();
     assert!(out.is_error && out.content.contains("spend limit reached"), "{out:?}");
     // what it had done is handed back with the reason, as for any other failure of a round
-    assert!(
-        out.content.contains("in round 2/") && out.content.contains("- wrote x.txt\n"),
-        "{}",
-        out.content
-    );
+    assert!(out.content.contains("in round 2/") && out.content.contains("- wrote x.txt\n"), "{}", out.content);
     assert_eq!(client.requests().len(), 2, "the second round was never asked");
     r.stop().await;
 }

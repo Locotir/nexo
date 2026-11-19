@@ -70,6 +70,7 @@ fn nexo_events_become_a_session_with_sub_agents_under_it() {
                 status: JobStatus::Running,
                 elapsed_ms: 0,
                 lines: 0,
+                held: false,
             }],
         },
         101,

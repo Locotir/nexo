@@ -295,6 +295,7 @@ mod tests {
             status,
             elapsed_ms: 0,
             lines: 0,
+            held: false,
         };
         a.set_jobs(&[job(JobStatus::Running)]);
         let mut src = LiveSource::new(d.path()).with_own_pid(0);

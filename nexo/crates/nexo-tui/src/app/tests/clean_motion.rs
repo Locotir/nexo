@@ -7,7 +7,7 @@ use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
 use ratatui::style::Modifier;
 
 fn job(status: JobStatus) -> JobInfo {
-    JobInfo { id: 3, kind: JobKind::Shell, label: "cargo test".into(), status, elapsed_ms: 0, lines: 0 }
+    JobInfo { id: 3, kind: JobKind::Shell, label: "cargo test".into(), status, elapsed_ms: 0, lines: 0, held: false }
 }
 
 #[test]

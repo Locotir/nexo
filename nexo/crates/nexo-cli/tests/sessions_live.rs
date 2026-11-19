@@ -47,6 +47,7 @@ fn live_sessions_show_their_state_model_and_jobs_and_stale_ones_do_not_show() {
         status: JobStatus::Running,
         elapsed_ms: 0,
         lines: 0,
+        held: false,
     }]);
     let _stale = open(d.path(), "20261115-110000-cccc", "stale", now - 60_000);
     let sessions = d.path().join("sessions");

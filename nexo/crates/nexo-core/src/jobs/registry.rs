@@ -48,6 +48,7 @@ impl Entry {
             status: self.status.lock().unwrap().clone(),
             elapsed_ms: end.duration_since(self.started).as_millis() as u64,
             lines: out.dropped + out.lines.len(),
+            held: self.held,
         }
     }
 }
@@ -231,6 +232,11 @@ impl Jobs {
 
     pub fn running(&self) -> usize {
         self.list().iter().filter(|j| j.status.running()).count()
+    }
+
+    /// The running jobs whose end is awaited: all but those a foreground command left running (`start_held`).
+    pub fn awaited(&self) -> usize {
+        self.list().iter().filter(|j| j.status.running() && !j.held).count()
     }
 
     fn entry(&self, id: u32) -> Option<Arc<Entry>> {

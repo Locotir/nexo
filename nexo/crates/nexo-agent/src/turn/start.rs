@@ -88,7 +88,7 @@ pub(super) async fn start_prompt_item(
     if let Some(why) = o.blocked {
         let st = state.lock().await;
         notice(&st.events, Level::Warn, format!("your message was not sent: a hook stopped it ({why})"));
-        emit(&st.events, AgentEvent::Idle { running_jobs: st.jobs.running() });
+        emit(&st.events, AgentEvent::Idle { running_jobs: st.jobs.awaited() });
         return None;
     }
     state.lock().await.hook_context.extend(o.context);

@@ -12,8 +12,15 @@ const RUN: &str = "call_1#3";
 fn with_run() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
     let (mut a, rx) = bare();
     a.handle_agent(AgentEvent::SubState { info: info(RUN, "survey the parser") });
-    let job =
-        |id: u32, kind| JobInfo { id, kind, label: "work".into(), status: JobStatus::Running, elapsed_ms: 0, lines: 0 };
+    let job = |id: u32, kind| JobInfo {
+        id,
+        kind,
+        label: "work".into(),
+        status: JobStatus::Running,
+        elapsed_ms: 0,
+        lines: 0,
+        held: false,
+    };
     a.handle_agent(AgentEvent::Jobs { jobs: vec![job(3, JobKind::Agent), job(4, JobKind::Shell)] });
     a.session_id = Some("session".into());
     (a, rx)

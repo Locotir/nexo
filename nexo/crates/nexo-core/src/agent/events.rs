@@ -211,7 +211,8 @@ pub enum AgentEvent {
         pending: usize,
     },
     /// The turn ended and nothing follows it (no queued request, goal round or job
-    /// notice): the agent waits for the person. Jobs may still run.
+    /// notice): the agent waits for the person. Jobs may still run: `running_jobs` counts those whose end is
+    /// awaited (`Jobs::awaited`), not what a foreground command left running.
     Idle {
         running_jobs: usize,
     },

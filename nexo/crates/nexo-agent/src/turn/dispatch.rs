@@ -414,7 +414,7 @@ async fn on_clear(rt: &mut Runtime) {
         if let Some(m) = rt.state.lock().await.mail.clone() {
             m.set_idle(true);
         }
-        emit(&rt.events, AgentEvent::Idle { running_jobs: rt.jobs.running() });
+        emit(&rt.events, AgentEvent::Idle { running_jobs: rt.jobs.awaited() });
     }
 }
 
@@ -535,7 +535,7 @@ async fn on_mcp_prompt(rt: &mut Runtime, server: String, prompt: String, args: S
         Err(e) => {
             notice(&rt.events, Level::Warn, format!("/mcp__{server}__{prompt}: {e}"));
             if rt.turn.is_none() {
-                emit(&rt.events, AgentEvent::Idle { running_jobs: rt.state.lock().await.jobs.running() });
+                emit(&rt.events, AgentEvent::Idle { running_jobs: rt.state.lock().await.jobs.awaited() });
             }
         }
         Ok(text) => {

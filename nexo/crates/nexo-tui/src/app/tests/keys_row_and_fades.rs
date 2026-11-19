@@ -69,6 +69,7 @@ fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
             status: JobStatus::Running,
             elapsed_ms: 0,
             lines: 0,
+            held: false,
         }],
     });
     a.shared = vec![("s1".into(), "the parser".into(), 2100)];

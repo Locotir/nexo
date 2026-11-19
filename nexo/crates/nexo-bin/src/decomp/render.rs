@@ -224,7 +224,14 @@ pub fn make_webs(f: &mut Lifted, facts: &Facts) -> WebInfo {
             names.insert(w, format!("v{counter}"));
         }
     }
-    WebInfo { names, bits, signed: signed.into_iter().map(|(k, v)| (k, v >= 0)).collect(), float, fwidth, args: arg_webs }
+    WebInfo {
+        names,
+        bits,
+        signed: signed.into_iter().map(|(k, v)| (k, v >= 0)).collect(),
+        float,
+        fwidth,
+        args: arg_webs,
+    }
 }
 
 /// The operands a float operation reads directly: the places that make a web a float.
@@ -245,9 +252,7 @@ fn float_operands<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
         }
         match e {
             Expr::Const(..) | Expr::Var(..) | Expr::Unknown(_) | Expr::StackAddr(_) | Expr::SegBase(_) => {}
-            Expr::Load(a, _) | Expr::Un(_, a) | Expr::Trunc(a, _) | Expr::Zext(a, _) | Expr::Sext(a, _) => {
-                walk(a, out)
-            }
+            Expr::Load(a, _) | Expr::Un(_, a) | Expr::Trunc(a, _) | Expr::Zext(a, _) | Expr::Sext(a, _) => walk(a, out),
             Expr::Bin(_, a, c)
             | Expr::Insert(a, c)
             | Expr::Cmp(_, a, c)
@@ -272,7 +277,6 @@ fn float_operands<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
     }
     walk(e, out);
 }
-
 
 /// The web a float operand names, looking through a narrowing cast.
 fn web_of_operand(e: &Expr) -> Option<u32> {
@@ -716,11 +720,22 @@ impl Printer<'_> {
                 if matches!(e, Expr::Unknown(_)) {
                     return None;
                 }
-                self.assign_text(self.var_text(*v, 0), e, for_step, matches!(v, Var::Web(w) if self.web.fwidth.contains_key(w)))
+                self.assign_text(
+                    self.var_text(*v, 0),
+                    e,
+                    for_step,
+                    matches!(v, Var::Web(w) if self.web.fwidth.contains_key(w)),
+                )
             }
             Stmt::Store(a, b, v) => {
                 let fl = self.float_width(v).is_some();
-                let ty = if !fl { utype(*b) } else if *b == 32 { "float" } else { "double" };
+                let ty = if !fl {
+                    utype(*b)
+                } else if *b == 32 {
+                    "float"
+                } else {
+                    "double"
+                };
                 let lhs = self.mem_text(a, *b, ty);
                 self.assign_text(lhs, v, for_step, fl)
             }

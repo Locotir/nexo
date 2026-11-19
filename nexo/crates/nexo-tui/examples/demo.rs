@@ -497,6 +497,7 @@ fn demo_sub(events: &nexo_core::agent::EventTx) -> Vec<nexo_core::subs::SubItem>
             status: JobStatus::Running,
             elapsed_ms: 0,
             lines: 0,
+            held: false,
         }],
     });
     let items = vec![

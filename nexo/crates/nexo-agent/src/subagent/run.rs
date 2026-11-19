@@ -376,11 +376,8 @@ impl Run {
                         match first_cut.take() {
                             // cut again: the longer try is the report, or the first one when it wrote nothing
                             Some((first, n1)) => {
-                                let (kept, at) = if t.trim().is_empty() && !first.trim().is_empty() {
-                                    (first, n1)
-                                } else {
-                                    (t, n)
-                                };
+                                let (kept, at) =
+                                    if t.trim().is_empty() && !first.trim().is_empty() { (first, n1) } else { (t, n) };
                                 cut_at = Some((at, None));
                                 break (kept, Vec::new());
                             }

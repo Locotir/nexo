@@ -72,7 +72,9 @@ pub(super) fn snapshot_flags(f: &mut Lifted) {
             }
             for st in &f.blocks[bi].stmts[i + 1..last] {
                 match &st.st {
-                    Stmt::Assign(r @ (Var::Reg(_) | Var::Xmm(_)), _) if regs.contains(r) && !need.contains(r) => need.push(*r),
+                    Stmt::Assign(r @ (Var::Reg(_) | Var::Xmm(_)), _) if regs.contains(r) && !need.contains(r) => {
+                        need.push(*r)
+                    }
                     Stmt::Clobber(vs) => {
                         for v in vs {
                             if matches!(v, Var::Reg(_) | Var::Xmm(_)) && regs.contains(v) && !need.contains(v) {

@@ -67,6 +67,10 @@ pub struct JobInfo {
     pub elapsed_ms: u64,
     /// Lines of output so far (including those no longer kept).
     pub lines: usize,
+    /// Left running by a foreground command (a server, a watcher; `Jobs::start_held`): silent by nature, and it
+    /// may never end, so neither the review nor a run that waits for its jobs waits on it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
 }
 
 /// The end of a job's output, for the interface to show.

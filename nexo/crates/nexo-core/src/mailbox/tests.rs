@@ -383,7 +383,7 @@ fn the_ledgers_are_read_once_from_an_offset() {
 }
 
 fn job(id: u32, kind: crate::jobs::JobKind, label: &str, status: crate::jobs::JobStatus) -> crate::jobs::JobInfo {
-    crate::jobs::JobInfo { id, kind, label: label.into(), status, elapsed_ms: 0, lines: 0 }
+    crate::jobs::JobInfo { id, kind, label: label.into(), status, elapsed_ms: 0, lines: 0, held: false }
 }
 
 #[test]

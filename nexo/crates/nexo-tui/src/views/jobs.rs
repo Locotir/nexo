@@ -345,6 +345,7 @@ mod tests {
             status: JobStatus::Running,
             elapsed_ms: 12_000,
             lines: 0,
+            held: false,
         };
         let theme = Theme::dark();
         for w in [30, 40, 60] {

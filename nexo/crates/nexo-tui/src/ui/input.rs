@@ -104,10 +104,7 @@ fn queued_hint(app: &App, room: usize) -> Option<String> {
     } else {
         "↑ edit queued · joins your next message"
     };
-    [long, "↑ edit queued"]
-        .into_iter()
-        .find(|s| width(s) <= room)
-        .map(String::from)
+    [long, "↑ edit queued"].into_iter().find(|s| width(s) <= room).map(String::from)
 }
 
 /// A key worth knowing, in the quiet moments only: idle, not in vim's normal mode, no window, list or search open,

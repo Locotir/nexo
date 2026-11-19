@@ -24,7 +24,7 @@ fn info(id: &str, title: &str, state: SubState) -> SubInfo {
 }
 
 fn job(id: u32, kind: JobKind) -> JobInfo {
-    JobInfo { id, kind, label: "work".into(), status: JobStatus::Running, elapsed_ms: 0, lines: 0 }
+    JobInfo { id, kind, label: "work".into(), status: JobStatus::Running, elapsed_ms: 0, lines: 0, held: false }
 }
 
 fn item(a: &mut App, id: &str, it: SubItem) {

@@ -153,6 +153,7 @@ fn lists_running_jobs_and_sessions_deleted_in_this_run() {
         status,
         elapsed_ms: 0,
         lines: 0,
+        held: false,
     };
     let jobs = vec![
         job(3, JobKind::Shell, JobStatus::Running),

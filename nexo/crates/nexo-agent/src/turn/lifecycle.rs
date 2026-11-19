@@ -77,7 +77,7 @@ pub(super) async fn on_turn_end(rt: &mut Runtime, res: Result<TurnEnd, tokio::ta
         if let Some(m) = rt.state.lock().await.mail.clone() {
             m.set_idle(true);
         }
-        emit(&rt.events, AgentEvent::Idle { running_jobs: rt.jobs.running() });
+        emit(&rt.events, AgentEvent::Idle { running_jobs: rt.jobs.awaited() });
         saved_state::save_in_background(&mut *rt.state.lock().await, &mut rt.saving);
     }
     if rt.turn.is_none() && reason == TurnEnd::Done {

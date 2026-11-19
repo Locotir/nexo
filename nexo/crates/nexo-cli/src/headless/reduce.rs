@@ -184,7 +184,7 @@ impl Run {
                 // a job that ended with no turn to follow it (the model was told of it already, or the session is
                 // held) is all the wait is for; with a turn open, that turn's own end decides. Jobs an earlier
                 // request left running are not waited for (as at `Idle`); a wait for them alone starts again
-                let own = jobs.iter().any(|j| j.status.running() && !self.carried.contains(&j.id));
+                let own = jobs.iter().any(|j| j.status.running() && !j.held && !self.carried.contains(&j.id));
                 if self.waiting && !self.turn_open && !own {
                     self.waiting = false;
                     return true;
@@ -279,7 +279,8 @@ impl Run {
                 }
                 self.waiting = false;
                 if *running_jobs == 0 {
-                    self.jobs.clear();
+                    // what a foreground command left running is not counted, but the end of the run still kills it
+                    self.jobs.retain(|j| j.held && j.status.running());
                 }
                 return true;
             }
@@ -297,14 +298,20 @@ impl Run {
         self.jobs.iter().filter(|j| j.status.running())
     }
 
+    /// The running jobs a request waits for: not what a foreground command left running (a server may never end),
+    /// which `Idle` does not count either.
+    fn awaited_jobs(&self) -> impl Iterator<Item = &nexo_core::jobs::JobInfo> {
+        self.running_jobs().filter(|j| !j.held)
+    }
+
     /// How many of the running jobs an earlier request left running.
     fn carried_running(&self) -> usize {
-        self.running_jobs().filter(|j| self.carried.contains(&j.id)).count()
+        self.awaited_jobs().filter(|j| self.carried.contains(&j.id)).count()
     }
 
     /// The request ends while it waits for jobs because the next message is here: the jobs it waited for are carried.
     pub(super) fn carry_running(&mut self) {
-        let ids: Vec<u32> = self.running_jobs().map(|j| j.id).filter(|id| !self.carried.contains(id)).collect();
+        let ids: Vec<u32> = self.awaited_jobs().map(|j| j.id).filter(|id| !self.carried.contains(id)).collect();
         self.carried.extend(ids);
     }
 
@@ -332,7 +339,7 @@ impl Run {
     /// there is no time limit: the wait ends when the jobs end or the run is stopped.
     fn waiting_line(&self, running: usize) -> String {
         let named: Vec<String> = self
-            .running_jobs()
+            .awaited_jobs()
             .map(|j| format!("job {} {}: {}", j.id, kind_word(j.kind), job_label(&j.label)))
             .collect();
         let who = if named.is_empty() { String::new() } else { format!(" ({})", named.join(", ")) };
@@ -459,7 +466,7 @@ mod tests {
         } else {
             nexo_core::jobs::JobStatus::Done { ok: true, how: "exit 0".into() }
         };
-        nexo_core::jobs::JobInfo { id, kind, label: label.into(), status, elapsed_ms: 0, lines: 0 }
+        nexo_core::jobs::JobInfo { id, kind, label: label.into(), status, elapsed_ms: 0, lines: 0, held: false }
     }
     fn jobs(list: Vec<nexo_core::jobs::JobInfo>) -> AgentEvent {
         AgentEvent::Jobs { jobs: list }
@@ -520,6 +527,24 @@ mod tests {
         // the model was told of this job already: its end sends a list and no turn
         assert!(run.on_event(&jobs(vec![job(4, Agent, "review", false)])));
         assert_eq!(run.r.text, "started it");
+    }
+
+    #[test]
+    pub(super) fn a_process_a_foreground_command_left_running_is_not_waited_for_but_is_named_killed() {
+        use nexo_core::jobs::JobKind::Shell;
+        let mut run = super::Run::new(super::Fmt::Json, vec![], false, None);
+        run.on_event(&AgentEvent::TurnStart { turn: 1 });
+        say(&mut run, "the server is up");
+        let mut server = job(5, Shell, "python3 -m http.server 8000 &", true);
+        server.held = true;
+        run.on_event(&jobs(vec![server]));
+        run.on_event(&AgentEvent::TurnEnd { reason: TurnEnd::Done });
+        // the agent counts only the jobs whose end it awaits
+        assert!(run.on_event(&AgentEvent::Idle { running_jobs: 0 }), "a server may never end: no wait");
+        run.carry_running();
+        assert!(!run.has_carried());
+        let v = run.result(0, &run.r.text.clone(), None, None);
+        assert_eq!(v["killed_jobs"][0]["id"], 5, "{v}");
     }
 
     #[test]
