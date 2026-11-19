@@ -681,7 +681,7 @@ impl<'a> Lifter<'a> {
             M::Addsd | M::Subsd | M::Mulsd | M::Divsd | M::Addss | M::Subss | M::Mulss | M::Divss => {
                 let w: Bits = if matches!(m, M::Addsd | M::Subsd | M::Mulsd | M::Divsd) { 64 } else { 32 };
                 let a = self.xmm_read(ins, 0, w);
-                let c = self.fsrc(ins, 1, w);
+                let c = self.xmm_read(ins, 1, w);
                 let op = match m {
                     M::Addsd | M::Addss => Bin::FAdd,
                     M::Subsd | M::Subss => Bin::FSub,
@@ -689,58 +689,6 @@ impl<'a> Lifter<'a> {
                     _ => Bin::FDiv,
                 };
                 self.write_reg(addr, ins.op0_register(), Expr::bin(op, a, c));
-            }
-            M::Sqrtsd | M::Sqrtss if ins.op0_kind() == OpKind::Register => {
-                let (w, name): (Bits, &'static str) = if m == M::Sqrtsd { (64, "sqrt") } else { (32, "sqrtf") };
-                let src = self.fsrc(ins, 1, w);
-                self.write_reg(addr, ins.op0_register(), Expr::Intr(name, vec![src], w));
-            }
-            M::Minsd | M::Minss | M::Maxsd | M::Maxss if ins.op0_kind() == OpKind::Register => {
-                let w: Bits = if matches!(m, M::Minsd | M::Maxsd) { 64 } else { 32 };
-                let a = self.xmm_read(ins, 0, w);
-                let c = self.fsrc(ins, 1, w);
-                // x86 hands back the second operand on NaN or equal, which is what `a < c ? a : c` does.
-                let op = if matches!(m, M::Minsd | M::Minss) { Cmp::FOlt } else { Cmp::FOgt };
-                let sel = Expr::Select(b(Expr::Cmp(op, b(a.clone()), b(c.clone()))), b(a), b(c));
-                self.write_reg(addr, ins.op0_register(), sel);
-            }
-            M::Xorpd | M::Andpd | M::Andnpd | M::Xorps | M::Andps | M::Andnps
-                if ins.op0_kind() == OpKind::Register
-                    && ins.op0_register().is_xmm()
-                    && (ins.op1_kind() == OpKind::Memory
-                        || (ins.op1_kind() == OpKind::Register && ins.op1_register().is_xmm())) =>
-            {
-                let single = matches!(m, M::Xorps | M::Andps | M::Andnps);
-                let w: Bits = if single { 32 } else { 64 };
-                let (neg_mask, abs_mask) =
-                    if single { (0x8000_0000u64, 0x7fff_ffffu64) } else { (1u64 << 63, !(1u64 << 63)) };
-                let lane = self.fconst(ins, 1, 16).map(|v| (v as u64) & mask(w));
-                let dst = ins.op0_register();
-                let a = Expr::Var(Var::Xmm(dst.number() as u8), w);
-                match (m, lane) {
-                    (M::Xorpd | M::Xorps, Some(l)) if l == neg_mask => {
-                        self.write_reg(addr, dst, Expr::Un(Un::FNeg, b(a)));
-                    }
-                    (M::Andpd | M::Andps, Some(l)) if l == abs_mask => {
-                        let name = if single { "fabsf" } else { "fabs" };
-                        self.write_reg(addr, dst, Expr::Intr(name, vec![a], w));
-                    }
-                    // other single-precision bit ops also appear in integer code: left raw
-                    _ if single => self.raw(ins),
-                    _ => {
-                        let ai = Expr::Intr("as_int", vec![a], 64);
-                        let ci = match lane {
-                            Some(l) => Expr::Const(l, 64),
-                            None => Expr::Intr("as_int", vec![self.xmm_read(ins, 1, 64)], 64),
-                        };
-                        let v = match m {
-                            M::Xorpd => Expr::bin(Bin::Xor, ai, ci),
-                            M::Andpd => Expr::bin(Bin::And, ai, ci),
-                            _ => Expr::bin(Bin::And, Expr::Un(Un::Not, b(ai)), ci),
-                        };
-                        self.write_reg(addr, dst, Expr::Intr("as_float", vec![v], 64));
-                    }
-                }
             }
             M::Cvtsi2sd | M::Cvtsi2ss => {
                 let bits = self.op_bits(ins, 1).max(32);
@@ -755,22 +703,21 @@ impl<'a> Lifter<'a> {
             M::Cvttsd2si | M::Cvttss2si | M::Cvtsd2si | M::Cvtss2si => {
                 let bits = self.op_bits(ins, 0);
                 let w: Bits = if matches!(m, M::Cvttsd2si | M::Cvtsd2si) { 64 } else { 32 };
-                let src = self.fsrc(ins, 1, w);
-                let name = if matches!(m, M::Cvttsd2si | M::Cvttss2si) { "ftoi" } else { "lrint" };
-                self.write(addr, ins, 0, Expr::Intr(name, vec![src], bits));
+                let src = self.xmm_read(ins, 1, w);
+                self.write(addr, ins, 0, Expr::Intr("(int)", vec![src], bits));
             }
             M::Cvtss2sd => {
-                let src = self.fsrc(ins, 1, 32);
-                self.write_reg(addr, ins.op0_register(), Expr::Intr("fext", vec![src], 64));
+                let src = self.xmm_read(ins, 1, 32);
+                self.write_reg(addr, ins.op0_register(), Expr::Intr("(double)", vec![src], 64));
             }
             M::Cvtsd2ss => {
-                let src = self.fsrc(ins, 1, 64);
-                self.write_reg(addr, ins.op0_register(), Expr::Intr("ftrunc", vec![src], 32));
+                let src = self.xmm_read(ins, 1, 64);
+                self.write_reg(addr, ins.op0_register(), Expr::Intr("(float)", vec![src], 32));
             }
             M::Ucomisd | M::Comisd | M::Ucomiss | M::Comiss => {
                 let w: Bits = if matches!(m, M::Ucomisd | M::Comisd) { 64 } else { 32 };
                 let a = self.xmm_read(ins, 0, w);
-                let c = self.fsrc(ins, 1, w);
+                let c = self.xmm_read(ins, 1, w);
                 self.assign(addr, Var::FlagOps, Expr::Flags(FlagKind::FCmp, b(a.clone()), b(c.clone())));
                 self.assign(addr, Var::FlagRes, Expr::Flags(FlagKind::FCmp, b(a), b(c)));
             }
@@ -812,37 +759,11 @@ impl<'a> Lifter<'a> {
 
     fn xmm_bits(ins: &Instruction) -> Bits {
         match ins.mnemonic() {
-            // note: a packed use of the destination later in the block would miss the high lane; packed ops go raw anyway
-            // a register copy of `movapd` only appears in double code: the low lane
-            Mnemonic::Movapd if ins.op0_kind() == OpKind::Register && ins.op1_kind() == OpKind::Register => 64,
             Mnemonic::Movaps | Mnemonic::Movapd | Mnemonic::Movups | Mnemonic::Movdqa | Mnemonic::Movdqu => 128,
             Mnemonic::Movss => 32,
             Mnemonic::Movd => 32,
             _ => 64,
         }
-    }
-
-    /// The constant behind a read-only memory operand: its bytes (up to 16, low first), recorded for the float pass.
-    /// Tries 16 bytes first, then just `bytes`, so a constant at the end of a section still reads.
-    fn fconst(&mut self, ins: &Instruction, n: u32, bytes: usize) -> Option<u128> {
-        if ins.op_kind(n) != OpKind::Memory || bytes == 0 || bytes > 16 {
-            return None;
-        }
-        let a = self.mem_addr(ins).as_const()?;
-        let v = {
-            let got = self.env.const_bytes(a, 16).or_else(|| self.env.const_bytes(a, bytes))?;
-            got.iter().take(16).enumerate().fold(0u128, |acc, (i, x)| acc | (u128::from(*x) << (8 * i)))
-        };
-        self.fconsts.insert(a, v);
-        Some(v)
-    }
-
-    /// A float source operand: the constant itself when it sits in read-only data, else the register or load.
-    fn fsrc(&mut self, ins: &Instruction, n: u32, w: Bits) -> Expr {
-        if let Some(v) = self.fconst(ins, n, (w / 8) as usize) {
-            return Expr::Const((v as u64) & mask(w), w);
-        }
-        self.xmm_read(ins, n, w)
     }
 
     fn xmm_read(&mut self, ins: &Instruction, n: u32, w: Bits) -> Expr {
@@ -866,10 +787,6 @@ impl<'a> Lifter<'a> {
     fn xmm_move(&mut self, ins: &Instruction) {
         let addr = ins.ip();
         let w = Self::xmm_bits(ins);
-        if ins.op_kind(0) == OpKind::Register && ins.op0_register().is_xmm() && ins.op_kind(1) == OpKind::Memory {
-            // remember the constant, for the float printing later
-            self.fconst(ins, 1, ((w / 8) as usize).min(16));
-        }
         let v = self.xmm_read(ins, 1, w);
         match ins.op_kind(0) {
             OpKind::Register => {

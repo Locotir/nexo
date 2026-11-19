@@ -42,8 +42,6 @@ pub enum Un {
     Not,
     /// Logical not of a condition.
     LNot,
-    /// Float negation (`-x`); a variant of its own so the integer folds of `Neg` never apply.
-    FNeg,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -81,21 +79,12 @@ pub enum Cmp {
     Ule,
     Ugt,
     Uge,
-    /// IEEE predicates (LLVM names): `FO*` are false when unordered (a NaN operand), `FU*` are true.
-    FOeq,
-    FOne,
-    FOlt,
-    FOle,
-    FOgt,
-    FOge,
-    FOrd,
-    FUeq,
-    FUne,
-    FUlt,
-    FUle,
-    FUgt,
-    FUge,
-    FUno,
+    Flt,
+    Fle,
+    Fgt,
+    Fge,
+    Feq,
+    Fne,
 }
 
 impl Cmp {
@@ -112,41 +101,18 @@ impl Cmp {
             Uge => Ult,
             Ule => Ugt,
             Ugt => Ule,
-            FOeq => FUne,
-            FUne => FOeq,
-            FOgt => FUle,
-            FUle => FOgt,
-            FOge => FUlt,
-            FUlt => FOge,
-            FOlt => FUge,
-            FUge => FOlt,
-            FOle => FUgt,
-            FUgt => FOle,
-            FOne => FUeq,
-            FUeq => FOne,
-            FOrd => FUno,
-            FUno => FOrd,
+            // A float compare is false when unordered, so these are only printed, never negated twice.
+            Flt => Fge,
+            Fge => Flt,
+            Fle => Fgt,
+            Fgt => Fle,
+            Feq => Fne,
+            Fne => Feq,
         }
     }
 
     pub fn is_float(self) -> bool {
-        matches!(
-            self,
-            Cmp::FOeq
-                | Cmp::FOne
-                | Cmp::FOlt
-                | Cmp::FOle
-                | Cmp::FOgt
-                | Cmp::FOge
-                | Cmp::FOrd
-                | Cmp::FUeq
-                | Cmp::FUne
-                | Cmp::FUlt
-                | Cmp::FUle
-                | Cmp::FUgt
-                | Cmp::FUge
-                | Cmp::FUno
-        )
+        matches!(self, Cmp::Flt | Cmp::Fle | Cmp::Fgt | Cmp::Fge | Cmp::Feq | Cmp::Fne)
     }
 
     pub fn is_signed(self) -> bool {
@@ -160,14 +126,12 @@ impl Cmp {
     pub fn text(self) -> &'static str {
         use Cmp::*;
         match self {
-            Eq | FOeq => "==",
-            Ne | FUne => "!=",
-            Lt | Ult | FOlt => "<",
-            Le | Ule | FOle => "<=",
-            Gt | Ugt | FOgt => ">",
-            Ge | Uge | FOge => ">=",
-            // The other predicates have no operator of their own; the printer spells them out.
-            FOne | FOrd | FUeq | FUlt | FUle | FUgt | FUge | FUno => "?",
+            Eq | Feq => "==",
+            Ne | Fne => "!=",
+            Lt | Ult | Flt => "<",
+            Le | Ule | Fle => "<=",
+            Gt | Ugt | Fgt => ">",
+            Ge | Uge | Fge => ">=",
         }
     }
 }
@@ -265,7 +229,7 @@ pub enum Expr {
     Cond(Cc, Box<Expr>, Box<Expr>),
     Select(Box<Expr>, Box<Expr>, Box<Expr>),
     Call(Box<Call>),
-    /// Anything else, by name (`rotl`, `bswap`, `(double)`, `sqrt`).
+    /// Anything else, by name (`rotl`, `bswap`, `(double)`).
     Intr(&'static str, Vec<Expr>, Bits),
 }
 
@@ -359,23 +323,6 @@ impl Expr {
 
     pub fn not(self) -> Expr {
         simplify(Expr::Un(Un::LNot, b(self)))
-    }
-
-    /// True when a floating-point operation computes this value: an F-op, a negation, a square root, an absolute
-    /// value, a conversion to float, or the pick of the smaller or larger of the two operands of a float compare
-    /// (`minsd`, `maxsd`). A select that only has a float compare as its condition picks integers: not one of these.
-    pub fn is_float_op(&self) -> bool {
-        match self {
-            Expr::Bin(Bin::FAdd | Bin::FSub | Bin::FMul | Bin::FDiv, ..) | Expr::Un(Un::FNeg, _) => true,
-            Expr::Intr(n, ..) => {
-                matches!(*n, "sqrt" | "sqrtf" | "fabs" | "fabsf" | "fext" | "ftrunc" | "(double)" | "(float)")
-            }
-            Expr::Select(c, a, d) => match &**c {
-                Expr::Cmp(op, p, q) if op.is_float() => (a == p && d == q) || (a == q && d == p),
-                _ => false,
-            },
-            _ => false,
-        }
     }
 
     pub fn as_const(&self) -> Option<u64> {

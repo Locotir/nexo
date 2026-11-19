@@ -275,8 +275,6 @@ fn eval(e: &Expr, leaf: &Expr, x: u64) -> Option<u64> {
                 self::Un::Neg => a.wrapping_neg(),
                 self::Un::Not => !a,
                 self::Un::LNot => u64::from(a == 0),
-                // no float arithmetic in an integer recovery
-                self::Un::FNeg => return None,
             }
         }
         Bin(op, a, c) => {

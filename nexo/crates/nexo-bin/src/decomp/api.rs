@@ -37,14 +37,6 @@ impl Env for ImgEnv<'_> {
     fn is_pe(&self) -> bool {
         self.0.format == Format::Pe
     }
-    fn const_bytes(&self, addr: u64, len: usize) -> Option<&[u8]> {
-        let s = self.0.section_at(addr).filter(|s| !s.write)?;
-        let end = addr.checked_add(len as u64)?;
-        if end > s.addr.saturating_add(s.size) {
-            return None;
-        }
-        self.0.read_at(addr, len).filter(|b| b.len() == len)
-    }
 }
 
 fn strip_plt(n: &str) -> String {
@@ -400,15 +392,6 @@ fn names_digest(img: &Image, data_dir: &Path) -> String {
         include_str!("ir.rs"),
         include_str!("lift.rs"),
         include_str!("lift/a64.rs"),
-        include_str!("lift/lifter.rs"),
-        include_str!("lift/slots.rs"),
-        include_str!("lift/switch.rs"),
-        include_str!("ir/simplify.rs"),
-        include_str!("flow/calls.rs"),
-        include_str!("flow/flag_and_div_passes.rs"),
-        include_str!("flow/propagate.rs"),
-        include_str!("flow/returns_and_tidy.rs"),
-        include_str!("types.rs"),
         include_str!("flow.rs"),
         include_str!("divrec.rs"),
         include_str!("structure.rs"),

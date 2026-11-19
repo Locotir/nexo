@@ -69,14 +69,6 @@ impl Abi {
         self.arg_regs().len()
     }
 
-    /// How many xmm registers carry float arguments.
-    pub fn float_arg_count(self) -> u8 {
-        match self {
-            Abi::SysV | Abi::Aapcs64 => 8,
-            Abi::Win64 => 4,
-        }
-    }
-
     /// Offset from the entry stack pointer where the first stack argument sits.
     pub fn stack_arg_base(self) -> i64 {
         match self {
@@ -98,11 +90,6 @@ pub trait Env {
     fn import_name(&self, i: usize) -> String;
     fn image_base(&self) -> u64;
     fn is_pe(&self) -> bool;
-    /// Exactly `len` bytes at `addr` when all of them sit in read-only data (a constant a float instruction reads).
-    /// Nothing known by default.
-    fn const_bytes(&self, _addr: u64, _len: usize) -> Option<&[u8]> {
-        None
-    }
 }
 
 const NORETURN: &[&str] = &[
@@ -152,8 +139,6 @@ pub struct Lifted {
     /// Instructions that were not lifted.
     pub raw: usize,
     pub instructions: usize,
-    /// The read-only bytes (low 16, zero-extended) at each constant address a float instruction read.
-    pub fconsts: HashMap<u64, u128>,
 }
 
 struct SwitchInfo {
@@ -261,7 +246,6 @@ struct Lifter<'a> {
     in_prologue: bool,
     info: InstructionInfoFactory,
     fmt: iced_x86::IntelFormatter,
-    fconsts: HashMap<u64, u128>,
 }
 
 fn b(e: Expr) -> Box<Expr> {
@@ -384,7 +368,6 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
         in_prologue: true,
         info: InstructionInfoFactory::new(),
         fmt: formatter(),
-        fconsts: HashMap::new(),
     };
     let mut states: HashMap<usize, State> = HashMap::new();
     states.insert(0, State { rsp: Some(0), rbp: None });
@@ -547,7 +530,6 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
         unresolved_jumps: unresolved,
         raw: lf.raw,
         instructions: d.ins.len(),
-        fconsts: std::mem::take(&mut lf.fconsts),
     };
     promote_slots(&mut out, &lf.escapes);
     let _ = (lf.start, lf.end, is_cond_jump);
