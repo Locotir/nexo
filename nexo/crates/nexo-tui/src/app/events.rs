@@ -866,10 +866,11 @@ impl App {
                                     });
                                 }
                                 Piece::Goal(words) => {
-                                    let text = format!(
-                                        "◎ goal set: {}",
-                                        nexo_core::agent::goal_shown(&words.unwrap_or_default())
-                                    );
+                                    let words = words.unwrap_or_default();
+                                    // the goal window holds the words of the goal it has now, not an earlier one's
+                                    let now = self.goal_log.original.as_deref().map(str::trim);
+                                    let shown = nexo_core::agent::goal_shown(&words, now == Some(words.trim()));
+                                    let text = format!("◎ goal set: {shown}");
                                     self.push(Block::Notice { level: Level::Info, text });
                                 }
                                 Piece::Started(_) => {}

@@ -56,10 +56,12 @@ pub fn goal_mark_at(text: &str) -> Option<usize> {
 /// The most characters of a goal a line of the screen carries: a few lines, the rest is in the goal window.
 pub const GOAL_SHOWN: usize = 200;
 
-/// A goal as one notice line shows it: on one line, cut to [`GOAL_SHOWN`] characters with where the rest is.
-pub fn goal_shown(goal: &str) -> String {
+/// A goal as one notice line shows it, on one line. `whole_in_window` says the goal window holds these very words
+/// (they are the goal it has now): then the line is cut to [`GOAL_SHOWN`] characters with where the rest is. Words
+/// the window does not hold (an earlier goal, replayed) are shown whole: there is nowhere else to read the rest.
+pub fn goal_shown(goal: &str, whole_in_window: bool) -> String {
     let one = goal.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one.chars().count() <= GOAL_SHOWN {
+    if !whole_in_window || one.chars().count() <= GOAL_SHOWN {
         return one;
     }
     let cut: String = one.chars().take(GOAL_SHOWN).collect();

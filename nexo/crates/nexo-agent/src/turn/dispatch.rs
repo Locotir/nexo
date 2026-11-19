@@ -425,7 +425,8 @@ async fn on_set_goal(rt: &mut Runtime, text: Option<String>) {
         if rt.turn.is_some() {
             let text = format!(
                 "goal set: {} · checked when this turn ends; the model reads it from the next turn",
-                nexo_core::agent::goal_shown(&goal)
+                // set just now: the goal window holds these words
+                nexo_core::agent::goal_shown(&goal, true)
             );
             notice(&rt.events, Level::Info, text);
         } else {

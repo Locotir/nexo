@@ -286,6 +286,30 @@ async fn a_goal_waiting_or_met_stays_so_when_the_session_reopens() {
 }
 
 #[tokio::test]
+async fn a_session_resumed_at_startup_cuts_its_current_goal() {
+    let d = test_tmpdir().unwrap();
+    data_dir();
+    let words = format!("make it fast {}", "and keep every test green ".repeat(12));
+    assert!(words.chars().count() > 200, "longer than a notice line carries");
+    let mut s = nexo_agent::session::Session::create(d.path(), "mock", "m1").unwrap();
+    s.append(&Message::user(format!("[goal set] {words}"))).unwrap();
+    s.record_goal(Some(words.as_str())).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let mut r = start(Scripted::new(vec![]), config(PermissionMode::Auto), Some(id), d.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    let log_at = evs.iter().position(|e| matches!(e, AgentEvent::GoalLog(l) if l.original.as_deref() == Some(&*words)));
+    let replayed_at = evs.iter().position(|e| {
+        matches!(e, AgentEvent::History { message, .. } if message.text().starts_with("[goal set]"))
+    });
+    // the interface draws the replayed goal against the goal log it has by then: it cuts the line only when
+    // the log already holds these words (the goal window has the rest)
+    let (log_at, replayed_at) = (log_at.expect("the goal log is sent"), replayed_at.expect("the goal is replayed"));
+    assert!(log_at < replayed_at, "the goal log comes before the replay: {log_at} vs {replayed_at}");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_restatement_keeps_a_met_goal_met_on_disk() {
     let d = test_tmpdir().unwrap();
     let brief = json!({"want": "ship it", "why": "w", "how": "h", "done": "d"});

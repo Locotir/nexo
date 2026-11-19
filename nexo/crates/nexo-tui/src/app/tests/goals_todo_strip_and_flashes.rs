@@ -29,6 +29,11 @@ fn a_restated_goal_reads_as_what_the_person_wants() {
 fn a_long_goal_shows_in_a_few_lines_and_the_rest_waits_in_the_goal_window() {
     let (mut a, _rx) = app();
     let long = format!("make it fast {}", "and keep every test green ".repeat(40));
+    // the goal window holds these words: the agent sends the log of the goal it has before the replay
+    a.handle_agent(AgentEvent::GoalLog(nexo_core::agent::GoalLog {
+        original: Some(long.trim().to_string()),
+        ..Default::default()
+    }));
     a.handle_agent(AgentEvent::History { index: 0, message: Message::user(format!("[goal set] {long}")) });
     let notice = a
         .blocks
@@ -41,6 +46,88 @@ fn a_long_goal_shows_in_a_few_lines_and_the_rest_waits_in_the_goal_window() {
     assert!(notice.starts_with("◎ goal set: make it fast and keep every test green"), "{notice}");
     assert!(notice.chars().count() < 260, "a few lines, not a wall: {}", notice.chars().count());
     assert!(notice.contains("goal window"), "{notice}");
+}
+
+#[test]
+fn a_replayed_goal_that_is_not_current_shows_all_its_words() {
+    let (mut a, _rx) = app();
+    let long = format!("make it fast {}", "and keep every test green ".repeat(12));
+    let words = long.trim();
+    assert!(words.chars().count() > 300, "longer than a notice line carries");
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user(format!("[goal set] {words}")) });
+    let notice = a
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the goal shows as a notice");
+    assert!(notice.contains(words), "all its characters: {notice}");
+    assert!(!notice.contains("the rest is in the goal window"), "{notice}");
+    // an earlier goal of a session whose current goal is another one: the window has not its words either
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::GoalLog(nexo_core::agent::GoalLog {
+        original: Some("something else".into()),
+        ..Default::default()
+    }));
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user(format!("[goal set] {words}")) });
+    assert!(a.blocks.iter().any(|b| matches!(b, Block::Notice { text, .. } if text.contains(words))));
+}
+
+fn goal_event(text: &str, state: GoalState) -> AgentEvent {
+    AgentEvent::Goal { text: Some(text.into()), round: 0, max: 5, state }
+}
+
+fn said(a: &App) -> String {
+    a.status.as_ref().map(|s| s.0.clone()).unwrap_or_default()
+}
+
+#[test]
+fn a_new_goal_after_a_met_one_flashes_its_words() {
+    let (mut a, _rx) = app();
+    a.handle_agent(goal_event("fix the parser", GoalState::Active));
+    a.handle_agent(goal_event("fix the parser", GoalState::Done));
+    assert_eq!(said(&a), "goal met ✓");
+    a.handle_agent(goal_event("write the report", GoalState::Active));
+    assert_eq!(said(&a), "goal: write the report", "the words of the new goal, not `goal resumed`");
+    // a new goal that arrives already met or paused is not the old one's change of state either
+    a.handle_agent(goal_event("a third goal", GoalState::Paused("interrupted".into())));
+    assert_eq!(said(&a), "goal: a third goal");
+}
+
+#[test]
+fn another_sessions_goal_does_not_flash_or_burst() {
+    let (mut a, _rx) = app();
+    a.handle_agent(goal_event("fix the parser", GoalState::Active));
+    a.handle_agent(AgentEvent::GoalLog(nexo_core::agent::GoalLog {
+        original: Some("fix the parser".into()),
+        ..Default::default()
+    }));
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "other".into(), title: String::new() });
+    assert!(a.goal.is_none() && a.goal_log == Default::default(), "the goal of the session left is gone");
+    a.handle_agent(goal_event("write the report", GoalState::Done));
+    assert!(a.fx.burst.is_none(), "the other session's goal met nothing here");
+    assert_eq!(said(&a), "goal: write the report", "no `goal met`");
+    // a session with no goal does not clear the one of the session before
+    let (mut a, _rx) = app();
+    a.handle_agent(goal_event("fix the parser", GoalState::Active));
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "third".into(), title: String::new() });
+    a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 5, state: Default::default() });
+    assert!(!said(&a).contains("goal cleared"), "{}", said(&a));
+    // the same session again (a rewind keeps its id) keeps its goal
+    a.handle_agent(goal_event("fix the parser", GoalState::Active));
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "third".into(), title: String::new() });
+    assert!(a.goal.is_some());
+}
+
+#[test]
+fn a_restatement_is_not_a_new_goal() {
+    let (mut a, _rx) = app();
+    a.handle_agent(goal_event("tests green pls", GoalState::Active));
+    a.status = None;
+    a.handle_agent(goal_event("Want: every test passes\nWhy: release\nHow: fix code", GoalState::Active));
+    assert!(a.status.is_none(), "{:?}", a.status);
 }
 
 #[test]

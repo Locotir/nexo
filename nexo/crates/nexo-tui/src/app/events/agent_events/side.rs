@@ -47,7 +47,14 @@ impl App {
     }
 
     pub(super) fn on_goal(&mut self, text: Option<String>, round: u32, max: u32, state: GoalState) {
+        // another goal than the one on show (the agent restating a goal is no other goal): it says its words, and
+        // the state, the round and the outcome of the goal before it are none of its own
+        let new_goal = matches!(
+            (&text, &self.goal),
+            (Some(t), Some(g)) if *t != g.text && !t.starts_with(nexo_core::agent::GOAL_BRIEF_HEAD)
+        );
         match (&text, &self.goal) {
+            (Some(t), Some(_)) if new_goal => self.flash(&format!("goal: {}", crate::render::wrap::truncate(t, 40))),
             (None, Some(_)) => self.flash("goal cleared"),
             (Some(t), None) => self.flash(&format!("goal: {}", crate::render::wrap::truncate(t, 40))),
             (Some(_), Some(g)) if g.state != state => self.flash(match &state {
@@ -64,6 +71,7 @@ impl App {
         }
         // a goal met bursts green; one stopped by a failure (not by the person) red
         let outcome = match (&text, &self.goal, &state) {
+            _ if new_goal => None,
             (Some(_), Some(g), GoalState::Done) if g.state != GoalState::Done => Some(crate::fx_burst::Kind::Met),
             (Some(_), Some(g), GoalState::Paused(why)) if g.state.is_active() && crate::fx_burst::failed(why) => {
                 Some(crate::fx_burst::Kind::Failed)

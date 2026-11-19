@@ -61,6 +61,19 @@ fn a_goal_mark_is_found_at_the_start_or_after_the_notes_before_it() {
 }
 
 #[test]
+fn a_goal_line_is_cut_only_where_the_goal_window_holds_the_rest() {
+    let long = format!("make it fast {}", "and keep every test green ".repeat(12));
+    let one_line = long.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(one_line.chars().count() > GOAL_SHOWN);
+    let cut = goal_shown(&long, true);
+    assert!(cut.ends_with("· the rest is in the goal window") && cut.chars().count() < GOAL_SHOWN + 60, "{cut}");
+    // words the window does not hold stay whole, on one line
+    assert_eq!(goal_shown(&long, false), one_line);
+    assert_eq!(goal_shown("make it\nfast", false), "make it fast");
+    assert_eq!(goal_shown("make it\nfast", true), "make it fast");
+}
+
+#[test]
 fn a_goal_logs_progress_is_what_is_saved_and_comes_back_with_the_words_untouched() {
     let stop = GoalStop { at_ms: 7, why: "Esc".into() };
     let log = GoalLog {

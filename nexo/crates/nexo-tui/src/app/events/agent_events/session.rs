@@ -46,6 +46,11 @@ impl App {
     pub(super) fn on_session_changed(&mut self, session_id: String, title: String) {
         if self.session_id.as_deref() != Some(session_id.as_str()) {
             self.flash(&format!("session: {}", if title.is_empty() { session_id.clone() } else { title.clone() }));
+            // the goal of the session left is not the new one's: its log, words and round must not be what the
+            // new session's goal is compared with (the agent sends the new one next). A rewind keeps the id.
+            self.goal = None;
+            self.goal_log = Default::default();
+            self.goal_round_said = None;
         }
         self.session_id = Some(session_id);
         self.session_title = title;
