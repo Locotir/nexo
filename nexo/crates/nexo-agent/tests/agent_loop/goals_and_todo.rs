@@ -354,9 +354,9 @@ async fn a_session_resumed_at_startup_cuts_its_current_goal() {
     let mut r = start(Scripted::new(vec![]), config(PermissionMode::Auto), Some(id), d.path()).await;
     let evs = r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
     let log_at = evs.iter().position(|e| matches!(e, AgentEvent::GoalLog(l) if l.original.as_deref() == Some(&*words)));
-    let replayed_at = evs.iter().position(|e| {
-        matches!(e, AgentEvent::History { message, .. } if message.text().starts_with("[goal set]"))
-    });
+    let replayed_at = evs
+        .iter()
+        .position(|e| matches!(e, AgentEvent::History { message, .. } if message.text().starts_with("[goal set]")));
     // the interface draws the replayed goal against the goal log it has by then: it cuts the line only when
     // the log already holds these words (the goal window has the rest)
     let (log_at, replayed_at) = (log_at.expect("the goal log is sent"), replayed_at.expect("the goal is replayed"));
@@ -806,7 +806,8 @@ async fn goal_resume_after_esc_runs_the_kept_messages() {
     r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
     r.send(AgentCommand::Interrupt);
     assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
-    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("queued request(s) kept"))).await;
+    let evs =
+        r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("queued request(s) kept"))).await;
     assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("interrupted".into())));
     r.send(AgentCommand::ResumeGoal);
     let t2 = r.turn().await;

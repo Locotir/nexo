@@ -40,8 +40,7 @@ pub const GOAL_PAUSED_HEAD: &str = "[goal: paused (";
 /// after the stop line (`nexo_core::agent::goal_state_line_of`).
 pub fn goal_state_line_of(text: &str) -> Option<&str> {
     let first = text.split('\n').next()?;
-    ((first.starts_with(GOAL_MET_HEAD) || first.starts_with(GOAL_PAUSED_HEAD)) && first.ends_with(']'))
-        .then_some(first)
+    ((first.starts_with(GOAL_MET_HEAD) || first.starts_with(GOAL_PAUSED_HEAD)) && first.ends_with(']')).then_some(first)
 }
 
 /// `text` without the goal-state line it starts with ([`goal_state_line_of`]), and the blank lines after it.

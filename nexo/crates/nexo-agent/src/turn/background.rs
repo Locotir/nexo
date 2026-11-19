@@ -227,11 +227,7 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         if st.goal.is_some() && (st.goal_state != GoalState::Done || goal_round(&st.history[own..])) {
             return;
         }
-        if !st.inbox.is_empty()
-            || !st.mail_wait.is_empty()
-            || st.jobs.running() > 0
-            || !st.jobs.untold().is_empty()
-        {
+        if !st.inbox.is_empty() || !st.mail_wait.is_empty() || st.jobs.running() > 0 || !st.jobs.untold().is_empty() {
             return;
         }
         let spent = budget::verdict(st.cost, budget::spent_today(), st.budget, a.max_cost_day);

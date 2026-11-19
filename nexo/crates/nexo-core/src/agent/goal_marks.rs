@@ -88,8 +88,7 @@ pub const GOAL_PAUSED_HEAD: &str = "[goal: paused (";
 /// (after the stop line), so that what it sits in front of is not read as the person's words.
 pub fn goal_state_line_of(text: &str) -> Option<&str> {
     let first = text.split('\n').next()?;
-    ((first.starts_with(GOAL_MET_HEAD) || first.starts_with(GOAL_PAUSED_HEAD)) && first.ends_with(']'))
-        .then_some(first)
+    ((first.starts_with(GOAL_MET_HEAD) || first.starts_with(GOAL_PAUSED_HEAD)) && first.ends_with(']')).then_some(first)
 }
 
 /// The most characters of a goal a line of the screen carries: a few lines, the rest is in the goal window.
