@@ -83,3 +83,52 @@ fn find_limit_says_how_many_matches_it_left_out() {
     let all = find_asm_in(&img, ".", None, 200).unwrap().text_all();
     assert!(!all.contains("more matches"), "{all}");
 }
+
+fn raw_hits(code: &[u8], v: i128) -> String {
+    let img = Image::from_raw(code.to_vec(), PathBuf::from("c.bin"), 0x1000, None).unwrap();
+    crate::find_imm(&img, v).unwrap().text_all()
+}
+
+#[test]
+fn find_imm_sees_a_32_bit_polynomial_in_every_form_a_compiler_emits() {
+    // and eax, imm32 | xor eax, imm32 | and edx, imm32 | mov ecx, imm32 | mov r8d, imm32
+    let forms: [(&str, &[u8]); 5] = [
+        ("and eax", &[0x25, 0x20, 0x83, 0xb8, 0xed]),
+        ("xor eax", &[0x35, 0x20, 0x83, 0xb8, 0xed]),
+        ("and edx", &[0x81, 0xe2, 0x20, 0x83, 0xb8, 0xed]),
+        ("mov ecx", &[0xb9, 0x20, 0x83, 0xb8, 0xed]),
+        ("mov r8d", &[0x41, 0xb8, 0x20, 0x83, 0xb8, 0xed]),
+    ];
+    for (name, bytes) in forms {
+        let mut code = bytes.to_vec();
+        code.push(0xc3);
+        for v in [0xEDB8_8320i128, -0x1247_7CE0] {
+            let t = raw_hits(&code, v);
+            assert!(t.contains("imm") && !t.starts_with("no match"), "{name} {v:#x}: {t}");
+        }
+        assert!(raw_hits(&code, 0xEDB8_8321).starts_with("no match"), "{name}");
+    }
+}
+
+#[test]
+fn find_imm_matches_a_sign_extended_64_bit_operand_by_its_low_32_bits() {
+    // and rdx, imm32 (sign-extended) | xor rax, imm32 | mov rcx, imm32 (c7 /0)
+    let forms: [(&str, &[u8]); 3] = [
+        ("and rdx", &[0x48, 0x81, 0xe2, 0x20, 0x83, 0xb8, 0xed]),
+        ("xor rax", &[0x48, 0x35, 0x20, 0x83, 0xb8, 0xed]),
+        ("mov rcx", &[0x48, 0xc7, 0xc1, 0x20, 0x83, 0xb8, 0xed]),
+    ];
+    for (name, bytes) in forms {
+        let mut code = bytes.to_vec();
+        code.push(0xc3);
+        let t = raw_hits(&code, 0xEDB8_8320);
+        assert!(!t.starts_with("no match"), "{name}: {t}");
+        // the full sign-extended value and the negative number are the same operand too
+        assert!(!raw_hits(&code, 0xFFFF_FFFF_EDB8_8320).starts_with("no match"), "{name}");
+        assert!(!raw_hits(&code, -0x1247_7CE0).starts_with("no match"), "{name}");
+        assert!(raw_hits(&code, 0xEDB8_8321).starts_with("no match"), "{name}");
+    }
+    // a positive 32-bit value is not a sign-extended one
+    let t = raw_hits(&[0x48, 0xc7, 0xc1, 0x78, 0x56, 0x34, 0x12, 0xc3], 0x1234_5678);
+    assert!(!t.starts_with("no match"), "{t}");
+}

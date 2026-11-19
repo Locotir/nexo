@@ -588,10 +588,18 @@ fn imm_matches(ins: &Instruction, v: i128) -> bool {
             return false;
         }
         let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
-        (ins.immediate(i) & mask) == ((v as u64) & mask)
+        let imm = ins.immediate(i);
+        if (imm & mask) == ((v as u64) & mask) {
+            return true;
+        }
+        // a 32-bit field sign-extended to 64 bits (`and rdx, 0xedb88320`) is also the 32-bit number it holds
+        ins.op_kind(i) == OpKind::Immediate32to64 && (0..1i128 << 32).contains(&v) && u64::from(imm as u32) == v as u64
     })
 }
 
+/// An immediate matches when it equals the number at the operand's own width, so 0xEDB88320 finds a 32-bit operand
+/// and a 64-bit one sign-extended from those 32 bits.
+///
 /// Every instruction with the number as an immediate or as the address written inside a memory
 /// operand (`[rdx+0x429a80]`, kind `disp` in JSON), and every place the data sections hold it as a
 /// 4-byte (or, for a larger number, 8-byte) little-endian value.

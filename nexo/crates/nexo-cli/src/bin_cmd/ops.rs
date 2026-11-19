@@ -407,7 +407,7 @@ pub enum BinOp {
         /// Hex bytes, like 48 8d 05.
         #[arg(required_unless_present_any = ["imm", "str", "asm", "seq"], conflicts_with_all = ["imm", "str", "asm", "seq"])]
         pattern: Vec<String>,
-        /// A number (0x1f4 or 500) instead of bytes.
+        /// A number (0x1f4 or 500) instead of bytes. It matches an immediate operand whose value equals it at the operand's own width (0xEDB88320 matches a 32-bit operand and a 64-bit sign-extended one; -1 and 0xFFFFFFFF match a 32-bit all-ones), an address inside a memory operand, and the number stored as 4 or 8 little-endian bytes in data.
         #[arg(long, allow_hyphen_values = true, value_name = "NUMBER", conflicts_with_all = ["str", "asm", "seq"])]
         imm: Option<String>,
         /// Text (UTF-8 bytes) in any mapped section, with the section and the function that holds it.
