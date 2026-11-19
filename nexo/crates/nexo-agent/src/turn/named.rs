@@ -1468,7 +1468,11 @@ mod tests {
         }
         put(&dir, "research/ideas/IDEAS.md", "# ideas\n");
         let f = look(&format!("ideas in {}/ and IDEAS.md", dir.display()), project.path(), home.path());
-        assert!(shown(&f).iter().any(|s| s.ends_with("research/ideas/IDEAS.md")), "{:?}", shown(&f));
+        assert!(
+            shown(&f).iter().any(|s| std::path::Path::new(s).ends_with("research/ideas/IDEAS.md")),
+            "{:?}",
+            shown(&f)
+        );
     }
 
     #[test]
@@ -1481,6 +1485,15 @@ mod tests {
         assert!(f.files.iter().all(|x| x.how == How::NoCase));
         // an exact match wins over one without case
         put(project.path(), "ideas.md", "# three\n");
+        // on a case-insensitive file system (macOS and Windows by default) that write went into IDEAS.md: there is
+        // no exact match to win, and the file is rightly still found without case
+        let names = std::fs::read_dir(project.path()).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok());
+        if names.filter(|n| n.eq_ignore_ascii_case("ideas.md")).count() < 2 {
+            eprintln!(
+                "this file system folds case, so IDEAS.md and ideas.md are one file: the exact-match check is skipped"
+            );
+            return;
+        }
         let f = look("mira ideas.md", project.path(), home.path());
         assert!(f.files.iter().all(|x| x.how == How::Exact), "{:?}", f.files);
     }

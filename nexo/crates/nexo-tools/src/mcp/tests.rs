@@ -1,8 +1,6 @@
 use super::client::passed_env;
 use super::*;
 use nexo_core::config::McpServerConfig;
-#[cfg(target_os = "linux")]
-use std::time::Duration;
 
 #[tokio::test]
 async fn a_missing_command_is_an_error() {
@@ -57,7 +55,7 @@ async fn a_server_that_fails_to_start_takes_what_it_started_with_it() {
         if gone() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(gone(), "the sleep (pid {pid}) is still running");
 }

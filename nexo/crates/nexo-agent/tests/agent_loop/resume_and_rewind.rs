@@ -1,5 +1,15 @@
 use super::*;
 
+/// A process other than the test that always runs: init on Unix, the System process on Windows (its pids are
+/// multiples of 4, so pid 1 names nothing there).
+fn other_live_pid() -> u32 {
+    if cfg!(windows) {
+        4
+    } else {
+        1
+    }
+}
+
 #[tokio::test]
 async fn session_title_is_announced_at_start_on_first_message_and_resume() {
     let d = test_tmpdir().unwrap();
@@ -213,7 +223,7 @@ async fn a_session_another_nexo_holds_is_not_resumed() {
     r.stop().await;
     let file = nexo_agent::session::dir().join(format!("{a}.jsonl"));
     let lock = file.with_extension("jsonl.lock");
-    std::fs::write(&lock, "1").unwrap(); // another nexo, still running, holds it
+    std::fs::write(&lock, other_live_pid().to_string()).unwrap(); // another nexo, still running, holds it
     let before = std::fs::read(&file).unwrap();
     // `/resume` from a nexo already running
     let client = Scripted::new(vec![]);
@@ -235,7 +245,7 @@ async fn a_session_another_nexo_holds_is_not_resumed() {
     assert!(e.contains("in use"), "{e}");
     assert_eq!(std::fs::read(&file).unwrap(), before, "nothing written to the file another nexo holds");
     assert!(client.requests().is_empty(), "nothing spent");
-    assert_eq!(std::fs::read_to_string(&lock).unwrap(), "1", "its lock stays");
+    assert_eq!(std::fs::read_to_string(&lock).unwrap(), other_live_pid().to_string(), "its lock stays");
     std::fs::remove_file(&lock).unwrap();
 }
 
@@ -257,7 +267,7 @@ async fn a_session_taken_over_is_opened_again_by_resume() {
     r.turn().await;
     let lock = nexo_agent::session::dir().join(format!("{a}.jsonl.lock"));
     // another nexo takes it over: the next write finds the lock is not this one's
-    std::fs::write(&lock, "1").unwrap();
+    std::fs::write(&lock, other_live_pid().to_string()).unwrap();
     r.send(AgentCommand::Submit { text: "lost".into(), attachments: vec![] });
     r.turn().await;
     // it ends and lets go; the person opens the session again
