@@ -8,6 +8,31 @@ fn fixed_tokens(r: &ModelRequest) -> u64 {
     (r.system.chars().count() + serde_json::to_string(&r.tools).unwrap().chars().count()) as u64 / 4
 }
 
+/// `messages` as they go out, as JSON, with the time of each person's message (`[16:13:05`, see `person_clock`)
+/// replaced by `[<T>`: two runs of the same session type their messages in different seconds. Nothing else changes.
+fn sent_without_clock<T: serde::Serialize + ?Sized>(messages: &T) -> String {
+    let s = serde_json::to_string(messages).unwrap();
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        let stamp = b.len() >= i + 9
+            && b[i] == b'['
+            && b[i + 3] == b':'
+            && b[i + 6] == b':'
+            && [1, 2, 4, 5, 7, 8].iter().all(|&k| b[i + k].is_ascii_digit());
+        if stamp {
+            out.push_str("[<T>");
+            i += 9;
+        } else {
+            let c = s[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
 /// What the whole first request takes, and the reply it asks room for.
 fn total_with_reply(r: &ModelRequest) -> u64 {
     fixed_tokens(r) + nexo_core::message::estimate_tokens(&r.messages) + u64::from(r.max_tokens)
@@ -436,7 +461,7 @@ async fn the_same_plain_session_at_200k_sends_the_requests_it_sent_before() {
     let (unknown, _) = a_big_read(None, "plain").await;
     assert_eq!(at_200k.len(), unknown.len());
     for (a, b) in at_200k.iter().zip(&unknown) {
-        assert_eq!(serde_json::to_string(&a.messages).unwrap(), serde_json::to_string(&b.messages).unwrap());
+        assert_eq!(sent_without_clock(&a.messages), sent_without_clock(&b.messages));
         assert_eq!(a.max_tokens, b.max_tokens);
     }
 }
@@ -528,7 +553,7 @@ async fn a_plain_session_at_8k_with_room_for_a_short_reply_only_goes_from_the_cu
     let (at_200k, _) = a_plain_read_of(chars, Some(200_000)).await;
     assert_eq!(at_200k.len(), whole.len());
     for (a, b) in at_200k.iter().zip(&whole) {
-        assert_eq!(serde_json::to_string(&a.messages).unwrap(), serde_json::to_string(&b.messages).unwrap());
+        assert_eq!(sent_without_clock(&a.messages), sent_without_clock(&b.messages));
         assert_eq!(a.max_tokens, b.max_tokens);
     }
 }
@@ -704,7 +729,7 @@ async fn the_same_hook_at_200k_is_sent_whole_as_before() {
     let _g = config_lock().lock().await;
     let at_200k = with_a_long_hook(Some(200_000), 40_000, "plain").await;
     let unknown = with_a_long_hook(None, 40_000, "plain").await;
-    assert_eq!(serde_json::to_string(&at_200k.messages).unwrap(), serde_json::to_string(&unknown.messages).unwrap());
+    assert_eq!(sent_without_clock(&at_200k.messages), sent_without_clock(&unknown.messages));
     assert!(!at_200k.messages[0].text().contains("-token window"));
 }
 
@@ -743,7 +768,7 @@ async fn the_files_nexo_attaches_by_itself_at_8k_fit_what_the_window_leaves_and_
     let mut none = with_files(200_000);
     none.providers.get_mut("mock").unwrap().context_window.clear();
     let unknown = first_request(none, d.path()).await;
-    assert_eq!(serde_json::to_string(&big.messages).unwrap(), serde_json::to_string(&unknown.messages).unwrap());
+    assert_eq!(sent_without_clock(&big.messages), sent_without_clock(&unknown.messages));
 }
 
 /// The requests of a session at window `w` (none when `None`) that is given two long messages, compacted with a
