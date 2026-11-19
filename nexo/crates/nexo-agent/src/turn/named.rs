@@ -1427,7 +1427,11 @@ mod tests {
         }
         put(&dir, "research/ideas/IDEAS.md", "# ideas\n");
         let f = look(&format!("ideas in {}/ and IDEAS.md", dir.display()), project.path(), home.path());
-        assert!(shown(&f).iter().any(|s| s.ends_with("research/ideas/IDEAS.md")), "{:?}", shown(&f));
+        assert!(
+            shown(&f).iter().any(|s| std::path::Path::new(s).ends_with("research/ideas/IDEAS.md")),
+            "{:?}",
+            shown(&f)
+        );
     }
 
     #[test]

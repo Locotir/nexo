@@ -627,6 +627,10 @@ fn a_blanket_browser_rule_still_asks_before_a_key_file_is_opened_or_uploaded() {
     assert_eq!(d(&blanket, upload("~/.ssh/id_rsa")), Decision::Ask);
     let batch = json!({"action": "batch", "steps": [{"action": "tabs"}, nav("file:///home/u/.ssh/id_rsa")]});
     assert_eq!(d(&blanket, batch), Decision::Ask);
+    // an address of another host names no local path on Unix: it is judged by its own path, escapes undone
+    if cfg!(unix) {
+        assert_eq!(d(&blanket, nav("file://h/home/u/%2Essh/config")), Decision::Ask);
+    }
     // pages and ordinary files go through as before
     assert_eq!(d(&blanket, nav("https://docs.rs/")), Decision::Allow);
     assert_eq!(d(&blanket, nav("view-source:https://docs.rs/")), Decision::Allow);
@@ -635,11 +639,10 @@ fn a_blanket_browser_rule_still_asks_before_a_key_file_is_opened_or_uploaded() {
     // yolo asks about nothing; a rule that names the path allows it
     let yolo = Policy { mode: PermissionMode::Auto, allow: vec![], deny: vec![] };
     assert_eq!(d(&yolo, nav("file:///home/u/.ssh/id_rsa")), Decision::Allow);
-    let named = Policy {
-        mode: PermissionMode::Ask,
-        allow: vec!["browser".into(), "browser(/home/u/.ssh/id_rsa)".into()],
-        deny: vec![],
-    };
-    assert_eq!(d(&named, nav("file:///home/u/.ssh/id_rsa")), Decision::Allow);
+    // a drive-less path is not absolute on Windows, so the named rule there uses a drive
+    let key = if cfg!(windows) { "C:/Users/u/.ssh/id_rsa" } else { "/home/u/.ssh/id_rsa" };
+    let named =
+        Policy { mode: PermissionMode::Ask, allow: vec!["browser".into(), format!("browser({key})")], deny: vec![] };
+    assert_eq!(d(&named, nav(&format!("file:///{}", key.trim_start_matches('/')))), Decision::Allow);
     assert_eq!(d(&named, nav("file:///home/u/.aws/credentials")), Decision::Ask);
 }

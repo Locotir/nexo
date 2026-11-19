@@ -163,9 +163,11 @@ fn collect_local(args: &Value, out: &mut Vec<String>, depth: usize) {
             continue;
         }
         match url::Url::parse(url) {
-            Ok(u) if u.scheme() == "file" => {
-                out.extend(u.to_file_path().ok().map(|p| p.to_string_lossy().into_owned()))
-            }
+            // an address that names no local path here (a drive-less path on Windows, another host on Unix) is judged by
+            // its own path: failing open would let a key file through
+            Ok(u) if u.scheme() == "file" => out.push(
+                u.to_file_path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| unescaped(u.path())),
+            ),
             // `C:\keys\id_rsa` parses with the drive letter as its scheme
             Ok(u) if u.scheme().len() == 1 => out.push(url.to_string()),
             Ok(_) => {}
@@ -181,4 +183,25 @@ fn collect_local(args: &Value, out: &mut Vec<String>, depth: usize) {
             collect_local(step, out, depth + 1);
         }
     }
+}
+
+/// `%XX` escapes turned back into bytes, so a path read from an address is judged as it is spelled on disk.
+fn unescaped(s: &str) -> String {
+    let b = s.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], b.get(i + 1).and_then(|c| hex(*c)), b.get(i + 2).and_then(|c| hex(*c))) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            _ => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

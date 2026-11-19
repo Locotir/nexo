@@ -209,6 +209,7 @@ mod request_prefix;
 mod resume_and_rewind;
 mod session_commands;
 mod session_models;
+#[cfg(unix)]
 mod shutdown;
 mod side_requests;
 mod small_window;

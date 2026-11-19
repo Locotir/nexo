@@ -15,10 +15,12 @@ async fn no_turn_within(r: &mut Running, ms: u64) {
     assert!(hit.is_err(), "a turn started by itself");
 }
 
+#[cfg(unix)]
 fn job_ended(e: &AgentEvent) -> bool {
     matches!(e, AgentEvent::Jobs { jobs } if jobs.iter().any(|j| j.id == 1 && !j.status.running()))
 }
 
+#[cfg(unix)]
 fn said(req: &ModelRequest) -> String {
     req.messages.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n")
 }
