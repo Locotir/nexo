@@ -32,7 +32,7 @@ pub(super) fn snapshot_flags(f: &mut Lifted) {
                 continue;
             }
             // the registers both flag definitions read
-            let mut regs: Vec<u8> = Vec::new();
+            let mut regs: Vec<Var> = Vec::new();
             let mut j = i;
             let mut end = f.blocks[bi].stmts.len();
             let mut defs = Vec::new();
@@ -41,7 +41,7 @@ pub(super) fn snapshot_flags(f: &mut Lifted) {
                     Stmt::Assign(Var::FlagOps | Var::FlagRes, e) if j <= i + 1 => {
                         defs.push(j);
                         e.visit(&mut |x| {
-                            if let Expr::Var(Var::Reg(r), _) = x {
+                            if let Expr::Var(r @ (Var::Reg(_) | Var::Xmm(_)), _) = x {
                                 if !regs.contains(r) {
                                     regs.push(*r);
                                 }
@@ -55,7 +55,7 @@ pub(super) fn snapshot_flags(f: &mut Lifted) {
                 }
                 j += 1;
             }
-            let mut need: Vec<u8> = Vec::new();
+            let mut need: Vec<Var> = Vec::new();
             // the last place in the block that reads the flags; the statement that reads them reads before it writes
             let mut last = i + 1;
             for k in i + 1..end {
@@ -72,13 +72,11 @@ pub(super) fn snapshot_flags(f: &mut Lifted) {
             }
             for st in &f.blocks[bi].stmts[i + 1..last] {
                 match &st.st {
-                    Stmt::Assign(Var::Reg(r), _) if regs.contains(r) && !need.contains(r) => need.push(*r),
+                    Stmt::Assign(r @ (Var::Reg(_) | Var::Xmm(_)), _) if regs.contains(r) && !need.contains(r) => need.push(*r),
                     Stmt::Clobber(vs) => {
                         for v in vs {
-                            if let Var::Reg(r) = v {
-                                if regs.contains(r) && !need.contains(r) {
-                                    need.push(*r);
-                                }
+                            if matches!(v, Var::Reg(_) | Var::Xmm(_)) && regs.contains(v) && !need.contains(v) {
+                                need.push(*v);
                             }
                         }
                     }
@@ -121,12 +119,33 @@ pub(super) fn snapshot_flags(f: &mut Lifted) {
                 let t = Var::Tmp(next);
                 next += 1;
                 let addr = f.blocks[bi].stmts[i].addr;
-                for &d in &defs {
-                    if let Stmt::Assign(_, e) = &mut f.blocks[bi].stmts[d + ins].st {
-                        e.subst(Var::Reg(r), &Expr::Var(t, 64));
+                // a single-precision compare (every read of the register is 32 bits wide) keeps its width
+                let mut tw: Bits = 64;
+                if matches!(r, Var::Xmm(_)) {
+                    let mut ws: Vec<Bits> = Vec::new();
+                    for &d in &defs {
+                        if let Stmt::Assign(_, e) = &f.blocks[bi].stmts[d + ins].st {
+                            e.visit(&mut |x| {
+                                if let Expr::Var(v, w) = x {
+                                    if *v == r {
+                                        ws.push(*w);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    if !ws.is_empty() && ws.iter().all(|&w| w == 32) {
+                        tw = 32;
                     }
                 }
-                f.blocks[bi].stmts.insert(i, S { addr, st: Stmt::Assign(t, Expr::Var(Var::Reg(r), 64)) });
+                for &d in &defs {
+                    if let Stmt::Assign(_, e) = &mut f.blocks[bi].stmts[d + ins].st {
+                        e.subst(r, &Expr::Var(t, tw));
+                    }
+                }
+                let src = Expr::Var(r, tw);
+                let src = if tw == 64 { src } else { src.zext(64) };
+                f.blocks[bi].stmts.insert(i, S { addr, st: Stmt::Assign(t, src) });
                 ins += 1;
             }
             i += ins + 2;

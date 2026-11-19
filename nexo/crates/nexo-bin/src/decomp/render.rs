@@ -39,6 +39,8 @@ pub struct WebInfo {
     pub bits: HashMap<u32, Bits>,
     pub signed: HashMap<u32, bool>,
     pub float: HashMap<u32, bool>,
+    /// Width (32 or 64) of every web that holds a float or a double.
+    pub fwidth: HashMap<u32, Bits>,
     pub args: Vec<(String, u32)>,
 }
 
@@ -113,6 +115,13 @@ pub fn make_webs(f: &mut Lifted, facts: &Facts) -> WebInfo {
             arg_webs.push((n, w));
         }
     }
+    if abi == super::lift::Abi::Win64 {
+        // one slot per position: `aN` and `fN` share slot N-1, and the one that is read fills it
+        let slot = |n: &str| n[1..].parse::<usize>().unwrap_or(0);
+        let fslots: Vec<usize> = arg_webs.iter().filter(|(n, _)| n.starts_with('f')).map(|(n, _)| slot(n)).collect();
+        arg_webs.retain(|(n, w)| !(n.starts_with('a') && *w == 0 && fslots.contains(&slot(n))));
+        arg_webs.sort_by_key(|(n, _)| (slot(n), n.starts_with('f')));
+    }
     // rewrite statements
     for bi in 0..f.blocks.len() {
         for si in 0..=f.blocks[bi].stmts.len() {
@@ -163,7 +172,6 @@ pub fn make_webs(f: &mut Lifted, facts: &Facts) -> WebInfo {
     let mut counter = 0;
     let mut bits: HashMap<u32, Bits> = HashMap::new();
     let mut signed: HashMap<u32, i32> = HashMap::new();
-    let mut float: HashMap<u32, bool> = HashMap::new();
     for (i, id) in id_of.values().enumerate() {
         let _ = i;
         let _ = id;
@@ -196,15 +204,14 @@ pub fn make_webs(f: &mut Lifted, facts: &Facts) -> WebInfo {
             if let Stmt::Assign(Var::Web(w), e) = &s.st {
                 let c = bits.entry(*w).or_insert(0);
                 *c = (*c).max(e.bits());
-                if matches!(e, Expr::Bin(Bin::FAdd | Bin::FSub | Bin::FMul | Bin::FDiv, ..)) {
-                    float.insert(*w, true);
-                }
             }
         }
         for e in bl.term.exprs() {
             note(e, &mut bits, &mut signed);
         }
     }
+    let fwidth = float_webs(f, &entry_name, &bits);
+    let float: HashMap<u32, bool> = fwidth.keys().map(|k| (*k, true)).collect();
     let mut ids: Vec<u32> = bits.keys().copied().collect();
     ids.extend(entry_name.keys().copied());
     ids.sort();
@@ -217,13 +224,119 @@ pub fn make_webs(f: &mut Lifted, facts: &Facts) -> WebInfo {
             names.insert(w, format!("v{counter}"));
         }
     }
-    WebInfo { names, bits, signed: signed.into_iter().map(|(k, v)| (k, v >= 0)).collect(), float, args: arg_webs }
+    WebInfo { names, bits, signed: signed.into_iter().map(|(k, v)| (k, v >= 0)).collect(), float, fwidth, args: arg_webs }
+}
+
+/// The operands a float operation reads directly: the places that make a web a float.
+fn float_operands<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+    fn walk<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+        match e {
+            Expr::Bin(Bin::FAdd | Bin::FSub | Bin::FMul | Bin::FDiv, a, c) => out.extend([&**a, &**c]),
+            Expr::Cmp(op, a, c) if op.is_float() => out.extend([&**a, &**c]),
+            Expr::Flags(FlagKind::FCmp, a, c) => out.extend([&**a, &**c]),
+            Expr::Un(Un::FNeg, a) => out.push(a),
+            Expr::Select(_, a, d) if e.is_float_op() => out.extend([&**a, &**d]),
+            Expr::Intr(n, args, _)
+                if matches!(*n, "sqrt" | "sqrtf" | "fabs" | "fabsf" | "fext" | "ftrunc" | "ftoi" | "lrint") =>
+            {
+                out.extend(args.iter())
+            }
+            _ => {}
+        }
+        match e {
+            Expr::Const(..) | Expr::Var(..) | Expr::Unknown(_) | Expr::StackAddr(_) | Expr::SegBase(_) => {}
+            Expr::Load(a, _) | Expr::Un(_, a) | Expr::Trunc(a, _) | Expr::Zext(a, _) | Expr::Sext(a, _) => {
+                walk(a, out)
+            }
+            Expr::Bin(_, a, c)
+            | Expr::Insert(a, c)
+            | Expr::Cmp(_, a, c)
+            | Expr::Flags(_, a, c)
+            | Expr::Cond(_, a, c) => {
+                walk(a, out);
+                walk(c, out);
+            }
+            Expr::Select(a, c, d) => {
+                walk(a, out);
+                walk(c, out);
+                walk(d, out);
+            }
+            Expr::Call(c) => {
+                if let Target::Indirect(t) = &c.target {
+                    walk(t, out);
+                }
+                c.args.iter().for_each(|a| walk(a, out));
+            }
+            Expr::Intr(_, args, _) => args.iter().for_each(|a| walk(a, out)),
+        }
+    }
+    walk(e, out);
+}
+
+
+/// The web a float operand names, looking through a narrowing cast.
+fn web_of_operand(e: &Expr) -> Option<u32> {
+    match e {
+        Expr::Var(Var::Web(w), _) => Some(*w),
+        Expr::Trunc(x, _) => web_of_operand(x),
+        _ => None,
+    }
+}
+
+/// Which webs hold floats, and how wide: float arguments, targets of float operations, direct operands of float
+/// operations, and (to a fixed point) anything copied from or to such a web.
+fn float_webs(f: &Lifted, entry_name: &HashMap<u32, String>, bits: &HashMap<u32, Bits>) -> HashMap<u32, Bits> {
+    let mut fl: std::collections::HashSet<u32> =
+        entry_name.iter().filter(|(_, n)| n.starts_with('f')).map(|(w, _)| *w).collect();
+    let mut copies: Vec<(u32, u32)> = Vec::new();
+    let scan = |e: &Expr, fl: &mut std::collections::HashSet<u32>| {
+        let mut ops = Vec::new();
+        float_operands(e, &mut ops);
+        for o in ops {
+            if let Some(w) = web_of_operand(o) {
+                fl.insert(w);
+            }
+        }
+    };
+    for bl in &f.blocks {
+        for s in &bl.stmts {
+            for e in s.st.exprs() {
+                scan(e, &mut fl);
+            }
+            if let Stmt::Assign(Var::Web(w), e) = &s.st {
+                if e.is_float_op() || matches!(e, Expr::Intr("as_float", ..)) {
+                    fl.insert(*w);
+                } else if let Some(o) = web_of_operand(e) {
+                    copies.push((*w, o));
+                }
+            }
+        }
+        for e in bl.term.exprs() {
+            scan(e, &mut fl);
+        }
+    }
+    for _ in 0..=copies.len() {
+        let mut grew = false;
+        for &(a, b) in &copies {
+            if fl.contains(&a) != fl.contains(&b) {
+                fl.insert(a);
+                fl.insert(b);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    fl.into_iter().map(|w| (w, if bits.get(&w) == Some(&32) { 32 } else { 64 })).collect()
 }
 
 // ---------------------------------------------------------------------------------------------
 // Expressions
 
 pub struct Printer<'a> {
+    /// The function returns a float or a double: the returned constants and loads are floats.
+    pub fret: bool,
     pub names: &'a dyn Names,
     pub web: &'a WebInfo,
     pub abi_stack_arg: i64,
@@ -362,7 +475,7 @@ impl Printer<'_> {
         }
     }
 
-    fn mem_text(&self, addr: &Expr, bits: Bits) -> String {
+    fn mem_text(&self, addr: &Expr, bits: Bits, ty: &str) -> String {
         let (base, off) = match addr {
             Expr::Bin(Bin::Add, b, k) if k.as_const().is_some() => (&**b, k.as_const().unwrap_or(0)),
             other => (other, 0),
@@ -385,20 +498,20 @@ impl Printer<'_> {
             Expr::StackAddr(o) => self.slot_name(*o),
             Expr::Const(a, _) => match self.names.global(*a) {
                 Some(g) => g,
-                None => format!("*({}*){}", utype(bits), hex(*a)),
+                None => format!("*({ty}*){}", hex(*a)),
             },
             // base + index * scale
             Expr::Bin(Bin::Add, b, i) => {
                 if let Expr::Bin(Bin::Mul, x, s) = &**i {
                     if let Some(k) = s.as_const() {
                         if u64::from(bits) / 8 == k {
-                            return format!("(({}*){})[{}]", utype(bits), self.expr(b, 12), self.expr(x, 0));
+                            return format!("(({ty}*){})[{}]", self.expr(b, 12), self.expr(x, 0));
                         }
                     }
                 }
-                format!("*({}*)({})", utype(bits), self.expr(addr, 0))
+                format!("*({ty}*)({})", self.expr(addr, 0))
             }
-            _ => format!("*({}*){}", utype(bits), self.expr(addr, 11)),
+            _ => format!("*({ty}*){}", self.expr(addr, 11)),
         }
     }
 
@@ -420,12 +533,13 @@ impl Printer<'_> {
             Expr::Unknown(_) => "undefined".into(),
             Expr::StackAddr(o) => format!("&{}", self.slot_name(*o)),
             Expr::SegBase(s) => (if *s == 0 { "fs_base" } else { "gs_base" }).into(),
-            Expr::Load(a, b) => self.mem_text(a, *b),
+            Expr::Load(a, b) => self.mem_text(a, *b, utype(*b)),
             Expr::Un(op, x) => {
                 let c = match op {
                     Un::Neg => "-",
                     Un::Not => "~",
                     Un::LNot => "!",
+                    Un::FNeg => return paren(11, format!("-{}", self.fexpr(x, 12))),
                 };
                 paren(11, format!("{c}{}", self.expr(x, 11)))
             }
@@ -439,6 +553,9 @@ impl Printer<'_> {
                     }
                 }
                 let p = prec(*op);
+                if matches!(op, Bin::FAdd | Bin::FSub | Bin::FMul | Bin::FDiv) {
+                    return paren(p, format!("{} {} {}", self.fexpr(a, p), op_text(*op), self.fexpr(c, p + 1)));
+                }
                 paren(p, format!("{} {} {}", self.expr(a, p), op_text(*op), self.expr(c, p + 1)))
             }
             Expr::Trunc(x, b) => {
@@ -457,6 +574,23 @@ impl Printer<'_> {
                 _ => format!("({})({})", itype(*b), self.expr(x, 0)),
             },
             Expr::Insert(a, c) => format!("INSERT({}, {})", self.expr(a, 0), self.expr(c, 0)),
+            Expr::Cmp(op, a, c) if op.is_float() => {
+                let (ta, tc) = (self.fexpr(a, 8), self.fexpr(c, 8));
+                let call = |name: &str| format!("{name}({}, {})", self.fexpr(a, 0), self.fexpr(c, 0));
+                match op {
+                    Cmp::FOeq | Cmp::FUne => paren(6, format!("{ta} {} {tc}", op.text())),
+                    Cmp::FOlt | Cmp::FOle | Cmp::FOgt | Cmp::FOge => paren(7, format!("{ta} {} {tc}", op.text())),
+                    Cmp::FUlt => paren(11, format!("!({ta} >= {tc})")),
+                    Cmp::FUle => paren(11, format!("!({ta} > {tc})")),
+                    Cmp::FUge => paren(11, format!("!({ta} < {tc})")),
+                    Cmp::FUgt => paren(11, format!("!({ta} <= {tc})")),
+                    Cmp::FOne => call("islessgreater"),
+                    Cmp::FUeq => paren(11, format!("!{}", call("islessgreater"))),
+                    Cmp::FUno => call("isunordered"),
+                    Cmp::FOrd => paren(11, format!("!{}", call("isunordered"))),
+                    _ => paren(7, format!("{ta} {} {tc}", op.text())),
+                }
+            }
             Expr::Cmp(op, a, c) => {
                 let (ta, tc) = if op.is_unsigned() {
                     let w = a.bits().max(c.bits());
@@ -473,19 +607,64 @@ impl Printer<'_> {
                 } else {
                     (self.expr(a, 8), self.expr(c, 8))
                 };
-                let q = if matches!(op, Cmp::Eq | Cmp::Ne | Cmp::Feq | Cmp::Fne) { 6 } else { 7 };
+                let q = if matches!(op, Cmp::Eq | Cmp::Ne) { 6 } else { 7 };
                 paren(q, format!("{ta} {} {tc}", op.text()))
             }
             Expr::Flags(k, a, c) => format!("flags_{k:?}({}, {})", self.expr(a, 0), self.expr(c, 0)).to_lowercase(),
             Expr::Cond(cc, a, c) => format!("cond_{}({}, {})", cc.name(), self.expr(a, 0), self.expr(c, 0)),
             Expr::Select(c, a, b) => {
+                if e.is_float_op() {
+                    return paren(0, format!("{} ? {} : {}", self.expr(c, 1), self.fexpr(a, 1), self.fexpr(b, 1)));
+                }
                 paren(0, format!("{} ? {} : {}", self.expr(c, 1), self.expr(a, 1), self.expr(b, 1)))
             }
             Expr::Call(c) => self.call_text(c),
-            Expr::Intr(n, args, _) => {
-                let a: Vec<String> = args.iter().map(|x| self.expr(x, 0)).collect();
-                format!("{n}({})", a.join(", "))
+            Expr::Intr(n, args, bits) => match (*n, args.as_slice()) {
+                ("(double)" | "(float)", [x]) => paren(11, format!("{n}{}", self.expr(x, 12))),
+                ("fext", [x]) => paren(11, format!("(double){}", self.fexpr(x, 12))),
+                ("ftrunc", [x]) => paren(11, format!("(float){}", self.fexpr(x, 12))),
+                ("ftoi", [x]) => paren(11, format!("({}){}", itype(*bits), self.fexpr(x, 12))),
+                ("lrint", [x]) if *bits == 32 => paren(11, format!("(i32)lrint({})", self.fexpr(x, 0))),
+                ("lrint" | "sqrt" | "sqrtf" | "fabs" | "fabsf", [x]) => format!("{n}({})", self.fexpr(x, 0)),
+                _ => {
+                    let a: Vec<String> = args.iter().map(|x| self.expr(x, 0)).collect();
+                    format!("{n}({})", a.join(", "))
+                }
+            },
+        }
+    }
+
+    /// The width of `e` when it holds a float: a float web or a float operation.
+    fn float_width(&self, e: &Expr) -> Option<Bits> {
+        match e {
+            Expr::Var(Var::Web(w), _) => self.web.fwidth.get(w).copied(),
+            Expr::Intr("as_float", ..) => Some(e.bits()),
+            _ if e.is_float_op() => Some(e.bits()),
+            _ => None,
+        }
+    }
+
+    /// The text of `e` where a float is expected: constants as floats, loads as `double` or `float` loads.
+    fn fexpr(&self, e: &Expr, min: u8) -> String {
+        match e {
+            Expr::Const(v, 64) => {
+                let s = fmt_f64(*v);
+                if s.starts_with('-') && min >= 11 {
+                    format!("({s})")
+                } else {
+                    s
+                }
             }
+            Expr::Const(v, 32) => {
+                let s = fmt_f32(*v as u32);
+                if s.starts_with('-') && min >= 11 {
+                    format!("({s})")
+                } else {
+                    s
+                }
+            }
+            Expr::Load(a, b @ (32 | 64)) => self.mem_text(a, *b, if *b == 32 { "float" } else { "double" }),
+            _ => self.expr(e, min),
         }
     }
 
@@ -507,7 +686,7 @@ impl Printer<'_> {
         self.lines.push(Line { addr, indent: self.indent, text });
     }
 
-    fn assign_text(&self, lhs: String, rhs: &Expr, for_step: bool) -> String {
+    fn assign_text(&self, lhs: String, rhs: &Expr, for_step: bool, fl: bool) -> String {
         if let Expr::Bin(op, a, c) = rhs {
             if let Expr::Var(v, _) = &**a {
                 if self.var_text(*v, 0) == lhs
@@ -524,6 +703,9 @@ impl Printer<'_> {
                 }
             }
         }
+        if fl {
+            return format!("{lhs} = {}", self.fexpr(rhs, 0));
+        }
         format!("{lhs} = {}", self.expr(rhs, 0))
     }
 
@@ -534,11 +716,13 @@ impl Printer<'_> {
                 if matches!(e, Expr::Unknown(_)) {
                     return None;
                 }
-                self.assign_text(self.var_text(*v, 0), e, for_step)
+                self.assign_text(self.var_text(*v, 0), e, for_step, matches!(v, Var::Web(w) if self.web.fwidth.contains_key(w)))
             }
             Stmt::Store(a, b, v) => {
-                let lhs = self.mem_text(a, *b);
-                self.assign_text(lhs, v, for_step)
+                let fl = self.float_width(v).is_some();
+                let ty = if !fl { utype(*b) } else if *b == 32 { "float" } else { "double" };
+                let lhs = self.mem_text(a, *b, ty);
+                self.assign_text(lhs, v, for_step, fl)
             }
             Stmt::Eval(e) => self.expr(e, 0),
             Stmt::Clobber(_) => return None,
@@ -659,6 +843,7 @@ impl Printer<'_> {
                 self.indent = i;
             }
             Node::Return(a, e) => match e {
+                Some(e) if self.fret => self.push(Some(*a), format!("return {};", self.fexpr(e, 0))),
                 Some(e) => self.push(Some(*a), format!("return {};", self.expr(e, 0))),
                 None => self.push(Some(*a), "return;".into()),
             },
@@ -684,6 +869,7 @@ pub fn render(
     proto: Option<&super::types::Proto>,
 ) -> Vec<Line> {
     let mut pr = Printer {
+        fret: matches!(facts.ret, Some(Var::Xmm(_))),
         names,
         web,
         abi_stack_arg: f.abi.stack_arg_base(),
@@ -695,15 +881,46 @@ pub fn render(
     };
     let ty = |w: u32| -> String {
         let b = web.bits.get(&w).copied().unwrap_or(64);
-        if web.float.get(&w).copied().unwrap_or(false) {
-            return "double".into();
+        if let Some(fw) = web.fwidth.get(&w) {
+            return if *fw == 32 { "float" } else { "double" }.into();
         }
         if web.signed.get(&w).copied().unwrap_or(true) { itype(b) } else { utype(b) }.to_string()
     };
     let ret = match facts.ret {
         _ if proto.is_some() => proto.map(|p| p.ret.clone()).unwrap_or_default(),
         None => "void".to_string(),
-        Some(Var::Xmm(_)) => "double".to_string(),
+        Some(Var::Xmm(_)) => {
+            fn f32_ret(v: &[Node], web: &WebInfo, narrow: &mut bool) {
+                for n in v {
+                    match n {
+                        Node::Return(_, Some(e)) => {
+                            let w = match e {
+                                Expr::Var(Var::Web(w), _) => web.fwidth.get(w).copied().unwrap_or(64),
+                                other => other.bits(),
+                            };
+                            *narrow |= w == 32;
+                        }
+                        Node::If(_, _, x, y) => {
+                            f32_ret(x, web, narrow);
+                            f32_ret(y, web, narrow);
+                        }
+                        Node::Loop(x) | Node::While(_, x) | Node::DoWhile(x, _) | Node::For(_, _, _, x) => {
+                            f32_ret(x, web, narrow)
+                        }
+                        Node::Switch(_, _, arms, d) => {
+                            arms.iter().for_each(|a| f32_ret(&a.1, web, narrow));
+                            if let Some(d) = d {
+                                f32_ret(d, web, narrow);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut narrow = false;
+            f32_ret(body, web, &mut narrow);
+            if narrow { "float" } else { "double" }.to_string()
+        }
         Some(_) => {
             // the width the returned expression has
             let mut b = 0;
@@ -746,7 +963,20 @@ pub fn render(
         .args
         .iter()
         .map(|(n, w)| {
-            let t = match proto.and_then(|p| n[1..].parse::<usize>().ok().and_then(|i| p.args.get(i.wrapping_sub(1)))) {
+            let by_name = proto.and_then(|p| {
+                let i = n[1..].parse::<usize>().ok()?;
+                if n.starts_with('f') {
+                    // Win64 numbers floats by slot; SysV counts the float-typed arguments
+                    if f.abi == super::lift::Abi::Win64 {
+                        p.args.get(i.checked_sub(1)?)
+                    } else {
+                        p.args.iter().filter(|(t, _)| t == "float" || t == "double").nth(i.checked_sub(1)?)
+                    }
+                } else {
+                    p.args.get(i.wrapping_sub(1))
+                }
+            });
+            let t = match by_name {
                 Some((t, _)) => t.clone(),
                 None if *w == 0 => "i64".to_string(),
                 None => ty(*w),
@@ -787,4 +1017,37 @@ pub fn render(
     pr.push(None, "}".into());
     let _ = ENTRY;
     pr.lines
+}
+
+/// A double as C text: exact, and `INFINITY` and `NAN` for those; any other NaN keeps its bits.
+fn fmt_f64(bits: u64) -> String {
+    let v = f64::from_bits(bits);
+    if v.is_nan() {
+        return match bits {
+            0x7ff8_0000_0000_0000 => "NAN".into(),
+            0xfff8_0000_0000_0000 => "-NAN".into(),
+            _ => format!("as_float(0x{bits:x})"),
+        };
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "INFINITY" } else { "-INFINITY" }.into();
+    }
+    // the shortest text that reads back to the same bits; it is valid C (`1.0`, `1e300`, `-0.0`)
+    format!("{v:?}")
+}
+
+/// The same for a float, with the `f` suffix on digits.
+fn fmt_f32(bits: u32) -> String {
+    let v = f32::from_bits(bits);
+    if v.is_nan() {
+        return match bits {
+            0x7fc0_0000 => "NAN".into(),
+            0xffc0_0000 => "-NAN".into(),
+            _ => format!("as_float(0x{bits:x})"),
+        };
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "INFINITY" } else { "-INFINITY" }.into();
+    }
+    format!("{v:?}f")
 }
