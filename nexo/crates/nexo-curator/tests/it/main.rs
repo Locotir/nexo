@@ -3,6 +3,7 @@
 mod added;
 mod golden;
 mod h1;
+mod invariants;
 mod ledger;
 mod notes;
 mod pockets;
