@@ -221,14 +221,12 @@ fn resumed_log(goal: Option<&str>, original: Option<&str>, progress: GoalProgres
     log.with_progress(progress)
 }
 
-/// The words of the latest `[goal set]` request in `history`: what follows the mark, up to the start note nexo put
-/// after them. None when no such request is left (a compaction removes it).
+/// The words of the latest `[goal set]` request in `history`: what follows the mark, up to the start note and the
+/// files nexo put after them (`goal_request`). None when no such request is left (a compaction removes it).
 fn goal_set_words(history: &[Message]) -> Option<String> {
     history.iter().rev().filter(|m| m.role == Role::User).find_map(|m| {
         let text = m.text();
-        let at = nexo_core::agent::goal_mark_at(&text)?;
-        let rest = text[at..].strip_prefix(GOAL_SET_MARK)?;
-        let rest = rest.split(&format!("\n\n{}", crate::session::START_NOTE_HEAD)).next().unwrap_or(rest);
+        let rest = nexo_core::agent::goal_request(&text)?.strip_prefix(GOAL_SET_MARK)?;
         Some(rest.trim().to_string()).filter(|w| !w.is_empty())
     })
 }
@@ -975,6 +973,9 @@ mod goal_tests {
             [asked("older goal"), Message::user("thanks"), asked("tests green pls"), Message::user(GOAL_CONTINUE_MARK)];
         let old = log(Some(want), None, &history);
         assert_eq!((old.original.as_deref(), old.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        // nor the files after them, with no start note between
+        let filed = format!("{GOAL_SET_MARK} sum it up\n\n@notes.md {}\n```md\nx\n```", nexo_core::agent::ATTACHED);
+        assert_eq!(log(Some(want), None, &[Message::user(filed)]).original.as_deref(), Some("sum it up"));
         // nothing left of that request (a compaction took it): the restatement is all there is
         let gone = log(Some(want), None, &[Message::user("thanks")]);
         assert_eq!((gone.original, gone.brief.as_deref()), (None, Some(want)));
