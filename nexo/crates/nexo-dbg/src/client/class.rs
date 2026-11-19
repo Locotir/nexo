@@ -1,7 +1,5 @@
 //! What a command does to the world, and which commands a read-only server refuses.
 
-use super::*;
-
 /// What a `nexo dbg` command does to the world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbgClass {

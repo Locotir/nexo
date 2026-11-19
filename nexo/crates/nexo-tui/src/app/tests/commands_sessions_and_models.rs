@@ -376,6 +376,7 @@ fn an_idle_esc_or_ctrl_c_holds_the_session() {
         status: JobStatus::Running,
         elapsed_ms: 0,
         lines: 0,
+        held: false,
     }];
     a.esc();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));

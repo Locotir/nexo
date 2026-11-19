@@ -211,7 +211,7 @@ async fn met_goal(more: Vec<Reply>, dir: &std::path::Path) -> (Arc<Scripted>, Ru
 async fn a_supervisor_check_in_leaves_a_goal_alone() {
     let d = test_tmpdir().unwrap();
     // the last two replies are what a check-in would get, if one were sent
-    let (client, mut r) =
+    let (client, r) =
         met_goal(vec![Reply::Events(text("CONTINUE keep going")), Reply::Events(text("on it"))], d.path()).await;
     assert_eq!(client.requests().len(), 2);
     r.send(AgentCommand::CheckIn { evidence: "tests still fail".into() });
