@@ -158,7 +158,7 @@ fn edit_ok_by_scan(e: &Engine) -> FxHashMap<String, bool> {
 
 fn assert_edit_caches(e: &Engine, what: &str) {
     let ids: FxHashSet<String> = e.edits.iter().map(|x| x.2.clone()).collect();
-    assert_eq!(e.edit_ids.0, e.edits.len(), "{what}: edits covered");
+    assert_eq!((*e.edit_ids).0, e.edits.len(), "{what}: edits covered");
     assert!(e.edit_ids.1 == ids, "{what}: ids");
     assert_eq!(e.edit_index.at(), e.edits.len(), "{what}: indexed");
     assert!(e.edit_ok == edit_ok_by_scan(e), "{what}: edit_ok");
@@ -178,7 +178,7 @@ fn edit_ids_match_the_scan() {
             let bytes = crate::snapshot::options().serialize(&e).unwrap();
             let born = e.born_messages();
             let mut back: Engine = crate::snapshot::options().deserialize(&bytes).unwrap();
-            assert_eq!(back.edit_ids.0, 0);
+            assert_eq!((*back.edit_ids).0, 0);
             back.take_history(&msgs[..len], &born).unwrap();
             assert_edit_caches(&back, "restored");
             assert_eq!(back.edits, e.edits);

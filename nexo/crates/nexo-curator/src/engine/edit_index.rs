@@ -122,12 +122,12 @@ pub(super) fn sync_edit_caches(
     index: &mut Shared<EditIndex>,
     edits: &[(String, usize, String)],
 ) {
-    if ids.0 > edits.len() {
+    if (**ids).0 > edits.len() {
         *ids = Default::default();
     }
     // nothing new: no write, so a shared copy stays shared
-    if ids.0 < edits.len() {
-        let covered = ids.0;
+    if (**ids).0 < edits.len() {
+        let covered = (**ids).0;
         let own = ids.mt();
         for e in &edits[covered..] {
             own.1.insert(e.2.clone());
