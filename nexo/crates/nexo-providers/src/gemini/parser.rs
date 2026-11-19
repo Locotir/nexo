@@ -97,7 +97,8 @@ impl Feed for GeminiParser {
             let thoughts = u["thoughtsTokenCount"].as_u64().unwrap_or(0);
             self.usage = Some(Usage {
                 input: prompt.saturating_sub(cached),
-                output: u["candidatesTokenCount"].as_u64().unwrap_or(0) + thoughts,
+                // a server-sent count can be u64::MAX, so the sum saturates instead of overflowing
+                output: u["candidatesTokenCount"].as_u64().unwrap_or(0).saturating_add(thoughts),
                 cache_read: cached,
                 cache_write: 0,
                 cache_write_1h: 0,

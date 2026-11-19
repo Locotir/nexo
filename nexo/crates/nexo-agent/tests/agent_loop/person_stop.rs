@@ -261,7 +261,7 @@ async fn a_stop_typed_during_a_turn_gets_no_check_in() {
 async fn a_job_that_ends_after_esc_and_a_rewind_starts_nothing() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![
-        Reply::Events(call("b1", "bash", json!({"command": "sleep 1", "background": true}))),
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 3", "background": true}))),
         Reply::Events(text("started")),
         Reply::Events(text("ok")),
     ]);
