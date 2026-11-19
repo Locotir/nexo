@@ -192,7 +192,13 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
     let (req, cfg, client, retries, events, stamp, flight) = {
         let mut st = state.lock().await;
         let a = &st.config.agent;
-        if !a.check_in || st.checked_in || st.perm.mode == PermissionMode::Plan {
+        if !a.check_in || st.checked_in || st.held || st.perm.mode == PermissionMode::Plan {
+            return;
+        }
+        // a request with no tool call of its own (the person said stop, asked a question) has nothing unfinished
+        // to check, whatever the supervisor says about older work
+        let own = st.turn_start.min(st.history.len());
+        if !st.history[own..].iter().any(|m| m.role == Role::Assistant && m.tool_calls().next().is_some()) {
             return;
         }
         if (st.goal.is_some() && st.goal_state.is_active())

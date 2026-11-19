@@ -197,6 +197,7 @@ impl Runtime {
             mcp_short: Vec::new(),
             mcp_told: String::new(),
             checked_in: false,
+            held: false,
             reply_boost: 1,
             audit,
         }));

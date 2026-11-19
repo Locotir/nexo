@@ -229,6 +229,7 @@ mod goals_todo_strip_and_flashes;
 mod keys_row_and_fades;
 mod live_block_height;
 mod navigation;
+mod nexo_started_requests;
 mod opening;
 mod outside_click;
 mod pastes_questions_and_plans;

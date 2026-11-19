@@ -128,6 +128,13 @@ pub enum Block {
         parts: Vec<nexo_core::agent::AddedPart>,
         folded: bool,
     },
+    /// A request nexo started by itself (jobs ended, a check-in, a goal round, mail): one dim line that says
+    /// why, its notes behind it. Never drawn as the person's message.
+    Started {
+        why: String,
+        parts: Vec<nexo_core::agent::AddedPart>,
+        folded: bool,
+    },
     /// A newer nexo is waiting on `main`: a framed card that is hard to miss.
     Update {
         behind: u32,
@@ -198,8 +205,14 @@ pub struct RenderOpts {
 
 impl Block {
     pub fn is_foldable(&self) -> bool {
-        matches!(self, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. } | Block::Added { .. })
-            || matches!(self, Block::Problem { problem, .. } if problem.detail.is_some() || problem.steps.len() > 1)
+        matches!(
+            self,
+            Block::Tool { .. }
+                | Block::Reasoning { .. }
+                | Block::Group { .. }
+                | Block::Added { .. }
+                | Block::Started { .. }
+        ) || matches!(self, Block::Problem { problem, .. } if problem.detail.is_some() || problem.steps.len() > 1)
     }
 
     pub fn toggle_fold(&mut self) -> bool {
@@ -208,6 +221,7 @@ impl Block {
             | Block::Reasoning { folded, .. }
             | Block::Group { folded, .. }
             | Block::Added { folded, .. }
+            | Block::Started { folded, .. }
             | Block::Usage { folded, .. }
             | Block::Problem { folded, .. } => {
                 *folded = !*folded;
@@ -222,10 +236,17 @@ impl Block {
         | Block::Reasoning { folded, .. }
         | Block::Group { folded, .. }
         | Block::Added { folded, .. }
+        | Block::Started { folded, .. }
         | Block::Problem { folded, .. } = self
         {
             *folded = v;
         }
+    }
+
+    /// Whether a new request begins here: the person's message, or one nexo started by itself. Turn
+    /// boundaries use this; the person's words, /undo, repeat and the pickers use `Block::User` alone.
+    pub fn starts_request(&self) -> bool {
+        matches!(self, Block::User { .. } | Block::Started { .. })
     }
 
     /// Whether this block changes between frames by itself (a spinner or a running clock).
@@ -339,6 +360,7 @@ impl Block {
                 lines
             }
             Block::Added { parts, folded } => super::added::lines(parts, *folded, w, theme),
+            Block::Started { why, parts, folded } => super::added::started_lines(why, parts, *folded, w, theme),
             Block::Reasoning { text, streaming, started, elapsed_ms, folded } => {
                 // a closed block with no text says nothing true (a provider that keeps its reasoning encrypted
                 // sends only a paragraph break): no line

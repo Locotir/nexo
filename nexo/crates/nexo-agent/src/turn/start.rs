@@ -304,7 +304,7 @@ async fn prepare_turn(
         // the typed words sit between what comes before them (shared memory, hooks, jobs) and what follows
         added.append(&mut after);
         // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
-        let tree = if text.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
+        let tree = if typed.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
         // a session that goes on past the day it began: its system text keeps that day, so today comes here
         let tree = match (prefix::date_line(&st), tree) {
             (Some(d), Some(t)) => Some(format!("{d}\n{t}")),

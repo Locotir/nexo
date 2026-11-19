@@ -19,7 +19,9 @@ fn a_restated_goal_reads_as_what_the_person_wants() {
             _ => None,
         })
         .collect();
-    assert_eq!(notices, ["◎ goal set: tests pls", "◎ goal · continuing"]);
+    assert_eq!(notices, ["◎ goal set: tests pls"]);
+    // the round of the loop is a dim line of nexo's own, not a notice
+    assert!(a.blocks.iter().any(|b| matches!(b, Block::Started { why, .. } if why == "◎ goal · continuing")));
     assert!(a.user_messages.is_empty(), "nothing of the loop to rewind to");
 }
 
@@ -58,8 +60,14 @@ fn a_goal_round_shows_as_one_line_with_its_round() {
             _ => None,
         })
         .collect();
-    assert_eq!(notices, ["◎ goal set: tests pls", "◎ goal · round 1/5 · continuing"]);
-    assert!(!notices.iter().any(|n| n.contains("goal: continuing")));
+    assert_eq!(notices, ["◎ goal set: tests pls"]);
+    let rounds: Vec<&str> = a
+        .blocks
+        .iter()
+        .filter_map(|b| if let Block::Started { why, .. } = b { Some(why.as_str()) } else { None })
+        .collect();
+    assert_eq!(rounds, ["◎ goal · round 1/5 · continuing"]);
+    assert!(!rounds.iter().any(|n| n.contains("goal: continuing")));
 }
 
 #[test]

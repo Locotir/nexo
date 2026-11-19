@@ -44,12 +44,19 @@ async fn esc_leaves_a_detached_sub_agent_running() {
     r.until(|e| matches!(e, AgentEvent::ToolDone { id, .. } if id == "t1")).await;
     r.send(AgentCommand::Interrupt);
     r.turn().await;
-    // it was not touched: it goes on and reports
+    // it was not touched: it goes on and reports, but Esc is final: no turn starts by itself
+    let before = client.main_requests().len();
     release(d.path(), "go");
+    r.until(all_jobs_ended).await;
+    assert!(r.quiet(300, |e| matches!(e, AgentEvent::TurnStart { .. })).await, "a turn started by itself after Esc");
+    assert_eq!(client.main_requests().len(), before, "the model was asked without the person writing");
+    // the person's next message carries the report
+    r.submit("next");
     let evs = r.turn().await;
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text.contains("noted"))));
     let reqs = client.main_requests();
-    assert!(texts(reqs.last().unwrap().messages.last().unwrap()).contains("survived"));
+    let last = texts(reqs.last().unwrap().messages.last().unwrap());
+    assert!(last.contains("[background jobs ended]") && last.contains("survived"), "{last}");
     r.stop().await;
 }
 

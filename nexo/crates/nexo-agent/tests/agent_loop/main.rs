@@ -187,6 +187,7 @@ mod model_setup;
 mod nexo_bin_hint;
 mod own_replies;
 mod permissions;
+mod person_stop;
 mod provider_limits;
 mod reasoning_replies;
 mod recall;

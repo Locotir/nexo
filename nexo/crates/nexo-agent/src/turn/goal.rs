@@ -116,6 +116,10 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     let mut st = state.lock().await;
     let text = text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     st.goal = text.clone();
+    // `/goal <text>` is the person's own command: it starts work, so it lifts a stop; a bare `/goal` only clears
+    if text.is_some() {
+        st.held = false;
+    }
     st.goal_round = 0;
     st.goal_state = GoalState::Active;
     st.goal_log = match &text {
@@ -355,6 +359,8 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
 /// A message of the person starts a turn: a goal waiting for their answer has it, and runs again.
 pub(super) fn person_spoke(st: &mut State) {
     st.checked_in = false;
+    // the person is back: what waited for them may start again
+    st.held = false;
     // what the person says is news: the goal's work counts its progress from here
     st.goal_idle = GoalIdle::default();
     // only a person's message gives a request its checkpoints back: a goal's rounds, a mail or a job's end do not
@@ -602,8 +608,13 @@ pub(super) async fn resume_goal(state: &Shared, running: bool) -> bool {
         notice(&st.events, Level::Info, "no goal set: /goal <text> sets one");
         return false;
     }
+    // the stop is lifted only when a continuation starts now
+    let start = !running && st.inbox.is_empty();
+    if start {
+        st.held = false;
+    }
     goal_to(&mut st, GoalState::Active, "goal resumed".into());
-    !running && st.inbox.is_empty()
+    start
 }
 
 #[cfg(test)]

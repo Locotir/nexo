@@ -1,6 +1,10 @@
 use super::*;
 
-async fn start_mail(client: Arc<Scripted>, cwd: &std::path::Path, mail: Arc<nexo_core::mailbox::Mailbox>) -> Running {
+pub(super) async fn start_mail(
+    client: Arc<Scripted>,
+    cwd: &std::path::Path,
+    mail: Arc<nexo_core::mailbox::Mailbox>,
+) -> Running {
     data_dir();
     let (handle, ends) = channels();
     let setup = AgentSetup {
@@ -20,7 +24,7 @@ async fn start_mail(client: Arc<Scripted>, cwd: &std::path::Path, mail: Arc<nexo
     Running { handle, task }
 }
 
-fn sessions(root: &std::path::Path) -> (Arc<nexo_core::mailbox::Mailbox>, Arc<nexo_core::mailbox::Mailbox>) {
+pub(super) fn sessions(root: &std::path::Path) -> (Arc<nexo_core::mailbox::Mailbox>, Arc<nexo_core::mailbox::Mailbox>) {
     use nexo_core::mail::Inbound;
     use nexo_core::mailbox::Mailbox;
     let cwd = root.to_string_lossy().to_string();
@@ -81,7 +85,7 @@ async fn a_mail_is_delivered_at_an_idle_point_as_a_marked_message_and_read_when_
 }
 
 #[tokio::test]
-async fn a_mail_handed_over_mid_turn_waits_for_the_turn_to_end() {
+async fn a_mail_handed_over_mid_turn_waits_for_the_turn_to_end_and_for_the_person_after_a_stop() {
     use nexo_core::mail::FromKind;
     let d = test_tmpdir().unwrap();
     let root = test_tmpdir().unwrap();
@@ -105,11 +109,24 @@ async fn a_mail_handed_over_mid_turn_waits_for_the_turn_to_end() {
     .await;
     assert!(quiet.is_err(), "no delivery mid-turn");
     assert_eq!(client.requests().len(), 1);
+    // Esc: the person stopped, so the mail keeps waiting until they write again
     r.send(AgentCommand::Interrupt);
+    r.until(|e| matches!(e, AgentEvent::TurnEnd { .. })).await;
+    let quiet = tokio::time::timeout(Duration::from_millis(300), async {
+        loop {
+            if let AgentEvent::MailDelivered { .. } = r.next().await {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "no delivery after a stop");
+    assert_eq!(client.requests().len(), 1);
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
     let evs = r.until(|e| matches!(e, AgentEvent::MailRead { .. })).await;
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::MailDelivered { .. })));
-    assert_eq!(client.requests().len(), 2);
-    assert!(client.requests()[1].messages.last().unwrap().text().contains("late news"));
+    assert_eq!(client.requests().len(), 3);
+    assert!(client.requests()[2].messages.last().unwrap().text().contains("late news"));
     r.stop().await;
 }
 
