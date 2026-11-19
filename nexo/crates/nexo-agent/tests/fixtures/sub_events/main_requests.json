@@ -98,7 +98,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Explicit provider \"mock\"; models [\"m1\"]; default None; chosen efforts {}. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Authentication and availability are not checked. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -107,7 +107,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "Task; empty lists providers/models"
+              "description": "Task; required and non-empty"
             },
             "agent": {
               "type": "string",
@@ -284,7 +284,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Explicit provider \"mock\"; models [\"m1\"]; default None; chosen efforts {}. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Authentication and availability are not checked. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -293,7 +293,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "Task; empty lists providers/models"
+              "description": "Task; required and non-empty"
             },
             "agent": {
               "type": "string",
@@ -501,7 +501,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Explicit provider \"mock\"; models [\"m1\"]; default None; chosen efforts {}. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Authentication and availability are not checked. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -510,7 +510,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "Task; empty lists providers/models"
+              "description": "Task; required and non-empty"
             },
             "agent": {
               "type": "string",
@@ -736,7 +736,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Explicit provider \"mock\"; models [\"m1\"]; default None; chosen efforts {}. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Authentication and availability are not checked. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -745,7 +745,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "Task; empty lists providers/models"
+              "description": "Task; required and non-empty"
             },
             "agent": {
               "type": "string",

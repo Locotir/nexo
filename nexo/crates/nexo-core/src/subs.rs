@@ -127,6 +127,9 @@ pub struct SubInfo {
     pub provider: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// Effective request effort; None means no level was specified (also before target resolution).
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     /// The first line of the task.
     pub title: String,
     pub state: SubState,
@@ -168,6 +171,7 @@ pub enum SubChange {
 struct Data {
     provider: Option<String>,
     model: Option<String>,
+    reasoning_effort: Option<String>,
     state: SubState,
     ended_ms: Option<u64>,
     tokens_in: u64,
@@ -197,6 +201,7 @@ impl Entry {
             profile: self.profile.clone(),
             provider: d.provider.clone(),
             model: d.model.clone(),
+            reasoning_effort: d.reasoning_effort.clone(),
             title: self.title.clone(),
             state: d.state,
             started_ms: self.started_ms,
@@ -283,6 +288,7 @@ impl Subs {
             data: Mutex::new(Data {
                 provider: None,
                 model: None,
+                reasoning_effort: None,
                 state: if background { SubState::Background } else { SubState::Attached },
                 ended_ms: None,
                 tokens_in: 0,
@@ -467,13 +473,14 @@ impl SubRun {
     }
 
     /// Record the target actually selected by the runner and notify late and live readers.
-    pub fn target(&self, provider: &str, model: &str) {
+    pub fn target(&self, provider: &str, model: &str, reasoning_effort: Option<&str>) {
         let mut d = self.entry.data.lock().unwrap();
         if !d.state.running() {
             return;
         }
         d.provider = Some(cut(provider, 1024));
         d.model = Some(cut(model, 1024));
+        d.reasoning_effort = reasoning_effort.map(|e| cut(e, 1024));
         self.send(SubChange::State(self.entry.info(&d)));
     }
 

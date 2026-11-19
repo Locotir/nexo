@@ -32,6 +32,7 @@ fn info(id: &str, title: &str) -> SubInfo {
         profile: "explore".into(),
         provider: None,
         model: None,
+        reasoning_effort: None,
         title: title.into(),
         state: SubState::Background,
         started_ms: 1,

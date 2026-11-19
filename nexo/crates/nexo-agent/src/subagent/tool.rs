@@ -22,7 +22,7 @@ impl Tool for SubAgent {
             "type": "object",
             "properties": {
                 "description": {"type": "string", "description": "Three to six words saying what the task is."},
-                "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them. Empty for catalog."},
+                "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them. A non-empty prompt is required."},
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
                 "start_clean": {"type": "boolean", "description": "No briefing, hook context or shared-memory tools; profile and project tools remain."},
@@ -53,7 +53,7 @@ impl Tool for SubAgent {
         Some(Compact {
             description: &self.short,
             params: &[
-                ("prompt", "Task; empty lists providers/models"),
+                ("prompt", "Task; required and non-empty"),
                 ("background", "Run as a job"),
                 ("start_clean", "No inherited context"),
                 ("model", "Only if the person asks"),
@@ -107,9 +107,6 @@ impl Tool for SubAgent {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
-        if args.get("prompt").and_then(Value::as_str) == Some("") {
-            return ToolOutput::ok(self.catalog());
-        }
         let Some(prompt) = args.get("prompt").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) else {
             return ToolOutput::error("`prompt` is required: the task for the sub-agent");
         };

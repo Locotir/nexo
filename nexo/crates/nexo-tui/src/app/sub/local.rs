@@ -73,6 +73,13 @@ impl App {
 
     pub(super) fn sub_state(&mut self, info: SubInfo) {
         let id = info.id.clone();
+        let target = target_label(&info);
+        let old_target = self.sub_runs.iter().find(|r| r.info.id == id).and_then(|r| target_label(&r.info));
+        let announcement = target.filter(|target| old_target.as_ref() != Some(target)).map(|target| {
+            let profile = crate::render::wrap::one_line(&info.profile);
+            let title = crate::render::wrap::one_line(&info.title);
+            format!("Agent {profile} · {target} · {title}")
+        });
         // the state of a run the app knows, unchanged: the agent sends that after a lag
         let mut resync = false;
         match self.sub_runs.iter_mut().find(|r| r.info.id == id) {
@@ -99,6 +106,12 @@ impl App {
             if let Some(g) = gone {
                 self.sub_runs.retain(|r| r.info.id != g);
             }
+        }
+        // A launch may come from task, a workflow, or ultracode. Announce it in the main
+        // transcript as soon as its effective target is known, even when its view is open.
+        if let Some(text) = announcement {
+            self.on_main(|a| a.push(Block::Notice { level: Level::Info, text }));
+            self.dirty = true;
         }
         let runs = self.sub_job_runs();
         if let Some(Modal::Jobs(v)) = &mut self.modal {

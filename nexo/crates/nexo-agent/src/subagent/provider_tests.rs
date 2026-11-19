@@ -527,24 +527,21 @@ async fn an_unknown_kind_is_answered_with_every_kind_and_its_whole_description()
 }
 
 #[tokio::test]
-async fn catalog_lists_configuration_without_launching_or_credentials() {
-    let mut other = cfg("b1", &["b2"]);
-    other.api_key_cmd = Some("secret-command".into());
-    other.headers.insert("Authorization".into(), "secret-header".into());
-    let all = map(&[("alpha", cfg("a1", &[])), ("beta", other)]);
-    let target = Target::new("alpha", all["alpha"].clone(), "active");
-    let sub = SubAgent::new(Arc::new(Mute), target.clone(), &ToolSet::new(), Vec::new(), Default::default())
-        .with_providers(all);
+async fn empty_task_requires_prompt_and_never_returns_a_catalog() {
+    let all = map(&[("alpha", cfg("a1", &[])), ("beta", cfg("b1", &["b2"]))]);
+    let sub = SubAgent::new(
+        Arc::new(Mute),
+        Target::new("alpha", all["alpha"].clone(), "active"),
+        &ToolSet::new(),
+        Vec::new(),
+        Default::default(),
+    )
+    .with_providers(all);
     let dir = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(dir.path().into());
-    let out = sub.run(json!({"prompt": ""}), &ctx).await;
-    assert!(!out.is_error, "{out:?}");
-    for text in ["alpha/active", "beta: default=b1; models=b2", "availability not checked"] {
-        assert!(out.content.contains(text), "{out:?}");
+    for args in [json!({}), json!({"prompt": ""}), json!({"prompt": "  "})] {
+        let out = sub.run(args, &ctx).await;
+        assert!(out.is_error && out.content.contains("prompt"), "{out:?}");
+        assert!(!out.content.contains("b2"));
     }
-    assert!(!out.content.contains("secret"));
-    target.set("beta", cfg("new-default", &["new-model"]), "new-active");
-    let out = sub.run(json!({"prompt": ""}), &ctx).await;
-    assert!(out.content.contains("beta/new-active") && out.content.contains("new-model"), "{out:?}");
-    assert!(sub.run(json!({}), &ctx).await.is_error);
 }

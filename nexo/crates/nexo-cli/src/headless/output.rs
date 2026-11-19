@@ -155,6 +155,7 @@ mod tests {
             profile: "explore".into(),
             provider: None,
             model: None,
+            reasoning_effort: None,
             title: "t".into(),
             state: SubState::Ok,
             started_ms: 0,

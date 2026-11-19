@@ -382,6 +382,7 @@ mod tests {
             profile: profile.into(),
             provider: None,
             model: None,
+            reasoning_effort: None,
             title: "task".into(),
             state,
             started_ms: 1,

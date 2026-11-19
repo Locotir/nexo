@@ -130,9 +130,9 @@ fn sub_rule(app: &App, w: usize) -> Line<'static> {
     if let Some(info) =
         app.sub_view.as_ref().and_then(|v| app.sub_runs.iter().find(|r| r.info.id == v.id)).map(|r| &r.info)
     {
-        if let (Some(provider), Some(model)) = (&info.provider, &info.model) {
+        if let Some(target) = crate::app::sub::target_label(info) {
             // Put the target first so it remains visible with long task titles.
-            title = format!("{} · {title}", crate::render::wrap::one_line(&format!("{provider}/{model}")));
+            title = format!("{target} · {title}");
         }
     }
     let (head, tail) = ("sub · ", if ended { " · ended" } else { "" });

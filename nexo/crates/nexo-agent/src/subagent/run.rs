@@ -202,8 +202,10 @@ impl Run {
         };
         // the window and prices of the model it runs on: its view is kept under the one and priced at the other
         let name = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
+        // The same effective level is published and used for every request of this run.
+        let effort = crate::setup::effective_effort(&cfg, &model, &None);
         if let Some(sub) = &self.sub {
-            sub.target(name, &model);
+            sub.target(name, &model, effort.as_deref());
         }
         let limits = crate::limits::resolve(name, &cfg, &model, None);
         // one set of prices for the reserve and for the bill, so what is held back is what is spent
@@ -321,7 +323,7 @@ impl Run {
             req.max_tokens = reply;
             req.session_id = Some(cache_id.clone());
             // the level set for this model holds for its sub-agents too (their own model's, when it differs)
-            req.reasoning = crate::turn::reasoning_of(&crate::setup::effective_effort(&cfg, &model, &None));
+            req.reasoning = crate::turn::reasoning_of(&effort);
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away
             let mut tries = 0u32;

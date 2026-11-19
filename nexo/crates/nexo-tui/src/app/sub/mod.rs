@@ -28,6 +28,13 @@ mod remote_items;
 use remote_items::remote_items;
 use remote_items::{safe_tool_args, safe_tool_text};
 
+/// The resolved target, or nothing while the runner is still selecting one.
+pub(crate) fn target_label(info: &SubInfo) -> Option<String> {
+    let (provider, model) = (info.provider.as_deref()?, info.model.as_deref()?);
+    let effort = info.reasoning_effort.as_deref().filter(|e| !e.is_empty()).unwrap_or("default");
+    Some(crate::render::wrap::one_line(&format!("{provider}/{model} · effort {effort}")))
+}
+
 /// Runs the app remembers; the ended ones that ended longest ago go first.
 const MAX_RUNS: usize = KEEP_RUNS * 2;
 

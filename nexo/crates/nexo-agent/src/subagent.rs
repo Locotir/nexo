@@ -287,19 +287,6 @@ impl SubAgent {
         &self.profiles
     }
 
-    /// Configuration only: do not resolve credentials or claim availability.
-    fn catalog(&self) -> String {
-        let (main, config, model) = self.target.get();
-        let mut providers = self.providers.clone();
-        providers.insert(main.clone(), config);
-        let mut lines = vec![format!("Configured models (authentication and availability not checked). Current: {main}/{model}. Use explicit provider and model with task.")];
-        for (name, cfg) in providers {
-            let default = cfg.default_model.as_deref().unwrap_or("none");
-            lines.push(format!("{name}: default={default}; models={}", cfg.models.join(", ")));
-        }
-        lines.join("\n")
-    }
-
     /// Whether a sub-agent of `p` has a tool that may change something (anything but reads and searches).
     fn can_write(&self, p: &Profile) -> bool {
         let set = self.tools_for(p);

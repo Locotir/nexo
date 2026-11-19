@@ -93,3 +93,32 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
     assert_eq!((info.state, info.tokens_in, info.tokens_out), (SubState::Ok, 250, 50));
     assert!(info.ended_ms.is_some_and(|e| e >= info.started_ms));
 }
+
+#[tokio::test]
+async fn resolved_effort_is_published_and_matches_every_subagent_request() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(
+        vec![],
+        vec![
+            Reply::Events(says_then_calls(&["looking"], "s1", "read", spends(10, 2))),
+            Reply::Events(text_spending("done", spends(10, 2))),
+        ],
+    );
+    let mut cfg = ProviderConfig::new("mock", "http://mock", None);
+    cfg.models = vec!["m1".into()];
+    cfg.effort.insert("m1".into(), "high".into());
+    cfg.efforts.insert("m1".into(), vec!["low".into(), "medium".into()]);
+    let agent = SubAgent::new(client.clone(), Target::new("mock", cfg, "m1"), &tools(&client.probe), vec![], Arc::new(OnceLock::new()));
+    let ctx = call_ctx(d.path(), "t1");
+    let subs = ctx.jobs.subs();
+    let mut rx = subs.changes();
+    agent.run(task("explore", "look around"), &ctx).await;
+    let info = subs.list().pop().unwrap();
+    assert_eq!((info.provider.as_deref(), info.model.as_deref(), info.reasoning_effort.as_deref()), (Some("mock"), Some("m1"), Some("medium")));
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, SubChange::State(i) if i.reasoning_effort.as_deref() == Some("medium"))));
+    let requests = client.sub_requests();
+    assert_eq!(requests.len(), 2);
+    for req in requests {
+        assert_eq!(serde_json::to_value(req.reasoning).unwrap(), serde_json::json!({"effort": "medium"}));
+    }
+}

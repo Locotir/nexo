@@ -12,6 +12,9 @@ pub struct Picked {
 /// Presets are defaults: a configured provider with the same name keeps the
 /// preset's fields it does not set itself.
 pub fn apply_presets(cfg: &mut Config) {
+    if cfg.explicit_providers.is_none() {
+        cfg.explicit_providers = Some(cfg.providers.clone());
+    }
     for (name, preset) in nexo_providers::presets() {
         match cfg.providers.get_mut(&name) {
             None => {
@@ -169,5 +172,24 @@ mod tests {
         let mut g = c.clone();
         g.providers.get_mut("refuseless").unwrap().models.push("codex/gw".into());
         assert_eq!(at(&g, None, "codex/gw"), ("refuseless".into(), "codex/gw".into()));
+    }
+}
+
+#[cfg(test)]
+mod explicit_provider_tests {
+    use super::*;
+
+    #[test]
+    fn presets_do_not_replace_the_explicit_provider_snapshot() {
+        let mut cfg = Config::default();
+        let mut own = nexo_core::config::ProviderConfig::default();
+        own.models = vec!["my-model".into()];
+        cfg.providers.insert("anthropic".into(), own);
+        apply_presets(&mut cfg);
+        apply_presets(&mut cfg);
+        let snapshot = cfg.explicit_providers.as_ref().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot["anthropic"].models, ["my-model"]);
+        assert!(cfg.providers.len() > 1);
     }
 }

@@ -750,6 +750,33 @@ pub(super) fn window_of(limits: &crate::limits::Limits) -> Option<u64> {
     limits.context_window.map(u64::from)
 }
 
+/// Only explicit settings, never preset model lists or credential material. This is request metadata,
+/// not a tool result or conversation message. The active target can change during the session.
+fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig, model: &str) -> String {
+    let mut lines = vec![format!("\nCurrent session target: {provider:?}/{model:?}.")];
+    let explicit = config.explicit_providers.as_ref().unwrap_or(&config.providers);
+    for (name, cfg) in explicit {
+        // Managed policy may have removed a provider since the snapshot was taken.
+        if !config.providers.contains_key(name) {
+            continue;
+        }
+        let mut models = cfg.models.clone();
+        if let Some(m) = &cfg.default_model {
+            models.push(m.clone());
+        }
+        models.extend(cfg.effort.keys().cloned());
+        models.sort();
+        models.dedup();
+        lines.push(format!(
+            " Explicit provider {name:?}; models {models:?}; default {:?}; chosen efforts {:?}.",
+            cfg.default_model, cfg.effort
+        ));
+    }
+    let effort = crate::setup::effective_effort(current, model, &config.agent.reasoning);
+    lines.push(format!(" Current session reasoning setting: {effort:?} (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Authentication and availability are not checked. Use task provider/model parameters for an explicit target."));
+    lines.concat()
+}
+
 /// The tools the model is offered: `exit_plan` only in plan mode, `recall` only when the policy asks for it.
 pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     let plan = st.perm.mode == PermissionMode::Plan;
@@ -763,6 +790,13 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     let specs = st.tools.specs_with(compact, compact.then(|| nexo_core::tool::mcp_share(window)));
     specs
         .into_iter()
+        .map(|mut s| {
+            if s.name == "task" {
+                let (provider, current, model) = st.target.get();
+                s.description.push_str(&task_model_context(&st.config, &provider, &current, &model));
+            }
+            s
+        })
         .filter(|s| {
             !prompt::left_out(window, &s.name)
                 && (plan || s.name != "exit_plan")
@@ -1080,5 +1114,32 @@ mod request_only_tests {
         for (s, e) in [("xhigh", Effort::Xhigh), ("max", Effort::Max), (" MAX ", Effort::Max)] {
             assert_eq!(reasoning_of(&Some(s.into())), Some(ReasoningConfig::Effort(e)), "{s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod task_model_context_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_settings_only_and_live_target_without_secrets() {
+        let mut config = Config::default();
+        let mut explicit = ProviderConfig::default();
+        explicit.models = vec!["chosen".into()];
+        explicit.effort.insert("chosen".into(), "high".into());
+        explicit.api_key_cmd = Some("secret-command".into());
+        config.providers.insert("mine".into(), explicit.clone());
+        config.explicit_providers = Some(config.providers.clone());
+        config.providers.get_mut("mine").unwrap().models.push("preset-model".into());
+        config.providers.insert("preset-provider".into(), ProviderConfig::default());
+        let text = task_model_context(&config, "mine", &explicit, "active");
+        for s in ["mine", "active", "chosen", "high", "not checked"] {
+            assert!(text.contains(s), "{text}");
+        }
+        for s in ["preset-provider", "preset-model", "secret-command"] {
+            assert!(!text.contains(s), "{text}");
+        }
+        let changed = task_model_context(&config, "other", &ProviderConfig::default(), "new-active");
+        assert!(changed.contains("new-active") && !changed.contains("\"active\""));
     }
 }

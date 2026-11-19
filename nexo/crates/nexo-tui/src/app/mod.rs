@@ -39,7 +39,7 @@ mod lines;
 mod palette_ui;
 mod pointer;
 mod status_and_call_text;
-mod sub;
+pub(crate) mod sub;
 mod submit;
 #[cfg(test)]
 mod tests;

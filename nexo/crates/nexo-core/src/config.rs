@@ -21,6 +21,9 @@ pub struct Config {
     /// The model used when none is asked for.
     pub model: Option<String>,
     pub providers: BTreeMap<String, ProviderConfig>,
+    /// Provider settings before built-in presets are merged, for describing explicit configuration.
+    #[serde(skip)]
+    pub explicit_providers: Option<BTreeMap<String, ProviderConfig>>,
     pub agent: AgentConfig,
     pub permissions: PermissionsConfig,
     pub context: ContextConfig,

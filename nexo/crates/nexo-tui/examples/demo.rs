@@ -480,6 +480,7 @@ fn demo_sub(events: &nexo_core::agent::EventTx) -> Vec<nexo_core::subs::SubItem>
             profile: "explore".into(),
             provider: None,
             model: None,
+            reasoning_effort: None,
             title: "survey how weights are parsed".into(),
             state: SubState::Background,
             started_ms: 1,

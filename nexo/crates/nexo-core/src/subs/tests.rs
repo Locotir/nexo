@@ -6,15 +6,22 @@ fn target_is_unknown_until_resolved_and_reaches_live_and_late_readers() {
     let mut rx = subs.changes();
     let run = subs.begin("call#1", "explore", "task", false);
     assert_eq!(subs.list()[0].provider, None);
-    run.target("xai", "grok-test");
+    assert_eq!(subs.list()[0].reasoning_effort, None);
+    run.target("xai", "grok-test", Some("high"));
     let info = &subs.list()[0];
     assert_eq!((info.provider.as_deref(), info.model.as_deref()), (Some("xai"), Some("grok-test")));
-    assert!(kinds(&mut rx).iter().any(|e| matches!(e, SubChange::State(i) if i.model.as_deref() == Some("grok-test"))));
+    assert_eq!(info.reasoning_effort.as_deref(), Some("high"));
+    assert!(kinds(&mut rx).iter().any(|e| matches!(e, SubChange::State(i) if i.model.as_deref() == Some("grok-test") && i.reasoning_effort.as_deref() == Some("high"))));
+    let roundtrip: SubInfo = serde_json::from_value(serde_json::to_value(info).unwrap()).unwrap();
+    assert_eq!(&roundtrip, info);
     let mut old = serde_json::to_value(info).unwrap();
     old.as_object_mut().unwrap().remove("provider");
     old.as_object_mut().unwrap().remove("model");
+    old.as_object_mut().unwrap().remove("reasoning_effort");
     let old: SubInfo = serde_json::from_value(old).unwrap();
-    assert!(old.provider.is_none() && old.model.is_none());
+    assert!(old.provider.is_none() && old.model.is_none() && old.reasoning_effort.is_none());
+    run.target("xai", "grok-test", None);
+    assert!(subs.list()[0].reasoning_effort.is_none());
 }
 
 fn kinds(rx: &mut broadcast::Receiver<SubChange>) -> Vec<SubChange> {

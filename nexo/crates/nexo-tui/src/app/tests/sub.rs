@@ -13,6 +13,7 @@ fn info(id: &str, title: &str, state: SubState) -> SubInfo {
         profile: "explore".into(),
         provider: None,
         model: None,
+        reasoning_effort: None,
         title: title.into(),
         state,
         started_ms: 1,
@@ -397,6 +398,29 @@ fn the_rule_and_the_placeholder_name_the_run_in_the_accent_colour() {
     let row = rows.iter().position(|r| r.contains("sub · survey")).unwrap() as u16;
     let col = rows[row as usize].chars().position(|c| c == 's').unwrap() as u16;
     assert_eq!(buf[(col, row)].fg, a.theme.accent);
+}
+
+#[test]
+fn resolved_target_is_announced_once_and_updates_the_open_view() {
+    let (mut a, _rx) = with_run();
+    let mut resolved = info(RUN, "survey the parser", SubState::Background);
+    resolved.provider = Some("provider".into());
+    resolved.model = Some("model".into());
+    a.handle_agent(AgentEvent::SubState { info: resolved.clone() });
+    let notice = "Agent explore · provider/model · effort default · survey the parser";
+    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Notice { text, .. } if text == notice)).count(), 1);
+    a.handle_agent(AgentEvent::SubState { info: resolved.clone() });
+    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Notice { text, .. } if text == notice)).count(), 1);
+    a.open_sub(RUN);
+    answer(&mut a, RUN, vec![reply("x")], 0);
+    assert!(on_screen(&frame(&mut a, 100, 30), "provider/model · effort default"));
+    resolved.reasoning_effort = Some("high".into());
+    a.handle_agent(AgentEvent::SubState { info: resolved });
+    assert!(on_screen(&frame(&mut a, 100, 30), "provider/model · effort high"));
+    let rows = frame(&mut a, 24, 8);
+    assert!(rows.iter().all(|r| crate::render::wrap::width(r) <= 24));
+    a.close_sub();
+    assert!(a.blocks.iter().any(|b| matches!(b, Block::Notice { text, .. } if text.contains("provider/model · effort high"))));
 }
 
 #[test]
