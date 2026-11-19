@@ -24,6 +24,8 @@ async fn switch_model(state: &Shared, provider: Option<String>, model: String) -
             st.limits = limits::resolve(&provider, &cfg, &model, None);
             // another model may count with another tokenizer
             st.tok_ratio = None;
+            // a request another model refused says nothing of this one's window
+            st.refused = None;
             // the fast request option belongs to the provider that was asked for it
             if provider != st.target.provider() {
                 st.fast = false;

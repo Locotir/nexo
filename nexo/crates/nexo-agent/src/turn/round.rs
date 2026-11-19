@@ -111,6 +111,12 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if cancel.is_cancelled() {
             return TurnEnd::Interrupted;
         }
+        // under the curator, a request not smaller than one the provider refused as too long without a number would
+        // be refused again: it is not sent, and the turn ends with the sizes
+        if refused_again(&state).await {
+            tell_not_fitting(&state, &events, None, refits).await;
+            return TurnEnd::Error;
+        }
         // what is in flight counts against the limits, and a reply the rest of the budget could not pay is asked
         // for shorter: the request goes out with the cap this leaves
         let flight = {
@@ -163,7 +169,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 }
                 // the curator answers with a smaller view and never with a summary
                 Lesson::Context | Lesson::Refit if curated(&state).await => {
-                    tell_not_fitting(&state, &events, &e, refits).await;
+                    tell_not_fitting(&state, &events, Some(&e), refits).await;
                     return TurnEnd::Error;
                 }
                 Lesson::Context | Lesson::Refit if !compacted => {
@@ -293,7 +299,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     }
                     Lesson::Context | Lesson::Refit if curated(&state).await => {
                         bill_attempt(&state, &events, &req.model, usage, call).await;
-                        tell_not_fitting(&state, &events, e, refits).await;
+                        tell_not_fitting(&state, &events, Some(e), refits).await;
                         return TurnEnd::Error;
                     }
                     Lesson::Context | Lesson::Refit if !compacted => {

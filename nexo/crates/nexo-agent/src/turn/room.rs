@@ -16,14 +16,19 @@ const SHARE: u64 = 4;
 const FLOOR_CHARS: usize = 2_000;
 
 /// Characters of one result in the room the window leaves, with the window it was worked out for. None when the
-/// model's window is not known, or its reply takes all of it.
+/// model's window is not known and no request was refused without a number, or its reply takes all of it. The room
+/// is under the view's ceiling (`view_ceiling`), so a request refused without a number lowers it, whether the window
+/// is known or not. The limit the cut line names is the model's window, or the ceiling when that is the smaller.
 pub(super) fn result_room(st: &State) -> Option<nexo_core::ResultRoom> {
-    let window = st.limits.context_window.filter(|w| *w > reply_tokens(st))?;
-    let view = view_window(window - reply_tokens(st), st.tok_ratio);
+    let view = view_ceiling(st)?;
     let left = view.saturating_sub(fixed_tokens(&st.system, &offered(st)));
     // a token is four characters, and a result may take a quarter of what is left
     let chars = usize::try_from(left * 4 / SHARE).unwrap_or(usize::MAX).max(FLOOR_CHARS);
-    Some(nexo_core::ResultRoom { chars, window: u64::from(window) })
+    let window = match st.limits.context_window {
+        Some(w) if window_ceiling(st) == Some(view) => u64::from(w),
+        _ => view,
+    };
+    Some(nexo_core::ResultRoom { chars, window })
 }
 
 /// `text` held to `room`: the head, and the fact of what was kept (`rest` says how to get the rest). What
@@ -40,13 +45,9 @@ pub(super) fn held(text: String, room: Option<nexo_core::ResultRoom>, what: &str
 }
 
 /// The tokens the first call of a request stays under with the files nexo attaches by itself: [`orient::FIRST_CALL`],
-/// or what the view leaves of the window when that is less.
+/// or the view's ceiling (`view_ceiling`: the window, and a request refused without a number) when that is less.
 pub(super) fn first_call(st: &State) -> u64 {
-    let reply = reply_tokens(st);
-    match st.limits.context_window.filter(|w| *w > reply) {
-        Some(w) => orient::FIRST_CALL.min(view_window(w - reply, st.tok_ratio)),
-        None => orient::FIRST_CALL,
-    }
+    view_ceiling(st).map_or(orient::FIRST_CALL, |c| orient::FIRST_CALL.min(c))
 }
 
 /// The note of jobs that ended, each report held to the room one result may take.

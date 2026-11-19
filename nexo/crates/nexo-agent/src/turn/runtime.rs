@@ -181,6 +181,7 @@ impl Runtime {
             est_sent: 0,
             compact_failed_at: None,
             tok_ratio: None,
+            refused: None,
             last_call: None,
             // the tools given may predate servers that connected since: the first turn brings them in
             mcp_gen: 0,

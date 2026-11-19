@@ -10,8 +10,8 @@ pub(super) enum Lesson {
     /// the next view smaller (compaction is the answer of the policies that do not).
     Context,
     /// The request is longer than the window and the policy keeps its view under the window: the ratio of
-    /// provider tokens to estimated tokens (or the window itself) was corrected, so a new view is smaller and
-    /// may fit with the history as it is.
+    /// provider tokens to estimated tokens, the window itself, or the smallest request refused (`State::refused`)
+    /// was corrected, so a new view is smaller and may fit with the history as it is.
     Refit,
     /// `max_tokens` was above the largest reply; it is capped now (retry).
     Output,
@@ -72,31 +72,52 @@ pub(super) async fn curated(state: &Shared) -> bool {
 
 /// Tells the person a request would not fit the window of the model after `refits` smaller views, and what
 /// they can do. The first error of a call that could not be answered with a smaller view is shown as the
-/// provider's own card.
-pub(super) async fn tell_not_fitting(state: &Shared, events: &EventTx, e: &ProviderError, refits: u32) {
-    let card = if refits == 0 {
-        problem_of(state, e, false).await
-    } else {
-        let views = if refits == 1 { "1 smaller view".to_string() } else { format!("{refits} smaller views") };
-        let why = if refits >= MAX_REFITS {
-            format!("It still did not fit after {views}.")
-        } else {
-            format!("It could not be made smaller after {views}.")
-        };
-        Problem::new("The request did not fit the model's window", why)
-            .step("`/compact` summarises the history.")
-            .step("`/clear` starts over.")
+/// provider's own card. With no error (`e` None) the request was not sent: it is not smaller than one the provider
+/// refused as too long without a number (`known_too_long`). Past the provider's card, the sizes are given.
+pub(super) async fn tell_not_fitting(state: &Shared, events: &EventTx, e: Option<&ProviderError>, refits: u32) {
+    let card = match e {
+        Some(err) if refits == 0 => problem_of(state, err, false).await,
+        _ => {
+            let views = if refits == 1 { "1 smaller view".to_string() } else { format!("{refits} smaller views") };
+            let (sizes, bare) = {
+                let st = state.lock().await;
+                (refused_sizes(&st), st.refused.is_some())
+            };
+            // a request refused with no number did not fail a window the provider named: it was refused as too long
+            let why = match e {
+                None => {
+                    "It was not sent: it is not smaller than a request the provider refused as too long.".to_string()
+                }
+                Some(_) if refits >= MAX_REFITS && bare => format!("It was still refused after {views}."),
+                Some(_) if refits >= MAX_REFITS => format!("It still did not fit after {views}."),
+                Some(_) => format!("It could not be made smaller after {views}."),
+            };
+            let title = if bare {
+                "The provider refused the request as too long"
+            } else {
+                "The request did not fit the model's window"
+            };
+            let card = Problem::new(title, format!("{why}{sizes}"));
+            if e.is_none() {
+                // `/compact` and `/clear` keep `State::refused`: only a model switch lifts it
+                card.step("`/model` switches the model; switch back to try this one again.")
+            } else {
+                card.step("`/compact` summarises the history.").step("`/clear` starts over.")
+            }
+        }
     };
     notice_problem(events, card);
 }
 
-/// How much more provider tokens a request takes per estimated token after an error that gives no count.
+/// How much more provider tokens a request takes per estimated token after an error that gives no count of the
+/// request it can use (an error with no number at all lowers `State::refused` instead).
 const RATIO_STEP: f64 = 1.15;
 
 /// What a context error teaches a policy that keeps its view under the window: the ratio of provider tokens to
 /// estimated tokens rises (from the request's own count when the error gives it, else by a step, to what the
-/// window leaves), and a window that is not known yet is guessed for this session. `Refit` when the next view
-/// will be smaller, `Context` when it would be the same request.
+/// window leaves), and a window that is not known yet is guessed for this session. An error with no number at all
+/// (neither a window nor the request's size) leaves the ratio alone and lowers the smallest request refused
+/// (`lower_refused`) instead. `Refit` when the next view will be smaller, `Context` when it would be the same request.
 fn refit(
     st: &mut State,
     provider: &str,
@@ -115,9 +136,13 @@ fn refit(
     let est = st.est_sent;
     let reply = reply_tokens(st);
     let said = hints::request_tokens(&e.message).filter(|_| est >= 500);
+    // the provider said only that the request was too long: neither its window nor the request's size
+    let bare = named.is_none() && hints::request_tokens(&e.message).is_none();
+    let lowered = bare && lower_refused(st);
     let ratio = match (said, st.limits.context_window) {
         (Some(said), _) => said as f64 / est as f64,
-        (None, Some(w)) if est > 0 => {
+        // an error with no number says nothing of the ratio: the smallest request refused answers it (`lower_refused`)
+        (None, Some(w)) if est > 0 && !bare => {
             let room = f64::from(w.saturating_sub(reply));
             (r0 * RATIO_STEP).max(room / est as f64 * RATIO_STEP)
         }
@@ -131,16 +156,19 @@ fn refit(
     // no window known and none named: a guess for this session only, never written to the person's file
     if st.limits.context_window.is_none() && est > 0 {
         st.limits.context_window = Some(guessed_window(st, est));
-        st.limits.source = "estimate".into();
+        st.limits.source = GUESSED.into();
         emit(&st.events, st.limits.event(provider, model));
         moved = true;
     }
-    if up || moved {
+    if up || moved || lowered {
         Lesson::Refit
     } else {
         Lesson::Context
     }
 }
+
+/// The `source` of a window nexo guessed from a refused request, not one the provider or the person stated.
+const GUESSED: &str = "estimate";
 
 /// The window to go by when none is known: the reply and room for three quarters of the request that failed, so
 /// the next view is that much smaller. The reply's size depends on the window, so it is worked out from it.
@@ -154,6 +182,63 @@ fn guessed_window(st: &State, est: u64) -> u32 {
         window = u64::from(limits.reply_room(st.config.agent.max_tokens, st.reply_boost)) + room;
     }
     u32::try_from(window).unwrap_or(u32::MAX)
+}
+
+/// Lowers `State::refused` to the request just refused (`st.est_sent`) when it is smaller than the smallest one
+/// refused before, and tells the person once a turn. False when it is not smaller: the next view would not be either.
+fn lower_refused(st: &mut State) -> bool {
+    let est = st.est_sent;
+    if est == 0 || st.refused.is_some_and(|r| est >= r) {
+        return false;
+    }
+    st.refused = Some(est);
+    // once a turn: `noticed` is emptied when a turn starts
+    if st.noticed.insert("refused with no number".to_string()) {
+        let ratio = st.tok_ratio;
+        let t = |n: u64| window_fit::provider_tokens(n, ratio);
+        notice(
+            &st.events,
+            Level::Info,
+            format!(
+                "the provider refused a request of about {} tokens as too long and did not say its window: requests \
+                 to this model are kept under about {} tokens from now on (until a model switch or a restart)",
+                t(est),
+                t(refused_cap(est))
+            ),
+        );
+    }
+    true
+}
+
+/// Whether the request the session last built (`st.est_sent`) is not smaller than one the provider refused as too
+/// long without a number, under the curator: sent, it would be refused again.
+pub(super) fn known_too_long(st: &State) -> bool {
+    st.policy.fits_window() && st.refused.is_some_and(|r| st.est_sent >= r)
+}
+
+/// [`known_too_long`] of the session.
+pub(super) async fn refused_again(state: &Shared) -> bool {
+    known_too_long(&state.lock().await)
+}
+
+/// The sizes the not-fitting card gives, in the provider's tokens as far as they are known: this request, the
+/// smallest request refused without a number and the ceiling it set (when there is one), and the window (when known).
+fn refused_sizes(st: &State) -> String {
+    let t = |n: u64| window_fit::provider_tokens(n, st.tok_ratio);
+    let mut parts = vec![format!("this request {}", t(st.est_sent))];
+    if let Some(r) = st.refused {
+        parts.push(format!("the smallest refused {}", t(r)));
+        parts.push(format!("the ceiling {}", t(refused_cap(r))));
+    }
+    if let Some(w) = st.limits.context_window {
+        // a window nexo guessed (`refit`) is not one the provider stated
+        parts.push(if st.limits.source == GUESSED {
+            format!("the window nexo assumes, about {w}")
+        } else {
+            format!("the window {w}")
+        });
+    }
+    format!(" Sizes in tokens, about: {}.", parts.join(", "))
 }
 
 /// Stores a limit learned from an error in the running configuration and
