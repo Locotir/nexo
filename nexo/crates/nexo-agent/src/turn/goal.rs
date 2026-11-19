@@ -81,8 +81,7 @@ pub(super) fn goal_state_line(st: &State) -> Option<String> {
     }
 }
 
-/// Whether a reply declares the goal met: its last non-empty line is `GOAL DONE`, or the words
-/// appear in its last `GOAL_TAIL` characters (models add a closing sentence after the line).
+/// Whether a reply declares the goal met: `GOAL DONE` opens one of its last few non-empty lines (`signal`).
 pub(super) fn goal_done(text: &str) -> bool {
     signal(text, "GOAL DONE")
 }
@@ -98,17 +97,40 @@ pub(super) fn goal_wait(text: &str) -> bool {
     !last.starts_with("```") && (bare.ends_with('?') || bare.ends_with('？'))
 }
 
-/// `word` (upper case) as the last non-empty line of a reply, or in its last `GOAL_TAIL` characters.
+/// How many of a reply's last non-empty lines may hold `GOAL DONE` or `GOAL WAIT` (a closing sentence or two
+/// can follow the line).
+const SIGNAL_LINES: usize = 3;
+
+/// Words that, right after `GOAL DONE` or `GOAL WAIT` and its separator, make the line a promise or a condition
+/// and not the signal (`GOAL DONE, cuando acabe la build`), in English and Spanish.
+const SIGNAL_HEDGES: [&str; 15] = [
+    "yet", "once", "when", "if", "will", "not", "until", "after", "aún", "todavía", "cuando", "si", "no", "hasta",
+    "después",
+];
+
+/// `word` (upper case) as the start of one of the last `SIGNAL_LINES` non-empty lines of a reply, read last first.
+/// The line may carry markdown or quote marks in front and a short note after (`GOAL DONE — all tests pass`,
+/// `GOAL DONE (42 green)`, `GOAL DONE ✅`), but the word must stand apart: not the start of a longer word, not
+/// followed by plain words, and not by a hedge (`GOAL DONE, cuando acabe la build`).
 pub(super) fn signal(text: &str, word: &str) -> bool {
-    let last_line = text
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(|l| l.trim_end_matches(['.', '!']).trim().eq_ignore_ascii_case(word))
-        .unwrap_or(false);
-    let tail: String = text.chars().rev().take(GOAL_TAIL).collect::<Vec<_>>().into_iter().rev().collect();
-    last_line || tail.to_ascii_uppercase().contains(word)
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(SIGNAL_LINES).any(|l| signal_line(l, word))
+}
+
+/// Whether `line` opens with `word` as a signal; see [`signal`].
+fn signal_line(line: &str, word: &str) -> bool {
+    let line = line.trim_start_matches(['*', '_', '`', '"', '\'', '>', '#', '-', ' ']);
+    // `get` is None inside a multi-byte character, and `word` is ASCII
+    let Some(head) = line.get(..word.len()) else { return false };
+    if !head.eq_ignore_ascii_case(word) {
+        return false;
+    }
+    let rest = line[word.len()..].trim_start();
+    // plain words after the word (or a longer word, `GOAL DONEX`) are no signal: a separator or the end follows
+    if rest.chars().next().is_some_and(char::is_alphanumeric) {
+        return false;
+    }
+    let next: String = rest.chars().skip_while(|c| !c.is_alphanumeric()).take_while(|c| c.is_alphanumeric()).collect();
+    !SIGNAL_HEDGES.contains(&next.to_lowercase().as_str())
 }
 
 /// Pins (or clears) the goal; gives back the goal set, for the caller to start the work.
@@ -655,9 +677,48 @@ mod goal_tests {
     fn goal_done_reads_the_last_line() {
         assert!(goal_done("all fixed\n\nGOAL DONE\n"));
         assert!(goal_done("done.\ngoal done."));
-        assert!(goal_done("all set\nGOAL DONE. Thanks for the task!"), "the words in the tail count");
+        assert!(goal_done("all set\nGOAL DONE. Thanks for the task!"), "words after the line count");
         assert!(!goal_done(&format!("GOAL DONE is what I will say later\n{}", "still working. ".repeat(20))));
         assert!(!goal_done(""));
+    }
+
+    #[test]
+    fn a_goal_word_inside_a_sentence_is_no_signal() {
+        assert!(!goal_done("Not GOAL DONE yet: sections 3 and 4 remain."));
+        assert!(!goal_done("I'll write GOAL DONE once saved"));
+        assert!(!goal_done("GOAL DONE once the build passes"));
+        assert!(!goal_done("GOAL DONE, cuando acabe la build"));
+        assert!(!goal_done("Aún no: GOAL DONE cuando termine"));
+        assert!(!goal_wait("No GOAL WAIT needed, carrying on."));
+    }
+
+    #[test]
+    fn a_goal_word_far_from_the_end_is_no_signal() {
+        assert!(!goal_done("GOAL DONE\na\nb\nc\nd"));
+        assert!(!goal_wait("GOAL WAIT\na\nb\n\nc\nd"));
+        // blank lines do not count as lines
+        assert!(goal_done("GOAL DONE\n\n\na\n\nb"));
+    }
+
+    #[test]
+    fn a_goal_word_on_its_own_line_still_counts() {
+        assert!(goal_done("all set\nGOAL DONE. Thanks for the task!"));
+        assert!(goal_done("**GOAL DONE**"));
+        assert!(goal_done("done\nGOAL DONE\n\nLet me know if you need more."));
+        assert!(goal_wait("GOAL WAIT: which port should I use"));
+    }
+
+    #[test]
+    fn a_goal_word_with_a_dash_bracket_or_emoji_still_counts() {
+        assert!(goal_done("GOAL DONE — all tests pass"));
+        assert!(goal_done("GOAL DONE - summary"));
+        assert!(goal_done("GOAL DONE (42 green)"));
+        assert!(goal_done("GOAL DONE ✅"));
+        assert!(!goal_done("GOAL DONE once the build passes"));
+        assert!(!goal_done("GOAL DONE — once the build passes"));
+        assert!(!goal_done("GOAL DONE, aún no"));
+        assert!(!goal_done("GOAL DONEX"));
+        assert!(!goal_done("GOAL DONE2"));
     }
 
     #[test]

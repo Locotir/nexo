@@ -174,7 +174,7 @@ A goal is in one of four states (`GoalState`): `active`, `waiting`,
 `paused(why)` or `done`; only an active goal continues. When a turn ends the
 loop settles it (`goal_settle`, before the inbox): an interrupt or a failed
 turn pauses it, the tool-round limit pauses it, a reply that declares
-`GOAL DONE` (last non-empty line, or anywhere in its last 200 characters) marks
+`GOAL DONE` (a line of its own among the last three non-empty lines) marks
 it done, and a reply that asks (`GOAL WAIT`, or a last line ending in `?`)
 makes it wait. A waiting goal goes back to active with the person's next
 message, whether it starts a turn or joins one; a paused or done goal stays

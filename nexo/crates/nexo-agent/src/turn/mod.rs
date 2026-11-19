@@ -120,8 +120,6 @@ const COMPACT_MARGIN: u64 = 10;
 const GOAL_ROUNDS: u32 = 5;
 /// What the agent submits by itself to keep working towards the goal.
 pub(crate) const GOAL_CONTINUE: &str = GOAL_CONTINUE_MARK;
-/// Characters at the end of a reply where `GOAL DONE` or `GOAL WAIT` counts even when it is not the last line.
-const GOAL_TAIL: usize = 200;
 
 /// A Stop hook may ask the agent to go on this many times in a row; then the request ends anyway.
 const STOP_HOOK_CAP: u32 = 3;
