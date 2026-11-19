@@ -805,6 +805,26 @@ fn a_fork_of_a_restated_goal_keeps_the_persons_words() {
 }
 
 #[test]
+fn an_old_goals_words_found_again_are_kept_by_the_next_rewrite() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+    s.append(&Message::user("[goal set] ship it")).unwrap();
+    let p = s.path().to_path_buf();
+    drop(s);
+    // a file saved before the words were kept: the goal is a restatement, its words only in the history
+    let mut f = OpenOptions::new().append(true).open(&p).unwrap();
+    f.write_all(b"{\"type\":\"goal\",\"text\":\"Want: ship it\"}\n").unwrap();
+    drop(f);
+    let mut s = Session::open_path(&p).unwrap();
+    s.adopt_goal_original("ship it");
+    s.adopt_goal_original("other words");
+    // a compaction takes the `[goal set]` request away; the words stay with the goal
+    s.reset_with(&[Message::user("summary")]).unwrap();
+    let o = Session::open_path(&p).unwrap();
+    assert_eq!((o.goal(), o.goal_original()), (Some("Want: ship it"), Some("ship it")));
+}
+
+#[test]
 fn the_list_counts_past_a_line_cut_inside_a_utf8_sequence() {
     let d = tempfile::tempdir().unwrap();
     let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();

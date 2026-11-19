@@ -227,6 +227,10 @@ fn goal_set_words(history: &[Message]) -> Option<String> {
 pub(super) fn reopened_goal(session: &mut Session, events: &EventTx) -> GoalLog {
     let (goal, original) = (session.goal(), session.goal_original());
     let mut log = resumed_log(goal, original, session.goal_progress().clone(), session.messages());
+    // words found again in the history of an older file: the session keeps them, so a compaction does not lose them
+    if let Some(words) = &log.original {
+        session.adopt_goal_original(words);
+    }
     if session.goal().is_some() && session.goal_state().is_active() {
         remember_stop(&mut log.stops, REOPENED);
         if let Err(e) = session.record_goal_state(GoalState::Paused(REOPENED.into()), log.progress()) {

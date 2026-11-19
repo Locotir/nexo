@@ -12,8 +12,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-// Sessions hold tool outputs, which can hold secrets: their folder and files are the user's alone (on unix).
 use nexo_core::agent::GoalProgress;
+// Sessions hold tool outputs, which can hold secrets: their folder and files are the user's alone (on unix).
 use nexo_core::fsmode::{create_private_dir, private_file};
 use nexo_core::message::{Message, Part, Role};
 use nexo_core::paths;

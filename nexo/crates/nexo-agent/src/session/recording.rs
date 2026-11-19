@@ -263,6 +263,14 @@ impl Session {
         &self.goal_progress
     }
 
+    /// The person's own words of a goal saved before they were kept, found again in the history: held from here
+    /// on, so the next write of the goal (a state change, a compaction, a rewind) saves them. Words already held stay.
+    pub fn adopt_goal_original(&mut self, words: &str) {
+        if self.goal.is_some() && self.goal_original.is_none() {
+            self.goal_original = Some(words.to_string());
+        }
+    }
+
     /// A new goal (or none): it starts active, with these words as the person's own and no progress yet.
     pub fn record_goal(&mut self, text: Option<&str>) -> anyhow::Result<()> {
         let started_ms = if text.is_some() { nexo_core::mailbox::now_ms() } else { 0 };
