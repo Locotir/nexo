@@ -26,8 +26,16 @@ pub(super) fn full_system(st: &State) -> String {
         base = format!("{base}\n\n{directive}");
     }
     // the task list is not here: a change in it would change the system text and with it the cached
-    // conversation after it. It rides on each request instead (`todo_note`).
-    with_goal(&base, st.goal.as_deref())
+    // conversation after it. It rides on each request instead (`todo_note`). The same goes for the goal's
+    // restatement (`goal_note`): the words here are the person's, fixed for the goal's life.
+    with_goal(&base, goal_words(st))
+}
+
+/// The person's own words of the goal set, as they typed them: the ones the system prompt pins and the request
+/// leaves out (`bare_goal_set`). A goal the agent restated (`goal_brief`) keeps them beside the restatement.
+pub(super) fn goal_words(st: &State) -> Option<&str> {
+    st.goal.as_ref()?;
+    st.goal_log.original.as_deref().or(st.goal.as_deref())
 }
 
 /// The task list as it stands, for the request about to be sent. It rides with that request only, so a change
@@ -47,17 +55,14 @@ pub(super) fn todo_note(st: &State) -> Option<String> {
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
 /// so pausing or resuming does not cost the cached prefix; what the state is reaches the model as a
 /// line in the person's next message (`goal_state_line`), not as a change here. The person's own words come with the
-/// request to restate them (`goal_brief`); once restated, the restatement is the goal.
+/// request to restate them (`goal_brief`); the restatement, once made, rides with each request (`goal_note`), so
+/// this text stays the same for the goal's life.
 pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
     let Some(g) = goal else { return system.to_string() };
-    let head = if g.starts_with(GOAL_BRIEF_HEAD) {
-        format!("Goal, as the person means it:\n{g}")
-    } else {
-        format!(
-            "Goal, in the person's words: {g}\nBefore working on it, call `goal_brief` once to restate it as they \
-             mean it: what they want, why, how they expect it done, and when it counts as done."
-        )
-    };
+    let head = format!(
+        "Goal, in the person's words: {g}\nBefore working on it, call `goal_brief` once to restate it as they \
+         mean it: what they want, why, how they expect it done, and when it counts as done."
+    );
     format!(
         "{system}\n\n{head}\nKeep working towards this goal across turns. `{GOAL_CONTINUE_MARK}` comes from the loop, \
          not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
@@ -190,7 +195,6 @@ pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
     if let Err(e) = st.session.record_goal_text(&brief, progress) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
-    st.system = full_system(&st);
     emit_goal(&st);
     ToolOutput::ok("The goal now reads as restated. Go on with the work.")
 }
@@ -384,17 +388,40 @@ fn written_paths(args: &Value) -> Vec<String> {
     one.into_iter().chain(many).collect()
 }
 
-/// What rides on each request of an active goal, never in the saved conversation: the counts of its run so far
-/// (see [`GoalCounts::line`]) and, once its work brings nothing new, the facts of that (see [`GoalIdle::facts`]).
+/// What rides on each request of a goal, never in the saved conversation: the goal as the agent restated it
+/// (`goal_brief`), whatever the goal's state, as first line; then, only while the goal is active, the counts of its
+/// run so far (see [`GoalCounts::line`]) and, once its work brings nothing new, the facts of that (see
+/// [`GoalIdle::facts`]). The restatement rides here and not in the system prompt, so making it leaves the cached
+/// prefix alone.
 pub(super) fn goal_note(st: &State) -> Option<String> {
-    if st.goal.is_none() || !st.goal_state.is_active() {
-        return None;
-    }
-    let counts = st.goal_counts.line(st.goal_round, st.cost);
-    // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
-    let idle = st.goal_idle.facts().map(|f| format!("[nexo, not the person: goal work: {f}]"));
-    let lines: Vec<String> = counts.into_iter().chain(idle).collect();
+    st.goal.as_ref()?;
+    let brief = st.goal_log.brief.as_ref().map(|b| format!("Goal, as the person means it:\n{b}"));
+    let (counts, idle) = if st.goal_state.is_active() {
+        // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
+        let idle = st.goal_idle.facts().map(|f| format!("[nexo, not the person: goal work: {f}]"));
+        (st.goal_counts.line(st.goal_round, st.cost), idle)
+    } else {
+        (None, None)
+    };
+    let lines: Vec<String> = brief.into_iter().chain(counts).chain(idle).collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// Takes the person's words out of the goal request of `messages`: in each user text whose goal request is
+/// `[goal set] <words>`, that request becomes `[goal set]`, and what nexo put around it (notes before, the start note
+/// and files after) stays. The system prompt holds the words for the goal's life (`goal_words`), so a request carries
+/// them once. Only the request changes: the history, the session file, compaction and the curator keep the words. An
+/// earlier goal's request has other words and stays whole.
+pub(super) fn bare_goal_set(messages: &mut [Message], words: &str) {
+    let whole = format!("{GOAL_SET_MARK} {words}");
+    for part in messages.iter_mut().filter(|m| m.role == Role::User).flat_map(|m| m.content.iter_mut()) {
+        let Part::Text { text } = part else { continue };
+        let found = nexo_core::agent::goal_mark_at(text.as_str()).zip(nexo_core::agent::goal_request(text.as_str()));
+        if let Some((at, request)) = found.filter(|(_, request)| *request == whole) {
+            let end = at + request.len();
+            text.replace_range(at..end, GOAL_SET_MARK);
+        }
+    }
 }
 
 /// Tells the interface the goal, its round and its state.
@@ -543,7 +570,7 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<(String, Vec<Attach
 pub(super) fn goal_request_now(st: &mut State) -> (String, Vec<Attachment>) {
     match st.goal_pending.take() {
         Some(attachments) => {
-            let words = st.goal_log.original.as_deref().or(st.goal.as_deref()).unwrap_or_default();
+            let words = goal_words(st).unwrap_or_default();
             (format!("{GOAL_SET_MARK} {words}"), attachments)
         }
         None => (GOAL_CONTINUE.to_string(), Vec::new()),
@@ -883,12 +910,52 @@ mod goal_tests {
         let s = with_goal("base", Some("ship it"));
         assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("single line GOAL DONE"));
         assert!(s.contains("single line GOAL WAIT") && s.contains("call `goal_brief` once"));
-        // once restated, the restatement is the goal and nothing asks for it again
-        let s = with_goal("base", Some("Want: a\nWhy: b\nHow: c\nDone when: d"));
-        assert!(
-            s.starts_with("base\n\nGoal, as the person means it:\nWant: a\n") && !s.contains("call `goal_brief` once")
-        );
         assert!(s.contains("`[goal: continue]` comes from the loop"));
+    }
+
+    #[test]
+    fn the_goals_request_carries_the_mark_and_not_the_words() {
+        let mut m = vec![Message::user("[goal set] make the tests pass")];
+        bare_goal_set(&mut m, "make the tests pass");
+        assert_eq!(m[0].text(), "[goal set]");
+        // what nexo put around the request stays: a note before it, the start note and a file after it
+        let around = "[background jobs ended]\njob 1 done\n\n[goal set] make the tests pass\n\n\
+                      [project at the start of this request]\nGit: clean\n\n\
+                      @notes.md (attached in full, as it is now):\n```md\nmake the tests pass\n```";
+        let mut m = vec![Message::user(around)];
+        bare_goal_set(&mut m, "make the tests pass");
+        let want = around.replacen("[goal set] make the tests pass", "[goal set]", 1);
+        assert_eq!(m[0].text(), want);
+        assert!(m[0].text().contains("```md\nmake the tests pass\n```"), "a file's own words are not the goal's");
+        // words of several paragraphs go whole
+        let mut m = vec![Message::user("[goal set] fix x\n\nand then y\n\n[project at the start of this request]\nc")];
+        bare_goal_set(&mut m, "fix x\n\nand then y");
+        assert_eq!(m[0].text(), "[goal set]\n\n[project at the start of this request]\nc");
+    }
+
+    #[test]
+    fn an_older_goals_request_and_other_messages_keep_their_words() {
+        let mut m = vec![
+            Message::user("[goal set] first goal"),
+            Message::assistant("[goal set] first goal"),
+            Message::user("please [goal set] first goal"),
+            Message::user("[goal: continue]"),
+            Message::user("[goal set] second goal"),
+        ];
+        bare_goal_set(&mut m, "second goal");
+        let texts: Vec<String> = m.iter().map(Message::text).collect();
+        let want = [
+            "[goal set] first goal",
+            "[goal set] first goal",
+            "please [goal set] first goal",
+            "[goal: continue]",
+            "[goal set]",
+        ];
+        assert_eq!(texts, want);
+        // the words of the goal must be the whole request: a request that only starts with them is another
+        let mut m = vec![Message::user("[goal set] fix the parser and the lexer")];
+        bare_goal_set(&mut m, "fix the parser");
+        assert_eq!(m[0].text(), "[goal set] fix the parser and the lexer");
     }
 
     #[test]

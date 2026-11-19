@@ -25,6 +25,17 @@ fn user_texts(evs: &[AgentEvent]) -> Vec<String> {
         .collect()
 }
 
+/// The last text part of a request's last message: where what rides on that request only (notes) goes.
+fn last_text_part(q: &ModelRequest) -> Option<String> {
+    let parts = &q.messages.last()?.content;
+    parts.iter().rev().find_map(|p| if let Part::Text { text } = p { Some(text.clone()) } else { None })
+}
+
+/// The text of every user message of a request, in order.
+fn user_messages_of(q: &ModelRequest) -> Vec<String> {
+    q.messages.iter().filter(|m| m.role == nexo_core::message::Role::User).map(Message::text).collect()
+}
+
 const CONTINUE: &str = "[goal: continue]";
 
 #[tokio::test]
@@ -94,9 +105,14 @@ async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
     let reqs = client.requests();
     assert!(reqs[0].system.contains("Goal, in the person's words: tests green pls\n"));
     assert!(reqs[0].tools.iter().any(|t| t.name == "goal_brief"));
-    // from the next request on, the restatement stands in for the person's words
-    assert!(reqs[1].system.contains(&format!("Goal, as the person means it:\n{want}\n")));
-    assert!(!reqs[1].system.contains("tests green pls"));
+    // the restatement does not change the system prompt (the cached prefix): the person's words stay in it, and
+    // the restatement rides with each request from the next one on, in its last text part
+    assert_eq!(reqs[0].system, reqs[1].system);
+    assert!(reqs[1].system.contains("Goal, in the person's words: tests green pls\n"));
+    assert!(!reqs[1].system.contains("Goal, as the person means it:"));
+    assert!(!last_text_part(&reqs[0]).unwrap_or_default().contains("Goal, as the person means it:"));
+    let last = last_text_part(&reqs[1]).expect("the request has a text part");
+    assert!(last.contains(&format!("Goal, as the person means it:\n{want}")), "{last}");
     r.stop().await;
     // a resumed session keeps the restatement
     let client = Scripted::new(vec![]);
@@ -108,6 +124,46 @@ async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
     assert_eq!(log.brief.as_deref(), Some(want));
     assert!(log.steps >= 1 && log.started_ms > 0, "the progress is saved too: {log:?}");
     r.stop().await;
+}
+
+#[tokio::test]
+async fn the_goal_words_go_once_per_request() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("make the tests pass".into()), attachments: vec![] });
+    let t1 = r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    // the system prompt holds the words, the request holds the mark
+    assert!(reqs[0].system.contains("Goal, in the person's words: make the tests pass\n"));
+    let first = user_messages_of(&reqs[0]).remove(0);
+    assert!(first.starts_with("[goal set]"), "{first}");
+    assert!(!first.contains("make the tests pass"), "{first}");
+    // the history keeps the words whole
+    assert_eq!(user_texts(&t1), vec!["[goal set] make the tests pass"]);
+}
+
+#[tokio::test]
+async fn an_older_goals_words_stay_in_the_request() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("again\nGOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("fix the parser".into()), attachments: vec![] });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("write the docs".into()), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    let sent = user_messages_of(&reqs[1]);
+    assert!(sent[0].starts_with("[goal set] fix the parser"), "the first goal's words stay: {sent:?}");
+    let second = sent.last().unwrap();
+    assert!(second.starts_with("[goal set]") && !second.contains("write the docs"), "{second}");
+    assert!(reqs[1].system.contains("Goal, in the person's words: write the docs\n"));
+    assert!(!reqs[1].system.contains("fix the parser"));
 }
 
 #[tokio::test]

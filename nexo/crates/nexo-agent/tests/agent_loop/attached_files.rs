@@ -675,7 +675,7 @@ async fn a_panic_location_names_its_file() {
 }
 
 /// A goal set from `/goal summarise @notes.md` brings the file the person attached, as a message does: the first
-/// request towards it holds the file whole and once, with the goal's words in full.
+/// request towards it holds the file whole and once, and the goal's words are in the system prompt, once.
 #[tokio::test]
 async fn a_goal_brings_the_files_the_person_attached() {
     let d = test_tmpdir().unwrap();
@@ -693,5 +693,9 @@ async fn a_goal_brings_the_files_the_person_attached() {
     let file = "@notes.md (attached in full, as it is now):\n```md\nthe plan is to ship on friday\n```";
     assert!(sent.contains(file), "{sent}");
     assert_eq!(sent.matches("the plan is to ship on friday").count(), 1, "the file comes once: {sent}");
-    assert!(sent.contains("[goal set] summarise @notes.md into REPORT.md"), "the words stay whole: {sent}");
+    // the words are in the system prompt, whole, and the request carries the mark (the history keeps them too)
+    assert!(sent.starts_with("[goal set]"), "{sent}");
+    assert!(!sent.contains("summarise @notes.md into REPORT.md"), "the words go once: {sent}");
+    let system = &client.requests()[0].system;
+    assert!(system.contains("Goal, in the person's words: summarise @notes.md into REPORT.md\n"), "{system}");
 }
