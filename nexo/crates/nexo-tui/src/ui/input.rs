@@ -93,12 +93,18 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Requests wait their turn and the box is empty: say how to take one back (the short form when the long does not fit).
+/// Requests wait and the box is empty: say how to take one back (the short form when the long does not fit). Enter
+/// sends them on only while a turn runs; idle (an Esc kept them) they join the next message.
 fn queued_hint(app: &App, room: usize) -> Option<String> {
     if !app.opts.hints || app.queued_msgs.is_empty() {
         return None;
     }
-    ["↑ edit queued messages · Enter sends now", "↑ edit queued"]
+    let long = if app.busy {
+        "↑ edit queued messages · Enter sends now"
+    } else {
+        "↑ edit queued · joins your next message"
+    };
+    [long, "↑ edit queued"]
         .into_iter()
         .find(|s| width(s) <= room)
         .map(String::from)
