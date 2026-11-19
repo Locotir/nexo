@@ -424,7 +424,9 @@ pub async fn run(
                     // the carried jobs ended with no turn to follow them: there is no answer to give
                     continue;
                 }
-                let more = stdin_rx.is_some() || !inbox.is_empty();
+                // jobs an earlier request left running keep the run going (it waits for them once the input ends),
+                // so this end does not kill them and its result does not name them as killed
+                let more = stdin_rx.is_some() || !inbox.is_empty() || run.has_carried();
                 if end_request(&mut run, schema.as_ref(), &mut attempt, &mut inbox, &mut exit, &mut last, more) {
                     break 'main;
                 }

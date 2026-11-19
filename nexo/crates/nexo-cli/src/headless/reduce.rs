@@ -182,8 +182,10 @@ impl Run {
                 self.jobs = jobs.clone();
                 self.carried.retain(|id| jobs.iter().any(|j| j.id == *id && j.status.running()));
                 // a job that ended with no turn to follow it (the model was told of it already, or the session is
-                // held) is all the wait is for; with a turn open, that turn's own end decides
-                if self.waiting && !self.turn_open && !jobs.iter().any(|j| j.status.running()) {
+                // held) is all the wait is for; with a turn open, that turn's own end decides. Jobs an earlier
+                // request left running are not waited for (as at `Idle`); a wait for them alone starts again
+                let own = jobs.iter().any(|j| j.status.running() && !self.carried.contains(&j.id));
+                if self.waiting && !self.turn_open && !own {
                     self.waiting = false;
                     return true;
                 }
@@ -487,6 +489,23 @@ mod tests {
         assert_eq!(v["result"], "the job finished");
         assert_eq!(v["num_turns"], 2);
         assert!(v.get("killed_jobs").is_none() && v.get("error").is_none(), "{v}");
+    }
+
+    #[test]
+    pub(super) fn a_job_left_running_by_an_earlier_request_does_not_hold_the_wait_of_a_later_one() {
+        use nexo_core::jobs::JobKind::Shell;
+        let mut run = super::Run::new(super::Fmt::Json, vec![], false, None);
+        run.on_event(&jobs(vec![job(1, Shell, "serve", true)]));
+        // the next message ended the wait for job 1
+        run.carry_running();
+        run.on_event(&AgentEvent::TurnStart { turn: 1 });
+        say(&mut run, "started another");
+        run.on_event(&AgentEvent::TurnEnd { reason: TurnEnd::Done });
+        run.on_event(&jobs(vec![job(1, Shell, "serve", true), job(2, Shell, "sleep 1", true)]));
+        assert!(!run.on_event(&AgentEvent::Idle { running_jobs: 2 }), "the request waits for job 2");
+        // job 2 ends with no turn to follow it: the wait is over although job 1 still runs
+        assert!(run.on_event(&jobs(vec![job(1, Shell, "serve", true), job(2, Shell, "sleep 1", false)])));
+        assert!(run.has_carried());
     }
 
     #[test]
