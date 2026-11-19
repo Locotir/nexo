@@ -70,3 +70,13 @@ fn float_compare_fuses_with_swapped_operands_and_arms() {
     let e = simplify(Expr::bin(Bin::LOr, cmp(Cmp::FUno, x(), y()), cmp(Cmp::FOne, y(), x())));
     assert_eq!(e, cmp(Cmp::FUne, x(), y()));
 }
+
+#[test]
+fn float_compares_that_do_not_fuse_keep_their_predicates() {
+    let x = || Expr::Var(Var::Xmm(0), 64);
+    let y = || Expr::Var(Var::Xmm(1), 64);
+    let cmp = |c: Cmp, p: Expr, q: Expr| Expr::Cmp(c, b(p), b(q));
+    // `x < y || y < x`: no ordered or unordered test to fuse with, so both compares stay as written
+    let e = simplify(Expr::bin(Bin::LOr, cmp(Cmp::FOlt, x(), y()), cmp(Cmp::FOlt, y(), x())));
+    assert_eq!(e, Expr::bin(Bin::LOr, cmp(Cmp::FOlt, x(), y()), cmp(Cmp::FOlt, y(), x())));
+}

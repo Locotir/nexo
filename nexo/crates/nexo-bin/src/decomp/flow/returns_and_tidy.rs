@@ -61,6 +61,8 @@ pub fn fix_returns(f: &mut Lifted) -> Option<Var> {
 /// least one of them is a float operation. The entry block without a definition is the argument.
 fn xmm0_float_result(f: &Lifted, an: &Analysis, rets: &[usize]) -> bool {
     let x0 = Key::V(Var::Xmm(0));
+    // xmm0 is an argument when some read of it sees the value the function was called with
+    let x0_arg = an.uses.iter().any(|u| u.key == x0 && u.reach.iter().any(|&d| an.defs[d].blk == ENTRY));
     let mut float = false;
     for &r in rets {
         let mut seen = vec![false; f.blocks.len()];
@@ -85,6 +87,10 @@ fn xmm0_float_result(f: &Lifted, an: &Analysis, rets: &[usize]) -> bool {
                 }
             }
             if !found {
+                // the function start with no definition: only a float argument can be the result
+                if (bi == 0 || an.preds[bi].is_empty()) && !x0_arg {
+                    return false;
+                }
                 work.extend(an.preds[bi].iter().copied());
             }
         }
@@ -116,7 +122,7 @@ pub fn float_consts(f: &mut Lifted, ret: Option<Var>) {
         }
     };
     let changed = std::cell::Cell::new(0usize);
-    let fix = |e: &mut Expr| {
+    let mut fix = |e: &mut Expr| {
         let mut n = 0usize;
         let float_pick = e.is_float_op();
         match e {

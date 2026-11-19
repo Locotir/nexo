@@ -280,9 +280,7 @@ fn fold_as_float(mut args: Vec<Expr>, w: Bits) -> Expr {
         Const(v, _) => Const(v & mask(w), w),
         B(op @ (Bin::And | Bin::Xor), x, y) => {
             let hit = match (&*x, &*y) {
-                (Intr("as_int", xs, _), Const(c, _)) if xs.len() == 1 && xs[0].bits() == w => {
-                    Some((xs[0].clone(), *c))
-                }
+                (Intr("as_int", xs, _), Const(c, _)) if xs.len() == 1 && xs[0].bits() == w => Some((xs[0].clone(), *c)),
                 _ => None,
             };
             match hit {
@@ -386,8 +384,8 @@ fn simplify_bin(op: Bin, x: Expr, y: Expr) -> Expr {
             if c1.is_float() && c2.is_float() && ((a1 == a2 && q1 == q2) || (a1 == q2 && q1 == a2)) =>
         {
             // the swapped operand order is the same test with the predicate mirrored
-            let c2 = if a1 == a2 && q1 == q2 { c2 } else { swap_float(c2) };
-            match fuse_float(op, c1, c2) {
+            let c2s = if a1 == a2 && q1 == q2 { c2 } else { swap_float(c2) };
+            match fuse_float(op, c1, c2s) {
                 Some(Ok(c)) => Expr::Cmp(c, a1, q1),
                 Some(Err(v)) => Const(u64::from(v), 1),
                 None => B(op, b(Expr::Cmp(c1, a1, q1)), b(Expr::Cmp(c2, a2, q2))),
@@ -418,7 +416,15 @@ fn swap_float(c: Cmp) -> Cmp {
 fn fuse_float(op: Bin, c1: Cmp, c2: Cmp) -> Option<Result<Cmp, bool>> {
     use Cmp::*;
     // The other predicate, when one of the two is `t`.
-    let pick = |t: Cmp| if c1 == t { Some(c2) } else if c2 == t { Some(c1) } else { None };
+    let pick = |t: Cmp| {
+        if c1 == t {
+            Some(c2)
+        } else if c2 == t {
+            Some(c1)
+        } else {
+            None
+        }
+    };
     match op {
         Bin::LAnd => Some(match pick(FOrd)? {
             FUeq => Ok(FOeq),
