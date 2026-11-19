@@ -36,8 +36,14 @@ pub(crate) mod testenv {
         fn is_pe(&self) -> bool {
             false
         }
+        fn const_bytes(&self, addr: u64, len: usize) -> Option<&[u8]> {
+            self.read(addr, len).filter(|b| b.len() == len)
+        }
     }
 }
+
+#[cfg(test)]
+mod sse_tests;
 
 #[cfg(test)]
 mod tests {

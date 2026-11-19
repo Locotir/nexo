@@ -54,3 +54,29 @@ fn subst_replaces_and_folds() {
     assert_eq!(e.subst(Var::Reg(0), &Expr::Const(8, 64)), 1);
     assert_eq!(e, Expr::Const(12, 64));
 }
+
+#[test]
+fn float_compare_fuses_with_swapped_operands_and_arms() {
+    let x = || Expr::Var(Var::Xmm(0), 64);
+    let y = || Expr::Var(Var::Xmm(1), 64);
+    let cmp = |c: Cmp, p: Expr, q: Expr| Expr::Cmp(c, b(p), b(q));
+    // ordered && unordered-equal, second compare with swapped operands
+    let e = simplify(Expr::bin(Bin::LAnd, cmp(Cmp::FOrd, x(), y()), cmp(Cmp::FUeq, y(), x())));
+    assert_eq!(e, cmp(Cmp::FOeq, x(), y()));
+    // swapped arm order
+    let e = simplify(Expr::bin(Bin::LAnd, cmp(Cmp::FUeq, y(), x()), cmp(Cmp::FOrd, x(), y())));
+    assert_eq!(e, cmp(Cmp::FOeq, y(), x()));
+    // unordered || ordered-not-equal, swapped operands
+    let e = simplify(Expr::bin(Bin::LOr, cmp(Cmp::FUno, x(), y()), cmp(Cmp::FOne, y(), x())));
+    assert_eq!(e, cmp(Cmp::FUne, x(), y()));
+}
+
+#[test]
+fn float_compares_that_do_not_fuse_keep_their_predicates() {
+    let x = || Expr::Var(Var::Xmm(0), 64);
+    let y = || Expr::Var(Var::Xmm(1), 64);
+    let cmp = |c: Cmp, p: Expr, q: Expr| Expr::Cmp(c, b(p), b(q));
+    // `x < y || y < x`: no ordered or unordered test to fuse with, so both compares stay as written
+    let e = simplify(Expr::bin(Bin::LOr, cmp(Cmp::FOlt, x(), y()), cmp(Cmp::FOlt, y(), x())));
+    assert_eq!(e, Expr::bin(Bin::LOr, cmp(Cmp::FOlt, x(), y()), cmp(Cmp::FOlt, y(), x())));
+}

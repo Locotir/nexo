@@ -85,14 +85,17 @@ fn fold_cond(cc: Cc, ops: &Expr, res: &Expr) -> Option<Expr> {
                 }
             }
             FlagKind::FCmp => Some(match cc {
-                Cc::A => cmp(Cmp::Fgt, x, y),
-                Cc::AE => cmp(Cmp::Fge, x, y),
-                Cc::B => cmp(Cmp::Flt, x, y),
-                Cc::BE => cmp(Cmp::Fle, x, y),
-                Cc::E => cmp(Cmp::Feq, x, y),
-                Cc::NE => cmp(Cmp::Fne, x, y),
-                Cc::P => Expr::Intr("unordered", vec![x, y], 1),
-                Cc::NP => Expr::Un(Un::LNot, b(Expr::Intr("unordered", vec![x, y], 1))),
+                // After `ucomisd x, y` an unordered pair sets ZF, PF and CF and clears OF, SF and AF, so SF == OF.
+                Cc::A => cmp(Cmp::FOgt, x, y),
+                Cc::AE => cmp(Cmp::FOge, x, y),
+                Cc::B => cmp(Cmp::FUlt, x, y),
+                Cc::BE => cmp(Cmp::FUle, x, y),
+                Cc::E | Cc::LE => cmp(Cmp::FUeq, x, y),
+                Cc::NE | Cc::G => cmp(Cmp::FOne, x, y),
+                Cc::P => cmp(Cmp::FUno, x, y),
+                Cc::NP => cmp(Cmp::FOrd, x, y),
+                Cc::S | Cc::O | Cc::L => Expr::Const(0, 1),
+                Cc::NS | Cc::NO | Cc::GE => Expr::Const(1, 1),
                 _ => return None,
             }),
             FlagKind::Bt => {
@@ -159,6 +162,8 @@ fn trunc_of(e: Expr, w: Bits) -> Expr {
     }
     match e {
         Const(v, _) => konst(v, w),
+        // The low bits of the same vector register (a copy made by `movaps`).
+        Var(self::Var::Xmm(n), _) => Var(self::Var::Xmm(n), w),
         Trunc(x, _) => trunc_of(*x, w),
         Zext(x, _) | Sext(x, _) if x.bits() >= w => trunc_of(*x, w),
         Zext(x, _) => Zext(x, w),
@@ -227,7 +232,7 @@ pub fn simplify_node(e: Expr) -> Expr {
             (self::Un::Neg, Un(self::Un::Neg, y))
             | (self::Un::Not, Un(self::Un::Not, y))
             | (self::Un::LNot, Un(self::Un::LNot, y)) => *y,
-            (self::Un::LNot, Cmp(c, l, r)) if !c.is_float() => Cmp(c.negate(), l, r),
+            (self::Un::LNot, Cmp(c, l, r)) => Cmp(c.negate(), l, r),
             (self::Un::LNot, Cond(cc, o, r)) => Cond(cc.negate(), o, r),
             (self::Un::LNot, Bin(self::Bin::LAnd, l, r)) => {
                 Bin(self::Bin::LOr, b(simplify_node(Un(self::Un::LNot, l))), b(simplify_node(Un(self::Un::LNot, r))))
@@ -252,11 +257,70 @@ pub fn simplify_node(e: Expr) -> Expr {
                 }
             }
             _ if x == y => *x,
-            other => Select(b(other), x, y),
+            other => match float_select_as_logic(&other, &x, &y) {
+                Some(folded) => folded,
+                None => Select(b(other), x, y),
+            },
         },
         Load(a, w) => Load(a, w),
+        Intr("as_float", args, w) => fold_as_float(args, w),
         other => other,
     }
+}
+
+/// `as_float` of a value whose bits are visible: a constant, a mask that clears the sign, a mask that flips it.
+fn fold_as_float(mut args: Vec<Expr>, w: Bits) -> Expr {
+    use Expr::{Bin as B, Const, Intr};
+    let (abs, sign) = if w == 32 { (0x7fff_ffffu64, 0x8000_0000u64) } else { (0x7fff_ffff_ffff_ffff, 1u64 << 63) };
+    if args.len() != 1 || !(w == 32 || w == 64) {
+        return Intr("as_float", args, w);
+    }
+    let a = args.remove(0);
+    match a {
+        Const(v, _) => Const(v & mask(w), w),
+        B(op @ (Bin::And | Bin::Xor), x, y) => {
+            let hit = match (&*x, &*y) {
+                (Intr("as_int", xs, _), Const(c, _)) if xs.len() == 1 && xs[0].bits() == w => Some((xs[0].clone(), *c)),
+                _ => None,
+            };
+            match hit {
+                Some((v, c)) if op == Bin::And && c == abs => Intr(if w == 32 { "fabsf" } else { "fabs" }, vec![v], w),
+                Some((v, c)) if op == Bin::Xor && c == sign => Expr::Un(Un::FNeg, b(v)),
+                _ => Intr("as_float", vec![B(op, x, y)], w),
+            }
+        }
+        other => Intr("as_float", vec![other], w),
+    }
+}
+
+/// `c ? 0 : y` and its mirrors on a float compare with a 1-bit `y`: the logic the compiler spelled with `setcc` and
+/// `cmovcc` (gcc writes `a == b` as `setnp` and `cmovne`).
+fn float_select_as_logic(c: &Expr, x: &Expr, y: &Expr) -> Option<Expr> {
+    let Expr::Cmp(op, ..) = c else { return None };
+    if !op.is_float() || x.bits() != y.bits() {
+        return None;
+    }
+    let w = x.bits();
+    let bit = |e: &Expr| -> Option<Expr> {
+        match e {
+            Expr::Zext(i, _) if i.bits() == 1 => Some((**i).clone()),
+            _ if e.bits() == 1 => Some(e.clone()),
+            _ => None,
+        }
+    };
+    let (k, other, const_first) = match (x, y) {
+        (Expr::Const(k @ (0 | 1), _), o) => (*k, bit(o)?, true),
+        (o, Expr::Const(k @ (0 | 1), _)) => (*k, bit(o)?, false),
+        _ => return None,
+    };
+    // `c ? k : o` with the constant first; `c ? o : k` is `!c ? k : o`.
+    let cond = if const_first { c.clone() } else { simplify_node(Expr::Un(Un::LNot, b(c.clone()))) };
+    let logic = if k == 0 {
+        simplify_node(Expr::bin(Bin::LAnd, simplify_node(Expr::Un(Un::LNot, b(cond))), other))
+    } else {
+        simplify_node(Expr::bin(Bin::LOr, cond, other))
+    };
+    Some(logic.zext(w))
 }
 
 fn simplify_bin(op: Bin, x: Expr, y: Expr) -> Expr {
@@ -315,7 +379,74 @@ fn simplify_bin(op: Bin, x: Expr, y: Expr) -> Expr {
         }
         (LAnd, x, Const(c, _)) if c != 0 => x,
         (LOr, x, Const(0, _)) => x,
+        // `jp` then `je` (or `setnp` then `cmovne`): an ordered test joined with the unordered one is the ordered one.
+        (op @ (LAnd | LOr), Expr::Cmp(c1, a1, q1), Expr::Cmp(c2, a2, q2))
+            if c1.is_float() && c2.is_float() && ((a1 == a2 && q1 == q2) || (a1 == q2 && q1 == a2)) =>
+        {
+            // the swapped operand order is the same test with the predicate mirrored
+            let c2s = if a1 == a2 && q1 == q2 { c2 } else { swap_float(c2) };
+            match fuse_float(op, c1, c2s) {
+                Some(Ok(c)) => Expr::Cmp(c, a1, q1),
+                Some(Err(v)) => Const(u64::from(v), 1),
+                None => B(op, b(Expr::Cmp(c1, a1, q1)), b(Expr::Cmp(c2, a2, q2))),
+            }
+        }
         (op, x, y) => B(op, b(x), b(y)),
+    }
+}
+
+/// The predicate that tests `(q, a)` when `c` tests `(a, q)`.
+fn swap_float(c: Cmp) -> Cmp {
+    use Cmp::*;
+    match c {
+        FOlt => FOgt,
+        FOgt => FOlt,
+        FOle => FOge,
+        FOge => FOle,
+        FUlt => FUgt,
+        FUgt => FUlt,
+        FUle => FUge,
+        FUge => FUle,
+        other => other,
+    }
+}
+
+/// `FOrd(a, b) && P(a, b)` is the ordered form of `P`; `FUno(a, b) || P(a, b)` is the unordered form of `P`.
+/// `Err` is a constant outcome.
+fn fuse_float(op: Bin, c1: Cmp, c2: Cmp) -> Option<Result<Cmp, bool>> {
+    use Cmp::*;
+    // The other predicate, when one of the two is `t`.
+    let pick = |t: Cmp| {
+        if c1 == t {
+            Some(c2)
+        } else if c2 == t {
+            Some(c1)
+        } else {
+            None
+        }
+    };
+    match op {
+        Bin::LAnd => Some(match pick(FOrd)? {
+            FUeq => Ok(FOeq),
+            FUlt => Ok(FOlt),
+            FUle => Ok(FOle),
+            FUgt => Ok(FOgt),
+            FUge => Ok(FOge),
+            FUne => Ok(FOne),
+            FUno => Err(false),
+            other => Ok(other),
+        }),
+        Bin::LOr => Some(match pick(FUno)? {
+            FOne => Ok(FUne),
+            FOeq => Ok(FUeq),
+            FOlt => Ok(FUlt),
+            FOle => Ok(FUle),
+            FOgt => Ok(FUgt),
+            FOge => Ok(FUge),
+            FOrd => Err(true),
+            other => Ok(other),
+        }),
+        _ => None,
     }
 }
 

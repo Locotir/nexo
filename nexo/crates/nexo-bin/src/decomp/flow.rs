@@ -352,6 +352,7 @@ pub fn run(f: &mut Lifted, sigs: &mut dyn Sigs) -> Facts {
     tidy(f);
     propagate(f);
     tidy(f);
+    float_consts(f, ret);
     narrow_returns(f);
     let mut facts = Facts { ret, ..Facts::default() };
     entry_facts(f, &mut facts);
@@ -375,7 +376,7 @@ pub fn entry_facts(f: &Lifted, facts: &mut Facts) {
             Key::V(Var::Stack(k)) if i64::from(k) >= abi.stack_arg_base() => {
                 facts.stack_args.insert(k);
             }
-            Key::V(Var::Xmm(x)) if x < 8 => {
+            Key::V(Var::Xmm(x)) if x < abi.float_arg_count() => {
                 facts.float_args.insert(x);
             }
             _ => {}

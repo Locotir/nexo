@@ -1172,6 +1172,7 @@ pub(super) fn lift(env: &dyn Env, start: u64, end: u64) -> Lifted {
         unresolved_jumps: unresolved,
         raw: lf.raw,
         instructions: ins.len(),
+        fconsts: Default::default(),
     };
     promote_slots(&mut out, &lf.escapes);
     out

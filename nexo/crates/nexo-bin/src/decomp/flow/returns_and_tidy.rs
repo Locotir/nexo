@@ -45,12 +45,151 @@ pub fn fix_returns(f: &mut Lifted) -> Option<Var> {
     if xmm_ok && !rax_defined_somewhere {
         return Some(Var::Xmm(0));
     }
+    // a loop that sums doubles ends in blocks with no xmm0 definition of their own: look through the predecessors
+    if !all_real && !rets.is_empty() && xmm0_float_result(f, &an, &rets.iter().map(|r| r.0).collect::<Vec<_>>()) {
+        return Some(Var::Xmm(0));
+    }
     for bl in &mut f.blocks {
         if let Term::Return(e) = &mut bl.term {
             *e = None;
         }
     }
     None
+}
+
+/// True when every definition of xmm0 that reaches the end of each return block is a real one (not a clobber), and at
+/// least one of them is a float operation. The entry block without a definition is the argument.
+fn xmm0_float_result(f: &Lifted, an: &Analysis, rets: &[usize]) -> bool {
+    let x0 = Key::V(Var::Xmm(0));
+    // xmm0 is an argument when some read of it sees the value the function was called with
+    let x0_arg = an.uses.iter().any(|u| u.key == x0 && u.reach.iter().any(|&d| an.defs[d].blk == ENTRY));
+    let mut float = false;
+    for &r in rets {
+        let mut seen = vec![false; f.blocks.len()];
+        let mut work = vec![r];
+        while let Some(bi) = work.pop() {
+            if std::mem::replace(&mut seen[bi], true) {
+                continue;
+            }
+            let bl = &f.blocks[bi];
+            let mut found = false;
+            'o: for j in (0..bl.stmts.len()).rev() {
+                for &d in &an.stmt_defs[bi][j] {
+                    if an.defs[d].key == x0 {
+                        match &bl.stmts[j].st {
+                            Stmt::Clobber(_) => return false,
+                            Stmt::Assign(_, e) => float |= e.is_float_op(),
+                            _ => {}
+                        }
+                        found = true;
+                        break 'o;
+                    }
+                }
+            }
+            if !found {
+                // the function start with no definition: only a float argument can be the result
+                if (bi == 0 || an.preds[bi].is_empty()) && !x0_arg {
+                    return false;
+                }
+                work.extend(an.preds[bi].iter().copied());
+            }
+        }
+    }
+    float
+}
+
+/// A float constant read from read-only data stays a load until here. In a float position (an operand of a float
+/// operation, or the returned double) it becomes the constant itself, so the printer can write `2.5` and not
+/// `*(double*)0x...`. Integer code has no such constants.
+pub fn float_consts(f: &mut Lifted, ret: Option<Var>) {
+    if f.fconsts.is_empty() {
+        return;
+    }
+    let consts = f.fconsts.clone();
+    let konst_of = |e: &Expr| -> Option<Expr> {
+        match e {
+            Expr::Load(a, w @ (32 | 64)) => match &**a {
+                Expr::Const(ad, _) => consts.get(ad).map(|v| Expr::Const((*v as u64) & mask(*w), *w)),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let swap = |c: &mut Expr, n: &mut usize| {
+        if let Some(k) = konst_of(c) {
+            *c = k;
+            *n += 1;
+        }
+    };
+    let changed = std::cell::Cell::new(0usize);
+    let mut fix = |e: &mut Expr| {
+        let mut n = 0usize;
+        let float_pick = e.is_float_op();
+        match e {
+            Expr::Bin(Bin::FAdd | Bin::FSub | Bin::FMul | Bin::FDiv, a, c) => {
+                swap(a, &mut n);
+                swap(c, &mut n);
+            }
+            Expr::Cmp(op, a, c) if op.is_float() => {
+                swap(a, &mut n);
+                swap(c, &mut n);
+            }
+            Expr::Flags(FlagKind::FCmp, a, c) => {
+                swap(a, &mut n);
+                swap(c, &mut n);
+            }
+            Expr::Un(Un::FNeg, a) => swap(a, &mut n),
+            Expr::Select(_, a, d) if float_pick => {
+                swap(a, &mut n);
+                swap(d, &mut n);
+            }
+            Expr::Intr(name, args, _)
+                if matches!(*name, "sqrt" | "sqrtf" | "fabs" | "fabsf" | "fext" | "ftrunc" | "ftoi" | "lrint") =>
+            {
+                args.iter_mut().for_each(|a| swap(a, &mut n));
+            }
+            Expr::Intr("as_float", args, _) => {
+                for a in args.iter_mut() {
+                    a.rewrite(&mut |x| {
+                        if let Expr::Intr("as_int", inner, w) = x {
+                            if let Some(k) = inner.first().and_then(konst_of) {
+                                *x = Expr::Const(k.as_const().unwrap_or(0) & mask(*w), *w);
+                                n += 1;
+                            }
+                        }
+                    });
+                }
+            }
+            _ => {}
+        }
+        changed.set(changed.get() + n);
+    };
+    for bi in 0..f.blocks.len() {
+        let bl = &mut f.blocks[bi];
+        for s in &mut bl.stmts {
+            for e in s.st.exprs_mut() {
+                let before = changed.get();
+                e.rewrite(&mut fix);
+                if changed.get() != before {
+                    let old = std::mem::replace(e, Expr::Unknown(0));
+                    *e = simplify(old);
+                }
+            }
+        }
+        for e in bl.term.exprs_mut() {
+            let before = changed.get();
+            e.rewrite(&mut fix);
+            if changed.get() != before {
+                let old = std::mem::replace(e, Expr::Unknown(0));
+                *e = simplify(old);
+            }
+        }
+        if ret == Some(Var::Xmm(0)) {
+            if let Term::Return(Some(e)) = &mut bl.term {
+                swap(e, &mut 0);
+            }
+        }
+    }
 }
 
 /// For the return statements of a function that returns a value, make the expression the variable.
