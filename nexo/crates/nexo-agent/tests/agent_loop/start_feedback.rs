@@ -144,17 +144,19 @@ async fn a_start_check_over_its_cap_leaves_the_post_write_check_on() {
     cfg.agent.check_at_start = true;
     cfg.tools.post_write_check = true;
     cfg.tools.post_write_check_secs = 1;
-    let set = tools().with(Arc::new(nexo_tools::edit::Edit));
+    let set = tools().with(Arc::new(nexo_tools::edit::Edit)).with(Arc::new(nexo_tools::bash::Bash));
     let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
     r.next().await;
+    let t0 = Instant::now();
     r.send(AgentCommand::Submit { text: "fix `add` in src/lib.rs".into(), attachments: vec![] });
-    // the post-write check waits for the crate's slow test, so the turn takes longer than a plain one
+    // the post-write check runs a real cargo test through the real bash, under the 1 s cap
     loop {
         let ev = r.raw_within(Duration::from_secs(90)).await;
         if matches!(ev, AgentEvent::TurnEnd { .. }) {
             break;
         }
     }
+    let took = t0.elapsed();
     r.stop().await;
     let reqs = client.requests();
     // the start check ran, and the cap killed it: without that the post-write asserts below prove nothing
@@ -172,4 +174,7 @@ async fn a_start_check_over_its_cap_leaves_the_post_write_check_on() {
     assert!(!result.contains("| skipped |"), "the start check's slowness is not the post-write check's: {result}");
     // a real outcome of the check (an exit or the cap's kill), not a note that it was left out
     assert!(result.contains("| exit "), "{result}");
+    assert!(!result.contains("| exit none |"), "no real exit: {result}");
+    assert!(!result.contains("bash:cargo test"), "the fake bash ran the check: {result}");
+    assert!(took < Duration::from_secs(20), "the turn took {took:?}: the check was not capped at 1 s");
 }
