@@ -68,7 +68,9 @@ fn a_watch_on_a_local_ends_with_one_stop_when_its_function_returns() {
     assert!(w.contains("`acc` is int at 0x") && w.contains("4 bytes") && w.contains("frame of work"), "{w}");
     assert!(run(&mut s, "breaks").contains("until work returns"));
     let (hits, end) = until_deleted(&mut s);
-    assert!(hits.len() >= 3 && hits.iter().all(|h| h.contains("watch #2") && h.contains("->")), "{hits:#?}");
+    // the first stop can be the local's own initialisation writing the zero the stack already held ("same value"): the change stops are the sums
+    assert!(hits.len() >= 3 && hits.iter().all(|h| h.contains("watch #2")), "{hits:#?}");
+    assert!(hits.iter().filter(|h| h.contains("->")).count() >= 3, "{hits:#?}");
     assert!(end.contains("watch #2 deleted: `acc` went out of scope (frame of work returned)"), "{end}");
     assert!(!run(&mut s, "breaks").contains("watch 0x"), "the watch is gone");
 }
