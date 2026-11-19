@@ -364,7 +364,7 @@ impl Remote {
                         let bit = self
                             .watch
                             .iter()
-                            .position(|w| w.is_some_and(|w| a >= w.addr && a < w.addr + u64::from(w.len)))
+                            .position(|w| w.is_some_and(|w| a >= w.addr && a - w.addr < u64::from(w.len)))
                             .unwrap_or(0);
                         Stop::Watch(1 << bit)
                     } else if exec {

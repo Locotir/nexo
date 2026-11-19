@@ -62,14 +62,14 @@ pub fn unwind(img: &Image, bias: u64, pc: u64, gp: &[u64; 16], rd: &mut dyn FnMu
         None => {
             // a leaf: nothing was pushed
             let ra = rd(n[SP])?;
-            n[SP] += 8;
+            n[SP] = n[SP].wrapping_add(8);
             Some((ra, n, Some(n[SP])))
         }
         Some((begin, _, info)) => {
             let into_prolog = rva - begin as u64;
             apply(img, info as u64, Some(into_prolog), &mut n, rd, 0)?;
             let ra = rd(n[SP])?;
-            n[SP] += 8;
+            n[SP] = n[SP].wrapping_add(8);
             Some((ra, n, Some(n[SP])))
         }
     }
@@ -105,7 +105,7 @@ fn apply(
             0 => {
                 if run {
                     n[WIN2GP[opinfo as usize]] = rd(n[SP])?;
-                    n[SP] += 8;
+                    n[SP] = n[SP].wrapping_add(8);
                 }
             }
             // ALLOC_LARGE
@@ -123,7 +123,7 @@ fn apply(
             // ALLOC_SMALL
             2 => {
                 if run {
-                    n[SP] += opinfo as u64 * 8 + 8;
+                    n[SP] = n[SP].wrapping_add(opinfo as u64 * 8 + 8);
                 }
             }
             // SET_FPREG
@@ -151,8 +151,8 @@ fn apply(
             // PUSH_MACHFRAME: an interrupt or exception frame, 5 words (rip cs eflags rsp ss), one more with an error code
             10 => {
                 if run {
-                    let at = n[SP] + if opinfo == 1 { 8 } else { 0 };
-                    n[SP] = rd(at + 24)?;
+                    let at = n[SP].wrapping_add(if opinfo == 1 { 8 } else { 0 });
+                    n[SP] = rd(at.wrapping_add(24))?;
                     return Some(());
                 }
             }
