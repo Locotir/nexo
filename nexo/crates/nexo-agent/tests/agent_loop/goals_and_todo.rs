@@ -510,7 +510,7 @@ async fn a_paused_goal_holds_through_messages_until_resume() {
 
     // the pause is kept with the session; resume goes on
     let mut r = start(client.clone(), config(PermissionMode::Auto), Some(id), dir.path()).await;
-    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
     assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("paused by you".into())));
     r.send(AgentCommand::ResumeGoal);
     let t = r.turn().await;

@@ -106,7 +106,7 @@ impl Glob {
                     break;
                 }
                 let kind = entry.file_type();
-                let is_link = kind.is_some_and(|t| t.is_symlink());
+                let is_link = entry.depth() > 0 && kind.is_some_and(|t| t.is_symlink());
                 if !is_link && !kind.is_some_and(|t| t.is_file()) {
                     continue;
                 }

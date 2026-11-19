@@ -125,6 +125,31 @@ pub(super) async fn run_command_logged(
             },
         }
     }
+    // the group is gone, so nothing holds the pipes: the readers are only behind on a big output.
+    // Keep reading until they close, fall silent for DRAIN, or the call is cancelled or times out
+    // (a process that left the group with its own setsid may still write to the pipes).
+    #[cfg(unix)]
+    if open && matches!(end, End::Exited(_)) {
+        if let Some(pid) = pid {
+            // SAFETY: signal 0 only checks that the process group exists; ESRCH means it does not.
+            let group_gone = unsafe { libc::kill(-(pid as i32), 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if group_gone {
+                while open {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        _ = &mut deadline => break,
+                        line = tokio::time::timeout(DRAIN, rx.recv()) => match line {
+                            Ok(Some(l)) => on_line(&l),
+                            Ok(None) => open = false,
+                            Err(_) => break,
+                        },
+                    }
+                }
+            }
+        }
+    }
     // the shell exited and a process it started still holds the pipes: the readers go on, for a job
     // (process groups are a unix thing: elsewhere the pid is only the shell's, which has exited and may be reused)
     let pgid = pid.filter(|_| cfg!(unix) && matches!(end, End::Exited(_)) && open);

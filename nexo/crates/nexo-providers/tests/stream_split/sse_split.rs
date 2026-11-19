@@ -45,7 +45,9 @@ fn recorded_streams_give_the_same_events_cut_at_every_position_with_each_line_en
     for (i, protocol) in PROTOCOLS.iter().enumerate() {
         let base = fixture(protocol);
         let reference = sse_events(base.as_bytes(), &[]);
-        assert!(reference.len() > 4, "{protocol}: the fixture has events");
+        let datas = base.lines().filter(|l| l.starts_with("data:")).count();
+        assert!(datas >= 3, "{protocol}: the fixture has events");
+        assert_eq!(reference.len(), datas, "{protocol}: every data line is one event");
         for (j, end) in ["\n", "\r\n", "\r"].iter().enumerate() {
             let text = with_line_ends(base, end);
             let name = format!("{protocol} with line end {j}");

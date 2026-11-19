@@ -196,7 +196,7 @@ impl Tool for Grep {
                         }
                         let Ok(e) = entry else { return WalkState::Continue };
                         let kind = e.file_type();
-                        let is_link = kind.is_some_and(|t| t.is_symlink());
+                        let is_link = e.depth() > 0 && kind.is_some_and(|t| t.is_symlink());
                         if !is_link && !kind.is_some_and(|t| t.is_file()) {
                             return WalkState::Continue;
                         }
