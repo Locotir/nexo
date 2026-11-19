@@ -586,6 +586,38 @@ fn piped_stdin_is_added_to_the_prompt_and_append_system_prompt_is_accepted() {
 }
 
 #[test]
+fn stdin_that_starts_after_the_request_is_named_and_exits_2() {
+    use std::io::Write;
+    let d = tempfile::tempdir().unwrap();
+    // each word of the answer takes 400 ms, so the run is still going when the late input comes
+    let config = format!("{MOCK}[providers.mock.extra]\ndelay_ms = 400\n[context]\npolicy = \"plain\"\n");
+    std::fs::write(d.path().join("config.toml"), config).unwrap();
+    let prompt = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nexo"))
+        .args(["-p", prompt])
+        .current_dir(d.path())
+        .env("NEXO_CONFIG_DIR", d.path())
+        .env("NEXO_DATA_DIR", d.path().join("data"))
+        .env("NEXO_CACHE_DIR", d.path().join("cache"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // open for 5 s (the 3 s wait plus room for the setup), then the input comes and stdin closes; the
+    // answer's 17 words keep the run going until at least 3 s + 6.8 s
+    let mut stdin = child.stdin.take().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    stdin.write_all(b"late logs\n").unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("came on stdin after the request went out"), "{stderr}");
+    assert!(!stdout.contains("late logs"), "{stdout}");
+}
+
+#[test]
 fn add_dir_lets_the_tools_write_outside_the_folder() {
     let d = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();

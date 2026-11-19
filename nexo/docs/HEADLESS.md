@@ -8,6 +8,8 @@ git diff | nexo -p "review this diff"            # plain stdin is added to the p
 nexo -p --input-format stream-json --output-format stream-json < messages.jsonl
 ```
 
+Piped input has 3 s to start when `-p` has a prompt. Input that starts later but before the request goes out is still added to it; input that comes after the request went out is not used, and the run exits 2 and says so on stderr (save the input to a file first, or add `< /dev/null`).
+
 Headless runs are saved as sessions but marked, so they stay out of `/resume`.
 
 ## Flags
@@ -38,7 +40,7 @@ Nobody can be asked in a headless run: a tool call that needs permission is refu
 | --- | --- |
 | 0 | Done. |
 | 1 | The run failed or the model hit an error (provider error, a session that cannot be resumed). |
-| 2 | Bad usage: unknown flag or value, unreadable schema or `--add-dir`, no prompt, a line of the input stream that is not a user message. |
+| 2 | Bad usage: unknown flag or value, unreadable schema or `--add-dir`, no prompt, a line of the input stream that is not a user message, or piped input that came after the request went out without it (it was not used). |
 | 3 | The final answer does not match `--json-schema` after one retry. |
 | 4 | The turn limit (`--max-turns`, or `agent.max_turns` in the configuration) was reached. |
 | 5 | A tool call was refused by the permission policy, a deny rule or `--allowed-tools`, and the run otherwise finished. Text mode prints the first refusal on stderr. |
