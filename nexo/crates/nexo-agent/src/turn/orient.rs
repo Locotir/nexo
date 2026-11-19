@@ -216,6 +216,41 @@ pub(super) fn carried(history: &[Message]) -> HashSet<String> {
     out
 }
 
+/// Tells `st.reads` what an installed history carries: it starts over, then each file the user messages put whole
+/// under a header counts as attached when the block the file makes now is in the latest message that heads it,
+/// byte for byte, as a live session keeps only the latest attachment of a file. A file changed since (or gone) is
+/// left out, so naming it attaches it again. Run when a history is installed (a resumed session, a forked one), as
+/// `Reads` is never rebuilt from the messages.
+pub(super) fn adopt_attached(st: &mut State) {
+    st.reads.clear();
+    let mut done = HashSet::new();
+    for m in st.history.iter().rev().filter(|m| m.role == Role::User) {
+        let text = m.text();
+        for header in text.lines().filter(|l| headed_file(l).is_some()) {
+            let Some(shown) = headed_file(header) else { continue };
+            let path = Path::new(shown);
+            let real = if path.is_absolute() { path.to_path_buf() } else { st.cwd.join(path) };
+            // the latest copy of a file decides, whether it still matches or not
+            if !done.insert(real.canonicalize().unwrap_or_else(|_| real.clone())) {
+                continue;
+            }
+            // a file that grew past what is attached, or one that is no regular file (a pipe), is not read
+            let fits = std::fs::metadata(&real).is_ok_and(|md| md.is_file() && md.len() <= ATTACHMENT_BYTES as u64);
+            if !fits {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&real) else { continue };
+            if bytes.len() > ATTACHMENT_BYTES {
+                continue;
+            }
+            let Ok(body) = String::from_utf8(bytes) else { continue };
+            if text.contains(&fenced(header, &real, &body)) {
+                st.reads.attached(real, body.as_bytes(), header.to_string());
+            }
+        }
+    }
+}
+
 /// The tokens nexo may put in the first call of a request besides the conversation: `agent.attach_budget`, or what a
 /// long request leaves of the first call (it stays under FIRST_CALL tokens, or what the window's view leaves when that
 /// is less). 0 when nexo attaches nothing by itself.
@@ -313,7 +348,7 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment], s
     let instructions = in_system_text(st);
     // a file the model wrote or read in this session, unchanged since, is already known: it can ask for it
     let allowed = |rel: &str, real: &Path| {
-        !said.contains(rel)
+        !(said.contains(rel) && std::fs::read(real).is_ok_and(|b| st.reads.shown_unchanged(real, &b)))
             && !st.reads.met_unchanged(&st.cwd.join(rel))
             && !st.reads.met_unchanged(real)
             && !made_in_work(&st.worked, real)

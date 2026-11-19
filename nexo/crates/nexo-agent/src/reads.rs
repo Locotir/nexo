@@ -66,6 +66,7 @@ pub enum Span {
 }
 
 /// Lines `start..=end` of a file, in the result of `anchor` (a call, or an attachment's header).
+#[derive(Clone)]
 struct Piece {
     start: usize,
     end: usize,
@@ -241,9 +242,22 @@ impl Reads {
             .then(|| "a file your own commands made, shown in full above".into())
     }
 
-    /// A file attached whole to a request, under `header`.
+    /// Whether `bytes` (the file as it is now) sit in what the model sees: an earlier attachment or a whole `read`
+    /// of exactly this text, still in view. False for a file changed since, or one a cut left out.
+    pub fn shown_unchanged(&self, path: &Path, bytes: &[u8]) -> bool {
+        let Some(s) = self.seen.get(&key(path)).filter(|s| s.hash == digest(bytes)) else { return false };
+        // the result of an `edit` or a `write` shows a change, not the file: only a header or a `read` counts
+        let changed = self.wrote.get(&key(path)).map(|w| w.1.as_str());
+        let shown: Vec<Piece> = s.pieces.iter().filter(|p| Some(p.anchor.as_str()) != changed).cloned().collect();
+        covers(&shown, bytes, Some(&self.in_view))
+    }
+
+    /// A file attached whole to a request, under `header`. The message was just pushed to the history, so the
+    /// next call carries it whole: it is in view from now, before `note_view` runs, as for a second message
+    /// of the same drain.
     pub fn attached(&mut self, path: PathBuf, bytes: &[u8], header: String) {
         let end = String::from_utf8_lossy(bytes).lines().count();
+        self.in_view.insert(header.clone());
         let pieces = vec![Piece { start: 1, end, anchor: header }];
         self.seen.insert(key(&path), Seen { hash: digest(bytes), pieces, noted: false });
     }
@@ -855,6 +869,51 @@ mod tests {
         r.note_view(&[Message::user(format!("look\n\n{header}\n```txt\none\n```"))]);
         let note = r.after_read(&p, "a.txt", None, 2000, "c1", usize::MAX).unwrap();
         assert!(note.contains("attached"), "{note}");
+    }
+
+    #[test]
+    fn an_attachment_counts_as_shown_only_while_unchanged_and_in_view() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.txt");
+        std::fs::write(&p, "one\n").unwrap();
+        let mut r = Reads::default();
+        let header = included_header("a.txt");
+        assert!(!r.shown_unchanged(&p, b"one\n"), "never attached");
+        r.attached(p.clone(), b"one\n", header.clone());
+        // just attached: the next request carries it
+        assert!(r.shown_unchanged(&p, b"one\n"));
+        r.note_view(&[Message::user(format!("{header}\n```txt\none\n```"))]);
+        assert!(r.shown_unchanged(&p, b"one\n"));
+        // the file is not what the copy says
+        assert!(!r.shown_unchanged(&p, b"two\n"));
+        // a cut left the header out of the view
+        r.note_view(&[Message::user("something else".to_string())]);
+        assert!(!r.shown_unchanged(&p, b"one\n"));
+        // an edit of the file leaves the result of the call, which is not an attachment
+        r.note_view(&[Message::user(format!("{header}\n```txt\none\n```")), result("e1", "edited")]);
+        std::fs::write(&p, "newer\n").unwrap();
+        r.after_change(&p, "e1", false);
+        assert!(!r.shown_unchanged(&p, b"newer\n"));
+    }
+
+    #[test]
+    fn a_whole_read_after_an_edit_counts_as_shown_and_the_edit_result_does_not() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("long.txt");
+        let old: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&p, &old).unwrap();
+        let mut r = Reads::default();
+        r.attached(p.clone(), old.as_bytes(), included_header("long.txt"));
+        let new = old.replace("line 5\n", "line five\n");
+        std::fs::write(&p, &new).unwrap();
+        r.after_change(&p, "e1", false);
+        r.note_view(&[result("e1", "edited")]);
+        assert!(!r.shown_unchanged(&p, new.as_bytes()), "the result of an edit is not the file");
+        assert!(r.after_read(&p, "long.txt", None, 2000, "c2", usize::MAX).is_none());
+        r.note_view(&[result("e1", "edited"), result("c2", "     1│ line 1")]);
+        assert!(r.shown_unchanged(&p, new.as_bytes()), "a whole read of it is in view");
+        r.note_view(&[result("e1", "edited")]);
+        assert!(!r.shown_unchanged(&p, new.as_bytes()), "a cut left the read out");
     }
 
     #[test]

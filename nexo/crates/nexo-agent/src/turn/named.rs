@@ -1181,6 +1181,10 @@ pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
     }
     let legacy = st.config.agent.attach_budget == 0;
     let said = orient::carried(&st.history);
+    // attached to an earlier request, or included in one: the conversation holds it while that copy is current
+    let held = |shown: &str, real: &Path| {
+        said.contains(shown) && std::fs::read(real).is_ok_and(|b| st.reads.shown_unchanged(real, &b))
+    };
     let texts: Vec<String> = st.history.iter().filter(|m| m.role == Role::User).map(|m| m.text()).collect();
     let allowed = |shown: &str| {
         st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": shown }), &st.cwd) == Decision::Allow
@@ -1189,7 +1193,7 @@ pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
     let mut taken = 0usize;
     for file in &found.files {
         let direct = file.project && (file.how == How::Path || (file.how == How::Exact && !file.shown.contains('/')));
-        if (legacy && !direct) || said.contains(&file.shown) || !allowed(&file.shown) {
+        if (legacy && !direct) || held(&file.shown, &file.real) || !allowed(&file.shown) {
             continue;
         }
         let tokens = orient::attached_tokens(file.size as usize);
@@ -1253,7 +1257,7 @@ pub(super) fn admit(st: &State, found: Found, budget: u64) -> Admitted {
         if !room.say(&mut out, &texts, format!("{}: defined at {}", def.word, at.join(", "))) {
             continue;
         }
-        if said.contains(&first.shown) {
+        if held(&first.shown, &def.real) {
             continue;
         }
         let tokens = orient::attached_tokens(first.size as usize);
