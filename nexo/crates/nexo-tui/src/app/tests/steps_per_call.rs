@@ -13,10 +13,11 @@ fn only_the_main_agents_calls_are_counted_as_steps() {
         session: Usage { input: 100, output: 10, ..Default::default() },
         cost_usd: 0.0,
     });
-    // three events of sub-agents, the reader or compaction: they spend, but carry no call usage
+    // three events of sub-agents, the reader or compaction: they spend, but carry no call usage (`turn` is what
+    // each event spent, `session` the running total)
     for i in 1..=3u64 {
         a.handle_agent(AgentEvent::Usage {
-            turn: Usage { input: 100 + 50 * i, output: 10 + 5 * i, ..Default::default() },
+            turn: Usage { input: 50, output: 5, ..Default::default() },
             call: Usage::default(),
             session: Usage { input: 100 + 50 * i, output: 10 + 5 * i, ..Default::default() },
             cost_usd: 0.0,

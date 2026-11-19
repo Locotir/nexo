@@ -80,6 +80,9 @@ pub(super) struct Run {
     pub(super) keeps_jobs: bool,
     /// The last result was built with `keeps_jobs` set: the run can still end with jobs running that it did not name.
     pub(super) last_kept: bool,
+    /// The jobs a request still waited for when the next message ended it: their follow-up is not the answer of a
+    /// later request, so no later request waits for them. Ids of jobs still running.
+    pub(super) carried: Vec<u32>,
 }
 
 /// The tools the model is offered (as `turn::offered` hands them out) among `all`, for a window of `window`.
@@ -123,6 +126,7 @@ impl Run {
             turn_open: false,
             keeps_jobs: false,
             last_kept: false,
+            carried: Vec::new(),
         }
     }
 
@@ -176,6 +180,7 @@ impl Run {
             AgentEvent::Preparing { .. } => self.turn_open = true,
             AgentEvent::Jobs { jobs } => {
                 self.jobs = jobs.clone();
+                self.carried.retain(|id| jobs.iter().any(|j| j.id == *id && j.status.running()));
                 // a job that ended with no turn to follow it (the model was told of it already, or the session is
                 // held) is all the wait is for; with a turn open, that turn's own end decides
                 if self.waiting && !self.turn_open && !jobs.iter().any(|j| j.status.running()) {
@@ -260,7 +265,9 @@ impl Run {
                 self.turn_open = false;
                 // jobs still run and the request has not ended badly: the end of a job starts a turn with its
                 // result, and that reply is the answer, so the request stays open for it
-                if *running_jobs > 0 && self.live && self.r.end.is_none() {
+                // the jobs an earlier request left running are not this request's to wait for
+                let own = running_jobs.saturating_sub(self.carried_running());
+                if own > 0 && self.live && self.r.end.is_none() {
                     self.waiting = true;
                     // stderr in every format but the old event stream: stream JSON keeps stdout for its own lines
                     if self.fmt != Fmt::Legacy {
@@ -286,6 +293,37 @@ impl Run {
     /// The jobs the last `Jobs` event listed as running.
     fn running_jobs(&self) -> impl Iterator<Item = &nexo_core::jobs::JobInfo> {
         self.jobs.iter().filter(|j| j.status.running())
+    }
+
+    /// How many of the running jobs an earlier request left running.
+    fn carried_running(&self) -> usize {
+        self.running_jobs().filter(|j| self.carried.contains(&j.id)).count()
+    }
+
+    /// The request ends while it waits for jobs because the next message is here: the jobs it waited for are carried.
+    pub(super) fn carry_running(&mut self) {
+        let ids: Vec<u32> = self.running_jobs().map(|j| j.id).filter(|id| !self.carried.contains(id)).collect();
+        self.carried.extend(ids);
+    }
+
+    /// True when a job an earlier request left running is still running.
+    pub(super) fn has_carried(&self) -> bool {
+        self.carried_running() > 0
+    }
+
+    /// The input ended and only jobs an earlier request left running remain: a new request waits for them, and the
+    /// reply to their end is its answer. False when none runs.
+    pub(super) fn wait_for_carried(&mut self) -> bool {
+        let n = self.carried_running();
+        if n == 0 {
+            return false;
+        }
+        self.r = Req::default();
+        self.waiting = true;
+        if self.fmt != Fmt::Legacy {
+            eprintln!("{}", self.waiting_line(n));
+        }
+        true
     }
 
     /// What the script reads on stderr while the request waits for background jobs. Every running job is named, and

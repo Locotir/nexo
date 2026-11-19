@@ -177,6 +177,8 @@ fn enter_on_an_empty_draft_with_a_queue_sends_it_now() {
     a.submit();
     assert_eq!(a.queued, 1);
     while rx.try_recv().is_ok() {}
+    // a deliberate Enter, after the pause that tells it from a double or held one (see double_enter.rs)
+    a.fx.clock = Some(a.queued_at.expect("the queueing Enter is timed") + std::time::Duration::from_secs(1));
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::InterruptRun)));
     // nothing waiting: an empty Enter does not stop the turn

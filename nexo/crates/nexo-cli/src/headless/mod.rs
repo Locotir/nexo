@@ -343,6 +343,8 @@ pub async fn run(
     let mut last: Option<Value> = None;
     let mut interrupts = 0;
     let mut agent_gone = false;
+    // the open request only waits for jobs an earlier request left running: no message of the script asked for it
+    let mut job_wait = false;
     // One wait for the whole run: a request that lands while the loop handles an event is kept for the next poll, and the
     // teardown below listens on the same one. A fresh wait each time would hear only what comes after it exists, and
     // the handlers outlive it, so a `kill` in between would do nothing at all.
@@ -360,13 +362,19 @@ pub async fn run(
                 run.r = Req::default();
                 // the jobs of an earlier request are named by this one's waiting line and, if it ends the run, killed
                 run.keeps_jobs = false;
+                job_wait = false;
                 sent_any = handle
                     .commands
                     .send(AgentCommand::Submit { text: msg, attachments: std::mem::take(&mut first_images) })
                     .is_ok();
                 busy = true;
             } else if stdin_rx.is_none() {
-                break;
+                // the input ended, but a job an earlier request waited for still runs: the reply to its end is a result
+                if !run.wait_for_carried() {
+                    break;
+                }
+                busy = true;
+                job_wait = true;
             }
         }
         tokio::select! {
@@ -395,6 +403,12 @@ pub async fn run(
             }
             ev = handle.events.recv() => {
                 let Some(ev) = ev else { agent_gone = true; break 'main };
+                if !busy && run.has_carried() && matches!(ev, AgentEvent::Preparing { .. }) {
+                    // a job an earlier request left running ended while no request is open: its turn is a request
+                    run.r = Req::default();
+                    busy = true;
+                    job_wait = true;
+                }
                 if !run.on_event(&ev) {
                     continue;
                 }
@@ -406,6 +420,10 @@ pub async fn run(
                     continue;
                 }
                 busy = false;
+                if std::mem::take(&mut job_wait) && matches!(ev, AgentEvent::Jobs { .. }) {
+                    // the carried jobs ended with no turn to follow them: there is no answer to give
+                    continue;
+                }
                 let more = stdin_rx.is_some() || !inbox.is_empty();
                 if end_request(&mut run, schema.as_ref(), &mut attempt, &mut inbox, &mut exit, &mut last, more) {
                     break 'main;
@@ -420,8 +438,10 @@ pub async fn run(
                         Ok(Some(t)) => {
                             if busy {
                                 // idle and waiting for jobs, and the next message is here: the request ends now
-                                // (its result goes out, the jobs keep running) and the message runs at once
+                                // (its result goes out, the jobs keep running) and the message runs at once; no
+                                // later request waits for those jobs
                                 busy = false;
+                                run.carry_running();
                                 if end_request(&mut run, schema.as_ref(), &mut attempt, &mut inbox, &mut exit, &mut last, true) {
                                     break 'main;
                                 }

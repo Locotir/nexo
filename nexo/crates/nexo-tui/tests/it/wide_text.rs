@@ -300,8 +300,9 @@ fn a_paste_is_whole_and_clean_and_a_resize_keeps_the_draft() {
     assert!(rx.try_recv().is_err(), "the line ends of a paste send nothing");
     assert_eq!(a.input.text(), "x [Pasted text #1 +7 lines]");
     let sent = a.input.full_text();
-    assert!(!sent.contains(['\x1b', '\r', '\t', '\u{200d}']), "{sent:?}");
-    assert!(sent.contains("tab    here\ncrlf\ncrred end\n日本語 "), "{sent:?}");
+    // a long paste is sent as pasted: escapes and carriage returns go, tabs and joiners stay
+    assert!(!sent.contains(['\x1b', '\r']), "{sent:?}");
+    assert!(sent.contains("tab\there\ncrlf\ncrred end\n日本語 👨\u{200d}👩\u{200d}👧\n"), "{sent:?}");
     // Backspace at the end of the chip takes it whole
     let mut b = a;
     for (w, h) in [(120u16, 40u16), (60, 15), (200, 50), (80, 24), (20, 5), (80, 24)] {
