@@ -97,7 +97,12 @@ impl Runtime {
             emit(&events, AgentEvent::GoalLog(goal_log.clone()));
             emit(
                 &events,
-                AgentEvent::Goal { text: goal.clone(), round: 0, max: goal_rounds(), state: goal_state.clone() },
+                AgentEvent::Goal {
+                    text: goal_log.original.clone().or_else(|| goal.clone()),
+                    round: 0,
+                    max: goal_rounds(),
+                    state: goal_state.clone(),
+                },
             );
         }
         if replay {
@@ -335,7 +340,6 @@ fn add_ask_tools(
             tools.add(Arc::new(crate::ask::AskUser::new(asker.clone())));
         }
         tools.add(Arc::new(crate::ask::ExitPlan::new((!headless).then(|| asker.clone()), plan.clone())));
-        tools.add(Arc::new(crate::goal_brief::GoalBrief));
     }
     plan
 }

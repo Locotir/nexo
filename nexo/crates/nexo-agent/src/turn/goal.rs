@@ -26,13 +26,12 @@ pub(super) fn full_system(st: &State) -> String {
         base = format!("{base}\n\n{directive}");
     }
     // the task list is not here: a change in it would change the system text and with it the cached
-    // conversation after it. It rides on each request instead (`todo_note`). The same goes for the goal's
-    // restatement (`goal_note`): the words here are the person's, fixed for the goal's life.
+    // conversation after it. It rides on each request instead (`todo_note`). Goal words are fixed for its life.
     with_goal(&base, goal_words(st))
 }
 
 /// The person's own words of the goal set, as they typed them: the ones the system prompt pins and the request
-/// leaves out (`bare_goal_set`). A goal the agent restated (`goal_brief`) keeps them beside the restatement.
+/// leaves out (`bare_goal_set`). Legacy sessions without recoverable original words fall back to their saved goal.
 pub(super) fn goal_words(st: &State) -> Option<&str> {
     st.goal.as_ref()?;
     st.goal_log.original.as_deref().or(st.goal.as_deref())
@@ -54,15 +53,10 @@ pub(super) fn todo_note(st: &State) -> Option<String> {
 
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
 /// so pausing or resuming does not cost the cached prefix; what the state is reaches the model as a
-/// line in the person's next message (`goal_state_line`), not as a change here. The person's own words come with the
-/// request to restate them (`goal_brief`); the restatement, once made, rides with each request (`goal_note`), so
-/// this text stays the same for the goal's life.
+/// line in the person's next message (`goal_state_line`), not as a change here.
 pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
     let Some(g) = goal else { return system.to_string() };
-    let head = format!(
-        "Goal, in the person's words: {g}\nBefore working on it, call `goal_brief` once to restate it as they \
-         mean it: what they want, why, how they expect it done, and when it counts as done."
-    );
+    let head = format!("Goal, in the person's words: {g}");
     format!(
         "{system}\n\n{head}\nKeep working towards this goal across turns. `{GOAL_CONTINUE_MARK}` comes from the loop, \
          not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
@@ -70,7 +64,7 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
          without the person (a question only they can answer, a decision, an approval, access you lack), ask it and \
          end your reply with the single line GOAL WAIT: the work waits for their answer. Do not stop for what you \
          can decide or check yourself. A message the person sends while you work comes first: answer it plainly, \
-         then go on; call `goal_brief` again when they change what they want."
+         then go on. Only an explicit new /goal changes the goal."
     )
 }
 
@@ -178,25 +172,9 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     text
 }
 
-/// Answers `goal_brief`: the agent's restatement takes the place of the goal from the next request on.
-pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
-    let brief = match crate::goal_brief::brief(args) {
-        Ok(b) => b,
-        Err(key) => return ToolOutput::error(format!("`{key}` is required")),
-    };
-    let mut st = state.lock().await;
-    if st.goal.is_none() {
-        return ToolOutput::error("no goal is set: carry on with the request");
-    }
-    st.goal = Some(brief.clone());
-    st.goal_log.brief = Some(brief.clone());
-    // the text only: a goal met or paused stays so on disk, and the person's words stay beside the restatement
-    let progress = st.goal_log.progress();
-    if let Err(e) = st.session.record_goal_text(&brief, progress) {
-        notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
-    }
-    emit_goal(&st);
-    ToolOutput::ok("The goal now reads as restated. Go on with the work.")
+/// Reject stale or unsolicited calls, including calls replayed by an older model request.
+pub(super) async fn goal_brief(_state: &Shared, _args: &Value) -> ToolOutput {
+    ToolOutput::error("goal_brief is retired; only the person's /goal sets the goal")
 }
 
 /// Why a goal found active on disk is paused when its session opens: nothing runs for it until the person says so.
@@ -214,7 +192,7 @@ fn resumed_log(goal: Option<&str>, original: Option<&str>, progress: GoalProgres
             None if restated => goal_set_words(history),
             None => Some(g.to_string()),
         };
-        if restated {
+        if restated && log.original.is_none() {
             log.brief = Some(g.to_string());
         }
     }
@@ -223,7 +201,7 @@ fn resumed_log(goal: Option<&str>, original: Option<&str>, progress: GoalProgres
 
 /// The words of the latest `[goal set]` request in `history`: what follows the mark, up to the start note and the
 /// files nexo put after them (`goal_request`). None when no such request is left (a compaction removes it).
-fn goal_set_words(history: &[Message]) -> Option<String> {
+pub(super) fn goal_set_words(history: &[Message]) -> Option<String> {
     history.iter().rev().filter(|m| m.role == Role::User).find_map(|m| {
         let text = m.text();
         let rest = nexo_core::agent::goal_request(&text)?.strip_prefix(GOAL_SET_MARK)?;
@@ -386,14 +364,9 @@ fn written_paths(args: &Value) -> Vec<String> {
     one.into_iter().chain(many).collect()
 }
 
-/// What rides on each request of a goal, never in the saved conversation: the goal as the agent restated it
-/// (`goal_brief`), whatever the goal's state, as first line; then, only while the goal is active, the counts of its
-/// run so far (see [`GoalCounts::line`]) and, once its work brings nothing new, the facts of that (see
-/// [`GoalIdle::facts`]). The restatement rides here and not in the system prompt, so making it leaves the cached
-/// prefix alone.
+/// Facts about active goal work, sent with each request without changing the goal.
 pub(super) fn goal_note(st: &State) -> Option<String> {
     st.goal.as_ref()?;
-    let brief = st.goal_log.brief.as_ref().map(|b| format!("Goal, as the person means it:\n{b}"));
     let (counts, idle) = if st.goal_state.is_active() {
         // an active goal's work that brings nothing new: the plain facts of it, in place of a generic note
         let idle = st.goal_idle.facts().map(|f| format!("[nexo, not the person: goal work: {f}]"));
@@ -401,7 +374,7 @@ pub(super) fn goal_note(st: &State) -> Option<String> {
     } else {
         (None, None)
     };
-    let lines: Vec<String> = brief.into_iter().chain(counts).chain(idle).collect();
+    let lines: Vec<String> = counts.into_iter().chain(idle).collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
@@ -434,7 +407,7 @@ pub(super) fn emit_goal(st: &State) {
         emit(&st.events, AgentEvent::GoalLog(goal_log(st)));
     }
     let event = AgentEvent::Goal {
-        text: st.goal.clone(),
+        text: goal_words(st).map(str::to_string).or_else(|| st.goal.clone()),
         round: st.goal_round,
         max: goal_rounds(),
         state: st.goal_state.clone(),
@@ -921,7 +894,7 @@ mod goal_tests {
         assert_eq!(with_goal("base", None), "base");
         let s = with_goal("base", Some("ship it"));
         assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("single line GOAL DONE"));
-        assert!(s.contains("single line GOAL WAIT") && s.contains("call `goal_brief` once"));
+        assert!(s.contains("single line GOAL WAIT") && !s.contains("goal_brief"));
         assert!(s.contains("`[goal: continue]` comes from the loop"));
     }
 
@@ -990,14 +963,14 @@ mod goal_tests {
         assert_eq!((own.original.as_deref(), own.brief), (Some("tests green pls"), None));
         // a restated goal: the person's words are the ones saved beside it
         let saved = log(Some(want), Some("tests green pls"), &[]);
-        assert_eq!((saved.original.as_deref(), saved.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        assert_eq!((saved.original.as_deref(), saved.brief.as_deref()), (Some("tests green pls"), None));
         // a file saved before the words were kept: the last `[goal set]` request holds them, without its start note
         let note = crate::session::START_NOTE_HEAD;
         let asked = |w: &str| Message::user(format!("{GOAL_SET_MARK} {w}\n\n{note}\nGit: 2 files"));
         let history =
             [asked("older goal"), Message::user("thanks"), asked("tests green pls"), Message::user(GOAL_CONTINUE_MARK)];
         let old = log(Some(want), None, &history);
-        assert_eq!((old.original.as_deref(), old.brief.as_deref()), (Some("tests green pls"), Some(want)));
+        assert_eq!((old.original.as_deref(), old.brief.as_deref()), (Some("tests green pls"), None));
         // nor the files after them, with no start note between
         let filed = format!("{GOAL_SET_MARK} sum it up\n\n@notes.md {}\n```md\nx\n```", nexo_core::agent::ATTACHED);
         assert_eq!(log(Some(want), None, &[Message::user(filed)]).original.as_deref(), Some("sum it up"));

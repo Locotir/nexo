@@ -1,5 +1,4 @@
-//! `goal_brief`: the agent restates the goal the way the person means it (what, why, how, when it is
-//! done), and the restatement takes the place of the person's words. The tool only says how the call
+//! `goal_brief`: an auxiliary, unverified interpretation of the person's authoritative goal. The tool only says how the call
 //! reads: the agent loop answers it, since the goal lives in the loop's state.
 
 use async_trait::async_trait;
@@ -33,10 +32,7 @@ impl Tool for GoalBrief {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "goal_brief".into(),
-            description: "Restate the goal as the person really means it; it replaces their words from then on. \
-                          Put yourself in their place: they wrote it quickly. Fill gaps from the conversation and \
-                          the repository. Call it again when they change what they want."
-                .into(),
+            description: "Retired; only the person's /goal sets the goal.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -60,7 +56,7 @@ impl Tool for GoalBrief {
     }
 
     async fn run(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
-        ToolOutput::error("goal_brief is answered by the agent loop")
+        ToolOutput::error("goal_brief is retired; only the person's /goal sets the goal")
     }
 }
 

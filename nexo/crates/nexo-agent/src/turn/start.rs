@@ -802,7 +802,7 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
                 && (plan || s.name != "exit_plan")
                 && (st.tools.get("ultracode_execute").is_none() || super::tools::ultracode_planning_tool(&s.name))
                 && (curator || s.name != "recall")
-                && (st.goal.is_some() || s.name != "goal_brief")
+                && s.name != "goal_brief"
         })
         .collect()
 }

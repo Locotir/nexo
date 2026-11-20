@@ -325,7 +325,18 @@ async fn recall_sessions(
 fn recall_session(id: &str, focus: Option<String>, budget: usize) -> Result<Option<(String, String)>, String> {
     let other = crate::session::Session::open(id).map_err(|e| format!("cannot read session {id}: {e}"))?;
     let title = other.meta().title.clone();
-    let focus = focus.or_else(|| other.goal().map(str::to_string)).unwrap_or_default();
+    let focus = focus
+        .or_else(|| other.goal_original().map(str::to_string))
+        .or_else(|| {
+            other.goal().and_then(|g| {
+                if g.starts_with(GOAL_BRIEF_HEAD) {
+                    goal_set_words(other.messages()).or_else(|| Some(g.to_string()))
+                } else {
+                    Some(g.to_string())
+                }
+            })
+        })
+        .unwrap_or_default();
     let cwd = other.meta().cwd.clone();
     Ok(crate::brief::recall(id, &title, &focus, other.messages(), &cwd, budget).map(|(block, _)| (title, block)))
 }

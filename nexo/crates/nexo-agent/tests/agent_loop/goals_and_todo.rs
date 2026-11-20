@@ -76,57 +76,6 @@ async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
 }
 
 #[tokio::test]
-async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
-    let dir = test_tmpdir().unwrap();
-    let brief = json!({
-        "want": "every test in the workspace passes",
-        "why": "the release is blocked on red tests",
-        "how": "fix the code, not the tests; keep the style",
-        "done": "cargo test shows 0 failed"
-    });
-    let client =
-        Scripted::new(vec![Reply::Events(call("g1", "goal_brief", brief)), Reply::Events(text("on it\nGOAL DONE"))]);
-    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
-    let id = match r.next().await {
-        AgentEvent::Ready { session_id, .. } => session_id,
-        other => panic!("{other:?}"),
-    };
-    r.send(AgentCommand::SetGoal { text: Some("tests green pls".into()), attachments: vec![] });
-    let t1 = r.turn().await;
-    let want =
-        "Want: every test in the workspace passes\nWhy: the release is blocked on red tests\nHow: fix the code, \
-                not the tests; keep the style\nDone when: cargo test shows 0 failed";
-    assert!(t1.iter().any(|e| matches!(e, AgentEvent::Goal { text: Some(t), .. } if t == want)));
-    // the person's words are kept beside the restatement, with the call it took
-    let log = last_goal_log(&t1).expect("the goal's log is sent");
-    assert_eq!(log.original.as_deref(), Some("tests green pls"));
-    assert_eq!(log.brief.as_deref(), Some(want));
-    assert!(log.steps >= 1 && log.started_ms > 0, "{log:?}");
-    let reqs = client.requests();
-    assert!(reqs[0].system.contains("Goal, in the person's words: tests green pls\n"));
-    assert!(reqs[0].tools.iter().any(|t| t.name == "goal_brief"));
-    // the restatement does not change the system prompt (the cached prefix): the person's words stay in it, and
-    // the restatement rides with each request from the next one on, in its last text part
-    assert_eq!(reqs[0].system, reqs[1].system);
-    assert!(reqs[1].system.contains("Goal, in the person's words: tests green pls\n"));
-    assert!(!reqs[1].system.contains("Goal, as the person means it:"));
-    assert!(!last_text_part(&reqs[0]).unwrap_or_default().contains("Goal, as the person means it:"));
-    let last = last_text_part(&reqs[1]).expect("the request has a text part");
-    assert!(last.contains(&format!("Goal, as the person means it:\n{want}")), "{last}");
-    r.stop().await;
-    // a resumed session keeps the restatement
-    let client = Scripted::new(vec![]);
-    let mut r = start(client, config(PermissionMode::Auto), Some(id), dir.path()).await;
-    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
-    assert_eq!(goal_of(&evs).and_then(|g| g.0), Some(want.to_string()));
-    let log = last_goal_log(&evs).expect("a resumed goal sends its log");
-    assert_eq!(log.original.as_deref(), Some("tests green pls"), "the person's words are saved beside it");
-    assert_eq!(log.brief.as_deref(), Some(want));
-    assert!(log.steps >= 1 && log.started_ms > 0, "the progress is saved too: {log:?}");
-    r.stop().await;
-}
-
-#[tokio::test]
 async fn the_goal_words_go_once_per_request() {
     let dir = test_tmpdir().unwrap();
     let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE"))]);
@@ -386,7 +335,7 @@ async fn a_restatement_keeps_a_met_goal_met_on_disk() {
     r.turn().await;
     r.stop().await;
     let s = nexo_agent::session::Session::open(&id).unwrap();
-    assert_eq!(s.goal(), Some("Want: ship it\nWhy: w\nHow: h\nDone when: d"), "the restatement is saved");
+    assert_eq!(s.goal(), Some("ship it"), "a met goal cannot be restated");
     assert_eq!(s.goal_original(), Some("ship it"));
     assert_eq!(s.goal_state(), &GoalState::Done, "and the goal stays met");
 }
@@ -881,5 +830,58 @@ async fn a_stop_typed_as_a_goal_round_ends_leaves_the_goal_waiting() {
     assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting), "{:?}", notices(&evs));
     super::person_stop::no_turn_within(&mut r, 600).await;
     assert_eq!(client.requests().len(), 2, "the round and the answer to the stop: no continuation");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn first_erroneous_brief_cannot_replace_goal_even_after_reopen() {
+    let dir = test_tmpdir().unwrap();
+    let original = "Take over Agent Bots on gzor.es";
+    let unrelated = json!({"want":"Fix Curator", "why":"context", "how":"edit code", "done":"tests"});
+    let client =
+        Scripted::new(vec![Reply::Events(call("g1", "goal_brief", unrelated)), Reply::Events(text("GOAL WAIT"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        e => panic!("{e:?}"),
+    };
+    r.send(AgentCommand::SetGoal { text: Some(original.into()), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Goal { text: Some(t), .. } if t.contains("Curator"))));
+    let reqs = client.requests();
+    assert!(reqs.iter().all(|q| q.system.contains(original) && !q.system.contains("Curator")));
+    assert!(reqs.iter().all(|q| !q.tools.iter().any(|t| t.name == "goal_brief")));
+    assert!(!last_text_part(reqs.last().unwrap()).unwrap_or_default().contains("Want: Fix Curator"));
+    r.stop().await;
+    let s = nexo_agent::session::Session::open(&id).unwrap();
+    assert_eq!(s.goal(), Some(original));
+    assert_eq!(s.goal_original(), Some(original));
+    let mut r = start(Scripted::new(vec![]), config(PermissionMode::Auto), Some(id), dir.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs).and_then(|g| g.0), Some(original.into()));
+    assert!(last_goal_log(&evs).unwrap().brief.is_none());
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn reopening_legacy_brief_with_original_never_injects_it_as_goal() {
+    let d = test_tmpdir().unwrap();
+    data_dir();
+    let mut s = nexo_agent::session::Session::create(d.path(), "mock", "m1").unwrap();
+    s.record_goal(Some("Take over Agent Bots")).unwrap();
+    s.record_goal_text("Want: Fix Curator\nWhy: context\nHow: edit\nDone when: tests", Default::default()).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), Some(id), d.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs).and_then(|g| g.0).as_deref(), Some("Take over Agent Bots"));
+    assert!(last_goal_log(&evs).unwrap().brief.is_none());
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    assert!(reqs[0].system.contains("Take over Agent Bots"));
+    assert!(!reqs[0].system.contains("Curator"));
+    assert!(!last_text_part(&reqs[0]).unwrap_or_default().contains("Curator"));
     r.stop().await;
 }
