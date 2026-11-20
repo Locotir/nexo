@@ -99,6 +99,12 @@ impl App {
     /// Whether block `i` is left out of the transcript: a finished call of a folded group, which
     /// its group's line stands for. A call still running or waiting stays in sight.
     pub fn hidden(&self, i: usize) -> bool {
+        // a line that says only the routine start note tells nothing the person does not already know
+        if let Some(Block::Added { parts, .. }) = self.blocks.get(i) {
+            if parts.iter().all(|p| p.kind == nexo_core::agent::AddedKind::StartNote) {
+                return true;
+            }
+        }
         match self.group_of(i) {
             Some(m) => {
                 let kept = match &self.blocks[i] {

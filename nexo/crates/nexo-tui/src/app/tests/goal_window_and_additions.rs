@@ -449,3 +449,18 @@ fn a_double_click_on_the_message_opens_what_was_added_and_another_folds_it() {
     a.release_at(4, r);
     assert!(!open(&a));
 }
+
+#[test]
+fn a_message_with_only_the_start_note_added_shows_no_line() {
+    use nexo_core::agent::{AddedKind::StartNote, AddedPart};
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    let note = "[project at the start of this request]\nattached: 0 files";
+    a.handle_agent(AgentEvent::History {
+        index: 0,
+        message: nexo_core::message::Message::user(format!("hola\n\n{note}")),
+    });
+    a.handle_agent(AgentEvent::Added { index: 0, parts: vec![AddedPart::new(StartNote, "project", note)] });
+    let all = frame(&mut a, 100, 30).join("\n");
+    assert!(all.contains("hola") && !all.contains("nexo added") && !all.contains("attached: 0 files"), "{all}");
+}
