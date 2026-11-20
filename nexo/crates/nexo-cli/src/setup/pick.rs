@@ -182,8 +182,7 @@ mod explicit_provider_tests {
     #[test]
     fn presets_do_not_replace_the_explicit_provider_snapshot() {
         let mut cfg = Config::default();
-        let mut own = nexo_core::config::ProviderConfig::default();
-        own.models = vec!["my-model".into()];
+        let own = nexo_core::config::ProviderConfig { models: vec!["my-model".into()], ..Default::default() };
         cfg.providers.insert("anthropic".into(), own);
         apply_presets(&mut cfg);
         apply_presets(&mut cfg);

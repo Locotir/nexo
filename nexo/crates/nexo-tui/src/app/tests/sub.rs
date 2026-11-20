@@ -420,7 +420,10 @@ fn resolved_target_is_announced_once_and_updates_the_open_view() {
     let rows = frame(&mut a, 24, 8);
     assert!(rows.iter().all(|r| crate::render::wrap::width(r) <= 24));
     a.close_sub();
-    assert!(a.blocks.iter().any(|b| matches!(b, Block::Notice { text, .. } if text.contains("provider/model · effort high"))));
+    assert!(a
+        .blocks
+        .iter()
+        .any(|b| matches!(b, Block::Notice { text, .. } if text.contains("provider/model · effort high"))));
 }
 
 #[test]

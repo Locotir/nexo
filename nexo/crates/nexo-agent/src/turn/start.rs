@@ -1124,8 +1124,7 @@ mod task_model_context_tests {
     #[test]
     fn explicit_settings_only_and_live_target_without_secrets() {
         let mut config = Config::default();
-        let mut explicit = ProviderConfig::default();
-        explicit.models = vec!["chosen".into()];
+        let mut explicit = ProviderConfig { models: vec!["chosen".into()], ..Default::default() };
         explicit.effort.insert("chosen".into(), "high".into());
         explicit.api_key_cmd = Some("secret-command".into());
         config.providers.insert("mine".into(), explicit.clone());
