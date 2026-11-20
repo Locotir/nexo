@@ -144,7 +144,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             None => Seg { text: p, style: base.fg(theme.accent2) },
         }
     });
-    // the model calls so far, and a chip only when the cache let the last call down (the share itself is in /context)
+    // a chip only when the cache let the last call down (the share itself is in /context)
     let extra = |k: &Keep| {
         let mut g = Vec::new();
         if let Some(fresh) = app.cache_miss().filter(|_| k.chip) {
@@ -152,12 +152,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 text: format!("cache miss · {} full price", fmt_k(fresh).replace(".0k", "k")),
                 style: base.fg(theme.warn),
             });
-        }
-        let calls = app.call_inputs.len();
-        if calls > 0 && k.extra {
-            let sep = if g.is_empty() { "" } else { " · " };
-            let word = if calls == 1 { "call" } else { "calls" };
-            g.push(Seg { text: format!("{sep}{calls} {word}"), style: base.fg(theme.dim) });
         }
         g
     };
@@ -169,8 +163,7 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         dir: bool,
         branch: bool,
         mem: bool,
-        extra: bool,
-        // the cache miss chip: a warning, so it outlasts the call count and goes only with the curator label
+        // the cache miss chip: a warning, so it goes only with the curator label
         chip: bool,
         counts: bool,
         // the curator's label: it outlives the counts
@@ -281,7 +274,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         dir: true,
         branch: true,
         mem: true,
-        extra: true,
         chip: true,
         counts: true,
         label: true,
@@ -292,21 +284,19 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         todo: true,
     };
     // the steps up to this one keep the whole model name, the gauge and the mode
-    const LAST_WHOLE_STEP: usize = 6;
+    const LAST_WHOLE_STEP: usize = 5;
     let steps = [
         Keep { ..all },
         Keep { dir: false, hint: false, ..all },
         Keep { dir: false, hint: false, branch: false, ..all },
-        Keep { dir: false, hint: false, branch: false, extra: false, ..all },
-        Keep { dir: false, hint: false, branch: false, mem: false, todo: false, extra: false, ..all },
-        Keep { dir: false, hint: false, branch: false, mem: false, todo: false, extra: false, counts: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, todo: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, todo: false, counts: false, ..all },
         Keep {
             dir: false,
             hint: false,
             branch: false,
             mem: false,
             todo: false,
-            extra: false,
             counts: false,
             label: false,
             chip: false,
@@ -318,7 +308,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             branch: false,
             mem: false,
             todo: false,
-            extra: false,
             counts: false,
             label: false,
             chip: false,
@@ -331,7 +320,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             branch: false,
             mem: false,
             todo: false,
-            extra: false,
             counts: false,
             label: false,
             chip: false,
@@ -345,7 +333,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             branch: false,
             mem: false,
             todo: false,
-            extra: false,
             counts: false,
             label: false,
             chip: false,
@@ -360,7 +347,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             branch: false,
             mem: false,
             todo: false,
-            extra: false,
             counts: false,
             label: false,
             chip: false,
@@ -380,13 +366,12 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 return c;
             }
             let mut keep = *k;
-            let back: [fn(&mut Keep); 9] = [
+            let back: [fn(&mut Keep); 8] = [
                 |k| k.label = true,
                 |k| k.chip = true,
                 |k| k.counts = true,
                 |k| k.todo = true,
                 |k| k.mem = true,
-                |k| k.extra = true,
                 |k| k.branch = true,
                 |k| k.dir = true,
                 |k| k.hint = true,

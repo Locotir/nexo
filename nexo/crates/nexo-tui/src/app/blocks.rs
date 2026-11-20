@@ -344,6 +344,19 @@ impl App {
                     self.theme.dim(),
                 )));
             }
+            if let Some(label) = self.topic_heads.get(&i) {
+                use crate::render::wrap::{truncate, width as cols};
+                let w = width - indent;
+                let text = truncate(label, w.saturating_sub(5));
+                let rule = "─".repeat(w.saturating_sub(cols(&text) + 4));
+                let head = Line::from(vec![
+                    Span::styled("── ", self.theme.dim2()),
+                    Span::styled(text, self.theme.dim()),
+                    Span::styled(format!(" {rule}"), self.theme.dim2()),
+                ]);
+                lines.insert(0, head);
+                meta.shift(1);
+            }
             debug_assert!(meta.conts.iter().all(|c| (c.line as usize) < lines.len()));
             if indent > 0 {
                 meta.add_deco(indent);

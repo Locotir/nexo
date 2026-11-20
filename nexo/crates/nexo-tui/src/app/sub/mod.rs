@@ -31,8 +31,24 @@ use remote_items::{safe_tool_args, safe_tool_text};
 /// The resolved target, or nothing while the runner is still selecting one.
 pub(crate) fn target_label(info: &SubInfo) -> Option<String> {
     let (provider, model) = (info.provider.as_deref()?, info.model.as_deref()?);
-    let effort = info.reasoning_effort.as_deref().filter(|e| !e.is_empty()).unwrap_or("default");
-    Some(crate::render::wrap::one_line(&format!("{provider}/{model} · effort {effort}")))
+    let label = match info.reasoning_effort.as_deref().filter(|e| !e.is_empty()) {
+        Some(effort) => format!("{provider}/{model} · {effort}"),
+        None => format!("{provider}/{model}"),
+    };
+    Some(crate::render::wrap::one_line(&label))
+}
+
+/// The run's line in the main transcript, once its target is known.
+pub(crate) fn agent_run(info: &SubInfo) -> Option<crate::render::blocks::AgentRun> {
+    use crate::render::wrap::one_line;
+    Some(crate::render::blocks::AgentRun {
+        id: info.id.clone(),
+        profile: one_line(&info.profile),
+        model: one_line(&format!("{}/{}", info.provider.as_deref()?, info.model.as_deref()?)),
+        effort: info.reasoning_effort.as_deref().filter(|e| !e.is_empty()).map(one_line),
+        title: one_line(&info.title),
+        running: info.state.running(),
+    })
 }
 
 /// Runs the app remembers; the ended ones that ended longest ago go first.

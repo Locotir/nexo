@@ -36,6 +36,18 @@ fn ranks_commands_and_moves_the_selection() {
 }
 
 #[test]
+fn an_old_name_finds_its_command_and_tab_keeps_the_old_name() {
+    for q in ["context-live", "context-l", "live"] {
+        let p = Palette::commands(q, 1);
+        let rows: Vec<Row> = (0..p.len()).map(|k| p.row(k)).collect();
+        assert_eq!(rows.first().map(|r| r.label.as_str()), Some("context"), "/{q}");
+        assert!(rows[0].alias.as_deref().is_some_and(|a| a.starts_with(q)), "/{q}: {:?}", rows[0].alias);
+        assert!(p.choice().is_some_and(|c| c.starts_with(q)), "/{q}: {:?}", p.choice());
+    }
+    assert_eq!(Palette::commands("co", 1).choice(), Some("compact"), "two letters do not reach old names");
+}
+
+#[test]
 fn an_alias_finds_its_command_first_and_tab_completes_the_primary_name() {
     let p = Palette::commands("ses", 1);
     assert_eq!(p.current(), Some("resume"), "Tab completes to the primary name");

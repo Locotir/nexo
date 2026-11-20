@@ -1,6 +1,9 @@
 //! Ranking for the palette: fuzzy matching of a query, the grouped listing and the closest name to a typo.
 
-use super::table::COMMANDS;
+use super::table::{COMMANDS, HIDDEN};
+
+/// Letters a query needs before an old name with no line of its own (`context-live`) finds its command.
+const HIDDEN_MIN: usize = 3;
 
 /// One row of the palette: the table index, the alias the query matched, if
 /// any, and the letters it matched (character positions in the alias when
@@ -13,23 +16,32 @@ pub struct Ranked {
 }
 
 /// The commands `query` can mean, best first: a prefix of a primary name,
-/// then a prefix of an alias, then a fuzzy match of the name, then of an
-/// alias; ties keep the table's order. An empty query lists everything, by group.
+/// then a prefix of an alias, then a prefix of an old name that still works,
+/// then a fuzzy match of the name, then of an alias; ties keep the table's
+/// order. An empty query lists everything, by group.
 pub fn rank(query: &str) -> Vec<Ranked> {
     let q = query.trim().to_ascii_lowercase();
     if q.is_empty() {
         return grouped().into_iter().map(|(_, index)| Ranked { index, via_alias: None, hits: Vec::new() }).collect();
     }
-    let mut tiers: [Vec<Ranked>; 4] = Default::default();
+    let old_name = |parent: &str| {
+        HIDDEN
+            .iter()
+            .find(|(old, p, _)| *p == parent && q.chars().count() >= HIDDEN_MIN && old.starts_with(&q))
+            .map(|(old, _, _)| *old)
+    };
+    let mut tiers: [Vec<Ranked>; 5] = Default::default();
     for (index, s) in COMMANDS.iter().enumerate() {
         if s.name.starts_with(&q) {
             tiers[0].push(Ranked { index, via_alias: None, hits: hits(&q, s.name) });
         } else if let Some(a) = s.aliases.iter().find(|a| a.starts_with(&q)) {
             tiers[1].push(Ranked { index, via_alias: Some(a), hits: hits(&q, a) });
+        } else if let Some(a) = old_name(s.name) {
+            tiers[2].push(Ranked { index, via_alias: Some(a), hits: hits(&q, a) });
         } else if subsequence(&q, s.name) {
-            tiers[2].push(Ranked { index, via_alias: None, hits: hits(&q, s.name) });
+            tiers[3].push(Ranked { index, via_alias: None, hits: hits(&q, s.name) });
         } else if let Some(a) = s.aliases.iter().find(|a| subsequence(&q, a)) {
-            tiers[3].push(Ranked { index, via_alias: Some(a), hits: hits(&q, a) });
+            tiers[4].push(Ranked { index, via_alias: Some(a), hits: hits(&q, a) });
         }
     }
     tiers.into_iter().flatten().collect()

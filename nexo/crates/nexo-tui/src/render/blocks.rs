@@ -57,6 +57,18 @@ pub enum ToolStatus {
     Denied,
 }
 
+/// A sub-agent's run as its line in the main transcript shows it.
+#[derive(Debug, Clone)]
+pub struct AgentRun {
+    pub id: String,
+    pub profile: String,
+    /// `provider/model`.
+    pub model: String,
+    pub effort: Option<String>,
+    pub title: String,
+    pub running: bool,
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Block {
@@ -139,6 +151,9 @@ pub enum Block {
     Update {
         behind: u32,
     },
+    /// A sub-agent's run: its profile as a badge, the model shimmering while it works, the reasoning level
+    /// in the colour of its weight, the task; all dim once it is over.
+    Agent(AgentRun),
     Usage {
         usage: Usage,
         cost_usd: f64,
@@ -254,6 +269,7 @@ impl Block {
         match self {
             Block::Tool { status, .. } => matches!(status, ToolStatus::Running | ToolStatus::Pending),
             Block::Reasoning { streaming, .. } | Block::Assistant { streaming, .. } => *streaming,
+            Block::Agent(r) => r.running,
             _ => false,
         }
     }
@@ -664,6 +680,7 @@ impl Block {
                 lines
             }
             Block::Update { behind } => update_card(*behind, theme, w),
+            Block::Agent(run) => agent_line(run, o.fx.then_some(o.spinner), theme, w),
             Block::Usage { usage, cost_usd, elapsed_ms, tally, plan, folded } => {
                 // quiet: time and cost; the whole line opens with the block's fold
                 let line = if *folded && o.detail == nexo_core::config::Detail::Quiet {

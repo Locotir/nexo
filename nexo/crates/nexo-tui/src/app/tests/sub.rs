@@ -407,23 +407,28 @@ fn resolved_target_is_announced_once_and_updates_the_open_view() {
     resolved.provider = Some("provider".into());
     resolved.model = Some("model".into());
     a.handle_agent(AgentEvent::SubState { info: resolved.clone() });
-    let notice = "Agent explore · provider/model · effort default · survey the parser";
-    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Notice { text, .. } if text == notice)).count(), 1);
+    let lines = |a: &crate::app::App| {
+        a.blocks
+            .iter()
+            .filter(|b| {
+                matches!(b, Block::Agent(r) if r.profile == "explore" && r.model == "provider/model" && r.title == "survey the parser")
+            })
+            .count()
+    };
+    assert_eq!(lines(&a), 1);
     a.handle_agent(AgentEvent::SubState { info: resolved.clone() });
-    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Notice { text, .. } if text == notice)).count(), 1);
+    assert_eq!(lines(&a), 1);
     a.open_sub(RUN);
     answer(&mut a, RUN, vec![reply("x")], 0);
-    assert!(on_screen(&frame(&mut a, 100, 30), "provider/model · effort default"));
+    assert!(on_screen(&frame(&mut a, 100, 30), "provider/model · survey"));
     resolved.reasoning_effort = Some("high".into());
     a.handle_agent(AgentEvent::SubState { info: resolved });
-    assert!(on_screen(&frame(&mut a, 100, 30), "provider/model · effort high"));
+    assert!(on_screen(&frame(&mut a, 100, 30), "provider/model · high"));
     let rows = frame(&mut a, 24, 8);
     assert!(rows.iter().all(|r| crate::render::wrap::width(r) <= 24));
     a.close_sub();
-    assert!(a
-        .blocks
-        .iter()
-        .any(|b| matches!(b, Block::Notice { text, .. } if text.contains("provider/model · effort high"))));
+    assert!(a.blocks.iter().any(|b| matches!(b, Block::Agent(r) if r.effort.as_deref() == Some("high"))));
+    assert_eq!(lines(&a), 1);
 }
 
 #[test]

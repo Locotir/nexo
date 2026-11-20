@@ -268,8 +268,9 @@ fn panel_is_a_command_and_agents_answers_without_being_listed() {
     assert_eq!(parse("/agents"), Some(Command::Panel));
     assert!(lookup("agents").is_some());
     assert!(COMMANDS.iter().all(|s| s.name != "agents" && !s.aliases.contains(&"agents")));
-    // the palette does not offer it either
-    assert!(nexo_tui::commands::rank("agents").iter().all(|r| r.via_alias != Some("agents")));
+    // typed whole, the palette finds the command it stands for
+    let ranked = nexo_tui::commands::rank("agents");
+    assert_eq!(COMMANDS[ranked[0].index].name, "panel");
 }
 
 #[test]

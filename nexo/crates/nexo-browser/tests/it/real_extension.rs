@@ -89,7 +89,7 @@ fn write_native_manifest(profile: &Path, host: &Path) {
 
 #[tokio::test]
 #[ignore = "starts a headless Chrome and needs the host program built; see the file header"]
-async fn the_real_extension_asks_first_and_then_drives_its_own_tabs() {
+async fn the_real_extension_connects_without_prompt_and_drives_its_own_tabs() {
     let Some(chrome_exe) = nexo_browser::find_browser() else {
         eprintln!("skipped: no chrome");
         return;
@@ -162,61 +162,30 @@ async fn the_real_extension_asks_first_and_then_drives_its_own_tabs() {
         "listing the browser must not open the prompt"
     );
 
-    // Asking to connect opens the prompt in the browser; nothing is controlled before it is answered.
-    let dirs2 = dirs.clone();
-    let id2 = id.clone();
-    let connecting = tokio::spawn(async move { RelayBrowser::connect(&dirs2, Some(&id2), "real-test").await });
-    let mut prompt = None;
-    let start = Instant::now();
-    while prompt.is_none() {
-        assert!(start.elapsed() < Duration::from_secs(30), "no prompt appeared");
-        prompt = targets(&cdp).await.into_iter().find(|t| t.2.contains("consent.html"));
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let (prompt_id, _, prompt_url) = prompt.unwrap();
-    assert!(prompt_url.contains("name=real-test"), "{prompt_url}");
-    let page = attach(&cdp, &prompt_id).await;
-    let heading = eval(&cdp, &page, "document.querySelector('h1').textContent").await;
-    assert_eq!(heading, "Allow nexo to control this browser?");
-    assert_eq!(
-        eval(&cdp, &page, "document.activeElement && document.activeElement.id").await,
-        "deny",
-        "Deny has the focus"
-    );
-
-    // A script cannot click for the person: the click is not trusted, so the prompt stays and nothing connects.
-    eval(&cdp, &page, "document.getElementById('allow').click(); true").await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert!(!connecting.is_finished(), "a script's click must not let a session in");
-    assert!(targets(&cdp).await.iter().any(|t| t.2.contains("consent.html")), "the prompt is still open");
-
-    // A real click (the browser's own input pipeline) allows.
-    let rect = eval(
-        &cdp,
-        &page,
-        "(() => { const r = document.getElementById('allow').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()",
-    )
-    .await;
-    let (x, y) = (rect["x"].as_f64().unwrap(), rect["y"].as_f64().unwrap());
-    for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
-        cdp.call(
-            "Input.dispatchMouseEvent",
-            json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1}),
-            Some(&page),
-        )
+    // Connection completes without any consent window or click.
+    let browser = tokio::time::timeout(Duration::from_secs(30), RelayBrowser::connect(&dirs, Some(&id), "real-test"))
         .await
-        .unwrap();
-    }
-    let browser = tokio::time::timeout(Duration::from_secs(30), connecting)
-        .await
-        .expect("the session never opened after Allow")
-        .unwrap()
-        .expect("connect failed after Allow");
+        .expect("automatic connection timed out")
+        .expect("automatic connection failed");
     assert!(browser.is_alive());
+    assert!(!targets(&cdp).await.iter().any(|t| t.2.contains("consent.html")));
 
-    // It drives a page of its own, in a tab group named nexo, and the person's tab stays out of it.
     let (port, server) = serve().await;
     let base = format!("http://127.0.0.1:{port}");
+
+    // A second session sees only its own tabs, not the first session's or the person's.
+    let other = RelayBrowser::connect(&dirs, Some(&id), "other-test").await.unwrap();
+    browser.navigate(&format!("{base}/?first-session")).await.unwrap();
+    other.navigate(&format!("{base}/?second-session")).await.unwrap();
+    let first_tabs = browser.tabs().await.unwrap();
+    let other_tabs = other.tabs().await.unwrap();
+    assert_eq!(first_tabs.len(), 1);
+    assert_eq!(other_tabs.len(), 1);
+    assert!(first_tabs[0].url.contains("first-session"), "{first_tabs:?}");
+    assert!(other_tabs[0].url.contains("second-session"), "{other_tabs:?}");
+    other.close().await.unwrap();
+
+    // It drives a page of its own, in a tab group named nexo, and the person's tab stays out of it.
     browser.navigate(&format!("{base}/")).await.unwrap();
     assert!(browser.read_text(None).await.unwrap().contains("Hello relay"));
     browser.fill("Full name", "Ada").await.unwrap();
@@ -241,6 +210,22 @@ async fn the_real_extension_asks_first_and_then_drives_its_own_tabs() {
     assert_eq!(browser.eval("1 + 1").await.unwrap(), "2");
     let refused = browser.navigate("chrome://settings").await.expect_err("browser pages are refused");
     assert!(refused.to_string().contains("own pages"), "{refused}");
+
+    // Simulate Chrome reporting Cancel on the debugging bar. A repeated grant must not revive
+    // the revoked session, and requests to it remain blocked.
+    let revoked = eval(
+        &cdp,
+        &ws,
+        r#"(async () => {
+      const [sid, session] = [...sessions].find(([, s]) => s.granted);
+      revoke(sid);
+      askConsent(sid);
+      return { revoked: session.revoked, granted: session.granted };
+    })()"#,
+    )
+    .await;
+    assert_eq!(revoked, json!({"revoked": true, "granted": false}));
+    assert!(browser.navigate("about:blank").await.is_err());
 
     // Closing ends the session; the tabs are the person's to keep or close.
     browser.close().await.unwrap();

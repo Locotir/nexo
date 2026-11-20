@@ -141,6 +141,11 @@ pub(super) fn hidden(name: &str) -> Option<&'static (&'static str, &'static str,
     HIDDEN.iter().find(|(a, _, _)| *a == name)
 }
 
+/// Whether `name` is an old name with no line of its own.
+pub fn is_hidden(name: &str) -> bool {
+    hidden(name).is_some()
+}
+
 /// The spec a name or alias stands for.
 pub fn lookup(name: &str) -> Option<&'static Spec> {
     let name = hidden(name).map_or(name, |(_, n, _)| n);

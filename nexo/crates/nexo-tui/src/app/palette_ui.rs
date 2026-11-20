@@ -168,7 +168,7 @@ impl App {
         let Some(p) = self.palette.take() else { return };
         // nothing matches: Tab takes the likely command, Enter sends the line as typed (and hears why not)
         let guess = if run { None } else { p.suggestion().map(String::from) };
-        let Some(choice) = p.current().map(String::from).or(guess) else {
+        let Some(choice) = p.choice().map(String::from).or(guess) else {
             if run {
                 self.submit();
             }

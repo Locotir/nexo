@@ -183,8 +183,8 @@ fn the_layout_at_100_by_30() {
         wide[wide.len() - 1]
     );
     assert!(
-        wide[wide.len() - 1].contains(" 1 call") && !wide[wide.len() - 1].contains("cached"),
-        "the cache share is not in the bar: {}",
+        !wide[wide.len() - 1].contains(" call") && !wide[wide.len() - 1].contains("cached"),
+        "neither the call count nor the cache share is in the bar: {}",
         wide[wide.len() - 1]
     );
     let mid = draw(&mut a, 150, 30);
@@ -210,7 +210,8 @@ fn the_layout_at_100_by_30() {
         "the memory goes before the gauge: {}",
         narrow[narrow.len() - 1]
     );
-    assert!(rows[rows.len() - 1].contains("$0.0031"));
+    // at 100 columns the session name pushes the cost off (it ranks above it); the wide bar keeps it
+    assert!(wide[wide.len() - 1].contains("$0.0031"), "{}", wide[wide.len() - 1]);
     assert!(all.contains("▌ fix the failing test"));
     assert!(all.contains("▸ thinking · 1 line"));
     assert!(all.contains("◆ I will read the test first."));

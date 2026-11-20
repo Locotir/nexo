@@ -86,8 +86,71 @@ impl App {
         self.call_tokens = call_tokens;
         self.map_changed =
             cells.iter().enumerate().map(|(i, c)| self.map.get(i).is_none_or(|old| old.state != c.state)).collect();
+        let heads = self.topic_heads_of(&cells, &zones);
+        for i in heads.keys().chain(self.topic_heads.keys()) {
+            if heads.get(i) != self.topic_heads.get(i) && *i < self.cache.len() {
+                self.cache[*i] = None;
+                self.dirty = true;
+            }
+        }
+        self.topic_heads = heads;
         self.map = cells;
         self.map_zones = zones;
         self.map_at = Some(self.now());
     }
+
+    /// The messages of the person that start a topic, or go back to one, with the words of their line: the
+    /// requests of the map, matched to the person's messages from the end (the transcript may hold fewer of
+    /// the oldest). A way back says how much of the earlier topic the model carries again. None while the
+    /// curator sees a single topic.
+    fn topic_heads_of(&self, cells: &[ContextCell], zones: &[ContextZone]) -> std::collections::HashMap<usize, String> {
+        let mut out = std::collections::HashMap::new();
+        if zones.len() < 3 {
+            return out;
+        }
+        let asks: Vec<usize> =
+            (0..cells.len()).filter(|&c| matches!(cells[c].kind, nexo_core::CellKind::Request)).collect();
+        let users: Vec<usize> =
+            (0..self.blocks.len()).filter(|&i| matches!(self.blocks[i], Block::User { .. })).collect();
+        let n = asks.len().min(users.len());
+        let mut prev = None;
+        let mut seen = std::collections::HashSet::new();
+        for (&bi, &ci) in users[users.len() - n..].iter().zip(&asks[asks.len() - n..]) {
+            let z = cells[ci].zone;
+            if z == 0 {
+                continue;
+            }
+            if prev != Some(z) && zones.get(z as usize).is_some() {
+                let head = if seen.contains(&z) {
+                    format!("↺ earlier topic{}", carried(&cells[..ci], z))
+                } else {
+                    "new topic".to_string()
+                };
+                out.insert(bi, head);
+            }
+            seen.insert(z);
+            prev = Some(z);
+        }
+        out
+    }
+}
+
+/// What the model carries of topic `zone` from the messages before a way back to it:
+/// ` · 2 msgs · 5 calls · 5 outputs`, the kinds it has none of left out.
+fn carried(before: &[ContextCell], zone: u32) -> String {
+    use nexo_core::{CellKind, CellState};
+    let kept = |kind: CellKind| {
+        before.iter().filter(|c| c.zone == zone && c.kind == kind && c.state != CellState::Dropped).count()
+    };
+    let parts = [(kept(CellKind::Request), "msg"), (kept(CellKind::Call), "call"), (kept(CellKind::Output), "output")];
+    let mut s = String::new();
+    for (n, what) in parts {
+        if n > 0 {
+            s.push_str(&format!(" · {n} {what}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    if s.is_empty() {
+        s.push_str(" · nothing kept");
+    }
+    s
 }

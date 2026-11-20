@@ -273,6 +273,9 @@ pub struct App {
     pub map: Vec<ContextCell>,
     /// The curator's zones the cells are in (empty without the curator).
     pub map_zones: Vec<ContextZone>,
+    /// The topic line above a message of the person that opens or goes back to a topic, by block index:
+    /// the topic's label and whether the conversation comes back to it.
+    pub topic_heads: std::collections::HashMap<usize, String>,
     /// Which cells changed with the last map, and when it came.
     pub map_changed: Vec<bool>,
     /// Where the output of each tool call stands for the last model call, by call id: the word at the
@@ -537,6 +540,7 @@ impl App {
             show_live: false,
             map: Vec::new(),
             map_zones: Vec::new(),
+            topic_heads: std::collections::HashMap::new(),
             map_changed: Vec::new(),
             marks: std::collections::HashMap::new(),
             call_tokens: std::collections::HashMap::new(),
@@ -676,6 +680,7 @@ impl App {
         self.context_wait = false;
         self.map.clear();
         self.map_zones.clear();
+        self.topic_heads.clear();
         self.map_changed.clear();
         self.curated.clear();
         self.live_rows = None;

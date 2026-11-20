@@ -60,7 +60,6 @@ fn a_normal_cached_session_shows_no_cache_figure() {
     call(&mut a, 2_000, 41_000);
     let b = bar(&mut a, 200);
     assert!(!b.contains("cached") && !b.contains("cache miss"), "{b}");
-    assert!(b.contains("2 calls"), "{b}");
 }
 
 #[test]
@@ -69,7 +68,8 @@ fn a_miss_after_cached_calls_shows_the_chip_with_the_full_price_part() {
     call(&mut a, 2_000, 40_000);
     call(&mut a, 31_000, 3_000);
     let b = bar(&mut a, 200);
-    assert!(b.contains("cache miss · 31k full price · 2 calls"), "{b}");
+    assert!(b.contains("cache miss · 31k full price"), "{b}");
+    assert!(!b.contains("calls"), "the call count is not on the bar: {b}");
 }
 
 #[test]
@@ -141,17 +141,12 @@ fn new_content_on_a_small_cached_prefix_is_not_a_lost_cache() {
 }
 
 #[test]
-fn a_miss_shows_its_chip_at_common_widths_and_the_count_returns_when_it_fits() {
+fn a_miss_shows_its_chip_at_common_widths() {
     let mut a = app();
     call(&mut a, 2_000, 40_000);
     call(&mut a, 31_000, 3_000);
     let b = bar(&mut a, 120);
     assert!(b.contains("cache miss · 31k full price"), "the chip is on at 120 columns: {b}");
     let wide = bar(&mut a, 200);
-    assert!(wide.contains("cache miss · 31k full price · 2 calls"), "{wide}");
-    // the count is its own piece: where only it fits, a session with no miss still shows it
-    let mut ok = app();
-    call(&mut ok, 2_000, 40_000);
-    call(&mut ok, 2_000, 41_000);
-    assert!(bar(&mut ok, 120).contains("2 calls"));
+    assert!(wide.contains("cache miss · 31k full price"), "{wide}");
 }

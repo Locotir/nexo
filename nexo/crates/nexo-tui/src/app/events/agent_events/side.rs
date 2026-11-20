@@ -78,8 +78,10 @@ impl App {
             }
             _ => None,
         };
+        // the more rounds the goal took, the bigger the burst
+        let rounds = round.max(self.goal.as_ref().map_or(0, |g| g.round));
         if let Some(kind) = outcome {
-            self.burst(kind);
+            self.burst_sized(kind, 1 + (rounds / 2).min(2) as u8);
         }
         self.goal = text.map(|text| Goal { text, round, max, state });
         if self.goal.is_none() {

@@ -376,3 +376,60 @@ fn a_pass_with_time_takes_everything_queued_behind_the_first() {
     assert_eq!(a.drain_events(first, &mut rx, std::time::Duration::from_secs(30)), 50);
     assert!(rx.is_empty());
 }
+
+#[test]
+fn a_call_about_a_shell_job_carries_its_whole_command() {
+    use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
+    let (mut a, _rx) = bare();
+    let cmd = "cd /home/u/nexo && ls -d target\necho done";
+    let job = |id, kind, label: &str| JobInfo {
+        id,
+        kind,
+        label: label.into(),
+        status: JobStatus::Running,
+        elapsed_ms: 0,
+        lines: 0,
+        held: false,
+    };
+    a.handle_agent(AgentEvent::Jobs { jobs: vec![job(1, JobKind::Shell, cmd), job(2, JobKind::Agent, "audit")] });
+    for (id, job) in [("j1", 1), ("j2", 2), ("j3", 9)] {
+        a.handle_agent(AgentEvent::ToolCall {
+            id: id.into(),
+            name: "jobs".into(),
+            args: serde_json::json!({"action": "output", "id": job, "wait": 600}),
+            summary: "jobs: waiting".into(),
+        });
+    }
+    let command = |id: &str| match &a.blocks[a.tool_index(id).unwrap()] {
+        Block::Tool { args, .. } => args.get("command").and_then(|c| c.as_str()).map(String::from),
+        _ => None,
+    };
+    assert_eq!(command("j1").as_deref(), Some(cmd));
+    // a sub-agent has no command, and an unknown job has nothing to show
+    assert_eq!(command("j2"), None);
+    assert_eq!(command("j3"), None);
+}
+
+#[test]
+fn a_message_that_opens_or_goes_back_to_a_topic_carries_its_line() {
+    use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
+    let (mut a, _rx) = bare();
+    let users: Vec<usize> = ["fix the NAS", "and the guard", "make the ad", "back to the NAS"]
+        .iter()
+        .map(|t| a.push(Block::User { text: (*t).into(), at: None }))
+        .collect();
+    let zone = |l: &str| ContextZone { label: l.into(), active: true, card: false };
+    let zones = vec![zone("anchor"), zone("fix the NAS"), zone("make the ad")];
+    let cells = [1, 1, 2, 1]
+        .iter()
+        .map(|&z| ContextCell { kind: CellKind::Request, tokens: 10, state: CellState::Whole, zone: z })
+        .collect();
+    a.handle_agent(AgentEvent::ContextMap { cells, zones, calls: Vec::new(), call_tokens: Vec::new() });
+    let head =
+        |a: &mut App, i: usize| a.lines(i, 80)[0].spans.iter().map(|s| s.content.to_string()).collect::<String>();
+    assert!(head(&mut a, users[0]).contains("new topic"));
+    assert!(!head(&mut a, users[1]).contains("──"), "the same topic goes on without a line");
+    assert!(head(&mut a, users[2]).contains("new topic"));
+    // the way back says how much of the earlier topic the model carries again
+    assert!(head(&mut a, users[3]).contains("↺ earlier topic · 2 msgs"), "{}", head(&mut a, users[3]));
+}

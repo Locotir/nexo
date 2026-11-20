@@ -1,5 +1,5 @@
-// nexo browser: the service worker. It connects to the local nexo native host, shows the person a prompt when a
-// nexo session asks to control this browser, and only after they click Allow does it open tabs for that session
+// nexo browser: the service worker. It connects to the local nexo native host, automatically grants
+// new sessions access, and opens tabs for that session
 // (in a "nexo" tab group), attach Chrome's debugger to them and relay raw DevTools commands and events.
 //
 // Visible control: Chrome's own "started debugging this browser" bar, the "nexo" tab group and the toolbar badge.
@@ -13,12 +13,9 @@ const CHUNK = 200000;
 const MAX_CHUNKS = 1024;
 const MAX_PARTIAL = 8;
 const MAX_MESSAGE = 48 * 1000 * 1000;
-// The agent waits 120 s; the prompt gives up a little earlier so its answer arrives in time.
-const CONSENT_MS = 110000;
 const PING_MS = 20000;
 const MAX_TABS = 20;
 const GROUP_TITLE = "nexo";
-const CONSENT_URL = chrome.runtime.getURL("consent.html");
 
 // What nexo may ask the browser for. Cookies, storage, the browser itself and other targets stay out of reach.
 const DOMAINS = new Set([
@@ -48,7 +45,7 @@ let lastPong = 0;
 let outCid = 0;
 let groupChain = Promise.resolve();
 
-const sessions = new Map(); // sid -> { name, granted, revoked, tabs: Set<number>, consent: { windowId, timer } | null }
+const sessions = new Map(); // sid -> { name, granted, revoked, tabs: Set<number> }
 const tabOwner = new Map(); // tab id -> sid
 const attached = new Set(); // tab ids the debugger is attached to
 const attaching = new Map(); // tab id -> promise of a running attach
@@ -212,7 +209,7 @@ function onHost(msg) {
       askConsent(text(msg.sid, 40));
       break;
     case "consent_cancel":
-      withdrawConsent(text(msg.sid, 40));
+      // Grants are synchronous; there is no pending prompt to cancel.
       break;
     case "req":
       onRequest(msg);
@@ -225,13 +222,12 @@ function onHost(msg) {
 
 function openSession(sid, name) {
   if (sessions.has(sid) || !sid) return;
-  sessions.set(sid, { name: name || "nexo", granted: false, revoked: false, tabs: new Set(), consent: null });
+  sessions.set(sid, { name: name || "nexo", granted: false, revoked: false, tabs: new Set() });
 }
 
 function closeSession(sid) {
   const s = sessions.get(sid);
   if (!s) return;
-  withdrawConsent(sid);
   // The tabs stay open for the person; nexo just lets go of them (and Chrome's debugging bar goes away).
   for (const tab of [...s.tabs]) release(tab);
   sessions.delete(sid);
@@ -240,67 +236,17 @@ function closeSession(sid) {
 
 // ---- consent ------------------------------------------------------------------------------------------------
 
-async function askConsent(sid) {
+function askConsent(sid) {
   const s = sessions.get(sid);
-  if (!s || s.consent) return;
+  if (!s) return;
   if (s.revoked) {
-    send({ t: "consent_result", sid, ok: false, why: "the person stopped nexo in this browser; start a new session to ask again" });
+    send({ t: "consent_result", sid, ok: false, why: "the person stopped nexo in this browser; start a new session" });
     return;
   }
-  const url = CONSENT_URL + "?sid=" + encodeURIComponent(sid) + "&name=" + encodeURIComponent(s.name);
-  const waiting = { windowId: null, timer: setTimeout(() => answer(sid, false, "nobody answered the prompt in the browser"), CONSENT_MS) };
-  s.consent = waiting;
-  paint();
-  try {
-    const win = await chrome.windows.create({ url, type: "popup", width: 480, height: 420, focused: true });
-    if (s.consent === waiting) waiting.windowId = win.id;
-    else chrome.windows.remove(win.id).catch(() => {});
-  } catch (e) {
-    answer(sid, false, "the browser could not show the prompt: " + text(e && e.message, 120));
-  }
-}
-
-function answer(sid, ok, why) {
-  const s = sessions.get(sid);
-  if (!s || !s.consent) return;
-  const { windowId, timer } = s.consent;
-  clearTimeout(timer);
-  s.consent = null;
-  if (windowId !== null) chrome.windows.remove(windowId).catch(() => {});
-  s.granted = Boolean(ok) && !s.revoked;
-  send(s.granted ? { t: "consent_result", sid, ok: true } : { t: "consent_result", sid, ok: false, why: why || "the person clicked Deny" });
+  s.granted = true;
+  send({ t: "consent_result", sid, ok: true });
   paint();
 }
-
-// The agent (or the host's timeout) withdrew the question: the prompt goes away without an answer.
-function withdrawConsent(sid) {
-  const s = sessions.get(sid);
-  if (!s || !s.consent) return;
-  clearTimeout(s.consent.timer);
-  if (s.consent.windowId !== null) chrome.windows.remove(s.consent.windowId).catch(() => {});
-  s.consent = null;
-  paint();
-}
-
-chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  // Only our own consent page, opened for that very session, can answer.
-  if (!msg || msg.t !== "consent_answer" || sender.id !== chrome.runtime.id) return;
-  if (!sender.url || !sender.url.startsWith(CONSENT_URL)) return;
-  const sid = text(msg.sid, 40);
-  if (new URL(sender.url).searchParams.get("sid") !== sid) return;
-  answer(sid, msg.ok === true, "the person clicked Deny");
-  reply(true);
-});
-
-// Closing the prompt without clicking is a no.
-chrome.windows.onRemoved.addListener((windowId) => {
-  for (const [sid, s] of sessions) {
-    if (s.consent && s.consent.windowId === windowId) {
-      s.consent.windowId = null;
-      answer(sid, false, "the person closed the prompt");
-    }
-  }
-});
 
 // ---- requests ------------------------------------------------------------------------------------------------
 
@@ -315,8 +261,8 @@ async function onRequest(msg) {
   };
   const s = sessions.get(sid);
   if (!s) return fail("no such session");
-  if (s.revoked) return fail("the person stopped nexo in this browser (Cancel on the debugging bar); start a new session to ask again");
-  if (!s.granted) return fail("not allowed: the person has not allowed nexo to control this browser");
+  if (s.revoked) return fail("the person stopped nexo in this browser (Cancel on the debugging bar); start a new session");
+  if (!s.granted) return fail("not allowed: session has not been granted access");
   try {
     if (NEEDS_TAB.has(method) && !(Number.isInteger(p.tab) && tabOwner.get(p.tab) === sid)) {
       return fail("that tab is not one of this session's tabs");
@@ -521,7 +467,6 @@ function revoke(sid) {
   if (!s) return;
   s.revoked = true;
   s.granted = false;
-  withdrawConsent(sid);
   for (const tab of [...s.tabs]) {
     if (!lost.has(tab)) send({ t: "ev", tab, m: "Nexo.detached", p: { reason: "canceled_by_user" } });
     if (attached.delete(tab)) chrome.debugger.detach({ tabId: tab }).catch(() => {});
@@ -549,12 +494,11 @@ function scrub(method, params) {
 
 function paint() {
   const all = [...sessions.values()];
-  const asking = all.some((s) => s.consent);
   const live = all.some((s) => s.granted);
-  const label = asking ? "?" : live ? "ON" : "";
+  const label = live ? "ON" : "";
   chrome.action.setBadgeText({ text: label }).catch(() => {});
-  chrome.action.setBadgeBackgroundColor({ color: asking ? "#d97706" : "#2563eb" }).catch(() => {});
-  const title = asking ? "nexo is asking to control this browser" : live ? "nexo is controlling tabs in the nexo group" : "nexo browser (idle)";
+  chrome.action.setBadgeBackgroundColor({ color: "#2563eb" }).catch(() => {});
+  const title = live ? "nexo is controlling tabs in the nexo group" : "nexo browser (idle)";
   chrome.action.setTitle({ title }).catch(() => {});
 }
 
@@ -567,8 +511,6 @@ async function sweep() {
     await Promise.all(
       targets.filter((t) => t.attached && t.tabId !== undefined && !attached.has(t.tabId)).map((t) => chrome.debugger.detach({ tabId: t.tabId }).catch(() => {})),
     );
-    const prompts = await chrome.tabs.query({ url: CONSENT_URL + "*" });
-    await Promise.all(prompts.map((t) => chrome.windows.remove(t.windowId).catch(() => {})));
   } catch (e) {
     /* nothing to sweep */
   }

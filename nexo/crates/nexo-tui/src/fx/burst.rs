@@ -51,9 +51,16 @@ impl Kind {
 pub struct Burst {
     pub kind: Kind,
     pub at: Instant,
+    /// 1 to 3: the longer the work took, the bigger the burst.
+    pub power: u8,
 }
 
 impl Burst {
+    /// How much wider and denser than a plain burst this one is.
+    pub fn scale(&self) -> f32 {
+        1.0 + 0.5 * self.power.saturating_sub(1) as f32
+    }
+
     pub fn alive(&self, now: Instant) -> bool {
         within(Some(self.at), now, self.kind.ms())
     }
@@ -74,6 +81,8 @@ pub struct Throw {
     pub x: f32,
     pub y: f32,
     pub up: bool,
+    /// Reach and number of sparks, 1 for a plain burst.
+    pub scale: f32,
 }
 
 // ---- the scene ----
@@ -115,8 +124,8 @@ fn drag(u: f32) -> f32 {
 
 fn met(cv: &mut Canvas, th: &Throw, t: f32, ascii: bool) {
     let (w, h) = cv.dots();
-    let r = reach(w, h);
-    let n = if w * h < 2400.0 { 28 } else { 56 };
+    let r = reach(w, h) * th.scale;
+    let n = ((if w * h < 2400.0 { 28.0 } else { 56.0 }) * th.scale) as usize;
     let g = r * 0.5;
     // the flash: a white-hot point and a ring that opens and thins
     if t < 220.0 {
@@ -197,7 +206,7 @@ fn met(cv: &mut Canvas, th: &Throw, t: f32, ascii: bool) {
 
 fn fail(cv: &mut Canvas, th: &Throw, t: f32) {
     let (w, h) = cv.dots();
-    let r = reach(w, h) * 0.55;
+    let r = reach(w, h) * 0.55 * th.scale;
     // the shudder: a short row of dots shaking left and right, settling
     let base_y = if th.up { h - 1.0 } else { th.y };
     if t < 300.0 {
@@ -210,7 +219,7 @@ fn fail(cv: &mut Canvas, th: &Throw, t: f32) {
         }
     }
     // the embers: a few heavy dots that hop up, fall and flicker out
-    let n = 22;
+    let n = (22.0 * th.scale) as usize;
     let g = r * 1.1;
     for i in 0..n {
         let s = 900 + i as u32 * 13;
@@ -244,6 +253,11 @@ fn fail(cv: &mut Canvas, th: &Throw, t: f32) {
 impl App {
     /// Starts a burst, unless the switch or the motion is off; the same kind already under way goes on.
     pub fn burst(&mut self, kind: Kind) {
+        self.burst_sized(kind, 1);
+    }
+
+    /// A burst of `power` 1 to 3: bigger for work that took longer.
+    pub fn burst_sized(&mut self, kind: Kind, power: u8) {
         if !self.opts.bursts || !self.fx_on() {
             return;
         }
@@ -251,7 +265,7 @@ impl App {
         if self.fx.burst.is_some_and(|b| b.kind == kind && b.alive(now)) {
             return;
         }
-        self.fx.burst = Some(Burst { kind, at: now });
+        self.fx.burst = Some(Burst { kind, at: now, power: power.clamp(1, 3) });
         self.dirty = true;
     }
 
@@ -295,6 +309,7 @@ pub fn draw(buf: &mut Buffer, app: &App, room: Rect) {
         x: (x - room.x) as f32 * dx + dx / 2.0,
         y: if up { room.height as f32 * dy + 1.0 } else { (y - room.y) as f32 * dy + dy / 2.0 },
         up,
+        scale: b.scale(),
     };
     let t = now.saturating_duration_since(b.at).as_secs_f64() * 1000.0;
     let g = grid(&th, t, room.width, room.height, ascii);
@@ -351,7 +366,7 @@ mod tests {
     }
 
     fn mid(kind: Kind) -> Throw {
-        Throw { kind, x: 80.0, y: 48.0, up: false }
+        Throw { kind, x: 80.0, y: 48.0, up: false, scale: 1.0 }
     }
 
     #[test]
@@ -390,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_burst_from_below_rises_into_the_room() {
-        let th = Throw { kind: Kind::Met, x: 80.0, y: 24.0 * 4.0 + 1.0, up: true };
+        let th = Throw { kind: Kind::Met, x: 80.0, y: 24.0 * 4.0 + 1.0, up: true, scale: 1.0 };
         let g = grid(&th, 300.0, 80, 24, false);
         let rows: Vec<usize> = (0..g.cells.len()).filter(|&i| g.cells[i].ch != ' ').map(|i| i / 80).collect();
         assert!(!rows.is_empty());

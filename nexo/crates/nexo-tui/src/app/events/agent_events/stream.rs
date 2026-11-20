@@ -116,6 +116,17 @@ impl App {
             return;
         }
         self.turn_tally.count_call(&name);
+        // a call about a shell job carries the job's whole command, so its card, opened, shows it as a
+        // shell card does (the head only has room for its start)
+        let mut args = args;
+        if name == "jobs" && args.get("command").is_none() {
+            let job = args.get("id").and_then(serde_json::Value::as_u64);
+            let shell =
+                self.jobs.iter().find(|j| Some(j.id as u64) == job && j.kind == nexo_core::jobs::JobKind::Shell);
+            if let (Some(j), Some(map)) = (shell, args.as_object_mut()) {
+                map.insert("command".into(), j.label.clone().into());
+            }
+        }
         // a plan stays open in the transcript: it is what was agreed
         let folded = name != "exit_plan";
         self.push(Block::Tool {

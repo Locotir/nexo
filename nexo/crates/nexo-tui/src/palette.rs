@@ -187,6 +187,15 @@ impl Palette {
         self.ranked.get(self.selected).map(|&i| self.items[i].as_str())
     }
 
+    /// What Tab puts in the draft: the selected item, or for a command found through an
+    /// old name, that name, which carries its arguments (`context-live` is `context live`).
+    pub fn choice(&self) -> Option<&str> {
+        match self.aliases.get(self.selected).copied().flatten() {
+            Some(a) if self.kind == PaletteKind::Commands && commands::is_hidden(a) => Some(a),
+            _ => self.current(),
+        }
+    }
+
     /// With nothing matching: the command the query most likely meant.
     pub fn suggestion(&self) -> Option<&'static str> {
         match self.kind {

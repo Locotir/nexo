@@ -71,15 +71,22 @@ impl App {
         }
     }
 
+    /// A run's line: the first state with a target adds it, the later ones redraw it in place.
+    fn put_agent_line(&mut self, run: crate::render::blocks::AgentRun) {
+        match self.blocks.iter().rposition(|b| matches!(b, Block::Agent(r) if r.id == run.id)) {
+            Some(i) => {
+                self.blocks[i] = Block::Agent(run);
+                self.cache[i] = None;
+            }
+            None => {
+                self.push(Block::Agent(run));
+            }
+        }
+    }
+
     pub(super) fn sub_state(&mut self, info: SubInfo) {
         let id = info.id.clone();
-        let target = target_label(&info);
-        let old_target = self.sub_runs.iter().find(|r| r.info.id == id).and_then(|r| target_label(&r.info));
-        let announcement = target.filter(|target| old_target.as_ref() != Some(target)).map(|target| {
-            let profile = crate::render::wrap::one_line(&info.profile);
-            let title = crate::render::wrap::one_line(&info.title);
-            format!("Agent {profile} · {target} · {title}")
-        });
+        let line = agent_run(&info);
         // the state of a run the app knows, unchanged: the agent sends that after a lag
         let mut resync = false;
         match self.sub_runs.iter_mut().find(|r| r.info.id == id) {
@@ -109,8 +116,9 @@ impl App {
         }
         // A launch may come from task, a workflow, or ultracode. Announce it in the main
         // transcript as soon as its effective target is known, even when its view is open.
-        if let Some(text) = announcement {
-            self.on_main(|a| a.push(Block::Notice { level: Level::Info, text }));
+        // Its line then follows the run: a level resolved late, and dim once it ends.
+        if let Some(run) = line {
+            self.on_main(|a| a.put_agent_line(run));
             self.dirty = true;
         }
         let runs = self.sub_job_runs();

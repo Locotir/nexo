@@ -68,6 +68,46 @@ pub(super) fn remembered_card(
     lines
 }
 
+/// The colour of a reasoning level: the light ones dim, `medium` plain, `high` in the accent, the top ones
+/// warm and bold.
+fn effort_style(effort: &str, theme: &Theme) -> Style {
+    match effort {
+        "off" | "minimal" | "low" => theme.style(theme.dim),
+        "high" => theme.style(theme.accent),
+        "xhigh" | "max" => Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+        _ => theme.style(theme.fg),
+    }
+}
+
+/// A sub-agent's line: ` general  codex/gpt · medium · task`. `spinner` makes the model shimmer while the run
+/// works (None: no motion); an ended run is all dim. The task is cut to fit one row.
+pub(super) fn agent_line(run: &AgentRun, spinner: Option<usize>, theme: &Theme, w: usize) -> Vec<Line<'static>> {
+    let dim = theme.style(theme.dim);
+    let badge = Style::default()
+        .fg(theme.bg)
+        .bg(if run.running { theme.accent } else { theme.dim })
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::styled(format!(" {} ", run.profile), badge), Span::raw(" ")];
+    match spinner.filter(|_| run.running) {
+        Some(frame) => spans.extend(super::live_marks::shimmer(&run.model, frame, theme)),
+        None if run.running => spans.push(Span::styled(run.model.clone(), theme.style(theme.accent))),
+        None => spans.push(Span::styled(run.model.clone(), dim)),
+    }
+    if let Some(e) = &run.effort {
+        spans.push(Span::styled(" · ", dim));
+        spans.push(Span::styled(e.clone(), if run.running { effort_style(e, theme) } else { dim }));
+    }
+    let used: usize = spans.iter().map(|s| width(&s.content)).sum();
+    if used + 4 > w {
+        let effort = run.effort.as_deref().map(|e| format!(" · {e}")).unwrap_or_default();
+        let plain = format!("{} · {}{effort} · {}", run.profile, run.model, run.title);
+        return wrap_plain(&plain, w, dim, &[Span::raw("  ")]);
+    }
+    spans.push(Span::styled(" · ", dim));
+    spans.push(Span::styled(truncate(&run.title, w - used - 3), dim));
+    vec![Line::from(spans)]
+}
+
 pub(super) fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'static>> {
     let edge = Style::default().fg(theme.accent2).add_modifier(Modifier::BOLD);
     let text = Style::default().fg(theme.fg);

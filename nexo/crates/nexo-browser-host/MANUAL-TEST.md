@@ -19,15 +19,16 @@ person makes once with the Chrome they actually use.
 1. Start a nexo session and ask the model to call `browsers`. It lists `headless` (the default) and your browser, with a
    star on the one in use. Nothing has been asked of you yet: no window appeared.
 2. Ask it to `select_browser` with your browser's id (or `switch_browser` to ask every running browser at once).
-3. A small window opens in the browser: "Allow nexo to control this browser?" with Deny focused. Waiting about two
-   minutes without answering counts as Deny. Click Allow.
-4. A blue "nexo" tab group appears with one tab, the toolbar badge reads ON, and Chrome shows its "started debugging this
-   browser" bar. Ask the
-   model to open a page, fill a form, take a screenshot. Only tabs nexo opened are visible to it; your other tabs are
-   neither listed nor touched.
-5. Click Cancel on the debugging bar. The session is revoked at once: the next action says the connection ended and
-   starts nothing. (Ask again with `select_browser` to be prompted again.)
-6. `close` releases the browser and leaves the tabs open for you.
+3. The session is granted automatically; no nexo consent window appears. A blue "nexo" tab group appears with one tab,
+   the toolbar badge reads ON, and Chrome shows its own "started debugging this browser" bar. Ask the model to open a
+   page, fill a form and take a screenshot. Only tabs created by this session are visible to it; your other tabs and
+   other sessions' tabs are neither listed nor touched.
+4. Click Cancel on Chrome's debugging bar. That session is revoked: its next action fails and it cannot be re-granted.
+   Starting a new session can connect automatically again.
+5. `close` releases the browser and leaves the tabs open for you.
+
+Automatic access means any authenticated nexo relay session can control its own browser tabs without a separate
+per-session confirmation. Chrome's debugging bar remains visible and provides the Cancel control.
 
 ## What differs from nexo's own headless Chrome
 
@@ -44,11 +45,10 @@ person makes once with the Chrome they actually use.
 ## The real-extension test
 
 ```text
-cargo build -p nexo-cli
-cargo test -p nexo-browser --test it real_extension -- --ignored --nocapture
+CARGO_TARGET_DIR="$HOME/build-cache/nexo-localbuild" nice -n 10 cargo build -j 2 -p nexo-browser-host
+CARGO_TARGET_DIR="$HOME/build-cache/nexo-localbuild" nice -n 10 cargo test -j 2 -p nexo-browser --test it real_extension -- --ignored --nocapture
 ```
 
 `NEXO_HOST_BIN` names the host program (default: `nexo` or `nexo-browser-host` beside the test binary). It needs a
 Chrome that accepts `--enable-unsafe-extension-debugging` with `Extensions.loadUnpacked` (Chrome for Testing, Chromium,
-or branded Chrome 137+ with that flag). The test confirms that a script's `.click()` on Allow is ignored and only a
-real mouse click lets a session in. It starts its own Chrome in a temporary folder and kills it at the end.
+or branded Chrome 137+ with that flag). The test checks automatic connection without a prompt, session isolation and revocation. It starts its own Chrome in a temporary folder and kills it at the end.
