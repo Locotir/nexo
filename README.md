@@ -196,7 +196,7 @@ tools the agent uses; sessions in `~/.nexo/sessions/` hold what passed through, 
 
 nexo is free and licensed under Apache 2.0. [![Support nexo on PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
-Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as [SECURITY.md](SECURITY.md) explains.
+Issues and pull requests are welcome: see [CONTRIBUTING.md](.github/CONTRIBUTING.md). Report security problems privately as [SECURITY.md](.github/SECURITY.md) explains.
 
 ## License
 

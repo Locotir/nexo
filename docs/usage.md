@@ -62,7 +62,8 @@ the `plain` arm.
 
 ```
 README.md                   the presentation and a short guide
-CONTRIBUTING.md, SECURITY.md  how to send a change, how to report a security problem
+.github/                    CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, CI
+docs/CHANGELOG.md           what changed in each release
 docs/
   usage.md                  this file: build, config, the benchmark, the replay example
   results.md                every measured figure

@@ -37,7 +37,7 @@ cargo test --workspace                        # must pass without the variable
   readable (no italics, AA contrast); `animations = false` stops all motion.
 - **Context policies are general.** A change to the curator has to help any kind of session (a web
   repository, a data project, a chat without tools), not one benchmark task. Show it with
-  `nexo bench` or the `replay` example ([`docs/usage.md`](docs/usage.md)).
+  `nexo bench` or the `replay` example ([`docs/usage.md`](../docs/usage.md)).
 - **Secrets never enter the repository.** Keys come from the environment; benchmark output stays
   outside the tree.
 
@@ -46,6 +46,6 @@ cargo test --workspace                        # must pass without the variable
 One topic per commit, a short imperative subject (`tui: keep the draft when a modal opens`), and
 the four checks green before you push.
 
-By contributing you agree that your work is released under the [Apache License 2.0](LICENSE).
+By contributing you agree that your work is released under the [Apache License 2.0](../LICENSE).
 
-See also the [code of conduct](CODE_OF_CONDUCT.md) and the [changelog](CHANGELOG.md).
+See also the [code of conduct](CODE_OF_CONDUCT.md) and the [changelog](../docs/CHANGELOG.md).
