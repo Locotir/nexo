@@ -89,7 +89,7 @@ mod windows_job {
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
@@ -163,8 +163,10 @@ mod windows_job {
 
     impl Drop for Job {
         fn drop(&mut self) {
-            // SAFETY: the handle is ours and closed once. Closing the last handle ends the processes in the job.
+            // SAFETY: the handle is ours and closed once. The job is ended outright, not left to the close of its last
+            // handle, so a handle held elsewhere cannot keep the processes alive; closing then ends any stragglers.
             unsafe {
+                TerminateJobObject(self.0, 1);
                 CloseHandle(self.0);
             }
         }
@@ -284,6 +286,33 @@ mod tests {
             }
         }
 
+        /// A handle to one process, held so its pid cannot be reused while the test looks at it.
+        struct Watch(windows_sys::Win32::Foundation::HANDLE);
+
+        impl Watch {
+            fn open(pid: u32) -> Watch {
+                // SAFETY: the handle is closed in `Drop`.
+                let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+                assert!(!h.is_null(), "could not open process {pid}");
+                Watch(h)
+            }
+
+            fn alive(&self) -> bool {
+                let mut code = 0u32;
+                // SAFETY: `self.0` is a live process handle.
+                unsafe { GetExitCodeProcess(self.0, &mut code) != 0 && code == RUNNING }
+            }
+        }
+
+        impl Drop for Watch {
+            fn drop(&mut self) {
+                // SAFETY: the handle is ours and closed once.
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+
         fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
             let start = Instant::now();
             while !done() {
@@ -315,10 +344,12 @@ mod tests {
             let guard = ProcessGuard::adopt(Some(child.id()));
             assert!(guard.contained(), "the child could not be put in a job");
             assert!(child.try_wait().unwrap().is_none(), "exited before the guard dropped");
-            assert!(alive(helper), "the helper exited before the guard dropped");
+            // the helper is watched through a handle taken now: a pid reused after it ends cannot read as alive
+            let watch = Watch::open(helper);
+            assert!(watch.alive(), "the helper exited before the guard dropped");
             drop(guard);
             wait_until("the child outlived its job", || child.try_wait().unwrap().is_some());
-            wait_until("the helper outlived its job", || !alive(helper));
+            wait_until("the helper outlived its job", || !watch.alive());
         }
 
         #[test]
