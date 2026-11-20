@@ -16,11 +16,9 @@ pub const HOST_NAME: &str = "dev.nexo.browser";
 pub const EXTENSION_ID: &str = "lollgkhihanglklkkahimoikiegabdon";
 
 /// The extension's files: name and text, as this nexo carries them.
-pub const EXTENSION_FILES: [(&str, &str); 4] = [
+pub const EXTENSION_FILES: [(&str, &str); 2] = [
     ("manifest.json", include_str!("../../assets/chrome-extension/manifest.json")),
     ("background.js", include_str!("../../assets/chrome-extension/background.js")),
-    ("consent.html", include_str!("../../assets/chrome-extension/consent.html")),
-    ("consent.js", include_str!("../../assets/chrome-extension/consent.js")),
 ];
 
 /// A browser that reads native-messaging manifests. An empty folder name means the browser has no build for that
@@ -563,12 +561,10 @@ mod tests {
     }
 
     #[test]
-    fn every_page_the_extension_opens_is_shipped() {
+    fn the_extension_opens_no_page_of_its_own() {
+        // consent is given in nexo, so the extension has no page to ship
         let background = EXTENSION_FILES[1].1;
-        assert!(background.contains("consent.html"));
-        let html = EXTENSION_FILES[2].1;
-        assert!(html.contains("consent.js"));
-        assert!(html.contains("Allow nexo to control this browser?"));
+        assert!(!background.contains(".html") && !background.contains("runtime.getURL"));
     }
 
     #[test]
