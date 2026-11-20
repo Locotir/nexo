@@ -25,6 +25,14 @@ pub enum GoalSignal {
     Wait,
 }
 
+/// Info notes that only say where the run stands (a goal's state, a queued request starting): drawn dim,
+/// so the blue ones stay for what the person should read.
+const STATUS_NOTES: &[&str] = &["goal ", "goal:", "running the "];
+
+pub fn is_status_note(text: &str) -> bool {
+    STATUS_NOTES.iter().any(|p| text.starts_with(p))
+}
+
 /// A reply without its closing `GOAL DONE` / `GOAL WAIT` line, and which one it was. While the reply
 /// streams in, a last line that is still on its way to one of them (`GOAL`, `GOAL W`) is held back too,
 /// so the bare words never flash on screen.
@@ -351,7 +359,7 @@ impl Block {
                 if let Some(sig) = signal {
                     let (icon, label, colour) = match sig {
                         GoalSignal::Done => ("✓", "goal met", theme.success),
-                        GoalSignal::Wait => ("⏸", "goal paused · waiting for your answer", theme.warn),
+                        GoalSignal::Wait => ("⏸", "goal waiting for your answer · reply to resume", theme.warn),
                     };
                     if lines.last().is_some_and(|l| l.spans.iter().any(|s| !s.content.trim().is_empty())) {
                         lines.push(Line::default());
@@ -638,6 +646,7 @@ impl Block {
                     return (Vec::new(), meta);
                 }
                 let (icon, style) = match level {
+                    Level::Info if is_status_note(text) => ("· ", theme.style(theme.dim)),
                     Level::Info => ("◇ ", theme.style(theme.info)),
                     Level::Warn => ("▲ ", theme.style(theme.warn)),
                     Level::Error => ("✗ ", theme.style(theme.error)),

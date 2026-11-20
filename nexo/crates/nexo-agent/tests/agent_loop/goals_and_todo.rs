@@ -356,7 +356,8 @@ async fn a_reply_that_asks_waits_for_the_answer_and_the_answer_resumes_the_goal(
     // the question stops the loop: no continuation answers it in the person's place
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting));
-    assert!(evs
+    // the reply's own waiting mark says it: no second line repeats it
+    assert!(!evs
         .iter()
         .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("waiting for your answer"))));
     assert_eq!(client.requests().len(), 1);

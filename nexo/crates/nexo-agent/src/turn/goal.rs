@@ -432,7 +432,10 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
     if let Err(e) = st.session.record_goal_state(to, st.goal_log.progress()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
-    notice(&st.events, Level::Info, say);
+    // nothing to say: the screen shows the change already (the reply's own mark, the goal chip)
+    if !say.is_empty() {
+        notice(&st.events, Level::Info, say);
+    }
     emit_goal(st);
 }
 
@@ -446,7 +449,7 @@ pub(super) fn person_spoke(st: &mut State) {
     // only a person's message gives a request its checkpoints back: a goal's rounds, a mail or a job's end do not
     st.ck_used = 0;
     if st.goal.is_some() && st.goal_state == GoalState::Waiting {
-        goal_to(st, GoalState::Active, "goal: resumed with your answer".into());
+        goal_to(st, GoalState::Active, String::new());
     }
 }
 
@@ -497,7 +500,8 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd, run_queue: bool
             if goal_done(&last) {
                 (GoalState::Done, "goal met · /goal resume reopens it, /goal off clears it".to_string())
             } else if goal_wait(&last) {
-                (GoalState::Waiting, "goal waiting for your answer: your next message resumes it".to_string())
+                // the reply ends with its own waiting mark: no second line that says the same
+                (GoalState::Waiting, String::new())
             } else if (typed || st.person_at > st.turn_start) && answered_in_words(&st) {
                 // the person wrote during the round (their words joined it, or ran right after it) and the model
                 // answered them in words (a stop, a question): a continuation would talk over them, so the goal
