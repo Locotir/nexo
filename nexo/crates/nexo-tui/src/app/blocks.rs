@@ -90,6 +90,42 @@ impl App {
         }
     }
 
+    /// Puts what a model call cost on the latest group of calls of this turn.
+    pub(super) fn charge_group(&mut self, usd: f64) {
+        let Some(m) = (0..self.blocks.len())
+            .rev()
+            .take_while(|&j| !matches!(self.blocks[j], Block::User { .. }))
+            .find(|&j| matches!(self.blocks[j], Block::Group { .. }))
+        else {
+            return;
+        };
+        let week = self.plan_usage.as_ref().and_then(|p| {
+            p.meters
+                .iter()
+                .find(|m| m.label == "wk" || m.window_minutes.is_some_and(|w| w >= 7 * 24 * 60))
+                .map(|m| m.used_pct)
+        });
+        self.looks[m].spent += usd;
+        self.looks[m].week_pct = week;
+        self.cache[m] = None;
+        self.dirty = true;
+    }
+
+    /// What group `i` cost: dollars on a paid API; on a plan, the API value and the week's use.
+    fn spend_text(&self, i: usize) -> String {
+        let Look { spent, week_pct, .. } = self.looks[i];
+        if spent < 0.00005 {
+            return String::new();
+        }
+        let usd = if spent >= 1.0 { format!("${spent:.2}") } else { format!("${spent:.4}") };
+        if self.on_plan() {
+            let week = week_pct.map(|p| format!(" · wk {p:.0}%")).unwrap_or_default();
+            format!(" · ≈{usd} API{week}")
+        } else {
+            format!(" · {usd}")
+        }
+    }
+
     /// The group block that block `i` belongs to.
     pub(super) fn group_of(&self, i: usize) -> Option<usize> {
         let back = self.looks.get(i)?.group_back?;
@@ -281,7 +317,7 @@ impl App {
                         (width - indent).max(8),
                         &self.theme,
                         self.opts.detail,
-                        !own_row,
+                        crate::render::group::HeadTail { show_call: !own_row, spend: &self.spend_text(i) },
                     );
                     let mut v = vec![head];
                     if !own_row {

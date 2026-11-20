@@ -11,7 +11,7 @@ fn the_goal_lines_become_a_badge_and_never_show_bare() {
     let b =
         Block::Assistant { text: "Ok.\n\nGOAL WAIT".into(), streaming: false, at: None, started: None, took_ms: None };
     let shown = texts(&b.render(80, &Theme::nexo(), opts())).join("\n");
-    assert!(!shown.contains("GOAL WAIT") && shown.contains("goal paused"), "{shown}");
+    assert!(!shown.contains("GOAL WAIT") && shown.contains("goal waiting for your answer"), "{shown}");
 }
 
 fn texts(lines: &[Line]) -> Vec<String> {

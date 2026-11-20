@@ -287,7 +287,16 @@ pub fn header_for(
     theme: &Theme,
     detail: nexo_core::config::Detail,
 ) -> Line<'static> {
-    header_with(members, folded, spinner, w, theme, detail, true)
+    header_with(members, folded, spinner, w, theme, detail, HeadTail { show_call: true, spend: "" })
+}
+
+/// What the end of a group's head carries besides the time.
+#[derive(Clone, Copy)]
+pub struct HeadTail<'a> {
+    /// Whether the running call is named on the head.
+    pub show_call: bool,
+    /// What the group cost, ready to print (` · $0.0123`), or empty.
+    pub spend: &'a str,
 }
 
 /// The same line; `show_call` says whether the running call is named on it. It is not when the call's
@@ -299,8 +308,9 @@ pub fn header_with(
     w: usize,
     theme: &Theme,
     detail: nexo_core::config::Detail,
-    show_call: bool,
+    tail: HeadTail,
 ) -> Line<'static> {
+    let HeadTail { show_call, spend } = tail;
     let quiet = detail == nexo_core::config::Detail::Quiet;
     let (mut failed, mut denied, mut live) = (0usize, 0usize, false);
     for b in members {
@@ -352,7 +362,7 @@ pub fn header_with(
         denies = if denied > 0 { format!(" ⊘{denied}") } else { String::new() };
     }
     let gap = if quiet { " · " } else { "  " };
-    let stamp = elapsed_ms(members).map(|ms| format!("{gap}{}", fmt_ms(ms))).unwrap_or_default();
+    let stamp = elapsed_ms(members).map(|ms| format!("{gap}{}", fmt_ms(ms))).unwrap_or_default() + spend;
     let fixed = |stamp: &str| 2 + width(&fails) + width(&denies) + width(stamp) + width(chevron);
     // the failures and the chevron are the last to go; the time goes first when the line is tight
     let stamp = if w.saturating_sub(fixed(&stamp)) < width(&text).min(24) { String::new() } else { stamp };
@@ -646,11 +656,13 @@ mod tests {
         }
         let m = [a];
         let q = nexo_core::config::Detail::Quiet;
-        let own = text(&header_with(&m, true, 0, 100, &theme, q, false));
+        let tail = |show_call, spend| HeadTail { show_call, spend };
+        let own = text(&header_with(&m, true, 0, 100, &theme, q, tail(false, "")));
+        assert!(text(&header_with(&m, true, 0, 100, &theme, q, tail(false, " · $0.0391"))).contains("$0.0391 ▸"));
         assert!(!own.contains("waiting for shell job") && !own.contains("step") && own.ends_with('▸'), "{own}");
         assert!(own.contains("3.0s"), "{own}");
         // the row is not drawn (folded away): the head still names the call
-        let hidden = text(&header_with(&m, true, 0, 100, &theme, q, true));
+        let hidden = text(&header_with(&m, true, 0, 100, &theme, q, tail(true, "")));
         assert!(hidden.contains("waiting for shell job 1"), "{hidden}");
         assert!(live_tail(&m, 60, &theme).is_some());
     }

@@ -716,4 +716,7 @@ struct Look {
     stopped: Option<Instant>,
     /// How far back the group block of a call is (None: not in a group).
     group_back: Option<u32>,
+    /// A group's share of the session cost (dollars or API value), and the plan's weekly use when it was last charged.
+    spent: f64,
+    week_pct: Option<f64>,
 }

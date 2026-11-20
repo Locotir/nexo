@@ -19,6 +19,9 @@ impl App {
         }
         self.turn_usage += turn;
         self.session_usage = session;
+        if cost_usd > self.cost {
+            self.charge_group(cost_usd - self.cost);
+        }
         self.cost = cost_usd;
     }
 
