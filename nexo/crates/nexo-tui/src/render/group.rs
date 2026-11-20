@@ -240,6 +240,40 @@ pub fn live_tail(members: &[Block], w: usize, theme: &Theme) -> Option<Line<'sta
 }
 
 /// The head line of a group of `members`, `w` cells wide.
+/// The summary in grey, with an edit's `+N` in green and `-N` in red, so the size of a change reads at a glance.
+fn tinted(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut grey = String::new();
+    for (i, word) in text.split(' ').enumerate() {
+        if i > 0 {
+            grey.push(' ');
+        }
+        let mut chars = word.chars();
+        let sign = chars.next();
+        let digits: String = chars.take_while(|c| c.is_ascii_digit()).collect();
+        let colour = match sign {
+            Some('+') if !digits.is_empty() => Some(theme.success),
+            Some('-' | '\u{2212}') if !digits.is_empty() => Some(theme.error),
+            _ => None,
+        };
+        match colour {
+            Some(c) => {
+                if !grey.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut grey), theme.dim()));
+                }
+                let n = sign.map_or(0, char::len_utf8) + digits.len();
+                spans.push(Span::styled(word[..n].to_string(), theme.style(c)));
+                grey.push_str(&word[n..]);
+            }
+            None => grey.push_str(word),
+        }
+    }
+    if !grey.is_empty() {
+        spans.push(Span::styled(grey, theme.dim()));
+    }
+    spans
+}
+
 pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: &Theme) -> Line<'static> {
     header_for(members, folded, spinner, w, theme, nexo_core::config::Detail::Full)
 }
@@ -323,7 +357,9 @@ pub fn header_with(
     // the failures and the chevron are the last to go; the time goes first when the line is tight
     let stamp = if w.saturating_sub(fixed(&stamp)) < width(&text).min(24) { String::new() } else { stamp };
     let room = w.saturating_sub(fixed(&stamp)).max(4);
-    let mut spans = vec![Span::styled(format!("{icon} "), istyle), Span::raw(truncate(&text, room))];
+    // the summary is secondary to the answer: grey, so the eye lands on the text; the calls open on demand
+    let mut spans = vec![Span::styled(format!("{icon} "), istyle)];
+    spans.extend(tinted(&truncate(&text, room), theme));
     // the call running now takes what the sentence leaves, and is the first thing to go
     if live && show_call {
         if let Some(call) = live_call(members) {
@@ -373,6 +409,20 @@ mod tests {
 
     fn text(l: &Line<'_>) -> String {
         l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn the_summary_is_grey_and_an_edit_reads_green_and_red() {
+        let theme = Theme::dark();
+        let spans = tinted("1 run, 2 edit +83 -5, 1 read", &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "1 run, 2 edit +83 -5, 1 read");
+        let of = |w: &str| spans.iter().find(|s| s.content == w).map(|s| s.style).unwrap();
+        assert_eq!(of("+83"), theme.style(theme.success));
+        assert_eq!(of("-5"), theme.style(theme.error));
+        assert!(spans.iter().filter(|s| s.content != "+83" && s.content != "-5").all(|s| s.style == theme.dim()));
+        let minus = tinted("Made 1 edit +1 \u{2212}2…", &theme);
+        assert!(minus.iter().any(|s| s.content == "\u{2212}2" && s.style == theme.style(theme.error)));
     }
 
     #[test]
