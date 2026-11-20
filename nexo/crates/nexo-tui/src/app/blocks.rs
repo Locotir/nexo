@@ -99,28 +99,20 @@ impl App {
         else {
             return;
         };
-        let week = self.plan_usage.as_ref().and_then(|p| {
-            p.meters
-                .iter()
-                .find(|m| m.label == "wk" || m.window_minutes.is_some_and(|w| w >= 7 * 24 * 60))
-                .map(|m| m.used_pct)
-        });
         self.looks[m].spent += usd;
-        self.looks[m].week_pct = week;
         self.cache[m] = None;
         self.dirty = true;
     }
 
-    /// What group `i` cost: dollars on a paid API; on a plan, the API value and the week's use.
+    /// What group `i` cost: dollars on a paid API; on a plan, the API value.
     fn spend_text(&self, i: usize) -> String {
-        let Look { spent, week_pct, .. } = self.looks[i];
+        let spent = self.looks[i].spent;
         if spent < 0.00005 {
             return String::new();
         }
         let usd = if spent >= 1.0 { format!("${spent:.2}") } else { format!("${spent:.4}") };
         if self.on_plan() {
-            let week = week_pct.map(|p| format!(" · wk {p:.0}%")).unwrap_or_default();
-            format!(" · ≈{usd} API{week}")
+            format!(" · ≈{usd} API")
         } else {
             format!(" · {usd}")
         }
