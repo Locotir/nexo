@@ -514,6 +514,18 @@ mod tests {
 
     #[test]
     fn close_all_writes_the_queued_lines_of_a_writer_still_held() {
+        // close_all closes every writer in the process, including those in parallel tests.
+        // Exercise it in a separate test process so it cannot close their writers.
+        const CHILD: &str = "NEXO_AUDIT_CLOSE_ALL_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "audit::tests::close_all_writes_the_queued_lines_of_a_writer_still_held"])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated close_all test failed: {status}");
+            return;
+        }
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("a.jsonl");
         let cfg = AuditConfig { enabled: true, path: Some(f.display().to_string()) };
