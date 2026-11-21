@@ -368,7 +368,7 @@ pub(super) async fn permit_why(
     hook: Option<crate::hooks::Decision>,
     agent: Option<&str>,
 ) -> (Verdict, Why) {
-    let kind = tool.kind();
+    let kind = tool.call_kind(args);
     let (mut decision, epoch) = {
         let st = state.lock().await;
         let d = st.perm.decide_boxed(name, kind, args, cwd, st.sandbox.mode.is_on());

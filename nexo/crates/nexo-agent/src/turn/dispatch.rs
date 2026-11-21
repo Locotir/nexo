@@ -16,7 +16,9 @@ use super::*;
 /// Answers one command; `Break` when the session ends.
 pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFlow<()> {
     match cmd {
-        AgentCommand::Loop { input } => scheduled::command(rt, &input),
+        AgentCommand::Loop { input } => {
+            scheduled::command(rt, &input, true);
+        }
         AgentCommand::Submit { text, attachments } => on_submit(rt, text, attachments).await,
         AgentCommand::SubmitDirected { target, text, reply } => on_submit_directed(rt, target, text, reply).await,
         AgentCommand::Ultracode { text, attachments } => on_ultracode(rt, text, attachments).await,
@@ -426,7 +428,7 @@ async fn on_clear(rt: &mut Runtime) {
 
 /// `/goal`: a goal set while idle starts a turn towards it; one set during a turn gets its own request, with its
 /// files, when that turn ends, and the turn's reply does not judge it.
-async fn on_set_goal(rt: &mut Runtime, text: Option<String>, attachments: Vec<Attachment>) {
+pub(super) async fn on_set_goal(rt: &mut Runtime, text: Option<String>, attachments: Vec<Attachment>) {
     if let Some(goal) = set_goal(&rt.state, text).await {
         let request = format!("{GOAL_SET_MARK} {goal}");
         if rt.turn.is_some() {

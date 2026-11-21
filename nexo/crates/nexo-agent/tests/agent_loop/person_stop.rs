@@ -122,6 +122,7 @@ async fn a_check_in_answered_continue_after_esc_starts_no_turn() {
     ));
     r.next().await;
     r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
+    r.approve_todo("c1").await;
     r.turn().await;
     no_turn_within(&mut r, 800).await;
     assert_eq!(client.requests().len(), 3, "the todo call, the reply, the check-in: no resumed turn");
@@ -216,6 +217,7 @@ async fn a_resume_turn_with_a_block_in_front_of_its_mark_carries_no_tree_note() 
     );
     r.next().await;
     r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
+    r.approve_todo("c1").await;
     r.turn().await;
     // the folder changed since the model last saw it
     std::fs::write(dir.path().join("new.rs"), "").unwrap();
@@ -248,6 +250,7 @@ async fn a_stop_typed_during_a_turn_gets_no_check_in() {
     }
     r.next().await;
     r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
+    r.approve_todo("c1").await;
     r.turn().await;
     no_turn_within(&mut r, 800).await;
     assert_eq!(client.requests().len(), 2, "the todo call and the answer to the stop: no check-in, no resumed turn");

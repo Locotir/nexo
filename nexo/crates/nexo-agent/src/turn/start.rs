@@ -81,6 +81,28 @@ pub(super) async fn start_prompt_item(
     cancel: CancellationToken,
     item: Option<InboxItem>,
 ) -> Option<JoinHandle<TurnEnd>> {
+    start_hooked_prompt(state, text, attachments, ultracode, cancel, item, true).await
+}
+
+/// Scheduled text retains its creator's provenance while still passing the submit hook.
+pub(super) async fn start_scheduled_prompt(
+    state: &Shared,
+    text: String,
+    person: bool,
+    cancel: CancellationToken,
+) -> Option<JoinHandle<TurnEnd>> {
+    start_hooked_prompt(state, text, Vec::new(), false, cancel, None, person).await
+}
+
+async fn start_hooked_prompt(
+    state: &Shared,
+    text: String,
+    attachments: Vec<Attachment>,
+    ultracode: bool,
+    cancel: CancellationToken,
+    item: Option<InboxItem>,
+    person: bool,
+) -> Option<JoinHandle<TurnEnd>> {
     // taken: said at once, before the hooks and the start of the turn (they can take seconds)
     let events = state.lock().await.events.clone();
     preparing(&events, PREP_REQUEST);
@@ -92,7 +114,7 @@ pub(super) async fn start_prompt_item(
         return None;
     }
     state.lock().await.hook_context.extend(o.context);
-    Some(begin_turn(state, text, attachments, true, ultracode, cancel, item).await)
+    Some(begin_turn(state, text, attachments, person, ultracode, cancel, item).await)
 }
 
 /// Starts a turn on a message that is not the person's own words (mail, the goal loop, a job note, the

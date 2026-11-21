@@ -106,7 +106,8 @@ pub(super) async fn unfinished(
     let mut r = start_with(client.clone(), cfg, None, dir.path(), todo_tools).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
-    let evs = r.turn().await;
+    let mut evs = r.approve_todo("c1").await;
+    evs.extend(r.turn().await);
     (client, r, evs, dir)
 }
 

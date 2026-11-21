@@ -27,9 +27,12 @@ pub(super) async fn learn(state: &Shared, e: &ProviderError, model: &str, wanted
     let (provider, mut cfg, _) = st.target.get();
     // a 429 is a throttle (tokens per minute), never the window
     let throttled = e.kind == ErrorKind::RateLimit || hints::is_rate_message(&e.message);
-    let named = hints::context_window(&e.message).filter(|_| !throttled);
+    if throttled {
+        return Lesson::None;
+    }
+    let named = hints::context_window(&e.message);
     // under the curator a request that was too long for the window is answered with a smaller view, never a summary
-    if st.policy.fits_window() && !throttled && (named.is_some() || e.kind == ErrorKind::ContextLength) {
+    if st.policy.fits_window() && (named.is_some() || e.kind == ErrorKind::ContextLength) {
         return refit(st, &provider, &mut cfg, model, e, named);
     }
     if let Some(n) = named {

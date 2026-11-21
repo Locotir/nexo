@@ -45,9 +45,20 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
     let names = req.tools.iter().map(|t| t.name.as_str()).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         names,
-        ["ask_user", "bash", "grep", "read", "shared_memory_read", "shared_memory_write", "task", "write"]
-            .into_iter()
-            .collect()
+        [
+            "ask_user",
+            "bash",
+            "goal",
+            "grep",
+            "loop",
+            "read",
+            "shared_memory_read",
+            "shared_memory_write",
+            "task",
+            "write"
+        ]
+        .into_iter()
+        .collect()
     );
     assert!(!req.tools.iter().any(|t| t.name == "exit_plan"));
     assert_eq!(req.messages.len(), 1);

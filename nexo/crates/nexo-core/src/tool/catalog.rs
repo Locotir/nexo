@@ -2,7 +2,7 @@
 //! that reads them. A new tool is added here, once, instead of in each caller.
 
 /// Tools that touch nothing outside the conversation: never asked about (a `deny` rule still holds).
-pub const ALWAYS_ALLOWED: &[&str] = &["todo", "note", "recall", "ask_user", "exit_plan"];
+pub const ALWAYS_ALLOWED: &[&str] = &["note", "recall", "ask_user", "exit_plan"];
 
 /// The tools an ultracode planning round may call. Conservative allowlist: unknown, network-mutating and
 /// execution tools are not planning tools.

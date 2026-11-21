@@ -9,6 +9,7 @@ use super::*;
 /// Everything the loop's branches act on besides the command channel.
 pub(super) struct Runtime {
     pub(super) loops: scheduled::Loops,
+    pub(super) control_rx: tokio::sync::mpsc::UnboundedReceiver<control_tool::Request>,
     pub(super) state: Shared,
     pub(super) events: EventTx,
     /// Answers the permission asks the interface resolves; a headless run gives its own gate to the state.
@@ -62,9 +63,15 @@ impl Runtime {
         let limits = limits::resolve(&provider, &pcfg, &model, None);
         let target = Target::new(&provider, pcfg, &model);
         let tools_enabled = add_shared_memory(&mut tools);
+        let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Register after the sub-agent snapshot, so children cannot control the parent session.
         // the sub-agents, when there are tools to give them; they reach the state once it exists
         let host: crate::subagent::HostCell = Arc::new(OnceLock::new());
         let flow_sub = add_subagents(&config, &cwd, &client, &target, &mut tools, &host);
+        if tools_enabled {
+            tools.add(Arc::new(control_tool::ControlTool::new("goal", control_tx.clone())));
+            tools.add(Arc::new(control_tool::ControlTool::new("loop", control_tx)));
+        }
         let plan = add_ask_tools(&mut tools, tools_enabled, headless, &asker);
         let (mut session, history, replay) = open_session(resume.as_deref(), &cwd, &provider, &model, &events)?;
         apply_title(&mut session, config.agent.session_title.as_deref(), &events);
@@ -251,6 +258,7 @@ impl Runtime {
         let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel::<Resume>();
         Ok(Runtime {
             loops: scheduled::Loops::default(),
+            control_rx,
             state,
             events,
             chan_gate,

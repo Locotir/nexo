@@ -83,6 +83,7 @@ mod window_fit;
 pub(crate) use start::{fixed_tokens, learn_ratio, reasoning_of, view_window};
 // and the rule for which calls of one round may overlap
 pub(crate) use tools::is_pure_check;
+mod control_tool;
 mod state;
 mod stop;
 mod tools;
@@ -141,6 +142,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     break;
                 }
             }
+            Some(r) = rt.control_rx.recv() => control_tool::handle(&mut rt, r).await,
             Some(r) = rt.resume_rx.recv() => lifecycle::on_resume(&mut rt, r).await,
             change = rt.sub_changes.recv(), if rt.subs_open => lifecycle::on_sub_change(&mut rt, change),
             change = rt.job_changes.recv() => lifecycle::on_job_change(&mut rt, change).await,

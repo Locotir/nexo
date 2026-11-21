@@ -112,7 +112,7 @@ async fn a_session_that_never_touches_a_binary_sends_what_it_sent_before() {
         assert!(!all.contains("nexo bin") && !all.contains("compiled"), "no hint, no system line");
         // The ordinary tools include shared memory, but no binary tool rides in every request.
         let names = req.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>();
-        assert_eq!(names, ["ask_user", "bash", "shared_memory_read", "shared_memory_write"]);
+        assert_eq!(names, ["ask_user", "bash", "goal", "loop", "shared_memory_read", "shared_memory_write"]);
     }
     assert_eq!(result_texts(client.requests().last().unwrap()), ["bash:ls -la"]);
 }

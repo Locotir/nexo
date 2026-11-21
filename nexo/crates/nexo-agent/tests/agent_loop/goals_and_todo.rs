@@ -477,15 +477,15 @@ async fn a_todo_call_shows_the_list_and_the_replay_keeps_it() {
     let items = json!({"items": [{"text": "read", "status": "done"}, {"text": "fix", "status": "in_progress"}, {"text": "test"}]});
     let client = Scripted::new(vec![Reply::Events(call("c1", "todo", items)), Reply::Events(text("on it"))]);
     let todo_tools = tools().with(Arc::new(nexo_tools::todo::Todo::with_dir(dir.path().to_path_buf())));
-    // the todo tool never asks, even in ask mode
+    // A todo mutation requires approval in Ask mode.
     let mut r = start_with(client, config(PermissionMode::Ask), None, dir.path(), todo_tools).await;
     let id = match r.next().await {
         AgentEvent::Ready { session_id, .. } => session_id,
         other => panic!("{other:?}"),
     };
     r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
-    let evs = r.turn().await;
-    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })));
+    let mut evs = r.approve_todo("c1").await;
+    evs.extend(r.turn().await);
     let done = evs.iter().find_map(|e| match e {
         AgentEvent::ToolDone { output, .. } => Some(output.clone()),
         _ => None,

@@ -445,14 +445,36 @@ async fn a_throttle_that_reads_as_a_context_error_changes_nothing_and_asks_for_n
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Error);
     assert!(no_summary(&client), "no summary request");
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ModelLimits { source, .. } if source == "error")));
     r.send(AgentCommand::Submit { text: fat_message(FAT_TURNS + 1), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let reqs = client.requests();
     assert_eq!(reqs.len(), FAT_TURNS + 2);
-    // the ratio is what it was: the next view is as large as the one that failed, not a sixth smaller
-    let (failed, next) = (estimate(&reqs[FAT_TURNS]), estimate(&reqs[FAT_TURNS + 1]));
-    assert!(next * 100 >= failed * 90, "{failed} then {next}");
+    // Curator selections can change between turns; request size alone does not prove that the ratio changed.
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ModelLimits { source, .. } if source == "error")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_throttle_misclassified_as_context_does_not_compact_plain_history() {
+    let _g = config_lock().lock().await;
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(bare(text("first"))),
+        too_long("Request too large on tokens per minute (TPM): Limit 6000, Requested 9000"),
+        Reply::Events(bare(text("next"))),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "second".into(), attachments: vec![] });
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Error);
+    assert_eq!(client.requests().len(), 2);
+    assert!(no_summary(&client));
+    r.send(AgentCommand::Submit { text: "third".into(), attachments: vec![] });
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
     r.stop().await;
 }
 

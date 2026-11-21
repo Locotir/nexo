@@ -186,6 +186,7 @@ mod attached_files;
 mod background_jobs;
 mod checkpoints;
 mod compaction;
+mod control_tools;
 mod cut_replies;
 mod goal_progress;
 mod goals_and_todo;
@@ -323,6 +324,17 @@ impl Running {
             .await
             .expect("an event in time")
             .expect("the agent is alive")
+    }
+
+    /// Approve the expected todo mutation while keeping preceding events for assertions.
+    async fn approve_todo(&mut self, id: &str) -> Vec<AgentEvent> {
+        let events = self.until(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::TurnEnd { .. })).await;
+        match events.last().unwrap() {
+            AgentEvent::PermissionAsk { request } => assert_eq!(request.id, id),
+            _ => panic!("expected todo approval {id}, got {events:?}"),
+        }
+        self.send(AgentCommand::Permission { id: id.into(), decision: PermissionDecision::Allow });
+        events
     }
 
     /// Events up to and including the next `TurnEnd`.

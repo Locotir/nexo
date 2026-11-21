@@ -236,6 +236,7 @@ async fn a_task_list_change_leaves_the_system_text_alone_and_the_list_rides_with
     r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });
     r.turn().await;
     r.send(AgentCommand::Submit { text: "second".into(), attachments: vec![] });
+    r.approve_todo("c1").await;
     r.turn().await;
     r.send(AgentCommand::Submit { text: "third".into(), attachments: vec![] });
     r.turn().await;
@@ -295,6 +296,7 @@ async fn a_resumed_session_carries_its_saved_task_list_and_not_the_one_left_behi
         other => panic!("{other:?}"),
     };
     r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
+    r.approve_todo("c1").await;
     r.turn().await;
     r.stop().await;
     // a new process resumes B: its first request carries the list
@@ -334,10 +336,12 @@ async fn a_shorter_fork_carries_the_task_list_of_the_messages_it_kept() {
     ]);
     let mut cfg = config(PermissionMode::Ask);
     cfg.agent.check_at_start = false;
+    cfg.agent.check_in = false;
     let mut r = start_with(client.clone(), cfg, None, d.path(), with_todo(d.path())).await;
     r.next().await;
-    for t in ["plan", "replan"] {
+    for (t, id) in [("plan", "c1"), ("replan", "c2")] {
         r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        r.approve_todo(id).await;
         r.turn().await;
     }
     // history: plan, call, result, two, replan, call, result, four
@@ -372,6 +376,7 @@ async fn a_rewind_takes_the_task_list_back_to_the_one_the_kept_messages_left() {
     ]);
     let mut cfg = config(PermissionMode::Ask);
     cfg.agent.check_at_start = false;
+    cfg.agent.check_in = false;
     // the list is kept where the session is, as it is outside a test
     let set = tools().with(Arc::new(nexo_tools::todo::Todo::with_dir(nexo_agent::session::dir())));
     let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
@@ -379,8 +384,9 @@ async fn a_rewind_takes_the_task_list_back_to_the_one_the_kept_messages_left() {
         AgentEvent::Ready { session_id, .. } => session_id,
         other => panic!("{other:?}"),
     };
-    for t in ["plan", "replan"] {
+    for (t, id) in [("plan", "c1"), ("replan", "c2")] {
         r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        r.approve_todo(id).await;
         r.turn().await;
     }
     r.send(AgentCommand::Rewind { index: 4 });

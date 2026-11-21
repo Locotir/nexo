@@ -60,6 +60,63 @@
         }
       },
       {
+        "name": "goal",
+        "description": "Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "set",
+                "clear",
+                "pause",
+                "resume",
+                "show"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "description": "Goal text for set."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
+        "name": "loop",
+        "description": "Manage session-local recurring prompts. A new loop runs as soon as idle, then at its interval; stopping nexo or switching sessions removes it. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "cancel"
+              ]
+            },
+            "interval": {
+              "type": "string",
+              "description": "60s to 30d, e.g. 5m."
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
         "name": "read",
         "description": "fake",
         "parameters": {
@@ -246,6 +303,63 @@
           "required": [
             "question",
             "options"
+          ]
+        }
+      },
+      {
+        "name": "goal",
+        "description": "Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "set",
+                "clear",
+                "pause",
+                "resume",
+                "show"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "description": "Goal text for set."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
+        "name": "loop",
+        "description": "Manage session-local recurring prompts. A new loop runs as soon as idle, then at its interval; stopping nexo or switching sessions removes it. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "cancel"
+              ]
+            },
+            "interval": {
+              "type": "string",
+              "description": "60s to 30d, e.g. 5m."
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "action"
           ]
         }
       },
@@ -467,6 +581,63 @@
           "required": [
             "question",
             "options"
+          ]
+        }
+      },
+      {
+        "name": "goal",
+        "description": "Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "set",
+                "clear",
+                "pause",
+                "resume",
+                "show"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "description": "Goal text for set."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
+        "name": "loop",
+        "description": "Manage session-local recurring prompts. A new loop runs as soon as idle, then at its interval; stopping nexo or switching sessions removes it. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "cancel"
+              ]
+            },
+            "interval": {
+              "type": "string",
+              "description": "60s to 30d, e.g. 5m."
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "action"
           ]
         }
       },
@@ -706,6 +877,63 @@
           "required": [
             "question",
             "options"
+          ]
+        }
+      },
+      {
+        "name": "goal",
+        "description": "Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "set",
+                "clear",
+                "pause",
+                "resume",
+                "show"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "description": "Goal text for set."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
+        "name": "loop",
+        "description": "Manage session-local recurring prompts. A new loop runs as soon as idle, then at its interval; stopping nexo or switching sessions removes it. Future tool calls require their own permissions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "cancel"
+              ]
+            },
+            "interval": {
+              "type": "string",
+              "description": "60s to 30d, e.g. 5m."
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "action"
           ]
         }
       },

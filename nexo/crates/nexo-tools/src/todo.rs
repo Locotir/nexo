@@ -4,7 +4,10 @@
 //! a resumed session gets it back.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+
+static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
 use nexo_core::{
@@ -65,7 +68,8 @@ impl Todo {
             std::fs::create_dir_all(d)?;
         }
         let text = serde_json::to_string(items).map_err(std::io::Error::other)?;
-        let tmp = f.with_extension(format!("json.{}.tmp", std::process::id()));
+        let tmp =
+            f.with_extension(format!("json.{}.{}.tmp", std::process::id(), TEMP_ID.fetch_add(1, Ordering::Relaxed)));
         let written = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &f));
         if written.is_err() {
             let _ = std::fs::remove_file(&tmp);
@@ -83,10 +87,21 @@ pub fn file_in(dir: &Path, id: &str) -> PathBuf {
 /// changed nothing, so it is passed over. `None` when the messages hold no such call (a session before the first
 /// one, or one whose calls were summarised away).
 pub fn items_in(history: &[Message]) -> Option<Vec<TodoItem>> {
-    history.iter().rev().flat_map(|m| m.content.iter().rev()).find_map(|p| match p {
-        Part::ToolCall { name, args, .. } if name == "todo" => args.get("items").and_then(|v| parse_items(v).ok()),
-        _ => None,
-    })
+    let mut successful = std::collections::HashSet::new();
+    for part in history.iter().rev().flat_map(|m| m.content.iter().rev()) {
+        match part {
+            Part::ToolResult { call_id, is_error: false, .. } => {
+                successful.insert(call_id.as_str());
+            }
+            Part::ToolCall { id, name, args, .. } if name == "todo" && successful.contains(id.as_str()) => {
+                if let Some(items) = args.get("items").and_then(|v| parse_items(v).ok()) {
+                    return Some(items);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Reads the `items` argument; an error names what is wrong.
@@ -199,6 +214,7 @@ impl Tool for Todo {
         // as the panel replays it; a save that failed or a file from before the list was kept leaves the file
         // behind them, so the messages win and the file is brought up to them. With no call in the messages
         // (they were summarised) the file is all there is.
+        let mut guard = self.items.lock().unwrap_or_else(|e| e.into_inner());
         let saved = match items_in(history) {
             Some(items) => {
                 if self.load(session_id).as_ref() != Some(&items) {
@@ -208,13 +224,19 @@ impl Tool for Todo {
             }
             None => self.load(session_id).unwrap_or_default(),
         };
-        if let Ok(mut g) = self.items.lock() {
-            *g = saved;
-        }
+        *guard = saved;
     }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Other
+    }
+
+    fn call_kind(&self, args: &Value) -> ToolKind {
+        if args.get("items").is_some() {
+            ToolKind::Other
+        } else {
+            ToolKind::Read
+        }
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -226,29 +248,25 @@ impl Tool for Todo {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
-        let items = match args.get("items") {
-            Some(v) => match parse_items(v) {
-                Ok(items) => items,
-                Err(e) => return ToolOutput::error(format!("todo: {e}")),
-            },
-            None => {
-                let mut cur = self.items();
-                if cur.is_empty() {
-                    if let Some(saved) = self.load(&ctx.session_id) {
-                        cur = saved;
-                    }
-                }
-                cur
+        let Some(value) = args.get("items") else {
+            let mut items = self.items();
+            if items.is_empty() {
+                items = self.load(&ctx.session_id).unwrap_or_default();
             }
+            return ToolOutput::ok(render(&items)).with_display(ToolDisplay::Todo { items });
         };
-        if let Ok(mut g) = self.items.lock() {
-            *g = items.clone();
-        }
-        // the list in memory is the one that counts; a save that fails is said, not hidden
+        let items = match parse_items(value) {
+            Ok(items) => items,
+            Err(e) => return ToolOutput::error(format!("todo: {e}")),
+        };
+        // Hold the list lock through persistence so concurrent replacements cannot save out of order.
+        let mut guard = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = items.clone();
         let mut content = render(&items);
         if let Err(e) = self.save(&ctx.session_id, &items) {
             content.push_str(&format!("\n(the list could not be saved: {e})"));
         }
+        drop(guard);
         ToolOutput::ok(content).with_display(ToolDisplay::Todo { items })
     }
 }
@@ -344,7 +362,9 @@ mod tests {
         let t = Todo::with_dir(dir.path().to_path_buf());
         let history = vec![
             todo_call("c1", json!([{"text": "old"}])),
+            Message::tool_results(vec![Part::tool_result("c1", "ok", false)]),
             todo_call("c2", json!([{"text": "new", "status": "in_progress"}])),
+            Message::tool_results(vec![Part::tool_result("c2", "ok", false)]),
             // a refused list changed nothing
             todo_call("c3", json!([{"text": "x", "status": "later"}])),
         ];
@@ -356,10 +376,43 @@ mod tests {
         later.session_opened("s6", &[]);
         assert_eq!(later.todo_items(), t.todo_items());
         // a call that emptied the list leaves it empty even when a file still holds the one before
-        t.session_opened("s6", &[todo_call("c4", json!([]))]);
+        t.session_opened(
+            "s6",
+            &[todo_call("c4", json!([])), Message::tool_results(vec![Part::tool_result("c4", "ok", false)])],
+        );
         assert_eq!(t.todo_items(), None);
         later.session_opened("s6", &[]);
         assert_eq!(later.todo_items(), None, "the file was brought up to the messages");
+    }
+
+    #[tokio::test]
+    async fn denied_cancelled_and_unfinished_calls_never_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Todo::with_dir(dir.path().to_path_buf());
+        let history = vec![
+            todo_call("ok", json!([{"text":"kept"}])),
+            Message::tool_results(vec![Part::tool_result("ok", "ok", false)]),
+            todo_call("denied", json!([{"text":"denied"}])),
+            Message::tool_results(vec![Part::tool_result("denied", "denied", true)]),
+            todo_call("cancelled", json!([{"text":"cancelled"}])),
+            Message::tool_results(vec![Part::tool_result("cancelled", "interrupted", true)]),
+            todo_call("pending", json!([{"text":"pending"}])),
+        ];
+        t.session_opened("s", &history);
+        assert_eq!(t.items()[0].text, "kept");
+    }
+
+    #[tokio::test]
+    async fn show_does_not_create_or_modify_file_or_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Todo::with_dir(dir.path().to_path_buf());
+        t.run(json!({}), &ctx(dir.path(), "s")).await;
+        assert!(!file_in(dir.path(), "s").exists());
+        std::fs::write(file_in(dir.path(), "s"), r#"[{"text":"saved","status":"pending"}]"#).unwrap();
+        let before = std::fs::read(file_in(dir.path(), "s")).unwrap();
+        assert!(t.run(json!({}), &ctx(dir.path(), "s")).await.content.contains("saved"));
+        assert_eq!(std::fs::read(file_in(dir.path(), "s")).unwrap(), before);
+        assert!(t.items().is_empty());
     }
 
     #[tokio::test]

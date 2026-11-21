@@ -93,3 +93,23 @@ async fn due_loop_runs_after_busy_turn_finishes_without_overlap() {
     assert!(requests[1].messages.iter().any(|m| m.text().contains("scheduled work")));
     r.stop().await;
 }
+
+#[tokio::test]
+async fn human_created_loop_retains_person_provenance() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done"))]);
+    let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
+    r.send(loop_cmd("60s human scheduled work"));
+    let events = r.turn().await;
+    let msg = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::History { message, .. } if message.text().contains("human scheduled work") => {
+                Some(message.text())
+            }
+            _ => None,
+        })
+        .expect("scheduled history");
+    assert!(msg.contains(nexo_core::agent::PERSON_MARK), "{msg}");
+    r.stop().await;
+}
