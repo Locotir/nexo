@@ -795,13 +795,20 @@ fn active_general_and_explore_badges_have_distinct_stable_theme_colours() {
         for theme in [Theme::by_name(name).unwrap(), Theme::by_name(name).unwrap().downsampled()] {
             let badge = |profile: &str, width| {
                 let run = AgentRun {
-                    id: "call".into(), profile: profile.into(), model: "provider/model".into(),
-                    effort: Some("high".into()), title: "survey".into(), running: true,
+                    id: "call".into(),
+                    profile: profile.into(),
+                    model: "provider/model".into(),
+                    effort: Some("high".into()),
+                    title: "survey".into(),
+                    running: true,
                 };
                 let rows = Block::Agent(run).render(width, &theme, RenderOpts { fx: true, spinner: 0, ..opts() });
-                rows.iter().flat_map(|row| &row.spans)
+                rows.iter()
+                    .flat_map(|row| &row.spans)
                     .find(|span| span.content == format!(" {profile} "))
-                    .expect("profile badge").style.bg
+                    .expect("profile badge")
+                    .style
+                    .bg
             };
             let general = badge("general", 120);
             let explore = badge("explore", 120);

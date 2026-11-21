@@ -193,7 +193,6 @@ mod goals_and_todo;
 mod hooks;
 mod literal_notes;
 mod loop_guards;
-mod scheduled_loop;
 mod mail;
 #[cfg(unix)]
 mod mcp_startup;
@@ -208,6 +207,7 @@ mod recall;
 mod repeat_watch;
 mod request_prefix;
 mod resume_and_rewind;
+mod scheduled_loop;
 mod session_commands;
 mod session_models;
 #[cfg(unix)]
