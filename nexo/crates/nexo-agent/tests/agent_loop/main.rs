@@ -193,6 +193,7 @@ mod goals_and_todo;
 mod hooks;
 mod literal_notes;
 mod loop_guards;
+mod scheduled_loop;
 mod mail;
 #[cfg(unix)]
 mod mcp_startup;

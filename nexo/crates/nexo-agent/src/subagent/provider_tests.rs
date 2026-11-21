@@ -40,13 +40,14 @@ const FIXED_32K: u64 = 2_400;
 /// Integration 1118 with land/1117: the 12 144 of the merged re branches plus the 282 that spelling out the keys of an
 /// `edit` change added (12 412 on land/1117 alone). Summed by hand at the merge, not measured yet; the first build
 /// measured 12 671.
-const SCHEMA_CEILING: usize = 12_671;
+// Explicit task effort adds 100 measured wire characters.
+const SCHEMA_CEILING: usize = 12_771;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
-const TASK_WITH_OWN_KINDS: usize = 1_915;
-/// What those kinds may add to the tools of a session, over [`SCHEMA_CEILING`]: `task` takes 725 of it
+const TASK_WITH_OWN_KINDS: usize = 2_009;
+/// What those kinds may add to the tools of a session, over [`SCHEMA_CEILING`]: `task` takes 819 of it
 /// with the two built-in kinds alone.
-const OWN_KINDS_BUDGET: usize = TASK_WITH_OWN_KINDS - 725;
+const OWN_KINDS_BUDGET: usize = TASK_WITH_OWN_KINDS - 819;
 
 fn map(list: &[(&str, ProviderConfig)]) -> BTreeMap<String, ProviderConfig> {
     list.iter().map(|(n, c)| (n.to_string(), c.clone())).collect()
@@ -543,5 +544,25 @@ async fn empty_task_requires_prompt_and_never_returns_a_catalog() {
         let out = sub.run(args, &ctx).await;
         assert!(out.is_error && out.content.contains("prompt"), "{out:?}");
         assert!(!out.content.contains("b2"));
+    }
+}
+
+#[tokio::test]
+async fn invalid_task_effort_is_rejected_before_starting_a_job() {
+    let sub = SubAgent::new(
+        Arc::new(Mute),
+        Target::new("p", cfg("m", &[]), "m"),
+        &ToolSet::new(),
+        Vec::new(),
+        Default::default(),
+    );
+    assert!(sub.spec().parameters["properties"]["effort"]["enum"].as_array().unwrap().iter().any(|v| v == "max"));
+    assert!(sub.compact().unwrap().params.iter().any(|(k, _)| *k == "effort"));
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(dir.path().into());
+    for effort in [json!("ultra"), json!(""), json!(42), json!(null)] {
+        let out = sub.run(json!({"prompt": "look", "effort": effort}), &ctx).await;
+        assert!(out.is_error && out.content.contains("`effort`"), "{out:?}");
+        assert!(ctx.jobs.subs().list().is_empty());
     }
 }

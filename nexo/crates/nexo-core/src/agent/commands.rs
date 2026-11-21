@@ -38,6 +38,10 @@ impl PartialEq for DirectedReply {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum AgentCommand {
+    /// Manage in-memory, session-scoped recurring requests.
+    Loop {
+        input: String,
+    },
     /// A request from the person. Queued if a turn is running.
     Submit {
         text: String,

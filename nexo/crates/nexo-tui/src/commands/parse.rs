@@ -7,6 +7,7 @@ use super::table::{hidden, lookup};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Help,
+    Loop(Option<String>),
     Model(Option<String>),
     Login,
     /// `/logout [provider]`: the stored key or sign-in of the provider, removed.
@@ -213,6 +214,7 @@ pub fn parse(line: &str) -> Option<Command> {
     let Some(spec) = lookup(&typed) else { return Some(Command::Unknown(typed)) };
     Some(match spec.name {
         "help" => Command::Help,
+        "loop" => Command::Loop(arg),
         "model" => Command::Model(arg),
         "logout" => Command::Logout(arg),
         "doctor" => Command::Doctor,

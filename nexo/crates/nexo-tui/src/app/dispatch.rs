@@ -13,6 +13,7 @@ impl App {
             return self.open_setup();
         }
         match cmd {
+            Command::Loop(input) => self.send(AgentCommand::Loop { input: input.unwrap_or_default() }),
             Command::Help => self.modal = Some(Modal::Help { scroll: 0, query: String::new() }),
             Command::Model(Some(name)) => {
                 let (provider, model) = self.model_target(name);

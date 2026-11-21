@@ -227,7 +227,7 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         assert!(lookup(old).is_some(), "/{old} no longer resolves");
         assert!(COMMANDS.iter().all(|s| s.name != old), "/{old} is a menu command");
     }
-    assert_eq!(COMMANDS.len(), 50, "the menu has grown or shrunk: update this on purpose");
+    assert_eq!(COMMANDS.len(), 51, "the menu has grown or shrunk: update this on purpose");
     for old in ["provider", "keys", "config", "yolo"] {
         assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
     }
@@ -314,7 +314,7 @@ fn the_palette_lists_every_command_in_this_exact_order_under_these_headings() {
     let rows: Vec<String> = grouped().iter().map(|(g, i)| format!("{g}/{}", COMMANDS[*i].name)).collect();
     let want = "\
 common/model common/permissions common/resume common/plan common/ultracode common/compact common/clear common/help common/effort \
-session/fork session/rewind session/undo session/rename session/msg session/export session/goal session/queue \
+session/fork session/rewind session/undo session/rename session/msg session/export session/goal session/queue session/loop \
 model/logout model/fast model/pricing model/prompt model/memory model/budget \
 context and tools/context context and tools/sent context and tools/cost context and tools/tools context and tools/hooks \
 context and tools/mcp context and tools/chrome context and tools/skills context and tools/plugins context and tools/jobs \
@@ -335,4 +335,11 @@ fn every_description_fits_a_narrow_palette_row_whole() {
         .map(|s| format!("/{}: {}", s.name, s.description))
         .collect();
     assert!(long.is_empty(), "too long for a narrow row:\n{}", long.join("\n"));
+}
+
+#[test]
+fn loop_commands_are_recognized() {
+    assert_eq!(parse("/loop 5m check status"), Some(Command::Loop(Some("5m check status".into()))));
+    assert_eq!(parse("/loop list"), Some(Command::Loop(Some("list".into()))));
+    assert_eq!(parse("/loop cancel 2"), Some(Command::Loop(Some("cancel 2".into()))));
 }

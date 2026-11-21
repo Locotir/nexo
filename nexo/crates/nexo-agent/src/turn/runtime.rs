@@ -8,6 +8,7 @@ use super::*;
 
 /// Everything the loop's branches act on besides the command channel.
 pub(super) struct Runtime {
+    pub(super) loops: scheduled::Loops,
     pub(super) state: Shared,
     pub(super) events: EventTx,
     /// Answers the permission asks the interface resolves; a headless run gives its own gate to the state.
@@ -249,6 +250,7 @@ impl Runtime {
         tokio::task::spawn_blocking(setup::sweep_trial_keys);
         let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel::<Resume>();
         Ok(Runtime {
+            loops: scheduled::Loops::default(),
             state,
             events,
             chan_gate,

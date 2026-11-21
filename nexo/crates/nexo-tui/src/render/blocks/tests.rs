@@ -760,3 +760,54 @@ fn a_failed_exit_code_stays_on_the_head_even_when_the_command_text_contains_it()
     let t = texts(&shell("cat /nonexistent; false").render(80, &Theme::dark(), opts()));
     assert!(t[0].contains("· exit 3"), "{t:?}");
 }
+
+#[test]
+fn resolved_agent_header_combines_blink_badge_and_target() {
+    let theme = Theme::dark();
+    let mut run = AgentRun {
+        id: "call#1".into(),
+        profile: "explore".into(),
+        model: "provider/model".into(),
+        effort: Some("high".into()),
+        title: "survey".into(),
+        running: true,
+    };
+    for (beat, face) in [(0, "[o_o]"), (22, "[-_-]")] {
+        for width in [24, 40, 120] {
+            let rows =
+                Block::Agent(run.clone()).render(width, &theme, RenderOpts { fx: true, spinner: beat, ..opts() });
+            assert!(texts(&rows).join(" ").contains(face));
+            assert!(rows.iter().all(|r| r.width() <= width));
+            assert!(rows
+                .iter()
+                .flat_map(|r| &r.spans)
+                .any(|s| s.content == " explore " && s.style.bg == Some(theme.accent)));
+        }
+    }
+    run.running = false;
+    let rows = Block::Agent(run).render(120, &theme, RenderOpts { fx: true, spinner: 22, ..opts() });
+    assert!(texts(&rows)[0].contains("[o_o]"));
+}
+
+#[test]
+fn active_general_and_explore_badges_have_distinct_stable_theme_colours() {
+    for &name in crate::theme::NAMES.iter().filter(|&&name| name != "mono") {
+        for theme in [Theme::by_name(name).unwrap(), Theme::by_name(name).unwrap().downsampled()] {
+            let badge = |profile: &str, width| {
+                let run = AgentRun {
+                    id: "call".into(), profile: profile.into(), model: "provider/model".into(),
+                    effort: Some("high".into()), title: "survey".into(), running: true,
+                };
+                let rows = Block::Agent(run).render(width, &theme, RenderOpts { fx: true, spinner: 0, ..opts() });
+                rows.iter().flat_map(|row| &row.spans)
+                    .find(|span| span.content == format!(" {profile} "))
+                    .expect("profile badge").style.bg
+            };
+            let general = badge("general", 120);
+            let explore = badge("explore", 120);
+            assert_ne!(general, explore, "theme {name}");
+            assert_eq!(general, badge("general", 24), "theme {name}");
+            assert_eq!(explore, badge("explore", 24), "theme {name}");
+        }
+    }
+}

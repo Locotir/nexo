@@ -124,9 +124,23 @@ impl App {
         i.checked_sub(back as usize).filter(|m| matches!(self.blocks.get(*m), Some(Block::Group { .. })))
     }
 
+    /// Runs use `<call id>#<job id>`; never guess by title or profile (parallel tasks may match).
+    pub(super) fn task_card_for_run(&self, run_id: &str) -> Option<usize> {
+        let (call_id, job) = run_id.rsplit_once('#')?;
+        job.parse::<u32>().ok()?;
+        self.blocks.iter().position(|b| matches!(b, Block::Tool { id, name, .. } if id == call_id && name == "task"))
+    }
+
     /// Whether block `i` is left out of the transcript: a finished call of a folded group, which
     /// its group's line stands for. A call still running or waiting stays in sight.
     pub fn hidden(&self, i: usize) -> bool {
+        // A task's card owns its run header. Keep the registry block for updates, but do not
+        // announce the same launch twice. Workflow runs without a task card keep their own line.
+        if let Some(Block::Agent(run)) = self.blocks.get(i) {
+            if self.task_card_for_run(&run.id).is_some_and(|card| !self.hidden(card)) {
+                return true;
+            }
+        }
         // a line that says only the routine start note tells nothing the person does not already know
         if let Some(Block::Added { parts, .. }) = self.blocks.get(i) {
             if parts.iter().all(|p| p.kind == nexo_core::agent::AddedKind::StartNote) {
@@ -140,6 +154,7 @@ impl App {
                     Block::Tool { name, output, .. } => {
                         // what nexo saved for later sessions is said in sight, not folded away
                         name == "exit_plan"
+                            || (name == "task" && self.blocks.iter().any(|b| matches!(b, Block::Agent(run) if run.running && self.task_card_for_run(&run.id) == Some(i))))
                             || matches!(output, Some(o) if matches!(o.display, ToolDisplay::Remembered { .. }))
                     }
                     Block::Reasoning { folded, text, .. } => !*folded && !text.trim().is_empty(),
@@ -322,11 +337,67 @@ impl App {
                     v
                 }
                 b => {
+                    // A task's description is its launch title, not a command to repeat below it.
+                    let mut card;
+                    let b = if matches!(b, Block::Tool { name, .. } if name == "task") {
+                        card = b.clone();
+                        if let Block::Tool { args, .. } = &mut card {
+                            if let Some(args) = args.as_object_mut() {
+                                args.remove("description");
+                            }
+                        }
+                        &card
+                    } else {
+                        b
+                    };
                     let (l, m) = b.render_meta(width - indent, &self.theme, self.render_opts());
                     meta = m;
                     l
                 }
             };
+            if let Block::Tool { id, name, elapsed_ms, folded, .. } = &self.blocks[i] {
+                if name == "task" {
+                    if let Some(run) = self.blocks.iter().find_map(|b| match b {
+                        Block::Agent(run)
+                            if run
+                                .id
+                                .rsplit_once('#')
+                                .is_some_and(|(call, job)| call == id && job.parse::<u32>().is_ok()) =>
+                        {
+                            Some(run)
+                        }
+                        _ => None,
+                    }) {
+                        // Replace only the launch header: output, failures and progress remain on the card.
+                        let elapsed = elapsed_ms
+                            .map(|ms| format!(" · {}", crate::render::blocks::fmt_ms(ms)))
+                            .unwrap_or_default();
+                        let suffix = format!("{elapsed} {}", if *folded { "▸" } else { "▾" });
+                        let mut header = Block::Agent(run.clone()).render(
+                            (width - indent).saturating_sub(crate::render::wrap::width(&suffix) + 2).max(1),
+                            &self.theme,
+                            self.render_opts(),
+                        );
+                        if let (Some(old), Some(new)) = (lines.first(), header.first_mut()) {
+                            if let Some(status) = old.spans.first() {
+                                new.spans.insert(0, status.clone());
+                            }
+                            if crate::render::wrap::width(&crate::render::markdown::text_of(new))
+                                + crate::render::wrap::width(&suffix)
+                                <= width - indent
+                            {
+                                new.spans.push(Span::styled(suffix, self.theme.dim()));
+                            }
+                        }
+                        if !lines.is_empty() {
+                            lines.remove(0);
+                        }
+                        meta.shift(header.len().saturating_sub(1));
+                        header.extend(lines);
+                        lines = header;
+                    }
+                }
+            }
             crate::render::wrap::clean_lines(&mut lines);
             if let Block::Tool { id, output: Some(_), status, .. } = &self.blocks[i] {
                 // a failed or refused call has no price to tag

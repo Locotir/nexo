@@ -1044,3 +1044,54 @@ fn the_runs_rule_says_how_to_go_back_when_it_has_room() {
     let narrow = rule(&mut a, 30);
     assert!(!narrow.contains("esc back") && narrow.starts_with("─ sub · "), "{narrow}");
 }
+
+#[test]
+fn a_task_launch_has_one_face_and_badge_and_keeps_its_report() {
+    let (mut a, _rx) = bare();
+    a.push(Block::Tool {
+        id: "launch".into(),
+        name: "task".into(),
+        summary: "task [explore]: survey the parser".into(),
+        args: serde_json::Value::Null,
+        status: crate::render::blocks::ToolStatus::Running,
+        progress: vec![],
+        output: None,
+        started: None,
+        elapsed_ms: None,
+        folded: true,
+    });
+    let mut run = info("launch#7", "survey the parser", SubState::Attached);
+    run.provider = Some("provider".into());
+    run.model = Some("model".into());
+    run.reasoning_effort = Some("high".into());
+    a.handle_agent(AgentEvent::SubState { info: run.clone() });
+    assert!(!a.hidden(0));
+    assert!(a.hidden(1));
+    let lines = a.lines(0, 120).to_vec();
+    let text = lines.iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("[o_o]") && text.contains("explore") && text.contains("provider/model") && text.contains("high"),
+        "{text}"
+    );
+    assert!(!text.contains("agent [explore]"), "{text}");
+    assert!(lines[0].spans.iter().any(|s| s.content == " explore " && s.style.bg == Some(a.theme.accent)));
+    run.reasoning_effort = Some("max".into());
+    a.handle_agent(AgentEvent::SubState { info: run.clone() });
+    assert!(a.lines(0, 120).iter().map(crate::render::markdown::text_of).collect::<String>().contains("max"));
+    run.state = SubState::Ok;
+    a.handle_agent(AgentEvent::SubState { info: run });
+    if let Block::Tool { status, output, folded, .. } = &mut a.blocks[0] {
+        *status = crate::render::blocks::ToolStatus::Done;
+        *output = Some(nexo_core::tool::ToolOutput::ok("unique report"));
+        *folded = false;
+    }
+    a.invalidate(0);
+    assert!(a.hidden(1));
+    assert!(a.lines(0, 120).iter().map(crate::render::markdown::text_of).collect::<String>().contains("unique report"));
+    // Same title is not a relationship; workflow and unrelated task runs keep their own card.
+    let mut other = info("unrelated#8", "survey the parser", SubState::Background);
+    other.provider = Some("provider".into());
+    other.model = Some("model".into());
+    a.handle_agent(AgentEvent::SubState { info: other });
+    assert!(!a.hidden(2));
+}

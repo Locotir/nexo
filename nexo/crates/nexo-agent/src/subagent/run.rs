@@ -133,6 +133,7 @@ pub(super) struct Run {
     /// Asked for this sub-agent: another provider (name and configuration) and another model.
     pub(super) provider: Option<(String, ProviderConfig)>,
     pub(super) model: Option<String>,
+    pub(super) effort: Option<String>,
     pub(super) tools: ToolSet,
     pub(super) profile: Profile,
     pub(super) host: Option<Arc<dyn Host>>,
@@ -196,23 +197,30 @@ impl Run {
         }
         // on another provider, its prices; the same model name there is the same model
         let other = matches!(&self.provider, Some((name, _)) if *name != main_provider);
-        let cfg = match &self.provider {
+        let mut cfg = match &self.provider {
             Some((_, cfg)) if other => cfg.clone(),
             _ => main_cfg,
         };
         // the window and prices of the model it runs on: its view is kept under the one and priced at the other
         let name = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
         // The same effective level is published and used for every request of this run.
+        if let Some(asked) = &self.effort {
+            cfg.effort.insert(model.clone(), asked.clone());
+        }
         let effort = crate::setup::effective_effort(&cfg, &model, &None);
+        if let Some(note) = crate::setup::effort_clamp_note(&cfg, &model, &None) {
+            say(note);
+        }
         if let Some(sub) = &self.sub {
             sub.target(name, &model, effort.as_deref());
         }
         let limits = crate::limits::resolve(name, &cfg, &model, None);
         // one set of prices for the reserve and for the bill, so what is held back is what is spent
         let prices = limits.pricing.or_else(|| cfg.pricing_for(&model));
-        if self.provider.is_some() || self.model.is_some() {
-            say(format!("on {name}/{model}"));
-        }
+        say(format!(
+            "on {name}/{model} · effort {} (request setting)",
+            effort.as_deref().unwrap_or("provider default/unknown")
+        ));
         let rounds = self.profile.rounds;
         let system = format!("{BASE}\nYou have {rounds} rounds of tool calls.\n\n{}", self.profile.prompt);
         // what it sends is the session's context policy over its own messages, as in the main turn: everything

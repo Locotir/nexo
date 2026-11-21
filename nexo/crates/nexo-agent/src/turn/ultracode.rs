@@ -223,6 +223,7 @@ impl nexo_core::Tool for ExecutePlan {
                 prompt: &step.prompt,
                 provider: Some(&step.provider),
                 model: Some(&step.model),
+                effort: None,
                 description: None,
                 title: None,
                 background: false,

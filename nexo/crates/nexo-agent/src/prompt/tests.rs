@@ -116,15 +116,19 @@ fn the_project_walks_cap_counts_the_ignored_and_hidden_files_it_reads_and_drops(
 
 #[test]
 fn a_new_session_walks_the_project_once_and_a_resumed_one_not_at_all() {
+    // Both captures read NEXO_CONFIG_DIR; other prompt tests temporarily change it.
+    let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir(d.path().join("src")).unwrap();
     std::fs::write(d.path().join("src/lib.rs"), "").unwrap();
+    std::fs::write(d.path().join("NEXO.md"), "Project rule.").unwrap();
     let cfg = AgentConfig::default();
     WALKS.with(|w| w.set(0));
     let (vol, tree) = Volatile::capture_with_tree(d.path(), &cfg);
     assert_eq!(WALKS.with(|w| w.get()), 1);
     assert!(vol.environment.contains("- src/ (1 files)"), "{}", vol.environment);
     assert_eq!(tree, project_tree(d.path()));
+    assert!(vol.instructions.contains("Project rule."));
     WALKS.with(|w| w.set(0));
     let again = Volatile::instructions_now(d.path(), &cfg);
     assert_eq!(WALKS.with(|w| w.get()), 0);

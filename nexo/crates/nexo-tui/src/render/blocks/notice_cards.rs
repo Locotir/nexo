@@ -83,11 +83,26 @@ fn effort_style(effort: &str, theme: &Theme) -> Style {
 /// works (None: no motion); an ended run is all dim. The task is cut to fit one row.
 pub(super) fn agent_line(run: &AgentRun, spinner: Option<usize>, theme: &Theme, w: usize) -> Vec<Line<'static>> {
     let dim = theme.style(theme.dim);
+    // Keep explore's existing accent; general gets a stable, contrasting theme colour.
+    // Mono deliberately retains the terminal's own colours.
+    let profile_colour = if run.profile == "general" && !theme.mono {
+        [theme.success, theme.accent2, theme.warn, theme.fg]
+            .into_iter()
+            .find(|&colour| colour != theme.accent && colour != theme.bg)
+            .unwrap_or(theme.accent)
+    } else {
+        theme.accent
+    };
     let badge = Style::default()
         .fg(theme.bg)
-        .bg(if run.running { theme.accent } else { theme.dim })
+        .bg(if run.running { profile_colour } else { theme.dim })
         .add_modifier(Modifier::BOLD);
-    let mut spans = vec![Span::styled(format!(" {} ", run.profile), badge), Span::raw(" ")];
+    let face = super::live_marks::robot(run.running, spinner.unwrap_or(0));
+    let mut spans = vec![
+        Span::styled(format!("{face} "), if run.running { theme.style(theme.accent2) } else { dim }),
+        Span::styled(format!(" {} ", run.profile), badge),
+        Span::raw(" "),
+    ];
     match spinner.filter(|_| run.running) {
         Some(frame) => spans.extend(super::live_marks::shimmer(&run.model, frame, theme)),
         None if run.running => spans.push(Span::styled(run.model.clone(), theme.style(theme.accent))),
@@ -100,8 +115,17 @@ pub(super) fn agent_line(run: &AgentRun, spinner: Option<usize>, theme: &Theme, 
     let used: usize = spans.iter().map(|s| width(&s.content)).sum();
     if used + 4 > w {
         let effort = run.effort.as_deref().map(|e| format!(" · {e}")).unwrap_or_default();
-        let plain = format!("{} · {}{effort} · {}", run.profile, run.model, run.title);
-        return wrap_plain(&plain, w, dim, &[Span::raw("  ")]);
+        let plain = format!("{face} {} · {}{effort} · {}", run.profile, run.model, run.title);
+        let mut rows = wrap_plain(&plain, w, dim, &[Span::raw("  ")]);
+        // Preserve the face and highlighted profile even when metadata wraps.
+        if w >= width(&run.profile) + 9 {
+            rows = vec![Line::from(vec![
+                Span::styled(format!("{face} "), theme.style(theme.accent2)),
+                Span::styled(format!(" {} ", run.profile), badge),
+            ])];
+            rows.extend(wrap_plain(&format!("{}{effort} · {}", run.model, run.title), w, dim, &[Span::raw("  ")]));
+        }
+        return rows;
     }
     spans.push(Span::styled(" · ", dim));
     spans.push(Span::styled(truncate(&run.title, w - used - 3), dim));

@@ -335,6 +335,11 @@ impl App {
         for i in 0..self.blocks.len() {
             if self.blocks[i].is_live() {
                 self.cache[i] = None;
+                if let Block::Agent(run) = &self.blocks[i] {
+                    if let Some(card) = self.task_card_for_run(&run.id) {
+                        self.cache[card] = None;
+                    }
+                }
                 live = true;
             }
         }

@@ -133,3 +133,46 @@ async fn resolved_effort_is_published_and_matches_every_subagent_request() {
         assert_eq!(serde_json::to_value(req.reasoning).unwrap(), serde_json::json!({"effort": "medium"}));
     }
 }
+
+#[tokio::test]
+async fn explicit_effort_overrides_default_and_is_clamped_in_every_request() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(
+        vec![],
+        vec![
+            Reply::Events(says_then_calls(&["looking"], "s1", "read", spends(10, 2))),
+            Reply::Events(text_spending("done", spends(10, 2))),
+        ],
+    );
+    let mut cfg = ProviderConfig::new("mock", "http://mock", None);
+    cfg.models = vec!["m1".into()];
+    cfg.effort.insert("m1".into(), "low".into());
+    cfg.efforts.insert("m1".into(), vec!["low".into(), "medium".into()]);
+    let agent = SubAgent::new(
+        client.clone(),
+        Target::new("mock", cfg, "m1"),
+        &tools(&client.probe),
+        vec![],
+        Arc::new(OnceLock::new()),
+    );
+    let ctx = call_ctx(d.path(), "t1");
+    let subs = ctx.jobs.subs();
+    let mut rx = subs.changes();
+    let mut args = task("explore", "look around");
+    args["effort"] = serde_json::json!("max");
+    let out = agent.run(args, &ctx).await;
+    assert!(!out.is_error, "{out:?}");
+    let info = subs.list().pop().unwrap();
+    assert_eq!(
+        (info.provider.as_deref(), info.model.as_deref(), info.reasoning_effort.as_deref()),
+        (Some("mock"), Some("m1"), Some("medium"))
+    );
+    assert!(drain(&mut rx)
+        .iter()
+        .any(|e| matches!(e, SubChange::State(i) if i.reasoning_effort.as_deref() == Some("medium"))));
+    let requests = client.sub_requests();
+    assert_eq!(requests.len(), 2);
+    for req in requests {
+        assert_eq!(serde_json::to_value(req.reasoning).unwrap(), serde_json::json!({"effort": "medium"}));
+    }
+}

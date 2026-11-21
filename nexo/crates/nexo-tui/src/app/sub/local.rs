@@ -73,6 +73,9 @@ impl App {
 
     /// A run's line: the first state with a target adds it, the later ones redraw it in place.
     fn put_agent_line(&mut self, run: crate::render::blocks::AgentRun) {
+        if let Some(card) = self.task_card_for_run(&run.id) {
+            self.invalidate(card);
+        }
         match self.blocks.iter().rposition(|b| matches!(b, Block::Agent(r) if r.id == run.id)) {
             Some(i) => {
                 self.blocks[i] = Block::Agent(run);

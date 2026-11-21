@@ -8,6 +8,8 @@ pub(crate) struct Launch<'a> {
     /// Another provider or model, as the `task` tool takes them.
     pub provider: Option<&'a str>,
     pub model: Option<&'a str>,
+    /// Explicit reasoning level for this run, ahead of the model default.
+    pub effort: Option<&'a str>,
     /// What the job and the claims call it; the first line of the prompt when none.
     pub description: Option<&'a str>,
     /// What the registry calls it; the first line of the task when none.

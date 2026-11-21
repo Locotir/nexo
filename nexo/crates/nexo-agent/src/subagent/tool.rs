@@ -26,6 +26,7 @@ impl Tool for SubAgent {
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
                 "start_clean": {"type": "boolean", "description": "No briefing, hook context or shared-memory tools; profile and project tools remain."},
+                "effort": {"type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "description": "Reasoning level for this run, overriding its model default; unsupported levels use the nearest configured level. This is a request, not proof of provider-side reasoning."},
                 "model": {"type": "string", "description": "Another model for this sub-agent, only when the person asks for one."}
             },
             "required": ["prompt"]
@@ -56,6 +57,7 @@ impl Tool for SubAgent {
                 ("prompt", "Task; required and non-empty"),
                 ("background", "Run as a job"),
                 ("start_clean", "No inherited context"),
+                ("effort", "off|minimal|low|medium|high|xhigh|max; overrides model default"),
                 ("model", "Only if the person asks"),
                 ("provider", "Only if the person asks"),
             ],
@@ -119,11 +121,17 @@ impl Tool for SubAgent {
             Some(Value::Bool(value)) => *value,
             Some(_) => return ToolOutput::error("`start_clean` must be a boolean"),
         };
+        let effort = match args.get("effort") {
+            None => None,
+            Some(Value::String(s)) if nexo_core::provider::LEVEL_ORDER.contains(&s.as_str()) => Some(s.as_str()),
+            Some(_) => return ToolOutput::error("`effort` must be off, minimal, low, medium, high, xhigh or max"),
+        };
         let launch = Launch {
             agent: name,
             prompt,
             provider: asked_for("provider"),
             model: asked_for("model"),
+            effort,
             description: args.get("description").and_then(Value::as_str),
             title: None,
             background: asked,

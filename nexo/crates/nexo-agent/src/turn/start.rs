@@ -750,31 +750,42 @@ pub(super) fn window_of(limits: &crate::limits::Limits) -> Option<u64> {
     limits.context_window.map(u64::from)
 }
 
-/// Only explicit settings, never preset model lists or credential material. This is request metadata,
-/// not a tool result or conversation message. The active target can change during the session.
+/// Effective delegation catalogue in request metadata, without credential material.
+/// The active target can change during the session; catalogue entries are not access guarantees.
 fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig, model: &str) -> String {
-    let mut lines = vec![format!("\nCurrent session target: {provider:?}/{model:?}.")];
-    let explicit = config.explicit_providers.as_ref().unwrap_or(&config.providers);
-    for (name, cfg) in explicit {
-        // Managed policy may have removed a provider since the snapshot was taken.
-        if !config.providers.contains_key(name) {
-            continue;
-        }
+    const CATALOGUE_LIMIT: usize = 12_000;
+    let short = |s: &str| s.chars().take(256).collect::<String>();
+    let mut text = format!("\nCurrent session target: {:?}/{:?}. Configured/preset delegation catalogue (authentication and availability are not checked):", short(provider), short(model));
+    let mut catalogue_size = 0;
+    for (name, cfg) in &config.providers {
+        let explicit = config.explicit_providers.as_ref().and_then(|p| p.get(name));
         let mut models = cfg.models.clone();
         if let Some(m) = &cfg.default_model {
             models.push(m.clone());
         }
         models.extend(cfg.effort.keys().cloned());
+        if let Some(e) = explicit {
+            models.extend(e.models.iter().cloned());
+            models.extend(e.default_model.iter().cloned());
+            models.extend(e.effort.keys().cloned());
+        }
         models.sort();
         models.dedup();
-        lines.push(format!(
-            " Explicit provider {name:?}; models {models:?}; default {:?}; chosen efforts {:?}.",
-            cfg.default_model, cfg.effort
-        ));
+        let entry = format!(
+            " Provider {name:?}; models {models:?}; effective default {:?}; explicit settings (default, efforts) {:?}.",
+            cfg.default_model,
+            explicit.map(|e| (&e.default_model, &e.effort))
+        );
+        if catalogue_size + entry.len() > CATALOGUE_LIMIT {
+            text.push_str(" Catalogue truncated due to size; omitted entries are not necessarily unavailable.");
+            break;
+        }
+        catalogue_size += entry.len();
+        text.push_str(&entry);
     }
     let effort = crate::setup::effective_effort(current, model, &config.agent.reasoning);
-    lines.push(format!(" Current session reasoning setting: {effort:?} (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Authentication and availability are not checked. Use task provider/model parameters for an explicit target."));
-    lines.concat()
+    text.push_str(&format!(" Current session reasoning setting: {effort:?} (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target."));
+    text
 }
 
 /// The tools the model is offered: `exit_plan` only in plan mode, `recall` only when the policy asks for it.
@@ -1122,23 +1133,39 @@ mod task_model_context_tests {
     use super::*;
 
     #[test]
-    fn explicit_settings_only_and_live_target_without_secrets() {
+    fn effective_catalogue_explicit_settings_policy_and_secrets() {
         let mut config = Config::default();
-        let mut explicit = ProviderConfig { models: vec!["chosen".into()], ..Default::default() };
-        explicit.effort.insert("chosen".into(), "high".into());
+        config.providers.clear();
+        let mut explicit = ProviderConfig::default();
+        explicit.effort.insert("gpt-6.1-terra".into(), "medium".into());
         explicit.api_key_cmd = Some("secret-command".into());
-        config.providers.insert("mine".into(), explicit.clone());
-        config.explicit_providers = Some(config.providers.clone());
-        config.providers.get_mut("mine").unwrap().models.push("preset-model".into());
-        config.providers.insert("preset-provider".into(), ProviderConfig::default());
-        let text = task_model_context(&config, "mine", &explicit, "active");
-        for s in ["mine", "active", "chosen", "high", "not checked"] {
+        let mut removed = ProviderConfig::default();
+        removed.models.push("removed-model".into());
+        config.explicit_providers = Some([("codex".into(), explicit.clone()), ("removed".into(), removed)].into());
+        let mut effective = explicit.clone();
+        effective.models.push("gpt-6-astra".into());
+        config.providers.insert("codex".into(), effective);
+        let text = task_model_context(&config, "codex", &explicit, "active");
+        for s in ["codex", "active", "gpt-6.1-terra", "gpt-6-astra", "medium", "not checked"] {
             assert!(text.contains(s), "{text}");
         }
-        for s in ["preset-provider", "preset-model", "secret-command"] {
+        for s in ["removed-model", "secret-command"] {
             assert!(!text.contains(s), "{text}");
         }
         let changed = task_model_context(&config, "other", &ProviderConfig::default(), "new-active");
         assert!(changed.contains("new-active") && !changed.contains("\"active\""));
+    }
+
+    #[test]
+    fn catalogue_is_bounded_and_reports_truncation() {
+        let mut config = Config::default();
+        config.providers.clear();
+        config
+            .providers
+            .insert("large".into(), ProviderConfig { models: vec!["x".repeat(20_000)], ..Default::default() });
+        let text = task_model_context(&config, "p", &ProviderConfig::default(), "m");
+        assert!(text.len() < 13_000);
+        assert!(text.contains("Catalogue truncated"));
+        assert!(text.contains("not checked"));
     }
 }

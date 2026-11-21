@@ -405,6 +405,7 @@ async fn schedule(
                 prompt: &u.prompt,
                 provider: None,
                 model: step.model.as_deref(),
+                effort: None,
                 description: Some(&u.label),
                 title: Some(&u.label),
                 background: false,

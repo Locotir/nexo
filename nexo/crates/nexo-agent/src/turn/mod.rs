@@ -74,6 +74,7 @@ mod room;
 mod round;
 mod runtime;
 mod saved_state;
+mod scheduled;
 mod settings;
 mod shutdown;
 mod start;
@@ -130,8 +131,10 @@ const STOP_HOOK_CAP: u32 = 3;
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
     let mut rt = Runtime::build(events, setup).await?;
+    let mut loop_tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
+            biased;
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
                 if dispatch::on_command(&mut rt, cmd).await.is_break() {
@@ -142,6 +145,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             change = rt.sub_changes.recv(), if rt.subs_open => lifecycle::on_sub_change(&mut rt, change),
             change = rt.job_changes.recv() => lifecycle::on_job_change(&mut rt, change).await,
             res = lifecycle::turn_ended(&mut rt.turn), if rt.turn.is_some() => lifecycle::on_turn_end(&mut rt, res).await,
+            _ = loop_tick.tick() => scheduled::tick(&mut rt).await,
         }
     }
     shutdown::close(rt).await;
