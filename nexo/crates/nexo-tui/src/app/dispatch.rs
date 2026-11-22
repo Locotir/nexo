@@ -213,6 +213,10 @@ impl App {
             Command::Budget(Some(arg)) => {
                 let a = arg.trim().trim_start_matches('$').to_ascii_lowercase();
                 match a.as_str() {
+                    _ if a.ends_with('%') => self.notice(
+                        Level::Warn,
+                        "/budget: percentage budgets are not supported; no percentage protection was set. Use a dollar amount (e.g. /budget 1.50) or /budget off",
+                    ),
                     "off" | "none" | "0" => self.send(AgentCommand::SetBudget { limit: None }),
                     _ => match a.replace(',', ".").parse::<f64>() {
                         Ok(v) if v > 0.0 && v.is_finite() => self.send(AgentCommand::SetBudget { limit: Some(v) }),

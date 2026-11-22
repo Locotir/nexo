@@ -22,6 +22,8 @@ const REFRESH: Duration = Duration::from_millis(1000);
 pub struct JobsView {
     jobs: Vec<JobInfo>,
     tails: Vec<JobTail>,
+    /// A read-only monitor list shares the jobs window's output navigation.
+    monitors: bool,
     /// The row under the cursor, in the order shown.
     pub selected: usize,
     /// Whether one job is open on its own.
@@ -37,12 +39,25 @@ impl JobsView {
         JobsView {
             jobs,
             tails: Vec::new(),
+            monitors: false,
             selected: 0,
             detail: false,
             scroll: 0,
             asked: Instant::now(),
             runs: Vec::new(),
         }
+    }
+
+    /// A read-only view of monitors, with the same output navigation as jobs.
+    pub fn monitors(monitors: Vec<JobInfo>, tails: Vec<JobTail>) -> JobsView {
+        let mut view = Self::new(monitors);
+        view.monitors = true;
+        view.tails = tails;
+        view
+    }
+
+    pub fn is_monitors(&self) -> bool {
+        self.monitors
     }
 
     /// The jobs in the order shown: running first, then ended, the newest first.
@@ -74,7 +89,9 @@ impl JobsView {
     }
 
     pub fn set_runs(&mut self, runs: Vec<(u32, String)>) {
-        self.runs = runs;
+        if !self.monitors {
+            self.runs = runs;
+        }
     }
 
     /// The run the job under the cursor is, when it is a sub-agent run that can be opened.
@@ -124,7 +141,7 @@ impl JobsView {
             KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(last),
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = last,
-            KeyCode::Char('x') => {
+            KeyCode::Char('x') if !self.monitors => {
                 if let Some(j) = self.current().filter(|j| j.status.running()) {
                     return ModalOut::Send(AgentCommand::KillJob { id: Some(j.id) });
                 }
@@ -157,6 +174,13 @@ impl JobsView {
     }
 
     pub fn title(&self) -> String {
+        if self.monitors {
+            return if self.detail {
+                " ◉ monitor ".into()
+            } else {
+                format!(" ◉ monitors · {} running ", self.jobs.iter().filter(|j| j.status.running()).count())
+            };
+        }
         if self.detail {
             return " ⚙ job ".into();
         }
@@ -173,14 +197,21 @@ impl JobsView {
         let detail: &[(&str, &str)] = &[("↑↓", "scroll"), ("x", "stop"), ("Esc", "back")];
         let short: &[(&str, &str)] = &[("Enter", ""), ("x", ""), ("Esc", "")];
         // with nothing listed only the key that works is offered
-        let first = if self.detail {
+        let monitor_list: &[(&str, &str)] = &[("↑↓", "move"), ("Enter", "open"), ("Esc", "close")];
+        let monitor_detail: &[(&str, &str)] = &[("↑↓", "scroll"), ("Esc", "back")];
+        let first = if self.monitors && self.detail {
+            monitor_detail
+        } else if self.monitors && !self.is_empty() {
+            monitor_list
+        } else if self.detail {
             detail
         } else if self.is_empty() {
             &[("Esc", "close")]
         } else {
             list
         };
-        for set in [first, short] {
+        let fallback: &[(&str, &str)] = if self.monitors { &[("Enter", ""), ("Esc", "")] } else { short };
+        for set in [first, fallback] {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (k, what) in set {
                 if !spans.is_empty() {
@@ -270,8 +301,12 @@ impl JobsView {
         let Some(j) = self.current() else { return Vec::new() };
         let mut lines = Vec::new();
         for (i, l) in j.label.lines().enumerate() {
-            let text = truncate(l, w.saturating_sub(8));
-            let lead = if i == 0 { format!("job {:<3} ", j.id) } else { "        ".into() };
+            let text = truncate(l, w.saturating_sub(if self.monitors { 12 } else { 8 }));
+            let lead = if i == 0 {
+                format!("{} {:<3} ", if self.monitors { "monitor" } else { "job" }, j.id)
+            } else {
+                "        ".into()
+            };
             lines.push(Line::from(vec![Span::styled(lead, theme.dim()), Span::styled(text, theme.bold(theme.fg))]));
         }
         lines.push(Line::from(Span::styled(

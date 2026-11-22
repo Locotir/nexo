@@ -198,6 +198,7 @@ mod mail;
 #[cfg(unix)]
 mod mcp_startup;
 mod model_setup;
+mod monitor;
 mod nexo_bin_hint;
 mod own_replies;
 mod permissions;
@@ -214,6 +215,7 @@ mod session_models;
 #[cfg(unix)]
 mod shutdown;
 mod side_requests;
+mod skills;
 mod small_window;
 #[cfg(unix)]
 mod start_feedback;

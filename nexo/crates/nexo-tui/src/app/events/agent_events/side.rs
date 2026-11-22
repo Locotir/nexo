@@ -105,10 +105,37 @@ impl App {
             }
         }
         if let Some(Modal::Jobs(v)) = &mut self.modal {
-            v.set_jobs(jobs.clone());
-            self.commands.send(AgentCommand::JobTails).ok();
+            if !v.is_monitors() {
+                v.set_jobs(jobs.clone());
+                self.commands.send(AgentCommand::JobTails).ok();
+            }
         }
         self.jobs = jobs;
+        self.sync_monitors();
+        self.dirty = true;
+    }
+
+    pub(super) fn on_monitor_ids(&mut self, ids: Vec<u32>) {
+        self.monitor_ids = ids;
+        self.sync_monitors();
+    }
+
+    fn sync_monitors(&mut self) {
+        let monitors = self.jobs.iter().filter(|j| self.monitor_ids.contains(&j.id)).cloned().collect();
+        let tails = self.monitor_tails.iter().filter(|t| self.monitor_ids.contains(&t.id)).cloned().collect();
+        self.on_monitors(monitors, tails);
+    }
+
+    /// Apply one coherent monitor snapshot, preserving selection in an open window.
+    pub fn on_monitors(&mut self, monitors: Vec<nexo_core::jobs::JobInfo>, tails: Vec<nexo_core::jobs::JobTail>) {
+        if let Some(Modal::Jobs(v)) = &mut self.modal {
+            if v.is_monitors() {
+                v.set_jobs(monitors.clone());
+                v.set_tails(tails.clone());
+            }
+        }
+        self.monitors = monitors;
+        self.monitor_tails = tails;
         self.dirty = true;
     }
 
@@ -128,7 +155,12 @@ impl App {
     }
 
     pub(super) fn on_job_tails(&mut self, tails: Vec<nexo_core::jobs::JobTail>) {
+        self.monitor_tails = tails.iter().filter(|t| self.monitor_ids.contains(&t.id)).cloned().collect();
         match &mut self.modal {
+            Some(Modal::Jobs(v)) if v.is_monitors() => {
+                v.set_tails(tails);
+                self.dirty = true;
+            }
             Some(Modal::Jobs(v)) => v.set_tails(tails),
             Some(Modal::Agents(v)) => {
                 v.set_tails(tails);

@@ -1,34 +1,34 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ●─╮ ╭─●   nexo 0.2.0                                                     │
-│   ╰●╯     deepseek/deepseek-chat · ask                                   │
-│ ●─╯ ╰─●   /tmp/project                                                   │
-│                                                                          │
-│ /model sets up a model · /resume picks a session · ? help                │
-╰──────────────────────────────────────────────────────────────────────────╯
+ ╭──────────────────────────────────────────────────────────────────────────╮
+ │ ●─╮ ╭─●   nexo 0.2.0                                                     │
+ │   ╰●╯     deepseek/deepseek-chat · ask                                   │
+ │ ●─╯ ╰─●   /tmp/project                                                   │
+ │                                                                          │
+ │ /model sets up a model · /resume picks a session · ? help                │
+ ╰──────────────────────────────────────────────────────────────────────────╯
 
- ▌ fix the failing test in the parser
+  ▌ fix the failing test in the parser
 
-   ▸ thinking · 1 line · 0ms
+    ▸ thinking · 1 line · 0ms
 
- ◆ I will read the test first.
+  ◆ I will read the test first.
 
-   • the input is 3 1 2
-   • the output must be 1 2 3
+    • the input is 3 1 2
+    • the output must be 1 2 3
 
-   rust ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   ▎ fn main() {}
+    rust ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    ▎ fn main() {}
 
-   ✓ read tests/a.rs · 2 lines  12ms ▸
-   ✓ edit src/lib.rs · +1 −1  3ms
-   │ @@ -1,1 +1,1 @@
-   │ 1 - let x = 1;
-   └ 1 + let x = 2;
+    ✓ read tests/a.rs · 2 lines  12ms ▸
+    ✓ edit src/lib.rs · +1 −1  3ms
+    │ @@ -1,1 +1,1 @@
+    │ 1 - let x = 1;
+    └ 1 + let x = 2;
 
- ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=… out=… cache=…) · from config
+  ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=… out=… cache=…) · from config
 
- ◇ compacted 2 messages
+  ◇ compacted 2 messages
 
-      0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
+       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
 
 
 

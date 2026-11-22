@@ -321,6 +321,10 @@ pub trait Tool: Send + Sync {
     fn compact(&self) -> Option<Compact<'_>> {
         None
     }
+    /// Session-captured skill catalogue for the system prompt, if this is a skill tool.
+    fn skill_catalog(&self, _compact: bool) -> Option<String> {
+        None
+    }
     /// The live task list, if this tool keeps one and it is not empty. The loop shows it to the
     /// model every turn, so it never falls out of the context when the history is compacted.
     fn todo_items(&self) -> Option<Vec<TodoItem>> {

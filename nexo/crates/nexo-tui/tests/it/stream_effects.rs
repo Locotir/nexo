@@ -292,7 +292,10 @@ fn an_interrupt_warms_only_the_reply_it_stopped_in() {
     let (mid, settled) = (at(&mut a, t0, 750), at(&mut a, t0, 3600));
     assert_eq!(row(&mid, "First"), row(&settled, "First"), "the earlier reply is not touched");
     let moved = diff(&row(&mid, "Second"), &row(&settled, "Second"));
-    assert!(!moved.is_empty() && moved.iter().all(|c| *c < 3), "only the rail of the second reply: {moved:?}");
+    assert!(
+        !moved.is_empty() && moved.iter().all(|c| (2..4).contains(c)),
+        "only the rail of the second reply: {moved:?}"
+    );
     assert!(!a.tick_fx());
 }
 

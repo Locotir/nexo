@@ -106,23 +106,34 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
         return;
     }
     let pieces = status_pieces(&app.opts.status_line);
-    // what is left of the subscription plan: `5h 63% left ↻2h · wk 88% left ↻4d`, warm from 80%, red when spent
+    // Remaining plan quota: `5h 63% ↻2h · wk 88% ↻4d`; /usage explains the figures.
     // (a provider on a key shows its per-minute limits in /usage only)
     let plan = app.plan_usage.as_ref().filter(|p| !p.is_limits() || app.on_plan());
     if let (true, true, Some(plan)) = (pieces.contains(&"plan"), area.width >= 60, plan) {
         let now = nexo_core::auth::now() as i64;
-        for it in plan.items(now, area.width >= 100).into_iter().take(2) {
+        for meter in plan.meters.iter().filter(|m| !m.is_stale(now)).take(2) {
             if !right.is_empty() {
                 right.push(Seg { text: " ·".to_string(), style: base.fg(theme.border) });
             }
-            let colour = if it.pct >= 100.0 {
+            let fast = plan.fast_pace(meter, now);
+            let colour = if meter.used_pct >= 100.0 {
                 theme.error
-            } else if it.pct >= 80.0 {
+            } else if meter.used_pct >= 80.0 || fast {
                 theme.warn
             } else {
                 theme.dim
             };
-            right.push(Seg { text: format!(" {}", it.text), style: base.fg(colour) });
+            let left = match meter.counts {
+                Some((used, total)) => format!("{}/{total}", total.saturating_sub(used)),
+                None => format!("{:.0}%", meter.left_pct()),
+            };
+            let reset = if area.width >= 100 {
+                meter.resets_in(now).map(|s| format!(" ↻{}", nexo_providers::usage::short_span(s))).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let pace = if fast { " !pace" } else { "" };
+            right.push(Seg { text: format!(" {} {left}{reset}{pace}", meter.label), style: base.fg(colour) });
         }
     }
     if pieces.contains(&"tokens") && !lean && (area.width >= 80 || app.cost <= 0.0 || !pieces.contains(&"cost")) {

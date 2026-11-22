@@ -6,29 +6,29 @@
 
 
 
- ▌ fix the failing test in the parser
+  ▌ fix the failing test in the parser
 
-   ▸ thinking · 1 line · 0ms
+    ▸ thinking · 1 line · 0ms
 
- ◆ I will read the test first.
+  ◆ I will read the test first.
      ╭ permission · bash ─────────────────────────────────────────────────────────────────────────────────────────╮
-   • │ bash  cargo test                                                                                           │
-   • │                                                                                                            │
+     │ bash  cargo test                                                                                           │
+     │                                                                                                            │
      │ $ cargo test                                                                                               │
-   r │                                                                                                            │ ──
-   ▎ │ Allow always with a rule:                                                                                  │
+     │                                                                                                            │ ──
+     │ Allow always with a rule:                                                                                  │
      │   1  bash(cargo *)                                                                                         │
-   ✓ │                                                                                                            │
-   ✓ │ [y] allow   [a] always   [n] deny                                                                          │
-   │ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-   │ 1 - let x = 1;
-   └ 1 + let x = 2;
+     │                                                                                                            │
+     │ [y] allow   [a] always   [n] deny                                                                          │
+     ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+    │ 1 - let x = 1;
+    └ 1 + let x = 2;
 
- ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=… out=… cache=…) · from config
+  ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=… out=… cache=…) · from config
 
- ◇ compacted 2 messages
+  ◇ compacted 2 messages
 
-      0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
+       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
 
 
 

@@ -1,7 +1,5 @@
-//! `skill`: load the instructions of an Agent Skill by name. The description lists the skills
-//! (name and short description) found when the session started, so the text the model sees is the
-//! same on every request; the body is read from disk when the tool is called and comes back as an
-//! ordinary tool result.
+//! `skill`: load an Agent Skill by name. The session catalogue is supplied to the system prompt;
+//! the body is read on demand and comes back as an ordinary tool result.
 
 use std::sync::Arc;
 
@@ -22,16 +20,8 @@ pub fn tool(skills: Vec<Skill>) -> Option<Arc<dyn Tool>> {
     if skills.is_empty() {
         return None;
     }
-    let description = format!(
-        "Load a skill: step-by-step instructions for a kind of task, kept in a folder. When a task matches one \
-         of the skills below, call this first with its name, then follow what comes back. The files a skill \
-         mentions are relative to its folder (read them with `read`). Skills:\n{}",
-        skills::listing(&skills)
-    );
-    let compact = format!(
-        "Load a skill (steps for a kind of task) by name; call it first when the task matches one. Skills:\n{}",
-        skills::compact_listing(&skills)
-    );
+    let description = "Load a skill by name from the system prompt catalogue. Follow its instructions as applicable; files it mentions are relative to its folder (read them with `read`).".to_string();
+    let compact = "Load a skill by name from the system prompt catalogue.".to_string();
     Some(Arc::new(SkillTool { skills: Arc::new(skills), description, compact }))
 }
 
@@ -58,6 +48,10 @@ impl Tool for SkillTool {
 
     fn compact(&self) -> Option<nexo_core::Compact<'_>> {
         Some(nexo_core::Compact { description: &self.compact, params: &[] })
+    }
+
+    fn skill_catalog(&self, compact: bool) -> Option<String> {
+        Some(if compact { skills::compact_listing(&self.skills) } else { skills::listing(&self.skills) })
     }
 
     fn kind(&self) -> ToolKind {
@@ -128,10 +122,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_a_body_and_lists_the_skills_in_its_description() {
+    async fn loads_a_body_without_listing_skills_in_description() {
         let d = tempfile::tempdir().unwrap();
         let t = tool(make(d.path())).unwrap();
-        assert!(t.spec().description.contains("- pdf: Work with PDFs"));
+        assert!(!t.spec().description.contains("Work with PDFs"));
+        assert!(!t.compact().unwrap().description.contains("Work with PDFs"));
+        assert!(t.skill_catalog(false).unwrap().contains("- pdf: Work with PDFs"));
         let out = t.run(json!({"name": "pdf", "arguments": "merge a and b"}), &ctx(d.path())).await;
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("Use forms.md.") && out.content.contains("Arguments: merge a and b"));
@@ -139,6 +135,19 @@ mod tests {
         let bad = t.run(json!({"name": "nope"}), &ctx(d.path())).await;
         assert!(bad.is_error && bad.content.contains("pdf"));
         assert!(t.run(json!({}), &ctx(d.path())).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn builtins_are_advertised_and_loaded_on_demand() {
+        let d = tempfile::tempdir().unwrap();
+        let t = tool(skills::discover(d.path(), false)).unwrap();
+        assert!(t.skill_catalog(false).unwrap().contains("- research:"));
+        assert!(!t.spec().description.contains("- research:"));
+        assert!(!t.spec().description.contains("Prefer primary sources"));
+        let out = t.run(json!({"name": "research", "arguments": "topic"}), &ctx(d.path())).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("Prefer primary sources"));
+        assert!(out.content.contains("Arguments: topic"));
     }
 
     #[test]

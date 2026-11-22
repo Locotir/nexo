@@ -1,4 +1,4 @@
- ◈ model deepseek/deepseek-chat · 9.0k │
+  ◈ model deepseek/deepseek-chat · 9.0k│
   ╭ permission · bash ───────────────╮ │
   │ bash  cargo test                 │ │
   │ $ cargo test                     │ │

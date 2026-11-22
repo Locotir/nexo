@@ -5,6 +5,22 @@ impl App {
         // one event per model call: its input is what that call sent (the attempt that
         // answered), while the turn counts all it spent
         if call.total_input() > 0 {
+            let input = call.total_input();
+            let cached = call.cache_read.min(input);
+            let previous = self.cache_baseline.as_ref().filter(|(provider, model, _, _)| {
+                self.last_call_input > 0 && *provider == self.provider && *model == self.model
+            });
+            let seen_cached = previous.is_some_and(|(_, _, _, seen)| *seen);
+            self.cache_miss_fresh = previous.and_then(|(_, _, before, _)| {
+                let before = (*before).min(input);
+                let fresh = input - cached;
+                (seen_cached
+                    && cached < before - cached.min(before)
+                    && cached < input - cached
+                    && fresh >= crate::app::gauge::CACHE_MISS_FRESH)
+                    .then_some(fresh)
+            });
+            self.cache_baseline = Some((self.provider.clone(), self.model.clone(), input, seen_cached || cached > 0));
             self.last_call_input = call.total_input();
             self.last_call_cached = call.cache_read;
             self.call_inputs.push(call.total_input());

@@ -713,7 +713,8 @@ impl Run {
         let call_id = format!("{}.{id}", self.id);
         let verdict = match &self.host {
             Some(h) => h.permit(&call_id, &self.profile.name, t.as_ref(), args, &ctx.cancel, decision).await,
-            None if self.profile.read_only => Ok(Why::RULE),
+            // Network access requires the parent's permission policy; without a host there is no policy to ask.
+            None if self.profile.read_only && t.kind() != ToolKind::Network && name != "web_search" => Ok(Why::RULE),
             None => Err(("no one to ask for leave".into(), Why::denied("rule"))),
         };
         let why = match verdict {

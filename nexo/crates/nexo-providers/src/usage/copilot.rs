@@ -31,6 +31,7 @@ pub(super) fn quota_meter(slot: &str, label: &str, q: &Value, resets_at: Option<
         counts: Some((used, total as u64)),
         window_minutes: None,
         resets_at,
+        observed_at: None,
     })
 }
 

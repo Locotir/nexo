@@ -167,6 +167,9 @@ async fn resume_in_place_replaces_the_conversation_and_its_file() {
     assert!(evs
         .iter()
         .any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "c1" && output.content == "read:f")));
+    // Switching sessions also clears the previous session’s monitor list.
+    let after_resume = r.until(|e| matches!(e, AgentEvent::Monitors { .. })).await;
+    assert!(matches!(after_resume.last(), Some(AgentEvent::Monitors { ids }) if ids.is_empty()));
     // the next request goes to A: index 4, and the model sees the five messages
     r.send(AgentCommand::Submit { text: "more".into(), attachments: vec![] });
     let evs = r.turn().await;

@@ -7,9 +7,19 @@ mod agent_events;
 impl App {
     pub(super) fn set_skills(&mut self, skills: Vec<nexo_core::skills::Skill>) {
         for s in &skills {
-            let name = s.name.to_ascii_lowercase();
+            let mut name = s.name.to_ascii_lowercase();
             if crate::commands::lookup(&name).is_some() || self.pushed_name_taken(&name) {
-                continue;
+                // Keep the native command (and existing pushed entries) first. Do not steal
+                // another skill's actual name, even when it appears later in the list.
+                loop {
+                    name.push_str("-skill");
+                    if crate::commands::lookup(&name).is_none()
+                        && !self.custom_commands.iter().any(|c| c.name == name)
+                        && !skills.iter().any(|other| other.name.eq_ignore_ascii_case(&name))
+                    {
+                        break;
+                    }
+                }
             }
             // the text is read when the command runs, so an edited skill is used as it is then
             self.custom_commands.push(crate::custom::CustomCommand {
@@ -36,7 +46,12 @@ impl App {
         }
         let mut lines = vec![format!("{}:", nexo_core::count(self.skills.len(), "skill"))];
         for s in &self.skills {
-            lines.push(format!("  /{}  ({})  {}", s.name, s.source, s.description));
+            let name = self
+                .custom_commands
+                .iter()
+                .find(|c| c.origin == "skill" && c.path == s.file())
+                .map_or(s.name.as_str(), |c| c.name.as_str());
+            lines.push(format!("  /{}  ({})  {}", name, s.source, s.description));
         }
         self.notice(Level::Info, lines.join("\n"));
     }

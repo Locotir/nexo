@@ -49,6 +49,64 @@ fn a_click_on_a_queued_row_takes_that_one_back_and_a_full_draft_is_kept() {
 }
 
 #[test]
+fn monitor_chip_opens_live_read_only_output_without_touching_jobs() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    use nexo_core::jobs::{JobInfo, JobKind, JobStatus, JobTail};
+    let (mut a, mut rx) = app();
+    let monitor = JobInfo {
+        id: 7,
+        kind: JobKind::Shell,
+        label: "watch script".into(),
+        status: JobStatus::Running,
+        elapsed_ms: 0,
+        lines: 1,
+        held: false,
+    };
+    let tail = JobTail { id: 7, ended_ago_ms: None, text: "first output".into() };
+    // IDs and jobs may arrive in either order.
+    a.handle_agent(AgentEvent::Monitors { ids: vec![7] });
+    assert!(a.monitors.is_empty());
+    a.handle_agent(AgentEvent::Jobs { jobs: vec![monitor.clone()] });
+    a.handle_agent(AgentEvent::JobTails { tails: vec![tail] });
+    frame(&mut a, 200, 20);
+    let r = a.hint_hits.iter().find(|(_, h)| *h == HintHit::Monitors).unwrap().0;
+    pointer(&mut a, K::Down(MouseButton::Left), r.x + 1, r.y);
+    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.len() == 1));
+    press(&mut a, KeyCode::Enter);
+    let Some(Modal::Jobs(v)) = &a.modal else { panic!("monitor window") };
+    let text: String =
+        v.lines(80, &a.theme).0.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("watch script") && text.contains("first output"), "{text}");
+    press(&mut a, KeyCode::Char('x'));
+    assert!(!drain(&mut rx).iter().any(|c| matches!(c, AgentCommand::KillJob { .. })));
+    a.handle_agent(AgentEvent::JobTails {
+        tails: vec![JobTail { id: 7, ended_ago_ms: None, text: "new output".into() }],
+    });
+    let Some(Modal::Jobs(v)) = &a.modal else { panic!("monitor window") };
+    let text: String =
+        v.lines(80, &a.theme).0.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("new output"));
+    let mut finished = monitor;
+    finished.status = JobStatus::Done { ok: true, how: "exit 0".into() };
+    a.handle_agent(AgentEvent::Jobs { jobs: vec![finished] });
+    assert!(!a.monitors[0].status.running());
+    // A finished job may still have a paused monitor with output to inspect.
+    press(&mut a, KeyCode::Esc); // back to list
+    press(&mut a, KeyCode::Esc); // close window
+    frame(&mut a, 200, 20);
+    let r = a.hint_hits.iter().find(|(_, h)| *h == HintHit::Monitors).expect("finished monitor remains accessible").0;
+    pointer(&mut a, K::Down(MouseButton::Left), r.x + 1, r.y);
+    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.len() == 1));
+    press(&mut a, KeyCode::Enter);
+    let Some(Modal::Jobs(v)) = &a.modal else { panic!("monitor window") };
+    let text: String = v.lines(80, &a.theme).0.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("new output"));
+    a.handle_agent(AgentEvent::Monitors { ids: vec![] });
+    assert!(a.monitors.is_empty());
+    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.len() == 0));
+}
+
+#[test]
 fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
     use crossterm::event::{MouseButton, MouseEventKind as K};
     use nexo_core::jobs::{JobInfo, JobKind, JobStatus};

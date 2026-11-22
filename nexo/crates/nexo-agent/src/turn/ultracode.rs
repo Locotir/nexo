@@ -450,6 +450,7 @@ mod tests {
                     counts: Some((25, 100)),
                     window_minutes: None,
                     resets_at: Some(200),
+                    observed_at: None,
                 },
                 Meter {
                     slot: "b".into(),
@@ -458,6 +459,7 @@ mod tests {
                     counts: None,
                     window_minutes: None,
                     resets_at: Some(50),
+                    observed_at: None,
                 },
             ],
             ..Default::default()

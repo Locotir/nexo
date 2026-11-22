@@ -167,6 +167,40 @@ fn a_model_switch_is_a_rebuild_not_a_miss() {
 }
 
 #[test]
+fn side_cache_does_not_validate_main_cache_misses() {
+    let mut side = usage(100, 30_000, 0, 1, 0, 0.1);
+    side["kind"] = json!("sub");
+    let d = digest(&[meta("/p", "m", T0), usage(30_000, 0, 0, 1, 0, 0.1), side, usage(31_000, 0, 0, 1, 0, 0.1)]);
+    assert_eq!(total(&d).misses, 0);
+}
+
+#[test]
+fn provider_switch_with_same_model_starts_a_new_cache_segment() {
+    let d = digest(&[
+        meta("/p", "m", T0),
+        usage(500, 29_500, 0, 1, 0, 0.1),
+        usage(31_000, 0, 0, 1, 0, 0.1), // real loss in p
+        json!({"type":"model","provider":"other","model":"m"}),
+        usage(30_000, 0, 0, 1, 0, 0.1),
+        usage(31_000, 0, 0, 1, 0, 0.1), // no evidence other reports cache
+    ]);
+    let t = total(&d);
+    assert_eq!((t.misses, t.resent, t.rebuilds), (1, 31_000, 1));
+}
+
+#[test]
+fn another_model_cannot_validate_an_uncached_segment() {
+    let d = digest(&[
+        meta("/p", "a", T0),
+        usage(30_000, 0, 0, 1, 0, 0.1),
+        usage(31_000, 0, 0, 1, 0, 0.1),
+        json!({"type":"model","provider":"p","model":"b"}),
+        usage(500, 29_500, 0, 1, 0, 0.1),
+    ]);
+    assert_eq!(total(&d).misses, 0);
+}
+
+#[test]
 fn tool_output_is_weighted_by_the_calls_that_carried_it() {
     let d = digest(&[
         meta("/p", "m", T0),

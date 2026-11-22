@@ -150,6 +150,7 @@ fn a_new_reading_replaces_its_slot_and_keeps_the_others() {
         counts: None,
         window_minutes: None,
         resets_at: None,
+        observed_at: None,
     };
     a.meters = vec![w("primary", 10.0), w("secondary", 20.0)];
     a.merge(PlanUsage { kind: "codex".into(), meters: vec![w("primary", 30.0)], seen: 2, ..Default::default() });
@@ -381,4 +382,61 @@ async fn a_credential_store_that_does_not_parse_is_an_error_not_a_provider_witho
     cfg.auth = Some("xai".into());
     let e = fetch_in(&store, &endpoints(&s), "xai", &cfg).await.expect_err("said, not read as signed out");
     assert!(e.to_string().contains("cannot be read"), "{e}");
+}
+
+#[test]
+fn pace_warning_requires_a_fresh_consistent_window_and_significant_overuse() {
+    let now = 1_800_000_000;
+    let mut m = Meter {
+        slot: "primary".into(),
+        label: "5h".into(),
+        used_pct: 50.0,
+        counts: None,
+        window_minutes: Some(300),
+        resets_at: Some(now + 3 * 3600),
+        observed_at: Some(now),
+    };
+    let mut p = PlanUsage { kind: "codex".into(), seen: now, meters: vec![m.clone()], ..Default::default() };
+    assert!(!p.fast_pace(&m, now)); // exactly the 25% margin
+    m.used_pct = 55.0;
+    assert!(p.fast_pace(&m, now));
+    assert!(!p.fast_pace(&m, now + 3601));
+    m.window_minutes = None;
+    assert!(!p.fast_pace(&m, now));
+    m.window_minutes = Some(300);
+    m.resets_at = Some(now + 6 * 3600);
+    assert!(!p.fast_pace(&m, now));
+    m.resets_at = Some(now - 1);
+    assert!(!p.fast_pace(&m, now));
+    m.resets_at = Some(now + 3 * 3600);
+    p.kind = "limits:example".into();
+    assert!(!p.fast_pace(&m, now));
+}
+
+#[test]
+fn codex_pace_tracks_each_merged_slots_own_observation() {
+    let now = 1_800_000_000;
+    let event = |primary: Option<f64>, secondary: Option<f64>| {
+        let mut limits = serde_json::json!({});
+        if let Some(pct) = primary {
+            limits["primary"] =
+                serde_json::json!({"used_percent": pct, "window_minutes": 300, "reset_at": now + 3 * 3600});
+        }
+        if let Some(pct) = secondary {
+            limits["secondary"] =
+                serde_json::json!({"used_percent": pct, "window_minutes": 10080, "reset_at": now + 5 * 86400});
+        }
+        serde_json::json!({"type": "codex.rate_limits", "rate_limits": limits})
+    };
+    let mut plan = codex_from_event(&event(Some(80.0), Some(60.0)), now).unwrap();
+    assert!(plan.meters.iter().all(|m| plan.fast_pace(m, now)));
+    plan.merge(codex_from_event(&event(Some(80.0), None), now + 3601).unwrap());
+    assert!(plan.fast_pace(&plan.meters[0], now + 3601));
+    assert!(!plan.fast_pace(&plan.meters[1], now + 3601));
+    assert_eq!(plan.meters[1].observed_at, Some(now));
+    let mut unknown = plan.meters[0].clone();
+    unknown.observed_at = None;
+    assert!(!plan.fast_pace(&unknown, now + 3601));
+    unknown.observed_at = Some(now + 3602);
+    assert!(!plan.fast_pace(&unknown, now + 3601));
 }

@@ -89,6 +89,31 @@ fn claude_agents_map_onto_nexo_and_nexo_files_win() {
 }
 
 #[test]
+fn research_is_read_only_and_a_custom_profile_can_replace_it() {
+    let profile = builtin().into_iter().find(|p| p.name == "research").unwrap();
+    assert!(profile.read_only && profile.tools.is_none());
+    assert!(profile.prompt.contains("do not assume web access"));
+    assert!(profile.prompt.contains("Cite URLs"));
+    assert!(short_text(&builtin()).contains("`research` is read-only"));
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let agents = project.path().join(".nexo/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("research.md"),
+        "---\nname: research\ndescription: custom research\n---\nCustom instructions.",
+    )
+    .unwrap();
+    let trust = home.path().join("trust");
+    nexo_core::config::trust_project(project.path(), &trust).unwrap();
+    let profiles = load_from(project.path(), home.path(), &trust, None);
+    let research: Vec<_> = profiles.iter().filter(|p| p.name == "research").collect();
+    assert_eq!(research.len(), 1);
+    assert_eq!(research[0].prompt, "Custom instructions.");
+    assert!(short_text(&profiles).contains("`research`: custom research"));
+}
+
+#[test]
 fn a_tool_list_that_names_only_task_and_workflow_gives_no_tool_not_all() {
     for list in ["task", "workflow", "[task, workflow]", "\"task\", 'workflow'"] {
         let p = parse(&format!("---\nname: x\ntools: {list}\n---\nB"), "x").unwrap();
@@ -141,7 +166,9 @@ fn a_description_is_cut_to_its_first_clause_and_a_long_one_at_a_comma_or_a_word(
 
 #[test]
 fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_few_words() {
-    let stock = format!("{SHORT} `explore` is read-only; `general` (default) can edit.");
+    let stock = format!(
+        "{SHORT} `explore` is read-only; `general` (default) can edit. `research` is read-only and checks sources."
+    );
     assert_eq!(short_text(&builtin()), stock);
     let mut kinds = builtin();
     kinds.extend([kind("docs", "Writes the manual. Use after a change."), kind("bare", "")]);
@@ -152,7 +179,7 @@ fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_fe
     kinds.push(kind("explore", "reads the wiki too"));
     assert_eq!(
         short_text(&kinds),
-        format!("{SHORT} `general` (default) can edit. More kinds for `agent`: `explore`: reads the wiki too.")
+        format!("{SHORT} `general` (default) can edit. `research` is read-only and checks sources. More kinds for `agent`: `explore`: reads the wiki too.")
     );
 }
 

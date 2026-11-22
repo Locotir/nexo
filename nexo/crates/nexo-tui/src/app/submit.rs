@@ -246,17 +246,20 @@ impl App {
             // a prompt of the same name
             self.reload_file_commands();
             // a skill: its folder and instructions are the request (read now, so edits count)
-            if let Some(s) = self.skills.iter().find(|s| s.name.eq_ignore_ascii_case(&name)).cloned() {
-                if self.command_entry(&name).is_some_and(|c| c.origin == "skill" && c.path == s.file()) {
-                    match s.instructions(args) {
-                        Ok(text) => {
-                            self.input.push_history(trimmed);
-                            return self.submit_expanded(&text, false);
-                        }
-                        Err(e) => {
-                            self.notice(Level::Warn, format!("cannot read skill {}: {e}", s.name));
-                            return;
-                        }
+            if let Some(s) = self
+                .command_entry(&name)
+                .filter(|c| c.origin == "skill")
+                .and_then(|c| self.skills.iter().find(|s| c.path == s.file()))
+                .cloned()
+            {
+                match s.instructions(args) {
+                    Ok(text) => {
+                        self.input.push_history(trimmed);
+                        return self.submit_expanded(&text, false);
+                    }
+                    Err(e) => {
+                        self.notice(Level::Warn, format!("cannot read skill {}: {e}", s.name));
+                        return;
                     }
                 }
             }
@@ -678,6 +681,13 @@ impl App {
                 Some(id) => self.open_sub(&id),
                 None => self.run_command(Command::Jobs(None)),
             },
+            HintHit::Monitors => {
+                self.modal = Some(Modal::Jobs(Box::new(crate::jobs_view::JobsView::monitors(
+                    self.monitors.clone(),
+                    self.monitor_tails.clone(),
+                ))));
+                self.send(AgentCommand::JobTails);
+            }
             HintHit::Mem => self.open_shared(),
             HintHit::Queued => self.open_queue(),
             HintHit::Session => self.run_command(Command::Sessions),

@@ -19,8 +19,15 @@ pub fn xai_from_billing(v: &Value, now: i64) -> Option<PlanUsage> {
         "USAGE_PERIOD_TYPE_MONTHLY" => "mo".to_string(),
         _ => window_label(minutes, "plan"),
     };
-    let meter =
-        Meter { slot: "primary".into(), label, used_pct, counts: None, window_minutes: minutes, resets_at: end };
+    let meter = Meter {
+        slot: "primary".into(),
+        label,
+        used_pct,
+        counts: None,
+        window_minutes: minutes,
+        resets_at: end,
+        observed_at: Some(now),
+    };
     let plan = v["subscription_tier"].as_str().or_else(|| c["subscription_tier"].as_str()).map(String::from);
     Some(PlanUsage { kind: XAI.into(), plan, meters: vec![meter], credits: None, seen: now })
 }

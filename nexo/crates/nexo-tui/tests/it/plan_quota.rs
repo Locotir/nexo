@@ -40,6 +40,7 @@ fn meter(slot: &str, label: &str, pct: f64, minutes: u64, in_secs: i64) -> Meter
         counts: None,
         window_minutes: Some(minutes),
         resets_at: Some(nexo_core::auth::now() as i64 + in_secs),
+        observed_at: Some(nexo_core::auth::now() as i64),
     }
 }
 
@@ -68,10 +69,10 @@ fn the_status_bar_shows_both_windows_with_their_reset() {
     let mut a = app(Some("codex"));
     a.plan_usage = Some(plan(37.0, 12.0));
     let s = screen(&mut a, 140);
-    assert!(s.contains("5h 63% left ↻2h · wk 88% left ↻4d"), "{s}");
+    assert!(s.contains("5h 63% ↻2h · wk 88% ↻4d"), "{s}");
     // a narrower bar keeps the figures and drops the resets; a very narrow one drops the item
     let s = screen(&mut a, 80);
-    assert!(s.contains("5h 63% left · wk 88% left") && !s.contains('↻'), "{s}");
+    assert!(s.contains("5h 63% · wk 88%") && !s.contains('↻'), "{s}");
     let s = screen(&mut a, 50);
     assert!(!s.contains("5h 63%"), "{s}");
 }
@@ -83,13 +84,13 @@ fn a_window_over_80_percent_turns_warm_and_a_spent_one_red() {
     a.plan_usage = Some(plan(85.0, 100.0));
     let t = draw(&mut a, 140);
     let rows = rows_of(t.backend().buffer());
-    let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("5h 15% left")).expect("the item");
+    let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("5h 15%")).expect("the item");
     let colour_of = |needle: &str| {
         let x = row[..row.find(needle).unwrap()].chars().count() as u16;
         t.backend().buffer()[(x, y as u16)].fg
     };
-    assert_eq!(colour_of("5h 15% left"), theme.warn);
-    assert_eq!(colour_of("wk 0% left"), theme.error);
+    assert_eq!(colour_of("5h 15%"), theme.warn);
+    assert_eq!(colour_of("wk 0%"), theme.error);
 }
 
 #[test]
@@ -119,7 +120,7 @@ fn a_reset_window_leaves_the_bar() {
     p.meters[0].resets_at = Some(nexo_core::auth::now() as i64 - 60);
     a.plan_usage = Some(p);
     let s = screen(&mut a, 140);
-    assert!(!s.contains("5h 63%") && s.contains("wk 88% left"), "{s}");
+    assert!(!s.contains("5h 63%") && s.contains("wk 88%"), "{s}");
 }
 
 fn xai_plan(used: f64) -> PlanUsage {
@@ -137,7 +138,7 @@ fn a_supergrok_login_shows_what_is_left_in_the_bar_and_in_usage() {
     let mut a = app(Some("xai"));
     a.plan_usage = Some(xai_plan(8.0));
     let s = screen(&mut a, 140);
-    assert!(s.contains("wk 92% left ↻3d"), "{s}");
+    assert!(s.contains("wk 92% ↻3d"), "{s}");
     a.run_command(Command::Cost);
     let s = screen(&mut a, 140);
     assert!(s.contains("SuperGrok plan") && s.contains("92% left") && s.contains("resets in 3d"), "{s}");
@@ -155,6 +156,7 @@ fn per_minute_limits_of_a_key_show_in_usage_but_not_in_the_bar() {
         counts: Some((6, 60)),
         window_minutes: None,
         resets_at: None,
+        observed_at: Some(nexo_core::auth::now() as i64),
     }];
     a.plan_usage = Some(limits);
     let s = screen(&mut a, 140);
@@ -171,4 +173,39 @@ fn usage_says_so_in_one_line_when_there_is_no_figure() {
     let s = screen(&mut a, 140);
     assert!(s.contains("no plan or rate-limit figure from p"), "{s}");
     assert!(s.contains("this session"), "{s}");
+}
+
+#[test]
+fn fast_pace_is_visible_and_conservative() {
+    let mut a = app(Some("xai"));
+    let mut p = xai_plan(50.0);
+    let now = nexo_core::auth::now() as i64;
+    // One quarter of the window elapsed, half of its allowance consumed.
+    p.seen = now;
+    p.meters[0].resets_at = Some(now + 7 * 86_400 * 3 / 4);
+    a.plan_usage = Some(p.clone());
+    let t = draw(&mut a, 140);
+    let rows = rows_of(t.backend().buffer());
+    let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("wk 50%")).unwrap();
+    assert!(row.contains("!pace"), "{row}");
+    let x = row[..row.find("wk 50%").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, y as u16)].fg, Theme::pick("dark").warn);
+    p.meters[0].observed_at = Some(now - 3601);
+    a.plan_usage = Some(p);
+    assert!(!screen(&mut a, 140).contains("!pace"));
+}
+
+#[test]
+fn codex_multi_window_pace_is_independent_per_slot() {
+    let mut a = app(Some("codex"));
+    let now = nexo_core::auth::now() as i64;
+    let mut p = plan(80.0, 20.0);
+    p.meters[0].resets_at = Some(now + 4 * 3600);
+    p.meters[1].resets_at = Some(now + 4 * 86400);
+    a.plan_usage = Some(p.clone());
+    let s = screen(&mut a, 180);
+    assert!(s.contains("5h 20%") && s.contains("!pace"), "{s}");
+    p.meters[0].observed_at = Some(now - 3601);
+    a.plan_usage = Some(p);
+    assert!(!screen(&mut a, 180).contains("!pace"));
 }

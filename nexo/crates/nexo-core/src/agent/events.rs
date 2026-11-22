@@ -226,6 +226,10 @@ pub enum AgentEvent {
     Jobs {
         jobs: Vec<crate::jobs::JobInfo>,
     },
+    /// Active session-local monitors, identified by their shell job IDs.
+    Monitors {
+        ids: Vec<u32>,
+    },
     /// An item of a sub-agent run's conversation (see [`crate::subs`]). The four `Sub` events are for the
     /// interface only: they are not written to the session and not printed by the headless mode.
     Sub {

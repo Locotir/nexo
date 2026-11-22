@@ -15,12 +15,16 @@ pub(super) struct MetaLite {
     created: String,
     #[serde(default)]
     model: String,
+    #[serde(default)]
+    provider: String,
 }
 
 #[derive(Deserialize)]
 pub(super) struct ModelLite {
     #[serde(default)]
     model: String,
+    #[serde(default)]
+    provider: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -98,6 +102,7 @@ pub(super) struct Walk {
     day: i64,
     created_day: i64,
     model: String,
+    provider: String,
     /// The model of the last conversation call, and the total input of the call before.
     last_model: Option<String>,
     prev: Option<u64>,
@@ -121,6 +126,7 @@ impl Walk {
             day: 0,
             created_day: 0,
             model: String::new(),
+            provider: String::new(),
             last_model: None,
             prev: None,
             rebuild: false,
@@ -151,6 +157,7 @@ impl Walk {
                 if let Ok(m) = serde_json::from_str::<MetaLite>(line) {
                     self.digest.cwd = m.cwd;
                     self.model = m.model;
+                    self.provider = m.provider;
                     if let Some(d) = self.day_of_ts(&m.created) {
                         self.day = d;
                         self.created_day = d;
@@ -159,10 +166,12 @@ impl Walk {
             }
             "model" => {
                 if let Ok(m) = serde_json::from_str::<ModelLite>(line) {
-                    if m.model != self.model {
+                    if m.model != self.model || m.provider != self.provider {
+                        self.finish_cache_segment();
                         self.rebuild = true;
                     }
                     self.model = m.model;
+                    self.provider = m.provider;
                 }
             }
             "reset" => {
@@ -229,9 +238,6 @@ impl Walk {
         let summed = u.kind == Some(UsageKind::Sum)
             || (first && u.kind.is_none() && u.ts.is_none() && self.messages >= 3 && self.same_ts);
         let total = u.usage.input + u.usage.cache_read + u.usage.cache_write;
-        if u.usage.cache_read > 0 || u.usage.cache_write > 0 {
-            self.cache_seen = true;
-        }
         let day =
             if summed { self.created_day } else { u.ts.as_deref().and_then(|t| self.day_of_ts(t)).unwrap_or(self.day) };
         let model = u.model.clone().unwrap_or_else(|| self.model.clone());
@@ -239,10 +245,17 @@ impl Walk {
         // the chain of conversation calls the cache is judged on
         let mut miss = None;
         if summed {
+            self.finish_cache_segment();
             self.prev = None;
             self.rebuild = true;
         } else if main {
             let switched = self.last_model.as_ref().is_some_and(|m| *m != model);
+            if switched {
+                self.finish_cache_segment();
+            }
+            if u.usage.cache_read > 0 || u.usage.cache_write > 0 {
+                self.cache_seen = true;
+            }
             if self.rebuild || switched {
                 if self.prev.is_some() {
                     miss = Some(false);
@@ -322,15 +335,22 @@ impl Walk {
         }
     }
 
-    fn finish(mut self) -> Digest {
-        // a session that never reported a cache has no misses: it has no cache
+    // Cache evidence belongs to this main-call model/provider segment only. Side calls and
+    // another provider's cache cannot establish that this chain supports cache reporting.
+    fn finish_cache_segment(&mut self) {
+        let misses = std::mem::take(&mut self.maybe_misses);
         if self.cache_seen {
-            for (day, total) in std::mem::take(&mut self.maybe_misses) {
+            for (day, total) in misses {
                 let t = &mut self.day_mut(day).tally;
                 t.misses += 1;
                 t.resent += total;
             }
         }
+        self.cache_seen = false;
+    }
+
+    fn finish(mut self) -> Digest {
+        self.finish_cache_segment();
         self.digest
     }
 }

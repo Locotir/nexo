@@ -491,6 +491,7 @@ fn session_title_persists_in_the_rendered_subscription_bar() {
             counts: None,
             window_minutes: Some(300),
             resets_at: None,
+            observed_at: None,
         }],
         ..Default::default()
     });

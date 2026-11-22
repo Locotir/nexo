@@ -173,6 +173,13 @@ fn budget_commands_and_the_spend_in_the_title() {
             (other, _) => panic!("{typed}: {other:?}"),
         }
     }
+    for typed in ["/budget 5%", "/budget $5%"] {
+        a.input.set_text(typed);
+        a.submit();
+        assert!(rx.try_recv().is_err(), "{typed}: no budget command should be sent");
+        assert!(matches!(a.blocks.last(), Some(Block::Notice { level: Level::Warn, text })
+            if text.contains("percentage budgets are not supported") && text.contains("no percentage protection was set")));
+    }
     a.input.set_text("/budget lots");
     a.submit();
     assert!(rx.try_recv().is_err(), "not an amount: nothing sent");
@@ -340,4 +347,68 @@ fn a_skill_shadowed_by_a_command_file_comes_back_when_the_file_is_deleted() {
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. })
         if text.contains("Run the linter.") && text.ends_with("Arguments: src")));
+}
+
+#[test]
+fn builtin_skills_dispatch_and_list_their_own_names() {
+    let (mut a, mut rx) = app();
+    let d = tempfile::tempdir().unwrap();
+    a.set_skills(nexo_core::skills::discover(d.path(), false));
+    a.input.set_text("/research topic");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. })
+        if text.contains("Built-in skill `research`") && text.contains("Arguments: topic")));
+    a.input.set_text("/verify");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. })
+        if text.contains("Built-in skill `verify`")));
+    a.run_command(Command::Skills);
+    let shown = format!("{:?}", a.blocks.last());
+    assert!(shown.contains("/research") && shown.contains("/verify"), "{shown}");
+}
+
+#[test]
+fn colliding_skills_get_discoverable_aliases_without_stealing_names() {
+    let (mut a, mut rx) = app();
+    let d = tempfile::tempdir().unwrap();
+    let skills: Vec<_> = ["doctor", "doctor-skill", "review"]
+        .iter()
+        .map(|name| {
+            let dir = d.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\ninstructions for {name}\n"),
+            )
+            .unwrap();
+            nexo_core::skills::Skill {
+                name: (*name).into(),
+                description: "test".into(),
+                dir,
+                allowed_tools: vec![],
+                source: "external".into(),
+            }
+        })
+        .collect();
+    a.set_skills(skills);
+    a.input.set_text("/doctor-skill-skill");
+    a.refresh_palette();
+    assert!(a.palette.as_ref().unwrap().rows(20).0.iter().any(|r| r.label == "doctor-skill-skill"));
+    a.submit();
+    assert!(
+        matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text.contains("instructions for doctor") && !text.contains("instructions for doctor-skill"))
+    );
+    a.input.set_text("/doctor-skill arg");
+    a.submit();
+    assert!(
+        matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text.contains("instructions for doctor-skill") && text.ends_with("Arguments: arg"))
+    );
+    a.input.set_text("/review-skill");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text.contains("instructions for review")));
+    a.run_command(Command::Skills);
+    let shown = format!("{:?}", a.blocks.last());
+    assert!(shown.contains("/doctor-skill-skill") && shown.contains("/review-skill"), "{shown}");
+    assert!(crate::commands::lookup("doctor").is_some());
+    assert!(crate::commands::lookup("review").is_some());
 }

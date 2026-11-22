@@ -155,6 +155,10 @@ pub struct App {
     pub hint_hits: Vec<(Rect, HintHit)>,
     /// The background jobs, as the agent last listed them.
     pub jobs: Vec<nexo_core::jobs::JobInfo>,
+    /// The latest monitor snapshot and its bounded output tails.
+    pub monitor_ids: Vec<u32>,
+    pub monitors: Vec<nexo_core::jobs::JobInfo>,
+    pub monitor_tails: Vec<nexo_core::jobs::JobTail>,
     /// The MCP servers, as the agent last listed them (their prompts are commands, their resources complete after `@`).
     pub mcp: Vec<nexo_core::agent::McpServerInfo>,
     /// The sessions that can be written to, as the mailbox last listed them (for `/msg`).
@@ -189,6 +193,9 @@ pub struct App {
     pub cost: f64,
     /// Input of each model call this session, for the usage window's sparkline.
     pub call_inputs: Vec<u64>,
+    /// Cache evidence from main calls in the current provider/model segment only.
+    cache_baseline: Option<(String, String, u64, bool)>,
+    cache_miss_fresh: Option<u64>,
     pub context: Option<ContextInfo>,
     /// Nothing can be asked until a model works: the home shows a card to set one up (see `ui::draw_lock`).
     pub locked: bool,
@@ -469,6 +476,9 @@ impl App {
             queue_rows: Vec::new(),
             hint_hits: Vec::new(),
             jobs: Vec::new(),
+            monitor_ids: Vec::new(),
+            monitors: Vec::new(),
+            monitor_tails: Vec::new(),
             mcp: Vec::new(),
             peers: Vec::new(),
             mail_polled: None,
@@ -489,6 +499,8 @@ impl App {
             turn_usage: Usage::default(),
             cost: 0.0,
             call_inputs: Vec::new(),
+            cache_baseline: None,
+            cache_miss_fresh: None,
             context: None,
             locked: false,
             scan: None,
@@ -655,6 +667,8 @@ impl App {
         self.last_call_cached = 0;
         self.last_call_input = 0;
         self.call_inputs.clear();
+        self.cache_baseline = None;
+        self.cache_miss_fresh = None;
         self.turn_cost_start = 0.0;
         self.pending_stamps.clear();
         self.unechoed.clear();

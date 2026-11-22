@@ -19,9 +19,18 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         AgentCommand::Loop { input } => {
             scheduled::command(rt, &input, true);
         }
-        AgentCommand::Submit { text, attachments } => on_submit(rt, text, attachments).await,
-        AgentCommand::SubmitDirected { target, text, reply } => on_submit_directed(rt, target, text, reply).await,
-        AgentCommand::Ultracode { text, attachments } => on_ultracode(rt, text, attachments).await,
+        AgentCommand::Submit { text, attachments } => {
+            scheduled::invalidate_for_intervention(rt);
+            on_submit(rt, text, attachments).await
+        }
+        AgentCommand::SubmitDirected { target, text, reply } => {
+            scheduled::invalidate_for_intervention(rt);
+            on_submit_directed(rt, target, text, reply).await
+        }
+        AgentCommand::Ultracode { text, attachments } => {
+            scheduled::invalidate_for_intervention(rt);
+            on_ultracode(rt, text, attachments).await
+        }
         AgentCommand::Deliver { mails } => on_deliver(rt, mails).await,
         AgentCommand::SendMail { to, text } => on_send_mail(rt, to, text).await,
         AgentCommand::ListPeers => on_list_peers(rt).await,
@@ -60,6 +69,7 @@ pub(super) async fn on_command(rt: &mut Runtime, cmd: AgentCommand) -> ControlFl
         }
         AgentCommand::Clear => {
             scheduled::clear(rt);
+            monitor::clear(rt);
             on_clear(rt).await
         }
         AgentCommand::Shell { command } => {
@@ -458,6 +468,7 @@ async fn on_resume(rt: &mut Runtime, id: String) {
         resume_session(&rt.state, &id).await;
         if rt.state.lock().await.epoch != before {
             scheduled::clear(rt);
+            monitor::clear(rt);
             flow::forget_old(&rt.jobs, &mut rt.sub_changes, &rt.chan_gate);
         }
     }
@@ -484,6 +495,7 @@ async fn on_fork(rt: &mut Runtime, index: Option<usize>) {
         fork_session(&rt.state, index).await;
         if rt.state.lock().await.epoch != before {
             scheduled::clear(rt);
+            monitor::clear(rt);
             flow::forget_old(&rt.jobs, &mut rt.sub_changes, &rt.chan_gate);
         }
     }

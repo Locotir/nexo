@@ -242,8 +242,8 @@ fn a_selected_block_has_a_bar_down_its_margin_in_every_theme() {
     // the steps of the turn sit under the reply, the result under its call
     let at = |rows: &[String], s: &str| rows.iter().position(|r| r.contains(s));
     let read = at(&rows, "   ✓ read tests/a.rs").expect("read card indented");
-    assert!(rows[read + 1].starts_with("   ✓ edit src/lib.rs"), "one-line steps read as a list: {rows:#?}");
-    assert!(rows.iter().any(|r| r == "   └ 1 + let x = 2;"), "{rows:#?}");
+    assert!(rows[read + 1].starts_with("    ✓ edit src/lib.rs"), "one-line steps read as a list: {rows:#?}");
+    assert!(rows.iter().any(|r| r == "    └ 1 + let x = 2;"), "{rows:#?}");
     a.select_last();
     for theme in ["nexo", "mono"] {
         a.set_theme(theme, false);
@@ -251,11 +251,11 @@ fn a_selected_block_has_a_bar_down_its_margin_in_every_theme() {
         draw_frame(&mut t, &mut a).unwrap();
         let rows = rows_of(t.backend().buffer());
         let head = at(&rows, "✓ edit src/lib.rs").unwrap();
-        assert!(rows[head].starts_with("┃  ✓ edit"), "{theme}: {}", rows[head]);
-        assert!(rows[head + 1].starts_with("┃  │ @@"), "{theme}: {}", rows[head + 1]);
-        assert!(rows[head + 3].starts_with("┃  └ 1 + let x = 2;"), "{theme}: {}", rows[head + 3]);
+        assert!(rows[head].starts_with("┏   ✓ edit"), "{theme}: {}", rows[head]);
+        assert!(rows[head + 1].starts_with("┃   │ @@"), "{theme}: {}", rows[head + 1]);
+        assert!(rows[head + 3].starts_with("┗   └ 1 + let x = 2;"), "{theme}: {}", rows[head + 3]);
         assert!(!rows[head + 4].starts_with('┃'), "the bar is the block's height: {}", rows[head + 4]);
-        let cell = &t.backend().buffer()[(6, head as u16)];
+        let cell = &t.backend().buffer()[(7, head as u16)];
         if theme == "mono" {
             assert!(cell.modifier.contains(ratatui::style::Modifier::REVERSED), "{theme}");
         } else {
@@ -440,7 +440,8 @@ fn the_banner_shows_on_an_empty_session_and_the_model_card_after_a_question() {
     let all = rows.join("\n");
     assert!(all.contains("╭──"), "the banner stays on top of the first message");
     assert!(
-        all.contains("◈ model deepseek/deepseek-chat · 128k context · 8.2k max reply · $0.28 in · $0.42 out · $0.028 cached · from catalogue"),
+        all.replace("
+    ", " ").contains("◈ model deepseek/deepseek-chat · 128k context · 8.2k max reply · $0.28 in · $0.42 out · $0.028 cached · from catalogue"),
         "{all}"
     );
     assert_eq!(nexo_tui::ui::gauge_cells(0.42, 8), ("███▍".to_string(), 4));

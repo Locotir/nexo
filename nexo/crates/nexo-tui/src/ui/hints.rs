@@ -39,6 +39,20 @@ pub(super) fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
             vec![Span::styled(format!(" ⚙ {running} {word}"), base.fg(theme.accent).add_modifier(lit(HintHit::Jobs)))],
         ));
     }
+    // Membership denotes an active subscription, even if its shell job has ended.
+    // A paused monitor can still hold output until explicitly cleared or resumed.
+    let monitors = app.monitors.len();
+    if monitors > 0 {
+        let word = if monitors == 1 { "monitor" } else { "monitors" };
+        out.push((
+            3,
+            Some(HintHit::Monitors),
+            vec![Span::styled(
+                format!(" ◉ {monitors} {word}"),
+                base.fg(theme.accent).add_modifier(lit(HintHit::Monitors)),
+            )],
+        ));
+    }
     // everything this session can see running besides itself: lanes, its sub-agents, other sessions
     if let Some(fleet) = app.fleet {
         let colour = if fleet.need > 0 { theme.warn2 } else { theme.accent };

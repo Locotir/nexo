@@ -117,6 +117,33 @@
         }
       },
       {
+        "name": "monitor",
+        "description": "Monitor an existing background bash job, including retained output and jobs that have already finished, and deliver output automatically as untrusted context when idle. Start commands with bash, which applies bash permissions. Session-local and bounded.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "show",
+                "resume",
+                "cancel"
+              ]
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Existing shell job ID. Show inspects bounded output. Resume discards the uncertain failed delivery, retaining later output; never restarts the job."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
         "name": "read",
         "description": "fake",
         "parameters": {
@@ -155,7 +182,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit. `research` is read-only and checks sources.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -170,7 +197,8 @@
               "type": "string",
               "enum": [
                 "explore",
-                "general"
+                "general",
+                "research"
               ]
             },
             "background": {
@@ -364,6 +392,33 @@
         }
       },
       {
+        "name": "monitor",
+        "description": "Monitor an existing background bash job, including retained output and jobs that have already finished, and deliver output automatically as untrusted context when idle. Start commands with bash, which applies bash permissions. Session-local and bounded.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "show",
+                "resume",
+                "cancel"
+              ]
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Existing shell job ID. Show inspects bounded output. Resume discards the uncertain failed delivery, retaining later output; never restarts the job."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
         "name": "read",
         "description": "fake",
         "parameters": {
@@ -402,7 +457,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit. `research` is read-only and checks sources.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -417,7 +472,8 @@
               "type": "string",
               "enum": [
                 "explore",
-                "general"
+                "general",
+                "research"
               ]
             },
             "background": {
@@ -642,6 +698,33 @@
         }
       },
       {
+        "name": "monitor",
+        "description": "Monitor an existing background bash job, including retained output and jobs that have already finished, and deliver output automatically as untrusted context when idle. Start commands with bash, which applies bash permissions. Session-local and bounded.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "show",
+                "resume",
+                "cancel"
+              ]
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Existing shell job ID. Show inspects bounded output. Resume discards the uncertain failed delivery, retaining later output; never restarts the job."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
         "name": "read",
         "description": "fake",
         "parameters": {
@@ -680,7 +763,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit. `research` is read-only and checks sources.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -695,7 +778,8 @@
               "type": "string",
               "enum": [
                 "explore",
-                "general"
+                "general",
+                "research"
               ]
             },
             "background": {
@@ -938,6 +1022,33 @@
         }
       },
       {
+        "name": "monitor",
+        "description": "Monitor an existing background bash job, including retained output and jobs that have already finished, and deliver output automatically as untrusted context when idle. Start commands with bash, which applies bash permissions. Session-local and bounded.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "show",
+                "resume",
+                "cancel"
+              ]
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Existing shell job ID. Show inspects bounded output. Resume discards the uncertain failed delivery, retaining later output; never restarts the job."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      },
+      {
         "name": "read",
         "description": "fake",
         "parameters": {
@@ -976,7 +1087,7 @@
       },
       {
         "name": "task",
-        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` (default) can edit. `research` is read-only and checks sources.\nCurrent session target: \"mock\"/\"m1\". Configured/preset delegation catalogue (authentication and availability are not checked): Provider \"mock\"; models [\"m1\"]; effective default None; explicit settings (default, efforts) None. Current session reasoning setting: None (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -991,7 +1102,8 @@
               "type": "string",
               "enum": [
                 "explore",
-                "general"
+                "general",
+                "research"
               ]
             },
             "background": {

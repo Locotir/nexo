@@ -9,6 +9,9 @@ use super::*;
 /// Everything the loop's branches act on besides the command channel.
 pub(super) struct Runtime {
     pub(super) loops: scheduled::Loops,
+    pub(super) monitors: monitor::Monitors,
+    pub(super) monitor_lines: tokio::sync::broadcast::Receiver<(u32, usize, String)>,
+    pub(super) monitor_lines_open: bool,
     pub(super) control_rx: tokio::sync::mpsc::UnboundedReceiver<control_tool::Request>,
     pub(super) state: Shared,
     pub(super) events: EventTx,
@@ -70,7 +73,8 @@ impl Runtime {
         let flow_sub = add_subagents(&config, &cwd, &client, &target, &mut tools, &host);
         if tools_enabled {
             tools.add(Arc::new(control_tool::ControlTool::new("goal", control_tx.clone())));
-            tools.add(Arc::new(control_tool::ControlTool::new("loop", control_tx)));
+            tools.add(Arc::new(control_tool::ControlTool::new("loop", control_tx.clone())));
+            tools.add(Arc::new(control_tool::ControlTool::new("monitor", control_tx)));
         }
         let plan = add_ask_tools(&mut tools, tools_enabled, headless, &asker);
         let (mut session, history, replay) = open_session(resume.as_deref(), &cwd, &provider, &model, &events)?;
@@ -129,6 +133,7 @@ impl Runtime {
         let jobs = Jobs::new();
         let detach = nexo_core::jobs::Detach::default();
         let job_changes = jobs.changes();
+        let monitor_lines = jobs.lines();
         let sub_changes = jobs.subs().changes();
         let state: Shared = Arc::new(Mutex::new(State {
             config,
@@ -258,6 +263,9 @@ impl Runtime {
         let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel::<Resume>();
         Ok(Runtime {
             loops: scheduled::Loops::default(),
+            monitors: monitor::Monitors::default(),
+            monitor_lines,
+            monitor_lines_open: true,
             control_rx,
             state,
             events,

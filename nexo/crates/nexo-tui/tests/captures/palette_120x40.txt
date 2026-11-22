@@ -1,25 +1,25 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ●─╮ ╭─●   nexo 0.2.0                                                     │
-│   ╰●╯     deepseek/deepseek-chat · ask                                   │
-│ ●─╯ ╰─●   /tmp/project                                                   │
-│                                                                          │
-│ /model sets up a model · /resume picks a session · ? help                │
-╰──────────────────────────────────────────────────────────────────────────╯
+ ╭──────────────────────────────────────────────────────────────────────────╮
+ │ ●─╮ ╭─●   nexo 0.2.0                                                     │
+ │   ╰●╯     deepseek/deepseek-chat · ask                                   │
+ │ ●─╯ ╰─●   /tmp/project                                                   │
+ │                                                                          │
+ │ /model sets up a model · /resume picks a session · ? help                │
+ ╰──────────────────────────────────────────────────────────────────────────╯
 
- ▌ fix the failing test in the parser
+  ▌ fix the failing test in the parser
 
-   ▸ thinking · 1 line · 0ms
+    ▸ thinking · 1 line · 0ms
 
- ◆ I will read the test first.
+  ◆ I will read the test first.
 
-   • the input is 3 1 2
-   • the output must be 1 2 3
+    • the input is 3 1 2
+    • the output must be 1 2 3
 
-   rust ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   ▎ fn main() {}
+    rust ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    ▎ fn main() {}
 
-   ✓ read tests/a.rs · 2 lines  12ms ▸
-   ✓ edit src/lib.rs · +1 −1  3ms
+    ✓ read tests/a.rs · 2 lines  12ms ▸
+    ✓ edit src/lib.rs · +1 −1  3ms
  common ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
  /model          [name]                        switch model, or set one up
  /permissions    [ask|accept-edits|plan|yolo…  set the permission mode

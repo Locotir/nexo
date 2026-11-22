@@ -1,11 +1,11 @@
                                        │
- ◈ model deepseek/deepseek-chat · 9.0k │
-   context · no prices known (/pricing │
-   in=… out=… cache=…) · from config   │
+  ◈ model deepseek/deepseek-chat · 9.0k│
+    context · no prices known (/pricing│
+    in=… out=… cache=…) · from config  │
                                        │
- ◇ compacted 2 messages                │
+  ◇ compacted 2 messages               │
                                        │
-      0ms  ↑ 6.2k  ↓  340  $0.0031     ┃
+       0ms  ↑ 6.2k  ↓  340  $0.0031    ┃
                                        ┃
 ─ ask ──────────────────────────────────
 ›   ask anything

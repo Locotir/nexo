@@ -20,8 +20,8 @@ pub fn message_text(m: &Message) -> String {
     for p in &m.content {
         match p {
             Part::Text { text } => out.push(text.clone()),
-            Part::ToolCall { name, args, .. } => out.push(format!("[call {name}] {args}")),
-            Part::ToolResult { name, content, is_error, .. } => {
+            Part::ToolCall { id, name, args } => out.push(format!("[call {name}, id={id}] {args}")),
+            Part::ToolResult { call_id, name, content, is_error } => {
                 let body: Vec<String> = content
                     .iter()
                     .filter_map(|c| match c {
@@ -31,7 +31,7 @@ pub fn message_text(m: &Message) -> String {
                     .collect();
                 let what = name.as_deref().unwrap_or("tool");
                 let err = if *is_error { " (error)" } else { "" };
-                out.push(format!("[output of {what}{err}]\n{}", body.join("\n")));
+                out.push(format!("[output of {what}{err}, call_id={call_id}]\n{}", body.join("\n")));
             }
             _ => {}
         }
@@ -42,7 +42,7 @@ pub fn message_text(m: &Message) -> String {
 /// What `recall` names a message by and the text it numbers. A message that only carries one output
 /// numbers the output alone, so line k is line k of what the tool printed, as the curator's marks count it.
 fn numbered(m: &Message) -> (String, String) {
-    if let [Part::ToolResult { name, content, is_error, .. }] = m.content.as_slice() {
+    if let [Part::ToolResult { call_id, name, content, is_error }] = m.content.as_slice() {
         let body: Vec<&str> = content
             .iter()
             .filter_map(|c| match c {
@@ -51,7 +51,10 @@ fn numbered(m: &Message) -> (String, String) {
             })
             .collect();
         let err = if *is_error { ", an error" } else { "" };
-        return (format!(" (the output of {}{err})", name.as_deref().unwrap_or("a tool")), body.join("\n"));
+        return (
+            format!(" (the output of {}{err}, call_id={call_id})", name.as_deref().unwrap_or("a tool")),
+            body.join("\n"),
+        );
     }
     (String::new(), message_text(m))
 }
@@ -170,7 +173,7 @@ mod tests {
     fn a_message_comes_back_exactly() {
         let o = answer(&history(), &json!({"message": "m00003"}));
         assert!(!o.is_error, "{}", o.content);
-        assert!(o.content.starts_with("m00003 (the output of bash), as it was:\nrow 1\n"), "{}", o.content);
+        assert!(o.content.starts_with("m00003 (the output of bash, call_id=c1), as it was:\nrow 1\n"), "{}", o.content);
         assert!(o.content.ends_with("row 5"), "{}", o.content);
         assert_eq!(index_of("m3"), Some(2));
         assert_eq!(index_of("3"), Some(2));
@@ -180,12 +183,45 @@ mod tests {
     #[test]
     fn part_of_a_message_and_bad_names() {
         let o = answer(&history(), &json!({"message": "m00003", "from": 3, "to": 4}));
-        assert_eq!(o.content, "m00003 (the output of bash), lines 3-4 of 5:\nrow 3\nrow 4");
+        assert_eq!(o.content, "m00003 (the output of bash, call_id=c1), lines 3-4 of 5:\nrow 3\nrow 4");
         let o = answer(&history(), &json!({"message": "m00002"}));
-        assert_eq!(o.content, "m00002, as it was:\n[call bash] {\"command\":\"cat t\"}\n(its output is m00003: recall that for what it printed)");
+        assert_eq!(o.content, "m00002, as it was:\n[call bash, id=c1] {\"command\":\"cat t\"}\n(its output is m00003: recall that for what it printed)");
         assert!(answer(&history(), &json!({"message": "m00009"})).is_error);
         assert!(answer(&history(), &json!({"message": "x"})).is_error);
         assert!(answer(&history(), &json!({})).is_error);
+    }
+
+    #[test]
+    fn parallel_calls_and_results_keep_their_ids() {
+        let history = vec![
+            Message::new(
+                nexo_core::message::Role::Assistant,
+                vec![
+                    Part::ToolCall { id: "a".into(), name: "read".into(), args: json!({"path":"old"}) },
+                    Part::ToolCall { id: "b".into(), name: "read".into(), args: json!({"path":"new"}) },
+                ],
+            ),
+            Message::tool_results(vec![
+                Part::ToolResult {
+                    call_id: "b".into(),
+                    name: Some("read".into()),
+                    content: vec![Part::text("30 days")],
+                    is_error: false,
+                },
+                Part::ToolResult {
+                    call_id: "a".into(),
+                    name: Some("read".into()),
+                    content: vec![Part::text("60 days")],
+                    is_error: false,
+                },
+            ]),
+        ];
+        let calls = answer(&history, &json!({"message":"m1"})).content;
+        let results = answer(&history, &json!({"message":"m2"})).content;
+        assert!(calls.contains("[call read, id=a] {\"path\":\"old\"}"));
+        assert!(calls.contains("[call read, id=b] {\"path\":\"new\"}"));
+        assert!(results.contains("[output of read, call_id=b]\n30 days"));
+        assert!(results.contains("[output of read, call_id=a]\n60 days"));
     }
 
     #[test]

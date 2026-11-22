@@ -96,6 +96,8 @@ pub enum HintHit {
     Todo,
     /// `⚙ N jobs`: `/jobs`.
     Jobs,
+    /// The running monitors and their output.
+    Monitors,
     /// `⊕ mem`: `/mem list`.
     Mem,
     /// `◷ N queued`: `/queue`.

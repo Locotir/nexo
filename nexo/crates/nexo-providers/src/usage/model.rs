@@ -23,6 +23,8 @@ pub struct Meter {
     pub window_minutes: Option<u64>,
     /// When it starts over, unix seconds.
     pub resets_at: Option<i64>,
+    /// Local time when this individual slot was observed, not a vendor timestamp.
+    pub observed_at: Option<i64>,
 }
 
 impl Meter {
@@ -104,6 +106,27 @@ impl PlanUsage {
                 Item { text, pct: m.used_pct }
             })
             .collect()
+    }
+
+    /// Whether a fresh reading suggests exhaustion before reset at the window-average pace.
+    /// This is an estimate, not a measured recent token rate. Missing or inconsistent window data
+    /// cannot support it. Wait until 5% of the window and 10% of the quota have passed to avoid
+    /// alarming on tiny early readings. A 25% margin avoids warning on small fluctuations.
+    pub fn fast_pace(&self, meter: &Meter, now: i64) -> bool {
+        let Some(seen) = meter.observed_at else { return false };
+        if self.is_limits() || seen <= 0 || now < seen || now.saturating_sub(seen) > 3600 || meter.is_stale(now) {
+            return false;
+        }
+        let (Some(minutes), Some(reset)) = (meter.window_minutes, meter.resets_at) else { return false };
+        let Some(seconds) = minutes.checked_mul(60).and_then(|s| i64::try_from(s).ok()).filter(|s| *s > 0) else {
+            return false;
+        };
+        let Some(remaining) = reset.checked_sub(seen) else { return false };
+        if remaining <= 0 || remaining > seconds || !meter.used_pct.is_finite() || meter.used_pct < 10.0 {
+            return false;
+        }
+        let elapsed = (seconds - remaining) as f64 / seconds as f64;
+        elapsed >= 0.05 && meter.used_pct > elapsed * 125.0
     }
 
     /// The full detail, one line per window and a line for the plan and the credits.

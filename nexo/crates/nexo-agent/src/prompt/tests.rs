@@ -5,6 +5,28 @@ use super::*;
 static CONFIG_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn skill_catalogue_follows_offered_tools_and_raw_prompt() {
+    let d = tempfile::tempdir().unwrap();
+    let skill = nexo_tools::skill::tool(nexo_core::skills::discover(d.path(), false)).unwrap();
+    let tools = ToolSet::new().with(skill);
+    let mut cfg = AgentConfig::default();
+    cfg.hermetic = true;
+    let vol = Volatile::capture(d.path(), &cfg);
+    let p = system_prompt_with(d.path(), &cfg, &tools, None, &vol);
+    assert!(p.contains("<skill_catalog>\n") && p.contains("- research:"), "{p}");
+    assert!(!p.contains("Prefer primary sources"));
+    let tiny = system_prompt_with(d.path(), &cfg, &tools, Some(TINY_WINDOW), &vol);
+    if left_out(Some(TINY_WINDOW), "skill") {
+        assert!(!tiny.contains("<skill_catalog>"));
+    }
+    assert!(!system_prompt_with(d.path(), &cfg, &ToolSet::new(), None, &vol).contains("<skill_catalog>"));
+    let raw = d.path().join("raw.md");
+    std::fs::write(&raw, format!("{RAW_MARK}\nOnly this.")).unwrap();
+    cfg.system_prompt_file = Some(raw);
+    assert_eq!(system_prompt_with(d.path(), &cfg, &tools, None, &vol), "Only this.");
+}
+
+#[test]
 fn environment_lists_the_tree_the_manifests_and_the_check_command() {
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();

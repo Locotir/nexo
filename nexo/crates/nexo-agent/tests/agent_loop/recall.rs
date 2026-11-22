@@ -25,7 +25,7 @@ async fn recall_brings_back_a_message_exactly_and_only_the_curator_offers_it() {
         Part::ToolResult { call_id, content, is_error, .. } => {
             assert_eq!(call_id, "c2");
             let got = nexo_core::message::result_text(content);
-            assert_eq!(got, "m00003 (the output of read), as it was:\nread:a.rs", "{got}");
+            assert_eq!(got, "m00003 (the output of read, call_id=c1), as it was:\nread:a.rs", "{got}");
             assert!(!is_error);
         }
         _ => panic!(),

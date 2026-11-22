@@ -1,7 +1,7 @@
 //! The registry of jobs, a job's handle and what one read of its output gives.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,22 @@ struct Out {
     read: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    Available,
+    Monitor(u64),
+    Delivered,
+}
+
+static NEXT_MONITOR_CLAIM: AtomicU64 = AtomicU64::new(1);
+
+/// Exclusive ownership of one job's terminal notification.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MonitorClaim {
+    id: u32,
+    token: u64,
+}
+
 struct Entry {
     id: u32,
     kind: JobKind,
@@ -29,8 +45,8 @@ struct Entry {
     ended: Mutex<Option<Instant>>,
     out: Mutex<Out>,
     status: Mutex<JobStatus>,
-    /// The model was told it ended.
-    told: Mutex<bool>,
+    /// Ownership of the terminal notification, shared by ordinary and monitor delivery.
+    completion: Mutex<Completion>,
     /// What a sub-agent reported when it ended (the end note carries it).
     report: Mutex<Option<String>>,
     cancel: CancellationToken,
@@ -58,6 +74,7 @@ struct Inner {
     jobs: Mutex<BTreeMap<u32, Arc<Entry>>>,
     root: CancellationToken,
     changes: broadcast::Sender<JobChange>,
+    lines: broadcast::Sender<(u32, usize, String)>,
     subs: crate::subs::Subs,
 }
 
@@ -87,6 +104,7 @@ impl std::fmt::Debug for Jobs {
 pub struct JobHandle {
     entry: Arc<Entry>,
     changes: broadcast::Sender<JobChange>,
+    lines: broadcast::Sender<(u32, usize, String)>,
 }
 
 impl JobHandle {
@@ -109,7 +127,10 @@ impl JobHandle {
         };
         let mut o = self.entry.out.lock().unwrap();
         o.chars += line.chars().count() + 1;
-        o.lines.push_back(line);
+        let sequence = o.dropped + o.lines.len();
+        o.lines.push_back(line.clone());
+        // The sequence and snapshot are protected by the same lock.
+        let _ = self.lines.send((self.entry.id, sequence, line));
         while o.chars > KEEP_CHARS && o.lines.len() > 1 {
             let l = o.lines.pop_front().unwrap();
             o.chars -= l.chars().count() + 1;
@@ -176,13 +197,30 @@ pub struct JobRead {
 impl Jobs {
     pub fn new() -> Jobs {
         let (changes, _) = broadcast::channel(64);
+        let (lines, _) = broadcast::channel(128);
         Jobs(Arc::new(Inner {
             next: AtomicU32::new(1),
             jobs: Mutex::new(BTreeMap::new()),
             root: CancellationToken::new(),
             changes,
+            lines,
             subs: crate::subs::Subs::new(),
         }))
+    }
+
+    /// Subscribe before starting jobs to observe their bounded, truncated output lines as they arrive.
+    /// Slow receivers get `Lagged`; this stream is not a durable log and does not mark output read.
+    pub fn lines(&self) -> broadcast::Receiver<(u32, usize, String)> {
+        self.0.lines.subscribe()
+    }
+
+    /// Retained output and the first sequence not included, without marking it read.
+    /// Subscribe to `lines` before taking this snapshot, then ignore older sequences.
+    /// The first element counts lines already evicted from the bounded job buffer.
+    pub fn output_snapshot(&self, id: u32) -> Option<(usize, usize, Vec<String>)> {
+        let e = self.entry(id)?;
+        let o = e.out.lock().unwrap();
+        Some((o.dropped, o.dropped + o.lines.len(), o.lines.iter().cloned().collect()))
     }
 
     /// A new job; the caller runs it (in a spawned task) and writes to the handle.
@@ -212,14 +250,14 @@ impl Jobs {
             ended: Mutex::new(None),
             out: Mutex::new(Out { lines: VecDeque::new(), chars: 0, dropped: 0, read: 0 }),
             status: Mutex::new(JobStatus::Running),
-            told: Mutex::new(false),
+            completion: Mutex::new(Completion::Available),
             report: Mutex::new(None),
             cancel: self.0.root.child_token(),
             done: Notify::new(),
         });
         self.0.jobs.lock().unwrap().insert(id, entry.clone());
         let _ = self.0.changes.send(JobChange(entry.info()));
-        JobHandle { entry, changes: self.0.changes.clone() }
+        JobHandle { entry, changes: self.0.changes.clone(), lines: self.0.lines.clone() }
     }
 
     pub fn list(&self) -> Vec<JobInfo> {
@@ -228,6 +266,11 @@ impl Jobs {
 
     pub fn get(&self, id: u32) -> Option<JobInfo> {
         self.entry(id).map(|e| e.info())
+    }
+
+    /// True only after the runner has finished writing its final output.
+    pub fn runner_finished(&self, id: u32) -> bool {
+        self.entry(id).is_some_and(|e| e.ended.lock().unwrap().is_some())
     }
 
     pub fn running(&self) -> usize {
@@ -311,7 +354,10 @@ impl Jobs {
         };
         // told only when the model has all of the output: a long job read in part stays to be noted
         if !info.status.running() && !unread {
-            *e.told.lock().unwrap() = true;
+            let mut completion = e.completion.lock().unwrap();
+            if *completion == Completion::Available {
+                *completion = Completion::Delivered;
+            }
         }
         Some(JobRead { info, new })
     }
@@ -347,7 +393,10 @@ impl Jobs {
         *s = JobStatus::Killed;
         drop(s);
         // the model asked for it: no notice
-        *e.told.lock().unwrap() = true;
+        let mut completion = e.completion.lock().unwrap();
+        if *completion == Completion::Available {
+            *completion = Completion::Delivered;
+        }
         e.cancel.cancel();
         true
     }
@@ -376,7 +425,7 @@ impl Jobs {
     pub fn untold(&self) -> Vec<JobInfo> {
         let jobs = self.0.jobs.lock().unwrap();
         jobs.values()
-            .filter(|e| e.ended.lock().unwrap().is_some() && !*e.told.lock().unwrap())
+            .filter(|e| e.ended.lock().unwrap().is_some() && *e.completion.lock().unwrap() == Completion::Available)
             .map(|e| e.info())
             .collect()
     }
@@ -386,15 +435,88 @@ impl Jobs {
         let jobs = self.0.jobs.lock().unwrap();
         jobs.values()
             .filter(|e| e.ended.lock().unwrap().is_some())
-            .filter(|e| !std::mem::replace(&mut *e.told.lock().unwrap(), true))
+            .filter(|e| {
+                let mut completion = e.completion.lock().unwrap();
+                if *completion == Completion::Available {
+                    *completion = Completion::Delivered;
+                    true
+                } else {
+                    false
+                }
+            })
             .map(|e| e.info())
             .collect()
+    }
+
+    /// Claim exclusive terminal delivery before attaching a monitor. Fails if another monitor
+    /// owns it, or an ordinary consumer has already reserved or consumed the notification.
+    /// Register before taking an output snapshot; a failed registration must not replay output.
+    pub fn register_monitor(&self, id: u32) -> Option<MonitorClaim> {
+        let e = self.entry(id)?;
+        let mut completion = e.completion.lock().unwrap();
+        if *completion != Completion::Available {
+            return None;
+        }
+        let token = NEXT_MONITOR_CLAIM.fetch_add(1, Ordering::Relaxed);
+        *completion = Completion::Monitor(token);
+        Some(MonitorClaim { id, token })
+    }
+
+    /// Release a monitor that has not taken the terminal event. Ordinary delivery can resume.
+    pub fn release_monitor(&self, claim: MonitorClaim) -> bool {
+        let Some(e) = self.entry(claim.id) else { return false };
+        let mut completion = e.completion.lock().unwrap();
+        if *completion != Completion::Monitor(claim.token) {
+            return false;
+        }
+        *completion = Completion::Available;
+        drop(completion);
+        // The original end event may already have been observed while reserved.
+        // If completion races this check, the runner itself emits the wakeup.
+        let ended = e.ended.lock().unwrap().is_some();
+        if ended {
+            let _ = self.0.changes.send(JobChange(e.info()));
+        }
+        true
+    }
+
+    /// Abandon an uncertain monitor delivery without allowing a replay, even if
+    /// the runner has not yet finished. Only the claim owner may consume it.
+    pub fn consume_monitor(&self, claim: MonitorClaim) -> bool {
+        let Some(e) = self.entry(claim.id) else { return false };
+        let mut completion = e.completion.lock().unwrap();
+        if *completion != Completion::Monitor(claim.token) {
+            return false;
+        }
+        *completion = Completion::Delivered;
+        true
+    }
+
+    /// Take the terminal event exactly once, after the runner has finished writing output.
+    /// The returned status includes the runner's success and exit description. Retain the
+    /// returned event on delivery failure: this operation does not automatically replay it.
+    pub fn take_monitor_ended(&self, claim: &MonitorClaim) -> Option<JobInfo> {
+        let e = self.entry(claim.id)?;
+        if e.ended.lock().unwrap().is_none() {
+            return None;
+        }
+        {
+            let mut completion = e.completion.lock().unwrap();
+            if *completion != Completion::Monitor(claim.token) {
+                return None;
+            }
+            *completion = Completion::Delivered;
+        }
+        Some(e.info())
     }
 
     /// The model got the outcome of job `id` some other way (a tool result): no ended note for it.
     pub fn tell(&self, id: u32) {
         if let Some(e) = self.entry(id) {
-            *e.told.lock().unwrap() = true;
+            let mut completion = e.completion.lock().unwrap();
+            if *completion == Completion::Available {
+                *completion = Completion::Delivered;
+            }
         }
     }
 

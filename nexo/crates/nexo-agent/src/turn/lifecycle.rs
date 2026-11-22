@@ -57,6 +57,7 @@ pub(super) async fn on_job_change(rt: &mut Runtime, change: Result<nexo_core::jo
     // The list goes out after the turn that follows an ended job has begun (its `Preparing` is sent first), so a reader that
     // sees no job running and no turn open knows that nothing follows.
     emit(&rt.events, AgentEvent::Jobs { jobs: rt.jobs.list() });
+    monitor::snapshot(rt);
 }
 
 /// The running turn ended: the interface and the hooks are told, the goal takes the end, then what runs next
@@ -65,6 +66,12 @@ pub(super) async fn on_turn_end(rt: &mut Runtime, res: Result<TurnEnd, tokio::ta
     rt.turn = None;
     rt.detach.clear();
     let reason = end_reason(&rt.events, res);
+    monitor::turn_end(rt, reason);
+    // A time-limited turn can have partial effects just like an error. Unlike a
+    // person's Esc, the time limit does not hold the session, so its recurring
+    // loop must be paused explicitly before the scheduler can tick again.
+    let loop_reason = if rt.stopper == Some(nexo_core::agent::Stopper::TimeLimit) { TurnEnd::Error } else { reason };
+    scheduled::turn_end(rt, loop_reason);
     emit(&rt.events, AgentEvent::TurnEnd { reason });
     fire_end_hooks(&rt.state, &rt.events, reason).await;
     rt.cancel = CancellationToken::new();

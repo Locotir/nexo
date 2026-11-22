@@ -14,6 +14,10 @@ impl App {
             }
         }
         self.flash(&format!("model: {provider}/{model}"));
+        if self.provider != provider || self.model != model {
+            self.cache_baseline = None;
+            self.cache_miss_fresh = None;
+        }
         self.provider = provider;
         self.model = model;
         self.limits = None;
@@ -68,6 +72,10 @@ impl App {
     ) {
         if self.nothing_chosen() {
             return;
+        }
+        if self.provider != provider || self.model != model {
+            self.cache_baseline = None;
+            self.cache_miss_fresh = None;
         }
         self.provider = provider.clone();
         self.model = model.clone();

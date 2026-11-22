@@ -65,6 +65,7 @@ mod hook_calls;
 mod host;
 mod lesson;
 mod lifecycle;
+mod monitor;
 mod named;
 mod notices;
 mod orient;
@@ -133,23 +134,130 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
     let mut rt = Runtime::build(events, setup).await?;
     let mut loop_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut prefer_loop = false;
     loop {
         tokio::select! {
-            biased;
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
-                if dispatch::on_command(&mut rt, cmd).await.is_break() {
-                    break;
-                }
+                if dispatch_command(&mut rt, cmd).await { break; }
             }
             Some(r) = rt.control_rx.recv() => control_tool::handle(&mut rt, r).await,
             Some(r) = rt.resume_rx.recv() => lifecycle::on_resume(&mut rt, r).await,
             change = rt.sub_changes.recv(), if rt.subs_open => lifecycle::on_sub_change(&mut rt, change),
+            line = rt.monitor_lines.recv(), if rt.monitor_lines_open => monitor::line(&mut rt, line),
             change = rt.job_changes.recv() => lifecycle::on_job_change(&mut rt, change).await,
             res = lifecycle::turn_ended(&mut rt.turn), if rt.turn.is_some() => lifecycle::on_turn_end(&mut rt, res).await,
-            _ = loop_tick.tick() => scheduled::tick(&mut rt).await,
+            outcome = scheduled::wait_hook(&mut rt.loops), if scheduled::pending(&rt.loops) => scheduled::hook_done(&mut rt, outcome).await,
+            _ = loop_tick.tick() => {
+                if drain_commands(&mut rt, &mut commands).await { break; }
+                if automatic_tick(&mut rt, &mut commands, &mut prefer_loop).await { break; }
+            },
         }
     }
     shutdown::close(rt).await;
     Ok(())
+}
+
+// Alternate only after a class actually starts work. Both ticks still run for
+// maintenance and a queued human command is drained between admission attempts.
+async fn automatic_tick(rt: &mut Runtime, commands: &mut nexo_core::agent::CommandRx, prefer_loop: &mut bool) -> bool {
+    if *prefer_loop {
+        let preparing = scheduled::preparing(&rt.loops);
+        let busy = rt.turn.is_some();
+        scheduled::tick(rt).await;
+        if (!preparing && scheduled::preparing(&rt.loops)) || (!busy && rt.turn.is_some()) {
+            *prefer_loop = false;
+        }
+        if drain_commands(rt, commands).await {
+            return true;
+        }
+        let busy = rt.turn.is_some();
+        monitor::tick(rt).await;
+        if !busy && rt.turn.is_some() {
+            *prefer_loop = true;
+        }
+    } else {
+        let busy = rt.turn.is_some();
+        monitor::tick(rt).await;
+        if !busy && rt.turn.is_some() {
+            *prefer_loop = true;
+        }
+        if drain_commands(rt, commands).await {
+            return true;
+        }
+        let preparing = scheduled::preparing(&rt.loops);
+        let busy = rt.turn.is_some();
+        scheduled::tick(rt).await;
+        if (!preparing && scheduled::preparing(&rt.loops)) || (!busy && rt.turn.is_some()) {
+            *prefer_loop = false;
+        }
+    }
+    false
+}
+
+async fn dispatch_command(rt: &mut Runtime, cmd: AgentCommand) -> bool {
+    if matches!(&cmd, AgentCommand::Interrupt | AgentCommand::InterruptRun | AgentCommand::StopBy(_)) {
+        scheduled::abandon(rt);
+    }
+    dispatch::on_command(rt, cmd).await.is_break()
+}
+
+// The Empty observation is the admission boundary for the following tick only.
+// A send concurrent with or after it may run after the admitted work. Continuous
+// command traffic may postpone admission indefinitely. Disconnection ends the loop.
+async fn drain_commands(rt: &mut Runtime, commands: &mut nexo_core::agent::CommandRx) -> bool {
+    use tokio::sync::mpsc::error::TryRecvError;
+    loop {
+        match commands.try_recv() {
+            Ok(cmd) => {
+                if dispatch_command(rt, cmd).await {
+                    return true;
+                }
+            }
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => return true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn queued_cancel_is_dispatched_before_scheduled_tick() {
+        let d = tempfile::tempdir().unwrap();
+        let mut rt = monitor::tests::runtime(d.path()).await;
+        scheduled::command(&mut rt, "60s do work", true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(AgentCommand::Loop { input: "cancel 1".into() }).unwrap();
+        assert!(!drain_commands(&mut rt, &mut rx).await);
+        scheduled::tick(&mut rt).await;
+        assert!(!scheduled::preparing(&rt.loops));
+        assert!(rt.turn.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_preparation_is_seen_before_next_tick() {
+        let d = tempfile::tempdir().unwrap();
+        let mut rt = monitor::tests::runtime(d.path()).await;
+        scheduled::command(&mut rt, "60s do work", true);
+        scheduled::tick(&mut rt).await;
+        assert!(scheduled::preparing(&rt.loops));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(AgentCommand::Loop { input: "cancel 1".into() }).unwrap();
+        assert!(!drain_commands(&mut rt, &mut rx).await);
+        scheduled::tick(&mut rt).await;
+        assert!(!scheduled::preparing(&rt.loops));
+        assert!(rt.turn.is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnected_channel_prevents_admission() {
+        let d = tempfile::tempdir().unwrap();
+        let mut rt = monitor::tests::runtime(d.path()).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(tx);
+        assert!(drain_commands(&mut rt, &mut rx).await);
+    }
 }

@@ -322,11 +322,12 @@ impl SubAgent {
                 Some(l) => l.iter().any(|n| n == &spec.name),
             };
             // `diagnostics` starts language servers, which may run the project's build scripts
-            let readable = matches!(t.kind(), ToolKind::Read | ToolKind::Search)
+            let readable = (matches!(t.kind(), ToolKind::Read | ToolKind::Search)
+                || (spec.name == "web_fetch" && t.kind() == ToolKind::Network))
                 && !matches!(spec.name.as_str(), "jobs" | "diagnostics");
             if listed && (!p.read_only || readable) {
                 set.add(t.clone());
-            } else if listed && spec.name == "debug" {
+            } else if listed && spec.name == "debug" && p.name != "research" {
                 // a read-only kind may look at and steer a session another agent started, nothing more
                 set.add(std::sync::Arc::new(nexo_tools::debug::Debug::steer_only()));
             }

@@ -5,6 +5,11 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
+    // Reserve a real gutter: block content often starts with an icon, not a space.
+    // Keeping it separate also leaves copy, links and hit testing aligned with the text.
+    let gutter = (area.width >= 3).then_some(area.x);
+    let area = if gutter.is_some() { Rect::new(area.x + 1, area.y, area.width - 1, area.height) } else { area };
+    app.transcript_area = area;
     let text_w = area.width.saturating_sub(1).max(1) as usize;
     let height = area.height as usize;
     let t = crate::trace::span("layout");
@@ -30,6 +35,7 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let glide = app.fx.block_sel;
     let selection = app.selection.clone();
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height);
+    let mut brackets = Vec::new();
     let mut line = scroll;
     let end = (scroll + height).min(app.total_lines);
     let mut bi = match app.offsets.binary_search(&scroll) {
@@ -57,12 +63,11 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 l = crate::fx_stream::band_in(l, &theme, t);
             }
         }
-        // the selected block: a bar down its margin, the whole height of it, and its head lit
+        // The bracket occupies its own gutter, even on icon and empty rows.
         let lvl = glide.level(bi, now);
         if lvl > 0.0 && j < n {
-            // the bar and the lit head ease in on the new block and out on the old one
             let bar = crate::motion::fade(&theme, theme.border, theme.accent, lvl);
-            l = mark_margin(l, theme.style(bar).add_modifier(Modifier::BOLD));
+            brackets.push((line - scroll, bracket_part(j, n), theme.style(bar).add_modifier(Modifier::BOLD)));
             if j == 0 {
                 l = l.patch_style(if lvl >= 1.0 {
                     theme.selection()
@@ -102,6 +107,11 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         line += 1;
     }
     f.render_widget(Paragraph::new(Text::from(out)), Rect { width: text_w as u16, ..area });
+    if let Some(x) = gutter {
+        for (row, symbol, style) in brackets {
+            f.buffer_mut()[(x, area.y + row as u16)].set_symbol(symbol).set_style(style);
+        }
+    }
     app.transcript_bar = None;
     let now = std::time::Instant::now();
     let mut pulse = anim::pulse(app.unseen_at, now);
@@ -152,17 +162,29 @@ fn pill_style(theme: &Theme, hot: bool, pulse: f32) -> Style {
     s.bg(mix(theme.bar_bg, theme.accent, pulse * 0.6))
 }
 
-/// The line with a bar in its first column, when that column is the margin.
-fn mark_margin(line: Line<'static>, style: Style) -> Line<'static> {
-    let Line { style: line_style, alignment, mut spans } = line;
-    if let Some(first) = spans.first_mut() {
-        if let Some(rest) = first.content.strip_prefix(' ') {
-            let rest = rest.to_string();
-            first.content = rest.into();
-            spans.insert(0, Span::styled("┃", style));
-        }
+/// Use the block's actual endpoints, not the viewport's, when it is scrolled.
+fn bracket_part(row: usize, height: usize) -> &'static str {
+    if height <= 1 {
+        "┃"
+    } else if row == 0 {
+        "┏"
+    } else if row + 1 == height {
+        "┗"
+    } else {
+        "┃"
     }
-    Line { style: line_style, alignment, spans }
+}
+
+#[cfg(test)]
+mod bracket_tests {
+    use super::bracket_part;
+
+    #[test]
+    fn bracket_marks_block_endpoints_not_viewport_endpoints() {
+        assert_eq!(bracket_part(0, 1), "┃");
+        assert_eq!((bracket_part(0, 4), bracket_part(1, 4), bracket_part(3, 4)), ("┏", "┃", "┗"));
+        assert_eq!(bracket_part(2, 4), "┃");
+    }
 }
 
 /// Blocks whose first line names them, kept in sight while the rest scrolls past.

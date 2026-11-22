@@ -9,6 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "skills_builtin.rs"]
+mod builtin;
+
 /// The most skills the model is told about.
 pub const MAX_LISTED: usize = 100;
 /// The most characters of one description in the list.
@@ -37,11 +40,22 @@ pub struct Skill {
 
 impl Skill {
     pub fn file(&self) -> PathBuf {
+        if self.source == "builtin" {
+            // Virtual paths are identities for palette/dispatch; no file is read for built-ins.
+            return PathBuf::from("<builtin-skills>").join(&self.name).join("SKILL.md");
+        }
         self.dir.join("SKILL.md")
     }
 
     /// The instructions: the file without its front matter, cut at [`MAX_BODY`] characters.
     pub fn body(&self) -> std::io::Result<String> {
+        if self.source == "builtin" {
+            return builtin::ALL
+                .iter()
+                .find(|b| b.name == self.name)
+                .map(|b| b.body.to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown built-in skill"));
+        }
         let text = std::fs::read_to_string(self.file())?;
         let (_, body) = split_front(&text);
         let body = body.trim();
@@ -54,11 +68,15 @@ impl Skill {
     /// What `/name args` or the `skill` tool hands over: the folder, the instructions and the arguments.
     pub fn instructions(&self, args: &str) -> std::io::Result<String> {
         let body = self.body()?;
-        let mut out = format!(
-            "Skill `{}` (folder {}; files it mentions are relative to it):\n\n{body}",
-            self.name,
-            self.dir.display()
-        );
+        let mut out = if self.source == "builtin" {
+            format!("Built-in skill `{}`:\n\n{body}", self.name)
+        } else {
+            format!(
+                "Skill `{}` (folder {}; files it mentions are relative to it):\n\n{body}",
+                self.name,
+                self.dir.display()
+            )
+        };
         let args = args.trim();
         if !args.is_empty() {
             out.push_str(&format!("\n\nArguments: {args}"));
@@ -152,14 +170,14 @@ fn load(dir: &Path, source: &str) -> Option<Skill> {
 /// Every skill reachable from `cwd` and the person's folders. `home` holds `.agents` and `.claude`;
 /// `nexo_dir` is nexo's own config folder (`~/.nexo`). With `user` false the person's folders are skipped.
 pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<Skill> {
-    discover_with(cwd, home, nexo_dir, user, crate::compat::claude_code())
+    discover_with(cwd, home, nexo_dir, user, crate::compat::claude_code(), true)
 }
 
 /// [`discover_in`] with the `.claude/skills` folders read (`claude`) or left out.
-fn discover_with(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool, claude: bool) -> Vec<Skill> {
+fn discover_with(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool, claude: bool, project: bool) -> Vec<Skill> {
     let mut roots: Vec<(PathBuf, String)> = Vec::new();
     // the project: the working directory and its parents up to the repository root
-    let mut p = Some(cwd);
+    let mut p = project.then_some(cwd);
     while let Some(d) = p {
         // a home kept in git: its skill folders are the person's own (listed below), not a project's
         if crate::paths::is_home(d, Some(home)) {
@@ -232,12 +250,31 @@ pub fn discover(cwd: &Path, user: bool) -> Vec<Skill> {
     // a managed policy can switch off the person's skills and the project's
     let policy = crate::managed::current();
     let allowed = |scope: &str| policy.as_ref().is_none_or(|p| p.extension_allowed(scope, "skills"));
-    let mut found = discover_in(cwd, &home, &crate::paths::config_dir(), user && allowed("user"));
-    if !allowed("project") {
-        // the person's folders are listed as `~/...`, the project's as plain folder names
-        found.retain(|s| s.source.starts_with('~'));
-    }
+    let mut found = discover_with(
+        cwd,
+        &home,
+        &crate::paths::config_dir(),
+        user && allowed("user"),
+        crate::compat::claude_code(),
+        allowed("project"),
+    );
+    add_builtins(&mut found);
     found
+}
+
+/// Append built-ins after external skills, so project and user overrides win.
+fn add_builtins(found: &mut Vec<Skill>) {
+    for b in builtin::ALL {
+        if !found.iter().any(|s| s.name.eq_ignore_ascii_case(b.name)) {
+            found.push(Skill {
+                name: b.name.into(),
+                description: b.description.into(),
+                dir: PathBuf::new(),
+                allowed_tools: Vec::new(),
+                source: "builtin".into(),
+            });
+        }
+    }
 }
 
 /// The skill called `name` (any case; a leading `/` is ignored).
@@ -296,6 +333,54 @@ mod tests {
         let f = root.join(rel);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(f, text).unwrap();
+    }
+
+    #[test]
+    fn builtins_load_and_external_collisions_win() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), ".nexo/skills/debug/SKILL.md", "---\nname: DEBUG\ndescription: custom\n---\nCustom steps\n");
+        let home = tempfile::tempdir().unwrap();
+        let mut found = discover_in(d.path(), home.path(), &home.path().join(".nexo"), true);
+        add_builtins(&mut found);
+        assert_eq!(found.len(), builtin::ALL.len());
+        assert_eq!(find(&found, "debug").unwrap().body().unwrap(), "Custom steps");
+        for b in builtin::ALL {
+            let s = find(&found, b.name).unwrap();
+            assert!(listing(&found).contains(&s.name));
+            assert!(!s.body().unwrap().is_empty());
+            assert!(s.allowed_tools.is_empty());
+        }
+        assert!(find(&found, "research").unwrap().instructions("topic").unwrap().contains("Arguments: topic"));
+    }
+
+    #[test]
+    fn blocked_external_scopes_do_not_override_builtins() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        write(
+            project.path(),
+            ".nexo/skills/debug/SKILL.md",
+            "---\nname: debug\ndescription: project override\n---\nProject\n",
+        );
+        write(
+            home.path(),
+            ".nexo/skills/research/SKILL.md",
+            "---\nname: research\ndescription: user override\n---\nUser\n",
+        );
+        let policy =
+            crate::managed::ManagedPolicy::parse("[extensions]\nuser_skills = false\nproject_skills = false").unwrap();
+        let mut found = discover_with(
+            project.path(),
+            home.path(),
+            &home.path().join(".nexo"),
+            policy.extension_allowed("user", "skills"),
+            true,
+            policy.extension_allowed("project", "skills"),
+        );
+        add_builtins(&mut found);
+        assert_eq!(find(&found, "debug").unwrap().source, "builtin");
+        assert_eq!(find(&found, "research").unwrap().source, "builtin");
+        assert!(!listing(&found).contains("override"));
     }
 
     #[test]
@@ -451,7 +536,7 @@ mod tests {
         write(proj.path(), ".agents/skills/a/SKILL.md", "---\nname: a\ndescription: agents\n---\n");
         write(home.path(), ".claude/skills/h/SKILL.md", "---\nname: h\ndescription: home\n---\n");
         let names = |claude| -> Vec<String> {
-            discover_with(proj.path(), home.path(), &home.path().join(".nexo"), true, claude)
+            discover_with(proj.path(), home.path(), &home.path().join(".nexo"), true, claude, true)
                 .into_iter()
                 .map(|s| s.name)
                 .collect()

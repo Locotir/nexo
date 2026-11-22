@@ -118,7 +118,8 @@ fn the_scrollbar_never_overwrites_the_welcome_card() {
     let mut a = app();
     let rows = draw(&mut a, 24, 10);
     let all = rows.join("\n");
-    let top: Vec<&String> = rows.iter().filter(|r| r.starts_with('│') || r.starts_with('╰')).collect();
+    let top: Vec<&String> =
+        rows.iter().filter(|r| r.trim_start().starts_with('│') || r.trim_start().starts_with('╰')).collect();
     assert!(top.len() >= 3, "no card\n{all}");
     for r in top {
         // the last column is the scrollbar; the card's edge is the one just left of it

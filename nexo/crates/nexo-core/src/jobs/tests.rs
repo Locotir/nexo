@@ -242,3 +242,139 @@ async fn a_kill_racing_the_finish_never_leaves_a_label_that_contradicts_it() {
         assert_eq!(killed, status == JobStatus::Killed, "{status:?}");
     }
 }
+
+#[tokio::test]
+async fn line_subscribers_receive_bounded_live_output_without_consuming_it() {
+    let jobs = Jobs::new();
+    let mut lines = jobs.lines();
+    let job = jobs.start(JobKind::Shell, "watch");
+    let id = job.id();
+    job.line("hello");
+    assert_eq!(lines.recv().await.unwrap(), (id, 0, "hello".to_string()));
+    let read = jobs.read(id, Duration::ZERO, &CancellationToken::new()).await.unwrap();
+    assert!(read.new.contains("hello"));
+    for _ in 0..200 {
+        job.line("x");
+    }
+    assert!(matches!(lines.recv().await, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))));
+    job.finish(true, "exit 0");
+}
+
+#[test]
+fn output_snapshot_boundary_survives_concurrent_writes_and_eviction() {
+    let jobs = Jobs::new();
+    let h = jobs.start(JobKind::Shell, "snapshot");
+    let id = h.id();
+    for _ in 0..30 {
+        h.line(&"x".repeat(LINE_CHARS));
+    }
+    let mut rx = jobs.lines();
+    let writer = std::thread::spawn(move || {
+        for i in 0..100 {
+            h.line(&format!("after-{i}"));
+        }
+        h.finish(true, "done");
+    });
+    let (dropped, boundary, retained) = jobs.output_snapshot(id).unwrap();
+    writer.join().unwrap();
+    assert!(dropped > 0);
+    assert_eq!(dropped + retained.len(), boundary);
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    let later: Vec<_> = events.iter().filter(|(_, seq, _)| *seq >= boundary).collect();
+    assert_eq!(boundary + later.len(), 130);
+    for (index, (_, seq, _)) in later.iter().enumerate() {
+        assert_eq!(*seq, boundary + index);
+    }
+    assert!(jobs.output_snapshot(999).is_none());
+}
+
+#[test]
+fn runner_completion_is_distinct_from_kill_request() {
+    let jobs = Jobs::new();
+    let h = jobs.start(JobKind::Shell, "test");
+    let id = h.id();
+    assert!(!jobs.runner_finished(id));
+    assert!(jobs.kill(id));
+    assert!(!jobs.runner_finished(id));
+    h.line("final output after cancellation");
+    h.finish(false, "cancelled");
+    assert!(jobs.runner_finished(id));
+    assert_eq!(jobs.last_line(id).as_deref(), Some("final output after cancellation"));
+}
+
+#[test]
+fn monitor_terminal_ownership_and_release() {
+    let jobs = Jobs::new();
+    let handle = jobs.start(JobKind::Shell, "watch");
+    let id = handle.id();
+    let claim = jobs.register_monitor(id).unwrap();
+    assert!(jobs.register_monitor(id).is_none());
+    assert!(jobs.take_monitor_ended(&claim).is_none());
+    handle.finish(false, "exit 7");
+    assert!(jobs.untold().is_empty());
+    assert!(jobs.take_ended().is_empty());
+    let event = jobs.take_monitor_ended(&claim).unwrap();
+    assert!(matches!(event.status, JobStatus::Done { ok: false, ref how } if how == "exit 7"));
+    assert!(jobs.take_monitor_ended(&claim).is_none());
+    assert!(!jobs.release_monitor(claim));
+    assert!(jobs.register_monitor(id).is_none());
+
+    let handle = jobs.start(JobKind::Shell, "other");
+    let id = handle.id();
+    let claim = jobs.register_monitor(id).unwrap();
+    handle.finish(true, "exit 0");
+    assert!(jobs.release_monitor(claim));
+    assert_eq!(jobs.take_ended()[0].id, id);
+    assert!(jobs.register_monitor(id).is_none());
+}
+
+#[test]
+fn monitor_and_ordinary_reservation_race_has_one_winner() {
+    for _ in 0..200 {
+        let jobs = Jobs::new();
+        let handle = jobs.start(JobKind::Shell, "race");
+        let id = handle.id();
+        handle.finish(true, "exit 0");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let other = jobs.clone();
+        let b = barrier.clone();
+        let thread = std::thread::spawn(move || {
+            b.wait();
+            other.take_ended()
+        });
+        barrier.wait();
+        let claim = jobs.register_monitor(id);
+        let ordinary = thread.join().unwrap();
+        assert_eq!(ordinary.len() + usize::from(claim.is_some()), 1);
+        if let Some(claim) = claim {
+            assert!(jobs.take_monitor_ended(&claim).is_some());
+        }
+    }
+}
+
+#[test]
+fn monitor_release_wakes_already_finished_job() {
+    let jobs = Jobs::new();
+    let job = jobs.start(JobKind::Shell, "watch");
+    let id = job.id();
+    let claim = jobs.register_monitor(id).unwrap();
+    let mut changes = jobs.changes();
+    job.finish(true, "done");
+    assert!(changes.try_recv().is_ok());
+    assert!(jobs.take_ended().is_empty());
+    assert!(jobs.release_monitor(claim));
+    assert_eq!(changes.try_recv().unwrap().0.id, id);
+    assert_eq!(jobs.take_ended().len(), 1);
+}
+
+#[test]
+fn monitor_consumption_suppresses_future_completion() {
+    let jobs = Jobs::new();
+    let job = jobs.start(JobKind::Shell, "watch");
+    let id = job.id();
+    let claim = jobs.register_monitor(id).unwrap();
+    assert!(jobs.consume_monitor(claim));
+    assert!(jobs.register_monitor(id).is_none());
+    job.finish(true, "done");
+    assert!(jobs.take_ended().is_empty());
+}

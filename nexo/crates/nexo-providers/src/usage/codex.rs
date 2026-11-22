@@ -31,6 +31,7 @@ pub(super) fn window_from_headers(h: &HeaderMap, which: &str, now: i64) -> Optio
         counts: None,
         window_minutes: minutes,
         resets_at,
+        observed_at: Some(now),
     })
 }
 
@@ -80,6 +81,7 @@ pub fn codex_from_event(v: &Value, now: i64) -> Option<PlanUsage> {
             counts: None,
             window_minutes: minutes,
             resets_at: w["reset_at"].as_i64(),
+            observed_at: Some(now),
         })
     };
     let c = &v["credits"];
@@ -105,6 +107,7 @@ pub fn codex_from_usage(v: &Value, now: i64) -> Option<PlanUsage> {
             counts: None,
             window_minutes: minutes,
             resets_at,
+            observed_at: Some(now),
         })
     };
     let meters: Vec<Meter> =

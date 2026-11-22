@@ -49,6 +49,7 @@ pub(super) fn limit_meter(h: &HeaderMap, slot: &str, label: &str, names: [&str; 
         counts: Some((used.round() as u64, limit.round() as u64)),
         window_minutes: None,
         resets_at,
+        observed_at: None,
     })
 }
 

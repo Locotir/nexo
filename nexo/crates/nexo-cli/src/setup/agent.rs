@@ -205,10 +205,9 @@ mod tests {
         assert!(h.iter().any(|n| n == "read"));
     }
 
-    /// Characters (name, description, parameter schema) of the tools a session has that `builtin()` does not: the
-    /// ones `prompt_tools` adds (`ask_user`, `task`, `bin` and, where there is a backend, `debug`), as a model is
-    /// offered them in a normal window and in a small one. The tool budget in `nexo-agent` counts `builtin()` only.
-    fn session_extras(small: bool) -> usize {
+    /// Characters (name, description, parameter schema) of session tools not counted in `builtin()`.
+    /// Count the newly built-in skill tool separately, so neither it nor the older extras can grow unchecked.
+    fn session_extras(small: bool, skill: bool) -> usize {
         let mut cfg = super::Config::default();
         // no skills from the person's home, and the sub-agent kinds are the built-in ones, not the person's own
         // agent files: the count must not depend on whose machine runs it
@@ -220,7 +219,11 @@ mod tests {
         tools
             .specs_for(small)
             .iter()
-            .filter(|s| !counted.contains(&s.name) && !nexo_agent::prompt::left_out(window, &s.name))
+            .filter(|s| {
+                !counted.contains(&s.name)
+                    && !nexo_agent::prompt::left_out(window, &s.name)
+                    && (s.name == "skill") == skill
+            })
             .map(|s| s.name.len() + s.description.len() + serde_json::to_string(&s.parameters).unwrap().len())
             .sum()
     }
@@ -230,18 +233,29 @@ mod tests {
     /// `the_tool_text_stays_within_its_budget` in `nexo-agent` is the same guard for `builtin()`.
     #[test]
     fn the_session_tools_beyond_the_built_in_ones_stay_within_their_budget() {
-        let n = session_extras(false);
+        let n = session_extras(false, false);
         // `debug` (300) is there only where it has a backend
         let budget = if nexo_tools::debug::available() { 2_150 } else { 1_830 };
         assert!(n <= budget, "ask_user, task, bin and debug take {n} characters; the budget is {budget}");
         assert!(n > 1_000, "the extra tools were not counted: {n} characters");
     }
 
-    /// In a 32k window only `ask_user` of them is offered: 452 characters when this budget was set, 5% more at most.
+    /// Of the older extras only `ask_user` is offered in a 32k window: 452 characters, plus 5% headroom.
     #[test]
     fn the_session_tools_beyond_the_built_in_ones_stay_within_their_small_window_budget() {
-        let n = session_extras(true);
+        let n = session_extras(true, false);
         assert!(n <= 480, "the extra tools of a small window take {n} characters; the budget is 480");
         assert!(n > 200, "the extra tools were not counted: {n} characters");
+    }
+
+    /// Built-in skills make `skill` present even in a hermetic session. Its current schema costs
+    /// 385 characters normally and 166 compact; retain roughly 5% headroom, independently of the other extras.
+    #[test]
+    fn the_builtin_skill_tool_stays_within_its_budget() {
+        for (small, budget) in [(false, 405), (true, 175)] {
+            let n = session_extras(small, true);
+            assert!(n <= budget, "skill tool takes {n} characters (small={small}); budget is {budget}");
+            assert!(n > 100, "skill tool was not counted (small={small}): {n} characters");
+        }
     }
 }

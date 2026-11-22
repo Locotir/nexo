@@ -1,8 +1,8 @@
-   in=… out=… cache=…) · from config   │
+    in=… out=… cache=…) · from config  │
                                        │
- ◇ compacted 2 messages                │
+  ◇ compacted 2 messages               │
                                        │
-      0ms  ↑ 6.2k  ↓  340  $0.0031     │
+       0ms  ↑ 6.2k  ↓  340  $0.0031    │
                                        ┃
 ─ ask ──────────── 2 lines · 126 chars ─
 › a question that goes on and on and

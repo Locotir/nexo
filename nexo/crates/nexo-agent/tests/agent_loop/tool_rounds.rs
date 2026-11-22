@@ -51,6 +51,7 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
             "goal",
             "grep",
             "loop",
+            "monitor",
             "read",
             "shared_memory_read",
             "shared_memory_write",

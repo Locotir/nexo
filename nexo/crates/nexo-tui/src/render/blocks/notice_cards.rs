@@ -79,6 +79,62 @@ fn effort_style(effort: &str, theme: &Theme) -> Style {
     }
 }
 
+/// Choose readable text without changing the badge's background. ANSI's first 16 colours can be
+/// customised by the terminal, so their standard RGB values are the best available approximation.
+fn badge_foreground(background: Color, preferred: Color) -> Color {
+    fn luminance(c: Color) -> Option<f64> {
+        let (r, g, b) = match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            Color::Indexed(n @ 16..=231) => {
+                let n = n - 16;
+                let level = |v| if v == 0 { 0 } else { 55 + 40 * v };
+                (level(n / 36), level((n / 6) % 6), level(n % 6))
+            }
+            Color::Indexed(n @ 232..=255) => {
+                let v = 8 + (n - 232) * 10;
+                (v, v, v)
+            }
+            Color::Black | Color::Indexed(0) => (0, 0, 0),
+            Color::Red | Color::Indexed(1) => (128, 0, 0),
+            Color::Green | Color::Indexed(2) => (0, 128, 0),
+            Color::Yellow | Color::Indexed(3) => (128, 128, 0),
+            Color::Blue | Color::Indexed(4) => (0, 0, 128),
+            Color::Magenta | Color::Indexed(5) => (128, 0, 128),
+            Color::Cyan | Color::Indexed(6) => (0, 128, 128),
+            Color::Gray | Color::Indexed(7) => (192, 192, 192),
+            Color::DarkGray | Color::Indexed(8) => (128, 128, 128),
+            Color::LightRed | Color::Indexed(9) => (255, 0, 0),
+            Color::LightGreen | Color::Indexed(10) => (0, 255, 0),
+            Color::LightYellow | Color::Indexed(11) => (255, 255, 0),
+            Color::LightBlue | Color::Indexed(12) => (0, 0, 255),
+            Color::LightMagenta | Color::Indexed(13) => (255, 0, 255),
+            Color::LightCyan | Color::Indexed(14) => (0, 255, 255),
+            Color::White | Color::Indexed(15) => (255, 255, 255),
+            Color::Reset => return None,
+        };
+        let linear = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        Some(0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b))
+    }
+    let Some(bg) = luminance(background) else { return preferred };
+    if let Some(fg) = luminance(preferred) {
+        if (bg.max(fg) + 0.05) / (bg.min(fg) + 0.05) >= 4.5 {
+            return preferred;
+        }
+    }
+    if (bg + 0.05) / 0.05 >= 1.05 / (bg + 0.05) {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
 /// A sub-agent's line: ` general  codex/gpt · medium · task`. `spinner` makes the model shimmer while the run
 /// works (None: no motion); an ended run is all dim. The task is cut to fit one row.
 pub(super) fn agent_line(run: &AgentRun, spinner: Option<usize>, theme: &Theme, w: usize) -> Vec<Line<'static>> {
@@ -93,10 +149,9 @@ pub(super) fn agent_line(run: &AgentRun, spinner: Option<usize>, theme: &Theme, 
     } else {
         theme.accent
     };
-    let badge = Style::default()
-        .fg(theme.bg)
-        .bg(if run.running { profile_colour } else { theme.dim })
-        .add_modifier(Modifier::BOLD);
+    let badge_bg = if run.running { profile_colour } else { theme.dim };
+    let badge_fg = if theme.mono { theme.bg } else { badge_foreground(badge_bg, theme.bg) };
+    let badge = Style::default().fg(badge_fg).bg(badge_bg).add_modifier(Modifier::BOLD);
     let face = super::live_marks::robot(run.running, spinner.unwrap_or(0));
     let mut spans = vec![
         Span::styled(format!("{face} "), if run.running { theme.style(theme.accent2) } else { dim }),
@@ -177,5 +232,44 @@ pub(super) fn user_notice(text: &str) -> std::borrow::Cow<'_, str> {
     match text.strip_prefix(CURATOR_PREFIX) {
         Some(rest) => format!("context trimmed to {rest}").into(),
         None => text.into(),
+    }
+}
+
+#[cfg(test)]
+mod badge_contrast_tests {
+    use super::*;
+
+    #[test]
+    fn badge_render_uses_readable_foreground_for_light_and_dark_backgrounds() {
+        for (background, expected) in [
+            (Color::Rgb(0, 255, 0), Color::Black),
+            (Color::Rgb(12, 20, 45), Color::White),
+            (Color::Indexed(46), Color::Black),
+            (Color::Indexed(17), Color::White),
+        ] {
+            for running in [true, false] {
+                for width in [24, 120] {
+                    let mut theme = Theme::dark();
+                    theme.bg = if expected == Color::Black { Color::White } else { Color::Black };
+                    theme.success = background;
+                    theme.dim = background;
+                    theme.accent = Color::Rgb(120, 0, 120);
+                    let run = AgentRun {
+                        id: "1".into(),
+                        profile: "general".into(),
+                        model: "provider/model".into(),
+                        effort: None,
+                        title: "task".into(),
+                        running,
+                    };
+                    let rows = agent_line(&run, Some(0), &theme, width);
+                    let badge = rows.iter().flat_map(|row| &row.spans).find(|s| s.content == " general ").unwrap();
+                    assert_eq!(badge.style.bg, Some(background));
+                    assert_eq!(badge.style.fg, Some(expected));
+                    assert!(badge.style.add_modifier.contains(Modifier::BOLD));
+                }
+            }
+        }
+        assert_eq!(badge_foreground(Color::Rgb(0, 255, 0), Color::Rgb(0, 0, 0)), Color::Rgb(0, 0, 0));
     }
 }

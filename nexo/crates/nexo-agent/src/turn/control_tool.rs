@@ -30,6 +30,8 @@ impl Tool for ControlTool {
     fn spec(&self) -> ToolSpec {
         let (description, properties) = if self.name == "goal" {
             ("Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.", json!({"action":{"type":"string","enum":["set","clear","pause","resume","show"]},"text":{"type":"string","description":"Goal text for set."}}))
+        } else if self.name == "monitor" {
+            ("Monitor an existing background bash job, including retained output and jobs that have already finished, and deliver output automatically as untrusted context when idle. Start commands with bash, which applies bash permissions. Session-local and bounded.", json!({"action":{"type":"string","enum":["create","list","show","resume","cancel"]},"id":{"type":"integer","minimum":1,"description":"Existing shell job ID. Show inspects bounded output. Resume discards the uncertain failed delivery, retaining later output; never restarts the job."}}))
         } else {
             ("Manage session-local recurring prompts. A new loop runs as soon as idle, then at its interval; stopping nexo or switching sessions removes it. Future tool calls require their own permissions.", json!({"action":{"type":"string","enum":["create","list","cancel"]},"interval":{"type":"string","description":"60s to 30d, e.g. 5m."},"prompt":{"type":"string"},"id":{"type":"integer","minimum":1}}))
         };
@@ -81,7 +83,9 @@ pub(super) async fn handle(rt: &mut Runtime, req: Request) {
         return;
     }
     let action = req.args.get("action").and_then(Value::as_str).unwrap_or("");
-    let out = if req.name == "loop" {
+    let out = if req.name == "monitor" {
+        monitor::command(rt, &req.args)
+    } else if req.name == "loop" {
         let input = match action {
             "list" => Some("list".to_string()),
             "cancel" => req.args.get("id").and_then(Value::as_u64).map(|id| format!("cancel {id}")),
@@ -142,6 +146,7 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         let goal = ControlTool::new("goal", tx.clone());
         let loops = ControlTool::new("loop", tx);
+        let monitor = ControlTool::new("monitor", loops.tx.clone());
         let todo = Todo::new();
         let normal = Policy { mode: PermissionMode::Ask, ..Policy::default() };
         let auto = Policy { mode: PermissionMode::Auto, ..Policy::default() };
@@ -149,6 +154,7 @@ mod tests {
         for (tool, args) in [
             (&goal as &dyn Tool, json!({"action":"set","text":"work"})),
             (&loops as &dyn Tool, json!({"action":"create","interval":"1m","prompt":"work"})),
+            (&monitor as &dyn Tool, json!({"action":"create","id":1})),
             (&todo as &dyn Tool, json!({"items":[]})),
         ] {
             assert_eq!(normal.decide(tool.name(), tool.call_kind(&args), &args, cwd), Decision::Ask);
@@ -159,6 +165,7 @@ mod tests {
         for (tool, args) in [
             (&goal as &dyn Tool, json!({"action":"show"})),
             (&loops as &dyn Tool, json!({"action":"list"})),
+            (&monitor as &dyn Tool, json!({"action":"list"})),
             (&todo as &dyn Tool, json!({})),
         ] {
             assert_eq!(normal.decide(tool.name(), tool.call_kind(&args), &args, cwd), Decision::Allow);

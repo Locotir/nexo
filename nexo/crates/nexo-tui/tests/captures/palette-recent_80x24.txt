@@ -1,9 +1,9 @@
                                                                                │
-   • the input is 3 1 2                                                        │
-   • the output must be 1 2 3                                                  │
+    • the input is 3 1 2                                                       │
+    • the output must be 1 2 3                                                 │
                                                                                │
-   rust ────────────────────────────────────────────────────────────────────── │
-   ▎ fn main() {}                                                              │
+    rust ───────────────────────────────────────────────────────────────────── │
+    ▎ fn main() {}                                                             │
  /fork                               new session copied from an earlier point
  /resume         [session|tree…      pick a session, or `tree` for its forks
  /model          [name]              switch model, or set one up

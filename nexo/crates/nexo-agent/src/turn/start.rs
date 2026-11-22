@@ -84,14 +84,15 @@ pub(super) async fn start_prompt_item(
     start_hooked_prompt(state, text, attachments, ultracode, cancel, item, true).await
 }
 
-/// Scheduled text retains its creator's provenance while still passing the submit hook.
-pub(super) async fn start_scheduled_prompt(
+/// Commit an admitted scheduled prompt after its cancelable hook completes.
+pub(super) async fn begin_scheduled_turn(
     state: &Shared,
     text: String,
     person: bool,
     cancel: CancellationToken,
-) -> Option<JoinHandle<TurnEnd>> {
-    start_hooked_prompt(state, text, Vec::new(), false, cancel, None, person).await
+    hook_context: Vec<String>,
+) -> JoinHandle<TurnEnd> {
+    begin_turn(state, text, Vec::new(), person, false, cancel, None, false, hook_context).await
 }
 
 async fn start_hooked_prompt(
@@ -114,7 +115,7 @@ async fn start_hooked_prompt(
         return None;
     }
     state.lock().await.hook_context.extend(o.context);
-    Some(begin_turn(state, text, attachments, person, ultracode, cancel, item).await)
+    Some(begin_turn(state, text, attachments, person, ultracode, cancel, item, false, Vec::new()).await)
 }
 
 /// Starts a turn on a message that is not the person's own words (mail, the goal loop, a job note, the
@@ -125,7 +126,12 @@ pub(super) async fn start_turn(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
-    begin_turn(state, text, attachments, false, false, cancel, None).await
+    begin_turn(state, text, attachments, false, false, cancel, None, false, Vec::new()).await
+}
+
+/// Monitor output is external data, never a source of implicit resource or file requests.
+pub(super) async fn start_monitor_turn(state: &Shared, text: String, cancel: CancellationToken) -> JoinHandle<TurnEnd> {
+    begin_turn(state, text, Vec::new(), false, false, cancel, None, true, Vec::new()).await
 }
 
 /// Starts a turn on ``text``. When the person wrote it (``person``), everything nexo adds (shared memory, hook
@@ -142,6 +148,8 @@ async fn begin_turn(
     ultracode: bool,
     cancel: CancellationToken,
     item: Option<InboxItem>,
+    untrusted: bool,
+    hook_context: Vec<String>,
 ) -> JoinHandle<TurnEnd> {
     let events = state.lock().await.events.clone();
     let what = if person {
@@ -157,7 +165,7 @@ async fn begin_turn(
     let state = state.clone();
     tokio::spawn(async move {
         let from = SystemTime::now();
-        if !prepare_turn(&state, text, attachments, person, ultracode, &cancel, item).await {
+        if !prepare_turn(&state, text, attachments, person, ultracode, &cancel, item, untrusted, hook_context).await {
             return TurnEnd::Interrupted;
         }
         let end = run_turn(state.clone(), cancel).await;
@@ -175,6 +183,8 @@ async fn prepare_turn(
     ultracode: bool,
     cancel: &CancellationToken,
     mut item: Option<InboxItem>,
+    untrusted: bool,
+    hook_context: Vec<String>,
 ) -> bool {
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
@@ -187,8 +197,8 @@ async fn prepare_turn(
     }
     let typed = text.clone();
     let text = match &hub {
-        Some(h) => h.expand_mentions(text).await,
-        None => text,
+        Some(h) if !untrusted => h.expand_mentions(text).await,
+        _ => text,
     };
     // the expansion only appends: what follows the typed words is what nexo added
     let mut added: Vec<AddedPart> = Vec::new();
@@ -206,9 +216,11 @@ async fn prepare_turn(
     // definitions that come with it, and whether it is about code, which decides the project's check
     let (cwd, check_words) = {
         let st = state.lock().await;
-        (st.cwd.clone(), check_words_of(&st.cwd))
+        (st.cwd.clone(), if untrusted { Vec::new() } else { check_words_of(&st.cwd) })
     };
-    let found = {
+    let found = if untrusted {
+        Default::default()
+    } else {
         let (text, files) = (text.clone(), attachments.clone());
         tokio::task::spawn_blocking(move || {
             let home = nexo_core::paths::user_home();
@@ -226,7 +238,7 @@ async fn prepare_turn(
         .unwrap_or_default()
     };
     // the project's check runs once, before the request is built, so its result comes with it
-    let check = orient::start_check(state, cancel, found.code, found.sources).await;
+    let check = if untrusted { None } else { orient::start_check(state, cancel, found.code, found.sources).await };
     // what the machine has for the programs and config the person names (nothing while its index is not built)
     let machine =
         if person && !marked_by_nexo(&typed) { orient::machine_found(state, &typed).await } else { Vec::new() };
@@ -252,17 +264,22 @@ async fn prepare_turn(
             first.push(ultracode::facts(&st.config, &provider, &model, now));
         }
         // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
-        let budget = orient::first_budget(&st, &text).saturating_sub(orient::counted(&st, &attachments).1);
-        let admitted = named::admit(&st, found, budget);
-        let (mut own, mut known, mut spent) = (admitted.whole, admitted.lines, admitted.spent);
-        let named: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
-        let (mapped, lines) = orient::machine_files(&mut st, &text, &named, machine, spent);
-        own.extend(mapped);
-        spent += lines.iter().map(|l| orient::attached_tokens(l.len())).sum::<u64>();
-        known.extend(lines);
-        let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
-        own.extend(orient::budget_files(&st, &text, &with, spent));
-        let included = orient::include(&own, &st.cwd);
+        let (included, known) = if untrusted {
+            (Vec::new(), Vec::new())
+        } else {
+            let budget = orient::first_budget(&st, &text).saturating_sub(orient::counted(&st, &attachments).1);
+            let admitted = named::admit(&st, found, budget);
+            let (mut own, mut known, mut spent) = (admitted.whole, admitted.lines, admitted.spent);
+            let named: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
+            let (mapped, lines) = orient::machine_files(&mut st, &text, &named, machine, spent);
+            own.extend(mapped);
+            spent += lines.iter().map(|l| orient::attached_tokens(l.len())).sum::<u64>();
+            known.extend(lines);
+            let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
+            own.extend(orient::budget_files(&st, &text, &with, spent));
+            let included = orient::include(&own, &st.cwd);
+            (included, known)
+        };
         // a server changed its tools since the last turn: they take effect now, not in the middle of one
         if let Some(h) = st.mcp.clone() {
             let st = &mut *st;
@@ -295,6 +312,8 @@ async fn prepare_turn(
                 format!("{note}\n\n{text}")
             }
         };
+        // Scheduled hook output belongs to this turn, never a later request if preparation was cancelled.
+        st.hook_context.extend(hook_context);
         // what other sessions shared goes first, once: it is part of this request from now on
         let text = if st.hook_context.is_empty() {
             text

@@ -339,8 +339,8 @@ fn full_shows_the_rules_and_the_key_line_at_once() {
 fn the_welcome_box_has_name_model_and_folder_only() {
     let (mut a, _rx) = app(Detail::Quiet);
     let rows = render(&mut a, 120, 36);
-    let top = rows.iter().position(|r| r.starts_with('╭')).expect("the welcome box");
-    let bottom = rows.iter().skip(top).position(|r| r.starts_with('╰')).unwrap();
+    let top = rows.iter().position(|r| r.trim_start().starts_with('╭')).expect("the welcome box");
+    let bottom = rows.iter().skip(top).position(|r| r.trim_start().starts_with('╰')).unwrap();
     assert_eq!(bottom - 1, 3, "three lines inside the frame\n{}", rows[top..=top + bottom].join("\n"));
     let text = rows.join("\n");
     assert!(text.contains("nexo") && text.contains("deepseek/deepseek-chat") && text.contains("/tmp/project"));

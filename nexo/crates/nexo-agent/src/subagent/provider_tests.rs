@@ -41,10 +41,10 @@ const FIXED_32K: u64 = 2_400;
 /// `edit` change added (12 412 on land/1117 alone). Summed by hand at the merge, not measured yet; the first build
 /// measured 12 671.
 // Explicit task effort adds 100 measured wire characters.
-const SCHEMA_CEILING: usize = 12_771;
+const SCHEMA_CEILING: usize = 12_850;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
-const TASK_WITH_OWN_KINDS: usize = 2_009;
+const TASK_WITH_OWN_KINDS: usize = 2_088;
 /// What those kinds may add to the tools of a session, over [`SCHEMA_CEILING`]: `task` takes 819 of it
 /// with the two built-in kinds alone.
 const OWN_KINDS_BUDGET: usize = TASK_WITH_OWN_KINDS - 819;
@@ -151,6 +151,22 @@ fn clean_launch_excludes_shared_memory_even_when_profile_lists_it() {
     assert!(clean.get("shared_memory_read").is_none());
     assert!(clean.get("shared_memory_write").is_none());
     assert!(clean.get("read").is_some());
+}
+
+#[test]
+fn research_gets_web_fetch_but_not_network_tools_or_debug_steering() {
+    let tools = nexo_tools::builtin();
+    let sub =
+        SubAgent::new(Arc::new(Mute), Target::new("p", cfg("m", &[]), "m"), &tools, Vec::new(), Default::default());
+    let research = builtin().into_iter().find(|p| p.name == "research").unwrap();
+    let offered = sub.tools_for(&research);
+    assert!(offered.get("web_fetch").is_some());
+    assert!(offered.get("web_search").is_some());
+    for denied in ["debug", "browser", "bash"] {
+        assert!(offered.get(denied).is_none(), "{denied}");
+    }
+    let restricted = Profile { tools: Some(vec!["read".into()]), ..research };
+    assert!(sub.tools_for(&restricted).get("web_fetch").is_none());
 }
 
 #[test]
@@ -310,7 +326,7 @@ fn own_kinds() -> Vec<Profile> {
         std::fs::write(dir.join(format!("{name}.md")), text).unwrap();
     }
     let kinds = load_from(proj.path(), cfg.path(), &cfg.path().join("trusted-projects"), Some(home.path()));
-    assert_eq!(kinds.len(), 2 + OWN_KINDS.len(), "{kinds:?}");
+    assert_eq!(kinds.len(), builtin().len() + OWN_KINDS.len(), "{kinds:?}");
     for (name, description) in OWN_KINDS {
         assert_eq!(kinds.iter().find(|k| k.name == name).unwrap().description, description, "{name}");
     }
@@ -373,7 +389,7 @@ fn the_default_tools_keep_under_their_schema_ceiling_with_the_rare_ones_still_of
     }
     assert_eq!(
         specs.iter().find(|s| s.name == "task").unwrap().parameters["properties"]["agent"]["enum"],
-        json!(["explore", "general"])
+        json!(["explore", "general", "research"])
     );
 }
 
@@ -391,7 +407,7 @@ fn task_keeps_its_short_text_with_nineteen_kinds_of_the_persons_own() {
             "task takes {chars} characters, over {TASK_WITH_OWN_KINDS}: {}",
             task.description
         );
-        for name in ["explore", "general"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0)) {
+        for name in ["explore", "general", "research"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0)) {
             assert!(task.description.contains(&format!("`{name}`")), "{name} is not named: {}", task.description);
         }
         // the call takes what the whole text says it takes

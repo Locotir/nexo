@@ -3,7 +3,7 @@
 use super::*;
 
 /// The full-price part of a call, in tokens, below which a cache miss is not worth a word in the status bar.
-const CACHE_MISS_FRESH: u64 = 8_000;
+pub(super) const CACHE_MISS_FRESH: u64 = 8_000;
 
 impl App {
     /// The context gauge: (tokens the last call sent, the window), when known.
@@ -41,14 +41,10 @@ impl App {
     /// at least 8k went at full price.
     /// None otherwise, so a provider that never reports caching never raises it.
     pub fn cache_miss(&self) -> Option<u64> {
-        let input = self.last_call_input;
-        let cached = self.last_call_cached.min(input);
-        let fresh = input - cached;
-        let earlier = self.session_usage.cache_read.saturating_sub(self.last_call_cached) > 0;
-        // what the cache could have served: the previous call's input, as far as this call still carries it. A big
-        // new tool output on a small cached prefix is new content, not a lost cache
-        let before = (*self.call_inputs.len().checked_sub(2).and_then(|i| self.call_inputs.get(i))?).min(input);
-        (earlier && cached * 2 < before && cached * 2 < input && fresh >= CACHE_MISS_FRESH).then_some(fresh)
+        if self.last_call_input == 0 {
+            return None;
+        }
+        self.cache_miss_fresh
     }
 
     /// Tokens the next call sends, for the bar when no window is known.
@@ -57,5 +53,55 @@ impl App {
             return Some(self.last_call_input);
         }
         self.context.as_ref().map(|c| c.view_tokens)
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use nexo_core::agent::AgentEvent;
+
+    fn app() -> App {
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        App::new(crate::TuiOptions { provider: "one".into(), model: "model".into(), ..Default::default() }, tx)
+    }
+
+    fn usage(a: &mut App, input: u64, cached: u64) {
+        let call = Usage { input, cache_read: cached, ..Default::default() };
+        let mut session = a.session_usage;
+        session += call;
+        a.handle_agent(AgentEvent::Usage { turn: call, call, session, cost_usd: 0.0 });
+    }
+
+    #[test]
+    fn side_usage_does_not_supply_cache_evidence() {
+        let mut a = app();
+        usage(&mut a, 40_000, 0);
+        let side = Usage { cache_read: 30_000, ..Default::default() };
+        let mut session = a.session_usage;
+        session += side;
+        a.handle_agent(AgentEvent::Usage { turn: side, call: Usage::default(), session, cost_usd: 0.0 });
+        usage(&mut a, 35_000, 0);
+        assert_eq!(a.cache_miss(), None);
+        usage(&mut a, 2_000, 40_000);
+        usage(&mut a, 30_000, 1_000);
+        assert_eq!(a.cache_miss(), Some(30_000));
+    }
+
+    #[test]
+    fn changing_provider_or_model_starts_a_fresh_segment() {
+        let mut a = app();
+        usage(&mut a, 2_000, 40_000);
+        a.handle_agent(AgentEvent::ModelChanged { provider: "two".into(), model: "model".into() });
+        usage(&mut a, 30_000, 0);
+        usage(&mut a, 30_000, 0);
+        assert_eq!(a.cache_miss(), None);
+        usage(&mut a, 2_000, 40_000);
+        a.handle_agent(AgentEvent::ModelChanged { provider: "two".into(), model: "other".into() });
+        usage(&mut a, 30_000, 0);
+        assert_eq!(a.cache_miss(), None);
+        usage(&mut a, 2_000, 40_000);
+        usage(&mut a, 30_000, 1_000);
+        assert_eq!(a.cache_miss(), Some(30_000));
     }
 }

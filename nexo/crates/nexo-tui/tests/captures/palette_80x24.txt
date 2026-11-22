@@ -1,9 +1,9 @@
                                                                                │
-   • the input is 3 1 2                                                        │
-   • the output must be 1 2 3                                                  │
+    • the input is 3 1 2                                                       │
+    • the output must be 1 2 3                                                 │
                                                                                │
-   rust ────────────────────────────────────────────────────────────────────── │
-   ▎ fn main() {}                                                              │
+    rust ───────────────────────────────────────────────────────────────────── │
+    ▎ fn main() {}                                                             │
  /model          [name]              switch model, or set one up
  /permissions    [ask|accept-edits…  set the permission mode
  /resume         [session|tree…      pick a session, or `tree` for its forks
