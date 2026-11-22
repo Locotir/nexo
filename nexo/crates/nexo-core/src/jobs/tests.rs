@@ -303,6 +303,27 @@ fn runner_completion_is_distinct_from_kill_request() {
 }
 
 #[test]
+fn review_stop_respects_monitor_registered_after_review_started() {
+    let jobs = Jobs::new();
+    let job = jobs.start(JobKind::Shell, "wait");
+    let id = job.id();
+    let generation = jobs.review_generation(id).unwrap();
+    let claim = jobs.register_monitor(id).unwrap();
+    assert!(jobs.review_generation(id).is_none());
+    assert!(!jobs.stop_for_review(id, generation, "late STOP"));
+    assert!(jobs.get(id).unwrap().status.running());
+    assert!(!job.cancel().is_cancelled());
+    assert!(jobs.release_monitor(claim));
+    assert!(!jobs.stop_for_review(id, generation, "stale STOP after release"));
+    assert!(jobs.stop_for_review(id, jobs.review_generation(id).unwrap(), "STOP"));
+    assert!(job.cancel().is_cancelled());
+
+    let held = jobs.start_held(JobKind::Shell, "server");
+    assert!(!jobs.stop_for_review(held.id(), 0, "STOP"));
+    assert!(jobs.stop(held.id(), "explicit stop"));
+}
+
+#[test]
 fn monitor_terminal_ownership_and_release() {
     let jobs = Jobs::new();
     let handle = jobs.start(JobKind::Shell, "watch");

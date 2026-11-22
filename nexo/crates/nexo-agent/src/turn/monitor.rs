@@ -163,6 +163,7 @@ pub(super) fn command(rt: &mut Runtime, args: &Value) -> ToolOutput {
             }
             let m = rt.monitors.0.iter_mut().find(|m| m.id == id).unwrap();
             m.closing = true;
+            rt.jobs.end_monitor(id);
             m.next = Instant::now();
             ToolOutput::ok(
                 "monitor stopped listening; buffered output remains for delivery or inspection; job continues",
@@ -222,6 +223,7 @@ pub(super) fn command(rt: &mut Runtime, args: &Value) -> ToolOutput {
 pub(super) fn clear(rt: &mut Runtime) {
     drain(rt);
     for mut m in rt.monitors.0.drain(..) {
+        rt.jobs.end_monitor(m.id);
         if !m.pending.is_empty() || m.dropped > 0 || m.terminal.is_some() {
             notice(
                 &rt.events,
@@ -312,6 +314,7 @@ pub(super) async fn tick(rt: &mut Runtime) {
         for m in &mut rt.monitors.0 {
             if closing.contains(&m.id) {
                 m.closing = true;
+                rt.jobs.end_monitor(m.id);
                 if let Some(claim) = m.claim.take() {
                     m.terminal = rt.jobs.take_monitor_ended(&claim);
                 } else if m.completion_consumed {
@@ -476,6 +479,26 @@ pub(super) mod tests {
         assert!(rt.turn.is_none());
         assert!(rt.jobs.untold().iter().all(|j| j.id != id));
         assert!(rt.monitors.0[0].paused);
+    }
+
+    #[tokio::test]
+    async fn paused_monitor_blocks_reviews_until_cancelled() {
+        let d = tempfile::tempdir().unwrap();
+        let mut rt = runtime(d.path()).await;
+        let job = rt.jobs.start(nexo_core::jobs::JobKind::Shell, "test");
+        let id = job.id();
+        let generation = rt.jobs.review_generation(id).unwrap();
+        watch(&mut rt, id, false);
+        rt.monitors.0[0].push("uncertain action");
+        rt.monitors.1 = Some((id, rt.monitors.0[0].pending.len(), 0));
+        turn_end(&mut rt, TurnEnd::Error);
+        assert!(rt.jobs.monitored(id));
+        assert!(rt.jobs.review_generation(id).is_none());
+        assert!(!rt.jobs.stop_for_review(id, generation, "stale"));
+        assert!(!command(&mut rt, &serde_json::json!({"action":"cancel", "id":id})).is_error);
+        assert!(!rt.jobs.monitored(id));
+        assert!(!rt.jobs.stop_for_review(id, generation, "stale after cancellation"));
+        assert!(rt.jobs.review_generation(id).is_some());
     }
 
     #[tokio::test]

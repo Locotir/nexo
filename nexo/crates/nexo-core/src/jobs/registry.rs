@@ -1,7 +1,7 @@
 //! The registry of jobs, a job's handle and what one read of its output gives.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,9 @@ struct Entry {
     status: Mutex<JobStatus>,
     /// Ownership of the terminal notification, shared by ordinary and monitor delivery.
     completion: Mutex<Completion>,
+    /// Changes on every monitor registration, invalidating in-flight reviews.
+    monitor_generation: AtomicU64,
+    monitor_active: AtomicBool,
     /// What a sub-agent reported when it ended (the end note carries it).
     report: Mutex<Option<String>>,
     cancel: CancellationToken,
@@ -234,6 +237,14 @@ impl Jobs {
         self.start_as(kind, label.into(), true)
     }
 
+    /// Whether a monitor currently owns the job's terminal notification.
+    pub fn monitored(&self, id: u32) -> bool {
+        self.entry(id).is_some_and(|e| {
+            let _guard = e.completion.lock().unwrap();
+            e.monitor_active.load(Ordering::Relaxed)
+        })
+    }
+
     /// Whether job `id` was made by `start_held`.
     pub fn held(&self, id: u32) -> bool {
         self.entry(id).is_some_and(|e| e.held)
@@ -251,6 +262,8 @@ impl Jobs {
             out: Mutex::new(Out { lines: VecDeque::new(), chars: 0, dropped: 0, read: 0 }),
             status: Mutex::new(JobStatus::Running),
             completion: Mutex::new(Completion::Available),
+            monitor_generation: AtomicU64::new(0),
+            monitor_active: AtomicBool::new(false),
             report: Mutex::new(None),
             cancel: self.0.root.child_token(),
             done: Notify::new(),
@@ -415,6 +428,37 @@ impl Jobs {
         true
     }
 
+    /// Snapshot monitor state for a review; registration invalidates the snapshot even
+    /// if the monitor is subsequently released before the review returns.
+    pub fn review_generation(&self, id: u32) -> Option<u64> {
+        let e = self.entry(id)?;
+        let _completion = e.completion.lock().unwrap();
+        if e.held || e.monitor_active.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(e.monitor_generation.load(Ordering::Relaxed))
+    }
+
+    /// Atomically reject a stale review or one whose job is currently monitored.
+    pub fn stop_for_review(&self, id: u32, generation: u64, why: &str) -> bool {
+        let Some(e) = self.entry(id) else { return false };
+        let _completion = e.completion.lock().unwrap();
+        if e.held
+            || e.monitor_active.load(Ordering::Relaxed)
+            || e.monitor_generation.load(Ordering::Relaxed) != generation
+        {
+            return false;
+        }
+        let mut status = e.status.lock().unwrap();
+        if !status.running() {
+            return false;
+        }
+        *status = JobStatus::Done { ok: false, how: format!("stopped: {why}") };
+        drop(status);
+        e.cancel.cancel();
+        true
+    }
+
     /// Stops every job still running.
     pub fn kill_all(&self) -> usize {
         let ids: Vec<u32> = self.list().iter().filter(|j| j.status.running()).map(|j| j.id).collect();
@@ -459,7 +503,17 @@ impl Jobs {
         }
         let token = NEXT_MONITOR_CLAIM.fetch_add(1, Ordering::Relaxed);
         *completion = Completion::Monitor(token);
+        e.monitor_generation.fetch_add(1, Ordering::Relaxed);
+        e.monitor_active.store(true, Ordering::Relaxed);
         Some(MonitorClaim { id, token })
+    }
+
+    /// End listening independently of terminal notification ownership.
+    pub fn end_monitor(&self, id: u32) {
+        if let Some(e) = self.entry(id) {
+            let _guard = e.completion.lock().unwrap();
+            e.monitor_active.store(false, Ordering::Relaxed);
+        }
     }
 
     /// Release a monitor that has not taken the terminal event. Ordinary delivery can resume.
@@ -470,6 +524,7 @@ impl Jobs {
             return false;
         }
         *completion = Completion::Available;
+        e.monitor_active.store(false, Ordering::Relaxed);
         drop(completion);
         // The original end event may already have been observed while reserved.
         // If completion races this check, the runner itself emits the wakeup.

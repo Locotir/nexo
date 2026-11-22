@@ -18,7 +18,7 @@ fn over_budget(st: &State) -> bool {
 fn reviewable(jobs: &Jobs) -> Vec<nexo_core::jobs::JobInfo> {
     jobs.list()
         .into_iter()
-        .filter(|j| j.kind == nexo_core::jobs::JobKind::Shell && j.status.running() && !jobs.held(j.id))
+        .filter(|j| j.kind == nexo_core::jobs::JobKind::Shell && j.status.running() && !j.held && !jobs.monitored(j.id))
         .collect()
 }
 
@@ -69,20 +69,19 @@ pub(super) fn spawn_job_review(state: &Shared, jobs: Jobs) {
                 if secs < next {
                     continue;
                 }
+                let Some(generation) = jobs.review_generation(j.id) else { continue };
                 let tail = tails.iter().find(|t| t.id == j.id).map(|t| t.text.as_str()).unwrap_or("");
                 let ask = crate::review::prompt(&j.label, secs, j.lines, j.lines.saturating_sub(seen), tail, &request);
                 match crate::review::ask(&*client, &target, retries, ask).await {
                     Ok((stop, usage, model)) => {
                         let Some(state) = weak.upgrade() else { return };
-                        add_usage(
-                            &mut *state.lock().await,
-                            &events,
-                            &model,
-                            usage,
-                            Usage::default(),
-                            UsageKind::Review,
-                        );
-                        if stop && jobs.stop(j.id, "a review judged it no longer worth waiting for") {
+                        let mut st = state.lock().await;
+                        add_usage(&mut st, &events, &model, usage, Usage::default(), UsageKind::Review);
+                        // Keep the session lock through the stop: Esc must not be able
+                        // to hold the session between this check and the job mutation.
+                        let stopped = stop && stop_reviewed_job(&st, &jobs, j.id, generation);
+                        drop(st);
+                        if stopped {
                             let took = nexo_core::jobs::duration(j.elapsed_ms);
                             notice(&events, Level::Info, format!("job {} stopped by the review after {took}", j.id));
                             continue;
@@ -94,6 +93,10 @@ pub(super) fn spawn_job_review(state: &Shared, jobs: Jobs) {
             }
         }
     });
+}
+
+fn stop_reviewed_job(st: &State, jobs: &Jobs, id: u32, generation: u64) -> bool {
+    !st.held && jobs.stop_for_review(id, generation, "a review judged it no longer worth waiting for")
 }
 
 /// Sent after the last request of the conversation and its reply, to ask for a prompt suggestion.
@@ -563,6 +566,32 @@ mod suggest_tests {
         assert_eq!(ids, vec![plain.id()]);
         assert!(jobs.held(kept.id()) && !jobs.held(plain.id()));
         assert!(jobs.get(kept.id()).unwrap().status.running(), "it is a running job all the same");
+    }
+
+    #[tokio::test]
+    async fn review_stop_after_session_hold_does_not_stop_job() {
+        let d = tempfile::tempdir().unwrap();
+        let rt = super::super::monitor::tests::runtime(d.path()).await;
+        let job = rt.jobs.start(nexo_core::jobs::JobKind::Shell, "long job");
+        let generation = rt.jobs.review_generation(job.id()).unwrap();
+        // A review was sent while active; Esc holds the session before its STOP arrives.
+        let mut st = rt.state.lock().await;
+        st.held = true;
+        assert!(!stop_reviewed_job(&st, &rt.jobs, job.id(), generation));
+        assert!(rt.jobs.get(job.id()).unwrap().status.running());
+        st.held = false;
+        assert!(stop_reviewed_job(&st, &rt.jobs, job.id(), generation));
+    }
+
+    #[test]
+    fn monitored_jobs_are_not_reviewed_and_become_reviewable_after_release() {
+        use nexo_core::jobs::JobKind;
+        let jobs = Jobs::new();
+        let job = jobs.start(JobKind::Shell, "wait for events");
+        let claim = jobs.register_monitor(job.id()).unwrap();
+        assert!(reviewable(&jobs).is_empty());
+        assert!(jobs.release_monitor(claim));
+        assert_eq!(reviewable(&jobs).iter().map(|j| j.id).collect::<Vec<_>>(), vec![job.id()]);
     }
 
     #[test]
