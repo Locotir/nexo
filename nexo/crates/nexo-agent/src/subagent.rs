@@ -52,6 +52,7 @@ mod provider;
 #[cfg(test)]
 mod provider_tests;
 mod run;
+mod skill;
 #[cfg(test)]
 mod tests;
 mod tool;
@@ -409,6 +410,8 @@ impl SubAgent {
         let Launch {
             agent: name,
             prompt,
+            skill,
+            skill_arguments,
             provider,
             model,
             effort,
@@ -462,6 +465,27 @@ impl SubAgent {
                 }
             }
             (p, _) => p,
+        };
+        // Never send an invented model to a configured endpoint. A trusted profile may
+        // explicitly name its own model even when the provider has no model list.
+        let (main, cfg, current) = self.target.get();
+        let (endpoint, cfg) = provider.as_ref().map_or((main.as_str(), &cfg), |(n, c)| (n.as_str(), c));
+        let model = if let Some(m) = model {
+            let known = listed(cfg)
+                .chain((endpoint == main).then_some(current.as_str()))
+                .chain((endpoint == main).then_some(profile.model.as_deref()).flatten().filter(|_| !profile.soft_model))
+                .find(|n| n.eq_ignore_ascii_case(&m));
+            Some(known.ok_or_else(|| format!("model `{m}` is not configured for `{endpoint}`"))?.to_owned())
+        } else if endpoint != main {
+            Some(
+                cfg.default_model
+                    .as_ref()
+                    .or(cfg.models.first())
+                    .ok_or_else(|| format!("no worker model configured for `{endpoint}`"))?
+                    .clone(),
+            )
+        } else {
+            None
         };
         // Register before SubagentStart hooks, briefing, or worktree setup. If any
         // preparation fails, dropping the handle ends the registered job.
@@ -526,6 +550,8 @@ impl SubAgent {
             provider,
             model,
             effort: effort.map(str::to_owned),
+            checkout: None,
+            skill: skill.map(|s| (s.to_owned(), skill_arguments.unwrap_or("").to_owned())),
             tools: self.tools_for_launch(&profile, start_clean),
             profile,
             host,
@@ -564,6 +590,8 @@ impl SubAgent {
         }
         let mut ictx = ctx.clone();
         if let Some(wt) = &isolated {
+            // The checkout containing the launch directory, not necessarily git's main checkout.
+            run.checkout = Some(ctx.cwd.ancestors().find(|a| a.join(".git").exists()).unwrap_or(&ctx.cwd).to_owned());
             ictx.cwd = wt.path.clone();
         }
         let id = job.id();

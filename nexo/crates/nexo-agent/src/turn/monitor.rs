@@ -313,6 +313,16 @@ pub(super) async fn tick(rt: &mut Runtime) {
         drain(rt);
         for m in &mut rt.monitors.0 {
             if closing.contains(&m.id) {
+                // The bounded drain can stop after a lag recovery while concurrent
+                // writers keep saturating the shared broadcast. The finished job's
+                // snapshot is the definitive boundary, independent of that stream.
+                if let Some((start, end, lines)) = rt.jobs.output_snapshot(m.id) {
+                    m.dropped = m.dropped.saturating_add(start.saturating_sub(m.from));
+                    for line in lines.iter().skip(m.from.saturating_sub(start)) {
+                        m.push(line);
+                    }
+                    m.from = m.from.max(end);
+                }
                 m.closing = true;
                 rt.jobs.end_monitor(m.id);
                 if let Some(claim) = m.claim.take() {
@@ -916,6 +926,31 @@ pub(super) mod tests {
         assert_eq!(rt.monitors.0[1].dropped, 0);
         drain(&mut rt);
         assert_eq!(rt.monitors.0[0].dropped, 21000 - 800);
+    }
+
+    #[tokio::test]
+    async fn completion_snapshot_recovers_final_line_after_lag_recovery() {
+        let d = tempfile::tempdir().unwrap();
+        let mut rt = runtime(d.path()).await;
+        let job = rt.jobs.start(nexo_core::jobs::JobKind::Shell, "test");
+        let noise = rt.jobs.start(nexo_core::jobs::JobKind::Shell, "noise");
+        watch(&mut rt, job.id(), false);
+        rt.state.lock().await.held = true;
+        job.line("first");
+        for _ in 0..300 {
+            noise.line("noise");
+        }
+        drain(&mut rt);
+        assert_eq!(rt.monitors.0[0].pending, "first\n");
+        job.line("final");
+        // Simulate the final broadcast event no longer being available at the
+        // close boundary; the retained per-job snapshot must still recover it.
+        while rt.monitor_lines.try_recv().is_ok() {}
+        job.finish(true, "done");
+        tick(&mut rt).await;
+        assert_eq!(rt.monitors.0[0].pending, "first\nfinal\n");
+        assert_eq!(rt.monitors.0[0].dropped, 0);
+        assert!(rt.monitors.0[0].terminal.is_some());
     }
 
     #[tokio::test]

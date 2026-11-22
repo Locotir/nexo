@@ -325,6 +325,11 @@ pub trait Tool: Send + Sync {
     fn skill_catalog(&self, _compact: bool) -> Option<String> {
         None
     }
+    /// Metadata only. The worker resolves this captured entry after skill hooks and loads its
+    /// body only after authorizing its actual read path. Unknown/custom tools fail closed.
+    fn named_skill(&self, _name: &str) -> Option<&crate::skills::Skill> {
+        None
+    }
     /// The live task list, if this tool keeps one and it is not empty. The loop shows it to the
     /// model every turn, so it never falls out of the context when the history is compacted.
     fn todo_items(&self) -> Option<Vec<TodoItem>> {

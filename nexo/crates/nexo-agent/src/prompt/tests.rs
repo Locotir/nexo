@@ -208,7 +208,7 @@ fn the_strands_line_says_steps_in_order_go_in_one_message_and_a_failure_stops_th
         assert!(all.contains(want), "missing {want}: {all}");
     }
     assert!(!all.contains("a change runs alone"), "{all}");
-    assert!(BUILT_IN_COMPACT.contains("a failure stops the rest"));
+    assert!(BUILT_IN_COMPACT.contains("they run in order and stop on failure"));
 }
 
 #[test]

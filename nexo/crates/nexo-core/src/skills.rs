@@ -7,7 +7,15 @@
 //! project (the working directory and its parents up to the repository root), then in the person's
 //! home. The first skill of a name wins, nexo's own folders first.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+#[path = "skills_file.rs"]
+mod file;
+
+const HEADER_BYTES: u64 = 16 * 1024;
 
 #[path = "skills_builtin.rs"]
 mod builtin;
@@ -56,7 +64,10 @@ impl Skill {
                 .map(|b| b.body.to_string())
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown built-in skill"));
         }
-        let text = std::fs::read_to_string(self.file())?;
+        // Bound the read itself, not just the string ultimately handed to the model.
+        let mut bytes = Vec::new();
+        file::open(&self.file())?.take(HEADER_BYTES + 4 * MAX_BODY as u64 + 4).read_to_end(&mut bytes)?;
+        let text = String::from_utf8_lossy(&bytes);
         let (_, body) = split_front(&text);
         let body = body.trim();
         Ok(match body.char_indices().nth(MAX_BODY) {
@@ -143,21 +154,24 @@ fn tool_list(front: &str) -> Vec<String> {
 
 /// A skill name the model can pass back and a person can type after `/`.
 fn valid_name(n: &str) -> bool {
-    !n.is_empty() && n.len() <= 64 && !n.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\')
+    !n.is_empty()
+        && n.len() <= 64
+        && !n.contains(|c: char| c.is_control() || c.is_whitespace() || c == '/' || c == '\\')
 }
 
 /// The skill in `dir`, if it has a readable `SKILL.md`.
 fn load(dir: &Path, source: &str) -> Option<Skill> {
-    let text = std::fs::read_to_string(dir.join("SKILL.md")).ok()?;
-    let (front, body) = split_front(&text);
+    let mut bytes = Vec::new();
+    file::open(&dir.join("SKILL.md")).ok()?.take(HEADER_BYTES).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let (front, _) = split_front(&text);
     let folder = dir.file_name()?.to_string_lossy().to_string();
     let name = field(front, "name").unwrap_or(folder);
     if !valid_name(&name) {
         return None;
     }
-    let description = field(front, "description").or_else(|| {
-        body.lines().map(|l| l.trim().trim_start_matches('#').trim()).find(|l| !l.is_empty()).map(String::from)
-    })?;
+    // Never promote a line of the private body into the coordinator's catalogue.
+    let description = field(front, "description").unwrap_or_default();
     Some(Skill {
         name,
         description,
@@ -170,13 +184,29 @@ fn load(dir: &Path, source: &str) -> Option<Skill> {
 /// Every skill reachable from `cwd` and the person's folders. `home` holds `.agents` and `.claude`;
 /// `nexo_dir` is nexo's own config folder (`~/.nexo`). With `user` false the person's folders are skipped.
 pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<Skill> {
-    discover_with(cwd, home, nexo_dir, user, crate::compat::claude_code(), true)
+    discover_with(cwd, home, nexo_dir, user, crate::compat::claude_code(), true, None)
 }
 
 /// [`discover_in`] with the `.claude/skills` folders read (`claude`) or left out.
-fn discover_with(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool, claude: bool, project: bool) -> Vec<Skill> {
+fn discover_with(
+    cwd: &Path,
+    home: &Path,
+    nexo_dir: &Path,
+    user: bool,
+    claude: bool,
+    project: bool,
+    custom: Option<&Path>,
+) -> Vec<Skill> {
     let mut roots: Vec<(PathBuf, String)> = Vec::new();
     // the project: the working directory and its parents up to the repository root
+    // Resolve the ambient project/home anchors once (e.g. /var -> /private/var on macOS),
+    // not any component supplied by a skill folder or manifest.
+    let project_root = crate::paths::canonical(cwd).unwrap_or_else(|_| cwd.to_owned());
+    let cwd = project_root.as_path();
+    let home_root = crate::paths::canonical(home).unwrap_or_else(|_| home.to_owned());
+    let nexo_root =
+        nexo_dir.strip_prefix(home).ok().map(|rel| home_root.join(rel)).unwrap_or_else(|| nexo_dir.to_owned());
+    let (home, nexo_dir) = (home_root.as_path(), nexo_root.as_path());
     let mut p = project.then_some(cwd);
     while let Some(d) = p {
         // a home kept in git: its skill folders are the person's own (listed below), not a project's
@@ -196,6 +226,9 @@ fn discover_with(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool, claude: b
         p = d.parent();
     }
     if user {
+        if let Some(root) = custom.filter(|p| p.is_absolute()) {
+            roots.push((root.to_owned(), "NEXO_SKILLS_DIR".into()));
+        }
         roots.push((nexo_dir.join("skills"), "~/.nexo/skills".into()));
         roots.push((home.join(".agents/skills"), "~/.agents/skills".into()));
         if claude {
@@ -257,6 +290,7 @@ pub fn discover(cwd: &Path, user: bool) -> Vec<Skill> {
         user && allowed("user"),
         crate::compat::claude_code(),
         allowed("project"),
+        std::env::var_os("NEXO_SKILLS_DIR").as_deref().map(Path::new),
     );
     add_builtins(&mut found);
     found
@@ -376,11 +410,25 @@ mod tests {
             policy.extension_allowed("user", "skills"),
             true,
             policy.extension_allowed("project", "skills"),
+            None,
         );
         add_builtins(&mut found);
         assert_eq!(find(&found, "debug").unwrap().source, "builtin");
         assert_eq!(find(&found, "research").unwrap().source, "builtin");
         assert!(!listing(&found).contains("override"));
+    }
+
+    #[test]
+    fn custom_root_is_user_scoped_and_never_advertises_the_body() {
+        let home = tempfile::tempdir().unwrap();
+        let root = crate::paths::canonical(home.path()).unwrap();
+        let custom = root.join("private");
+        write(&custom, "report/SKILL.md", "private first line");
+        let discover = |user| discover_with(&root, &root, &root.join(".nexo"), user, false, false, Some(&custom));
+        let found = discover(true);
+        assert_eq!(find(&found, "report").unwrap().source, "NEXO_SKILLS_DIR");
+        assert!(!listing(&found).contains("private first line"));
+        assert!(find(&discover(false), "report").is_none());
     }
 
     #[test]
@@ -393,25 +441,28 @@ mod tests {
         );
         write(d.path(), "b/SKILL.md", "---\nname: beta\ndescription: >\n  Folded text\n  over lines\nallowed-tools:\n  - Grep\n  - Glob\n---\nGo\n");
         write(d.path(), "c/SKILL.md", "Just text, no front matter\nmore");
-        let a = load(&d.path().join("a"), "x").unwrap();
+        let a = load(&crate::paths::canonical(d.path()).unwrap().join("a"), "x").unwrap();
         assert_eq!((a.name.as_str(), a.description.as_str()), ("alpha", "Does A"));
         assert_eq!(a.allowed_tools, ["Bash", "Read"]);
         assert_eq!(a.body().unwrap(), "# Body\nSteps");
-        let b = load(&d.path().join("b"), "x").unwrap();
+        let b = load(&crate::paths::canonical(d.path()).unwrap().join("b"), "x").unwrap();
         assert_eq!(b.description, "Folded text over lines");
         assert_eq!(b.allowed_tools, ["Grep", "Glob"]);
-        let c = load(&d.path().join("c"), "x").unwrap();
-        assert_eq!((c.name.as_str(), c.description.as_str()), ("c", "Just text, no front matter"));
+        let c = load(&crate::paths::canonical(d.path()).unwrap().join("c"), "x").unwrap();
+        assert_eq!((c.name.as_str(), c.description.as_str()), ("c", ""));
         write(d.path(), "bad name/SKILL.md", "---\ndescription: x\n---\n");
-        assert!(load(&d.path().join("bad name"), "x").is_none());
-        assert!(load(&d.path().join("missing"), "x").is_none());
+        assert!(load(&crate::paths::canonical(d.path()).unwrap().join("bad name"), "x").is_none());
+        assert!(load(&crate::paths::canonical(d.path()).unwrap().join("missing"), "x").is_none());
     }
 
     #[test]
     fn the_escapes_of_a_quoted_description_are_decoded() {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "q/SKILL.md", "---\nname: q\ndescription: \"Use for \\\"review this\\\", it's ok\"\n---\nGo\n");
-        assert_eq!(load(&d.path().join("q"), "x").unwrap().description, "Use for \"review this\", it's ok");
+        assert_eq!(
+            load(&crate::paths::canonical(d.path()).unwrap().join("q"), "x").unwrap().description,
+            "Use for \"review this\", it's ok"
+        );
     }
 
     #[test]
@@ -518,13 +569,9 @@ mod tests {
     fn instructions_carry_the_folder_and_arguments() {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "s/SKILL.md", "---\nname: s\ndescription: x\n---\nDo it.\n");
-        let s = load(&d.path().join("s"), "x").unwrap();
+        let s = load(&crate::paths::canonical(d.path()).unwrap().join("s"), "x").unwrap();
         let t = s.instructions(" now ").unwrap();
-        assert!(
-            t.contains(&d.path().join("s").display().to_string())
-                && t.contains("Do it.")
-                && t.ends_with("Arguments: now")
-        );
+        assert!(t.contains(&s.dir.display().to_string()) && t.contains("Do it.") && t.ends_with("Arguments: now"));
         assert_eq!(find(&[s], "/S").map(|s| s.name.as_str()), Some("s"));
     }
 
@@ -536,7 +583,7 @@ mod tests {
         write(proj.path(), ".agents/skills/a/SKILL.md", "---\nname: a\ndescription: agents\n---\n");
         write(home.path(), ".claude/skills/h/SKILL.md", "---\nname: h\ndescription: home\n---\n");
         let names = |claude| -> Vec<String> {
-            discover_with(proj.path(), home.path(), &home.path().join(".nexo"), true, claude, true)
+            discover_with(proj.path(), home.path(), &home.path().join(".nexo"), true, claude, true, None)
                 .into_iter()
                 .map(|s| s.name)
                 .collect()

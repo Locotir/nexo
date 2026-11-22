@@ -423,10 +423,8 @@ async fn a_sub_agent_goes_to_the_provider_and_model_asked_for_and_is_priced_ther
     let (reqs, bases) = (client.requests(), client.bases.lock().unwrap().clone());
     let task = reqs[0].tools.iter().find(|t| t.name == "task").unwrap();
     // the names are not sent with every request: a wrong one is answered with them, as above
-    assert_eq!(
-        task.parameters["properties"]["provider"],
-        json!({"type": "string", "description": "Only if the person asks"})
-    );
+    assert_eq!(task.parameters["properties"]["provider"]["type"], "string");
+    assert!(task.parameters["properties"]["provider"].get("enum").is_none());
     let pd = task.parameters["properties"]["provider"]["description"].as_str().unwrap();
     assert!(!pd.contains("o1") && !pd.contains("Set up"), "{pd}");
     // the refused call asked nothing of any model

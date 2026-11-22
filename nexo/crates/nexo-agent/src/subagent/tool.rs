@@ -23,18 +23,20 @@ impl Tool for SubAgent {
             "properties": {
                 "description": {"type": "string", "description": "Three to six words saying what the task is."},
                 "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them. A non-empty prompt is required."},
+                "skill": {"type": "string", "description": "Skill to load privately inside the worker by name."},
+                "skill_arguments": {"type": "string", "description": "Arguments for the worker skill."},
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
                 "start_clean": {"type": "boolean", "description": "No briefing, hook context or shared-memory tools; profile and project tools remain."},
                 "effort": {"type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "description": "Reasoning level for this run, overriding its model default; unsupported levels use the nearest configured level. This is a request, not proof of provider-side reasoning."},
-                "model": {"type": "string", "description": "Another model for this sub-agent, only when the person asks for one."}
+                "model": {"type": "string", "description": "Model for this worker. Choose for the task only from known configured options and within applicable policies; do not invent a model catalogue. Respect the person's explicit choice. Omit to use the configured default or profile."}
             },
             "required": ["prompt"]
         });
-        // another provider only when there is one to go to; its name is checked when the call runs, and a
+        // expose provider only when there is another to go to; its name is checked when the call runs, and a
         // wrong one is answered with the names there are: the list is not paid for in every request
         if self.providers.keys().any(|n| *n != main_provider) {
-            params["properties"]["provider"] = json!({"type": "string", "description": "Another provider for this sub-agent, by name, only when the person asks for one."});
+            params["properties"]["provider"] = json!({"type": "string", "description": "Configured provider for this worker, by name. Respect the person's explicit choice and applicable policies; do not change providers arbitrarily or invent provider names. Omit to retain the default or profile provider."});
         }
         ToolSpec {
             name: "task".into(),
@@ -54,12 +56,11 @@ impl Tool for SubAgent {
         Some(Compact {
             description: &self.short,
             params: &[
-                ("prompt", "Task; required and non-empty"),
-                ("background", "Run as a job"),
-                ("start_clean", "No inherited context"),
-                ("effort", "off|minimal|low|medium|high|xhigh|max; overrides model default"),
-                ("model", "Only if the person asks"),
-                ("provider", "Only if the person asks"),
+                ("skill", "Delegate by name; body stays in worker"),
+                ("start_clean", "No briefing, hooks or shared memory"),
+                ("effort", "off|minimal|low|medium|high|xhigh|max"),
+                ("model", "Configured; follow policy and user"),
+                ("provider", "Configured; honor user"),
             ],
         })
     }
@@ -126,9 +127,27 @@ impl Tool for SubAgent {
             Some(Value::String(s)) if nexo_core::provider::LEVEL_ORDER.contains(&s.as_str()) => Some(s.as_str()),
             Some(_) => return ToolOutput::error("`effort` must be off, minimal, low, medium, high, xhigh or max"),
         };
+        for key in ["skill", "skill_arguments"] {
+            if args.get(key).is_some_and(|v| !v.is_string()) {
+                return ToolOutput::error(format!("`{key}` must be a string"));
+            }
+        }
+        if asked_for("skill").is_some_and(|s| s.len() > 256)
+            || args["skill_arguments"].as_str().is_some_and(|s| s.len() > 16 * 1024)
+        {
+            return ToolOutput::error("worker skill name (256 bytes) or arguments (16 KiB) too long");
+        }
+        if args.get("skill").is_some() && asked_for("skill").is_none() {
+            return ToolOutput::error("`skill` must not be empty");
+        }
+        if args.get("skill_arguments").is_some() && asked_for("skill").is_none() {
+            return ToolOutput::error("`skill_arguments` requires `skill`");
+        }
         let launch = Launch {
             agent: name,
             prompt,
+            skill: asked_for("skill"),
+            skill_arguments: args.get("skill_arguments").and_then(Value::as_str),
             provider: asked_for("provider"),
             model: asked_for("model"),
             effort,

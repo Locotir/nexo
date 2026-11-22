@@ -54,6 +54,10 @@ impl Tool for SkillTool {
         Some(if compact { skills::compact_listing(&self.skills) } else { skills::listing(&self.skills) })
     }
 
+    fn named_skill(&self, name: &str) -> Option<&Skill> {
+        skills::find(&self.skills, name)
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Read
     }
@@ -62,7 +66,7 @@ impl Tool for SkillTool {
         format!("skill {}", args.get("name").and_then(Value::as_str).unwrap_or("?"))
     }
 
-    async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+    async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
         let Some(name) = args.get("name").and_then(Value::as_str) else {
             return ToolOutput::error("`name` is required: the skill's name from the list");
         };
@@ -70,6 +74,17 @@ impl Tool for SkillTool {
             let names: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
             return ToolOutput::error(format!("no skill called `{name}`; the skills are: {}", names.join(", ")));
         };
+        if skill.source != "builtin" {
+            let path = skill.file();
+            let Some(path) = path.to_str() else {
+                return ToolOutput::error("non-UTF-8 skill path");
+            };
+            if ctx.check.as_ref().is_some_and(|check| {
+                check("read", ToolKind::Read, &json!({"path": path})) != nexo_core::tool::Check::Allow
+            }) {
+                return ToolOutput::error("skill file needs read permission; request it with read instead");
+            }
+        }
         let extra = args.get("arguments").and_then(Value::as_str).unwrap_or("");
         match skill.instructions(extra) {
             Ok(t) => ToolOutput::ok(t),
@@ -105,7 +120,7 @@ mod tests {
     }
 
     fn make(d: &std::path::Path) -> Vec<Skill> {
-        let dir = d.join("pdf");
+        let dir = nexo_core::paths::canonical(d).unwrap().join("pdf");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), "---\nname: pdf\ndescription: Work with PDFs\n---\nUse forms.md.\n")
             .unwrap();
@@ -131,7 +146,9 @@ mod tests {
         let out = t.run(json!({"name": "pdf", "arguments": "merge a and b"}), &ctx(d.path())).await;
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("Use forms.md.") && out.content.contains("Arguments: merge a and b"));
-        assert!(out.content.contains(&d.path().join("pdf").display().to_string()));
+        assert!(out
+            .content
+            .contains(&nexo_core::paths::canonical(d.path()).unwrap().join("pdf").display().to_string()));
         let bad = t.run(json!({"name": "nope"}), &ctx(d.path())).await;
         assert!(bad.is_error && bad.content.contains("pdf"));
         assert!(t.run(json!({}), &ctx(d.path())).await.is_error);

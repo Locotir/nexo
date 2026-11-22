@@ -94,7 +94,7 @@ fn research_is_read_only_and_a_custom_profile_can_replace_it() {
     assert!(profile.read_only && profile.tools.is_none());
     assert!(profile.prompt.contains("do not assume web access"));
     assert!(profile.prompt.contains("Cite URLs"));
-    assert!(short_text(&builtin()).contains("`research` is read-only"));
+    assert!(short_text(&builtin()).contains("`research`: read-only"));
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let agents = project.path().join(".nexo/agents");
@@ -166,9 +166,8 @@ fn a_description_is_cut_to_its_first_clause_and_a_long_one_at_a_comma_or_a_word(
 
 #[test]
 fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_few_words() {
-    let stock = format!(
-        "{SHORT} `explore` is read-only; `general` (default) can edit. `research` is read-only and checks sources."
-    );
+    let stock =
+        format!("{SHORT} `explore`: read-only; `general` (default): edit. `research`: read-only, checks sources.");
     assert_eq!(short_text(&builtin()), stock);
     let mut kinds = builtin();
     kinds.extend([kind("docs", "Writes the manual. Use after a change."), kind("bare", "")]);
@@ -179,7 +178,7 @@ fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_fe
     kinds.push(kind("explore", "reads the wiki too"));
     assert_eq!(
         short_text(&kinds),
-        format!("{SHORT} `general` (default) can edit. `research` is read-only and checks sources. More kinds for `agent`: `explore`: reads the wiki too.")
+        format!("{SHORT} `general` (default): edit. `research`: read-only, checks sources. More kinds for `agent`: `explore`: reads the wiki too.")
     );
 }
 

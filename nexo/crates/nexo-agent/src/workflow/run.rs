@@ -406,6 +406,8 @@ async fn schedule(
                 provider: None,
                 model: step.model.as_deref(),
                 effort: None,
+                skill: None,
+                skill_arguments: None,
                 description: Some(&u.label),
                 title: Some(&u.label),
                 background: false,

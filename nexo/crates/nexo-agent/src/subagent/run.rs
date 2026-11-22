@@ -134,6 +134,8 @@ pub(super) struct Run {
     pub(super) provider: Option<(String, ProviderConfig)>,
     pub(super) model: Option<String>,
     pub(super) effort: Option<String>,
+    pub(super) checkout: Option<PathBuf>,
+    pub(super) skill: Option<(String, String)>,
     pub(super) tools: ToolSet,
     pub(super) profile: Profile,
     pub(super) host: Option<Arc<dyn Host>>,
@@ -281,6 +283,34 @@ impl Run {
             parts.push(Part::text(l));
         }
         let mut messages = vec![Message::new(Role::User, parts)];
+        if let Some((name, arguments)) = &self.skill {
+            if ctx.cancel.is_cancelled() {
+                return Err("skill loading cancelled".into());
+            }
+            let args = serde_json::json!({"name": name, "arguments": arguments});
+            let gate = tokio::sync::Mutex::new(());
+            let done = self.call_record("initial-skill", "skill", &args, ctx, say, &gate).await;
+            if done.out.is_error {
+                return Err(format!("cannot load skill `{name}`: {}", done.out.content));
+            }
+            let args = done.args;
+            let out = done.out;
+            // Record the actual loader call/result in the private worker history. In particular,
+            // do not concatenate file instructions into a user message (or a system prompt).
+            messages.push(Message::new(Role::Assistant, vec![Part::tool_call("initial-skill", "skill", args)]));
+            messages.push(Message::tool_results(vec![Part::ToolResult {
+                call_id: "initial-skill".into(),
+                name: Some("skill".into()),
+                content: vec![Part::text(out.content)],
+                is_error: false,
+            }]));
+            if let Some(w) = limits.context_window {
+                let used = system_tokens + nexo_core::message::estimate_tokens(&messages) + u64::from(reply);
+                if used > u64::from(w) {
+                    return Err(format!("skill `{name}` does not fit the worker context window"));
+                }
+            }
+        }
         let mut tok_ratio: Option<f64> = None;
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
         let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -323,6 +353,17 @@ impl Run {
                         memory: None,
                     }
                 }
+            };
+            // A curator must not discard the explicitly requested skill before the first request.
+            let view = if round == 0 && self.skill.is_some() {
+                crate::context::View {
+                    tokens: nexo_core::message::estimate_tokens(&messages),
+                    messages: messages.clone(),
+                    note: None,
+                    memory: None,
+                }
+            } else {
+                view
             };
             let sent_tokens = system_tokens + view.tokens;
             let (sent, _) = nexo_core::message::well_formed(view.messages);
@@ -542,7 +583,7 @@ impl Run {
                         id: id.clone(),
                         ok: !out.is_error,
                         bytes: out.content.len(),
-                        output: out.content.clone(),
+                        output: if name == "skill" { "[worker skill]".into() } else { out.content.clone() },
                     });
                 }
                 results.push(Part::ToolResult {
@@ -629,6 +670,18 @@ impl Run {
         say: &(dyn Fn(String) + Send + Sync),
         gate: &tokio::sync::Mutex<()>,
     ) -> ToolOutput {
+        self.call_record(id, name, args, ctx, say, gate).await.out
+    }
+
+    async fn call_record(
+        &self,
+        id: &str,
+        name: &str,
+        args: &Value,
+        ctx: &ToolContext,
+        say: &(dyn Fn(String) + Send + Sync),
+        gate: &tokio::sync::Mutex<()>,
+    ) -> Done {
         let t0 = std::time::Instant::now();
         let done = self.call_one(id, name, args, ctx, say, gate).await;
         if let Some(h) = &self.host {
@@ -649,7 +702,7 @@ impl Run {
             };
             h.audit(call).await;
         }
-        done.out
+        done
     }
 
     pub(super) async fn call_one(
@@ -735,6 +788,16 @@ impl Run {
                 h.before_write(path).await;
             }
         }
+        // A file-backed skill is a second, separately authorized read. Keep hooks and
+        // permission questions serialized until it has been checked.
+        let skill = if name == "skill" {
+            match self.worker_skill(&call_id, t.as_ref(), args, ctx).await {
+                Ok(skill) => Some(skill),
+                Err((reason, why)) => return Done::denied(ToolOutput::error(reason), args.clone(), name, why),
+            }
+        } else {
+            None
+        };
         drop(turn);
         // the stop can come while the hooks or the permission were waited for; the tools that watch the token
         // end on their own, the others (a write, an edit) would still land after it
@@ -745,7 +808,12 @@ impl Run {
         let started = std::time::Instant::now();
         // as the main turn does: a tool that does not watch the token itself (the browser, a file read) is
         // left when the person stops, so one slow call does not hold the round and the calls started with it
-        let mut out = if t.handles_cancel() {
+        let mut out = if let Some(skill) = skill {
+            match skill.instructions(args.get("arguments").and_then(Value::as_str).unwrap_or("")) {
+                Ok(text) => ToolOutput::ok(text),
+                Err(_) => ToolOutput::error("cannot safely read the skill file"),
+            }
+        } else if t.handles_cancel() {
             t.run(args.clone(), ctx).await
         } else {
             tokio::select! {
@@ -757,8 +825,9 @@ impl Run {
         };
         if let Some(h) = &self.host {
             let mut fields = self.fields(name, args);
-            fields["output"] = json!(out.content);
-            fields["tool_response"] = json!(out.content);
+            let response = if name == "skill" { "[worker skill]" } else { &out.content };
+            fields["output"] = json!(response);
+            fields["tool_response"] = json!(response);
             fields["is_error"] = json!(out.is_error);
             fields["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
             let o = h.hook("post_tool", name, fields).await;

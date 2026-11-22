@@ -119,7 +119,7 @@ impl App {
         self.map_at = Some(self.now());
     }
 
-    /// The messages of the person that start a topic, or go back to one, with the words of their line: the
+    /// The messages of the person that go back to a topic, with the words of their line: the
     /// requests of the map, matched to the person's messages from the end (the transcript may hold fewer of
     /// the oldest). A way back says how much of the earlier topic the model carries again. None while the
     /// curator sees a single topic.
@@ -140,13 +140,8 @@ impl App {
             if z == 0 {
                 continue;
             }
-            if prev != Some(z) && zones.get(z as usize).is_some() {
-                let head = if seen.contains(&z) {
-                    format!("↺ earlier topic{}", carried(&cells[..ci], z))
-                } else {
-                    "new topic".to_string()
-                };
-                out.insert(bi, head);
+            if prev != Some(z) && seen.contains(&z) && zones.get(z as usize).is_some() {
+                out.insert(bi, format!("↺ earlier topic{}", carried(&cells[..ci], z)));
             }
             seen.insert(z);
             prev = Some(z);

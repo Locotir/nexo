@@ -92,6 +92,14 @@ fn the_model_lookup_ignores_ascii_case() {
     assert_eq!(provider_of("A1", ("a", &main), &all), Ok(None));
 }
 
+#[tokio::test]
+async fn unconfigured_worker_model_is_rejected_before_a_job() {
+    let target = Target::new("a", cfg("a1", &["a2"]), "a1");
+    let sub = SubAgent::new(Arc::new(Mute), target, &ToolSet::new(), Vec::new(), Default::default());
+    let out = sub.run(json!({"prompt":"look", "model":"invented"}), &ToolContext::new(PathBuf::new())).await;
+    assert!(out.is_error && out.content.contains("not configured"), "{out:?}");
+}
+
 #[test]
 fn the_provider_text_does_not_grow_with_the_providers() {
     let mut all = BTreeMap::new();

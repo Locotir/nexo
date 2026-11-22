@@ -147,3 +147,255 @@ async fn recall_is_answered_from_the_sub_agents_own_messages() {
     };
     assert!(text.contains("out0w0") && text.contains("out0w29"), "{text}");
 }
+
+#[tokio::test]
+async fn explicit_skill_is_private_and_failures_stop_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = nexo_core::paths::canonical(dir.path()).unwrap().join("private-skill");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("SKILL.md"), "---\nname: private-skill\ndescription: test\n---\nSECRET_SKILL_BODY\n")
+        .unwrap();
+    let skill = nexo_core::skills::Skill {
+        name: "private-skill".into(),
+        description: "test".into(),
+        dir: folder,
+        allowed_tools: vec![],
+        source: "test".into(),
+    };
+    let mut tools = ToolSet::new();
+    tools.add(nexo_tools::skill::tool(vec![skill]).unwrap());
+    tools.add(Arc::new(nexo_tools::read::Read));
+    let client = Scripted::new(0, None);
+    let mut cfg = ProviderConfig { default_model: Some("m".into()), ..Default::default() };
+    cfg.context_window.insert("m".into(), 32_000);
+    let sub = SubAgent::new(client.clone(), Target::new("p", cfg, "m"), &tools, Vec::new(), Default::default());
+    let ctx = ToolContext::new(dir.path().into());
+    let out = sub.run(json!({"prompt":"do it", "agent":"explore", "start_clean":true, "skill":"private-skill", "skill_arguments":"ARG_MARKER"}), &ctx).await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.content.contains("SECRET_SKILL_BODY"));
+    {
+        let seen = client.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(!seen[0].system.contains("SECRET_SKILL_BODY"));
+        assert!(!seen[0].messages[0].text().contains("SECRET_SKILL_BODY"));
+        let Part::ToolResult { content, .. } = &seen[0].messages[2].content[0] else { panic!("not skill tool output") };
+        let task = nexo_core::message::result_text(content);
+        assert!(task.contains("SECRET_SKILL_BODY") && task.contains("ARG_MARKER"));
+    }
+    let out = sub.run(json!({"prompt":"do it", "agent":"explore", "skill":"missing"}), &ctx).await;
+    assert!(out.is_error && out.content.contains("missing"), "{}", out.content);
+    assert_eq!(client.seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn explicit_skill_requires_profile_tool_and_fits_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = nexo_core::paths::canonical(dir.path()).unwrap().join("huge");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("SKILL.md"),
+        format!("---\nname: huge\ndescription: test\n---\n{}", "large content ".repeat(10000)),
+    )
+    .unwrap();
+    let skill = nexo_core::skills::Skill {
+        name: "huge".into(),
+        description: "test".into(),
+        dir: folder,
+        allowed_tools: vec![],
+        source: "test".into(),
+    };
+    let mut tools = ToolSet::new();
+    tools.add(nexo_tools::skill::tool(vec![skill]).unwrap());
+    tools.add(Arc::new(nexo_tools::read::Read));
+    let client = Scripted::new(0, None);
+    let mut cfg = ProviderConfig { default_model: Some("m".into()), ..Default::default() };
+    cfg.context_window.insert("m".into(), 8192);
+    let sub = SubAgent::new(client.clone(), Target::new("p", cfg.clone(), "m"), &tools, Vec::new(), Default::default());
+    let ctx = ToolContext::new(dir.path().into());
+    let out = sub.run(json!({"prompt":"do it", "agent":"explore", "skill":"huge"}), &ctx).await;
+    assert!(out.is_error && out.content.contains("does not fit"), "{}", out.content);
+    let sub =
+        SubAgent::new(client.clone(), Target::new("p", cfg, "m"), &ToolSet::new(), Vec::new(), Default::default());
+    let out = sub.run(json!({"prompt":"do it", "agent":"explore", "skill":"huge"}), &ctx).await;
+    assert!(out.is_error && out.content.contains("no tool"), "{}", out.content);
+    assert!(client.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn builtin_skill_can_be_loaded_in_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = ToolSet::new();
+    tools.add(nexo_tools::skill::tool(nexo_core::skills::discover(dir.path(), false)).unwrap());
+    let client = Scripted::new(0, None);
+    let cfg = ProviderConfig { default_model: Some("m".into()), ..Default::default() };
+    let sub = SubAgent::new(client.clone(), Target::new("p", cfg, "m"), &tools, Vec::new(), Default::default());
+    let out = sub
+        .run(json!({"prompt":"do it", "agent":"explore", "skill":"research"}), &ToolContext::new(dir.path().into()))
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(format!("{:?}", client.seen.lock().unwrap()[0].messages).contains("Prefer primary sources"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_skill_is_refused_before_model_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::fs::write(external.path().join("secret"), "SECRET_SYMLINK_BODY").unwrap();
+    let folder = nexo_core::paths::canonical(dir.path()).unwrap().join("skill");
+    std::fs::create_dir(&folder).unwrap();
+    std::os::unix::fs::symlink(external.path().join("secret"), folder.join("SKILL.md")).unwrap();
+    let skill = nexo_core::skills::Skill {
+        name: "linked".into(),
+        description: "test".into(),
+        dir: folder,
+        allowed_tools: vec![],
+        source: "test".into(),
+    };
+    let mut tools = ToolSet::new();
+    tools.add(nexo_tools::skill::tool(vec![skill]).unwrap());
+    tools.add(Arc::new(nexo_tools::read::Read));
+    let client = Scripted::new(0, None);
+    let cfg = ProviderConfig { default_model: Some("m".into()), ..Default::default() };
+    let sub = SubAgent::new(client.clone(), Target::new("p", cfg, "m"), &tools, Vec::new(), Default::default());
+    let out = sub
+        .run(json!({"prompt":"do it", "agent":"explore", "skill":"linked"}), &ToolContext::new(dir.path().into()))
+        .await;
+    assert!(out.is_error, "{}", out.content);
+    assert!(!out.content.contains("SECRET_SYMLINK_BODY"));
+    assert!(client.seen.lock().unwrap().is_empty());
+}
+
+struct AllowSkill;
+#[async_trait]
+impl Host for AllowSkill {
+    async fn permit(
+        &self,
+        _: &str,
+        _: &str,
+        _: &dyn Tool,
+        _: &Value,
+        _: &CancellationToken,
+        _: Option<crate::hooks::Decision>,
+    ) -> Result<Why, (String, Why)> {
+        Ok(Why::RULE)
+    }
+    async fn spent(&self, _: &str, _: Usage, _: Option<Pricing>, _: bool) -> f64 {
+        0.0
+    }
+}
+
+struct RewriteSkill;
+#[async_trait]
+impl Host for RewriteSkill {
+    async fn permit(
+        &self,
+        _: &str,
+        _: &str,
+        _: &dyn Tool,
+        _: &Value,
+        _: &CancellationToken,
+        _: Option<crate::hooks::Decision>,
+    ) -> Result<Why, (String, Why)> {
+        Ok(Why::RULE)
+    }
+    async fn hook(&self, event: &str, subject: &str, _: Value) -> crate::hooks::Outcome {
+        if event == "pre_tool" && subject == "skill" {
+            crate::hooks::Outcome {
+                updated_input: Some(json!({"name":"research", "arguments":"rewritten"})),
+                ..Default::default()
+            }
+        } else {
+            Default::default()
+        }
+    }
+    async fn spent(&self, _: &str, _: Usage, _: Option<Pricing>, _: bool) -> f64 {
+        0.0
+    }
+}
+
+#[tokio::test]
+async fn explicit_skill_history_uses_hook_rewritten_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = ToolSet::new();
+    tools.add(nexo_tools::skill::tool(nexo_core::skills::discover(dir.path(), false)).unwrap());
+    let client = Scripted::new(0, None);
+    let host: HostCell = Default::default();
+    host.set(Arc::new(RewriteSkill)).ok().unwrap();
+    let sub = SubAgent::new(client.clone(), Target::new("p", ProviderConfig::default(), "m"), &tools, Vec::new(), host);
+    let out = sub
+        .run(json!({"prompt":"do it", "agent":"explore", "skill":"original"}), &ToolContext::new(dir.path().into()))
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    let seen = client.seen.lock().unwrap();
+    let Part::ToolCall { args, .. } = &seen[0].messages[1].content[0] else { panic!("missing call") };
+    assert_eq!(args["name"], "research");
+    assert_eq!(args["arguments"], "rewritten");
+    let Part::ToolResult { content, .. } = &seen[0].messages[2].content[0] else { panic!("missing result") };
+    assert!(nexo_core::message::result_text(content).contains("Prefer primary sources"));
+}
+
+#[tokio::test]
+async fn explicit_skill_untracked_in_worktree_is_refused() {
+    worktree_skill(false).await;
+}
+
+#[tokio::test]
+async fn explicit_skill_tracked_in_worktree_uses_worker_copy() {
+    worktree_skill(true).await;
+}
+
+async fn worktree_skill(tracked: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "test@example.com"],
+        &["config", "user.name", "Test"],
+        &["commit", "--allow-empty", "-qm", "initial"],
+    ] {
+        assert!(std::process::Command::new("git").current_dir(dir.path()).args(args).status().unwrap().success());
+    }
+    let folder = nexo_core::paths::canonical(dir.path()).unwrap().join(".nexo/skills/local");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("SKILL.md"), "---\nname: local\ndescription: test\n---\nUNTRACKED_WORKTREE_SKILL\n")
+        .unwrap();
+    if tracked {
+        for args in [&["add", ".nexo/skills/local/SKILL.md"][..], &["commit", "-qm", "add skill"]] {
+            assert!(std::process::Command::new("git").current_dir(dir.path()).args(args).status().unwrap().success());
+        }
+    }
+    let original_folder = folder.clone();
+    let skill = nexo_core::skills::Skill {
+        name: "local".into(),
+        description: "test".into(),
+        dir: folder,
+        allowed_tools: vec![],
+        source: ".nexo/skills".into(),
+    };
+    let mut tools = ToolSet::new();
+    tools.add(nexo_tools::skill::tool(vec![skill]).unwrap());
+    tools.add(Arc::new(nexo_tools::read::Read));
+    tools.add(Arc::new(nexo_tools::write::Write));
+    let client = Scripted::new(0, None);
+    let mut profile = builtin().into_iter().find(|p| p.name == "general").unwrap();
+    profile.isolation = true;
+    let host: HostCell = Default::default();
+    host.set(Arc::new(AllowSkill)).ok().unwrap();
+    let sub =
+        SubAgent::new(client.clone(), Target::new("p", ProviderConfig::default(), "m"), &tools, vec![profile], host);
+    let out = sub
+        .run(json!({"prompt":"do it", "agent":"general", "skill":"local"}), &ToolContext::new(dir.path().into()))
+        .await;
+    let seen = client.seen.lock().unwrap();
+    if tracked {
+        assert!(!out.is_error, "{}", out.content);
+        let messages = format!("{:?}", seen[0].messages);
+        assert!(messages.contains("UNTRACKED_WORKTREE_SKILL"));
+        assert!(!messages.contains(&original_folder.display().to_string()));
+        assert!(messages.contains(".nexo/skills/local"));
+    } else {
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("unavailable in the worker worktree"), "{}", out.content);
+        assert!(seen.is_empty());
+    }
+}

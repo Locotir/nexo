@@ -62,3 +62,65 @@ async fn project_skill_is_advertised_loaded_and_does_not_grant_write_permission(
     )));
     r.stop().await;
 }
+
+/// A read rule applies to the resolved external file even though the model asked for a
+/// skill by *name*. Inspect actual worker and coordinator requests, not just the tool result.
+#[tokio::test]
+async fn delegated_skill_uses_session_read_rules_and_only_enters_worker_request() {
+    for (denied, ask) in [(true, false), (false, false), (true, true), (false, true)] {
+        let project = test_tmpdir().unwrap();
+        let external = test_tmpdir().unwrap();
+        let mut root = nexo_core::paths::canonical(external.path()).unwrap();
+        if ask {
+            root.push(".ssh");
+        }
+        let folder = root.join("report");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("SKILL.md"), "---\ndescription: Build a report\n---\nWORKER_BODY_MARKER").unwrap();
+        let found = nexo_core::skills::scan_root(&root, "NEXO_SKILLS_DIR", None);
+        let set = tools().with(nexo_tools::skill::tool(found).unwrap());
+        let mut replies = vec![Reply::Events(call(
+            "t",
+            "task",
+            json!({"agent":"explore","prompt":"Report","skill":"report","skill_arguments":"arg","start_clean":true}),
+        ))];
+        if !denied {
+            replies.push(Reply::Events(text("worker result")));
+        }
+        replies.push(Reply::Events(text("done")));
+        let client = Scripted::new(replies);
+        let mut cfg = config(PermissionMode::Ask);
+        if denied && !ask {
+            cfg.permissions.deny.push("read(**/SKILL.md)".into());
+        }
+        let mut r = start_with(client.clone(), cfg, None, project.path(), set).await;
+        r.send(AgentCommand::Submit { text: "delegate report".into(), attachments: vec![] });
+        if ask {
+            let events = r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::TurnEnd { .. })).await;
+            let Some(AgentEvent::PermissionAsk { request }) = events.last() else {
+                panic!("missing read ask: {events:?}")
+            };
+            assert_eq!(request.tool, "read");
+            assert_eq!(request.agent.as_deref(), Some("explore"));
+            // A single-file read is shown in the summary; detail lists only multi-file reads.
+            assert_eq!(request.summary, format!("read {}", folder.join("SKILL.md").display()));
+            assert_eq!(client.requests().len(), 1);
+            r.send(AgentCommand::Permission {
+                id: request.id.clone(),
+                decision: if denied { PermissionDecision::Deny { reason: None } } else { PermissionDecision::Allow },
+            });
+        }
+        let evs = r.turn().await;
+        assert!(
+            evs.iter().any(|e| matches!(e, AgentEvent::ToolDone{id,output,..} if id=="t" && output.is_error==denied)),
+            "{evs:?}"
+        );
+        let reqs = client.requests();
+        assert_eq!(reqs.len(), if denied { 2 } else { 3 });
+        for (i, req) in reqs.iter().enumerate() {
+            assert!(!req.system.contains("WORKER_BODY_MARKER"));
+            assert_eq!(format!("{:?}", req.messages).contains("WORKER_BODY_MARKER"), !denied && i == 1);
+        }
+        r.stop().await;
+    }
+}

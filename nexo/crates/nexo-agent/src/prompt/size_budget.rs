@@ -75,9 +75,8 @@ fn both_prompts_name_every_part_nexo_adds_to_the_persons_messages() {
 
 #[test]
 fn both_prompts_say_to_answer_at_once_when_the_proving_check_passes() {
-    for text in [BUILT_IN, BUILT_IN_COMPACT] {
-        assert!(text.contains("run the one check that proves it; when it passes, answer at once"), "{text}");
-    }
+    assert!(BUILT_IN.contains("run the one check that proves it; when it passes, answer at once"));
+    assert!(BUILT_IN_COMPACT.contains("run the proving check; when it passes, answer at once"));
 }
 
 #[test]

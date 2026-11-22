@@ -5,6 +5,8 @@ pub(crate) struct Launch<'a> {
     /// The kind of sub-agent (a name of [`SubAgent::profiles`]).
     pub agent: &'a str,
     pub prompt: &'a str,
+    pub skill: Option<&'a str>,
+    pub skill_arguments: Option<&'a str>,
     /// Another provider or model, as the `task` tool takes them.
     pub provider: Option<&'a str>,
     pub model: Option<&'a str>,

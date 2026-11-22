@@ -411,7 +411,7 @@ fn a_call_about_a_shell_job_carries_its_whole_command() {
 }
 
 #[test]
-fn a_message_that_opens_or_goes_back_to_a_topic_carries_its_line() {
+fn only_a_message_that_goes_back_to_a_topic_carries_a_line() {
     use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
     let (mut a, _rx) = bare();
     let users: Vec<usize> = ["fix the NAS", "and the guard", "make the ad", "back to the NAS"]
@@ -427,9 +427,10 @@ fn a_message_that_opens_or_goes_back_to_a_topic_carries_its_line() {
     a.handle_agent(AgentEvent::ContextMap { cells, zones, calls: Vec::new(), call_tokens: Vec::new() });
     let head =
         |a: &mut App, i: usize| a.lines(i, 80)[0].spans.iter().map(|s| s.content.to_string()).collect::<String>();
-    assert!(head(&mut a, users[0]).contains("new topic"));
+    assert!(!head(&mut a, users[0]).contains("──"), "the first topic has no line");
     assert!(!head(&mut a, users[1]).contains("──"), "the same topic goes on without a line");
-    assert!(head(&mut a, users[2]).contains("new topic"));
+    assert!(!head(&mut a, users[2]).contains("──"), "a new topic has no line");
+    assert_eq!(a.map_zones.len(), 3, "topic map remains available");
     // the way back says how much of the earlier topic the model carries again
     assert!(head(&mut a, users[3]).contains("↺ earlier topic · 2 msgs"), "{}", head(&mut a, users[3]));
 }

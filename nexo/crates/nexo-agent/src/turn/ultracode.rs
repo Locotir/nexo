@@ -224,6 +224,8 @@ impl nexo_core::Tool for ExecutePlan {
                 provider: Some(&step.provider),
                 model: Some(&step.model),
                 effort: None,
+                skill: None,
+                skill_arguments: None,
                 description: None,
                 title: None,
                 background: false,

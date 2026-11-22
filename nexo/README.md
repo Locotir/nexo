@@ -209,7 +209,7 @@ Review $ARGUMENTS against CONTRIBUTING.md and list what breaks a rule.
 **Agent Skills.** A folder with a `SKILL.md` (front matter `name`, `description`, optional `allowed-tools`)
 and any files it mentions is a skill, the same format Claude Code and Codex use. nexo looks in
 `.nexo/skills`, `.agents/skills` and `.claude/skills` of the project (the working directory up to the
-repository root), then in `~/.nexo/skills`, `~/.agents/skills` and `~/.claude/skills`; on a name clash the
+repository root), then in the optional absolute `NEXO_SKILLS_DIR` (same layout and managed policy as user skills), then `~/.nexo/skills`, `~/.agents/skills` and `~/.claude/skills`; on a name clash the
 first wins, nexo's own folders first. The model sees each skill's name and a short description (up to
 100, fixed for the session so the prompt cache holds) and loads the body with the `skill` tool when a
 task matches. Run one yourself with `/skill-name [args]`; `/skills` lists what was found and where from.
@@ -218,11 +218,12 @@ task matches. Run one yourself with `/skill-name [args]`; `/skills` lists what w
 
 **Sub-agents.** The model has a `task` tool: it hands a self-contained job to a sub-agent that works on
 its own and answers with a short report. Only the report enters the conversation, so a wide search costs
-one message. Two kinds come built in:
+one message. Three kinds come built in:
 
 | Kind | Can do | For |
 |---|---|---|
 | `explore` | read, grep, glob, ls, web search; nothing outside the project | "where is X handled?", "what calls Y?" |
+| `research` | read-only; available search tools | find, contrast and cite sources |
 | `general` (default) | every tool but `task`; writes and commands ask the same permission as the main agent | a self-contained change or check |
 
 Several `task` calls in one message run at once, also `general` ones that change files: a file one of
@@ -243,7 +244,16 @@ Read the change and list what is wrong with it, worst first.
 
 The model is told each of your kinds by name with the start of its `description`: the first clause, 60
 characters at most, so say first what the kind is for. A call that names a kind there is not is answered
-with every kind and its whole description.
+with every kind and its whole description. A profile's `model` selects a model on the conversation's provider;
+without one it inherits the conversation model. An explicit `task` model overrides the profile, subject to
+provider configuration and managed policy. Profiles do not grant tools or permissions the session lacks.
+
+When the `task` schema offers `skill`, pass an available skill's name and optional `skill_arguments` to load
+it inside the worker rather than loading its body into the coordinator. The worker's profile must allow the
+`skill` tool and, for a file-backed skill, `read`. Loading checks the exact `SKILL.md` against the
+session's read rules, including asks and denials; linked skill paths are not followed. Other files in the
+skill folder still require normal tool calls. Built-ins need no file read. A skill never expands permissions. Delegate substantial self-contained work, not trivial
+operations where the extra worker would cost more than doing the operation directly.
 
 `[agent] subagents = false` removes the tool.
 
