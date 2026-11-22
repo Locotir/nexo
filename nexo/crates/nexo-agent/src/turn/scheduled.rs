@@ -123,7 +123,7 @@ async fn admit(rt: &mut Runtime) {
         return;
     }
     let p = rt.loops.pending.as_ref().unwrap();
-    let changed = p.config != st.config || p.cwd != st.cwd || p.session != st.session.id().to_string();
+    let changed = p.config != st.config || p.cwd != st.cwd || p.session != st.session.id();
     drop(st);
     if changed {
         abandon(rt);
@@ -294,7 +294,8 @@ pub(super) async fn tick(rt: &mut Runtime) {
         )
         .await
     });
-    rt.loops.pending = Some(Pending { id, prompt, person, config, cwd, session, hook: Some(hook), outcome: None, intervened: false });
+    rt.loops.pending =
+        Some(Pending { id, prompt, person, config, cwd, session, hook: Some(hook), outcome: None, intervened: false });
 }
 
 pub(super) fn turn_end(rt: &mut Runtime, reason: TurnEnd) {
@@ -321,7 +322,8 @@ mod tests {
             assert!(!loops.tasks[1].paused);
             assert_eq!(loops.finish(reason), None); // unrelated subsequent turn
         }
-        for reason in [TurnEnd::Done] {
+        {
+            let reason = TurnEnd::Done;
             let mut loops = Loops { tasks: vec![make(1)], next_id: 1, running: Some(1), pending: None };
             assert_eq!(loops.finish(reason), None);
             assert!(!loops.tasks[0].paused);

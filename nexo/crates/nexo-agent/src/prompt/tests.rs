@@ -9,8 +9,7 @@ fn skill_catalogue_follows_offered_tools_and_raw_prompt() {
     let d = tempfile::tempdir().unwrap();
     let skill = nexo_tools::skill::tool(nexo_core::skills::discover(d.path(), false)).unwrap();
     let tools = ToolSet::new().with(skill);
-    let mut cfg = AgentConfig::default();
-    cfg.hermetic = true;
+    let mut cfg = AgentConfig { hermetic: true, ..AgentConfig::default() };
     let vol = Volatile::capture(d.path(), &cfg);
     let p = system_prompt_with(d.path(), &cfg, &tools, None, &vol);
     assert!(p.contains("<skill_catalog>\n") && p.contains("- research:"), "{p}");

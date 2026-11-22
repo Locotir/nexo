@@ -175,18 +175,6 @@ fn bracket_part(row: usize, height: usize) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod bracket_tests {
-    use super::bracket_part;
-
-    #[test]
-    fn bracket_marks_block_endpoints_not_viewport_endpoints() {
-        assert_eq!(bracket_part(0, 1), "┃");
-        assert_eq!((bracket_part(0, 4), bracket_part(1, 4), bracket_part(3, 4)), ("┏", "┃", "┗"));
-        assert_eq!(bracket_part(2, 4), "┃");
-    }
-}
-
 /// Blocks whose first line names them, kept in sight while the rest scrolls past.
 fn sticky(b: &crate::render::blocks::Block) -> bool {
     use crate::render::blocks::Block;
@@ -239,4 +227,16 @@ pub(super) fn highlight(line: Line<'static>, q: &str, style: Style, current: boo
         }
     }
     Line::from(spans).style(line.style)
+}
+
+#[cfg(test)]
+mod bracket_tests {
+    use super::bracket_part;
+
+    #[test]
+    fn bracket_marks_block_endpoints_not_viewport_endpoints() {
+        assert_eq!(bracket_part(0, 1), "┃");
+        assert_eq!((bracket_part(0, 4), bracket_part(1, 4), bracket_part(3, 4)), ("┏", "┃", "┗"));
+        assert_eq!(bracket_part(2, 4), "┃");
+    }
 }

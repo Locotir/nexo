@@ -99,11 +99,12 @@ fn monitor_chip_opens_live_read_only_output_without_touching_jobs() {
     assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.len() == 1));
     press(&mut a, KeyCode::Enter);
     let Some(Modal::Jobs(v)) = &a.modal else { panic!("monitor window") };
-    let text: String = v.lines(80, &a.theme).0.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+    let text: String =
+        v.lines(80, &a.theme).0.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("new output"));
     a.handle_agent(AgentEvent::Monitors { ids: vec![] });
     assert!(a.monitors.is_empty());
-    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.len() == 0));
+    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.is_empty()));
 }
 
 #[test]

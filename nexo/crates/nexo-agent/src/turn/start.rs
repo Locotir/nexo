@@ -92,7 +92,20 @@ pub(super) async fn begin_scheduled_turn(
     cancel: CancellationToken,
     hook_context: Vec<String>,
 ) -> JoinHandle<TurnEnd> {
-    begin_turn(state, text, Vec::new(), person, false, cancel, None, false, hook_context).await
+    begin_turn(
+        state,
+        TurnInput {
+            text,
+            attachments: Vec::new(),
+            person,
+            ultracode: false,
+            item: None,
+            untrusted: false,
+            hook_context,
+        },
+        cancel,
+    )
+    .await
 }
 
 async fn start_hooked_prompt(
@@ -115,7 +128,14 @@ async fn start_hooked_prompt(
         return None;
     }
     state.lock().await.hook_context.extend(o.context);
-    Some(begin_turn(state, text, attachments, person, ultracode, cancel, item, false, Vec::new()).await)
+    Some(
+        begin_turn(
+            state,
+            TurnInput { text, attachments, person, ultracode, item, untrusted: false, hook_context: Vec::new() },
+            cancel,
+        )
+        .await,
+    )
 }
 
 /// Starts a turn on a message that is not the person's own words (mail, the goal loop, a job note, the
@@ -126,12 +146,38 @@ pub(super) async fn start_turn(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
-    begin_turn(state, text, attachments, false, false, cancel, None, false, Vec::new()).await
+    begin_turn(
+        state,
+        TurnInput {
+            text,
+            attachments,
+            person: false,
+            ultracode: false,
+            item: None,
+            untrusted: false,
+            hook_context: Vec::new(),
+        },
+        cancel,
+    )
+    .await
 }
 
 /// Monitor output is external data, never a source of implicit resource or file requests.
 pub(super) async fn start_monitor_turn(state: &Shared, text: String, cancel: CancellationToken) -> JoinHandle<TurnEnd> {
-    begin_turn(state, text, Vec::new(), false, false, cancel, None, true, Vec::new()).await
+    begin_turn(
+        state,
+        TurnInput {
+            text,
+            attachments: Vec::new(),
+            person: false,
+            ultracode: false,
+            item: None,
+            untrusted: true,
+            hook_context: Vec::new(),
+        },
+        cancel,
+    )
+    .await
 }
 
 /// Starts a turn on ``text``. When the person wrote it (``person``), everything nexo adds (shared memory, hook
@@ -140,17 +186,18 @@ pub(super) async fn start_monitor_turn(state: &Shared, text: String, cancel: Can
 ///
 /// The work before the first model call (the mentions, the project's check, the message) runs in the turn's own
 /// task: the loop takes commands meanwhile, so a message sent then is queued (and said to be) and Esc stops it.
-async fn begin_turn(
-    state: &Shared,
+struct TurnInput {
     text: String,
     attachments: Vec<Attachment>,
     person: bool,
     ultracode: bool,
-    cancel: CancellationToken,
     item: Option<InboxItem>,
     untrusted: bool,
     hook_context: Vec<String>,
-) -> JoinHandle<TurnEnd> {
+}
+
+async fn begin_turn(state: &Shared, input: TurnInput, cancel: CancellationToken) -> JoinHandle<TurnEnd> {
+    let TurnInput { ref text, person, .. } = input;
     let events = state.lock().await.events.clone();
     let what = if person {
         PREP_REQUEST
@@ -165,7 +212,7 @@ async fn begin_turn(
     let state = state.clone();
     tokio::spawn(async move {
         let from = SystemTime::now();
-        if !prepare_turn(&state, text, attachments, person, ultracode, &cancel, item, untrusted, hook_context).await {
+        if !prepare_turn(&state, input, &cancel).await {
             return TurnEnd::Interrupted;
         }
         let end = run_turn(state.clone(), cancel).await;
@@ -175,17 +222,8 @@ async fn begin_turn(
 }
 
 /// What `begin_turn` does before the turn's rounds: the message the model reads, in the history.
-async fn prepare_turn(
-    state: &Shared,
-    text: String,
-    attachments: Vec<Attachment>,
-    person: bool,
-    ultracode: bool,
-    cancel: &CancellationToken,
-    mut item: Option<InboxItem>,
-    untrusted: bool,
-    hook_context: Vec<String>,
-) -> bool {
+async fn prepare_turn(state: &Shared, input: TurnInput, cancel: &CancellationToken) -> bool {
+    let TurnInput { text, attachments, person, ultracode, mut item, untrusted, hook_context } = input;
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
     if let Some(h) = &hub {
