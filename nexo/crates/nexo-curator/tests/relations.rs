@@ -260,3 +260,46 @@ fn old_read_after_successful_edit_is_not_an_unqualified_current_value() {
         );
     }
 }
+
+#[test]
+fn a_complete_tail_line_of_a_large_result_keeps_its_raw_coordinates() {
+    let quote = "cerulean742 spindle916: batch = cobalt";
+    let row = format!("{}\r\n", "received ".repeat(62));
+    let body = format!("{}{quote}", row.repeat(512));
+    assert!(body.len() > 256 * 1024);
+    let h = history(vec![read("lot", "west/box.csv")], vec![result("lot", &body)]);
+    let rows = query(h, "Which catalogue reported cerulean742 spindle916?");
+    let found = at(&rows, "m00003", 1).find(|r| r["quote"] == quote).expect("missing tail receipt");
+    assert_eq!(found["line"], 513);
+    pair(found, 1, "lot");
+}
+
+#[test]
+fn a_receipt_named_only_in_the_middle_of_the_request_is_found() {
+    let quote = "cerulean742 spindle916: batch = cobalt";
+    let h = history(vec![read("lot", "west/box.csv")], vec![result("lot", &format!("{quote}\n{}", page("west", 68)))]);
+    let pad = "catalogue ".repeat(100);
+    let rows = query(h, &format!("{pad}cerulean742 spindle916 {pad}"));
+    assert!(at(&rows, "m00003", 1).any(|r| r["quote"] == quote && r["call_id"] == "lot"));
+}
+
+#[test]
+fn visible_hits_do_not_exhaust_the_shortlist_before_a_hidden_direct_match() {
+    let quote = "saffron742: original receipt = cobalt";
+    let h = history(vec![read("lot", "west/box.csv")], vec![result("lot", &format!("{quote}\n{}", page("west", 68)))]);
+    let mut h = h;
+    age(&mut h);
+    // Newer, equally scoring matches stay visible. They are not evidence to echo back, but
+    // neither should 48 of them exhaust the direct shortlist and hide match 49.
+    let visible: String = (0..48).map(|n| format!("saffron742 scratch label {n}\n")).collect();
+    h.extend([msg("assistant", visible), msg("user", "Continue the museum inventory ledger audit. Trace saffron742.")]);
+    let mut c = Curator::new(SPEC).unwrap();
+    c.window(WINDOW);
+    let reply = c.view(HEAD, &h, 1.0).unwrap();
+    let rows = records(&reply);
+    let found = at(&rows, "m00003", 1).find(|r| r["quote"] == quote).expect("hidden direct match 49");
+    assert_eq!(found["line"], 1);
+    pair(found, 1, "lot");
+    assert!(rows.len() <= 48);
+    assert!(!rows.iter().any(|r| r["quote"].as_str().unwrap().contains("scratch label")));
+}

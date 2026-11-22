@@ -228,6 +228,8 @@ pub struct AgentsView {
     deliveries: Vec<(String, &'static str)>,
     /// The end of the output of this session's jobs, by job id, as `/jobs` reads it.
     tails: HashMap<u32, String>,
+    /// Number of monitors in this session, including those whose jobs ended.
+    monitor_count: usize,
     /// The last time the tails were asked for.
     tails_asked: Option<Instant>,
     /// Starts a lane's runner: the detached `nexo team run <name>`; a test puts a stand-in here.
@@ -308,6 +310,7 @@ impl AgentsView {
             runs: Vec::new(),
             deliveries: Vec::new(),
             tails: HashMap::new(),
+            monitor_count: 0,
             tails_asked: None,
             starter: nexo_core::team::spawn::runner,
             starter_now: nexo_core::team::spawn::runner_now,
@@ -402,6 +405,11 @@ impl AgentsView {
     /// of its step.
     pub fn set_deliveries(&mut self, deliveries: Vec<(String, &'static str)>) {
         self.deliveries = deliveries.into_iter().map(|(id, state)| (format!("nexo:{id}"), state)).collect();
+    }
+
+    /// Update the shortcut's count from this session's monitor snapshot.
+    pub fn set_monitor_count(&mut self, count: usize) {
+        self.monitor_count = count;
     }
 
     /// The end of the output of this session's jobs (the answer to `JobTails`).

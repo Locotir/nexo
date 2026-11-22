@@ -277,7 +277,7 @@ impl AgentsView {
     /// The keys that act on the selected line, most used first. None act on two things on one row.
     pub fn footer_keys(&self) -> Vec<&'static str> {
         let sup = self.panel.is_some();
-        let mut k: Vec<&'static str> = Vec::new();
+        let mut k: Vec<&'static str> = vec![if self.monitor_count > 0 { "m monitors •" } else { "m monitors" }];
         let item = self.selected_item();
         if let Some(Item::Head { group, .. }) = &item {
             if *group == Group::Lanes {

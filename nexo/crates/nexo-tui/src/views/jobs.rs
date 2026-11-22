@@ -24,6 +24,7 @@ pub struct JobsView {
     tails: Vec<JobTail>,
     /// A read-only monitor list shares the jobs window's output navigation.
     monitors: bool,
+    monitor_states: Vec<(u32, nexo_core::agent::MonitorStatus)>,
     /// The row under the cursor, in the order shown.
     pub selected: usize,
     /// Whether one job is open on its own.
@@ -40,6 +41,7 @@ impl JobsView {
             jobs,
             tails: Vec::new(),
             monitors: false,
+            monitor_states: Vec::new(),
             selected: 0,
             detail: false,
             scroll: 0,
@@ -54,6 +56,20 @@ impl JobsView {
         view.monitors = true;
         view.tails = tails;
         view
+    }
+
+    pub fn set_monitor_states(&mut self, states: Vec<(u32, nexo_core::agent::MonitorStatus)>) {
+        self.monitor_states = states;
+    }
+
+    fn monitor_status(&self, id: u32) -> &'static str {
+        use nexo_core::agent::MonitorStatus::*;
+        match self.monitor_states.iter().find(|(job, _)| *job == id).map(|(_, state)| state) {
+            Some(Listening) => "listening",
+            Some(Paused) => "paused",
+            Some(Closing) => "closing",
+            None => "unknown",
+        }
     }
 
     pub fn is_monitors(&self) -> bool {
@@ -84,7 +100,12 @@ impl JobsView {
     pub fn set_jobs(&mut self, jobs: Vec<JobInfo>) {
         let id = self.current().map(|j| j.id);
         self.jobs = jobs;
-        self.selected = id.and_then(|id| self.order().iter().position(|j| j.id == id)).unwrap_or(0);
+        let position = id.and_then(|id| self.order().iter().position(|j| j.id == id));
+        if self.detail && position.is_none() {
+            self.detail = false;
+            self.scroll = 0;
+        }
+        self.selected = position.unwrap_or(0);
         self.selected = self.selected.min(self.len().saturating_sub(1));
     }
 
@@ -178,7 +199,7 @@ impl JobsView {
             return if self.detail {
                 " ◉ monitor ".into()
             } else {
-                format!(" ◉ monitors · {} running ", self.jobs.iter().filter(|j| j.status.running()).count())
+                format!(" ◉ monitors · {} total ", self.jobs.len())
             };
         }
         if self.detail {
@@ -235,8 +256,17 @@ impl JobsView {
         if self.is_empty() {
             let empty = vec![
                 Line::from(Span::styled("⚙", theme.dim2())).centered(),
-                Line::from(Span::styled("No background jobs", theme.dim())).centered(),
-                Line::from(Span::styled("Ask the agent to run a command in the background.", theme.dim2())).centered(),
+                Line::from(Span::styled(if self.monitors { "No monitors" } else { "No background jobs" }, theme.dim()))
+                    .centered(),
+                Line::from(Span::styled(
+                    if self.monitors {
+                        "Ask the agent to monitor a background shell job."
+                    } else {
+                        "Ask the agent to run a command in the background."
+                    },
+                    theme.dim2(),
+                ))
+                .centered(),
             ];
             return (empty, Vec::new(), 0);
         }
@@ -247,7 +277,7 @@ impl JobsView {
         let mut starts = Vec::new();
         let mut ended_header = false;
         for (i, j) in self.order().into_iter().enumerate() {
-            if !j.status.running() && !ended_header {
+            if !self.monitors && !j.status.running() && !ended_header {
                 if i > 0 {
                     lines.push(Line::default());
                 }
@@ -276,7 +306,8 @@ impl JobsView {
             JobKind::Agent => "sub-agent: ".into(),
         };
         let first = j.label.lines().next().unwrap_or("");
-        let status = status_text(j, self.tail(j.id));
+        let status =
+            if self.monitors { self.monitor_status(j.id).to_string() } else { status_text(j, self.tail(j.id)) };
         let left = format!("{} {:>3}  ", if sel { "▸" } else { " " }, j.id);
         let room = w.saturating_sub(width(&left) + width(&status) + 2);
         let label = truncate(&format!("{what}{first}"), room);
@@ -309,8 +340,16 @@ impl JobsView {
             };
             lines.push(Line::from(vec![Span::styled(lead, theme.dim()), Span::styled(text, theme.bold(theme.fg))]));
         }
+        if self.monitors {
+            lines.push(Line::from(Span::styled(format!("monitor: {}", self.monitor_status(j.id)), theme.dim())));
+        }
         lines.push(Line::from(Span::styled(
-            format!("{} · {} lines of output", status_text(j, self.tail(j.id)), j.lines),
+            format!(
+                "{}{} · {} lines of output",
+                if self.monitors { "job: " } else { "" },
+                status_text(j, self.tail(j.id)),
+                j.lines
+            ),
             theme.dim(),
         )));
         lines.push(Line::from(Span::styled("─".repeat(w), theme.dim2())));
@@ -370,6 +409,29 @@ impl JobsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_monitor_closes_detail_instead_of_showing_another() {
+        let job = |id| JobInfo {
+            id,
+            kind: JobKind::Shell,
+            label: format!("job {id}"),
+            status: JobStatus::Running,
+            elapsed_ms: 0,
+            lines: 0,
+            held: false,
+        };
+        let mut view = JobsView::monitors(vec![job(1), job(2)], vec![]);
+        view.key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(view.current().unwrap().id, 2);
+        assert!(view.detail);
+        view.set_jobs(vec![job(1), job(2), job(3)]);
+        assert!(view.detail);
+        assert_eq!(view.current().unwrap().id, 2);
+        view.set_jobs(vec![job(1), job(3)]);
+        assert!(!view.detail);
+        assert_eq!(view.scroll, 0);
+    }
 
     #[test]
     fn a_wide_label_pads_by_cells_so_the_status_stays_inside_the_row() {

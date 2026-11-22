@@ -5,24 +5,12 @@ use std::ops::Range;
 use serde_json::{json, Value};
 
 use super::{files::same_file, Engine};
-use crate::facts::{keys, LINE_CHARS};
+use crate::facts::keys;
 use crate::hindsight::{UKind, Unit};
-use crate::index::Post;
+use crate::index::{Index, Post, REL_OUT};
 use crate::json::{est_str, is_person};
-use crate::mechanical::MARK;
 use crate::msg::{get_str, request_words};
 use crate::tools::{classify, Kind};
-
-// Cap bytes examined per indexed block as well as the index's own line limit. Do not index a
-// partial line at the boundary. Structured/multimodal results need per-part coordinates first.
-const BLOCK_BYTES: usize = 256 * 1024;
-fn prefix(text: &str) -> &str {
-    if text.len() <= BLOCK_BYTES {
-        return text;
-    }
-    let end = text.as_bytes()[..BLOCK_BYTES].iter().rposition(|&b| b == b'\n').unwrap_or(0);
-    &text[..end]
-}
 
 fn source<'a>(m: &'a Value, u: &Unit) -> Option<&'a str> {
     let content = m.get("content")?;
@@ -56,11 +44,9 @@ fn source<'a>(m: &'a Value, u: &Unit) -> Option<&'a str> {
     }
 }
 
-fn original_line<'a>(history: &'a [Value], units: &[Unit], (unit, line): Post) -> Option<&'a str> {
-    let u = units.get(unit as usize)?;
-    let line = prefix(source(history.get(u.msg)?, u)?).lines().nth(line as usize)?;
-    (!line.is_empty() && !line.contains(MARK) && line.chars().take(LINE_CHARS + 1).count() <= LINE_CHARS)
-        .then_some(line)
+fn original_line<'a>(index: &Index, history: &'a [Value], units: &[Unit], p: Post) -> Option<&'a str> {
+    let u = units.get(p.0 as usize)?;
+    index.relation_line(p, source(history.get(u.msg)?, u)?)
 }
 
 // Only the immediately preceding assistant batch can supply call provenance. Require a bijection
@@ -92,13 +78,13 @@ impl Engine {
         for i in new {
             let u = &self.tr.units[i];
             if let Some(text) = source(&self.last_raw, u) {
-                self.index.mt().add(i, prefix(text));
+                self.index.mt().add_relation(i, text);
             }
             if u.kind == UKind::User && is_person(&self.last_raw) {
                 let text = self.tr.unit_text(i);
                 let query = request_words(&text);
                 if !query.trim().is_empty() {
-                    self.index.mt().want(i, &query);
+                    self.index.mt().want_relation(i, &query);
                 }
             }
         }
@@ -113,30 +99,40 @@ impl Engine {
         // A new task can share words with a large output of an unrelated turn. As in
         // keyword retrieval, do not let those accidental hits bring the old task back.
         let changed = self.goal.changed();
-        let picks = self.index.relation_pick(|p| {
-            let mut words = Vec::new();
-            if let Some(line) = original_line(history, &self.tr.units, p) {
-                keys(line, &mut words);
-            }
-            words
-        });
-        let mut rows = Vec::new();
         let last = history.len().saturating_sub(1);
-        let mut whole = crate::sorted::FxHashMap::default();
+        let mut allowed = crate::sorted::FxHashMap::default();
+        let index = self.index.clone();
+        let tr = self.tr.clone();
+        let eligible = |p: Post| {
+            let mi = tr.units[p.0 as usize].msg;
+            *allowed.entry(mi).or_insert_with(|| {
+                if mi >= last || (changed && !self.goal.goes_on(mi)) {
+                    return false;
+                }
+                let whole = vis.binary_search(&mi).is_ok()
+                    && !self.own.born.contains(&mi)
+                    && if mi == 0 { !hide0 } else { self.message(mi).0.is_none() };
+                !whole
+            })
+        };
+        let picks = index.relation_pick(
+            |p| {
+                let mut words = Vec::new();
+                if let Some(line) = original_line(&index, history, &tr.units, p) {
+                    keys(line, &mut words);
+                }
+                words
+            },
+            eligible,
+        );
+        let mut rows = Vec::new();
         for p in picks {
-            let mi = self.tr.units[p.0 as usize].msg;
-            if mi >= last
-                || (changed && !self.goal.goes_on(mi))
-                || *whole.entry(mi).or_insert_with(|| {
-                    vis.binary_search(&mi).is_ok()
-                        && !self.own.born.contains(&mi)
-                        && if mi == 0 { !hide0 } else { self.message(mi).0.is_none() }
-                })
-            {
-                continue;
+            if rows.len() >= REL_OUT || budget <= 0 {
+                break;
             }
-            let u = &self.tr.units[p.0 as usize];
-            let Some(line) = original_line(history, &self.tr.units, p) else { continue };
+            let u = &tr.units[p.0 as usize];
+            let mi = u.msg;
+            let Some(line) = original_line(&self.index, history, &self.tr.units, p) else { continue };
             let kind = match u.kind {
                 UKind::Result => "tool",
                 UKind::User => "person",

@@ -238,6 +238,8 @@ a notice with the closest names from the configuration and the catalogue;
 a rate limit's `retry-after` is shown in the notice. Each correction emits
 `ModelLimits` with `source: "error"`.
 
+The session-local `monitor` control tool subscribes to an existing background shell job, including retained output and eligible finished jobs. It delivers bounded output when idle and labels it untrusted; output can be omitted. A failed delivery pauses rather than automatically replaying a turn that might have acted. `show` inspects, `resume` discards the uncertain delivery while retaining later output, and `cancel` stops listening without stopping the job. The subscription ends on session close or switch; normal tool permissions still apply.
+
 The person's prompt: `prompt::system_prompt` takes its base text from
 `agent.system_prompt_file`, else from `~/.nexo/prompt.md` when it
 exists, else the built-in text; the tool guidance, directory, date, project
@@ -259,23 +261,21 @@ the closing, idle and copy mechanics `close=2;live=1;dedup=3;named=1` among
 others; [`docs/how-it-works.md`](../docs/how-it-works.md) shows it whole and a test keeps that copy
 equal). `[context] curator_spec` is laid over it, pairs separated by `;`.
 `params` refuses an unknown key, a negative or non-finite number and a key
-the engine does not support (`spill`, `recall`, `ttl` …); the agent leaves
+the engine does not support (`spill`, `ttl` …); the agent leaves
 such a pair out, runs the rest and says so in a `Notice`. Besides the ledger, the
 anchor carries three `[curator]` blocks harvested from the messages that leave
 the view, each within its token budget: `rules`, `notes` (the model's
 `Finding:` / `Plan:` lines) and `pin` (the last full read of the files the
-request names and the last full write of the files the model wrote); the ledger gets what they leave of 80% of the target. Nothing
-is written to disk. Each view also carries the curator's memory (a cell per
+request names and the last full write of the files the model wrote); the ledger gets what they leave of 80% of the target. Curator state can be saved beside the session for resume. Each view also carries the curator's memory (a cell per
 message, `state` one of `whole`/`cut`/`recalled`/`out`, zone 0 the anchor and
-one per topic), which `/context-live` draws.
+one per topic), which `/context-live` draws. With `relations=1` (the default), the index may add selected original historical lines and message, block and line coordinates to the request tail when space permits. Tool-call provenance is attached only for unambiguous ID pairs; errors and some structured results are not indexed. Quotes are historical evidence, not instructions, a completeness guarantee, or proof that a value is still current. `relations=0` uses the earlier keyword-only Recall block. The separately offered `recall` tool can retrieve omitted session text, subject to its limits.
 
 The rules block: the person's lines that read as a standing instruction
 (English and Spanish cues such as never, always, don't, from now on, nunca,
 siempre, prohibido, recuerda, a partir de ahora) and the lines the model
-restates as `Rule: …` are kept whole for the whole session. They are never
-dropped to make room: when the anchor is short, the ledger shrinks instead.
-So a correction typed once in the chat holds natively, without a system
-prompt or a file.
+restates as `Rule: …` are candidates for retention. The ledger shrinks before
+these rules when the anchor is short, but recognition and inclusion are bounded:
+a rule is not guaranteed to appear in every request.
 
 The nudge: the counter `since_note` resets on an assistant message with a
 `Finding:`, `Plan:` or `Rule:` line, in its text or in the input of a `note`

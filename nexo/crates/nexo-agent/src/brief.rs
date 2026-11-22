@@ -157,6 +157,13 @@ pub async fn build(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfi
     if cfg.tokens == 0 || history.is_empty() || task.trim().is_empty() {
         return None;
     }
+    // Selection and disk checks are synchronous and can take seconds on long
+    // sessions. Keep them off Tokio's workers, including single-worker runtimes.
+    let (task, history, cwd, cfg) = (task.to_owned(), history.to_vec(), cwd.to_owned(), cfg.clone());
+    tokio::task::spawn_blocking(move || build_sync(&task, &history, &cwd, &cfg)).await.expect("briefing worker failed")
+}
+
+fn build_sync(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfig) -> Option<Brief> {
     let ledger = Ledger::of(history, cwd, cfg.check_disk, task);
     let (head, facts) = ledger.render(cfg.tokens * 2 / 5);
     // the latest request the ledger states whole is not an excerpt too

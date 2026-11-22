@@ -4,7 +4,7 @@
 │ this session after your message, it… │
 │ nexo team lanes, other nexo session… │
 ├──────────────────────────────────────┤
-│ / filter · f show · Esc close        │
+│ m monitors · / filter · Esc close    │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

@@ -119,7 +119,7 @@ impl App {
             AgentEvent::MemoryShared { pending } => self.on_memory_shared(pending),
             AgentEvent::Queued { pending } => self.on_queued(pending),
             AgentEvent::Jobs { jobs } => self.on_jobs(jobs),
-            AgentEvent::Monitors { ids } => self.on_monitor_ids(ids),
+            AgentEvent::Monitors { ids, states } => self.on_monitor_ids(ids, states),
             AgentEvent::Chrome(info) => self.on_chrome(info),
             AgentEvent::Mcp { servers } => self.on_mcp(servers),
             AgentEvent::JobTails { tails } => self.on_job_tails(tails),

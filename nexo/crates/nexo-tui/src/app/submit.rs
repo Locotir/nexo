@@ -682,10 +682,9 @@ impl App {
                 None => self.run_command(Command::Jobs(None)),
             },
             HintHit::Monitors => {
-                self.modal = Some(Modal::Jobs(Box::new(crate::jobs_view::JobsView::monitors(
-                    self.monitors.clone(),
-                    self.monitor_tails.clone(),
-                ))));
+                let mut view = crate::jobs_view::JobsView::monitors(self.monitors.clone(), self.monitor_tails.clone());
+                view.set_monitor_states(self.monitor_states.clone());
+                self.modal = Some(Modal::Jobs(Box::new(view)));
                 self.send(AgentCommand::JobTails);
             }
             HintHit::Mem => self.open_shared(),

@@ -551,7 +551,7 @@ pub(crate) fn slice_forward(
                     }
                     break;
                 }
-                Flow::Jump => match ins.target.and_then(&index_of) {
+                Flow::Jump => match ins.target.and_then(index_of) {
                     Some(ti) => {
                         k = ti;
                         continue;
@@ -568,7 +568,7 @@ pub(crate) fn slice_forward(
                     }
                 },
                 Flow::Cond => {
-                    if let Some(ti) = ins.target.and_then(&index_of) {
+                    if let Some(ti) = ins.target.and_then(index_of) {
                         work.push((ti, set.clone(), true));
                     }
                     crossed = true;

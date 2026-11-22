@@ -360,3 +360,33 @@ fn a_goal_state_line_before_an_ended_jobs_note_is_not_a_request() {
     assert!(l.request.as_deref().is_none_or(|r| r.contains("Fix the parser")), "{:?}", l.request);
     assert!(!l.constraints.iter().any(|c| c.contains("Only one caller")), "{:?}", l.constraints);
 }
+
+#[tokio::test]
+async fn briefing_does_not_stall_runtime_heartbeat() {
+    use std::time::{Duration, Instant};
+    let d = tempfile::tempdir().unwrap();
+    let mut h = vec![Message::user("Investigate parser and tests")];
+    for i in 0..350 {
+        let out = (0..40)
+            .map(|j| format!("line {j}: parser component_{i} processes token_{j} and reports errors\n"))
+            .collect::<String>();
+        h.extend(bash(&format!("b{i}"), &format!("cargo test component_{i}"), &out, false));
+    }
+    let cfg = BriefConfig { tokens: 2000, engine: Engine::Curator, check_disk: false };
+    let start = Instant::now();
+    let timer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        start.elapsed()
+    });
+    tokio::task::yield_now().await;
+    let worker = tokio::spawn(async move {
+        let started = Instant::now();
+        let brief = build("Investigate parser component_249 token_13", &h, d.path(), &cfg).await;
+        (started.elapsed(), brief)
+    });
+    let latency = timer.await.unwrap();
+    let (duration, result) = worker.await.unwrap();
+    eprintln!("heartbeat={latency:?}, briefing={duration:?}");
+    assert!(result.is_some());
+    assert!(latency < Duration::from_millis(200), "runtime heartbeat stalled: {latency:?}");
+}

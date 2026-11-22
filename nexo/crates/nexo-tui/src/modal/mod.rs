@@ -439,6 +439,8 @@ pub enum ModalOut {
     Copy(String),
     /// Open the conversation of the sub-agent run with this id; the modal closes.
     OpenSub(String),
+    /// Open this session's monitors from the panel.
+    OpenMonitors,
     /// Observe a panel row; only the app can resolve it to a local run.
     ObserveAgent {
         key: String,

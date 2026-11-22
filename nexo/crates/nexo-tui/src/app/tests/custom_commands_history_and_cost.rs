@@ -80,7 +80,7 @@ fn a_command_of_ones_own_is_offered_and_sends_its_text() {
 fn a_skill_is_a_command_that_sends_its_instructions_and_is_listed() {
     let (mut a, mut rx) = app();
     let d = tempfile::tempdir().unwrap();
-    let dir = d.path().join("lint-fix");
+    let dir = nexo_core::paths::canonical(d.path()).unwrap().join("lint-fix");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\nname: lint-fix\ndescription: fix lint\n---\nRun the linter.\n").unwrap();
     let skills = vec![nexo_core::skills::Skill {
@@ -319,7 +319,7 @@ fn a_skill_shadowed_by_a_command_file_comes_back_when_the_file_is_deleted() {
     nexo_core::config::trust_project(proj.path(), &trust).unwrap();
     let (cfg_dir, proj_dir) = (cfg.path().to_path_buf(), proj.path().to_path_buf());
     a.command_loader = Box::new(move |_| crate::custom::load_from(&proj_dir, &cfg_dir, &trust, None));
-    let skill_dir = proj.path().join("skills/lint-fix");
+    let skill_dir = nexo_core::paths::canonical(proj.path()).unwrap().join("skills/lint-fix");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("SKILL.md"), "---\nname: lint-fix\ndescription: fix lint\n---\nRun the linter.\n")
         .unwrap();
@@ -374,7 +374,7 @@ fn colliding_skills_get_discoverable_aliases_without_stealing_names() {
     let skills: Vec<_> = ["doctor", "doctor-skill", "review"]
         .iter()
         .map(|name| {
-            let dir = d.path().join(name);
+            let dir = nexo_core::paths::canonical(d.path()).unwrap().join(name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("SKILL.md"),

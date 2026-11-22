@@ -200,6 +200,7 @@ pub struct App {
     pub jobs: Vec<nexo_core::jobs::JobInfo>,
     /// The latest monitor snapshot and its bounded output tails.
     pub monitor_ids: Vec<u32>,
+    pub monitor_states: Vec<(u32, nexo_core::agent::MonitorStatus)>,
     pub monitors: Vec<nexo_core::jobs::JobInfo>,
     pub monitor_tails: Vec<nexo_core::jobs::JobTail>,
     /// The MCP servers, as the agent last listed them (their prompts are commands, their resources complete after `@`).
@@ -523,6 +524,7 @@ impl App {
             hint_hits: Vec::new(),
             jobs: Vec::new(),
             monitor_ids: Vec::new(),
+            monitor_states: Vec::new(),
             monitors: Vec::new(),
             monitor_tails: Vec::new(),
             mcp: Vec::new(),

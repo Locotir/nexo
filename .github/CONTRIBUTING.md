@@ -12,8 +12,21 @@ three on Linux and Windows (the macOS job runs the same checks but is not gating
 cargo fmt --check
 cargo build --workspace
 cargo test --workspace --no-fail-fast
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --keep-going -- -D warnings
 ```
+
+Before pushing, `nexo/tools/pre-push-check.sh` runs those four checks for the local stable
+host, with true colour and a Linux 32-bit C toolchain probe (the debugger tests otherwise skip).
+For example, from `nexo/`:
+
+```sh
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$HOME/build-cache/nexo-ci" nice tools/pre-push-check.sh
+```
+
+This is not an automatic Git hook and does not check other operating systems, Rust 1.89,
+`cargo deny`, or the Intel Mac target. Run CI and inspect each job, including macOS and
+advisories, which currently do not gate the overall result. A local pass cannot establish a
+cross-platform pass. Do not set `NEXO_UPDATE_GOLDEN` during validation.
 
 The interface tests draw in 24-bit colour: run them from a colour terminal, or with
 `COLORTERM=truecolor` set.

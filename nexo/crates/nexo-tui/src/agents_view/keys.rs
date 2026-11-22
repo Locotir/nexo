@@ -116,6 +116,7 @@ impl AgentsView {
                 self.finding = true;
                 self.find.get_or_insert_with(String::new);
             }
+            KeyCode::Char('m') => return ModalOut::OpenMonitors,
             KeyCode::Char('f') => self.cycle_show(),
             KeyCode::Char('F') => self.cycle_filter(),
             KeyCode::Char('P') if self.panel.is_some() => {

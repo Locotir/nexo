@@ -229,6 +229,7 @@ mod goal_window_and_additions;
 mod goals_todo_strip_and_flashes;
 mod keys_row_and_fades;
 mod live_block_height;
+mod monitor_order;
 mod navigation;
 mod nexo_started_requests;
 mod opening;

@@ -282,6 +282,8 @@ on Windows), its output goes to a log file under the temp directory, and the res
 pid to stop it with. It is not a job (`jobs` does not list it, exit does not stop it), asks for the same approval
 as any `bash` command and runs inside the OS sandbox when that is on.
 
+**Monitoring shell jobs.** The model can use the session-local `monitor` tool to subscribe to an existing background `bash` job, including retained output and, when available, a finished job. It delivers bounded batches when idle, at most once per 10 seconds; output may be omitted. Job output is untrusted data, not instructions. `list` and `show` inspect monitors; `cancel` stops listening, not the job. After a failed delivery the monitor pauses rather than retrying a turn that may already have acted; `resume` discards that uncertain delivery and retains later buffered output. Monitors end on session close or switch. Starting a command and subsequent tool calls remain subject to their usual permissions.
+
 **Language servers.** The `diagnostics` tool asks the file's language server (rust-analyzer, pyright or pylsp,
 typescript-language-server, gopls, clangd; whichever is installed) what is wrong after an edit. It starts
 the server with build scripts, proc macros and check on save off, so it does not run the project's code;
@@ -818,6 +820,8 @@ policy = "curator"                   # auto | plain | compact | curator
 # working_set = "10000/0/0"         # target/cap/hard tokens of the view (default: cost rule, ceiling at 95 % of the window)
 ```
 
+By default, `relations=1` may add selected historical quotes relevant to the request, with message, block and line coordinates when space permits. Tool-call provenance is included only when IDs pair unambiguously. These are historical evidence, not instructions or a guarantee of current values or coverage; failed results and some structured content are not indexed. `relations=0` selects the earlier keyword-only Recall block.
+
 `--curator-spec SPEC` (or `NEXO_CURATOR_SPEC`) sets them for one run, over the file. One more switch: `kept` (default `0`, off) makes epochs land only when what leaves pays for the view sent again ([`docs/how-it-works.md`](../docs/how-it-works.md)).
 
 The status bar says what the policy is doing, next to the gauge:
@@ -837,7 +841,7 @@ did with that card's output:
 |---|---|---|
 | `● cached` | sent whole, inside the part of the request that did not change since the call before, so the provider serves it from its prompt cache | about a tenth of the normal price |
 | `● full price` | sent whole, after the point where the request changed, so the provider reads it again | the normal input price |
-| `◐ trimmed` | sent shortened: the curator kept the lines that matter (errors, results, the first and last lines) and left a note saying what was cut | less than whole |
+| `◐ trimmed` | sent shortened: the curator selected lines such as errors, results, and the first and last lines and left a note saying what was cut | less than whole |
 | `○` | set aside: not sent this time; the model did not see it in this call. It is still in the history, with its name, and nothing is lost. Every card of an answered request usually stands here, so it is the glyph alone | nothing |
 | `↺ recalled` | it had been set aside and came back, whole or in part, because the model asked for it (`recall`) or the work turned back to it | as `full price` for what came back |
 
@@ -845,12 +849,11 @@ A card with no mark was not part of the last call's decision (for example it is 
 
 On `● cached` and `● full price` the card adds what that output cost in the last request (`0.00150 $`: its tokens at the cached or the full input price), when the model's input, output and cached prices are all known and the line has room for it; with a price missing, or on a narrow terminal, only the mark shows.
 
-`/context` and `/status` add the sentence behind the label. Every message the curator leaves out keeps a name (`m00042`), and the model can bring it back exactly with the `recall` tool, which nexo answers from the whole history it keeps: leaving a message out never loses it. The view never passes the model's window: when the history is too big for it, the oldest messages leave first, and a single output too big on its own keeps its first and last lines with a mark saying which lines were left out. Every fallback is
+`/context` and `/status` add the sentence behind the label. Omitted messages have names such as `m00042`; when offered, `recall` retrieves text from session history, subject to its output limits and representation. Curator builds a limited view rather than replacing session history. Nexo attempts to fit requests within the known window by dropping or shortening history, but estimates and provider limits do not guarantee acceptance. A shortened output can retain its beginning and end with a cut marker. Configuration fallbacks are
 said, never silent: a `curator_spec` setting the curator cannot run or an
 unknown policy name shows a warning in the transcript and in the log. A history
 that stopped between a tool call and its result (a session closed or killed
-mid-step) is mended before it is sent: the call is answered as not run, and
-nothing it holds is lost.
+mid-step) is mended before it is sent: the missing result is represented as not run.
 
 Savings per recording, live runs and the cache-aware simulation: [`docs/results.md`](../docs/results.md).
 
@@ -863,9 +866,9 @@ view, each within its budget in tokens (0 turns it off):
 - `rules=` **the rules block**: the person's standing instructions, whole
   (lines with never, always, don't, from now on, nunca, siempre, prohibido,
   recuerda, a partir de ahora …) and the lines the model restates as
-  `Rule: …`. They are kept for the whole session and never dropped: when the
-  anchor is short of room the ledger shrinks instead, so a correction typed
-  once in the chat holds natively, without a system prompt or a file;
+  `Rule: …`. The curator tries to retain recognized rules, giving them priority over
+  the ledger when the anchor is short of room. Recognition and inclusion are
+  bounded; a correction is not guaranteed to remain visible on every call;
 - `notes=` the model's own `Finding:` and `Plan:` lines, in its text or in a
   `note` call, so settled facts are not worked out again (oldest out first).
   After `nudge=N` steps without a note (off by default, `nudge=0`) the curator

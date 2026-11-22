@@ -469,6 +469,7 @@ impl App {
         }
         // the panel knows which of its jobs are sub-agents it can write to, and reads the output of the one it shows
         if let Some(Modal::Agents(v)) = &mut self.modal {
+            v.set_monitor_count(self.monitors.len());
             let runs = self
                 .sub_runs
                 .iter()

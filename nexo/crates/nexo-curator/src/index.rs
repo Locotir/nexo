@@ -5,6 +5,8 @@
 //! decides nothing. The lines come from any part of the history, whatever topic it was on. No text is stored: a
 //! pair points at the unit, and the caller reads the line from it.
 
+mod sample;
+
 use crate::sorted::{FxHashMap, FxHashSet};
 
 use crate::facts::{key, keys};
@@ -29,13 +31,15 @@ const NEED_CHARS: usize = 400;
 const REL_FRONT: usize = 24;
 const REL_KEYS: usize = 6;
 const REL_DF: usize = 32;
-const REL_OUT: usize = 48;
+pub(crate) const REL_OUT: usize = 48;
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
     #[serde(with = "crate::snapshot::posts")]
     posts: FxHashMap<u64, Vec<Post>>,
     lines: usize,
+    /// First (raw line, byte offset) of each separately indexed suffix.
+    tails: FxHashMap<u32, (u32, u32)>,
     /// The keys of the person's latest request.
     need: Vec<u64>,
     /// Those of its keys that hold a digit: a number names one thing (topic 32, port 8797) more than a word does.
@@ -49,30 +53,56 @@ impl Index {
     pub fn add(&mut self, unit: usize, text: &str) {
         let mut ks = Vec::new();
         for (n, line) in text.lines().enumerate().take(UNIT_LINES) {
-            keys(line, &mut ks);
-            if ks.is_empty() {
-                continue;
-            }
+            self.add_line((unit as u32, n as u32), line, &mut ks);
+        }
+    }
+
+    fn add_line(&mut self, p: Post, line: &str, ks: &mut Vec<u64>) {
+        keys(line, ks);
+        if !ks.is_empty() {
             self.lines += 1;
-            for &k in &ks {
-                self.posts.entry(k).or_default().push((unit as u32, n as u32));
+            for &k in ks.iter() {
+                self.posts.entry(k).or_default().push(p);
             }
         }
     }
 
     /// Takes ``text`` as the latest request of the person: its head and its tail make the keys a request looks up.
     pub fn want(&mut self, unit: usize, text: &str) {
-        self.asked = unit as u32;
         let n = text.chars().count();
         let read: String = if n <= 2 * NEED_CHARS {
             text.to_string()
         } else {
             text.chars().take(NEED_CHARS).chain("\n".chars()).chain(text.chars().skip(n - NEED_CHARS)).collect()
         };
+        self.set_need(unit, [read.as_str()]);
+    }
+
+    /// Sample the start, middle and end without counting or copying a potentially huge paste.
+    /// Tokenize the slices separately (in particular, never join words across a skipped span).
+    pub fn want_relation(&mut self, unit: usize, text: &str) {
+        let Some((head, _)) = text.char_indices().nth(NEED_CHARS) else {
+            return self.set_need(unit, [text]);
+        };
+        let tail = text.char_indices().rev().nth(NEED_CHARS - 1).unwrap().0;
+        if tail <= head {
+            return self.set_need(unit, [&text[..head], &text[tail..]]);
+        }
+        let mut mid = head + (tail - head) / 2;
+        while !text.is_char_boundary(mid) {
+            mid -= 1;
+        }
+        let lo = text[head..mid].char_indices().rev().nth(NEED_CHARS / 2 - 1).map_or(head, |(i, _)| head + i);
+        let hi = text[mid..tail].char_indices().nth(NEED_CHARS / 2).map_or(tail, |(i, _)| mid + i);
+        self.set_need(unit, [&text[..head], &text[lo..hi], &text[tail..]]);
+    }
+
+    fn set_need<'a>(&mut self, unit: usize, parts: impl IntoIterator<Item = &'a str>) {
+        self.asked = unit as u32;
         self.need.clear();
         self.need_num.clear();
         let mut ks = Vec::new();
-        for line in read.lines() {
+        for line in parts.into_iter().flat_map(str::lines) {
             keys(line, &mut ks);
             self.need.extend_from_slice(&ks);
             for run in line.split(|c: char| !c.is_alphanumeric()).filter(|r| r.bytes().any(|b| b.is_ascii_digit())) {
@@ -94,8 +124,20 @@ impl Index {
 
     /// Lines named directly by the request, interleaved with up to two hops through shared rare keys.
     /// Visibility doesn't stop a path. The caller supplies keys from original indexed lines only.
-    pub fn relation_pick(&self, mut line_keys: impl FnMut(Post) -> Vec<u64>) -> Vec<Post> {
-        let mut terms: Vec<_> = self.need.iter().filter_map(|&k| Some((self.posts.get(&k)?.len(), k))).collect();
+    pub fn relation_pick(
+        &self,
+        mut line_keys: impl FnMut(Post) -> Vec<u64>,
+        mut eligible: impl FnMut(Post) -> bool,
+    ) -> Vec<Post> {
+        let mut terms: Vec<_> = self
+            .need
+            .iter()
+            .filter_map(|&k| {
+                let posts = self.posts.get(&k)?;
+                // Keys held only by this request cannot retrieve history; don't spend NEED_KEYS on them.
+                (posts.first()?.0 != self.asked || posts.last()?.0 != self.asked).then_some((posts.len(), k))
+            })
+            .collect();
         terms.sort_unstable(); // rarest first, stable choice among ties
         let idf = |df: usize| (self.lines.max(2) as f64 / df as f64).ln();
         let mut scores = FxHashMap::default();
@@ -106,26 +148,30 @@ impl Index {
                 }
             }
         }
-        let direct = relation_front(scores);
-        let mut seen: FxHashSet<_> = direct.iter().map(|&(_, p)| p).collect();
-        let near = self.relation_hop(&direct, &seen, &mut line_keys);
+        let direct = relation_rank(scores);
+        // The walk is independent of output eligibility: even a visible hit can be a bridge.
+        let mut seen: FxHashSet<_> = direct.iter().take(REL_OUT).map(|&(_, p)| p).collect();
+        let near = self.relation_hop(&direct[..direct.len().min(REL_FRONT)], &seen, &mut line_keys);
         seen.extend(near.iter().map(|&(_, p)| p));
         let far = self.relation_hop(&near, &seen, &mut line_keys);
 
-        let mut direct = direct.into_iter().map(|(_, p)| p);
-        let mut near = near.into_iter().map(|(_, p)| p);
-        let mut far = far.into_iter().map(|(_, p)| p);
+        // All scored postings are already bounded by NEED_KEYS * RARE. Spend output slots only
+        // on eligible hits. A direct hit promoted from below the cut may also occur in a hop.
+        let direct: Vec<_> = direct.into_iter().map(|(_, p)| p).filter(|&p| eligible(p)).take(REL_OUT).collect();
+        let selected: FxHashSet<_> = direct.iter().copied().collect();
+        let mut direct = direct.into_iter();
+        let mut near = near.into_iter().map(|(_, p)| p).filter(|p| !selected.contains(p));
+        let mut far = far.into_iter().map(|(_, p)| p).filter(|p| !selected.contains(p));
+        // Keep direct / bridge diversity, but let the caller count only quotes that fit.
         let mut out: Vec<_> = direct.by_ref().take(2).collect();
         loop {
             let next = [near.next(), far.next(), direct.next()];
             if next == [None; 3] {
                 break;
             }
-            out.extend(next.into_iter().flatten().take(REL_OUT - out.len()));
-            if out.len() == REL_OUT {
-                break;
-            }
+            out.extend(next.into_iter().flatten());
         }
+        out.retain(|&p| selected.contains(&p) || eligible(p));
         out
     }
 
@@ -168,7 +214,9 @@ impl Index {
                 }
             }
         }
-        relation_front(scores)
+        let mut ranked = relation_rank(scores);
+        ranked.truncate(REL_FRONT);
+        ranked
     }
 
     /// The lines of the history that the latest request names, best first: for each key of the request that few
@@ -227,11 +275,10 @@ impl Index {
     }
 }
 
-/// Highest score first, newest post as total tie-break. Only these posts seed the next hop.
-fn relation_front(scores: FxHashMap<Post, f64>) -> Vec<(f64, Post)> {
+/// Highest score first, newest post as total tie-break.
+fn relation_rank(scores: FxHashMap<Post, f64>) -> Vec<(f64, Post)> {
     let mut ranked: Vec<_> = scores.into_iter().map(|(p, s)| (s, p)).collect();
     ranked.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
-    ranked.truncate(REL_FRONT);
     ranked
 }
 
@@ -268,15 +315,28 @@ mod tests {
         }
         ix.want(rows.len(), "saffron merino");
         let run = || {
-            ix.relation_pick(|(u, _)| {
-                let mut ks = Vec::new();
-                keys(rows[u as usize], &mut ks);
-                ks
-            })
+            ix.relation_pick(
+                |(u, _)| {
+                    let mut ks = Vec::new();
+                    keys(rows[u as usize], &mut ks);
+                    ks
+                },
+                |_| true,
+            )
         };
         let got = run();
         assert_eq!(got, [(6, 0), (5, 0), (1, 0), (2, 0), (4, 0), (0, 0)]);
         assert_eq!(got, run());
+    }
+
+    #[test]
+    fn request_only_terms_do_not_consume_the_history_lookup_slots() {
+        let mut ix = Index::default();
+        ix.add_relation(0, "spindle916: cobalt");
+        let ask = (0..NEED_KEYS + 3).map(|n| format!("newterm{n}\n")).collect::<String>() + "spindle916";
+        ix.add_relation(1, &ask);
+        ix.want_relation(1, &ask);
+        assert_eq!(ix.relation_pick(|_| vec![], |_| true), [(0, 0)]);
     }
 
     #[test]

@@ -321,3 +321,25 @@ fn a_stop_line_marks_the_turn_it_quotes_and_not_one_a_goal_message_stands_betwee
     );
     assert_eq!(e.goal.ended(&e.tr, 1), None, "the stop was of the first request, not of the one before the line");
 }
+
+#[test]
+fn relation_lookup_skips_rows_that_do_not_fit_without_losing_a_shorter_match() {
+    let quote = "saffron742: cobalt";
+    let long = format!("saffron742: {}", "x".repeat(350));
+    let body = format!("{quote}\n{}", (long.clone() + "\n").repeat(30));
+    let mut h = vec![json!({"role":"user", "content":"Audit the museum inventory ledger."})];
+    h.extend(step(1, "inventory", &body));
+    for i in 0..16 {
+        h.extend(step(i + 2, "inventory", &listing(i * 150, (i + 1) * 150 - 1)));
+    }
+    h.push(json!({"role":"assistant", "content":"Finished that inventory pass."}));
+    h.push(json!({"role":"user", "content":"Continue the museum inventory ledger audit. Trace saffron742."}));
+    let mut c = crate::Curator::new("relations=1").unwrap();
+    c.window(20_000);
+    c.view(640, &h, 1.0).unwrap();
+    let rows = c.eng.relation_lines(&h, 80);
+    assert!(rows.iter().any(|r| serde_json::from_str::<Value>(r).unwrap()["quote"] == quote), "{rows:?}");
+    assert!(rows.iter().all(|r| !r.contains(&long)));
+    assert!(rows.iter().map(|r| est_str(r) + 2).sum::<i64>() <= 80);
+    assert!(c.eng.relation_lines(&h, 1).is_empty());
+}

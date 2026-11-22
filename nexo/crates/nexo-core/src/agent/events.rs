@@ -231,6 +231,9 @@ pub enum AgentEvent {
     /// Active session-local monitors, identified by their shell job IDs.
     Monitors {
         ids: Vec<u32>,
+        /// Current monitor states, independent of the underlying job status.
+        #[serde(default)]
+        states: Vec<(u32, MonitorStatus)>,
     },
     /// An item of a sub-agent run's conversation (see [`crate::subs`]). The four `Sub` events are for the
     /// interface only: they are not written to the session and not printed by the headless mode.
@@ -452,4 +455,13 @@ pub struct SessionRow {
     pub messages: usize,
     /// When the session file was last written, in ms since the epoch; 0 when it is not known.
     pub updated_ms: i64,
+}
+
+/// State of a session-local shell job monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorStatus {
+    Listening,
+    Paused,
+    Closing,
 }

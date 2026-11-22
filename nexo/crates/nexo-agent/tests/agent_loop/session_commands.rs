@@ -51,7 +51,7 @@ async fn attachments_shell_model_and_clear() {
     r.send(AgentCommand::SetPermissionMode(PermissionMode::Auto));
     assert!(matches!(r.next().await, AgentEvent::PermissionModeChanged { mode: PermissionMode::Auto }));
     r.send(AgentCommand::Clear);
-    assert!(matches!(r.next().await, AgentEvent::Monitors { ids } if ids.is_empty()));
+    assert!(matches!(r.next().await, AgentEvent::Monitors { ids, .. } if ids.is_empty()));
     let ev = r.next().await;
     assert!(matches!(&ev, AgentEvent::Ready { model, .. } if model == "m2"), "{ev:?}");
     assert!(matches!(r.next().await, AgentEvent::HistoryCleared));
@@ -178,7 +178,7 @@ async fn clear_tells_the_interface_to_start_over() {
     r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
     r.turn().await;
     r.send(AgentCommand::Clear);
-    assert!(matches!(r.next().await, AgentEvent::Monitors { ids } if ids.is_empty()));
+    assert!(matches!(r.next().await, AgentEvent::Monitors { ids, .. } if ids.is_empty()));
     let second = match r.next().await {
         AgentEvent::Ready { session_id, .. } => session_id,
         _ => panic!(),

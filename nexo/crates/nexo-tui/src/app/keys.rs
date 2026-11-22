@@ -392,6 +392,18 @@ impl App {
     pub fn modal_out(&mut self, out: ModalOut) {
         match out {
             ModalOut::Nothing => self.sync_theme_preview(),
+            ModalOut::OpenMonitors => {
+                if matches!(self.modal, Some(Modal::Agents(_))) {
+                    if let Some(panel) = self.modal.take() {
+                        self.back.push(Back::Window(panel));
+                    }
+                    let mut view =
+                        crate::jobs_view::JobsView::monitors(self.monitors.clone(), self.monitor_tails.clone());
+                    view.set_monitor_states(self.monitor_states.clone());
+                    self.modal = Some(Modal::Jobs(Box::new(view)));
+                    self.commands.send(AgentCommand::JobTails).ok();
+                }
+            }
             ModalOut::ObserveAgent { key, nexo } => {
                 // Supervisor keys for local jobs are <current session>.<job number>.
                 // Resolve only a unique known run; names and foreign sessions are not identities.

@@ -284,7 +284,12 @@ impl Plugin {
 
     /// Folders that hold `<skill>/SKILL.md` folders.
     pub fn skill_roots(&self) -> Vec<PathBuf> {
-        self.dirs("skills", &self.manifest.skills)
+        // Resolve only the plugin anchor, never the skill roots or their children: the
+        // secure skill reader must still reject links supplied inside the plugin.
+        let root = crate::paths::canonical(&self.root).unwrap_or_else(|_| self.root.clone());
+        let mut roots = vec![root.join("skills")];
+        roots.extend(self.manifest.skills.iter().filter_map(|r| inside(&root, r)));
+        roots.into_iter().filter(|d| d.is_dir()).collect()
     }
 
     fn json_files(&self, usual: &str, inline: &[Value]) -> Vec<Value> {
@@ -510,6 +515,28 @@ mod tests {
         assert!(Manifest::parse("[]").is_err());
         let empty = tempfile::tempdir().unwrap();
         assert!(Manifest::read(empty.path()).unwrap_err().contains("no .nexo-plugin"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_roots_resolve_plugin_anchor_but_not_links_inside_it() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("plugin");
+        sample(&root, ".claude-plugin");
+        let alias = d.path().join("alias");
+        symlink(&root, &alias).unwrap();
+        let p = Plugin {
+            name: "acme".into(),
+            root: alias,
+            manifest: Manifest::read(&root).unwrap(),
+            entry: Entry::default(),
+        };
+        assert_eq!(p.contents().skills, ["acme:lint"]);
+        let outside = d.path().join("outside");
+        w(outside.join("SKILL.md"), "---\nname: escape\n---\nsecret");
+        symlink(&outside, root.join("skills/escape")).unwrap();
+        assert_eq!(p.contents().skills, ["acme:lint"]);
     }
 
     #[test]

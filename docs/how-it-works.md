@@ -65,7 +65,10 @@ paths are in [`context-curator.md`](context-curator.md).
   paths they govern and shown as `Standing:` lines when an action supposes the default. By default, the index uses rare keys in the request and in matching lines to find related
   historical evidence. When space permits, the tail quotes lines not already shown whole, with the original
   message, block and line number. A tool result names its call only when the IDs pair unambiguously. These
-  are historical quotes, not new instructions or proof that a value is still current. With `relations=0`,
+  are historical quotes, not new instructions or proof that a value is still current. The relational index
+  samples long requests at the start, middle and end; it indexes a bounded prefix and, for eligible inputs
+  up to 4 MiB, a bounded suffix of source lines. Unindexed gaps, long or partial lines, ranking and the
+  output budget can hide relevant evidence. With `relations=0`,
   Curator uses the previous keyword-only `Recall` block instead; that mode can expand a broad request up to
   99 % of the window for that call only.
 - **What a request needs that left** (`named`, `recall`). A step that read a file the request names stays
@@ -75,9 +78,9 @@ paths are in [`context-curator.md`](context-curator.md).
   within its budget in tokens (0 turns it off):
   - **rules** (`rules=2000`): the person's standing instructions, whole, from lines with cues such as
     never, always, don't, must, from now on, remember, nunca, siempre, prohibido, recuerda, a partir de
-    ahora, and the lines the model restates as `Rule: …`. They hold for the whole session and are never
-    dropped: when the anchor is short of room the ledger shrinks instead. A correction typed once in the
-    chat keeps holding long after its message left, without a system prompt or a file;
+    ahora, and the lines the model restates as `Rule: …`. The ledger shrinks before these rules when the
+    anchor is short, but recognition and inclusion are bounded; a correction is not guaranteed to remain
+    visible in every request;
   - **notes** (`notes=3000`): the agent's own `Finding:` and `Plan:` lines (every finding once, the
     latest plan), written in its text or passed to the `note` tool, whose call is the note itself (a model
     that only calls tools answers a tool); the directives ask for them, so a settled fact is not worked

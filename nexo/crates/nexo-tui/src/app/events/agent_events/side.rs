@@ -115,8 +115,9 @@ impl App {
         self.dirty = true;
     }
 
-    pub(super) fn on_monitor_ids(&mut self, ids: Vec<u32>) {
+    pub(super) fn on_monitor_ids(&mut self, ids: Vec<u32>, states: Vec<(u32, nexo_core::agent::MonitorStatus)>) {
         self.monitor_ids = ids;
+        self.monitor_states = states;
         self.sync_monitors();
     }
 
@@ -131,11 +132,19 @@ impl App {
         if let Some(Modal::Jobs(v)) = &mut self.modal {
             if v.is_monitors() {
                 v.set_jobs(monitors.clone());
+                v.set_monitor_states(self.monitor_states.clone());
                 v.set_tails(tails.clone());
             }
         }
         self.monitors = monitors;
-        self.monitor_tails = tails;
+        if let Some(Modal::Agents(v)) = &mut self.modal {
+            v.set_monitor_count(self.monitors.len());
+        }
+        for back in &mut self.back {
+            if let crate::app::types::Back::Window(Modal::Agents(v)) = back {
+                v.set_monitor_count(self.monitors.len());
+            }
+        }
         self.dirty = true;
     }
 
@@ -155,7 +164,8 @@ impl App {
     }
 
     pub(super) fn on_job_tails(&mut self, tails: Vec<nexo_core::jobs::JobTail>) {
-        self.monitor_tails = tails.iter().filter(|t| self.monitor_ids.contains(&t.id)).cloned().collect();
+        // Keep the complete snapshot: monitor IDs may arrive after this event.
+        self.monitor_tails = tails.clone();
         match &mut self.modal {
             Some(Modal::Jobs(v)) if v.is_monitors() => {
                 v.set_tails(tails);

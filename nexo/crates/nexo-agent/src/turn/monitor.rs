@@ -25,6 +25,17 @@ struct Monitor {
 }
 
 impl Monitor {
+    fn status(&self) -> nexo_core::agent::MonitorStatus {
+        use nexo_core::agent::MonitorStatus::*;
+        if self.paused {
+            Paused
+        } else if self.closing {
+            Closing
+        } else {
+            Listening
+        }
+    }
+
     fn push(&mut self, line: &str) {
         let room = MAX_PENDING.saturating_sub(self.pending.len());
         let mut end = line.len().min(room.saturating_sub(1));
@@ -46,6 +57,7 @@ pub(super) struct Monitors(Vec<Monitor>, Option<(u32, usize, usize)>);
 
 // Acknowledge only after a successful turn. New lines appended meanwhile remain queued.
 pub(super) fn turn_end(rt: &mut Runtime, reason: TurnEnd) {
+    let mut changed = false;
     if let Some((id, bytes, dropped)) = rt.monitors.1.take() {
         if let Some(m) = rt.monitors.0.iter_mut().find(|m| m.id == id) {
             if reason == TurnEnd::Done {
@@ -62,6 +74,7 @@ pub(super) fn turn_end(rt: &mut Runtime, reason: TurnEnd) {
                     m.completion_consumed = rt.jobs.consume_monitor(claim);
                 }
                 m.paused = true;
+                changed = true;
                 m.failed = Some((bytes, dropped));
                 notice(
                     &rt.events,
@@ -74,10 +87,19 @@ pub(super) fn turn_end(rt: &mut Runtime, reason: TurnEnd) {
             }
         }
     }
+    if changed {
+        snapshot(rt);
+    }
 }
 
 pub(super) fn snapshot(rt: &Runtime) {
-    emit(&rt.events, AgentEvent::Monitors { ids: rt.monitors.0.iter().map(|m| m.id).collect() });
+    emit(
+        &rt.events,
+        AgentEvent::Monitors {
+            ids: rt.monitors.0.iter().map(|m| m.id).collect(),
+            states: rt.monitors.0.iter().map(|m| (m.id, m.status())).collect(),
+        },
+    );
 }
 
 pub(super) fn command(rt: &mut Runtime, args: &Value) -> ToolOutput {
@@ -140,6 +162,7 @@ pub(super) fn command(rt: &mut Runtime, args: &Value) -> ToolOutput {
             m.pending.drain(..bytes);
             m.dropped = m.dropped.saturating_sub(dropped);
             m.paused = false;
+            snapshot(rt);
             ToolOutput::ok(
                 "monitor resumed; failed delivery discarded, later buffered output remains. The job was not restarted.",
             )
@@ -165,6 +188,7 @@ pub(super) fn command(rt: &mut Runtime, args: &Value) -> ToolOutput {
             m.closing = true;
             rt.jobs.end_monitor(id);
             m.next = Instant::now();
+            snapshot(rt);
             ToolOutput::ok(
                 "monitor stopped listening; buffered output remains for delivery or inspection; job continues",
             )
@@ -345,7 +369,7 @@ pub(super) async fn tick(rt: &mut Runtime) {
     }
     let before = rt.monitors.0.len();
     rt.monitors.0.retain(|m| m.paused || !m.closing || !m.pending.is_empty() || m.dropped > 0 || m.terminal.is_some());
-    if before != rt.monitors.0.len() {
+    if before != rt.monitors.0.len() || !closing.is_empty() {
         snapshot(rt);
     }
     let st = rt.state.lock().await;
@@ -399,6 +423,36 @@ pub(super) async fn tick(rt: &mut Runtime) {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    #[tokio::test]
+    async fn monitor_snapshots_follow_state_transitions() {
+        use nexo_core::agent::MonitorStatus::*;
+        let d = tempfile::tempdir().unwrap();
+        let mut rt = runtime(d.path()).await;
+        let (mut handle, ends) = nexo_core::agent::channels();
+        rt.events = ends.events;
+        let job = rt.jobs.start(nexo_core::jobs::JobKind::Shell, "work");
+        let id = job.id();
+        command(&mut rt, &serde_json::json!({"action":"create", "id":id}));
+        let state = |event| match event {
+            AgentEvent::Monitors { states, .. } => states,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(state(handle.events.try_recv().unwrap()), vec![(id, Listening)]);
+        rt.monitors.1 = Some((id, 0, 0));
+        turn_end(&mut rt, TurnEnd::Error);
+        // Failure also sends a notice.
+        let events: Vec<_> = std::iter::from_fn(|| handle.events.try_recv().ok()).collect();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Monitors { states, .. } if states == &vec![(id, Paused)])));
+        command(&mut rt, &serde_json::json!({"action":"resume", "id":id}));
+        assert_eq!(state(handle.events.try_recv().unwrap()), vec![(id, Listening)]);
+        command(&mut rt, &serde_json::json!({"action":"cancel", "id":id}));
+        assert_eq!(state(handle.events.try_recv().unwrap()), vec![(id, Closing)]);
+        tick(&mut rt).await;
+        assert_eq!(state(handle.events.try_recv().unwrap()), vec![]);
+    }
+
     #[test]
     fn monitor_queue_is_bounded_and_counts_loss() {
         let now = Instant::now();

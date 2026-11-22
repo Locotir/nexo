@@ -79,6 +79,31 @@ fn panel(keys: &[&str]) -> Modal {
     Modal::Agents(Box::new(AgentsView::with_rows(keys.iter().map(|k| row(k)).collect(), 0, true)))
 }
 
+#[test]
+fn panel_monitors_open_output_and_return_to_panel() {
+    let (mut a, mut rx) = with_run();
+    a.handle_agent(AgentEvent::Monitors {
+        ids: vec![4],
+        states: vec![(4, nexo_core::agent::MonitorStatus::Listening)],
+    });
+    a.handle_agent(AgentEvent::JobTails {
+        tails: vec![nexo_core::jobs::JobTail { id: 4, text: "recent output".into(), ended_ago_ms: None }],
+    });
+    a.modal = Some(panel(&["session"]));
+    press(&mut a, KeyCode::Char('m'));
+    let Some(Modal::Jobs(v)) = &a.modal else { panic!("monitor list") };
+    assert!(v.is_monitors());
+    assert_eq!(v.len(), 1);
+    let text = v.lines(100, &crate::theme::Theme::dark()).0.iter().map(|l| l.to_string()).collect::<String>();
+    assert!(text.contains("work") && text.contains("listening") && text.contains("recent output"), "{text}");
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.detail));
+    press(&mut a, KeyCode::Esc);
+    press(&mut a, KeyCode::Esc);
+    assert!(matches!(a.modal, Some(Modal::Agents(_))));
+    assert!(!drain(&mut rx).iter().any(|c| matches!(c, AgentCommand::KillJob { .. })));
+}
+
 /// The run's view, entered from /panel with Enter.
 fn sub_from_panel() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
     let (mut a, mut rx) = with_run();

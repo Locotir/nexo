@@ -513,6 +513,7 @@ mod tests {
         let proj = home.path().join("code/app");
         std::fs::create_dir_all(proj.join(".git")).unwrap();
         write(&proj, ".claude/skills/y/SKILL.md", "---\nname: y\ndescription: project skill\n---\n");
+        std::fs::create_dir(proj.join("src")).unwrap();
         let found = discover_in(&proj.join("src"), home.path(), &home.path().join(".nexo"), true);
         let mut got: Vec<_> = found.iter().map(|s| (s.name.as_str(), s.source.as_str())).collect();
         got.sort();

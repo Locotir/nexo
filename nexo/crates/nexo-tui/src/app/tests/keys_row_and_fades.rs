@@ -64,7 +64,7 @@ fn monitor_chip_opens_live_read_only_output_without_touching_jobs() {
     };
     let tail = JobTail { id: 7, ended_ago_ms: None, text: "first output".into() };
     // IDs and jobs may arrive in either order.
-    a.handle_agent(AgentEvent::Monitors { ids: vec![7] });
+    a.handle_agent(AgentEvent::Monitors { ids: vec![7], states: vec![] });
     assert!(a.monitors.is_empty());
     a.handle_agent(AgentEvent::Jobs { jobs: vec![monitor.clone()] });
     a.handle_agent(AgentEvent::JobTails { tails: vec![tail] });
@@ -102,7 +102,7 @@ fn monitor_chip_opens_live_read_only_output_without_touching_jobs() {
     let text: String =
         v.lines(80, &a.theme).0.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("new output"));
-    a.handle_agent(AgentEvent::Monitors { ids: vec![] });
+    a.handle_agent(AgentEvent::Monitors { ids: vec![], states: vec![] });
     assert!(a.monitors.is_empty());
     assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.is_monitors() && v.is_empty()));
 }

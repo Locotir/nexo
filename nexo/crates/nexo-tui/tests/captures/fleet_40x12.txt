@@ -4,7 +4,7 @@
 │ ↻ scheduler      Bash  git pull   1m │
 │ ◐ nightly-fixer  Read  …nning.rs  1m │
 ├──────────────────────────────────────┤
-│ ⏎ details · Esc close       ↓ 7 more │
+│ m monitors · Esc close      ↓ 7 more │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

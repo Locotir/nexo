@@ -347,8 +347,9 @@ impl App {
             },
             Command::Panel => {
                 let panel = self.panel_handle();
-                let view = crate::agents_view::AgentsView::new(Some(panel), !self.fx_on())
+                let mut view = crate::agents_view::AgentsView::new(Some(panel), !self.fx_on())
                     .remembering(self.panel_filter.clone());
+                view.set_monitor_count(self.monitors.len());
                 self.modal = Some(Modal::Agents(Box::new(view)))
             }
             Command::Cost => {

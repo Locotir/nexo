@@ -57,7 +57,7 @@ async fn output_is_delivered_automatically_while_running_and_after_exit() {
     .expect("final monitor output was not delivered");
     tokio::time::timeout(
         Duration::from_secs(10),
-        r.until(|e| matches!(e, AgentEvent::Monitors { ids } if ids.is_empty())),
+        r.until(|e| matches!(e, AgentEvent::Monitors { ids, .. } if ids.is_empty())),
     )
     .await
     .expect("finished monitor was not removed after delivery");
@@ -189,7 +189,7 @@ async fn finished_fast_job_is_monitored_from_retained_output() {
     .expect("initial output was not delivered");
     tokio::time::timeout(
         Duration::from_secs(10),
-        r.until(|e| matches!(e, AgentEvent::Monitors { ids } if ids.is_empty())),
+        r.until(|e| matches!(e, AgentEvent::Monitors { ids, .. } if ids.is_empty())),
     )
     .await
     .expect("finished monitor was not removed");

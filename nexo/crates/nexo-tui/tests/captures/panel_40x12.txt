@@ -4,7 +4,7 @@
 │ ◆ docs           which license …  1m │
 │ ◐ nightly-fixer  Read  …nning.rs  1m │
 ├──────────────────────────────────────┤
-│ ⏎ details · Esc close       ↓ 6 more │
+│ m monitors · Esc close      ↓ 6 more │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything
