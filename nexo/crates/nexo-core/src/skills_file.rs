@@ -67,10 +67,16 @@ fn open_checked(path: &Path) -> io::Result<File> {
     }
     let actual = PathBuf::from(OsString::from_wide(&buf[..n]));
     // Windows returns verbatim paths, including `\\?\UNC\server\share` for UNC.
-    if path != actual && !actual.to_str().is_some_and(|p| windows_plain_path(p).as_deref() == path.to_str()) {
+    if !windows_same_path(path, &actual) {
         return Err(io::Error::other("skill file resolves through an alias"));
     }
     Ok(f)
+}
+
+#[cfg(windows)]
+fn windows_same_path(requested: &Path, actual: &Path) -> bool {
+    requested == actual
+        || actual.to_str().and_then(windows_plain_path).is_some_and(|plain| requested == Path::new(&plain))
 }
 
 #[cfg(any(windows, test))]
@@ -81,6 +87,37 @@ fn windows_plain_path(path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_final_path_accepts_mixed_separators_but_not_redirects() {
+        use std::path::Path;
+        let same = super::windows_same_path;
+        assert!(same(
+            Path::new(r"C:\project\.nexo/skills/debug/SKILL.md"),
+            Path::new(r"\\?\C:\project\.nexo\skills\debug\SKILL.md")
+        ));
+        assert!(same(
+            Path::new(r"\\server\share\skills/debug/SKILL.md"),
+            Path::new(r"\\?\UNC\server\share\skills\debug\SKILL.md")
+        ));
+        assert!(!same(Path::new(r"C:\project\skills\debug\SKILL.md"), Path::new(r"\\?\C:\outside\debug\SKILL.md")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opens_skill_with_mixed_path_separators() {
+        use std::io::Read;
+        let temp = tempfile::tempdir().unwrap();
+        let root = crate::paths::canonical(temp.path()).unwrap();
+        let dir = root.join(".nexo/skills/example");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(&path, "instructions").unwrap();
+        let mut text = String::new();
+        super::open(&path).unwrap().read_to_string(&mut text).unwrap();
+        assert_eq!(text, "instructions");
+    }
+
     #[test]
     fn windows_verbatim_drive_and_unc_paths() {
         assert_eq!(super::windows_plain_path(r"\\?\C:\skill\SKILL.md").as_deref(), Some(r"C:\skill\SKILL.md"));
