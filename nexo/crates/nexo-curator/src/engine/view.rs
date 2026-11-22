@@ -481,11 +481,17 @@ impl Engine {
         self.goal.assignment()
     }
 
+    #[cfg(test)]
     pub fn view(&mut self) -> Vec<Value> {
+        self.view_with_history(&[]).0
+    }
+
+    pub fn view_with_history(&mut self, history: &[Value]) -> (Vec<Value>, Option<Vec<String>>) {
         self.decide();
         let mut view = self.render();
-        self.add_tail(&mut view);
-        view
+        let mut evidence = Vec::new();
+        self.add_tail(&mut view, history, &mut evidence);
+        (view, self.p.relations.then_some(evidence))
     }
 
     /// Whether the other topics leave the view. Decided once for each request (`split_now`) and kept until the

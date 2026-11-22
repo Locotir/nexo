@@ -5,6 +5,30 @@
 
 use super::*;
 
+/// A policy can squeeze a user block to a small recall pointer before `fit` sees it. Check the minimum
+/// input using the unaltered words first, even before deciding whether to spend a model call on compaction.
+/// History (including files, tool results, and earlier failed turns) isn't part of this lower bound.
+pub(super) fn check_words(st: &State, specs: &[nexo_core::provider::ToolSpec], extra: u64) -> anyhow::Result<()> {
+    let Some(window) = st.limits.context_window.map(u64::from) else { return Ok(()) };
+    if st.turn_words_tokens == 0 {
+        return Ok(());
+    }
+    let ratio = fit_ratio(st.tok_ratio, window);
+    let fixed = fixed_tokens(&st.system, specs);
+    let conversation = st.turn_words_tokens.saturating_add(extra);
+    let input = provider_tokens(fixed.saturating_add(conversation), ratio);
+    let reply = reply_tokens(st).min(limits::REPLY_FLOOR);
+    if input.saturating_add(u64::from(reply)) > window {
+        let system = st.system.len() as u64 / 4;
+        anyhow::bail!(
+            "request not sent: preserving your words needs about {input} input tokens for a {window}-token window \
+             (system {}, tools {}, conversation {}, plus {reply} for the reply). Try a shorter request; your session history is unchanged.",
+            provider_tokens(system, ratio), provider_tokens(fixed.saturating_sub(system), ratio), provider_tokens(conversation, ratio),
+        );
+    }
+    Ok(())
+}
+
 /// What a request takes, in the provider's tokens as far as they are known: `est` estimated tokens (4 characters a
 /// token) through the ratio learned from the provider's counts.
 pub(super) fn provider_tokens(est: u64, ratio: Option<f64>) -> u64 {
@@ -34,49 +58,128 @@ pub(super) fn room_left(st: &State, window: u64, wanted: u32) -> bool {
     used + u64::from(limits::REPLY_FLOOR) <= window && used + u64::from(wanted) > window
 }
 
-/// Fits `req`, built from the session's view, to the model's window when it and its reply would pass it. In order:
-/// when the session's policy does not keep its view under the window (plain, compact) and the request leaves no
-/// useful reply (an eighth of the window, at least `limits::REPLY_FLOOR`), the same request from the curator's view,
-/// as long as that view holds the person's newest message as they wrote it; then a shorter reply, down to
-/// `limits::REPLY_FLOOR`; and when it still does not fit, the request goes as it is and the person is told once a
-/// turn what it holds, so the provider's answer (and the lesson the loop takes from an error) decides what follows.
-/// `notes` is the text this request alone carries on its last message, and `extra` its estimated tokens.
-/// A request the loop will not send ([`known_too_long`]) is left as it is, with no notice.
-pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&str>, extra: u64) {
-    // a request the loop will not send (`known_too_long`) gets no shorter reply and no notice that it goes as it is
-    if known_too_long(st) {
-        return;
-    }
-    let Some(window) = st.limits.context_window.map(u64::from) else { return };
+/// Admit the assembled request, including request-only notes, before it can reach a provider.
+/// Only the outbound copy is shortened. The newest request and tool call/result pairs stay intact.
+pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&str>, extra: u64) -> anyhow::Result<()> {
+    req.output_ceiling = st.limits.max_output;
+    let Some(window) = st.limits.context_window.map(u64::from) else { return Ok(()) };
     let wanted = req.max_tokens;
-    let ratio = fit_ratio(st.tok_ratio, window);
-    let mut used = provider_tokens(st.est_sent, ratio);
-    if used + u64::from(wanted) <= window {
-        return;
-    }
     let floor = wanted.min(limits::REPLY_FLOOR);
-    // a reply with room for an edit call: an eighth of the window, never under the floor nor over what was asked
-    let useful = wanted.min(limits::REPLY_FLOOR.max(u32::try_from(window / 8).unwrap_or(u32::MAX)));
-    if used + u64::from(useful) > window && !st.policy.fits_window() {
+    let ratio = fit_ratio(st.tok_ratio, window);
+    let fixed = fixed_tokens(&req.system, &req.tools);
+    let estimate = |ms: &[Message]| fixed + nexo_core::message::estimate_tokens(ms);
+    st.est_sent = estimate(&req.messages);
+    let mut used = provider_tokens(st.est_sent, ratio);
+    let useful = wanted.min(limits::REPLY_FLOOR.max((window / 8) as u32));
+    if used + u64::from(useful) > window && !st.policy.fits_window() && !known_too_long(st) {
         if let Some((messages, tokens)) = curator_view(st, req, notes, extra, ratio).await {
-            // the usage line tells the request was cut here, and how much of the history it leaves out
             st.fit_tokens = Some(tokens);
-            st.reads.note_view(&messages);
-            st.last_sent.follow(&messages);
-            st.est_sent = fixed_tokens(&st.system, &req.tools) + nexo_core::message::estimate_tokens(&messages);
             req.messages = messages;
+            st.est_sent = estimate(&req.messages);
             used = provider_tokens(st.est_sent, ratio);
         }
     }
-    if used + u64::from(floor) <= window {
-        // what is left of the window, never more than was asked
-        req.max_tokens = u32::try_from(window - used).unwrap_or(u32::MAX).min(wanted);
-        return;
+    if used + u64::from(floor) > window {
+        // Keep this turn's tools usable even when many results land in one round. Never change
+        // call IDs, input arguments, or the stored transcript. Prefer newer results at equal size.
+        // Verify the turn before replacing any of its result bodies.
+        let cut = turn_boundary(st, &req.messages, notes);
+        let mut results = Vec::new();
+        for (i, m) in req.messages.iter().enumerate() {
+            for (j, part) in m.content.iter().enumerate() {
+                if let Part::ToolResult { content, .. } = part {
+                    let n = content
+                        .iter()
+                        .map(|p| match p {
+                            Part::Text { text } => text.len(),
+                            _ => 0,
+                        })
+                        .sum::<usize>();
+                    if n > 256 {
+                        results.push((std::cmp::Reverse(n), i, j));
+                    }
+                }
+            }
+        }
+        results.sort_unstable();
+        let mut sizes: Vec<_> = req.messages.iter().map(nexo_core::message::message_tokens).collect();
+        for (_, i, j) in results {
+            let Part::ToolResult { content, .. } = &mut req.messages[i].content[j] else { continue };
+            *content = vec![Part::text(
+                "[curator] Tool output omitted to fit the context window. Request a smaller range if needed.",
+            )];
+            let new = nexo_core::message::message_tokens(&req.messages[i]);
+            st.est_sent = st.est_sent - sizes[i] + new;
+            sizes[i] = new;
+            if provider_tokens(st.est_sent, ratio) + u64::from(wanted) <= window {
+                break;
+            }
+        }
+        used = provider_tokens(st.est_sent, ratio);
+        // Drop only the prefix before the verified turn, never up to a later queued request or job note.
+        if used + u64::from(floor) > window {
+            if let Some(i) = cut.filter(|i| *i > 0) {
+                req.messages.drain(..i);
+                st.est_sent = estimate(&req.messages);
+                used = provider_tokens(st.est_sent, ratio);
+            }
+        }
+        if used + u64::from(floor) > window {
+            req.max_tokens = floor;
+            anyhow::bail!("{}", over_window(st, req, window, ratio));
+        }
+        st.fit_tokens = Some(nexo_core::message::estimate_tokens(&req.messages));
     }
-    req.max_tokens = floor;
-    if st.noticed.insert(format!("over the window {window}")) {
-        notice(&st.events, Level::Warn, over_window(st, req, window, ratio));
+    if st.fit_tokens.is_some() {
+        st.reads.note_view(&req.messages);
+        st.last_sent.follow(&req.messages);
     }
+    let room = (window - used) as u32;
+    req.output_ceiling = Some(room.min(st.limits.max_output.unwrap_or(u32::MAX)));
+    req.max_tokens = wanted.min(req.output_ceiling.unwrap());
+    Ok(())
+}
+
+/// `turn_start` indexes history, not the outbound view. Match the complete tail from the end (including
+/// queued requests), allowing only `attach_hidden`'s known final addition. A missing/rewritten tail,
+/// replaced history or synthetic continuation gives no proven boundary: do not drain it.
+fn turn_boundary(st: &State, view: &[Message], notes: Option<&str>) -> Option<usize> {
+    if st.person_turn_version != Some(st.history.version()) {
+        return None;
+    }
+    let turn = st.history.get(st.turn_start..)?;
+    let (last, prefix) = turn.split_last()?;
+    if !turn[0].is_person() {
+        return None;
+    }
+    let before = match notes {
+        None => view.strip_suffix(turn)?,
+        Some(note) => {
+            let (end, prior) = view.split_last()?;
+            let (added, original) = end.content.split_last()?;
+            if end.role != Role::User || !matches!(added, Part::Text { text } if text == note) {
+                return None;
+            }
+            if last.role == Role::User && original == last.content {
+                prior.strip_suffix(prefix)?
+            } else if last.role == Role::Assistant && original.is_empty() {
+                prior.strip_suffix(turn)?
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(before.len())
+}
+
+/// Silent optional calls use a clone of the last request with new messages. The old ceiling
+/// cannot be reused: skip the optional call if its own reply no longer fits.
+pub(super) fn side_fits(st: &State, req: &mut ModelRequest) -> bool {
+    let Some(w) = st.limits.context_window.map(u64::from) else { return true };
+    let est = fixed_tokens(&req.system, &req.tools) + nexo_core::message::estimate_tokens(&req.messages);
+    let room = w.saturating_sub(provider_tokens(est, fit_ratio(st.tok_ratio, w))) as u32;
+    req.output_ceiling = Some(room.min(st.limits.max_output.unwrap_or(u32::MAX)));
+    req.max_tokens <= room
 }
 
 /// `req`'s messages as the curator would send them under the window, with the room `req`'s reply asked for, and
@@ -96,7 +199,7 @@ async fn curator_view(
     let prices = st.limits.pricing.or_else(|| cfg.pricing_for(&model));
     // `recall` is offered only with the curator's own policy: this view leaves out what it cannot hold without
     // pointing at a tool the model does not have
-    let cur = st.fit_view.get_or_insert_with(|| context::BuiltIn::lenient("recall=0"));
+    let cur = st.fit_view.get_or_insert_with(|| context::BuiltIn::lenient("recall=0;relations=0"));
     cur.tools(&names);
     if window > reply {
         cur.window(view_window(window - reply, ratio));
@@ -146,8 +249,7 @@ fn over_window(st: &State, req: &ModelRequest, window: u64, ratio: Option<f64>) 
     }
     format!(
         "request over the window: about {} tokens with the reply, for a {window}-token window (system {system}, \
-         tools {tools}, conversation {conversation}, reply {reply}); the largest part is {} at {} tokens. Sent as it \
-         is; the provider's answer decides what happens next.",
+         tools {tools}, conversation {conversation}, reply {reply}); the largest part is {} at {} tokens. Not sent. Try a shorter request; your session history is unchanged.",
         total + reply,
         largest.0,
         largest.1

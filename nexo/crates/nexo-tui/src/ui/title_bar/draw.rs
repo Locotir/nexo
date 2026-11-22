@@ -115,10 +115,10 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
             if !right.is_empty() {
                 right.push(Seg { text: " ·".to_string(), style: base.fg(theme.border) });
             }
-            let fast = plan.fast_pace(meter, now);
-            let colour = if meter.used_pct >= 100.0 {
+            let eta = plan.burn_eta(meter, now);
+            let colour = if meter.used_pct >= 100.0 || eta.is_some() {
                 theme.error
-            } else if meter.used_pct >= 80.0 || fast {
+            } else if meter.used_pct >= 80.0 {
                 theme.warn
             } else {
                 theme.dim
@@ -132,8 +132,8 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
             } else {
                 String::new()
             };
-            let pace = if fast { " !pace" } else { "" };
-            right.push(Seg { text: format!(" {} {left}{reset}{pace}", meter.label), style: base.fg(colour) });
+            let burn = eta.map(|s| format!(" 󰈸 0% in {}", nexo_providers::usage::short_span(s))).unwrap_or_default();
+            right.push(Seg { text: format!(" {} {left}{reset}{burn}", meter.label), style: base.fg(colour) });
         }
     }
     if pieces.contains(&"tokens") && !lean && (area.width >= 80 || app.cost <= 0.0 || !pieces.contains(&"cost")) {
@@ -189,11 +189,14 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     let (notes, notes_w) = quiet_notes(app, w, full_w);
     // the name holds the bar's right end: before it yields, it pushes the cost ("API value") off,
     // the one right-side piece ranked below it. It never costs a title segment, and shows whole or not at all.
+    let cut_ms = app.condense_ms();
+    let policy = policy_text(app, cut_ms);
+    let groups_at = |app: &App, avail| segments::with_policy(app, avail, policy.as_deref());
     let name_fits = |label: &str, dropped: usize, app: &App| -> bool {
         let avail = w.saturating_sub((full_w - dropped) + notes_w);
         let room = avail.saturating_sub(width(label));
-        let with = segs_width(app, &title_segments(app, room));
-        with <= room && with == segs_width(app, &title_segments(app, avail))
+        let with = segs_width(app, &groups_at(app, room));
+        with <= room && with == segs_width(app, &groups_at(app, avail))
     };
     let fit_full = label.as_ref().is_some_and(|l| name_fits(l, 0, app));
     let fit_nocost = !fit_full && cost_w > 0 && label.as_ref().is_some_and(|l| name_fits(l, cost_w, app));
@@ -204,7 +207,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
     let label_w = label.as_ref().map_or(0, |l| width(l));
     let avail = w.saturating_sub(right_w + notes_w).saturating_sub(label_w);
-    let groups = title_segments(app, avail);
+    let groups = groups_at(app, avail);
     let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
     if app.root {
         spans.push(Span::styled(ROOT_MARK, base.fg(theme.error).add_modifier(Modifier::BOLD)));
@@ -219,7 +222,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     }
     let mut used = brand_width(app);
     let mut hits = Vec::new();
-    let curator = app.condense_ms().and_then(|_| policy_text(app));
+    let mut landing = None;
     'outer: for (gi, g) in groups.iter().enumerate() {
         let sep = " │ ";
         if used + width(sep) > avail {
@@ -286,9 +289,13 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
                 }
             }
             // the light of a cut lands over the curator's figure (over the label when it has none)
-            if curator.as_deref().is_some_and(|c| shown.trim_start() == c) {
+            if cut_ms.is_some() && policy.as_deref() == Some(shown.trim_start()) {
                 let at = shown.rfind(" -").map_or(shown.len() - shown.trim_start().len(), |i| i + 1);
-                app.fx.cut_col.set(Some(area.x + (used + width(&shown[..at])) as u16));
+                let x = area.x + used as u16;
+                let start = x + (sw - width(shown.trim_start())) as u16;
+                let sign = x + width(&shown[..at]) as u16;
+                app.fx.cut_col.set(Some(sign));
+                landing = Some((start..x + sw as u16, sign));
             }
             used += sw;
             let m = h.map(lit).unwrap_or_else(Modifier::empty);
@@ -335,6 +342,15 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     spans.extend(label_span(app, label, area));
     app.status_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+    if app.fx_on() {
+        if let (Some((cols, sign)), Some(ms)) = (landing, cut_ms) {
+            pulse::landing(f.buffer_mut(), theme, area.y, cols, sign, ms);
+        }
+        // The signature belongs only to the turn that actually finished, never to the next turn.
+        if let Some(at) = app.fx.turn_done.filter(|&at| !app.busy && app.turn_started.is_none_or(|start| start <= at)) {
+            pulse::signature(f.buffer_mut(), theme, area, now.saturating_duration_since(at));
+        }
+    }
 }
 
 /// The session name's span at the bar's right end, and its click.

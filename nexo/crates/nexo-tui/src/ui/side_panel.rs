@@ -212,6 +212,10 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
     let theme = &app.theme;
     let fmt_k = crate::render::blocks::fmt_k;
     let mut out = vec![Line::from(Span::styled("context live", Style::default().add_modifier(Modifier::BOLD)))];
+    if let Some(n) = app.relation_quotes {
+        let unit = if n == 1 { "quote" } else { "quotes" };
+        out.push(Line::from(Span::styled(format!("relations · {n} {unit}"), theme.style(theme.accent))));
+    }
     let sent_of = |cells: &mut dyn Iterator<Item = &nexo_core::ContextCell>| {
         cells.fold((0, 0), |(s, m), c| match c.state {
             CellState::Dropped => (s, m + c.tokens),
@@ -231,7 +235,10 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
     ]));
     // the grid gets what the panel has left after the text around it
     let zoned = !app.map_zones.is_empty();
-    let rows = height.saturating_sub(if zoned { 9 } else { 8 }).clamp(2, if zoned { 40 } else { 12 });
+    let rows = height
+        .saturating_sub(usize::from(app.relation_quotes.is_some()))
+        .saturating_sub(if zoned { 9 } else { 8 })
+        .clamp(2, if zoned { 40 } else { 12 });
     let w = w.max(1);
     // the zones to draw, in order, each with its cells (index into the map)
     let mut groups: Vec<(Option<usize>, Vec<usize>)> = if zoned {

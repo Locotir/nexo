@@ -1,7 +1,8 @@
 //! Monitor delivery through real shell jobs, session control, and the model channel.
+#![cfg(unix)]
+
 use super::*;
 
-#[cfg(unix)]
 #[tokio::test]
 async fn output_is_delivered_automatically_while_running_and_after_exit() {
     let d = test_tmpdir().unwrap();
@@ -63,7 +64,6 @@ async fn output_is_delivered_automatically_while_running_and_after_exit() {
     r.stop().await;
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn cancel_unsubscribes_without_killing_job() {
     let d = test_tmpdir().unwrap();
@@ -137,7 +137,6 @@ impl Tool for WaitForJob {
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn finished_fast_job_is_monitored_from_retained_output() {
     let d = test_tmpdir().unwrap();
@@ -211,7 +210,6 @@ async fn finished_fast_job_is_monitored_from_retained_output() {
     r.stop().await;
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn consumed_job_completion_cannot_be_monitored_again() {
     let d = test_tmpdir().unwrap();
@@ -267,7 +265,6 @@ async fn consumed_job_completion_cannot_be_monitored_again() {
     r.stop().await;
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn monitor_output_cannot_attach_named_files_or_expand_mentions() {
     let d = test_tmpdir().unwrap();

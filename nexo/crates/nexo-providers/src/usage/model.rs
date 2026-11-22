@@ -108,25 +108,40 @@ impl PlanUsage {
             .collect()
     }
 
-    /// Whether a fresh reading suggests exhaustion before reset at the window-average pace.
-    /// This is an estimate, not a measured recent token rate. Missing or inconsistent window data
-    /// cannot support it. Wait until 5% of the window and 10% of the quota have passed to avoid
-    /// alarming on tiny early readings. A 25% margin avoids warning on small fluctuations.
+    /// Estimated seconds from now to exhaustion at the observed window-average pace.
+    /// Match the weekly status line after three hours; keep the conservative margin for shorter windows.
+    pub fn burn_eta(&self, meter: &Meter, now: i64) -> Option<i64> {
+        let seen = meter.observed_at?;
+        let age = now.checked_sub(seen)?;
+        let reset = meter.resets_at?;
+        if self.is_limits() || seen <= 0 || !(0..=3600).contains(&age) || reset <= now {
+            return None;
+        }
+        let minutes = meter.window_minutes?;
+        let window = i64::try_from(minutes.checked_mul(60)?).ok()?;
+        let remaining = reset.checked_sub(seen)?;
+        let elapsed = window.checked_sub(remaining)?;
+        let used = meter.used_pct;
+        if elapsed <= 0 || !(used > 0.0 && used < 100.0) {
+            return None;
+        }
+        if minutes == 7 * 24 * 60 {
+            if elapsed < 3 * 3600 {
+                return None;
+            }
+        } else {
+            let fraction = elapsed as f64 / window as f64;
+            if fraction < 0.05 || used < 10.0 || used <= fraction * 125.0 {
+                return None;
+            }
+        }
+        let to_empty = elapsed as f64 * (100.0 - used) / used;
+        (to_empty < remaining as f64 && to_empty > age as f64).then(|| (to_empty - age as f64).ceil() as i64)
+    }
+
+    /// Whether there is a current early-exhaustion estimate for this window.
     pub fn fast_pace(&self, meter: &Meter, now: i64) -> bool {
-        let Some(seen) = meter.observed_at else { return false };
-        if self.is_limits() || seen <= 0 || now < seen || now.saturating_sub(seen) > 3600 || meter.is_stale(now) {
-            return false;
-        }
-        let (Some(minutes), Some(reset)) = (meter.window_minutes, meter.resets_at) else { return false };
-        let Some(seconds) = minutes.checked_mul(60).and_then(|s| i64::try_from(s).ok()).filter(|s| *s > 0) else {
-            return false;
-        };
-        let Some(remaining) = reset.checked_sub(seen) else { return false };
-        if remaining <= 0 || remaining > seconds || !meter.used_pct.is_finite() || meter.used_pct < 10.0 {
-            return false;
-        }
-        let elapsed = (seconds - remaining) as f64 / seconds as f64;
-        elapsed >= 0.05 && meter.used_pct > elapsed * 125.0
+        self.burn_eta(meter, now).is_some()
     }
 
     /// The full detail, one line per window and a line for the plan and the credits.

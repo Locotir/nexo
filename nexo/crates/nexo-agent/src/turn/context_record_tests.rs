@@ -147,7 +147,7 @@ async fn a_request_the_curator_fitted_under_plain_says_so_with_what_it_held() {
     let (_, _, model) = st.target.get();
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
     req.max_tokens = reply_tokens(&st);
-    super::window_fit::fit(&mut st, &mut req, None, 0).await;
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
     // the curator cut the request: the result does not go whole, and the request takes under the window
     let sent = serde_json::to_string(&req.messages).unwrap();
     assert!(!sent.contains(&big), "the 64 000-char result went whole");
@@ -160,7 +160,7 @@ async fn a_request_the_curator_fitted_under_plain_says_so_with_what_it_held() {
     let (_, _, model) = st.target.get();
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
     req.max_tokens = reply_tokens(&st);
-    super::window_fit::fit(&mut st, &mut req, None, 0).await;
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
     host::add_usage(&mut st, &rt.events, "m1", call, call, UsageKind::Main);
     let lines = usage_lines(st.session.path());
     assert_eq!(lines.len(), 2, "{lines:?}");
@@ -170,5 +170,75 @@ async fn a_request_the_curator_fitted_under_plain_says_so_with_what_it_held() {
     let second: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
     assert!(second.get("fitted").is_none(), "{}", lines[1]);
     assert_eq!(second["held"], 0, "{}", lines[1]);
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+/// Drive the last guard directly, after policy selection, so neither a helpful fallback nor a mock
+/// provider can mask what the actual outbound request contains.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn window_guard_preserves_the_whole_turn_or_refuses_the_cut() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(1000);
+    st.system.clear();
+    let ask = Message::user("keep my original request");
+    let queued = Message::user("also check the second case");
+    let job = Message::user("[background jobs ended] 7");
+    let old = Message::assistant("x".repeat(8000));
+    st.history.replace(vec![Message::user("earlier"), old.clone(), ask.clone(), queued.clone(), job.clone()]);
+    st.turn_start = 2;
+    st.person_turn_version = Some(st.history.version());
+    let request = |mut messages: Vec<Message>| {
+        attach_hidden(&mut messages, "only on this request".into());
+        let mut req = ModelRequest::new("m1", "", messages);
+        req.max_tokens = 256;
+        req
+    };
+    let note = Some("only on this request");
+    // The curated prefix no longer has the same length as the history prefix.
+    let mut req = request(vec![old.clone(), ask.clone(), queued.clone(), job.clone()]);
+    super::window_fit::fit(&mut st, &mut req, note, 0).await.unwrap();
+    assert_eq!(req.messages, request(vec![ask.clone(), queued.clone(), job.clone()]).messages);
+    // An unrecognisable first or queued request must not be dropped in favour of the exact job note.
+    for tail in [vec![queued.clone(), job.clone()], vec![ask.clone(), job.clone()]] {
+        let mut req = request([vec![old.clone()], tail].concat());
+        assert!(super::window_fit::fit(&mut st, &mut req, note, 0).await.is_err());
+    }
+    // A supervisor resume can itself be the first user-role message of a turn.
+    st.history.replace(vec![ask, old, Message::user(SUPERVISOR_RESUME_MARK), queued]);
+    st.person_turn_version = None;
+    let mut req = request(st.history.to_vec());
+    assert!(super::window_fit::fit(&mut st, &mut req, note, 0).await.is_err());
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn window_guard_omitted_read_can_be_read_again_at_a_smaller_range() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(1000);
+    st.system.clear();
+    let body = "one long line\n".repeat(1000);
+    let path = d.path().join("a.txt");
+    std::fs::write(&path, &body).unwrap();
+    assert!(st.reads.after_read(&path, "a.txt", None, 1000, "c1", usize::MAX).is_none());
+    st.history.replace(vec![
+        Message::user("read a.txt"),
+        Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", serde_json::json!({"path":"a.txt"}))]),
+        Message::tool_results(vec![Part::tool_result("c1", body.clone(), false)]),
+    ]);
+    let mut req = ModelRequest::new("m1", "", st.history.to_vec());
+    req.max_tokens = 256;
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
+    assert_ne!(req.messages.last(), st.history.last(), "the guard actually omitted the read");
+    assert!(st.reads.after_read(&path, "a.txt", Some(99), 1, "c2", usize::MAX).is_none(), "line 99 was not sent");
     std::env::remove_var("NEXO_DATA_DIR");
 }

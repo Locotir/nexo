@@ -68,6 +68,7 @@ pub struct RunRec {
 struct Parked {
     blocks: Vec<Block>,
     cache: Vec<Option<Rendered>>,
+    tasks: TaskRows,
     looks: Vec<Look>,
     offsets: Vec<usize>,
     total_lines: usize,
@@ -97,6 +98,7 @@ impl Parked {
         Parked {
             blocks: Vec::new(),
             cache: Vec::new(),
+            tasks: TaskRows::default(),
             looks: Vec::new(),
             offsets: Vec::new(),
             total_lines: 0,
@@ -257,6 +259,7 @@ impl App {
         }
         swap!(
             blocks,
+            tasks,
             cache,
             looks,
             offsets,

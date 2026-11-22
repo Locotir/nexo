@@ -1095,3 +1095,40 @@ fn a_task_launch_has_one_face_and_badge_and_keeps_its_report() {
     a.handle_agent(AgentEvent::SubState { info: other });
     assert!(!a.hidden(2));
 }
+
+#[test]
+fn indexed_task_rows_follow_group_insertion_view_switch_and_clear() {
+    let (mut a, _rx) = bare();
+    a.opts.group_tools = true;
+    for id in ["launch", "sibling"] {
+        a.push(Block::Tool {
+            id: id.into(),
+            name: "task".into(),
+            summary: String::new(),
+            args: serde_json::Value::Null,
+            status: crate::render::blocks::ToolStatus::Done,
+            progress: vec![],
+            output: None,
+            started: None,
+            elapsed_ms: None,
+            folded: true,
+        });
+    }
+    let id = "launch#7";
+    let mut run = info(id, "worker", SubState::Background);
+    run.provider = Some("mock".into());
+    run.model = Some("model".into());
+    a.handle_agent(AgentEvent::SubState { info: run.clone() });
+    assert_eq!(a.task_card_for_run(id), Some(1));
+    assert!(!a.hidden(1) && a.hidden(2) && a.hidden(3));
+    a.open_sub(id);
+    answer(&mut a, id, vec![person("hello")], 0);
+    assert_eq!(a.task_card_for_run(id), None);
+    a.close_sub();
+    assert_eq!(a.task_card_for_run(id), Some(1));
+    run.state = SubState::Ok;
+    a.handle_agent(AgentEvent::SubState { info: run });
+    assert!(a.hidden(1) && !a.hidden(3));
+    a.clear_transcript();
+    assert_eq!(a.task_card_for_run(id), None);
+}

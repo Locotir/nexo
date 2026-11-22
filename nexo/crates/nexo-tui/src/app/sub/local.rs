@@ -76,7 +76,7 @@ impl App {
         if let Some(card) = self.task_card_for_run(&run.id) {
             self.invalidate(card);
         }
-        match self.blocks.iter().rposition(|b| matches!(b, Block::Agent(r) if r.id == run.id)) {
+        match self.tasks.by_run.get(&run.id).copied() {
             Some(i) => {
                 self.blocks[i] = Block::Agent(run);
                 self.cache[i] = None;
@@ -154,6 +154,7 @@ impl App {
         let old_reveal = self.reveal;
         self.read_back = None;
         self.blocks.clear();
+        self.tasks = TaskRows::default();
         self.cache.clear();
         self.looks.clear();
         self.offsets.clear();

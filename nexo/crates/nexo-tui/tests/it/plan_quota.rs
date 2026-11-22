@@ -81,7 +81,10 @@ fn the_status_bar_shows_both_windows_with_their_reset() {
 fn a_window_over_80_percent_turns_warm_and_a_spent_one_red() {
     let theme = Theme::pick("dark");
     let mut a = app(Some("codex"));
-    a.plan_usage = Some(plan(85.0, 100.0));
+    let mut p = plan(85.0, 100.0);
+    // High usage, but on track to reach the reset: only exhaustion should be red here.
+    p.meters[0].resets_at = Some(nexo_core::auth::now() as i64 + 10 * 60);
+    a.plan_usage = Some(p);
     let t = draw(&mut a, 140);
     let rows = rows_of(t.backend().buffer());
     let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("5h 15%")).expect("the item");
@@ -187,12 +190,12 @@ fn fast_pace_is_visible_and_conservative() {
     let t = draw(&mut a, 140);
     let rows = rows_of(t.backend().buffer());
     let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("wk 50%")).unwrap();
-    assert!(row.contains("!pace"), "{row}");
+    assert!(row.contains("wk 50% ↻5d6h 󰈸 0% in 1d18h"), "{row}");
     let x = row[..row.find("wk 50%").unwrap()].chars().count() as u16;
-    assert_eq!(t.backend().buffer()[(x, y as u16)].fg, Theme::pick("dark").warn);
+    assert_eq!(t.backend().buffer()[(x, y as u16)].fg, Theme::pick("dark").error);
     p.meters[0].observed_at = Some(now - 3601);
     a.plan_usage = Some(p);
-    assert!(!screen(&mut a, 140).contains("!pace"));
+    assert!(!screen(&mut a, 140).contains('󰈸'));
 }
 
 #[test]
@@ -204,8 +207,8 @@ fn codex_multi_window_pace_is_independent_per_slot() {
     p.meters[1].resets_at = Some(now + 4 * 86400);
     a.plan_usage = Some(p.clone());
     let s = screen(&mut a, 180);
-    assert!(s.contains("5h 20%") && s.contains("!pace"), "{s}");
+    assert!(s.contains("5h 20% ↻4h 󰈸 0% in 15m") && s.matches('󰈸').count() == 1, "{s}");
     p.meters[0].observed_at = Some(now - 3601);
     a.plan_usage = Some(p);
-    assert!(!screen(&mut a, 180).contains("!pace"));
+    assert!(!screen(&mut a, 180).contains('󰈸'));
 }

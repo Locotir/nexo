@@ -348,6 +348,12 @@ impl App {
             return None;
         }
         let line = self.view_top() + (y - a.y) as usize;
+        let block = self.block_at_line(line)?;
+        self.lines(block, self.last_width);
+        let local = line - self.offsets[block];
+        if self.looks[block].no_link_row == Some(local) {
+            return None;
+        }
         let col = (x - a.x) as usize;
         // the rows of the logical line, the first one and the ones the layout wrapped after it
         let mut first = line;
@@ -389,6 +395,12 @@ impl App {
                 }
             }
             shape.push((skip, base, at));
+        }
+        // Both bare and Markdown links ultimately contain one of our supported URL prefixes.
+        // Test the reconstructed text so even a prefix split across a soft wrap still works.
+        if !text.contains("://") && !text.as_bytes().windows(4).any(|w| w.eq_ignore_ascii_case(b"www.")) {
+            self.looks[block].no_link_row = Some(local);
+            return None;
         }
         let (skip, delta, end) = *shape.get(line - first)?;
         if col < skip {

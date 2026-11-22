@@ -69,6 +69,7 @@ impl App {
         }
         self.context_wait = false;
         self.words.defer(false);
+        self.relation_quotes = None;
         self.context = Some(ContextInfo {
             view_tokens,
             history_tokens,

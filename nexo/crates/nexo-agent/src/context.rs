@@ -33,6 +33,8 @@ pub struct Memory {
     /// from the curator's memory).
     #[serde(skip)]
     pub curated: Vec<nexo_core::CuratedItem>,
+    #[serde(skip)]
+    pub relation_quotes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]

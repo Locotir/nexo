@@ -184,8 +184,9 @@ impl Message {
         self.content.iter().any(Part::is_tool_call)
     }
 
+    /// A tool reply, even when a request-only supervisor or goal note follows its results.
     pub fn is_tool_results(&self) -> bool {
-        !self.content.is_empty() && self.content.iter().all(Part::is_tool_result)
+        self.role == Role::User && self.content.iter().any(Part::is_tool_result)
     }
 
     /// Whether this is something the person said: a user message with text or a picture and no tool

@@ -124,7 +124,19 @@ impl Gemini {
         }
         body["generationConfig"] = gen;
         for (k, v) in &req.extra {
-            body[k] = v.clone();
+            // Protobuf JSON also accepts the snake_case spelling. Keep just one configuration on the wire.
+            let key = if req.output_ceiling.is_some() && k == "generation_config" { "generationConfig" } else { k };
+            body[key] = v.clone();
+        }
+        if let Some(cap) = req.output_ceiling {
+            // An overlay may have replaced the entire object (including omitting or nulling the limit).
+            let gen = &mut body["generationConfig"];
+            if !gen.is_object() {
+                *gen = json!({});
+            }
+            let snake = gen.as_object_mut().unwrap().remove("max_output_tokens");
+            let limit = crate::output::bounded(gen.get("maxOutputTokens").or(snake.as_ref()), req.max_tokens, cap);
+            gen["maxOutputTokens"] = json!(limit);
         }
         body
     }

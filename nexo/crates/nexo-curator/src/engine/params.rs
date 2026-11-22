@@ -3,6 +3,8 @@
 /// The settings of an engine (see the spec in `lib.rs`).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Params {
+    /// Quote bounded historical evidence linked by rare keys, with tool-call provenance when unambiguous.
+    pub relations: bool,
     pub threshold: f64,
     pub protect: i64,
     pub check: i64,

@@ -170,6 +170,80 @@ fn too_long(message: &str) -> Reply {
     Reply::Err(ProviderError::new(ErrorKind::ContextLength, message))
 }
 
+// The request fits comfortably by *every* local estimate. Learning a different ratio from this error does
+// not change the short view or require a shorter reply, even though it changes the preflight ceiling.
+const KNOWN_WINDOW_ERROR: &str = "This model's maximum context length is 131072 tokens.";
+
+fn context_retry_config(protocol: &str) -> Config {
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    let p = cfg.providers.get_mut("mock").unwrap();
+    p.protocol = protocol.into();
+    p.context_window.insert("m1".into(), 131_072);
+    cfg
+}
+
+#[tokio::test]
+async fn context_retry_does_not_resend_the_same_load_or_block_the_next_turn() {
+    let _g = config_lock().lock().await;
+    for in_stream in [false, true] {
+        let d = test_tmpdir().unwrap();
+        let error = ProviderError::new(ErrorKind::ContextLength, KNOWN_WINDOW_ERROR);
+        let refusal = if in_stream { Reply::Events(vec![StreamEvent::Error(error)]) } else { Reply::Err(error) };
+        let client = Scripted::new(vec![refusal, Reply::Events(bare(text("next turn")))]);
+        let mut r = start(client.clone(), context_retry_config("openai-chat"), None, d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Error);
+        assert!(notices(&evs).iter().any(|s| s.contains("not sent again")), "{evs:?}");
+        assert_eq!(evs.iter().filter(|e| matches!(e, AgentEvent::AssistantStart)).count(), 1);
+        assert_eq!(client.requests().len(), 1, "the numbered window was already known");
+        r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("next turn", TurnEnd::Done));
+        assert_eq!(client.requests().len(), 2);
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn context_retry_after_billing_checks_the_effective_output_limit() {
+    let _g = config_lock().lock().await;
+    for omits_limit in [false, true] {
+        let d = test_tmpdir().unwrap();
+        let mut cfg = context_retry_config("openai-responses");
+        cfg.agent.max_cost = Some(0.007);
+        let p = cfg.providers.get_mut("mock").unwrap();
+        p.extra.insert("omit_max_tokens".into(), omits_limit.into());
+        // Only the reply has a price: the failed call consumes $0.0025, so the next spend admission lowers
+        // max_tokens even though the window refit does not change the prompt or preferred reply size.
+        p.pricing.insert("m1".into(), Pricing { output: 1.0, ..Pricing::default() });
+        let client = Scripted::new(vec![
+            Reply::Events(vec![
+                StreamEvent::Usage(Usage { output: 2500, ..Default::default() }),
+                StreamEvent::Error(ProviderError::new(ErrorKind::ContextLength, KNOWN_WINDOW_ERROR)),
+            ]),
+            Reply::Events(bare(text("fits now"))),
+        ]);
+        let mut r = start(client.clone(), cfg, None, d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        let reqs = client.requests();
+        if omits_limit {
+            assert_eq!(end_of(&evs), TurnEnd::Error);
+            assert_eq!(reqs.len(), 1, "a smaller unsent output limit changes nothing for the provider");
+        } else {
+            assert_eq!((text_of(&evs).as_str(), end_of(&evs)), ("fits now", TurnEnd::Done));
+            assert_eq!(reqs.len(), 2);
+            assert_eq!(reqs[0].messages, reqs[1].messages);
+            assert!(reqs[1].max_tokens < reqs[0].max_tokens, "the provider can use a genuinely smaller reply");
+        }
+        r.stop().await;
+    }
+}
+
 #[tokio::test]
 async fn the_same_window_named_again_gets_a_smaller_curated_view_and_no_summary() {
     let _g = config_lock().lock().await;
@@ -490,7 +564,7 @@ async fn each_curator_call_reports_what_it_added_right_after_its_map_and_the_pla
     let evs = r.turn().await;
     let at = evs.iter().position(|e| matches!(e, AgentEvent::ContextMap { .. })).expect("a map");
     // a short conversation adds nothing, and the event still says so
-    assert!(matches!(&evs[at + 1], AgentEvent::Curated { items } if items.is_empty()), "{evs:?}");
+    assert!(matches!(&evs[at + 1], AgentEvent::Curated { items, .. } if items.is_empty()), "{evs:?}");
     r.stop().await;
 
     let client = Scripted::new(vec![Reply::Events(text("one"))]);

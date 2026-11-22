@@ -324,8 +324,8 @@ fn between_epochs_a_view_is_a_prefix_of_the_next() {
 }
 
 #[test]
-fn a_request_that_names_more_than_the_tail_holds_inflates_that_call_only() {
-    let mut cur = Curator::new("").unwrap();
+fn the_keyword_only_tail_inflates_a_broad_request_for_that_call_only() {
+    let mut cur = Curator::new("relations=0").unwrap();
     cur.window(100_000);
     let mut msgs = vec![json!({"role": "user", "content": "Keep the settings of each topic in mind."})];
     // 24 topics, each with 12 settings, then enough work to push them out of the view

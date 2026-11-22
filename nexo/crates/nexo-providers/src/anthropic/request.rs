@@ -61,7 +61,20 @@ impl Anthropic {
         // every breakpoint takes the same lifetime, so the rule that a longer one comes first holds
         let long = cache && req.cache_long && cfg.extra.get("cache_ttl_1h").and_then(|v| v.as_bool()).unwrap_or(true);
         let bp = if long { json!({"type": "ephemeral", "ttl": "1h"}) } else { json!({"type": "ephemeral"}) };
-        let mut body = json!({"model": req.model, "max_tokens": req.max_tokens, "stream": true});
+        // Modern Claude normally gets extra room for thinking. A known model/window limit is harder than this
+        // floor and than a request overlay; use the final limit also when sizing manual thinking below.
+        let modern = modern(&req.model);
+        let preferred = if modern {
+            let floor = if req.max_tokens >= nexo_core::config::DEFAULT_MAX_TOKENS { MODERN_MAX_TOKENS } else { 4096 };
+            req.max_tokens.max(floor).min(MODERN_MAX_OUTPUT)
+        } else {
+            req.max_tokens
+        };
+        let limit = req.output_ceiling.map_or(preferred, |cap| {
+            let cap = if modern { cap.min(MODERN_MAX_OUTPUT) } else { cap };
+            crate::output::bounded(req.extra.get("max_tokens"), preferred, cap)
+        });
+        let mut body = json!({"model": req.model, "max_tokens": limit, "stream": true});
         if !req.system.is_empty() {
             let mut sys = json!({"type": "text", "text": req.system});
             if cache {
@@ -130,7 +143,7 @@ impl Anthropic {
             }
         }
         body["messages"] = Value::Array(messages);
-        if modern(&req.model) {
+        if modern {
             Self::modern_fields(cfg, req, &mut body);
         } else {
             if let Some(t) = req.temperature.filter(|_| takes_temperature(&req.model)) {
@@ -160,8 +173,8 @@ impl Anthropic {
                     // Claude 5 thinks when `thinking` is left out: off must say so
                     body["thinking"] = json!({"type": t});
                 }
-            } else if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
-                let b = b.min(req.max_tokens - 1);
+            } else if let Some(b) = budget.filter(|_| !broken_round && limit > 1024) {
+                let b = b.min(limit - 1);
                 body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
                 if body["temperature"].is_number() {
                     body.as_object_mut().map(|o| o.remove("temperature")); // not allowed with thinking
@@ -175,7 +188,10 @@ impl Anthropic {
         }
         for (k, v) in &req.extra {
             // the models of the 5.5 line reject sampling parameters whatever their value
-            if modern(&req.model) && matches!(k.as_str(), "temperature" | "top_p" | "top_k") {
+            if req.output_ceiling.is_some() && k == "max_tokens" {
+                continue; // already applied to `limit`
+            }
+            if modern && matches!(k.as_str(), "temperature" | "top_p" | "top_k") {
                 continue;
             }
             if !takes_temperature(&req.model) && k == "temperature" {
@@ -223,9 +239,6 @@ impl Anthropic {
                 }
             }
         }
-        // a large file written in one call must not be cut, and thinking shares the room
-        let floor = if req.max_tokens >= nexo_core::config::DEFAULT_MAX_TOKENS { MODERN_MAX_TOKENS } else { 4096 };
-        body["max_tokens"] = json!(req.max_tokens.max(floor).min(MODERN_MAX_OUTPUT));
     }
 
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {

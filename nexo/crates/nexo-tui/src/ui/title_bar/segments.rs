@@ -7,7 +7,12 @@ use super::*;
 /// bar does not fit, the directory goes first, then the branch, then the
 /// memory, then the gauge's counts, then the model is shortened.
 pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
-    let mut groups = title_core(app, avail);
+    with_policy(app, avail, policy_text(app, app.condense_ms()).as_deref())
+}
+
+/// All fits and the final paint in a frame share one sample of the rolling label.
+pub(super) fn with_policy(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
+    let mut groups = title_core(app, avail, policy);
     // quiet: `? help` ends the bar, the first piece to go when it is tight
     let help = "? help";
     if app.quiet() && segs_width(app, &groups) + 3 + width(help) <= avail {
@@ -16,7 +21,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     groups
 }
 
-pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
+fn title_core(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
     let theme = &app.theme;
     let lean = app.quiet() && app.opts.status_line.is_empty();
     let base = theme.bar();
@@ -97,7 +102,6 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         let counts = if guessed { fmt_k(num) } else { format!("{}/{}", fmt_k(num), fmt_k(den)) };
         (cells, Seg { text: counts, style: base.fg(theme.dim) })
     };
-    let policy = policy_text(app);
     // every token of the session so far (what each call sends is the gauge); "tok" so nobody reads it as RAM
     let mem = app
         .context
@@ -121,28 +125,26 @@ pub(super) fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     };
     let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: lit_if(3, theme.bar_fg, base) });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: lit_if(4, theme.dim, base.fg(theme.dim)) };
-    // what the curator just let go is in its label: green for a moment, then its own colour. With the motion
-    // on, the label waits for the light that carries the cut out of the map (see `fx_condense`), lights up
-    // once as it lands and its figure counts up
+    // A cut lands on its figure (the ripple is painted after fitting). The label warms up under
+    // the ripple and cools back to its own ink. Reduced motion always shows the settled label.
     let policy_seg = policy.filter(|_| !lean).map(|p| {
         let now = app.now();
-        match app.fx.cut.filter(|c| crate::motion::within(Some(c.1), now, crate::motion::CUT_MS)) {
+        let style = match app
+            .fx
+            .cut
+            .filter(|c| app.opts.animations && crate::motion::within(Some(c.1), now, crate::motion::CUT_MS))
+        {
             Some((_, at)) => {
-                let ms = now.saturating_duration_since(at).as_millis() as u64;
-                let land = if app.opts.animations { crate::fx_condense::LIGHT_TO_MS } else { 0 };
-                let bold = base.add_modifier(Modifier::BOLD);
-                let Some(after) = ms.checked_sub(land) else {
-                    return Seg { text: p, style: bold.fg(theme.accent2) };
-                };
-                let t = after as f32 / (crate::motion::CUT_MS - land) as f32;
-                let style = bold.fg(crate::motion::fade(theme, theme.success, theme.accent2, t));
-                // the pop as the light lands: the selection colour behind the label, gone in `POP_MS`
-                let pop = if land > 0 { 1.0 - (after as f32 / crate::motion::POP_MS as f32).min(1.0) } else { 0.0 };
-                let style = if pop > 0.0 { crate::motion::lit_style(theme, style, pop) } else { style };
-                Seg { text: p, style }
+                let land = crate::fx_condense::LIGHT_TO_MS;
+                let after = (now.saturating_duration_since(at).as_millis() as u64).saturating_sub(land) as f32;
+                let warmth = (after / crate::motion::POP_MS as f32).min(1.0)
+                    * (1.0 - after / (crate::motion::CUT_MS - land) as f32);
+                base.fg(crate::motion::fade(theme, theme.accent2, theme.success, 0.85 * warmth))
+                    .add_modifier(Modifier::BOLD)
             }
-            None => Seg { text: p, style: base.fg(theme.accent2) },
-        }
+            None => base.fg(theme.accent2),
+        };
+        Seg { text: p.to_string(), style }
     });
     // a chip only when the cache let the last call down (the share itself is in /context)
     let extra = |k: &Keep| {
@@ -418,13 +420,13 @@ pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
 
 /// What the policy does ("curator", "curator -12k tok", "curator idle"), not only its name; while a cut plays,
 /// with its figure counting up (see `fx_condense`).
-pub(super) fn policy_text(app: &App) -> Option<String> {
+pub(super) fn policy_text(app: &App, cut_ms: Option<u64>) -> Option<String> {
     let c = app.context.as_ref()?;
     let p = if c.label.is_empty() { c.policy.clone() } else { c.label.clone() };
     if p.is_empty() {
         return None;
     }
-    Some(match app.condense_ms() {
+    Some(match cut_ms {
         Some(ms) => crate::fx_condense::roll_label(&p, ms),
         None => p,
     })

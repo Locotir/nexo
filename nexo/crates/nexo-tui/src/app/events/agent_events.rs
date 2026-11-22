@@ -77,7 +77,10 @@ impl App {
             AgentEvent::ContextMap { cells, zones, calls, call_tokens } => {
                 self.on_context_map(cells, zones, calls, call_tokens)
             }
-            AgentEvent::Curated { items } => self.note_curated(items),
+            AgentEvent::Curated { items, relation_quotes } => {
+                self.relation_quotes = relation_quotes;
+                self.note_curated(items);
+            }
             AgentEvent::Notice { problem: Some(problem), .. } => self.push_problem(problem),
             AgentEvent::Notice { level, text, .. } => self.notice(level, text),
             AgentEvent::UpdateAvailable { behind } => self.update_ready(behind),

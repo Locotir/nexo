@@ -32,6 +32,8 @@ pub struct Reply {
     pub removed: usize,
     /// What the view carries beyond the conversation and what it holds back, by name and size.
     pub curated: Vec<Added>,
+    /// Complete historical quotes in this view; None when relational retrieval is off.
+    pub relation_quotes: Option<usize>,
 }
 
 /// The curator of one conversation. A copy shares the engine's large parts until one of the two changes them.
@@ -149,7 +151,7 @@ impl Curator {
         let missed = self.eng.stats.get("miss").copied().unwrap_or(0);
         self.cal_fresh |= self.eng.sync(messages);
         self.cal_seen = messages.len();
-        let mut view = self.eng.view();
+        let (mut view, evidence) = self.eng.view_with_history(messages);
         let mut tokens = self.eng.tokens();
         let mut paged = Vec::new();
         if budget > 0 && tokens > budget {
@@ -172,11 +174,29 @@ impl Curator {
             *self.eng.stats.entry("miss_page").or_insert(0) += behind;
             *self.eng.stats.entry("miss").or_insert(0) += (behind - counted).max(0);
         }
+        // Only the block we appended can carry these quotes. Paging may have cut its middle.
+        let relation_quotes = evidence.map(|rows| {
+            if rows.is_empty() || !paged.contains(&view.len().saturating_sub(1)) {
+                return rows.len();
+            }
+            let tail = view.last().and_then(|m| m["content"].as_array()?.last()?["text"].as_str()).unwrap_or("");
+            rows.iter().filter(|row| tail.lines().any(|line| line == row.as_str())).count()
+        });
         self.paged = now;
         let memory = self.eng.memory();
         let (added, back, removed) = self.activity(&memory);
         let curated = self.eng.added();
-        Ok(Reply { view, tokens, stats: self.eng.stats.clone(), memory, added, back, removed, curated })
+        Ok(Reply {
+            view,
+            tokens,
+            stats: self.eng.stats.clone(),
+            memory,
+            added,
+            back,
+            removed,
+            curated,
+            relation_quotes,
+        })
     }
 
     /// The model's prices per million input tokens: uncached and read from the cache. The view is then

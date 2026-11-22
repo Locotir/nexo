@@ -135,6 +135,8 @@ pub enum AgentEvent {
     /// (sent with `ContextMap`; only with the curator; empty when it added nothing).
     Curated {
         items: Vec<CuratedItem>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relation_quotes: Option<usize>,
     },
     Notice {
         level: Level,

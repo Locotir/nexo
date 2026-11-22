@@ -24,6 +24,13 @@ const NEED_KEYS: usize = 24;
 /// Characters at each end of the request that are read.
 const NEED_CHARS: usize = 400;
 
+/// Relation traversal is local: at most two frontiers of 24 lines, six shared keys per line,
+/// and 32 holders per bridge. Direct lookup visits at most NEED_KEYS * RARE postings.
+const REL_FRONT: usize = 24;
+const REL_KEYS: usize = 6;
+const REL_DF: usize = 32;
+const REL_OUT: usize = 48;
+
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
     #[serde(with = "crate::snapshot::posts")]
@@ -85,6 +92,85 @@ impl Index {
         self.posts.get(&k).is_some_and(|v| v.binary_search(&p).is_ok())
     }
 
+    /// Lines named directly by the request, interleaved with up to two hops through shared rare keys.
+    /// Visibility doesn't stop a path. The caller supplies keys from original indexed lines only.
+    pub fn relation_pick(&self, mut line_keys: impl FnMut(Post) -> Vec<u64>) -> Vec<Post> {
+        let mut terms: Vec<_> = self.need.iter().filter_map(|&k| Some((self.posts.get(&k)?.len(), k))).collect();
+        terms.sort_unstable(); // rarest first, stable choice among ties
+        let idf = |df: usize| (self.lines.max(2) as f64 / df as f64).ln();
+        let mut scores = FxHashMap::default();
+        for (df, k) in terms.into_iter().take(NEED_KEYS).filter(|&(df, _)| df <= RARE && df < self.lines) {
+            for &p in &self.posts[&k] {
+                if p.0 != self.asked {
+                    *scores.entry(p).or_default() += idf(df);
+                }
+            }
+        }
+        let direct = relation_front(scores);
+        let mut seen: FxHashSet<_> = direct.iter().map(|&(_, p)| p).collect();
+        let near = self.relation_hop(&direct, &seen, &mut line_keys);
+        seen.extend(near.iter().map(|&(_, p)| p));
+        let far = self.relation_hop(&near, &seen, &mut line_keys);
+
+        let mut direct = direct.into_iter().map(|(_, p)| p);
+        let mut near = near.into_iter().map(|(_, p)| p);
+        let mut far = far.into_iter().map(|(_, p)| p);
+        let mut out: Vec<_> = direct.by_ref().take(2).collect();
+        loop {
+            let next = [near.next(), far.next(), direct.next()];
+            if next == [None; 3] {
+                break;
+            }
+            out.extend(next.into_iter().flatten().take(REL_OUT - out.len()));
+            if out.len() == REL_OUT {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Each bridge inherits its strongest parent's support (repeated seeds sharing the same key
+    /// don't each cast a vote). A child gains support for each distinct bridge, weighted by IDF.
+    fn relation_hop(
+        &self,
+        front: &[(f64, Post)],
+        seen: &FxHashSet<Post>,
+        line_keys: &mut impl FnMut(Post) -> Vec<u64>,
+    ) -> Vec<(f64, Post)> {
+        let cap = (self.lines / 16).clamp(2, REL_DF);
+        let mut bridges: FxHashMap<u64, f64> = FxHashMap::default();
+        for &(support, p) in front {
+            let mut terms: Vec<_> = line_keys(p)
+                .into_iter()
+                .take(48) // the limit of facts::keys, even for another callback
+                .filter(|k| self.need.binary_search(k).is_err())
+                .filter_map(|k| {
+                    let posts = self.posts.get(&k)?;
+                    ((2..=cap).contains(&posts.len()) && posts.binary_search(&p).is_ok()).then_some((posts.len(), k))
+                })
+                .collect();
+            terms.sort_unstable();
+            terms.dedup();
+            for (_, k) in terms.into_iter().take(REL_KEYS) {
+                // The frontier is sorted strongest first.
+                bridges.entry(k).or_insert(support);
+            }
+        }
+        let mut bridges: Vec<_> = bridges.into_iter().collect();
+        bridges.sort_unstable_by_key(|&(k, _)| k); // fixed addition order, including after a snapshot restore
+        let mut scores = FxHashMap::default();
+        for (k, support) in bridges {
+            let posts = &self.posts[&k];
+            let weight = support * (self.lines as f64 / posts.len() as f64).ln();
+            for &p in posts {
+                if p.0 != self.asked && !seen.contains(&p) && weight > 0.0 {
+                    *scores.entry(p).or_default() += weight;
+                }
+            }
+        }
+        relation_front(scores)
+    }
+
     /// The lines of the history that the latest request names, best first: for each key of the request that few
     /// lines hold (the rarest first), the ``per_key`` lines that hold the most of the request's keys by weight
     /// (the newest among equals), ``total`` in all. ``skip`` says which are not wanted (already in the view).
@@ -141,6 +227,14 @@ impl Index {
     }
 }
 
+/// Highest score first, newest post as total tie-break. Only these posts seed the next hop.
+fn relation_front(scores: FxHashMap<Post, f64>) -> Vec<(f64, Post)> {
+    let mut ranked: Vec<_> = scores.into_iter().map(|(p, s)| (s, p)).collect();
+    ranked.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
+    ranked.truncate(REL_FRONT);
+    ranked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +254,29 @@ mod tests {
 
     fn lines(ix: &Index, per_key: usize) -> Vec<Post> {
         ix.pick(per_key, 10, &mut |_| false)
+    }
+
+    #[test]
+    fn relation_pick_interleaves_two_hops_but_never_walks_a_third() {
+        // Neither the relay nor the destination contains a query term. A third-hop decoy
+        // is joined to the destination by 'hinge', but must never be reached.
+        let rows =
+            ["saffron prism", "prism bobbin", "bobbin hinge", "hinge latch", "saffron", "saffron", "saffron merino"];
+        let mut ix = Index::default();
+        for (u, row) in rows.iter().enumerate() {
+            ix.add(u, row);
+        }
+        ix.want(rows.len(), "saffron merino");
+        let run = || {
+            ix.relation_pick(|(u, _)| {
+                let mut ks = Vec::new();
+                keys(rows[u as usize], &mut ks);
+                ks
+            })
+        };
+        let got = run();
+        assert_eq!(got, [(6, 0), (5, 0), (1, 0), (2, 0), (4, 0), (0, 0)]);
+        assert_eq!(got, run());
     }
 
     #[test]

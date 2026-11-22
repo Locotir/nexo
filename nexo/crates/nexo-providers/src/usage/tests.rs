@@ -414,6 +414,29 @@ fn pace_warning_requires_a_fresh_consistent_window_and_significant_overuse() {
 }
 
 #[test]
+fn weekly_burn_eta_matches_the_three_hour_warmup_and_counts_from_now() {
+    let seen = 1_800_000_000;
+    let plan = PlanUsage { kind: "codex".into(), ..Default::default() };
+    let mut m = Meter {
+        slot: "secondary".into(),
+        label: "wk".into(),
+        used_pct: 2.0,
+        counts: None,
+        window_minutes: Some(10_080),
+        resets_at: Some(seen + 7 * 86_400 - 3 * 3600),
+        observed_at: Some(seen),
+    };
+    assert_eq!(plan.burn_eta(&m, seen + 60), Some(49 * 3 * 3600 - 60));
+    m.resets_at = m.resets_at.map(|r| r + 1);
+    assert_eq!(plan.burn_eta(&m, seen), None);
+    m.resets_at = Some(seen + 7 * 86_400 / 2);
+    for pct in [0.0, 50.0, 100.0, 101.0, f64::NAN] {
+        m.used_pct = pct;
+        assert_eq!(plan.burn_eta(&m, seen), None);
+    }
+}
+
+#[test]
 fn codex_pace_tracks_each_merged_slots_own_observation() {
     let now = 1_800_000_000;
     let event = |primary: Option<f64>, secondary: Option<f64>| {

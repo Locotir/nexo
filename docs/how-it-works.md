@@ -62,11 +62,12 @@ paths are in [`context-curator.md`](context-curator.md).
 - **Standing facts and the index** (`standing.rs`, `index.rs`, `facts.rs`). Two things go in the tail of
   the last message, built again for each call, so the cached prefix is not touched. The standing facts are
   lines of the session that override a default (a port, a path, a folder not to touch), kept by the words and
-  paths they govern and shown as `Standing:` lines when an action supposes the default. The index holds
-  every line of the history by its keys (words, numbers, paths, versions, identifiers); the lines the
-  person's request names that the view does not hold whole are shown as a `Recall` block, the rarest keys
-  first. A request that names more than the normal tail holds gets its lines up to 99 % of the window for
-  that call only.
+  paths they govern and shown as `Standing:` lines when an action supposes the default. By default, the index uses rare keys in the request and in matching lines to find related
+  historical evidence. When space permits, the tail quotes lines not already shown whole, with the original
+  message, block and line number. A tool result names its call only when the IDs pair unambiguously. These
+  are historical quotes, not new instructions or proof that a value is still current. With `relations=0`,
+  Curator uses the previous keyword-only `Recall` block instead; that mode can expand a broad request up to
+  99 % of the window for that call only.
 - **What a request needs that left** (`named`, `recall`). A step that read a file the request names stays
   or comes back as text at the end of the view; the model can also ask for a message by name
   (`recall m00042`).
@@ -118,11 +119,12 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=64000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600;kept=0;lcalls=12;lahead=0.2;lmargin=1;trim=0;need=0
+threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=64000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600;kept=0;lcalls=12;lahead=0.2;lmargin=1;trim=0;need=0;relations=1
 ```
 
 | setting | default | what it sets |
 |---|---|---|
+| `relations=0/1` | `1` | Quote relevant original lines with their sources in the request tail. Set `relations=0` for the previous keyword-only `Recall` block. |
 | `eoq=K` | `16000` | the view after a rewrite, in tokens, for the EOQ cap `K + Q*`; used when the first message and the protected tail do not fit the target |
 | `ledger=N` | `6000` | the ledger, at most what the blocks leave of 80% of the view's target |
 | `rules=N` | `2000` | the person's standing instructions and `Rule:` lines, whole |

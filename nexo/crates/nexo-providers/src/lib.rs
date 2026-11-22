@@ -22,6 +22,7 @@ pub mod mock;
 pub mod modellist;
 pub mod openai_chat;
 pub mod openai_responses;
+mod output;
 pub mod parse;
 pub mod presets;
 pub mod probe;

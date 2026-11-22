@@ -32,6 +32,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     let mut compacted = false;
     // new, smaller views made after context errors in this call (at most MAX_REFITS, before the turn ends)
     let mut refits = 0u32;
+    let mut refused = HashSet::new();
     let mut capped = false;
     let mut rounds = 0u32;
     // each tool round of this request as one hash of its calls and outputs (`agent.loop_guard`)
@@ -144,6 +145,16 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 }
             }
         };
+        // Compare the *admitted* request, not a new estimate or a change to the learned window. A refit can
+        // leave both the provider's input and its reply limit unchanged. No request, or AssistantStart, then.
+        if !refused.is_empty() && refused.contains(&refit_key(&cfg, &mut req)) {
+            notice_problem(
+                &events,
+                Problem::new("The request still does not fit", "The provider already refused this request as too long. It was not sent again.")
+                    .step("Send a shorter request, use `/compact` to summarise the history, or switch to a model with a larger window."),
+            );
+            return TurnEnd::Error;
+        }
         emit(&events, AgentEvent::AssistantStart);
         // the request is out: until its first word the wait is the model's
         preparing(&events, PREP_MODEL);
@@ -164,6 +175,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             Ok(s) => s,
             Err(e) => match learn(&state, &e, &req.model, req.max_tokens).await {
                 Lesson::Refit if refits < MAX_REFITS => {
+                    refused.insert(refit_key(&cfg, &mut req));
                     refits += 1;
                     continue;
                 }
@@ -175,6 +187,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 Lesson::Context | Lesson::Refit if !compacted => {
                     compacted = true;
                     if compact_now(&state, &events, Some(()), &cancel).await {
+                        refused.insert(refit_key(&cfg, &mut req));
                         continue;
                     }
                     let p = problem_of(&state, &e, false).await.after_compaction_failed();
@@ -294,6 +307,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 match learn(&state, e, &req.model, req.max_tokens).await {
                     Lesson::Refit if refits < MAX_REFITS => {
                         bill_attempt(&state, &events, &req.model, usage, call).await;
+                        refused.insert(refit_key(&cfg, &mut req));
                         refits += 1;
                         continue;
                     }
@@ -306,6 +320,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                         compacted = true;
                         if compact_now(&state, &events, Some(()), &cancel).await {
                             bill_attempt(&state, &events, &req.model, usage, call).await;
+                            refused.insert(refit_key(&cfg, &mut req));
                             continue;
                         }
                     }
@@ -317,6 +332,9 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     _ => {}
                 }
             }
+        }
+        if c.error.is_none() {
+            refused.clear(); // the context retry is over; ordinary tool rounds never compute a key
         }
         // the stream broke inside the reasoning, before any text or call: the client leaves it alone (the
         // reasoning is on the screen by then), and ending the turn here loses the request to one bad
@@ -696,6 +714,58 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             stale = 0;
         }
     }
+}
+
+/// Identity of a context retry, only computed after a refusal. Use the adapters' own bodies: a lower
+/// estimate or ceiling does not necessarily lower the wire limit (Claude can raise it, a subscription can
+/// omit it). Keep just a digest per refused attempt, not another copy of a potentially large prompt.
+fn refit_key(cfg: &ProviderConfig, req: &mut ModelRequest) -> [u8; 32] {
+    use nexo_providers::{anthropic, copilot, gemini, openai_chat, openai_responses};
+    use sha2::{Digest, Sha256};
+
+    let shaped;
+    let (protocol, cfg) = if cfg.protocol == copilot::ID {
+        let route = copilot::route(&req.model);
+        shaped = copilot::shape(cfg, Some(req), route);
+        let id = match route {
+            copilot::Route::Messages => anthropic::ID,
+            copilot::Route::Responses => openai_responses::ID,
+            copilot::Route::Chat => openai_chat::ID,
+        };
+        (id, &shaped)
+    } else {
+        (cfg.protocol.as_str(), cfg)
+    };
+    // A different cache write lifetime does not make room for a reply.
+    let long = std::mem::take(&mut req.cache_long);
+    let body = match protocol {
+        anthropic::ID => anthropic::Anthropic::body(cfg, req),
+        openai_chat::ID => openai_chat::OpenAiChat::body(cfg, req),
+        openai_responses::ID => {
+            let mut body = openai_responses::OpenAiResponses::body(cfg, req);
+            // Codex login supplies this default at send time when it is not explicit in the config.
+            if cfg.login.as_deref() == Some("codex") && !cfg.extra.contains_key("omit_max_tokens") {
+                body.as_object_mut().unwrap().remove("max_output_tokens");
+            }
+            body
+        }
+        gemini::ID => gemini::Gemini::body(cfg, req),
+        // Mock and external clients take the protocol-neutral request.
+        _ => serde_json::json!([
+            req.model,
+            req.system,
+            req.messages,
+            req.tools,
+            req.no_tool_call,
+            req.reasoning,
+            req.extra,
+            req.max_tokens.min(req.output_ceiling.unwrap_or(u32::MAX))
+        ]),
+    };
+    req.cache_long = long;
+    let mut digest = Sha256::new();
+    serde_json::to_writer(&mut digest, &(&cfg.protocol, &cfg.base_url, body)).expect("JSON values into a digest");
+    digest.finalize().into()
 }
 
 /// Where a request stands after a guard's stop (`agent.guard_answer`): an answer from what was gathered, or the

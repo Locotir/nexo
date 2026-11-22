@@ -22,6 +22,7 @@ impl App {
             _ => {}
         }
         let is_call = self.opts.group_tools && matches!(b, Block::Tool { .. });
+        self.tasks.add(&b, self.blocks.len());
         self.blocks.push(b);
         self.cache.push(None);
         let born = self.opts.animations.then(|| self.now());
@@ -61,6 +62,7 @@ impl App {
             return at;
         }
         let born = self.looks[prev].born;
+        self.tasks.shift(prev, true);
         self.blocks.insert(prev, Block::Group { folded: true, len: at + 1 - prev });
         self.cache.insert(prev, None);
         self.looks.insert(prev, Look { born, ..Look::default() });
@@ -126,9 +128,7 @@ impl App {
 
     /// Runs use `<call id>#<job id>`; never guess by title or profile (parallel tasks may match).
     pub(super) fn task_card_for_run(&self, run_id: &str) -> Option<usize> {
-        let (call_id, job) = run_id.rsplit_once('#')?;
-        job.parse::<u32>().ok()?;
-        self.blocks.iter().position(|b| matches!(b, Block::Tool { id, name, .. } if id == call_id && name == "task"))
+        self.tasks.cards.get(TaskRows::call(run_id)?).copied()
     }
 
     /// Whether block `i` is left out of the transcript: a finished call of a folded group, which
@@ -151,10 +151,14 @@ impl App {
             Some(m) => {
                 let kept = match &self.blocks[i] {
                     // the agreed plan and thinking the user opened stay in sight
-                    Block::Tool { name, output, .. } => {
+                    Block::Tool { id, name, output, .. } => {
                         // what nexo saved for later sessions is said in sight, not folded away
                         name == "exit_plan"
-                            || (name == "task" && self.blocks.iter().any(|b| matches!(b, Block::Agent(run) if run.running && self.task_card_for_run(&run.id) == Some(i))))
+                            || (name == "task"
+                                && self.tasks.cards.get(id) == Some(&i)
+                                && self.tasks.by_call.get(id).is_some_and(|rows| {
+                                    rows.iter().any(|&j| matches!(&self.blocks[j], Block::Agent(run) if run.running))
+                                }))
                             || matches!(output, Some(o) if matches!(o.display, ToolDisplay::Remembered { .. }))
                     }
                     Block::Reasoning { folded, text, .. } => !*folded && !text.trim().is_empty(),
@@ -357,17 +361,9 @@ impl App {
             };
             if let Block::Tool { id, name, elapsed_ms, folded, .. } = &self.blocks[i] {
                 if name == "task" {
-                    if let Some(run) = self.blocks.iter().find_map(|b| match b {
-                        Block::Agent(run)
-                            if run
-                                .id
-                                .rsplit_once('#')
-                                .is_some_and(|(call, job)| call == id && job.parse::<u32>().is_ok()) =>
-                        {
-                            Some(run)
-                        }
-                        _ => None,
-                    }) {
+                    if let Some(Block::Agent(run)) =
+                        self.tasks.by_call.get(id).and_then(|v| v.first()).and_then(|&j| self.blocks.get(j))
+                    {
                         // Replace only the launch header: output, failures and progress remain on the card.
                         let elapsed = elapsed_ms
                             .map(|ms| format!(" · {}", crate::render::blocks::fmt_ms(ms)))
@@ -465,6 +461,7 @@ impl App {
                     l.spans.insert(0, Span::raw(margin.clone()));
                 }
             }
+            self.looks[i].no_link_row = None;
             self.wrapped = true;
             self.cache[i] = Some((width, lines.len(), Some(lines), meta));
         }

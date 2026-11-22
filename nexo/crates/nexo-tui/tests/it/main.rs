@@ -20,6 +20,7 @@ mod goal_fx;
 mod hints;
 mod inline_mode;
 mod input_box;
+mod interaction_perf;
 mod locked_home;
 mod modals_view;
 mod model_groups;

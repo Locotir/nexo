@@ -255,6 +255,9 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         req.messages.push(reply.clone());
         req.messages.push(Message::user(nexo_supervise::watch::check_in_ask(&evidence)));
         lean(&mut req, cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]), CHECK_IN_TOKENS);
+        if !super::window_fit::side_fits(&st, &mut req) {
+            return;
+        }
         // the limits count the calls in flight, and the check-in's reply is capped to what the budget can pay
         let input = (st.est_sent as f64 * st.tok_ratio.unwrap_or(1.0)).round() as u64;
         let priced = main_pricing(&st, &req.model);
@@ -343,7 +346,11 @@ pub(super) fn spawn_suggest(state: &Shared) {
             if last.model != model || !st.inbox.is_empty() || thinks {
                 return;
             }
-            let req = suggest_request(last, reply.clone(), cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]));
+            let mut req =
+                suggest_request(last, reply.clone(), cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]));
+            if !super::window_fit::side_fits(&st, &mut req) {
+                return;
+            }
             (req, cfg, st.client.clone(), st.config.agent.retries, (st.turns, st.epoch), st.events.clone())
         };
         let Ok(mut stream) = client.stream(&cfg, &req, retries).await else { return };

@@ -176,7 +176,11 @@ impl Engine {
         }
         let new = self.fz.mt().extend(&self.tr, &mut self.int);
         if self.p.rules != 0 {
-            self.take_index(new.clone());
+            if self.p.relations {
+                self.take_relation_index(new.clone());
+            } else {
+                self.take_index(new.clone());
+            }
         }
         self.track_edits(new.clone());
         self.asked_back(new.clone());

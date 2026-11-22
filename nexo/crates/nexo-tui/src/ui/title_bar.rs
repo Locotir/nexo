@@ -4,6 +4,7 @@ mod draw;
 mod gauge;
 mod marks;
 mod notes;
+mod pulse;
 mod segments;
 
 pub(super) use draw::draw_title;

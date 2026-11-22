@@ -63,7 +63,7 @@ impl OpenAiChat {
                 "max_tokens".into()
             }
         });
-        body[max_key] = json!(req.max_tokens);
+        body[&max_key] = json!(req.max_tokens);
         if let Some(t) = req.temperature.filter(|_| !default_temperature_only(cfg, &req.model)) {
             body["temperature"] = temp(t);
         }
@@ -89,7 +89,16 @@ impl OpenAiChat {
             body["prompt_cache_key"] = json!(id);
         }
         for (k, v) in &req.extra {
+            if req.output_ceiling.is_some()
+                && k != &max_key
+                && matches!(k.as_str(), "max_tokens" | "max_completion_tokens")
+            {
+                continue; // don't send a competing limit under the other spelling
+            }
             body[k] = v.clone();
+        }
+        if let Some(cap) = req.output_ceiling {
+            body[&max_key] = json!(crate::output::bounded(body.get(&max_key), req.max_tokens, cap));
         }
         body
     }

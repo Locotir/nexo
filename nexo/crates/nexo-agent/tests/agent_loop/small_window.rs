@@ -3,9 +3,9 @@
 
 use super::*;
 
-/// The estimate nexo itself uses: four characters a token, over the system prompt and the tool text.
+/// The fixed part of the input estimate: UTF-8 bytes of system text and serialized tool schemas, divided by four.
 fn fixed_tokens(r: &ModelRequest) -> u64 {
-    (r.system.chars().count() + serde_json::to_string(&r.tools).unwrap().chars().count()) as u64 / 4
+    (r.system.len() + serde_json::to_string(&r.tools).unwrap().len()) as u64 / 4
 }
 
 /// `messages` as they go out, as JSON, with the time of each person's message (`[16:13:05`, see `person_clock`)
@@ -412,52 +412,159 @@ async fn a_big_read(w: Option<u32>, policy: &str) -> (Vec<ModelRequest>, Vec<Age
     (client.requests(), evs)
 }
 
-fn over_window(evs: &[AgentEvent]) -> Vec<String> {
-    notices(evs).into_iter().filter(|n| n.starts_with("request over the window")).collect()
+/// Check the request captured at the provider boundary, not the size of the Curator view reported to the UI.
+fn assert_fits(r: &ModelRequest, window: u32, ratio: f64) {
+    let estimate = fixed_tokens(r) + nexo_core::message::estimate_tokens(&r.messages);
+    let input = (estimate as f64 * ratio).ceil() as u64;
+    assert!(input + u64::from(r.max_tokens) <= u64::from(window), "{input} input + {} reply > {window}", r.max_tokens);
 }
 
 #[tokio::test]
 async fn a_64k_read_under_the_plain_policy_at_8k_is_sent_from_the_curators_view_and_fits_with_its_reply() {
     let _g = config_lock().lock().await;
     let (reqs, evs) = a_big_read(Some(8_000), "plain").await;
-    let last = reqs.last().unwrap();
-    let total = total_with_reply(last);
-    assert!(total <= 8_000, "the request after the read and its reply take {total} tokens of 8000");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(reqs.len(), 2, "the request after the read actually went to the model");
+    for req in &reqs {
+        assert_fits(req, 8_000, 4.0 / 3.0);
+    }
+    let last = &reqs[1];
     assert!(last.max_tokens >= 256, "the reply keeps room for a call: {}", last.max_tokens);
     assert!(last.messages.iter().any(|m| m.text().contains("look at the file big.rs")), "the person's words stay");
-    assert!(over_window(&evs).is_empty(), "{:?}", notices(&evs));
 }
 
 #[tokio::test]
-async fn a_request_that_cannot_fit_keeps_the_persons_message_whole_and_says_once_what_it_holds() {
+async fn an_impossible_message_never_reaches_the_provider_or_blocks_the_next_turn_in_the_same_session() {
+    let _g = config_lock().lock().await;
+    let words = "0123456789".repeat(2_220);
+    let message_tokens = nexo_core::message::message_tokens(&Message::user(&words));
+    // Before the first provider count, the words alone leave a useful reply. Even omitting ALL older
+    // messages, they cannot be sent whole once the system prompt and tools are counted as well.
+    let cold = 4.0 / 3.0;
+    assert!((message_tokens as f64 * cold).ceil() as u64 + 256 <= 8_000);
+    for policy in ["plain", "curator"] {
+        let d = project();
+        let client =
+            Scripted::new(vec![Reply::Events(uncounted(text("first"))), Reply::Events(uncounted(text("pong")))]);
+        let mut cfg = cfg_window(8_000);
+        cfg.context.policy = policy.into();
+        let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+        let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!("no Ready") };
+        r.send(AgentCommand::Submit { text: "first question".into(), attachments: vec![] });
+        assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+        let first = client.requests();
+        assert_eq!(first.len(), 1);
+        assert_fits(&first[0], 8_000, cold);
+        assert!(((fixed_tokens(&first[0]) + message_tokens) as f64 * cold).ceil() as u64 > 8_000);
+        let history = || nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+        let prefix = history();
+        assert_eq!(prefix.len(), 2);
+
+        r.send(AgentCommand::Submit { text: words.clone(), attachments: vec![] });
+        let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.expect("the blocked turn ends");
+        assert_eq!(client.requests().len(), 1, "{policy}: no model, summary or retry for an impossible request");
+        assert_eq!(end_of(&evs), TurnEnd::Error, "{policy}");
+        let told = notices(&evs);
+        let sizes: Vec<_> = told.iter().filter(|n| n.contains("8000") && n.contains("window")).collect();
+        assert_eq!(sizes.len(), 1, "{policy}: {told:?}");
+        let n = sizes[0];
+        for part in ["system", "tools", "conversation", "reply"] {
+            assert!(n.contains(part), "{policy}: missing {part} in {n}");
+        }
+        assert!(!n.contains("Sent as it is"), "{n}");
+        let blocked = history();
+        assert!(blocked.starts_with(&prefix), "{policy}: previous turns changed");
+        assert_eq!(nexo_core::agent::person_words(&blocked[prefix.len()].text()), words);
+
+        // No reset, resume, rewind or manual compaction between submits.
+        r.send(AgentCommand::Submit { text: "ping".into(), attachments: vec![] });
+        let next = r.turn().await;
+        assert_eq!((end_of(&next), text_of(&next).as_str()), (TurnEnd::Done, "pong"), "{policy}");
+        let reqs = client.requests();
+        assert_eq!(reqs.len(), 2, "{policy}: exactly one new provider call");
+        assert_eq!(reqs[1].session_id.as_deref(), Some(id.as_str()));
+        assert_fits(&reqs[1], 8_000, cold);
+        assert!(reqs[1].messages.iter().any(|m| m.is_person() && nexo_core::agent::person_words(&m.text()) == "ping"));
+        r.stop().await;
+        let after = history();
+        assert!(after.starts_with(&blocked), "{policy}: making room changed the saved conversation");
+        assert_eq!(nexo_core::agent::person_words(&after[blocked.len()].text()), "ping");
+        assert_eq!(after.last().unwrap().text(), "pong");
+    }
+}
+
+#[tokio::test]
+async fn curator_fits_a_batch_of_24_large_results_before_asking_the_model_again() {
+    const WINDOW: u32 = 20_000;
+    const COUNTED_INPUT: u64 = 8_000;
     let _g = config_lock().lock().await;
     let d = project();
-    let words = "please look at the parser and say why it fails on empty input ".repeat(600);
-    let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
-    let mut cfg = cfg_window(8_000);
-    cfg.context.policy = "plain".into();
+    let mut batch = Vec::new();
+    for i in 0..24 {
+        let path = format!("section-{i:02}.txt");
+        // Distinct paths AND bodies: deduplicating repeat reads would hide the overflow.
+        let body: String =
+            (0..240).map(|j| format!("section-{i:02}, entry {j}: recorded value {}\n", i * 240 + j)).collect();
+        std::fs::write(d.path().join(&path), body).unwrap();
+        let id = format!("r{i}");
+        batch.push(StreamEvent::ToolCallStart { id: id.clone(), name: "read".into() });
+        batch.push(StreamEvent::ToolCallEnd { id, name: "read".into(), args: json!({"path":path}) });
+    }
+    batch.extend([
+        StreamEvent::Usage(Usage { input: COUNTED_INPUT, output: 900, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ]);
+    let client = Scripted::new(vec![Reply::Events(batch), Reply::Events(uncounted(text("checked all sections")))]);
+    let mut cfg = cfg_window(WINDOW);
+    cfg.context.policy = "curator".into();
+    cfg.providers.get_mut("mock").unwrap().max_output.insert("m1".into(), 1_024);
     let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
-    r.next().await;
-    r.send(AgentCommand::Submit { text: words.clone(), attachments: vec![] });
+    let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!("no Ready") };
+    r.send(AgentCommand::Submit { text: "check the sections".into(), attachments: vec![] });
     let evs = r.turn().await;
     r.stop().await;
-    let req = &client.requests()[0];
-    assert!(req.messages.iter().any(|m| m.text().contains(words.trim())), "the person's message goes whole");
-    assert_eq!(req.max_tokens, 256, "the reply is asked at its floor");
-    let told = over_window(&evs);
-    assert_eq!(told.len(), 1, "{:?}", notices(&evs));
-    let n = &told[0];
-    for part in ["for a 8000-token window (system ", ", tools ", ", conversation ", ", reply 256)"] {
-        assert!(n.contains(part), "{part:?} in {n}");
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Context { policy, .. } if policy == "curator")));
+    let reqs = client.requests();
+    let first = &reqs[0];
+    assert_fits(first, WINDOW, 4.0 / 3.0);
+    // The first (small) request is sent whole. Its provider usage is the only calibration sample.
+    let est = fixed_tokens(first) + nexo_core::message::estimate_tokens(&first.messages);
+    assert!(est >= 500);
+    let ratio = (COUNTED_INPUT as f64 / est as f64).clamp(0.5, 3.0);
+    assert!(ratio > 4.0 / 3.0, "the calibration must matter here: {ratio}");
+    for next in &reqs[1..] {
+        assert_fits(next, WINDOW, ratio);
     }
-    assert!(n.contains("the largest part is your message (message "), "{n}");
+    assert_eq!((end_of(&evs), text_of(&evs).as_str()), (TurnEnd::Done, "checked all sections"));
+    assert_eq!(reqs.len(), 2, "the batch was fitted without another user turn or a provider retry");
+    let next = &reqs[1].messages;
+    assert!(nexo_core::message::is_well_formed(next));
+    assert!(next.iter().any(Message::is_tool_results), "the continuation must see tool results");
+    assert!(next.iter().any(|m| m.is_person() && m.text().contains("check the sections")));
+
+    let saved = nexo_agent::Session::open(&id).unwrap();
+    let results = saved.messages().iter().find(|m| m.is_tool_results()).expect("saved batch");
+    assert_eq!(results.content.len(), 24, "one batch, not 24 rounds");
+    for (i, part) in results.content.iter().enumerate() {
+        let Part::ToolResult { call_id, content, is_error: false, .. } = part else {
+            panic!("result {i} missing or failed")
+        };
+        assert_eq!(call_id, &format!("r{i}"));
+        let output = tool_answer(&evs, call_id);
+        assert!(output.contains(&format!("section-{i:02}, entry 0")) && output.len() > 1_500);
+        assert_eq!(nexo_core::message::result_text(content), output, "{call_id}: only the outbound view may be cut");
+    }
+    let full = nexo_core::message::message_tokens(results);
+    assert!((full as f64 * ratio).ceil() as u64 > u64::from(WINDOW), "without fitting, the results alone overflow");
 }
 
 #[tokio::test]
 async fn the_same_plain_session_at_200k_sends_the_requests_it_sent_before() {
     let _g = config_lock().lock().await;
     let (at_200k, evs) = a_big_read(Some(200_000), "plain").await;
-    assert!(over_window(&evs).is_empty(), "{:?}", notices(&evs));
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(at_200k.len(), 2);
     // with no window known nothing is fitted: the same session at 200k sends the same messages and reply size
     let (unknown, _) = a_big_read(None, "plain").await;
     assert_eq!(at_200k.len(), unknown.len());

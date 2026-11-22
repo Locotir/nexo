@@ -45,6 +45,7 @@ mod notes;
 mod own;
 mod params;
 mod recall;
+mod relations;
 mod snapshot;
 mod stale;
 mod steps;

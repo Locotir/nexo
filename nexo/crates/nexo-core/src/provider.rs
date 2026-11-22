@@ -127,6 +127,11 @@ pub struct ModelRequest {
     #[serde(default)]
     pub tools: Vec<ToolSpec>,
     pub max_tokens: u32,
+    /// Hard upper bound on the wire reply limit for this particular input, from the preflight and/or model limit.
+    /// Unlike `max_tokens` (the desired size), adapter defaults and request extras must not raise it. Protocols
+    /// without a reply-limit field leave control to the server. `None` keeps the adapter's usual behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_ceiling: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +170,7 @@ impl ModelRequest {
             messages,
             tools: Vec::new(),
             max_tokens: 8192,
+            output_ceiling: None,
             temperature: None,
             reasoning: None,
             stop: Vec::new(),

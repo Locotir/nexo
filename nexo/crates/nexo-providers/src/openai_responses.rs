@@ -99,7 +99,14 @@ impl OpenAiResponses {
             body["prompt_cache_key"] = json!(id);
         }
         for (k, v) in &req.extra {
+            if subscription && k == "max_output_tokens" {
+                continue; // this server rejects a client-supplied reply limit
+            }
             body[k] = v.clone();
+        }
+        if let Some(cap) = req.output_ceiling.filter(|_| !subscription) {
+            body["max_output_tokens"] =
+                json!(crate::output::bounded(body.get("max_output_tokens"), req.max_tokens, cap));
         }
         body
     }

@@ -10,6 +10,11 @@ use nexo_curator::Curator;
 use rustc_hash::FxHashMap;
 use serde_json::Value;
 
+// These exact wire replies were recorded with keyword-only tail retrieval. Keep that contract
+// for opt-out users rather than replacing the corpus. The default quote format is exercised
+// against the original source lines in tests/relations.rs.
+const RECORDED_SPEC: &str = "relations=0";
+
 /// Whether this run records the replies again instead of checking them.
 fn updating() -> bool {
     std::env::var("NEXO_UPDATE_GOLDEN").is_ok_and(|v| v == "1")
@@ -98,7 +103,7 @@ fn with_reply(line: &str, reply: &Value) -> String {
 fn run(name: &str) -> Vec<String> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap();
-    let mut cur = Curator::new("").unwrap();
+    let mut cur = Curator::new(RECORDED_SPEC).unwrap();
     let (mut msgs, mut prev): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
     let mut diffs = Vec::new();
     let mut out = String::new();
@@ -110,6 +115,11 @@ fn run(name: &str) -> Vec<String> {
             msgs.truncate(base);
             msgs.extend(new.as_array().unwrap().iter().cloned());
             serde_json::json!({"op": "view", "system_tokens": req.get("system_tokens").cloned().unwrap_or(Value::Null), "messages": msgs})
+        } else if req["op"] == "reset" {
+            let mut reset = req.clone();
+            let spec = req["spec"].as_str().unwrap_or("");
+            reset["spec"] = format!("{RECORDED_SPEC};{spec}").into();
+            reset
         } else {
             req.clone()
         };

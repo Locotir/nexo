@@ -299,6 +299,7 @@ impl ContextPolicy for BuiltIn {
             zones: r.memory.zones.iter().map(zone).collect(),
             cells: r.memory.cells.iter().map(cell).collect(),
             curated: curated_items(&r.curated),
+            relation_quotes: r.relation_quotes,
         });
         let note = match &self.caveat {
             Some(c) if !self.told => {

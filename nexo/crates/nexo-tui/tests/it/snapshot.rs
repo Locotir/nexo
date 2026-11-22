@@ -612,7 +612,7 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     let all = draw(&mut a, 120, 60).join("\n");
     assert!(!all.contains("Added by the curator"), "{all}");
     a.modal = None;
-    a.handle_agent(AgentEvent::Curated { items: curated_items() });
+    a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None });
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let rows = draw(&mut a, 120, 60);
@@ -626,11 +626,25 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     assert!(at("Left out") > at("total") && rows[at("Left out") + 1].contains("old notes"), "{all}");
     // a call with nothing from the curator says so
     a.modal = None;
-    a.handle_agent(AgentEvent::Curated { items: Vec::new() });
+    a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None });
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let all = draw(&mut a, 120, 60).join("\n");
     assert!(all.contains("The curator added nothing to this call."), "{all}");
+}
+
+#[test]
+fn the_live_map_shows_only_the_current_calls_relation_quotes() {
+    let mut a = app();
+    fill(&mut a);
+    a.show_live = true;
+    for (count, expected) in [(Some(2), "relations · 2 quotes"), (Some(0), "relations · 0 quotes"), (None, "")] {
+        a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: count });
+        let screen = draw(&mut a, 120, 40).join("\n");
+        assert!(screen.contains("context live"), "{screen}");
+        assert_eq!(screen.contains("relations ·"), count.is_some());
+        assert!(screen.contains(expected), "{screen}");
+    }
 }
 
 #[test]
@@ -643,8 +657,8 @@ fn f3_lists_the_curator_rows_of_a_call_in_the_live_panel() {
     // nothing yet: a hint, no panel
     f3(&mut a);
     assert!(!a.show_live && a.live_rows.is_none());
-    a.handle_agent(AgentEvent::Curated { items: curated_items() });
-    a.handle_agent(AgentEvent::Curated { items: Vec::new() });
+    a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None });
+    a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None });
     f3(&mut a);
     assert!(a.show_live);
     assert_eq!(a.live_rows, Some(0));

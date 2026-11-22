@@ -330,7 +330,9 @@ async fn prepare_turn(state: &Shared, input: TurnInput, cancel: &CancellationTok
         }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
+        st.person_turn_version = person.then(|| st.history.version());
         st.person_at = st.turn_start;
+        st.turn_words_tokens = 0;
         st.request_in = false;
         st.goal_idle.changed = false;
         st.noticed.clear();
@@ -577,6 +579,9 @@ fn push_user_checked(
     // a file the person attached too is known by their header: theirs is recorded last
     own.append(&mut whole);
     let whole = own;
+    // Count the actual input, not the layout marker: that marker may occur literally in what the person typed.
+    let words_tokens =
+        typed.as_ref().filter(|s| !s.is_empty()).map_or(0, |s| nexo_core::message::message_tokens(&Message::user(s)));
     let text = match typed {
         Some(words) if text.trim().is_empty() => words,
         Some(words) => format!("{}\n\n{}\n{words}", text.trim_matches('\n'), nexo_core::agent::PERSON_MARK),
@@ -592,6 +597,7 @@ fn push_user_checked(
     if !may_incorporate(guard) {
         return false;
     }
+    st.turn_words_tokens = st.turn_words_tokens.saturating_add(words_tokens);
     st.history.push(m.clone());
     for (path, bytes, header) in whole {
         st.reads.attached(path, &bytes, header);
@@ -926,6 +932,15 @@ pub(super) async fn prepare(
     let st = &mut *guard;
     let specs = offered(st);
     mcp_offered_short(st);
+    // what rides on this request only is worked out first, so the view's budget leaves room for it
+    let hidden = (!st.hidden.is_empty()).then(|| nexo_supervise::watch::hidden_block(&st.hidden));
+    // a goal: its restatement and, while it is active, the counts of its run and, once its work brings nothing new,
+    // the facts of that (see `goal_note`)
+    let goal_facts = goal_note(st);
+    // the task list, as it stands now: with this request only, so a change in it leaves the cached prefix alone
+    let todo = todo_note(st);
+    let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).chain(&todo).collect::<Vec<_>>());
+    super::window_fit::check_words(st, &specs, extra)?;
     if let Some(at) = st.policy.compact_at() {
         let at = compact_threshold(at, st.limits.context_window, reply_tokens(st));
         if request_tokens(st, &specs) > at {
@@ -943,14 +958,6 @@ pub(super) async fn prepare(
             }
         }
     }
-    // what rides on this request only is worked out first, so the view's budget leaves room for it
-    let hidden = (!st.hidden.is_empty()).then(|| nexo_supervise::watch::hidden_block(&st.hidden));
-    // a goal: its restatement and, while it is active, the counts of its run and, once its work brings nothing new,
-    // the facts of that (see `goal_note`)
-    let goal_facts = goal_note(st);
-    // the task list, as it stands now: with this request only, so a change in it leaves the cached prefix alone
-    let todo = todo_note(st);
-    let extra = request_only_tokens(&hidden.iter().chain(&goal_facts).chain(&todo).collect::<Vec<_>>());
     let mut view = view_now(st, extra).await;
     // the goal's words are in the system prompt: the goal's request carries the mark and not the words a second time
     // (the history and the session file keep them)
@@ -980,7 +987,7 @@ pub(super) async fn prepare(
     req.no_tool_call = no_tool_call;
     req.max_tokens = reply_tokens(st);
     // the request and its reply within the window, or the person told why not
-    super::window_fit::fit(st, &mut req, notes.as_deref(), extra).await;
+    super::window_fit::fit(st, &mut req, notes.as_deref(), extra).await?;
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
     req.session_id = Some(st.session.id().to_string());
@@ -1154,7 +1161,7 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
     emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
     if let Some(m) = &view.memory {
-        emit(&st.events, AgentEvent::Curated { items: m.curated.clone() });
+        emit(&st.events, AgentEvent::Curated { items: m.curated.clone(), relation_quotes: m.relation_quotes });
     }
     view
 }

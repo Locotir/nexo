@@ -85,6 +85,97 @@ fn t7_chat_openai_uses_max_completion_tokens_for_o_series_and_gpt5_and_max_token
 }
 
 #[test]
+fn t7_output_ceiling_limits_modern_claude_only_when_its_usual_reply_does_not_fit() {
+    let c = cfg("anthropic", "https://example.test");
+    let mut r = req("claude-sonnet-5-5");
+    for (preferred, cap, wire) in [
+        (16_384, None, 64_000),
+        (16_384, Some(100_000), 64_000),
+        (16_384, Some(20_000), 20_000),
+        (1_024, Some(5_000), 4_096),
+        (1_024, Some(1_024), 1_024),
+        (1_024, Some(256), 256),
+    ] {
+        r.max_tokens = preferred;
+        r.output_ceiling = cap;
+        assert_eq!(Anthropic::body(&c, &r)["max_tokens"], wire);
+    }
+    r.output_ceiling = Some(10_000);
+    for (override_, wire) in [(500, 500), (300_000, 10_000)] {
+        r.extra.insert("max_tokens".into(), json!(override_));
+        assert_eq!(Anthropic::body(&c, &r)["max_tokens"], wire);
+    }
+    // On older models, manual thinking still fits the actual serialized reply limit.
+    r.model = "claude-sonnet-4-5".into();
+    r.max_tokens = 8192;
+    r.reasoning = Some(ReasoningConfig::Budget(8000));
+    r.output_ceiling = Some(1500);
+    let b = Anthropic::body(&c, &r);
+    assert_eq!(b["max_tokens"], 1500);
+    assert_eq!(b["thinking"]["budget_tokens"], 1499);
+}
+
+#[test]
+fn t7_output_ceiling_survives_chat_key_selection_and_final_overlays() {
+    for (model, configured, key) in [
+        ("qwen3:8b", None, "max_tokens"),
+        ("gpt-5", None, "max_completion_tokens"),
+        ("local", Some("custom_limit"), "custom_limit"),
+    ] {
+        let (mut c, mut r) = api(model);
+        if let Some(k) = configured {
+            c.extra.insert("max_tokens_key".into(), toml::Value::String(k.into()));
+        }
+        r.output_ceiling = Some(700);
+        let other = if key == "max_tokens" { "max_completion_tokens" } else { "max_tokens" };
+        r.extra.insert(other.into(), json!(5000));
+        for (v, wire) in [(json!(100), 100), (json!(50_000_000_000_u64), 700), (json!(-1), 700), (Value::Null, 700)] {
+            r.extra.insert(key.into(), v);
+            let b = OpenAiChat::body(&c, &r);
+            assert_eq!(b[key], wire);
+            assert!(b.get(other).is_none());
+        }
+    }
+}
+
+#[test]
+fn t7_output_ceiling_in_responses_cannot_be_overridden_or_invented_for_a_subscription() {
+    let mut c = cfg("openai-responses", "https://example.test");
+    let mut r = req("gpt-5");
+    r.extra.insert("max_output_tokens".into(), json!(1000));
+    r.output_ceiling = Some(666);
+    assert_eq!(OpenAiResponses::body(&c, &r)["max_output_tokens"], 666);
+    r.extra.insert("max_output_tokens".into(), json!(300));
+    assert_eq!(OpenAiResponses::body(&c, &r)["max_output_tokens"], 300);
+    c.extra.insert("omit_max_tokens".into(), toml::Value::Boolean(true));
+    assert!(OpenAiResponses::body(&c, &r).get("max_output_tokens").is_none());
+}
+
+#[test]
+fn t7_output_ceiling_in_gemini_survives_replacement_of_generation_config() {
+    let c = cfg("gemini", "https://example.test");
+    let mut r = req("gemini-2.5-pro");
+    r.max_tokens = 500;
+    r.output_ceiling = Some(750);
+    for (key, overlay, wire) in [
+        ("generationConfig", json!({"maxOutputTokens": 9000}), 750),
+        ("generationConfig", json!({"maxOutputTokens": 300}), 300),
+        ("generationConfig", json!({"temperature": 0.25}), 500),
+        ("generation_config", json!({"max_output_tokens": 9000}), 750),
+        ("generationConfig", Value::Null, 500),
+        ("generationConfig", json!("disabled"), 500),
+    ] {
+        r.extra.clear();
+        r.extra.insert(key.into(), overlay.clone());
+        let b = Gemini::body(&c, &r);
+        assert_eq!(b["generationConfig"]["maxOutputTokens"], wire);
+        assert_eq!(b["generationConfig"].get("temperature"), overlay.get("temperature"));
+        assert!(b.get("generation_config").is_none());
+        assert!(b["generationConfig"].get("max_output_tokens").is_none());
+    }
+}
+
+#[test]
 fn t7_chat_no_temperature_to_openai_reasoning_models_but_to_everyone_else() {
     // before: review.rs asks for 0.0 and the retry changes it; `gpt-5` and `o3` answer 400 to any value
     for (base, model, sent) in [

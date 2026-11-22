@@ -82,12 +82,55 @@ type NearKey = (usize, usize, usize);
 /// Reads the custom command files found under a project folder.
 pub(crate) type CommandLoader = Box<dyn Fn(&std::path::Path) -> Vec<crate::custom::CustomCommand> + Send>;
 
+/// Lookup for task headers and their agent rows, scoped to the transcript on screen.
+#[derive(Default)]
+struct TaskRows {
+    cards: std::collections::HashMap<String, usize>,
+    by_call: std::collections::HashMap<String, Vec<usize>>,
+    by_run: std::collections::HashMap<String, usize>,
+}
+
+impl TaskRows {
+    fn call(run: &str) -> Option<&str> {
+        let (call, job) = run.rsplit_once('#')?;
+        job.parse::<u32>().ok().map(|_| call)
+    }
+
+    fn add(&mut self, block: &Block, at: usize) {
+        match block {
+            Block::Tool { name, id, .. } if name == "task" => {
+                self.cards.entry(id.clone()).or_insert(at);
+            }
+            Block::Agent(run) => {
+                self.by_run.insert(run.id.clone(), at);
+                if let Some(call) = Self::call(&run.id) {
+                    self.by_call.entry(call.to_owned()).or_default().push(at);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn shift(&mut self, from: usize, up: bool) {
+        for at in self.cards.values_mut().chain(self.by_run.values_mut()).chain(self.by_call.values_mut().flatten()) {
+            if *at >= from {
+                if up {
+                    *at += 1;
+                } else {
+                    *at -= 1;
+                }
+            }
+        }
+    }
+}
+
 pub struct App {
     pub opts: TuiOptions,
     pub theme: Theme,
     pub commands: CommandTx,
     pub blocks: Vec<Block>,
     cache: Vec<Option<Rendered>>,
+    tasks: TaskRows,
     /// Beside each block: its fold when it has none of its own, and its animations.
     looks: Vec<Look>,
     pub offsets: Vec<usize>,
@@ -296,6 +339,8 @@ pub struct App {
     pub curated: Vec<Vec<nexo_core::CuratedItem>>,
     /// `/context-live`: the call (0 the latest) whose curator rows the panel lists in place of the map.
     pub live_rows: Option<usize>,
+    /// Historical quotes carried by the last call, when relational retrieval ran.
+    pub relation_quotes: Option<usize>,
     pub files_area: Rect,
     /// The "panel hidden" note was shown for the current shrink.
     pub panel_hint_shown: bool,
@@ -435,6 +480,7 @@ impl App {
             commands,
             blocks: Vec::new(),
             cache: Vec::new(),
+            tasks: TaskRows::default(),
             looks: Vec::new(),
             offsets: Vec::new(),
             total_lines: 0,
@@ -559,6 +605,7 @@ impl App {
             map_at: None,
             curated: Vec::new(),
             live_rows: None,
+            relation_quotes: None,
             files_area: Rect::default(),
             panel_hint_shown: false,
             editor_area: Rect::default(),
@@ -662,6 +709,7 @@ impl App {
         self.suggestion = None;
         self.words.clear();
         self.blocks.clear();
+        self.tasks = TaskRows::default();
         self.cache.clear();
         self.looks.clear();
         self.last_call_cached = 0;
@@ -698,6 +746,7 @@ impl App {
         self.map_changed.clear();
         self.curated.clear();
         self.live_rows = None;
+        self.relation_quotes = None;
         self.marks.clear();
         self.call_tokens.clear();
         self.queued = 0;
@@ -724,6 +773,8 @@ struct Look {
     /// When a tool card stopped running, and whether it was running at the last tick.
     done_at: Option<Instant>,
     was_live: bool,
+    /// Last wrapped row known to contain no link, relative to this cached render.
+    no_link_row: Option<usize>,
     /// When the thinking of a reasoning block closed (its header settles), and when a turn was interrupted
     /// at this block (its rail warms).
     ended: Option<Instant>,

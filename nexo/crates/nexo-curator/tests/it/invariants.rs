@@ -122,7 +122,10 @@ fn run_in(msg: &Value, blocks: &[Value]) -> bool {
 
 fn strip_tail(mut blocks: Vec<Value>) -> Vec<Value> {
     let tail = blocks.last().is_some_and(|b| {
-        kind(b) == "text" && b["text"].as_str().is_some_and(|t| t.starts_with(FACTS_HEAD) || t.starts_with(RECALL_HEAD))
+        kind(b) == "text"
+            && b["text"].as_str().is_some_and(|t| {
+                t.starts_with(FACTS_HEAD) || t.starts_with(RECALL_HEAD) || t.starts_with("Historical evidence (")
+            })
     });
     if tail {
         blocks.pop();
@@ -460,11 +463,11 @@ fn i10(r: &Reply, h: &[Value], t: &mut Tally) -> Result<(), String> {
             named.extend(ns);
         }
     }
-    for i in 1..h.len() {
+    for (i, msg) in h.iter().enumerate().skip(1) {
         if r.memory.cells[i].state != State::Out || i < s_map {
             continue;
         }
-        let j = if role(&h[i]) == "user" { i } else { i + 1 };
+        let j = if role(msg) == "user" { i } else { i + 1 };
         let n = j + 1;
         if !named.contains(&n) && !spans.iter().any(|&(a, z)| n > a && n <= z) {
             return Err(format!("m{:05} is out (map covers to {s_map}) and no shut line names m{n:05}", i + 1));

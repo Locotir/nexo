@@ -567,7 +567,10 @@ mod tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
         let own = [home.join(".nexo"), elsewhere.clone()];
         assert_eq!(project_dir_in(&work, Some(&home), &own), None);
-        assert_eq!(project_dir_in(&d.path().join("cfg"), Some(&home), &own), None);
+        // Outside home the search continues upward. Keep its next project inside the fixture,
+        // independent of whether the runner's real home has a .nexo directory.
+        std::fs::create_dir(d.path().join(".git")).unwrap();
+        assert_eq!(project_dir_in(&d.path().join("cfg"), Some(&home), &own), Some(d.path().join(".nexo")));
         // with nothing declared own, the home's folder is just a folder with a name
         assert_eq!(project_dir_in(&work, None, &[]), Some(home.join(".nexo")));
     }
