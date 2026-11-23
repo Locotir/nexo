@@ -49,7 +49,10 @@
       const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
       Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
     } else if (el.isContentEditable) {
-      el.textContent = value;
+      // Rich-text editors (including Gmail) use normal whitespace: textContent's
+      // raw LF characters collapse into spaces. innerText creates real line breaks
+      // while treating markup as literal text, without changing the editor's CSS.
+      el.innerText = value;
     } else {
       return { ok: false, error: 'not a field' };
     }

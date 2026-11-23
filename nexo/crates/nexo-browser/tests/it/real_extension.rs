@@ -191,6 +191,57 @@ async fn the_real_extension_connects_without_prompt_and_drives_its_own_tabs() {
     browser.fill("Full name", "Ada").await.unwrap();
     browser.click("Send").await.unwrap();
     assert_eq!(browser.read_text(Some("#out")).await.unwrap(), "sent Ada/r/false");
+    // Gmail-like rich-text composer: normal whitespace collapses raw LF text nodes.
+    // Keep this local: no account, external page or real message is involved.
+    browser
+        .eval(
+            r#"document.body.insertAdjacentHTML('beforeend',
+            '<div id="draft" role="textbox" aria-label="Message Body" contenteditable="true" style="white-space:normal">old draft</div><textarea id="plain"></textarea>');
+            window.draftEvents = [];
+            document.querySelector('#draft').addEventListener('input', e => draftEvents.push(e.data));"#,
+        )
+        .await
+        .unwrap();
+    for text in [
+        "Hello Ben,\n\nThanks for your help.\nRegards,",
+        "\nLeading and trailing\n\n",
+        "First\r\nSecond\rThird",
+        "<b>Literal, not HTML</b> & café 🦀\nNext line",
+        "One line",
+        "",
+    ] {
+        browser.fill("Message Body", text).await.unwrap();
+        let visible = browser.eval("document.querySelector('#draft').innerText").await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<String>(&visible).unwrap(),
+            text.replace("\r\n", "\n").replace('\r', "\n"),
+            "fill {text:?}",
+        );
+        assert_eq!(browser.eval("document.querySelector('#draft b') === null").await.unwrap(), "true");
+        assert_eq!(
+            browser.eval("draftEvents[draftEvents.length - 1]").await.unwrap(),
+            serde_json::to_string(text).unwrap(),
+        );
+    }
+    let text = "First paragraph\n\nSecond paragraph\n";
+    let report = browser.fill_batch(&[("#draft", text), ("#plain", text)]).await.unwrap();
+    assert_eq!(report.filled.len(), 2);
+    assert_eq!(browser.eval("document.querySelector('#draft').innerText").await.unwrap(), json!(text).to_string());
+    assert_eq!(browser.eval("document.querySelector('#plain').value").await.unwrap(), json!(text).to_string());
+
+    // type_text uses native Input.insertText, which creates block paragraphs
+    // rather than fill's <br>s. Check its rendered lines, not innerText's extra
+    // separators around those blocks. The textarea must still match exactly.
+    browser.fill("#draft", "").await.unwrap();
+    browser.type_text(text).await.unwrap();
+    assert_eq!(
+        browser.eval("document.querySelector('#draft').innerText.split(/\\n+/).filter(Boolean)").await.unwrap(),
+        json!(["First paragraph", "Second paragraph"]).to_string(),
+    );
+    browser.fill("#plain", "").await.unwrap();
+    browser.type_text(text).await.unwrap();
+    assert_eq!(browser.eval("document.querySelector('#plain').value").await.unwrap(), json!(text).to_string());
+
     let shot = browser.screenshot(false).await.unwrap();
     assert!(shot.len() > 500, "a screenshot came back");
     let tabs = browser.tabs().await.unwrap();

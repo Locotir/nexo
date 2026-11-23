@@ -37,20 +37,15 @@ pub(super) fn catastrophic_at(cmd: &str, home: Option<&Path>, cwd: Option<&Path>
     if packed.contains(":(){:|:&};:") {
         return Some("a fork bomb");
     }
+    // Use the shared lexer while quotes and escapes still distinguish shell syntax from argument text.
+    // In particular an SSH script is one argument, not a local redirect whose filename is the whole script.
+    if output_targets(cmd).iter().any(|target| disk(target)) {
+        return Some("raw bytes written over a disk");
+    }
     // where the next command runs: `cd ~ && rm -rf *` deletes the home folder; `None` once a `cd` goes
     // somewhere that cannot be told
     let mut here: Option<PathBuf> = cwd.filter(|c| c.has_root()).map(Path::to_path_buf);
     for seg in segments(cmd) {
-        // `> /dev/sda`, `2>/dev/sdb`, `&> /dev/nvme0n1`: whatever writes, the redirect writes over the disk
-        for (k, word) in seg.words.iter().enumerate() {
-            let Some(at) = word.rfind('>') else { continue };
-            let target = word[at + 1..].trim_start_matches('&');
-            let target =
-                if target.is_empty() { seg.words.get(k + 1).map(String::as_str).unwrap_or("") } else { target };
-            if disk(target) {
-                return Some("raw bytes written over a disk");
-            }
-        }
         let (prog, args) = program(&seg.words);
         // `(cd ~; rm -rf *)`: the opening parenthesis belongs to the group, not to the program
         let prog = prog.trim_start_matches('(');
@@ -200,6 +195,18 @@ pub(super) fn catastrophic_at(cmd: &str, home: Option<&Path>, cwd: Option<&Path>
         }
     }
     None
+}
+
+/// Actual output filenames, not `>` characters in quoted or escaped argument text. The lexer also handles
+/// append, clobber, combined stdout/stderr and read/write redirects, preserving quoted target filenames.
+fn output_targets(cmd: &str) -> Vec<String> {
+    nexo_core::shell::lex(cmd, true)
+        .cmds
+        .into_iter()
+        .flat_map(|c| c.redirects)
+        .filter(|r| r.writes() && !r.dup)
+        .filter_map(|r| r.target)
+        .collect()
 }
 
 /// The operands of a command (the words that are not options), without the values of the options that take one.
@@ -416,6 +423,9 @@ fn wipes_disk(args: &[String]) -> bool {
 
 /// Why a command is never approved, when it is one of the fixed dangerous calls.
 pub(super) fn dangerous(cmd: &str, cwd: &Path, home: Option<&Path>) -> Option<&'static str> {
+    if output_targets(cmd).iter().any(|target| outside(target, cwd, home)) {
+        return Some("writes outside the session folder");
+    }
     let segs = segments(cmd);
     for (i, seg) in segs.iter().enumerate() {
         let (prog, args) = program(&seg.words);
@@ -455,7 +465,10 @@ pub(super) fn dangerous(cmd: &str, cwd: &Path, home: Option<&Path>) -> Option<&'
             "dd" => return Some("dd"),
             p if p.starts_with("mkfs") => return Some("mkfs"),
             "sh" | "bash" | "zsh" | "dash" | "ksh" => {
-                if let Some(at) = args.iter().position(|a| a == "-c") {
+                // Match the catastrophic floor: grouped short flags (`-lc`, `-ec`) also run a script.
+                if let Some(at) =
+                    args.iter().position(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('c'))
+                {
                     if let Some(inner) = args.get(at + 1) {
                         if let Some(why) = dangerous(inner, cwd, home) {
                             return Some(why);
@@ -478,16 +491,6 @@ pub(super) fn dangerous(cmd: &str, cwd: &Path, home: Option<&Path>) -> Option<&'
                 if matches!(program(&next.words).0, "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish") {
                     return Some("a download piped into a shell");
                 }
-            }
-        }
-        // Redirections: `> file`, `>> file`, `2>file`.
-        let w = &seg.words;
-        for (k, word) in w.iter().enumerate() {
-            let Some(at) = word.rfind('>') else { continue };
-            let target = word[at + 1..].trim_start_matches('&');
-            let target = if target.is_empty() { w.get(k + 1).map(String::as_str).unwrap_or("") } else { target };
-            if !target.is_empty() && !target.chars().all(|c| c.is_ascii_digit()) && outside(target, cwd, home) {
-                return Some("writes outside the session folder");
             }
         }
     }

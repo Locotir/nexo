@@ -378,6 +378,81 @@ fn tools_that_erase_or_repartition_a_disk_are_catastrophic() {
 }
 
 #[test]
+fn quoted_command_text_is_not_a_local_disk_redirect() {
+    let nginx = r#"ssh -i ~/.ssh/ssh-key-2025-06-07.key -o BatchMode=yes -o ConnectTimeout=15 root@locotir.net 'nginx -T 2>/dev/null | grep -n -A 14 -B 8 -E "server_name .*locotir.net|location /downloads|alias .*downloads" | head -160'"#;
+    for cmd in [
+        nginx,
+        r#"ssh host 'cat /etc/example 2>/dev/null; cat /usr/local/example'"#,
+        "printf '%s' '> /dev/sda'",
+        r#"echo "2>/dev/null /some/path""#,
+        r"echo \>/dev/sda",
+        "cat /dev/sda",
+        "cat </dev/sda",
+        "cat >/dev/null",
+    ] {
+        assert_eq!(catastrophic(cmd), None, "{cmd}");
+        assert_eq!(super::danger::dangerous(cmd, Path::new("/work/project"), None), None, "{cmd}");
+    }
+}
+
+#[test]
+fn actual_output_redirects_outside_the_session_are_still_denied() {
+    let cwd = Path::new("/work/project");
+    for cmd in ["echo x > /etc/example", "echo x >> '/etc/example'", "echo x &>/etc/example", "exec 3<>/etc/example"] {
+        assert_eq!(super::danger::dangerous(cmd, cwd, None), Some("writes outside the session folder"), "{cmd}");
+    }
+    for cmd in ["cmd 2>&1", "echo x > local.log", "echo '> /etc/example'"] {
+        assert_eq!(super::danger::dangerous(cmd, cwd, None), None, "{cmd}");
+    }
+}
+
+#[test]
+fn grouped_shell_flags_still_deny_output_outside_the_session() {
+    let cwd = Path::new("/work/project");
+    for cmd in [
+        "bash -lc 'echo x > /etc/example'",
+        "sh -ec 'echo x >> /etc/example'",
+        "dash -ec 'exec 3<>/etc/example'",
+        "zsh -lc 'echo x > /etc/example'",
+        "ksh -ec 'echo x > /etc/example'",
+        "bash -l -c 'echo x > /etc/example'",
+        "bash -lc \"sh -ec 'echo x > /etc/example'\"",
+    ] {
+        assert_eq!(super::danger::dangerous(cmd, cwd, None), Some("writes outside the session folder"), "{cmd}");
+    }
+    for cmd in [
+        "bash -lc 'echo x > local.log'",
+        "sh -ec 'echo x > /work/project/local.log'",
+        "bash -lc 'cmd 2>&1'",
+        "bash -lc \"echo '> /etc/example'\"",
+        "bash --rcfile 'echo x > /etc/example'",
+    ] {
+        assert_eq!(super::danger::dangerous(cmd, cwd, None), None, "{cmd}");
+    }
+}
+
+#[test]
+fn real_disk_redirects_still_hit_the_floor() {
+    for cmd in [
+        "cat image > /dev/sda",
+        "cat image >/dev/sda",
+        "cat image >>/dev/sda",
+        "cat image >|/dev/sda",
+        "cmd 2>/dev/nvme0n1",
+        "cmd &>/dev/sdb",
+        "cmd &>>/dev/sdb",
+        "cmd 2>&/dev/sdb",
+        "exec 3<>/dev/sda",
+        "cat image > '/dev/disk/by-id/example'",
+        "cat image > /dev/mapper/root",
+        "printf '%s' 'ignored > /dev/null' >/dev/sda",
+        "bash -lc 'cat image >/dev/sda'",
+    ] {
+        assert_eq!(catastrophic(cmd), Some("raw bytes written over a disk"), "{cmd}");
+    }
+}
+
+#[test]
 fn a_shell_started_with_a_group_of_flags_hands_its_script_to_the_floor() {
     let home = Some(Path::new("/home/lctr"));
     assert!(catastrophic_in("bash -lc 'rm -rf ~'", home).is_some());
