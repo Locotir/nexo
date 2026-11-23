@@ -116,6 +116,11 @@ pub(super) fn read_piped<R: Read + Send + 'static>(mut r: R, first_byte: Option<
             }
         }
     });
+    read_chunks(rx, first_byte)
+}
+
+/// Collects the reader's chunks, applying the deadline only before the first one.
+fn read_chunks(rx: std::sync::mpsc::Receiver<Vec<u8>>, first_byte: Option<Duration>) -> (String, Option<Late>) {
     let mut bytes: Vec<u8> = Vec::new();
     if let Some(wait) = first_byte {
         match rx.recv_timeout(wait) {
@@ -256,7 +261,7 @@ mod image_tests {
 
 #[cfg(test)]
 mod piped_tests {
-    use super::read_piped;
+    use super::{read_chunks, read_piped};
     use std::io::Read;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -301,8 +306,22 @@ mod piped_tests {
 
     #[test]
     fn the_wait_covers_only_the_first_byte() {
-        let r = Slow(vec![(50, "abc"), (300, "def")]);
-        assert_eq!(piped(r, Some(Duration::from_millis(100))), ("abcdef".to_string(), false));
+        let (tx, rx) = mpsc::channel();
+        // Queue the first chunk before starting the collector: even a zero deadline
+        // must accept it, regardless of when the OS schedules either thread.
+        tx.send(b"abc".to_vec()).unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let collector = std::thread::spawn(move || {
+            let (text, late) = read_chunks(rx, Some(Duration::ZERO));
+            done_tx.send((text, late.is_some())).unwrap();
+        });
+        // Keep the stream open beyond the first-byte deadline. This timeout is a
+        // negative assertion, not a window in which a thread must be scheduled.
+        assert!(matches!(done_rx.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout)));
+        tx.send(b"def".to_vec()).unwrap();
+        drop(tx);
+        assert_eq!(done_rx.recv().unwrap(), ("abcdef".to_string(), false));
+        collector.join().unwrap();
     }
 
     #[test]
