@@ -77,7 +77,8 @@ impl App {
             AgentEvent::ContextMap { cells, zones, calls, call_tokens } => {
                 self.on_context_map(cells, zones, calls, call_tokens)
             }
-            AgentEvent::Curated { items, relation_quotes } => {
+            AgentEvent::Curated { items, relation_quotes, quote_heat } => {
+                self.quote_heat = quote_heat;
                 self.relation_quotes = relation_quotes;
                 self.note_curated(items);
             }

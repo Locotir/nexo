@@ -36,7 +36,7 @@ async fn session_on_m2(d: &std::path::Path) -> String {
 /// What the agent says while it starts up: everything before the answer to `/sent`.
 async fn startup_events(r: &mut Running) -> Vec<AgentEvent> {
     r.send(AgentCommand::ShowSent);
-    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("nothing was sent yet"))).await
+    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("no request prepared yet"))).await
 }
 
 #[tokio::test]

@@ -744,7 +744,9 @@ impl App {
             }
             let line = self.view_top() + (y - a.y) as usize;
             if let Some(i) = self.block_at_line(line) {
-                if line == self.offsets[i] && self.foldable(i) {
+                if (line == self.offsets[i] && self.foldable(i))
+                    || matches!(self.blocks[i], Block::User { .. } | Block::Assistant { .. })
+                {
                     return Hover::Head(i);
                 }
             }
@@ -754,6 +756,7 @@ impl App {
 
     /// The pointer moved to `(x, y)` with no button down: what it is over lights up.
     pub fn pointer_moved(&mut self, x: u16, y: u16) {
+        self.pointer_pos = Some((x, y));
         let h = self.hover_at(x, y);
         if h != self.hover {
             self.hover = h;

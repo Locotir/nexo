@@ -541,9 +541,12 @@ fn the_context_map_shows_what_the_call_sends() {
     let panel: Vec<&str> = rows.iter().map(|r| r.split('│').next_back().unwrap_or("")).collect();
     let all = panel.join("\n");
     assert!(all.contains("context live"), "{all}");
-    assert!(all.contains("sent 950 of 990"), "{all}");
+    assert!(all.contains("selected originals 950/990"), "{all}");
+    assert!(!all.contains("sent 950"), "trimmed original sizes are not payload sizes: {all}");
     assert!(all.contains("·█▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒█"), "{all}");
-    assert!(all.contains("1 cell ≈ 50 tok · curator"), "{all}");
+    assert!(all.contains("up to 50 tok/cell · curator"), "{all}");
+    assert!(all.contains("1+ cells per message"), "{all}");
+    assert!(all.contains("█ whole ▒ cut ░ recalled · out"), "{all}");
     // narrow: the toggle refuses and says why
     let mut b = app();
     b.toggle_live(80);
@@ -588,7 +591,55 @@ fn the_context_map_shows_the_curators_memory_by_topic() {
     assert!(panel[at("● write the docs") + 1].starts_with("█▒▒▒▒"), "{all}");
     assert!(panel[at("◐ old") + 1].starts_with("······░░"), "{all}");
     assert!(panel[at("◐ old")].ends_with("100/400 back"), "{all}");
-    assert!(all.contains("░ back · out"), "{all}");
+    assert!(all.contains("░ recalled · out"), "{all}");
+}
+
+#[test]
+fn unknown_context_selection_is_a_range_and_composition_is_not_invented() {
+    use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
+    let mut a = app();
+    fill(&mut a);
+    let cell = |tokens, state, zone| ContextCell { kind: CellKind::Output, tokens, state, zone };
+    a.handle_agent(AgentEvent::ContextMap {
+        cells: vec![cell(100, CellState::Whole, 0), cell(200, CellState::Unknown, 1), cell(300, CellState::Dropped, 1)],
+        zones: vec![
+            ContextZone { label: "anchor".into(), active: true, card: false },
+            ContextZone { label: "uncertain".into(), active: false, card: false },
+        ],
+        calls: Vec::new(),
+        call_tokens: Vec::new(),
+    });
+    a.toggle_live(120);
+    let all = draw(&mut a, 120, 40).join("\n");
+    assert!(all.contains("selected originals 100–300?/600"), "{all}");
+    assert!(all.contains("0–200?/500 unknown"), "{all}");
+    let parts = nexo_tui::overlay::context_parts(&a, &a.theme);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].1, "in use (composition unknown)");
+    assert_eq!(parts[0].2, a.gauge_view().0);
+}
+
+#[test]
+fn context_overlay_does_not_allocate_gauge_to_original_message_sizes() {
+    use nexo_core::{CellKind, CellState, ContextCell};
+    let mut a = app();
+    a.last_call_input = 10_000; // Includes system/tools and need not match the current map.
+    let cell = |kind, tokens, state| ContextCell { kind, tokens, state, zone: 0 };
+    for cells in [
+        vec![cell(CellKind::Request, 100, CellState::Whole), cell(CellKind::Output, 900_000, CellState::Shrunk)],
+        vec![cell(CellKind::Request, 100, CellState::Whole), cell(CellKind::Output, 200, CellState::Whole)],
+        vec![],
+    ] {
+        a.handle_agent(AgentEvent::ContextMap { cells, zones: vec![], calls: vec![], call_tokens: vec![] });
+        let parts = nexo_tui::overlay::context_parts(&a, &a.theme);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].1, "in use (composition unknown)");
+        assert_eq!(parts[0].2, 10_000);
+        let rendered = nexo_tui::overlay::lines(&a, 0, 100, 1.0, nexo_agent::session_scan::Period::Week);
+        let text = rendered.iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("in use (composition unknown)"), "{text}");
+        assert!(!text.contains("system & tools") && !text.contains("tool output"), "{text}");
+    }
 }
 
 fn curated_items() -> Vec<nexo_core::CuratedItem> {
@@ -610,27 +661,35 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let all = draw(&mut a, 120, 60).join("\n");
-    assert!(!all.contains("Added by the curator"), "{all}");
+    assert!(!all.contains("Curator selection (before fit)"), "{all}");
     a.modal = None;
-    a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None });
+    a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None, quote_heat: None });
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let rows = draw(&mut a, 120, 60);
     let all = rows.join("\n");
     let at = |s: &str| rows.iter().position(|l| l.contains(s)).unwrap_or_else(|| panic!("{s} not in\n{all}"));
-    assert!(all.contains("Added by the curator (last call)"), "{all}");
+    assert!(all.contains("Curator selection (before fit)"), "{all}");
     assert!(at("thread") < at("recalled") && at("recalled") < at("rule") && at("rule") < at("total"), "{all}");
     assert!(rows[at("thread")].contains("parser rewrite") && rows[at("thread")].contains("12.4k"), "{all}");
     assert!(rows[at("recalled")].contains("~900"), "{all}");
     assert!(rows[at("total")].contains("13.6k"), "{all}");
-    assert!(at("Left out") > at("total") && rows[at("Left out") + 1].contains("old notes"), "{all}");
+    assert!(at("Left out") > at("total"), "{all}");
+    // The added disclaimer and inventory can extend below the modal's viewport.
+    if let Some(nexo_tui::modal::Modal::Info(i)) = &mut a.modal {
+        i.scroll = 10;
+    }
+    let scrolled = draw(&mut a, 120, 60).join("\n");
+    assert!(scrolled.contains("old notes"), "{scrolled}");
+    assert!(scrolled.contains("Curator selection before final fit; not proof of what was sent."), "{scrolled}");
     // a call with nothing from the curator says so
     a.modal = None;
-    a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None });
+    a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None, quote_heat: None });
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let all = draw(&mut a, 120, 60).join("\n");
-    assert!(all.contains("The curator added nothing to this call."), "{all}");
+    assert!(all.contains("No curator items reported for this selection."), "{all}");
+    assert!(all.contains("not proof of what was sent"), "{all}");
 }
 
 #[test]
@@ -638,13 +697,86 @@ fn the_live_map_shows_only_the_current_calls_relation_quotes() {
     let mut a = app();
     fill(&mut a);
     a.show_live = true;
-    for (count, expected) in [(Some(2), "relations · 2 quotes"), (Some(0), "relations · 0 quotes"), (None, "")] {
-        a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: count });
+    for (count, expected) in
+        [(Some(2), "relations · 2 selected quotes"), (Some(0), "relations · 0 selected quotes"), (None, "")]
+    {
+        a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: count, quote_heat: None });
         let screen = draw(&mut a, 120, 40).join("\n");
         assert!(screen.contains("context live"), "{screen}");
         assert_eq!(screen.contains("relations ·"), count.is_some());
         assert!(screen.contains(expected), "{screen}");
     }
+}
+
+#[test]
+fn hidden_topics_need_not_be_the_oldest() {
+    use nexo_core::agent::QuoteHeat;
+    use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
+    let mut a = app();
+    fill(&mut a);
+    a.show_live = true;
+    let cells = (0..8)
+        .map(|zone| ContextCell { kind: CellKind::Output, tokens: 100, state: CellState::Dropped, zone })
+        .collect();
+    let zones = (0..8).map(|i| ContextZone { label: format!("topic-{i}"), active: false, card: false }).collect();
+    a.handle_agent(AgentEvent::ContextMap { cells, zones, calls: vec![], call_tokens: vec![] });
+    a.handle_agent(AgentEvent::Curated {
+        items: vec![],
+        relation_quotes: Some(1),
+        quote_heat: Some(QuoteHeat { input_tokens: 1000, by_message: [(1, 10)].into() }),
+    });
+    let screen = draw(&mut a, 120, 24).join("\n");
+    assert!(screen.contains("topic-1"), "{screen}");
+    assert!(!screen.contains("topic-2"), "{screen}");
+    assert!(screen.contains("hidden topics"), "{screen}");
+    assert!(!screen.contains("older topics"), "{screen}");
+}
+
+#[test]
+fn quote_heat_marks_only_sources_and_scales_by_zone_over_current_input() {
+    use nexo_core::agent::QuoteHeat;
+    use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
+    let mut a = app();
+    fill(&mut a);
+    a.show_live = true;
+    let cell = |zone| ContextCell { kind: CellKind::Output, tokens: 100, state: CellState::Dropped, zone };
+    a.handle_agent(AgentEvent::ContextMap {
+        cells: vec![cell(0), cell(0), cell(0), cell(1)],
+        zones: ["first", "second"].map(|label| ContextZone { label: label.into(), active: true, card: false }).into(),
+        calls: vec![],
+        call_tokens: vec![],
+    });
+    let mut colours = |input| {
+        a.handle_agent(AgentEvent::Curated {
+            items: vec![],
+            relation_quotes: Some(4),
+            quote_heat: Some(QuoteHeat { input_tokens: input, by_message: [(0, 1), (2, 2), (3, 20)].into() }),
+        });
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        draw_frame(&mut term, &mut a).unwrap();
+        let buf = term.backend().buffer();
+        let rows = rows_of(buf);
+        let row = |zone: &str, expected: &str| {
+            let y = rows.iter().position(|r| r.contains(zone)).unwrap() + 1;
+            assert!(rows[y].contains(expected), "{}", rows[y]);
+            let col = rows[y].chars().position(|c| c == '◇').unwrap() as u16;
+            (col, y as u16)
+        };
+        let (x, y) = row("◆ first", "◇···◇·");
+        let second = row("● second", "◇·");
+        assert_eq!(buf[(x, y)].fg, buf[(x + 4, y)].fg, "same zone: sum both messages");
+        [buf[(x, y)].fg, buf[second].fg]
+    };
+    let normal = colours(1000);
+    assert_ne!(normal[0], normal[1], "small share differs from capped bright");
+    assert_ne!(normal[0], colours(1500)[0], "same numerator, different input");
+    assert_eq!(normal[1], colours(100)[1], "saturates");
+    let unknown = colours(0);
+    assert_eq!(unknown[0], unknown[1], "unknown denominator: no invented scale");
+    // The next call may use a policy with no Curated event. Its map cannot inherit heat.
+    fill(&mut a);
+    let screen = draw(&mut a, 120, 40).join("\n");
+    assert!(!screen.contains("◇ quoted source"));
 }
 
 #[test]
@@ -657,13 +789,14 @@ fn f3_lists_the_curator_rows_of_a_call_in_the_live_panel() {
     // nothing yet: a hint, no panel
     f3(&mut a);
     assert!(!a.show_live && a.live_rows.is_none());
-    a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None });
-    a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None });
+    a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None, quote_heat: None });
+    a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None, quote_heat: None });
     f3(&mut a);
     assert!(a.show_live);
     assert_eq!(a.live_rows, Some(0));
     let all = draw(&mut a, 120, 40).join("\n");
-    assert!(all.contains("curator rows") && all.contains("The curator added nothing"), "{all}");
+    assert!(all.contains("curator rows") && all.contains("No curator items reported for this"), "{all}");
+    assert!(all.contains("not proof of what was sent"), "{all}");
     // again: the call before, with its rows
     f3(&mut a);
     assert_eq!(a.live_rows, Some(1));
@@ -789,7 +922,7 @@ fn a_tool_card_says_where_its_output_stands() {
     let rows = draw(&mut a, 120, 30);
     let row = |s: &str| rows.iter().find(|r| r.contains(s)).unwrap_or_else(|| panic!("{s}:\n{}", rows.join("\n")));
     // the word sits at the right of the head, the head itself unchanged
-    assert!(row("tests/a.rs").trim_end().ends_with("● cached"), "{}", rows.join("\n"));
+    assert!(row("tests/a.rs").trim_end().ends_with("● same prefix"), "{}", rows.join("\n"));
     // set aside, the usual state of an older card, is the glyph alone
     let aside = row("src/lib.rs").trim_end().to_string();
     assert!(aside.ends_with(" ○") && !aside.contains("set aside"), "{}", rows.join("\n"));
@@ -810,7 +943,7 @@ fn a_tool_card_says_where_its_output_stands() {
 }
 
 #[test]
-fn a_tool_card_adds_the_price_of_its_output_only_with_full_prices_and_room() {
+fn a_tool_card_estimates_input_cost_without_claiming_provider_cache_hits() {
     use nexo_core::pricing::Pricing;
     use nexo_core::CallMark;
     let limits = |pricing| AgentEvent::ModelLimits {
@@ -833,23 +966,23 @@ fn a_tool_card_adds_the_price_of_its_output_only_with_full_prices_and_room() {
     fill(&mut a);
     a.handle_agent(limits(Some(full)));
     a.handle_agent(map());
-    // 5000 tokens at the cached rate, 1000 at the full one
+    // Identical message prefixes do not prove cache hits: both use the input rate.
     let wide = text(&mut a, 120);
-    assert!(wide.contains("● cached 0.00150 $"), "{wide}");
-    assert!(wide.contains("● full price 0.00300 $"), "{wide}");
+    assert!(wide.contains("● same prefix ~0.01500 $"), "{wide}");
+    assert!(wide.contains("● sent ~0.00300 $"), "{wide}");
     // narrow: the command is cut with an ellipsis, the word and the price stay
-    let narrow = text(&mut a, 50);
-    assert!(narrow.contains("● cached 0.00150 $") && narrow.contains("● full price 0.00300 $"), "{narrow}");
+    let narrow = text(&mut a, 65);
+    assert!(narrow.contains("● same prefix ~0.01500 $") && narrow.contains("● sent ~0.00300 $"), "{narrow}");
     // too narrow for the price: the word alone
-    let tight = text(&mut a, 34);
-    assert!(tight.contains("● cached") && !tight.contains("0.00150"), "{tight}");
-    // a price missing (no cached rate): nothing extra, the word stays
+    let tight = text(&mut a, 39);
+    assert!(tight.contains("● same prefix") && !tight.contains("0.01500"), "{tight}");
+    // No cached rate is needed: this is an undiscounted input estimate.
     a.handle_agent(limits(Some(Pricing { cache_read: 0.0, ..full })));
     let part = text(&mut a, 120);
-    assert!(part.contains("● cached") && !part.contains("0.00150"), "{part}");
+    assert!(part.contains("● same prefix ~0.01500 $") && !part.contains("● cached"), "{part}");
     a.handle_agent(limits(None));
     let none = text(&mut a, 120);
-    assert!(none.contains("● full price") && !none.contains("0.00300"), "{none}");
+    assert!(none.contains("● sent") && !none.contains("0.00300"), "{none}");
 }
 
 #[test]

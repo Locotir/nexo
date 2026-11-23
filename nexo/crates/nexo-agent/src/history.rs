@@ -48,6 +48,13 @@ impl Sent {
         self.sizes.clear();
     }
 
+    /// Compare a prospective view without changing the last request.
+    pub fn compare(&self, view: &[Message]) -> (usize, u64) {
+        let same = self.messages.iter().zip(view).take_while(|(a, b)| a == b).count();
+        let bytes = self.sizes[..same].iter().sum::<u64>() + view[same..].iter().map(size_of).sum::<u64>();
+        (same, bytes)
+    }
+
     /// Takes `view` as the request just made. Returns how many of its first messages equal those of the
     /// request before, and the JSON bytes of all of `view`. Only the messages after that part are copied
     /// and measured; each size was taken from a message equal to the one in `view` now.
@@ -257,5 +264,22 @@ mod tests {
             seen_version = h.version();
         }
         assert!(detected[1] > 100 && detected[2] > 100, "{detected:?}");
+    }
+}
+
+#[cfg(test)]
+mod sent_preview_tests {
+    use super::*;
+
+    #[test]
+    fn prospective_view_does_not_replace_last_request() {
+        let mut sent = Sent::default();
+        let actual = vec![Message::user("actual"), Message::assistant("response")];
+        let preview = vec![Message::user("preview")];
+        sent.follow(&actual);
+        assert_eq!(sent.compare(&preview), (0, size_of(&preview[0])));
+        assert_eq!(sent.messages(), actual);
+        assert_eq!(sent.compare(&actual).0, 2);
+        assert_eq!(sent.follow(&actual).0, 2);
     }
 }

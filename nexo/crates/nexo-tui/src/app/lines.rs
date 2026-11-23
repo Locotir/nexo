@@ -11,23 +11,24 @@ pub(super) fn is_step(b: &Block) -> bool {
 /// bar is drawn), and two more for the steps of a turn, so a call and its result sit under
 /// the reply's text. Narrow terminals keep every column for the text.
 /// The word at the right of a tool card's head: where its output stands for the last model call (in the
-/// cached part of the request, paid in full, trimmed, set aside, recalled). A glyph and a word, coloured like the bar,
+/// repeated message prefix (not confirmed cache), sent, trimmed, set aside, recalled). A glyph and a word, coloured like the bar,
 /// and only when it fits beside the head. Set aside is the glyph alone: it is where every card of an answered request
 /// stands, and the same word on each of them would only be noise.
 pub(super) fn mark_head(head: &mut Line<'static>, m: CallMark, cost: Option<f64>, w: usize, theme: &Theme) {
     use crate::render::wrap::width;
     let (word, style) = match m {
-        CallMark::Cached => ("● cached", theme.style(theme.success)),
-        CallMark::Sent => ("● full price", theme.style(theme.accent)),
+        CallMark::Cached => ("● same prefix", theme.style(theme.accent2)),
+        CallMark::Sent => ("● sent", theme.style(theme.accent)),
         CallMark::Cut => ("◐ trimmed", theme.style(theme.warn)),
         CallMark::Out => ("○", theme.dim2()),
         CallMark::Back => ("↺ recalled", theme.style(theme.accent2)),
+        CallMark::Unknown => ("? unknown", theme.dim()),
     };
     // the mark wins over the end of a long head: the command is cut with an ellipsis, never below this
     const HEAD_KEEP: usize = 16;
     let used: usize = head.spans.iter().map(|s| width(&s.content)).sum();
-    // the price of this output in the last request goes after the word when it fits, else the word alone
-    let priced = cost.map(|c| format!("{word} {c:.5} $"));
+    // Estimated base-input cost, never an attributed cache discount or billed amount.
+    let priced = cost.map(|c| format!("{word} ~{c:.5} $"));
     let Some((text, limit)) = priced.into_iter().chain([word.to_string()]).find_map(|t| {
         let limit = w.saturating_sub(width(&t) + 3);
         (used <= limit || limit >= HEAD_KEEP).then_some((t, limit))

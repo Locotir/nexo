@@ -35,8 +35,10 @@ fn zone(label: &str) -> Zone {
 
 impl Engine {
     /// Whether a message of the view is sent with parts cut or whole.
-    fn cell_state(&self, mi: usize) -> State {
-        if self.fz.by_msg(mi).iter().any(|i| self.dropped.contains_key(i)) {
+    fn cell_state(&mut self, mi: usize) -> State {
+        if self.fz.by_msg(mi).iter().any(|i| self.dropped.contains_key(i))
+            || self.dups_on(mi).iter().any(Option::is_some)
+        {
             State::Cut
         } else {
             State::Whole

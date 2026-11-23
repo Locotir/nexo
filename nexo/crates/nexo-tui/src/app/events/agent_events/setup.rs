@@ -80,7 +80,20 @@ impl App {
         self.provider = provider.clone();
         self.model = model.clone();
         self.limits = Some(Limits { pricing, context_window, max_output, source: source.clone() });
-        self.invalidate_all();
+        // Only tool price tags and group API-value labels use the current model.
+        // Dropping all heights here forces the next frame to re-wrap the entire
+        // transcript (including evicted markdown), making /model scale with history.
+        for i in 0..self.blocks.len() {
+            let affected = match &self.blocks[i] {
+                Block::Tool { id, .. } => self.marks.contains_key(id),
+                Block::Group { .. } => true,
+                _ => false,
+            };
+            if affected {
+                self.invalidate(i);
+            }
+        }
+        self.dirty = true;
         self.refresh_welcome();
         // the card is worth a line after a change or a question, not at every start
         if !self.fresh() || source == "error" {

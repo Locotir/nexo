@@ -173,6 +173,105 @@ async fn a_request_the_curator_fitted_under_plain_says_so_with_what_it_held() {
     std::env::remove_var("NEXO_DATA_DIR");
 }
 
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn prepared_map_reflects_the_fitted_request() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let (mut handle, ends) = channels();
+    let big = "0123456789abcdef".repeat(4000);
+    {
+        let mut st = rt.state.lock().await;
+        st.events = ends.events;
+        st.limits.context_window = Some(8000);
+        st.system = "test".into();
+        st.history.replace(vec![
+            Message::user("read"),
+            Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", serde_json::json!({}))]),
+            Message::tool_results(vec![Part::tool_result("c1", big.clone(), false)]),
+            Message::assistant("done"),
+            Message::user("hello"),
+        ]);
+    }
+    let (req, _, _, _) = super::start::prepare(&rt.state, &CancellationToken::new(), false).await.unwrap();
+    assert!(!serde_json::to_string(&req.messages).unwrap().contains(&big));
+    let mut last = None;
+    while let Ok(event) = handle.events.try_recv() {
+        if let AgentEvent::ContextMap { calls, .. } = event {
+            last = Some(calls);
+        }
+    }
+    let calls = last.expect("prepared request emitted a map");
+    assert_ne!(calls.iter().find(|(id, _)| id == "c1").unwrap().1, nexo_core::CallMark::Sent);
+    assert_ne!(calls.iter().find(|(id, _)| id == "c1").unwrap().1, nexo_core::CallMark::Cached);
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+/// Return a known inventory so the real prepare path, not just its goal helper, is exercised.
+struct GoalInventory(Option<context::Memory>);
+
+#[async_trait::async_trait]
+impl ContextPolicy for GoalInventory {
+    fn name(&self) -> &str {
+        "goal-inventory"
+    }
+    async fn view(&mut self, _: u64, history: &[Message]) -> anyhow::Result<View> {
+        Ok(View {
+            messages: history.to_vec(),
+            tokens: nexo_core::message::estimate_tokens(history),
+            note: None,
+            memory: self.0.clone(),
+        })
+    }
+    fn reset(&mut self) {}
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn prepare_checks_goal_inventory_before_extracting_memory() {
+    use nexo_core::{CuratedItem, CuratedKind, CuratedState};
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let (mut handle, ends) = channels();
+    rt.state.lock().await.events = ends.events;
+    let item = CuratedItem { kind: CuratedKind::Goal, label: "goal".into(), tokens: 1, state: CuratedState::In };
+    // Either kind of inventory must survive; empty or absent inventory still permits deduplication.
+    for (curated, relation_quotes, has_memory, preserve) in [
+        (vec![], Some(1), true, true),
+        (vec![item], None, true, true),
+        (vec![], Some(0), true, false),
+        (vec![], None, false, false),
+    ] {
+        let original = Message::user("[goal set] hello");
+        {
+            let mut st = rt.state.lock().await;
+            st.system = "test".into();
+            st.goal = Some("hello".into());
+            st.history.replace(vec![original.clone()]);
+            st.policy = Box::new(GoalInventory(has_memory.then(|| context::Memory {
+                zones: vec![],
+                cells: vec![],
+                curated: curated.clone(),
+                relation_quotes,
+            })));
+        }
+        let (req, _, _, _) = super::start::prepare(&rt.state, &CancellationToken::new(), false).await.unwrap();
+        // Request-only goal notes may follow this part, but must not replace its carrier.
+        assert_eq!(req.messages[0].content[0] == original.content[0], preserve);
+        let mut inventory = None;
+        while let Ok(event) = handle.events.try_recv() {
+            if let AgentEvent::Curated { items, relation_quotes, .. } = event {
+                inventory = Some((items, relation_quotes));
+            }
+        }
+        let expected = if preserve { (curated, relation_quotes) } else { (vec![], None) };
+        assert_eq!(inventory.expect("prepare announces final inventory"), expected);
+    }
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
 /// Drive the last guard directly, after policy selection, so neither a helpful fallback nor a mock
 /// provider can mask what the actual outbound request contains.
 #[tokio::test]

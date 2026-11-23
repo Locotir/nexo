@@ -73,6 +73,61 @@ fn a_run_an_earlier_output_holds_points_to_it_while_that_output_is_whole() {
 }
 
 #[test]
+fn memory_marks_active_dedup_pointers_cut_and_restored_lines_whole() {
+    use crate::memory::State;
+
+    let mut e = reads("dedup=3;nudge=0", &[(1, 40), (21, 60)]);
+    assert!(e.dropped.is_empty(), "dedup alone must mark the message cut");
+    assert!(e.dups_on(4).iter().any(Option::is_some));
+    assert_ne!(output(&e.render(), 4), listing(21, 60));
+    let memory = e.memory();
+    assert_eq!(memory.cells[2].state, State::Whole);
+    assert_eq!(memory.cells[4].state, State::Cut);
+    assert_eq!(memory, e.memory_whole());
+
+    // The source loses lines: the candidate remains, but its pointer is inactive
+    // and the later read sends those lines itself again.
+    let src = result_in(&e, 2);
+    e.dropped.entry(src).or_default().insert(0);
+    assert!(!e.dups[&4].is_empty());
+    assert!(e.dups_on(4).iter().all(Option::is_none));
+    assert_eq!(output(&e.render(), 4), listing(21, 60));
+    let memory = e.memory();
+    assert_eq!(memory.cells[2].state, State::Cut);
+    assert_eq!(memory.cells[4].state, State::Whole);
+    assert_eq!(memory, e.memory_whole());
+    let (_, changed) = e.memory_changed().expect("incremental map");
+    assert!(changed.contains(&(4, State::Whole)));
+
+    // Returning the source reactivates the pointer and updates the map too.
+    e.dropped.remove(&src);
+    assert!(e.dups_on(4).iter().any(Option::is_some));
+    assert_ne!(output(&e.render(), 4), listing(21, 60));
+    assert_eq!(e.memory().cells[4].state, State::Cut);
+    assert!(e.memory_changed().unwrap().1.contains(&(4, State::Cut)));
+}
+
+#[test]
+fn memory_keeps_fresh_dedup_candidates_whole_until_the_pointer_is_active() {
+    use crate::memory::State;
+
+    let mut e = reads("dedup=3;nudge=0;asked=3;fresh=1", &[(1, 40), (1, 40)]);
+    assert!(!e.dups[&4].is_empty());
+    assert!(e.dups_on(4).iter().all(Option::is_none));
+    assert_eq!(output(&e.render(), 4), listing(1, 40));
+    assert_eq!(e.memory().cells[4].state, State::Whole);
+
+    let mut msgs = e.tr.msgs.clone();
+    msgs.extend(step(9, "wc -l listing.txt", "40 listing.txt"));
+    e.sync(&msgs);
+    e.view();
+    assert!(e.dups_on(4).iter().any(Option::is_some));
+    assert_ne!(output(&e.render(), 4), listing(1, 40));
+    assert_eq!(e.memory().cells[4].state, State::Cut);
+    assert!(e.memory_changed().unwrap().1.contains(&(4, State::Cut)));
+}
+
+#[test]
 fn an_output_asked_for_past_its_pointer_goes_whole() {
     let reads3 = |spec: &str| {
         let view = reads(spec, &[(1, 40), (1, 40), (1, 40)]).view();

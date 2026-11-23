@@ -553,7 +553,7 @@ async fn a_throttle_misclassified_as_context_does_not_compact_plain_history() {
 }
 
 #[tokio::test]
-async fn each_curator_call_reports_what_it_added_right_after_its_map_and_the_plain_policy_does_not() {
+async fn each_call_reports_its_inventory_after_the_map_and_plain_clears_it() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![Reply::Events(text("one")), Reply::Events(text("two"))]);
     let mut cfg = config(PermissionMode::Ask);
@@ -572,7 +572,12 @@ async fn each_curator_call_reports_what_it_added_right_after_its_map_and_the_pla
     r.next().await;
     r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
     let evs = r.turn().await;
-    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Curated { .. })), "{evs:?}");
+    let at = evs.iter().position(|e| matches!(e, AgentEvent::ContextMap { .. })).expect("a map");
+    // Plain must clear any inventory left by a previously selected curator policy.
+    assert!(
+        matches!(&evs[at + 1], AgentEvent::Curated { items, relation_quotes: None, quote_heat: None } if items.is_empty()),
+        "{evs:?}"
+    );
     r.stop().await;
 }
 

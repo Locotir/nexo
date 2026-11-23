@@ -32,6 +32,8 @@ async fn refresh_plans(providers: Vec<(String, nexo_core::ProviderConfig)>) {
 
 /// Takes the terminal until the person quits or the agent shuts down.
 pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()> {
+    // Drop the report after the terminal, including on early errors.
+    let mut frame_report = crate::frame_stats::FrameReport::new(crate::frame_stats::FrameStats::enabled());
     let mouse = opts.mouse;
     let mut term = terminal::Term::enter(mouse)?;
     let mut app = App::new(opts, handle.commands.clone());
@@ -46,7 +48,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
     let mut events = Keys::spawn();
     let mut hangup = Hangup::new();
     let mut pacer = frame::Pacer::new(Instant::now(), app.opts.animations);
-    frame::draw_synced(&mut term.terminal, &mut app)?;
+    frame_report.draw(|| frame::draw_synced(&mut term.terminal, &mut app))?;
     app.dirty = false;
     let mut title = String::new();
     // a paste coming as keys, in pieces: its text so far and when the last piece came
@@ -198,7 +200,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
         }
         if pacer.draw(now, app.dirty) {
             app.dirty = false;
-            frame::draw_synced(&mut term.terminal, &mut app)?;
+            frame_report.draw(|| frame::draw_synced(&mut term.terminal, &mut app))?;
         }
         let now = app.terminal_title();
         if now != title {

@@ -21,7 +21,7 @@ impl Tool for SubAgent {
         let mut params = json!({
             "type": "object",
             "properties": {
-                "description": {"type": "string", "description": "Three to six words saying what the task is."},
+                "description": {"type": "string", "description": "Three to six words describing the task."},
                 "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them. A non-empty prompt is required."},
                 "skill": {"type": "string", "description": "Skill to load privately inside the worker by name."},
                 "skill_arguments": {"type": "string", "description": "Arguments for the worker skill."},
@@ -56,10 +56,10 @@ impl Tool for SubAgent {
         Some(Compact {
             description: &self.short,
             params: &[
-                ("skill", "Delegate by name; body stays in worker"),
+                ("skill", "Load by name in worker"),
                 ("start_clean", "No briefing, hooks or shared memory"),
-                ("effort", "off|minimal|low|medium|high|xhigh|max"),
-                ("model", "Configured; follow policy and user"),
+                ("effort", "Reasoning level"),
+                ("model", "Configured; honor policy and user"),
                 ("provider", "Configured; honor user"),
             ],
         })

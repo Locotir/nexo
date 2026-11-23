@@ -198,18 +198,13 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
         if fails && times >= REPEAT_FAILS {
             out.push(finding(
                 format!("rerun:{key}:{}", times / REPEAT_FAILS),
-                format!(
-                    "`{}` failed and was run again {} time(s) with nothing changed in between; the same input gives \
-                     the same failure",
-                    s.short(),
-                    times - 1
-                ),
+                format!("`{}` was run again with no recorded change ({times} runs). The latest run failed.", s.short()),
             ));
         } else if !fails && times >= REPEAT_CALLS {
             out.push(finding(
                 format!("repeat:{key}:{}", times / REPEAT_CALLS),
                 format!(
-                    "`{}` was called {times} times with the same arguments and nothing changed in between",
+                    "`{}` was called {times} times with the same arguments and no recorded change between calls.",
                     s.short()
                 ),
             ));
@@ -238,7 +233,7 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
                 (&path, &o, &n).hash(&mut h);
                 out.push(finding(
                     format!("undo:{:x}", h.finish()),
-                    format!("an edit of {path} puts back the text an earlier edit of it replaced; the edits undo each other"),
+                    format!("An edit to `{path}` restored text replaced by an earlier edit."),
                 ));
             }
             edits.insert((path.clone(), o, n));
@@ -249,7 +244,7 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
     if run >= READ_RUN {
         out.push(finding(
             format!("reads:{}", run / READ_RUN),
-            format!("{run} reads in a row, with no change made, no command that builds or tests and no todo update"),
+            format!("{run} consecutive reads without an edit, build, test, or todo update."),
         ));
     }
     out
@@ -297,9 +292,10 @@ pub fn scan_end(history: &[Message], reply: &str) -> Vec<Finding> {
         let open = t.pending + t.doing;
         if open > 0 {
             let doing = t.doing_text.as_deref().map(|d| format!(" (in progress: {d})")).unwrap_or_default();
+            let items = if open == 1 { "item" } else { "items" };
             out.push(finding(
                 format!("todo:{open}"),
-                format!("the todo list still has {open} open item(s){doing} and the turn ended"),
+                format!("The turn ended with {open} open {items} on the todo list{doing}."),
             ));
         }
     }
@@ -308,16 +304,16 @@ pub fn scan_end(history: &[Message], reply: &str) -> Vec<Finding> {
     if let Some(i) = last_test.filter(|i| steps[*i].failed()) {
         let s = &steps[i];
         let wrote = steps[i + 1..].iter().any(changes);
-        let tail = if wrote { ", then files were changed and the tests were not run again" } else { "" };
+        let tail = if wrote { " Subsequent changes were not tested." } else { "" };
         if claims_done(reply) {
             out.push(finding(
                 format!("claim:{}", s.key()),
-                format!("the last message says the work is done, but the last test run (`{}`) failed{tail}", s.short()),
+                format!("The reply reports completion, but the last test run (`{}`) failed.{tail}", s.short()),
             ));
         } else {
             out.push(finding(
                 format!("test:{}", s.key()),
-                format!("the turn ended and the last test run (`{}`) failed{tail}", s.short()),
+                format!("The last test run (`{}`) failed before the turn ended.{tail}", s.short()),
             ));
         }
     }
@@ -327,9 +323,10 @@ pub fn scan_end(history: &[Message], reply: &str) -> Vec<Finding> {
 /// The note that rides on the next request only: not a message, never saved in the conversation.
 pub fn hidden_block(lines: &[String]) -> String {
     let list: Vec<String> = lines.iter().map(|l| format!("- {l}")).collect();
+    // `/sent` recognizes this opening in both current and older requests.
     format!(
-        "<system-reminder>\nAn automatic check on this session noticed, by counting (it may be wrong):\n{}\nIf it \
-         is true, change what you do next. Do not mention this note to the person unless it matters to them.\n\
+        "<system-reminder>\nAn automatic check on this session flagged the following:\n{}\n\
+         If confirmed, adjust your next step. No reply to this reminder is needed. Report any issue that affects the task.\n\
          </system-reminder>",
         list.join("\n")
     )
@@ -339,9 +336,9 @@ pub fn hidden_block(lines: &[String]) -> String {
 pub fn check_in_ask(evidence: &[String]) -> String {
     let list: Vec<String> = evidence.iter().map(|l| format!("- {l}")).collect();
     format!(
-        "Automatic check-in from the supervisor, not from the person. The session stopped. Everything OK? I noticed:\n\
-         {}\nIs the task finished? Answer on the first line with the single word DONE if it is, or with CONTINUE \
-         followed by what to do next, in one or two sentences. Do not call tools.",
+        "Supervisor check-in: the session stopped. Review these observations:\n{}\n\
+         If the task is complete, reply with DONE on the first line. Otherwise, start with CONTINUE and \
+         describe the next step in one or two sentences. Do not call tools.",
         list.join("\n")
     )
 }
@@ -521,8 +518,8 @@ mod tests {
         let h = hist(&[bash("make deploy", true), bash("make deploy", true), bash("make deploy", true)]);
         let f = scan_rounds(&h);
         assert_eq!(kinds(&f), ["rerun", "rerun"], "a command that changes things still counts its own reruns");
-        assert!(f[0].text.contains("again 1 time(s)"), "{}", f[0].text);
-        assert!(f[1].text.contains("again 2 time(s)"), "{}", f[1].text);
+        assert!(f[0].text.contains("2 runs"), "{}", f[0].text);
+        assert!(f[1].text.contains("3 runs"), "{}", f[1].text);
     }
 
     #[test]
@@ -561,7 +558,7 @@ mod tests {
         assert!(scan_end(&h, "Here is where I am.").is_empty());
         let h = hist(&[bash("cargo test -q", true), edit("a.rs", "x", "y")]);
         let f = scan_end(&h, "Here is where I am.");
-        assert!(f[0].text.contains("not run again"), "{}", f[0].text);
+        assert!(f[0].text.contains("Subsequent changes were not tested."), "{}", f[0].text);
         let h = hist(&[bash("cargo build", true)]);
         assert!(scan_end(&h, "Failed.").is_empty(), "a build is not a test run");
     }

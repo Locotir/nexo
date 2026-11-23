@@ -39,7 +39,7 @@ fn rung(s: CellState) -> usize {
         CellState::Whole => 0,
         CellState::Shrunk => 2,
         CellState::Recalled => 3,
-        CellState::Dropped => 4,
+        CellState::Dropped | CellState::Unknown => 4,
     }
 }
 

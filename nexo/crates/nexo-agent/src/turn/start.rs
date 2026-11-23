@@ -958,12 +958,16 @@ pub(super) async fn prepare(
             }
         }
     }
-    let mut view = view_now(st, extra).await;
+    let previous = st.last_sent.messages().to_vec();
+    let mut view = view_with_map(st, extra, false).await;
+    let policy_messages = view.messages.clone();
     // the goal's words are in the system prompt: the goal's request carries the mark and not the words a second time
     // (the history and the session file keep them)
     if let Some(words) = goal_words(st) {
-        bare_goal_set(&mut view.messages, words);
+        bare_goal_if_inventory_safe(&mut view, words);
     }
+    // The goal guard must inspect the policy inventory before it is moved out.
+    let memory = view.memory.take();
     let (_, cfg, model) = st.target.get();
     let effort = setup::effective_effort(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
@@ -988,6 +992,37 @@ pub(super) async fn prepare(
     req.max_tokens = reply_tokens(st);
     // the request and its reply within the window, or the person told why not
     super::window_fit::fit(st, &mut req, notes.as_deref(), extra).await?;
+    // Strip only the known request-only note for history attribution. Keep the actual
+    // request for prefix comparison: cache marks must reflect what is sent.
+    let mut mapped = req.messages.clone();
+    if let Some(note) = &notes {
+        if let Some(last) = mapped.last_mut() {
+            if matches!(last.content.last(), Some(Part::Text { text }) if text == note) {
+                last.content.pop();
+                if last.content.is_empty() {
+                    mapped.pop();
+                }
+            }
+        }
+    }
+    let unchanged = mapped == policy_messages;
+    let (cells, zones) = if unchanged {
+        memory
+            .as_ref()
+            .and_then(|m| crate::context_map::from_memory(&st.history, m))
+            .unwrap_or_else(|| (crate::context_map::map(&st.history, &mapped), Vec::new()))
+    } else {
+        (crate::context_map::map(&st.history, &mapped), Vec::new())
+    };
+    let same = previous.iter().zip(&req.messages).take_while(|(a, b)| a == b).count();
+    let calls = crate::context_map::calls(&st.history, &cells, &req.messages, same);
+    let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
+    emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
+    // The policy inventory is valid only if the final request kept its view intact.
+    let (items, relation_quotes) =
+        if unchanged { memory.map(|m| (m.curated, m.relation_quotes)).unwrap_or_default() } else { (Vec::new(), None) };
+    emit(&st.events, AgentEvent::Curated { items, relation_quotes, quote_heat: None });
+    st.last_sent.follow(&req.messages);
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
     req.session_id = Some(st.session.id().to_string());
@@ -1089,9 +1124,66 @@ pub(super) fn request_only_tokens(blocks: &[&String]) -> u64 {
     nexo_core::message::estimate_tokens(&msgs)
 }
 
+// Memory describes the policy's original view, not a repaired one.
+fn mend_view(view: &mut View) -> Vec<String> {
+    let original = std::mem::take(&mut view.messages);
+    let (messages, mends) = nexo_core::message::well_formed(original.clone());
+    if messages != original {
+        view.memory = None;
+    }
+    view.messages = messages;
+    mends
+}
+
+// The inventory has no per-item carrier here. Do not remove goal words from a
+// possible carrier; retaining those words twice is preferable to false provenance.
+fn bare_goal_if_inventory_safe(view: &mut View, words: &str) {
+    let has_inventory =
+        view.memory.as_ref().is_some_and(|m| !m.curated.is_empty() || m.relation_quotes.is_some_and(|n| n > 0));
+    if !has_inventory {
+        bare_goal_set(&mut view.messages, words);
+    }
+}
+
+#[cfg(test)]
+mod provenance_regressions {
+    use super::*;
+    use crate::context::Memory;
+    fn memory() -> Memory {
+        Memory { zones: vec![], cells: vec![], curated: vec![], relation_quotes: Some(1) }
+    }
+    #[test]
+    fn repair_invalidates_memory() {
+        let result = Message::tool_results(vec![Part::ToolResult {
+            call_id: "orphan".into(),
+            name: None,
+            content: vec![Part::text("x")],
+            is_error: false,
+        }]);
+        let mut view = View { messages: vec![result], tokens: 0, note: None, memory: Some(memory()) };
+        assert!(!mend_view(&mut view).is_empty());
+        assert!(view.memory.is_none());
+    }
+    #[test]
+    fn goal_does_not_invalidate_inventory() {
+        let mut view =
+            View { messages: vec![Message::user("[goal set] hello")], tokens: 0, note: None, memory: Some(memory()) };
+        let original = view.messages.clone();
+        bare_goal_if_inventory_safe(&mut view, "hello");
+        assert_eq!(view.messages, original);
+        view.memory = None;
+        bare_goal_if_inventory_safe(&mut view, "hello");
+        assert_ne!(view.messages, original);
+    }
+}
+
 /// What the next call will see, announced to the interface: on every call, and
 /// when a conversation is loaded, so its numbers are there before the first call.
 pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
+    view_with_map(st, extra_tokens, true).await
+}
+
+async fn view_with_map(st: &mut State, extra_tokens: u64, announce_map: bool) -> View {
     let specs = offered(st);
     // what is not the history but rides on the request: the system prompt, the tools and `extra_tokens` (the
     // blocks added to this request only)
@@ -1123,8 +1215,7 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     }
     // a request with a call and no result, or a result and no call, fails on every provider: the view
     // is mended (what it holds stays, as text when it must) and each mend is said once
-    let (messages, mends) = nexo_core::message::well_formed(std::mem::take(&mut view.messages));
-    view.messages = messages;
+    let mends = mend_view(&mut view);
     for m in mends {
         if st.mended.insert(m.clone()) {
             notice(&st.events, Level::Warn, format!("history mended before sending: {m}"));
@@ -1132,7 +1223,7 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     }
     st.reads.note_view(&view.messages);
     // what repeats the last request is neither copied nor measured again
-    let (same, view_bytes) = st.last_sent.follow(&view.messages);
+    let (same, view_bytes) = st.last_sent.compare(&view.messages);
     let history_tokens = st.history.tokens();
     let last = std::mem::replace(&mut st.last_view, (history_tokens, view.tokens));
     st.fit_tokens = None;
@@ -1153,15 +1244,21 @@ pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
             detail: Some(detail),
         },
     );
-    let (cells, zones) = match view.memory.as_ref().and_then(|m| crate::context_map::from_memory(&st.history, m)) {
-        Some(map) => map,
-        None => (crate::context_map::map(&st.history, &view.messages), Vec::new()),
-    };
-    let calls = crate::context_map::calls(&st.history, &cells, &view.messages, same);
-    let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
-    emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
-    if let Some(m) = &view.memory {
-        emit(&st.events, AgentEvent::Curated { items: m.curated.clone(), relation_quotes: m.relation_quotes });
+    if announce_map {
+        let (cells, zones) = match view.memory.as_ref().and_then(|m| crate::context_map::from_memory(&st.history, m)) {
+            Some(map) => map,
+            None => (crate::context_map::map(&st.history, &view.messages), Vec::new()),
+        };
+        let calls = crate::context_map::calls(&st.history, &cells, &view.messages, same);
+        let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
+        emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
+        if let Some(m) = &view.memory {
+            let quote_heat = None;
+            emit(
+                &st.events,
+                AgentEvent::Curated { items: m.curated.clone(), relation_quotes: m.relation_quotes, quote_heat },
+            );
+        }
     }
     view
 }

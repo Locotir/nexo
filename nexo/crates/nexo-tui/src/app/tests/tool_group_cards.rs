@@ -59,12 +59,12 @@ fn a_long_command_is_cut_so_the_cache_mark_and_price_still_show() {
     let mut l = head();
     mark_head(&mut l, CallMark::Cached, Some(0.00012), 60, &theme);
     let t = text(&l);
-    assert!(t.ends_with("● cached 0.00012 $") && t.contains('…'), "{t}");
+    assert!(t.ends_with("● same prefix ~0.00012 $") && t.contains('…'), "{t}");
     assert_eq!(width(&t), 60);
     // no price known: the word alone
     let mut l = head();
     mark_head(&mut l, CallMark::Sent, None, 50, &theme);
-    assert!(text(&l).ends_with("● full price") && width(&text(&l)) == 50, "{}", text(&l));
+    assert!(text(&l).ends_with("● sent") && width(&text(&l)) == 50, "{}", text(&l));
     // a short command is left whole
     let mut l = Line::from(vec![Span::raw("▸ bash  "), Span::raw("ls")]);
     mark_head(&mut l, CallMark::Cached, Some(0.00012), 60, &theme);
@@ -73,6 +73,32 @@ fn a_long_command_is_cut_so_the_cache_mark_and_price_still_show() {
     let mut l = head();
     mark_head(&mut l, CallMark::Cached, Some(0.00012), 20, &theme);
     assert_eq!(text(&l), text(&head()));
+}
+
+#[test]
+fn repeated_prefix_cost_is_an_undiscounted_estimate_not_a_cache_hit() {
+    use nexo_core::pricing::Pricing;
+    let (mut a, _rx) = app();
+    a.call_tokens.insert("c1".into(), 5000);
+    a.handle_agent(AgentEvent::ModelLimits {
+        provider: "p".into(),
+        model: "m".into(),
+        context_window: None,
+        max_output: None,
+        pricing: Some(Pricing { input: 3.0, cache_read: 0.3, ..Default::default() }),
+        source: "config".into(),
+    });
+    assert_eq!(a.call_cost("c1", CallMark::Cached), Some(0.015));
+    assert_eq!(a.call_cost("c1", CallMark::Cached), a.call_cost("c1", CallMark::Sent));
+    // Aggregate provider cache usage cannot attribute a hit to this individual output.
+    a.last_call_cached = 5000;
+    assert_eq!(a.call_cost("c1", CallMark::Cached), Some(0.015));
+    for mark in [CallMark::Cut, CallMark::Out, CallMark::Back] {
+        assert_eq!(a.call_cost("c1", mark), None);
+    }
+    assert_eq!(a.call_cost("unknown", CallMark::Cached), None);
+    a.limits.as_mut().unwrap().pricing.as_mut().unwrap().input = f64::NAN;
+    assert_eq!(a.call_cost("c1", CallMark::Cached), None);
 }
 
 #[test]
@@ -91,7 +117,7 @@ fn a_failed_call_card_carries_no_cache_tag() {
     let head: String =
         a.lines(i, 80).iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect::<Vec<_>>().join("|");
     assert!(matches!(a.blocks[i], Block::Tool { status: ToolStatus::Failed, .. }), "{head}");
-    assert!(!head.contains("full price"), "{head}");
+    assert!(!head.contains("● sent"), "{head}");
 }
 
 #[test]
@@ -111,7 +137,7 @@ fn a_head_never_ends_in_a_separator_and_an_ellipsis_or_a_cut_figure() {
         mark_head(&mut l, CallMark::Sent, None, w, &theme);
         let t = text(&l);
         assert!(!t.contains("· …") && !t.contains("· 4…") && !t.contains("lin…") && !t.contains(" 4…"), "{w}: {t}");
-        assert!(t.ends_with("● full price") && width(&t) == w, "{w}: {t}");
+        assert!(t.ends_with("● sent") && width(&t) == w, "{w}: {t}");
     }
 }
 
@@ -377,4 +403,72 @@ fn a_long_finished_group_costs_nothing_per_frame() {
     let rendered = a.cache.iter().filter(|c| matches!(c, Some((_, _, Some(_), _)))).count();
     assert!(rendered <= 2, "hidden calls are not rendered: {rendered}");
     assert!(a.total_lines <= 2, "one line and its gap: {}", a.total_lines);
+}
+
+#[test]
+fn skill_cards_stay_visible_between_grouped_tools_and_follow_real_events() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    a.push(card("before", 1));
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "skill".into(),
+        name: "skill".into(),
+        args: serde_json::json!({"name":"Verify"}),
+        summary: "skill Verify".into(),
+    });
+    a.push(card("after", 1));
+    assert!(!a.blocks.iter().any(|b| matches!(b, Block::Group { .. })));
+    let i = a.tool_index("skill").unwrap();
+    let text = |a: &mut App| a.lines(i, 80).iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
+    assert!(text(&mut a).contains("| queued"));
+    a.handle_agent(AgentEvent::ToolStart { id: "skill".into() });
+    assert!(text(&mut a).contains("| loading"));
+    a.handle_agent(AgentEvent::ToolDone {
+        id: "skill".into(),
+        output: ToolOutput::ok("SECRET INSTRUCTIONS"),
+        elapsed_ms: 1,
+    });
+    let shown = text(&mut a);
+    assert!(shown.contains("Skill · Verify | loaded") && !shown.contains("SECRET"), "{shown}");
+    // A replayed summary updates the existing card, not its status or fold state.
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "skill".into(),
+        name: "skill".into(),
+        args: serde_json::json!({"name":"Verify"}),
+        summary: "skill Verify".into(),
+    });
+    assert!(text(&mut a).contains("| loaded"));
+    a.tick_frame(true);
+    assert!(!text(&mut a).contains("SECRET"));
+    a.toggle_block(i);
+    assert!(text(&mut a).contains("SECRET INSTRUCTIONS"));
+}
+
+#[test]
+fn skill_history_replay_is_folded_static_and_preserves_errors() {
+    for error in [false, true] {
+        let (mut a, _rx) = bare();
+        a.opts.animations = true;
+        a.handle_agent(AgentEvent::History {
+            index: 0,
+            message: Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("s", "skill", serde_json::json!({"name":"Verify"}))],
+            ),
+        });
+        a.handle_agent(AgentEvent::History {
+            index: 1,
+            message: Message::tool_results(vec![Part::tool_result("s", "PRIVATE INSTRUCTIONS", error)]),
+        });
+        let i = a.tool_index("s").unwrap();
+        assert!(!a.blocks[i].is_live());
+        assert!(matches!(&a.blocks[i], Block::Tool { started: None, folded: true, .. }));
+        let rows = a.lines(i, 80).iter().map(crate::render::markdown::text_of).collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains(if error { "| error" } else { "| loaded" }));
+        assert!(!rows[0].contains("PRIVATE"));
+        // No extra retained motion state is attached to old skill loads.
+        assert!(a.looks[i].done_at.is_none());
+        assert!(!a.looks[i].was_live);
+    }
 }

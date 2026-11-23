@@ -178,6 +178,24 @@ fn research_gets_web_fetch_but_not_network_tools_or_debug_steering() {
 }
 
 #[test]
+fn review_has_exactly_the_explore_tools_and_no_mutating_tools() {
+    let tools = nexo_tools::builtin();
+    let sub =
+        SubAgent::new(Arc::new(Mute), Target::new("p", cfg("m", &[]), "m"), &tools, Vec::new(), Default::default());
+    let profiles = builtin();
+    let names = |name: &str| {
+        let profile = profiles.iter().find(|p| p.name == name).unwrap();
+        sub.tools_for(profile).specs().iter().map(|s| s.name.clone()).collect::<Vec<_>>()
+    };
+    let review = names("review");
+    assert_eq!(review, names("explore"));
+    assert!(review.iter().any(|n| n == "read"));
+    for denied in ["bash", "edit", "write", "browser", "debug"] {
+        assert!(!review.iter().any(|n| n == denied), "{denied}");
+    }
+}
+
+#[test]
 fn a_general_sub_agent_leaves_note_todo_and_recall_to_its_parent() {
     let tools = nexo_tools::builtin();
     let providers = nexo_providers::presets::presets();
@@ -397,7 +415,7 @@ fn the_default_tools_keep_under_their_schema_ceiling_with_the_rare_ones_still_of
     }
     assert_eq!(
         specs.iter().find(|s| s.name == "task").unwrap().parameters["properties"]["agent"]["enum"],
-        json!(["explore", "general", "research"])
+        json!(["explore", "general", "research", "review"])
     );
 }
 
@@ -415,7 +433,7 @@ fn task_keeps_its_short_text_with_nineteen_kinds_of_the_persons_own() {
             "task takes {chars} characters, over {TASK_WITH_OWN_KINDS}: {}",
             task.description
         );
-        for name in ["explore", "general", "research"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0)) {
+        for name in ["explore", "general", "research", "review"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0)) {
             assert!(task.description.contains(&format!("`{name}`")), "{name} is not named: {}", task.description);
         }
         // the call takes what the whole text says it takes

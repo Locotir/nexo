@@ -186,7 +186,7 @@ async fn a_request_that_used_tools_and_left_items_open_still_gets_its_one_check_
     let (client, r, _d) = checked_once(vec![]).await;
     let reqs = client.requests();
     assert_eq!(reqs.len(), 3, "the todo call, the reply, the check-in");
-    assert!(reqs[2].messages.last().unwrap().text().contains("Everything OK?"));
+    assert!(reqs[2].messages.last().unwrap().text().contains("Supervisor check-in:"));
     r.stop().await;
 }
 

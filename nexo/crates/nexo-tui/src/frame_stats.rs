@@ -1,10 +1,10 @@
-//! Per-frame timing statistics (F8).
-//!
-//! Pure arithmetic over samples supplied by the caller: the wall clock is
-//! read only in `lib.rs`, which feeds microseconds in here and prints the
-//! report on exit when `NEXO_FRAME_STATS` is set.
+//! Optional frame timings. Percentiles describe the last 4096 draws.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
+use std::time::Instant;
+
+const MAX_SAMPLES: usize = 4096;
 
 /// Environment variable that switches the report on.
 pub const ENV: &str = "NEXO_FRAME_STATS";
@@ -13,7 +13,9 @@ pub const ENV: &str = "NEXO_FRAME_STATS";
 #[derive(Debug, Clone, Default)]
 pub struct FrameStats {
     draws: Vec<u64>,
-    sections: Vec<(&'static str, u64)>,
+    next: usize,
+    total: usize,
+    slowest: Option<(&'static str, u64)>,
 }
 
 /// Summary of one run.
@@ -33,21 +35,26 @@ impl FrameStats {
 
     /// Records one full draw, in microseconds.
     pub fn record_draw(&mut self, micros: u64) {
-        self.draws.push(micros);
+        self.total = self.total.saturating_add(1);
+        if self.draws.len() < MAX_SAMPLES {
+            self.draws.push(micros);
+        } else {
+            self.draws[self.next] = micros;
+        }
+        self.next = (self.next + 1) % MAX_SAMPLES;
     }
 
     /// Records the cost of one named section inside a draw; only the
     /// slowest one is reported.
     pub fn record_section(&mut self, name: &'static str, micros: u64) {
-        match self.sections.iter_mut().find(|(n, _)| *n == name) {
-            Some(slot) => slot.1 = slot.1.max(micros),
-            None => self.sections.push((name, micros)),
+        if self.slowest.is_none_or(|(_, old)| micros > old) {
+            self.slowest = Some((name, micros));
         }
     }
 
     /// Number of draws recorded so far.
     pub fn draws(&self) -> usize {
-        self.draws.len()
+        self.total
     }
 
     /// Computes the summary; `None` when nothing was drawn.
@@ -58,10 +65,10 @@ impl FrameStats {
         let mut sorted = self.draws.clone();
         sorted.sort_unstable();
         Some(Summary {
-            draws: sorted.len(),
+            draws: self.total,
             median_us: percentile(&sorted, 50),
             p99_us: percentile(&sorted, 99),
-            slowest: self.sections.iter().copied().max_by_key(|(_, us)| *us),
+            slowest: self.slowest,
         })
     }
 
@@ -71,8 +78,9 @@ impl FrameStats {
         if let Some(s) = self.summary() {
             let _ = write!(
                 out,
-                "frames: {} draws, median {:.2} ms, p99 {:.2} ms",
+                "frames: {} draws (last {} sampled), median {:.2} ms, p99 {:.2} ms",
                 s.draws,
+                self.draws.len(),
                 s.median_us as f64 / 1000.0,
                 s.p99_us as f64 / 1000.0
             );
@@ -81,6 +89,36 @@ impl FrameStats {
             }
         }
         out
+    }
+}
+
+/// Declared before the terminal, so its report follows terminal restoration.
+pub(crate) struct FrameReport(pub Option<FrameStats>);
+
+impl FrameReport {
+    pub fn new(enabled: bool) -> Self {
+        Self(enabled.then(FrameStats::default))
+    }
+
+    pub fn draw<T, E>(&mut self, draw: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        let Some(stats) = &mut self.0 else { return draw() };
+        let start = Instant::now();
+        let result = draw();
+        if result.is_ok() {
+            stats.record_draw(start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
+        }
+        result
+    }
+}
+
+impl Drop for FrameReport {
+    fn drop(&mut self) {
+        if let Some(stats) = &self.0 {
+            let report = stats.report();
+            if !report.is_empty() {
+                let _ = writeln!(std::io::stderr().lock(), "{report}");
+            }
+        }
     }
 }
 
@@ -126,7 +164,33 @@ mod tests {
         assert_eq!(s.median_us, 3000);
         assert_eq!(s.p99_us, 50_000);
         assert_eq!(s.slowest, Some(("blocks", 1500)));
-        assert_eq!(st.report(), "frames: 5 draws, median 3.00 ms, p99 50.00 ms, slowest section blocks 1.50 ms");
+        assert_eq!(
+            st.report(),
+            "frames: 5 draws (last 5 sampled), median 3.00 ms, p99 50.00 ms, slowest section blocks 1.50 ms"
+        );
+    }
+
+    #[test]
+    fn samples_are_bounded_and_recent() {
+        let mut st = FrameStats::default();
+        for i in 0..MAX_SAMPLES + 10 {
+            st.record_draw(i as u64);
+        }
+        assert_eq!(st.draws(), MAX_SAMPLES + 10);
+        assert_eq!(st.draws.len(), MAX_SAMPLES);
+        assert_eq!(st.draws.iter().min(), Some(&10));
+    }
+
+    #[test]
+    fn optional_draw_records_only_successes() {
+        let mut disabled = FrameReport::new(false);
+        assert_eq!(disabled.draw(|| Ok::<_, ()>(7)), Ok(7));
+        assert!(disabled.0.is_none());
+        let mut enabled = FrameReport::new(true);
+        assert_eq!(enabled.draw(|| Err::<(), _>("error")), Err("error"));
+        assert_eq!(enabled.0.as_ref().unwrap().draws(), 0);
+        assert_eq!(enabled.draw(|| Ok::<_, ()>(7)), Ok(7));
+        assert_eq!(enabled.0.as_ref().unwrap().draws(), 1);
     }
 
     #[test]

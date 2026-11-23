@@ -349,11 +349,21 @@ impl App {
         let mut live = false;
         for i in 0..self.blocks.len() {
             if self.blocks[i].is_live() {
-                self.cache[i] = None;
                 if let Block::Agent(run) = &self.blocks[i] {
-                    if let Some(card) = self.task_card_for_run(&run.id) {
-                        self.cache[card] = None;
+                    // The face and model shimmer change paint, not wrapping or height. Retain
+                    // the measured height so off-screen runs need not be rendered every beat.
+                    if let Some((_, _, lines, meta)) = &mut self.cache[i] {
+                        *lines = None;
+                        *meta = Default::default();
                     }
+                    if let Some(card) = self.task_card_for_run(&run.id) {
+                        if let Some((_, _, lines, meta)) = &mut self.cache[card] {
+                            *lines = None;
+                            *meta = Default::default();
+                        }
+                    }
+                } else {
+                    self.cache[i] = None;
                 }
                 live = true;
             }

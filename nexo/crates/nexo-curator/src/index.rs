@@ -26,6 +26,26 @@ const NEED_KEYS: usize = 24;
 /// Characters at each end of the request that are read.
 const NEED_CHARS: usize = 400;
 
+/// Keep only complete whitespace-delimited tokens within a sampled range. A cut through a
+/// path or identifier must not turn its prefix/suffix into a different lookup key. Trimming
+/// inward preserves the sampling bound, including for a paste with no whitespace at all.
+fn query_sample(text: &str, start: usize, end: usize) -> &str {
+    let mut sample = &text[start..end];
+    if start > 0
+        && text[..start].chars().next_back().is_some_and(|c| !c.is_whitespace())
+        && sample.chars().next().is_some_and(|c| !c.is_whitespace())
+    {
+        sample = sample.find(char::is_whitespace).map_or("", |i| &sample[i..]);
+    }
+    if end < text.len()
+        && text[end..].chars().next().is_some_and(|c| !c.is_whitespace())
+        && sample.chars().next_back().is_some_and(|c| !c.is_whitespace())
+    {
+        sample = sample.rfind(char::is_whitespace).map_or("", |i| &sample[..i]);
+    }
+    sample
+}
+
 /// Relation traversal is local: at most two frontiers of 24 lines, six shared keys per line,
 /// and 32 holders per bridge. Direct lookup visits at most NEED_KEYS * RARE postings.
 const REL_FRONT: usize = 24;
@@ -86,7 +106,7 @@ impl Index {
         };
         let tail = text.char_indices().rev().nth(NEED_CHARS - 1).unwrap().0;
         if tail <= head {
-            return self.set_need(unit, [&text[..head], &text[tail..]]);
+            return self.set_need(unit, [query_sample(text, 0, head), query_sample(text, tail, text.len())]);
         }
         let mut mid = head + (tail - head) / 2;
         while !text.is_char_boundary(mid) {
@@ -94,7 +114,10 @@ impl Index {
         }
         let lo = text[head..mid].char_indices().rev().nth(NEED_CHARS / 2 - 1).map_or(head, |(i, _)| head + i);
         let hi = text[mid..tail].char_indices().nth(NEED_CHARS / 2).map_or(tail, |(i, _)| mid + i);
-        self.set_need(unit, [&text[..head], &text[lo..hi], &text[tail..]]);
+        self.set_need(
+            unit,
+            [query_sample(text, 0, head), query_sample(text, lo, hi), query_sample(text, tail, text.len())],
+        );
     }
 
     fn set_need<'a>(&mut self, unit: usize, parts: impl IntoIterator<Item = &'a str>) {
@@ -327,6 +350,74 @@ mod tests {
         let got = run();
         assert_eq!(got, [(6, 0), (5, 0), (1, 0), (2, 0), (4, 0), (0, 0)]);
         assert_eq!(got, run());
+    }
+
+    #[test]
+    fn query_sample_trims_only_cut_tokens_at_every_boundary() {
+        let text = "  reçu receipt123 config.rs trailing  ";
+        let bounds: Vec<_> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+        for &start in &bounds {
+            for &end in bounds.iter().filter(|&&end| end >= start) {
+                let sample = query_sample(text, start, end);
+                assert!(sample.len() <= end - start);
+                assert!(
+                    sample.split_whitespace().all(|word| text.split_whitespace().any(|whole| whole == word)),
+                    "invented token in {sample:?} at {start}..{end}"
+                );
+            }
+        }
+        assert_eq!(query_sample(text, 0, text.len()), text);
+        assert_eq!(query_sample("receipt123", 2, 7), "");
+        assert_eq!(query_sample("receipt123", 0, 10), "receipt123");
+    }
+
+    #[test]
+    fn relation_query_samples_never_invent_partial_words() {
+        for word in ["receipt", "étiquette", "config.rs"] {
+            let chars = word.chars().count();
+            for cut in 1..chars {
+                let start = NEED_CHARS - cut;
+                let text = format!("{}{} {}", " ".repeat(start), word, " ".repeat(NEED_CHARS + 10));
+                let mut ix = Index::default();
+                ix.want_relation(0, &text);
+                let mut expected = Vec::new();
+                keys(word, &mut expected);
+                assert!(ix.need.iter().all(|k| expected.contains(k)), "head cut {cut} in {word}");
+
+                let text = format!("{} {}{}", " ".repeat(NEED_CHARS + 10), word, " ".repeat(start));
+                ix.want_relation(0, &text);
+                assert!(ix.need.iter().all(|k| expected.contains(k)), "tail cut {cut} in {word}");
+            }
+        }
+    }
+
+    #[test]
+    fn relation_query_sampling_does_not_retrieve_a_fragment_as_an_identifier() {
+        let mut ix = Index::default();
+        ix.add_relation(0, "receipt: cancelled\nunrelated padding");
+        let ask = format!("{}receipt123 {}", " ".repeat(NEED_CHARS - "receipt".len()), " ".repeat(900));
+        ix.want_relation(1, &ask);
+        assert!(ix.relation_pick(|_| vec![], |_| true).is_empty());
+    }
+
+    #[test]
+    fn relation_frequency_cutoff_includes_the_indexed_request_even_after_restore() {
+        // Characterize the existing cliff, not a desirable retrieval guarantee: the request
+        // itself contributes a posting, so 64 historical hits cross the 64-post limit.
+        for historical in [63, 64] {
+            let mut ix = Index::default();
+            for unit in 0..historical {
+                ix.add_relation(unit, "spindle916");
+            }
+            ix.add_relation(historical, "unrelated padding");
+            ix.add_relation(historical + 1, "spindle916");
+            ix.want_relation(historical + 1, "spindle916");
+            let before = ix.relation_pick(|_| vec![], |_| true);
+            assert_eq!(before.len(), if historical == 63 { REL_OUT } else { 0 });
+            let bytes = postcard::to_allocvec(&ix).unwrap();
+            let restored: Index = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(restored.relation_pick(|_| vec![], |_| true), before);
+        }
     }
 
     #[test]

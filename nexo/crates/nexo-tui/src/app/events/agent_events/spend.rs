@@ -70,6 +70,7 @@ impl App {
         self.context_wait = false;
         self.words.defer(false);
         self.relation_quotes = None;
+        self.quote_heat = None;
         self.context = Some(ContextInfo {
             view_tokens,
             history_tokens,
@@ -155,7 +156,10 @@ impl App {
 fn carried(before: &[ContextCell], zone: u32) -> String {
     use nexo_core::{CellKind, CellState};
     let kept = |kind: CellKind| {
-        before.iter().filter(|c| c.zone == zone && c.kind == kind && c.state != CellState::Dropped).count()
+        before
+            .iter()
+            .filter(|c| c.zone == zone && c.kind == kind && !matches!(c.state, CellState::Dropped | CellState::Unknown))
+            .count()
     };
     let parts = [(kept(CellKind::Request), "msg"), (kept(CellKind::Call), "call"), (kept(CellKind::Output), "output")];
     let mut s = String::new();

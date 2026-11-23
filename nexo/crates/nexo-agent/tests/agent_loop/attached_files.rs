@@ -372,7 +372,7 @@ async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_reque
     r.next().await;
     r.send(AgentCommand::ShowSent);
     let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
-    assert!(matches!(evs.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("nothing was sent yet")));
+    assert!(matches!(evs.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("no request prepared yet")));
     r.send(AgentCommand::Submit { text: "just words".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { index: 0, .. })));

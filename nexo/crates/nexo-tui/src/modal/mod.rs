@@ -405,7 +405,7 @@ pub enum Modal {
     Chrome(Box<crate::chrome_view::ChromeView>),
     /// A click on `◎ goal`: the goal, its stops and a Resume button.
     Goal(Box<crate::goal_view::GoalView>),
-    /// `/sent`: the last request as it was sent, by section.
+    /// `/sent`: a summary of the last prepared request; delivery is not confirmed.
     Sent(Box<crate::sent_view::SentView>),
     /// The start in a folder not trusted yet.
     Trust(Trust),

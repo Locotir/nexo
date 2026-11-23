@@ -342,6 +342,7 @@ pub struct App {
     pub live_rows: Option<usize>,
     /// Historical quotes carried by the last call, when relational retrieval ran.
     pub relation_quotes: Option<usize>,
+    pub quote_heat: Option<nexo_core::agent::QuoteHeat>,
     pub files_area: Rect,
     /// The "panel hidden" note was shown for the current shrink.
     pub panel_hint_shown: bool,
@@ -434,6 +435,8 @@ pub struct App {
     pub bar_drag: Option<scrollbar::Drag>,
     /// What is under the pointer (the last move), lit while it is there.
     pub hover: Hover,
+    /// Last position used for hover hit testing, including wheel events.
+    pub pointer_pos: Option<(u16, u16)>,
     /// The first transcript line shown glides to `scroll` over a few frames.
     pub scroll_fx: Tween,
     /// When lines last arrived out of sight: the thumb and the pill beat a moment.
@@ -608,6 +611,7 @@ impl App {
             curated: Vec::new(),
             live_rows: None,
             relation_quotes: None,
+            quote_heat: None,
             files_area: Rect::default(),
             panel_hint_shown: false,
             editor_area: Rect::default(),
@@ -657,6 +661,7 @@ impl App {
             modal_list_first: 0,
             bar_drag: None,
             hover: Hover::Nothing,
+            pointer_pos: None,
             scroll_fx: Tween::new(0.0, anim::SCROLL_MS),
             unseen_at: None,
             unseen_before: 0,
@@ -749,6 +754,7 @@ impl App {
         self.curated.clear();
         self.live_rows = None;
         self.relation_quotes = None;
+        self.quote_heat = None;
         self.marks.clear();
         self.call_tokens.clear();
         self.queued = 0;

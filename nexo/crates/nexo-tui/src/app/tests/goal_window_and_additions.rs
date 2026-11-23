@@ -246,7 +246,7 @@ fn sent_asks_the_agent_and_the_answer_opens_a_window_with_the_sections() {
     assert!(matches!(a.modal, Some(Modal::Sent(_))));
     let all = frame(&mut a, 120, 40).join("\n");
     for want in [
-        "request · m1 · ~",
+        "prepared request summary (not provider wire; delivery unconfirmed) · m1",
         "System prompt",
         "instruction files",
         "Use tabs.",

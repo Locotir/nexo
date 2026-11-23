@@ -1,4 +1,4 @@
-//! `/sent` (`/request`): the last request exactly as it was sent, in a scrollable window. The system prompt
+//! `/sent` (`/request`): the last prepared request, in a scrollable window; delivery is not confirmed. The system prompt
 //! with the parts it is made of, the tools offered, then every message part by part, each with its size in
 //! tokens. What the context curator or the supervisor put in carries a tag and a colour. A tool result shows
 //! its first lines until it is opened. `/` searches, `n` and `N` go to the next and the previous match, `y`
@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 
 use crate::modal::ModalOut;
 use crate::render::blocks::fmt_k;
-use crate::render::wrap::{truncate, width, wrap_plain};
+use crate::render::wrap::{clean, truncate, width, wrap_plain};
 use crate::theme::Theme;
 
 /// Lines of a folded section shown before `… N more lines`.
@@ -65,7 +65,11 @@ impl SentView {
     }
 
     pub fn title(&self) -> String {
-        format!(" request · {} · ~{} tokens ", self.model, fmt_k(self.tokens()))
+        format!(
+            " prepared request summary (not provider wire; delivery unconfirmed) · {} · ~{} tokens ",
+            self.model,
+            fmt_k(self.tokens())
+        )
     }
 
     /// The section the first line of the view belongs to.
@@ -73,14 +77,15 @@ impl SentView {
         self.starts.partition_point(|s| *s <= self.scroll).checked_sub(1)
     }
 
-    /// What `y` copies for section `i`: its text; for the head of the system prompt, all its parts.
+    /// What `y` copies for section `i`: its text, or all parts of a grouped heading.
     fn copy_text(&self, i: usize) -> String {
         let s = &self.sections[i];
         if s.depth == 0 && s.text.is_empty() {
             let parts: Vec<&str> =
                 self.sections[i + 1..].iter().take_while(|x| x.depth > 0).map(|x| x.text.as_str()).collect();
             if !parts.is_empty() {
-                return parts.join("\n\n");
+                // System parts are exact slices of one prompt; tools are separate JSON documents.
+                return if s.heading.starts_with("Tools offered · ") { parts.join("\n\n") } else { parts.concat() };
             }
         }
         s.text.clone()
@@ -93,7 +98,7 @@ impl SentView {
         s.collapse
             && !self.open[i]
             && s.text.lines().count() > FOLDED_LINES
-            && (q.is_empty() || !s.text.to_lowercase().contains(q))
+            && (q.is_empty() || !clean(&s.text).to_lowercase().contains(q))
     }
 
     pub fn key(&mut self, key: KeyEvent) -> ModalOut {
@@ -209,10 +214,12 @@ impl SentView {
     /// The body at `w` columns. Also records where each section starts and which lines match the search,
     /// and carries out the jump a key asked for.
     pub fn layout(&mut self, w: usize, theme: &Theme) -> Vec<Line<'static>> {
-        let q = self.query.to_lowercase();
+        let q = clean(&self.query).to_lowercase();
         let w = w.max(8);
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut starts = Vec::with_capacity(self.sections.len());
+        let mut matches = Vec::new();
+        let mut highlights = Vec::new();
         for (i, s) in self.sections.iter().enumerate() {
             if s.depth == 0 && !lines.is_empty() {
                 lines.push(Line::default());
@@ -236,7 +243,14 @@ impl SentView {
             if let (Some(tag), Some(c)) = (&s.tag, tone) {
                 head.push(Span::styled(format!("  [{tag}]"), theme.bold(c)));
             }
-            lines.push(Line::from(head));
+            let heading = Line::from(head);
+            if !q.is_empty()
+                && heading.spans.iter().map(|s| s.content.as_ref()).collect::<String>().to_lowercase().contains(&q)
+            {
+                matches.push(lines.len());
+                highlights.push((lines.len(), lines.len()));
+            }
+            lines.push(heading);
             if s.text.is_empty() {
                 continue;
             }
@@ -246,23 +260,55 @@ impl SentView {
             };
             let prefix = [Span::styled(indent, tone.map_or(theme.dim2(), |c| theme.style(c)))];
             let all: Vec<&str> = s.text.lines().collect();
-            if self.folded(i, &q) {
-                lines.extend(wrap_plain(&all[..FOLDED_LINES].join("\n"), w, style, &prefix));
+            let folded = self.folded(i, &q);
+            let text = if folded { all[..FOLDED_LINES].join("\n") } else { s.text.clone() };
+            // Search the cleaned source, not reconstructed wraps: continuation gaps are capped
+            // at 255 and cannot preserve long whitespace runs. Each hard line stays a boundary.
+            for raw in text.split('\n') {
+                let source = clean(raw);
+                let logical = source.to_lowercase();
+                let wrapped = wrap_plain(&source, w, style, &prefix);
+                if !q.is_empty() {
+                    let mut source_rows = Vec::with_capacity(source.len());
+                    let mut cursor = 0;
+                    for (row, line) in wrapped.iter().enumerate() {
+                        let content =
+                            line.spans.iter().skip(prefix.len()).map(|s| s.content.as_ref()).collect::<String>();
+                        // The wrapper only removes trailing whitespace. Recover its full length
+                        // from the source and associate it with the preceding visible row.
+                        let offset = cursor + source[cursor..].find(&content).expect("wrapped source slice");
+                        source_rows.resize(offset, lines.len() + row.saturating_sub(1));
+                        source_rows.extend(std::iter::repeat_n(lines.len() + row, content.len()));
+                        cursor = offset + content.len();
+                    }
+                    source_rows.resize(source.len(), lines.len() + wrapped.len() - 1);
+                    // Map original bytes first: lowercasing each visual row changes Greek
+                    // final sigma at soft wraps. Only the complete hard line has its context.
+                    // Lowercase may also expand a character (İ -> i + combining dot).
+                    // Contextual sigma changes the value, but not the lowercase byte length.
+                    let mut rows = Vec::with_capacity(logical.len());
+                    for (offset, ch) in source.char_indices() {
+                        let len: usize = ch.to_lowercase().map(char::len_utf8).sum();
+                        rows.extend(std::iter::repeat_n(source_rows[offset], len));
+                    }
+                    for (offset, found) in logical.match_indices(&q) {
+                        let start = rows[offset];
+                        let end = rows[offset + found.len() - 1];
+                        matches.push(start);
+                        highlights.push((start, end));
+                    }
+                }
+                lines.extend(wrapped);
+            }
+            if folded {
                 let more = format!("… {} more lines · e opens", all.len() - FOLDED_LINES);
                 lines.push(Line::from(vec![Span::raw(indent.replace('▎', " ")), Span::styled(more, theme.dim2())]));
-            } else {
-                lines.extend(wrap_plain(&s.text, w, style, &prefix));
             }
         }
         self.starts = starts;
-        // the lines with the words in them
-        self.matches = if q.is_empty() {
-            Vec::new()
-        } else {
-            let text =
-                |l: &Line<'static>| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().to_lowercase();
-            lines.iter().enumerate().filter(|(_, l)| text(l).contains(&q)).map(|(i, _)| i).collect()
-        };
+        // Navigation is by row, even if several occurrences start on the same row.
+        matches.dedup();
+        self.matches = matches;
         if let Some(j) = self.jump.take() {
             let n = self.matches.len();
             if n > 0 {
@@ -274,10 +320,19 @@ impl SentView {
                 self.scroll = self.matches[self.at];
             }
         }
-        for (k, &m) in self.matches.iter().enumerate() {
-            let hl = if k == self.at { theme.selection() } else { theme.hover() };
-            for s in &mut lines[m].spans {
-                s.style = s.style.patch(hl);
+        self.at = self.at.min(self.matches.len().saturating_sub(1));
+        // Paint the selected match last so overlapping rows keep its stronger highlight.
+        let selected = self.matches.get(self.at).copied();
+        for active in [false, true] {
+            let hl = if active { theme.selection() } else { theme.hover() };
+            for &(start, end) in &highlights {
+                if (Some(start) == selected) == active {
+                    for line in &mut lines[start..=end] {
+                        for span in &mut line.spans {
+                            span.style = span.style.patch(hl);
+                        }
+                    }
+                }
             }
         }
         lines
@@ -330,7 +385,7 @@ mod tests {
             vec![
                 sec("System prompt", 0, None, "", false),
                 sec("built-in text", 1, None, "You are nexo.", false),
-                sec("curator directives", 1, Some("curator"), "[curator] Working efficiently", false),
+                sec("curator directives", 1, Some("curator"), "\n\n[curator] Working efficiently", false),
                 sec("#1 user", 0, None, "fix the bug", false),
                 sec("#1 user · standing rules", 0, Some("curator"), "[curator] Standing instructions: tabs", false),
                 sec("#2 assistant · call read", 0, None, "{\"path\":\"a.rs\"}", false),
@@ -368,6 +423,11 @@ mod tests {
             assert!(t.iter().any(|l| l.contains("… 3 more lines · e opens")), "{t:?}");
             assert_eq!(v.starts.len(), 7);
             assert!(v.title().contains("m1") && v.title().contains("tokens"));
+            assert!(
+                v.title().contains("prepared request summary")
+                    && v.title().contains("not provider wire")
+                    && v.title().contains("delivery unconfirmed")
+            );
         }
     }
 
@@ -392,6 +452,31 @@ mod tests {
             ModalOut::Copy("You are nexo.\n\n[curator] Working efficiently".into())
         );
         assert_eq!(press(&mut v, KeyCode::Esc), ModalOut::Close);
+    }
+
+    #[test]
+    fn copying_tools_heading_separates_json_without_changing_system_prompt() {
+        let mut v = SentView::new(
+            "m".into(),
+            vec![
+                sec("System prompt", 0, None, "", false),
+                sec("built-in", 1, None, "prompt", false),
+                sec("other", 1, None, "\n\nmore", false),
+                sec("Tools offered · 2", 0, None, "", false),
+                sec("tool · read", 1, None, "{\"name\":\"read\"}", true),
+                sec("tool · write", 1, None, "{\"name\":\"write\"}", true),
+                sec("#1 user", 0, None, "hello", false),
+            ],
+        );
+        v.layout(80, &Theme::dark());
+        assert_eq!(press(&mut v, KeyCode::Char('y')), ModalOut::Copy("prompt\n\nmore".into()));
+        v.scroll = v.starts[3];
+        assert_eq!(
+            press(&mut v, KeyCode::Char('y')),
+            ModalOut::Copy("{\"name\":\"read\"}\n\n{\"name\":\"write\"}".into())
+        );
+        v.scroll = v.starts[4];
+        assert_eq!(press(&mut v, KeyCode::Char('y')), ModalOut::Copy("{\"name\":\"read\"}".into()));
     }
 
     #[test]
@@ -426,6 +511,95 @@ mod tests {
         assert!(plain(&v.pinned(100, &theme))[1].contains("no match"));
         assert_eq!(press(&mut v, KeyCode::Esc), ModalOut::Nothing);
         assert_eq!(press(&mut v, KeyCode::Esc), ModalOut::Close);
+    }
+
+    #[test]
+    fn search_finds_matches_across_soft_wraps_but_not_hard_newlines() {
+        let theme = Theme::dark();
+        let mut v = SentView::new(
+            "m".into(),
+            vec![
+                sec("first", 0, None, "xxxx hello world yyyy\na b c\nd", false),
+                sec("second", 0, None, "hello world", false),
+            ],
+        );
+        v.query = "hello world".into();
+        v.jump = Some(Jump::First);
+        let lines = plain(&v.layout(10, &theme));
+        assert_eq!(v.matches.len(), 2, "{lines:?}");
+        assert!(lines[v.scroll].contains("hello"));
+        press(&mut v, KeyCode::Char('n'));
+        v.layout(10, &theme);
+        assert_eq!(v.scroll, v.matches[1]);
+        v.query = "c d".into();
+        v.layout(10, &theme);
+        assert!(v.matches.is_empty());
+        v.query = "lowor".into();
+        v.layout(10, &theme);
+        assert!(v.matches.is_empty(), "spaces must not disappear at a soft wrap");
+    }
+
+    #[test]
+    fn unicode_search_maps_contextual_sigma_and_expanding_lowercase_across_wraps() {
+        let theme = Theme::dark();
+        for (text, query) in [("aaaaaΟΣΑ", "οσα"), ("aaaaaaΟΣ", "ος"), ("aaaaaİΣΑ", "i\u{307}σα")] {
+            let mut v = SentView::new("m".into(), vec![sec("body", 0, None, text, false)]);
+            v.query = query.into();
+            v.jump = Some(Jump::First);
+            let lines = v.layout(9, &theme);
+            assert_eq!(lines.len(), 3, "{text}: {:?}", plain(&lines));
+            assert_eq!(v.matches, [1], "{text}");
+            assert_eq!(v.scroll, 1, "{text}");
+            for line in &lines[1..] {
+                assert!(line.spans.iter().all(|s| s.style.bg == theme.selection().bg), "{text}: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_split_match_highlights_every_row_and_navigation_stays_by_start_row() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let mut v =
+                SentView::new("m".into(), vec![sec("body", 0, None, "hello world again\nhello world again", false)]);
+            v.query = "hello world again".into();
+            v.jump = Some(Jump::First);
+            let lines = v.layout(8, &theme);
+            assert_eq!(v.matches, [1, 4]);
+            for (row, line) in lines.iter().enumerate().skip(1) {
+                let expected = if row < 4 { theme.selection() } else { theme.hover() };
+                assert!(line.spans.iter().all(|s| s.style.bg == expected.bg), "row {row}: {line:?}");
+            }
+            press(&mut v, KeyCode::Char('n'));
+            let lines = v.layout(8, &theme);
+            assert_eq!(v.scroll, 4);
+            assert!(lines[6].spans.iter().all(|s| s.style.bg == theme.selection().bg));
+            press(&mut v, KeyCode::Char('N'));
+            v.layout(8, &theme);
+            assert_eq!(v.scroll, 1);
+        }
+    }
+
+    #[test]
+    fn tab_search_and_long_spaces_use_the_same_source_when_folded_or_wrapped() {
+        let theme = Theme::dark();
+        for gap in ["\t".to_string(), " ".repeat(256), " ".repeat(400)] {
+            let text = format!("one\ntwo\nthree\nhello{gap}world");
+            for query in [format!("HELLO{gap}WORLD"), format!("hello{}world", gap.replace('\t', "    "))] {
+                for width in [8, 80, 600] {
+                    let mut v = SentView::new("m".into(), vec![sec("body", 0, None, &text, true)]);
+                    v.query = query.clone();
+                    v.jump = Some(Jump::First);
+                    let lines = v.layout(width, &theme);
+                    assert_eq!(v.matches.len(), 1, "gap {}, width {width}", gap.len());
+                    assert!(plain(&lines)[v.scroll].contains("hello"));
+                    assert!(!plain(&lines).iter().any(|l| l.contains("more lines")));
+                    assert!(lines.last().unwrap().spans.iter().all(|s| s.style.bg == theme.selection().bg));
+                    v.query = "hello world".into();
+                    v.layout(width, &theme);
+                    assert!(v.matches.is_empty(), "whitespace must not be shortened");
+                }
+            }
+        }
     }
 
     #[test]

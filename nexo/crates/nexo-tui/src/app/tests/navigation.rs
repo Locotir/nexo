@@ -7,6 +7,40 @@ use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
 use nexo_core::subs::{SubInfo, SubState};
 use nexo_supervise::{AgentRow, SourceKind, State};
 
+#[test]
+fn hover_multiline_message_covers_each_content_row() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    a.push(Block::User { text: "first line\nsecond line".into(), at: None });
+    a.push(Block::User { text: "another message".into(), at: None });
+    a.transcript_area = Rect::new(0, 1, 80, 20);
+    a.layout(80);
+    a.settle(20);
+    let first = a.offsets[0];
+    assert!(a.block_at_line(first + 1) == Some(0));
+    a.pointer_moved(2, 1 + (first + 1) as u16);
+    assert_eq!(a.hover, Hover::Head(0));
+    a.pointer_moved(2, 1 + a.offsets[1] as u16);
+    assert_ne!(a.hover, Hover::Head(0));
+}
+
+#[test]
+fn hover_multiline_message_renders_both_rows() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    a.push(Block::User { text: "first line\nsecond line".into(), at: None });
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
+    let x = a.transcript_area.x + 2;
+    let y = a.transcript_area.y + (a.offsets[0] - a.view_top()) as u16;
+    let before = term.backend().buffer().clone();
+    a.pointer_moved(x, y + 1);
+    term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
+    let after = term.backend().buffer();
+    assert_ne!(before[(x, y)].bg, after[(x, y)].bg, "first row");
+    assert_ne!(before[(x, y + 1)].bg, after[(x, y + 1)].bg, "second row");
+}
+
 const RUN: &str = "call_1#3";
 
 fn with_run() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {

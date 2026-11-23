@@ -114,6 +114,19 @@ fn research_is_read_only_and_a_custom_profile_can_replace_it() {
 }
 
 #[test]
+fn review_is_read_only_and_has_a_findings_contract() {
+    let profiles = builtin();
+    let review = profiles.iter().find(|p| p.name == "review").unwrap();
+    let explore = profiles.iter().find(|p| p.name == "explore").unwrap();
+    assert!(review.read_only);
+    assert_eq!(review.tools, explore.tools);
+    for requirement in ["severity", "file paths and lines", "Do not invent findings", "could not verify"] {
+        assert!(review.prompt.contains(requirement), "{requirement}");
+    }
+    assert!(short_text(&profiles).contains("`review`: read-only"));
+}
+
+#[test]
 fn a_tool_list_that_names_only_task_and_workflow_gives_no_tool_not_all() {
     for list in ["task", "workflow", "[task, workflow]", "\"task\", 'workflow'"] {
         let p = parse(&format!("---\nname: x\ntools: {list}\n---\nB"), "x").unwrap();
@@ -167,7 +180,7 @@ fn a_description_is_cut_to_its_first_clause_and_a_long_one_at_a_comma_or_a_word(
 #[test]
 fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_few_words() {
     let stock =
-        format!("{SHORT} `explore`: read-only; `general` (default): edit. `research`: read-only, checks sources.");
+        format!("{SHORT} `explore`: read-only; `general` (default): edit. `research`: read-only, checks sources. `review`: read-only, reports findings.");
     assert_eq!(short_text(&builtin()), stock);
     let mut kinds = builtin();
     kinds.extend([kind("docs", "Writes the manual. Use after a change."), kind("bare", "")]);
@@ -178,7 +191,7 @@ fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_fe
     kinds.push(kind("explore", "reads the wiki too"));
     assert_eq!(
         short_text(&kinds),
-        format!("{SHORT} `general` (default): edit. `research`: read-only, checks sources. More kinds for `agent`: `explore`: reads the wiki too.")
+        format!("{SHORT} `general` (default): edit. `research`: read-only, checks sources. `review`: read-only, reports findings. More kinds for `agent`: `explore`: reads the wiki too.")
     );
 }
 

@@ -1132,3 +1132,41 @@ fn indexed_task_rows_follow_group_insertion_view_switch_and_clear() {
     a.clear_transcript();
     assert_eq!(a.task_card_for_run(id), None);
 }
+
+#[test]
+fn live_agent_tick_keeps_height_but_repaints_face_on_run_and_task_card() {
+    for width in [20, 120] {
+        let (mut a, _rx) = bare();
+        a.opts.animations = true;
+        a.push(Block::Tool {
+            id: "launch".into(),
+            name: "task".into(),
+            summary: String::new(),
+            args: serde_json::Value::Null,
+            status: crate::render::blocks::ToolStatus::Done,
+            progress: vec![],
+            output: None,
+            started: None,
+            elapsed_ms: None,
+            folded: true,
+        });
+        let mut run = info("launch#7", "a long enough task title to wrap", SubState::Background);
+        run.provider = Some("mock".into());
+        run.model = Some("a-long-model-name".into());
+        a.handle_agent(AgentEvent::SubState { info: run });
+        let card = a.task_card_for_run("launch#7").unwrap();
+        let agent = a.blocks.iter().position(|b| matches!(b, Block::Agent(r) if r.id == "launch#7")).unwrap();
+        a.spinner = 0;
+        let before: Vec<_> = [card, agent].into_iter().map(|i| a.lines(i, width).to_vec()).collect();
+        a.spinner = 21;
+        a.tick_frame(true);
+        for (i, old) in [card, agent].into_iter().zip(before) {
+            let (_, height, lines, _) = a.cache[i].as_ref().unwrap();
+            assert_eq!(*height, old.len());
+            assert!(lines.is_none(), "live paint must be invalidated");
+            let new = a.lines(i, width);
+            assert_eq!(new.len(), old.len());
+            assert_ne!(new, old, "the blinking face must be repainted");
+        }
+    }
+}

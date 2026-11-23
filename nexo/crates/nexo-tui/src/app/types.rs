@@ -123,7 +123,7 @@ pub enum Hover {
     /// A row of the palette, of a picker or of a question.
     Palette(usize),
     Picker(usize),
-    /// The first line of a block that folds (a click there folds or opens it).
+    /// A message block or the first line of another foldable block; click behavior is independent.
     Head(usize),
     /// A link in the transcript: the screen row and the columns it covers on it.
     Link {

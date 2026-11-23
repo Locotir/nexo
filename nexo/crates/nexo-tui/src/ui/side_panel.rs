@@ -201,6 +201,28 @@ fn map_unit(tokens: &[u64], cap: usize) -> u64 {
     MAP_UNITS.iter().copied().find(|&u| cells(u) <= cap).unwrap_or(MAP_UNITS[MAP_UNITS.len() - 1])
 }
 
+// Bounds on original sizes, not payload sizes. Unknown is neither in nor out.
+fn selection_counts<'a>(cells: impl Iterator<Item = &'a nexo_core::ContextCell>) -> (u64, u64, u64) {
+    use nexo_core::CellState;
+    cells.fold((0u64, 0u64, 0u64), |(known, unknown, total), c| {
+        let total = total.saturating_add(c.tokens);
+        match c.state {
+            CellState::Dropped => (known, unknown, total),
+            CellState::Unknown => (known, unknown.saturating_add(c.tokens), total),
+            _ => (known.saturating_add(c.tokens), unknown, total),
+        }
+    })
+}
+
+fn selection_label(known: u64, unknown: u64, total: u64) -> String {
+    let fmt = crate::render::blocks::fmt_k;
+    if unknown == 0 {
+        format!("{}/{}", fmt(known), fmt(total))
+    } else {
+        format!("{}–{}?/{}", fmt(known), fmt(known.saturating_add(unknown)), fmt(total))
+    }
+}
+
 /// `/context-live`: the whole history as a grid, a cell per `unit` tokens,
 /// coloured by who wrote it and lit by how much of it the last call sent.
 /// With the curator, the grid is its memory in zones: the anchor, the topic in
@@ -208,36 +230,51 @@ fn map_unit(tokens: &[u64], cap: usize) -> u64 {
 /// what of it the call takes. Also where the newest cell condensing after a cut is (line, column), for the
 /// light that leaves the map from it.
 fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
-    use nexo_core::CellState;
     let theme = &app.theme;
     let fmt_k = crate::render::blocks::fmt_k;
     let mut out = vec![Line::from(Span::styled("context live", Style::default().add_modifier(Modifier::BOLD)))];
     if let Some(n) = app.relation_quotes {
         let unit = if n == 1 { "quote" } else { "quotes" };
-        out.push(Line::from(Span::styled(format!("relations · {n} {unit}"), theme.style(theme.accent))));
+        out.push(Line::from(Span::styled(format!("relations · {n} selected {unit}"), theme.style(theme.accent))));
     }
-    let sent_of = |cells: &mut dyn Iterator<Item = &nexo_core::ContextCell>| {
-        cells.fold((0, 0), |(s, m), c| match c.state {
-            CellState::Dropped => (s, m + c.tokens),
-            _ => (s + c.tokens, m + c.tokens),
-        })
-    };
-    let (sent, mem) = sent_of(&mut app.map.iter());
+    // Keep the scale and its denominator on the same call. A source mark identifies a
+    // message, not a substring or a token position within the original message.
+    let heat = app.quote_heat.as_ref();
+    let mut zone_tokens = std::collections::HashMap::<u32, u64>::new();
+    if let Some(h) = heat {
+        for (&i, &tokens) in &h.by_message {
+            if let Some(c) = app.map.get(i) {
+                let total = zone_tokens.entry(c.zone).or_default();
+                *total = total.saturating_add(tokens);
+            }
+        }
+        out.push(Line::from(Span::styled("◇ quoted source message", theme.dim())));
+        out.push(Line::from(Span::styled(
+            if h.input_tokens > 0 { "zone quote / est. input toks" } else { "input unknown · no heat scale" },
+            theme.dim(),
+        )));
+        if h.input_tokens > 0 {
+            out.push(Line::from(Span::styled("dim → bright: 0–1% (capped)", theme.dim())));
+        }
+    }
+    let (sent, unknown, mem) = selection_counts(app.map.iter());
     if app.map.is_empty() {
         out.push(Line::from(Span::styled("fills in with the next call", theme.dim())));
         return (out, None);
     }
     let policy = app.context.as_ref().map(|c| c.policy.clone()).unwrap_or_default();
-    let pct = sent * 100 / mem.max(1);
+    // Original sizes of selected messages, not the payload: messages may be
+    // trimmed and synthetic additions are not in the map.
     out.push(Line::from(vec![
-        Span::styled(format!("sent {}", fmt_k(sent)), theme.style(theme.accent).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" of {} · {pct}%", fmt_k(mem)), theme.dim()),
+        Span::styled("selected originals ", theme.style(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(selection_label(sent, unknown, mem), theme.dim()),
     ]));
     // the grid gets what the panel has left after the text around it
     let zoned = !app.map_zones.is_empty();
     let rows = height
         .saturating_sub(usize::from(app.relation_quotes.is_some()))
-        .saturating_sub(if zoned { 9 } else { 8 })
+        .saturating_sub(heat.map_or(0, |h| 2 + usize::from(h.input_tokens > 0)))
+        .saturating_sub(if zoned { 10 } else { 9 })
         .clamp(2, if zoned { 40 } else { 12 });
     let w = w.max(1);
     // the zones to draw, in order, each with its cells (index into the map)
@@ -249,8 +286,15 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
             }
         }
         let mut order: Vec<usize> = (0..by.len()).filter(|&z| !by[z].is_empty()).collect();
-        // anchor, then the topic in progress, then the others by their latest message
-        order.sort_by_key(|&z| (z != 0, !app.map_zones[z].active, std::cmp::Reverse(by[z].last().copied())));
+        // Keep quoted topics ahead of other inactive ones when the grid is short.
+        order.sort_by_key(|&z| {
+            (
+                z != 0,
+                !app.map_zones[z].active,
+                !zone_tokens.contains_key(&(z as u32)),
+                std::cmp::Reverse(by[z].last().copied()),
+            )
+        });
         order.into_iter().map(|z| (Some(z), std::mem::take(&mut by[z]))).collect()
     } else {
         vec![(None, (0..app.map.len()).collect())]
@@ -270,7 +314,7 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
         let tokens: Vec<u64> = app.map.iter().map(|c| c.tokens).collect();
         map_unit(&tokens, rows * w)
     };
-    // still too many lines: the oldest topics go, counted at the end
+    // Still too many lines: omit the lowest-priority topics, counted at the end.
     let mut hidden = 0;
     while zoned && groups.len() > 2 && lines_at(unit, &groups) + 1 > rows {
         groups.pop();
@@ -294,19 +338,21 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
     for (z, ix) in &groups {
         if let Some(z) = *z {
             let zone = &app.map_zones[z];
-            let (s, m) = sent_of(&mut ix.iter().map(|&i| &app.map[i]));
+            let (s, u, m) = selection_counts(ix.iter().map(|&i| &app.map[i]));
             let (mark, style, tag) = if z == 0 {
                 ("◆ ", theme.style(theme.accent2), String::new())
             } else if zone.active {
                 ("● ", theme.style(theme.accent).add_modifier(Modifier::BOLD), " now".to_string())
             } else if s > 0 {
                 ("◐ ", theme.style(theme.info), " back".to_string())
+            } else if u > 0 {
+                ("? ", theme.style(theme.warn), " unknown".to_string())
             } else if zone.card {
                 ("▭ ", theme.style(theme.info), " card".to_string())
             } else {
                 ("○ ", theme.dim2(), String::new())
             };
-            let nums = format!(" {}/{}{tag}", fmt_k(s), fmt_k(m));
+            let nums = format!(" {}{tag}", selection_label(s, u, m));
             let label = truncate(&zone.label, w.saturating_sub(2 + width(&nums)).max(1));
             out.push(Line::from(vec![
                 Span::styled(mark, style),
@@ -323,7 +369,12 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
                 let start = crate::fx_condense::start_ms(rank, c.len());
                 Some((ms.saturating_sub(start), app.fx.cut_from[i]))
             });
+            let start = cells.len();
             cells.extend(cell_spans(app, i, unit, flash, &kinds, cond));
+            if let Some(h) = heat.filter(|h| h.by_message.contains_key(&i)) {
+                let tokens = zone_tokens[&app.map[i].zone];
+                cells[start] = Span::styled("◇", quote_style(theme, tokens, h.input_tokens));
+            }
             if cond.is_some() && condensing.as_ref().and_then(|c| c.1.last()) == Some(&i) {
                 newest = Some(cells.len() - 1);
             }
@@ -344,9 +395,10 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
         }
     }
     if hidden > 0 {
-        out.push(Line::from(Span::styled(format!("… {hidden} older topics"), theme.dim2())));
+        out.push(Line::from(Span::styled(format!("… {hidden} hidden topics"), theme.dim2())));
     }
-    out.push(Line::from(Span::styled(format!("1 cell ≈ {} tok · {policy}", fmt_k(unit)), theme.dim())));
+    out.push(Line::from(Span::styled(format!("up to {} tok/cell · {policy}", fmt_k(unit)), theme.dim())));
+    out.push(Line::from(Span::styled("1+ cells per message", theme.dim())));
     // the legend wears the colours the cells wear, so the key matches the map
     let kinds = theme.kind_colours();
     out.push(Line::from(vec![
@@ -359,12 +411,25 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
         Span::styled("█", theme.style(kinds[3])),
         Span::styled(" tool", theme.dim()),
     ]));
-    let (recalled, left) = if zoned { ("░ back ", "· out") } else { ("", "· left out") };
+    let (recalled, left) = ("░ recalled ", "· out ? unknown");
     out.push(Line::from(vec![
-        Span::styled(format!("█ sent ▒ cut {recalled}"), theme.dim()),
+        Span::styled(format!("█ whole ▒ cut {recalled}"), theme.dim()),
         Span::styled(left, theme.dim2()),
     ]));
     (out, spot)
+}
+
+/// Linear over the first percentage point of estimated input. A fixed, readable floor
+/// lets even a single recovered token remain visible; above 1% the scale saturates.
+fn quote_style(theme: &Theme, tokens: u64, input: u64) -> Style {
+    if input == 0 {
+        return theme.dim();
+    }
+    let t = (100.0 * tokens as f64 / input as f64).min(1.0) as f32;
+    if theme.mono {
+        return if t < 0.5 { theme.dim() } else { Style::default().add_modifier(Modifier::BOLD) };
+    }
+    theme.style(crate::motion::fade(theme, theme.dim2, theme.accent, t))
 }
 
 /// The place of a kind of message in [`Theme::kind_colours`], the colours of the map and of the context chart.
@@ -413,6 +478,7 @@ fn cell_spans(
         CellState::Shrunk => ("▒".into(), theme.style(colour)),
         CellState::Recalled => ("░".into(), theme.style(colour)),
         CellState::Dropped => ("·".into(), theme.dim2()),
+        CellState::Unknown => ("?".into(), theme.style(theme.warn)),
     };
     match cond {
         // condensing: a step down the ladder at a time, the colour lifted at first so the eye finds it, then

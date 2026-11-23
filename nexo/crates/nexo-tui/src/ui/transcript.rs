@@ -18,6 +18,16 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     app.settle(height);
     app.reveal_step();
     let scroll = app.glide(height);
+    // The content can move under a stationary pointer throughout the glide.
+    if app.modal.is_none() && app.palette.is_none() {
+        if let Some((x, y)) = app.pointer_pos {
+            // Other regions' hit boxes are rebuilt later in the frame; don't
+            // replace their hover using incomplete geometry here.
+            if crate::modal::contains(area, x, y) {
+                app.pointer_moved(x, y);
+            }
+        }
+    }
     let theme = app.theme.clone();
     let hovered_head = match app.hover {
         Hover::Head(i) => Some(i),
@@ -75,8 +85,21 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                     crate::motion::lit_style(&theme, Style::default(), lvl)
                 });
             }
-        } else if hovered_head == Some(bi) && j == 0 {
-            l = l.patch_style(theme.hover());
+        }
+        if hovered_head == Some(bi)
+            && j < n
+            && (j == 0
+                || matches!(
+                    app.blocks[bi],
+                    crate::render::blocks::Block::User { .. } | crate::render::blocks::Block::Assistant { .. }
+                ))
+            && !(lvl > 0.0 && j == 0)
+        {
+            let style = theme.hover();
+            l = l.patch_style(style);
+            for span in &mut l.spans {
+                span.style = span.style.patch(style);
+            }
         }
         if let Some(q) = &query {
             l = highlight(l, q, theme.highlight(), current_match == Some(line));

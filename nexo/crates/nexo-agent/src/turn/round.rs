@@ -99,16 +99,16 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         // this request asks for less reasoning than the first: a cut past the asks stops the turn
         let mut lowered = false;
         if calm && req.reasoning.is_none() {
-            let mut st = state.lock().await;
+            let st = state.lock().await;
             let (_, pcfg, model) = st.target.get();
             let levels = pcfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]);
             req.reasoning = calm_level(levels, nexo_providers::probe::off_thinks_less(&pcfg.protocol, &model));
             // a level is set only where it changes the request: none left means the same request again
             lowered = req.reasoning.is_some();
-            if let Some(last) = st.last_request.as_mut() {
-                last.reasoning = req.reasoning;
-            }
         }
+        // `prepare` saved the request once; keep its snapshot in step with round-only changes,
+        // even when cancellation or admission prevents this prepared request from being sent.
+        sync_prepared(&mut state.lock().await.last_request, &req);
         if cancel.is_cancelled() {
             return TurnEnd::Interrupted;
         }
@@ -137,6 +137,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             match admitted {
                 Ok((cap, hold)) => {
                     req.max_tokens = cap;
+                    sync_prepared(&mut state.lock().await.last_request, &req);
                     hold
                 }
                 Err(why) => {
@@ -716,6 +717,15 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     }
 }
 
+/// Copy only fields changed after `prepare`, without cloning the prompt a second time.
+fn sync_prepared(snapshot: &mut Option<ModelRequest>, req: &ModelRequest) {
+    if let Some(last) = snapshot {
+        last.temperature = req.temperature;
+        last.reasoning = req.reasoning;
+        last.max_tokens = req.max_tokens;
+    }
+}
+
 /// Identity of a context retry, only computed after a refusal. Use the adapters' own bodies: a lower
 /// estimate or ceiling does not necessarily lower the wire limit (Claude can raise it, a subscription can
 /// omit it). Keep just a digest per refused attempt, not another copy of a potentially large prompt.
@@ -852,15 +862,13 @@ fn without_reasoning(msg: &Message) -> Message {
 fn budget_note(budget: u64, again: bool) -> String {
     let what = if again {
         format!(
-            "Your reasoning passed the {budget}-token limit again and was cut, with no answer and no tool call. \
-         Reply now with almost no reasoning: one tool call, or a short answer, or one short question to the person \
-         if the request is unclear."
+            "Reasoning reached the {budget}-token limit again before an answer or tool call. \
+             Keep reasoning brief: make one tool call, give a short answer, or ask one clarifying question."
         )
     } else {
         format!(
-            "Your reasoning passed the {budget}-token limit and was cut, with no answer and no tool call; that \
-         reasoning is gone. Do not think it all over again: make the next tool call now, or answer in a few lines. \
-         If the request is a new task, start it with one small step (for example, write the first file)."
+            "Reasoning reached the {budget}-token limit before an answer or tool call and was discarded. \
+             Make the next tool call now or answer briefly. For a new task, start with one small step."
         )
     };
     format!("<system-reminder>{what}</system-reminder>")
@@ -868,8 +876,8 @@ fn budget_note(budget: u64, again: bool) -> String {
 
 /// Sent when a reply held only reasoning (often cut at max_tokens while thinking): not a request of the person.
 pub(super) const MUTE_NOTE: &str =
-    "<system-reminder>Your last reply held only reasoning: no answer and no tool call reached the person. \
-     Go on from it now with a tool call or the answer, keeping the reasoning short.</system-reminder>";
+    "<system-reminder>The previous reply contained only reasoning. Keep further reasoning brief and continue \
+     with a tool call or an answer.</system-reminder>";
 
 /// How much of the end of a reasoning-only reply the next ask repeats: a lead to go on from, not the plan again
 /// (a provider that sends reasoning back has all of it already).
@@ -891,9 +899,8 @@ fn reasoning_tail(r: &str) -> String {
 
 /// The second time in a row: planning longer is what keeps failing, so the model is told to build first.
 pub(super) const MUTE_NOTE_AGAIN: &str =
-    "<system-reminder>Your replies keep ending inside the reasoning, before any answer or tool call. Stop \
-     planning: make a tool call now that builds the simplest version that could work (write the file, run the \
-     command), then test it and improve it step by step.</system-reminder>";
+    "<system-reminder>Several replies have ended without an answer or tool call. Stop planning and make one \
+     tool call to build the simplest working version. Then test and refine it.</system-reminder>";
 
 /// What the model reads, after the outputs of the round a guard stopped, before the call that may only answer
 /// (`agent.guard_answer`).
@@ -903,12 +910,12 @@ pub(super) const ANSWER_NOW: &str =
 
 /// Sent after `CHECKPOINT STOP` with no summary: the request ends on the model's account of its work.
 pub(super) const SUMMARY_NOW: &str =
-    "<system-reminder>You chose to stop at the checkpoint. Tool calls will not run now. \
-     Write your final summary for the person: what was done, what is left and how to go on.</system-reminder>";
+    "<system-reminder>You stopped at the checkpoint. Tool calls are unavailable. Give a final summary of what \
+     you completed, what remains, and how to proceed.</system-reminder>";
 
 /// Sent once when the model chose to continue at a checkpoint but called no tool.
 pub(super) const CHECKPOINT_GO_ON: &str =
-    "<system-reminder>You chose to continue at the checkpoint. Go on with the next tool call.</system-reminder>";
+    "<system-reminder>You chose to continue at the checkpoint. Make the next tool call.</system-reminder>";
 
 /// Whether a tool result is a success: not an error, and not a shell command that ended with a non-zero
 /// code (that is no failure to show, but a check that answered no is not a check that passed).

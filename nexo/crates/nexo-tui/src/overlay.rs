@@ -135,37 +135,12 @@ pub fn lines(app: &App, tab: usize, w: usize, t: f64, period: Period) -> Vec<Lin
     }
 }
 
-/// The parts of what the next call sends, as (glyph, label, tokens, colour).
+/// Gauge total as (glyph, label, tokens, colour), without an unsupported breakdown.
 pub fn context_parts(app: &App, theme: &Theme) -> Vec<(&'static str, &'static str, u64, Color)> {
     let (num, _, _) = app.gauge_view();
-    let mut by_kind = [0u64; 4];
-    for c in app.map.iter().filter(|c| c.state != nexo_core::agent::CellState::Dropped) {
-        by_kind[crate::ui::kind_ix(c.kind)] += c.tokens;
-    }
-    let total: u64 = by_kind.iter().sum();
-    let mut parts = Vec::new();
-    let mut given = 0;
-    if total > 0 && num > 0 {
-        // the colours of the map: four kinds, four colours far apart
-        let k = theme.kind_colours();
-        let names = [
-            ("◆", "your messages", k[0]),
-            ("◆", "replies", k[1]),
-            ("◈", "tool calls", k[2]),
-            ("◈", "tool output", k[3]),
-        ];
-        for (i, (g, l, c)) in names.into_iter().enumerate() {
-            let n = (by_kind[i] as f64 / total as f64 * num as f64).round() as u64;
-            if n > 0 {
-                given += n;
-                parts.push((g, l, n, c));
-            }
-        }
-    }
-    if num > given {
-        parts.insert(0, ("◆", if parts.is_empty() { "in use" } else { "system & tools" }, num - given, theme.dim));
-    }
-    parts
+    // Map sizes are original estimates, not the payload by kind: even Whole cells
+    // cannot account for system/tools or reconcile a last-call total with this map.
+    vec![("◆", "in use (composition unknown)", num, theme.dim)]
 }
 
 fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
@@ -295,10 +270,10 @@ fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
         }
         out.extend(lines);
     }
-    // what the curator added to the last call (only once a call has come with it)
+    // Curator's most recent selection, before the final request fit.
     if let Some(items) = app.curated.first() {
         out.push(Line::default());
-        out.extend(crate::curated::lines(theme, items, w, "Added by the curator (last call)"));
+        out.extend(crate::curated::lines(theme, items, w, "Curator selection (before fit)"));
     }
     out
 }

@@ -24,7 +24,7 @@ pub enum AgentEvent {
         index: usize,
         parts: Vec<AddedPart>,
     },
-    /// The last request exactly as it was sent, in sections (answers `ShowSent`).
+    /// Summary of the last prepared request, in sections; delivery is not confirmed (answers `ShowSent`).
     Sent {
         model: String,
         sections: Vec<SentSection>,
@@ -137,6 +137,8 @@ pub enum AgentEvent {
         items: Vec<CuratedItem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relation_quotes: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quote_heat: Option<QuoteHeat>,
     },
     Notice {
         level: Level,

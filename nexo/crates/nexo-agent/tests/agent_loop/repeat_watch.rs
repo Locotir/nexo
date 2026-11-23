@@ -123,11 +123,11 @@ async fn a_check_in_that_says_continue_resumes_the_session_with_the_answer_as_hi
     assert_eq!(reqs.len(), 4, "the todo call, the reply, the check-in, the resumed turn");
     let ask = reqs[2].messages.last().unwrap();
     assert_eq!(ask.role, Role::User);
-    assert!(ask.text().contains("Everything OK?") && ask.text().contains("1 open item"), "{}", ask.text());
+    assert!(ask.text().contains("Supervisor check-in:") && ask.text().contains("1 open item"), "{}", ask.text());
     assert_eq!(reqs[2].messages[reqs[2].messages.len() - 2].text(), "all done", "after the reply it got");
     assert!(reqs[3].messages.iter().any(|m| m.text().contains("answer was CONTINUE: run the missing test")));
     let said = history_texts(&evs);
-    assert!(!said.contains("run the missing test") && !said.contains("Everything OK?"), "{said}");
+    assert!(!said.contains("run the missing test") && !said.contains("Supervisor check-in:"), "{said}");
     assert!(
         evs.iter().any(|e| matches!(e, AgentEvent::History { message, .. } if message.text() == nexo_core::agent::SUPERVISOR_RESUME_MARK))
     );
@@ -145,7 +145,7 @@ async fn a_check_in_that_says_done_changes_nothing() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(client.requests().len(), 3);
     assert!(!more.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })), "no new turn");
-    assert!(!history_texts(&evs).contains("Everything OK?"));
+    assert!(!history_texts(&evs).contains("Supervisor check-in:"));
     r.stop().await;
 }
 
@@ -220,7 +220,10 @@ async fn a_supervisor_check_in_leaves_a_goal_alone() {
     let reqs = client.requests();
     assert_eq!(reqs.len(), 2, "the goal's own round is not checked on");
     let said: String = reqs.iter().flat_map(|q| q.messages.iter().map(|m| m.text())).collect::<Vec<_>>().join("\n");
-    assert!(!said.contains(nexo_core::agent::SUPERVISOR_RESUME_MARK) && !said.contains("Everything OK?"), "{said}");
+    assert!(
+        !said.contains(nexo_core::agent::SUPERVISOR_RESUME_MARK) && !said.contains("Supervisor check-in:"),
+        "{said}"
+    );
     r.stop().await;
 }
 

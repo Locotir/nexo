@@ -231,8 +231,8 @@ pub enum AgentCommand {
     ShowTools,
     /// Ask for the hooks that are loaded and where each comes from; answered with a `Notice`.
     ShowHooks,
-    /// Ask for the last request exactly as it was sent, in sections; answered with `Sent` (a `Notice` when
-    /// nothing was sent yet).
+    /// Ask for a summary of the last prepared request, in sections; answered with `Sent` (a `Notice` when
+    /// no request has been prepared yet).
     ShowSent,
     /// Ask for the MCP servers with their state and lists; answered with `Mcp`.
     ShowMcp,

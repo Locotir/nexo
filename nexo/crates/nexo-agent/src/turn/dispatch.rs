@@ -542,14 +542,14 @@ async fn on_set_budget(rt: &mut Runtime, limit: Option<f64>) {
     notice(&rt.events, Level::Info, budget_text(&st, day, true));
 }
 
-/// `/sent`: the last request as it was sent, by section.
+/// `/sent`: the last prepared request, by section; delivery is not confirmed.
 async fn on_show_sent(rt: &mut Runtime) {
     let st = rt.state.lock().await;
     match &st.last_request {
         Some(req) => {
             emit(&rt.events, AgentEvent::Sent { model: req.model.clone(), sections: crate::sent::sections(req) })
         }
-        None => notice(&rt.events, Level::Info, "nothing was sent yet: /sent shows the last request"),
+        None => notice(&rt.events, Level::Info, "no request prepared yet: /sent shows the last prepared request"),
     }
 }
 

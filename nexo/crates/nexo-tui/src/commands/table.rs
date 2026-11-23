@@ -97,7 +97,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("diff", "context and tools", 37, &[], "", "browse staged, unstaged and new files"),
     spec("panel", "context and tools", 34, &[], "", "sub-agents, lanes and sessions: watch, act"),
     spec("cost", "context and tools", 26, &["usage"], "", "window: tokens, cost, calls"),
-    spec("sent", "context and tools", 25, &["request"], "", "window: the last request as sent"),
+    spec("sent", "context and tools", 25, &["request"], "", "window: last prepared request summary"),
     spec("context", "context and tools", 24, &["ctx"], "[live]", "window: what the next call sends"),
     spec("theme", "settings", 47, &[], "[name]", "change the colours"),
     spec("copy", "nexo", 49, &[], "[code]", "copy the last reply, or its code block"),

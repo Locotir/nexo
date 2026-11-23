@@ -14,15 +14,41 @@ fn skill_catalogue_follows_offered_tools_and_raw_prompt() {
     let p = system_prompt_with(d.path(), &cfg, &tools, None, &vol);
     assert!(p.contains("<skill_catalog>\n") && p.contains("- research:"), "{p}");
     assert!(!p.contains("Prefer primary sources"));
+    for window in [None, Some(COMPACT_WINDOW)] {
+        let prompt = system_prompt_with(d.path(), &cfg, &tools, window, &vol);
+        let (guide, catalogue) = prompt.split_once("<skill_catalog>\n").unwrap();
+        assert!(guide.contains("use `perspectives`"));
+        assert!(catalogue.split_once("</skill_catalog>").unwrap().0.contains("perspectives"));
+        assert!(!prompt.contains("Weigh the evidence, not the votes"));
+    }
     let tiny = system_prompt_with(d.path(), &cfg, &tools, Some(TINY_WINDOW), &vol);
     if left_out(Some(TINY_WINDOW), "skill") {
-        assert!(!tiny.contains("<skill_catalog>"));
+        assert!(!tiny.contains("<skill_catalog>") && !tiny.contains("use `perspectives`"));
     }
     assert!(!system_prompt_with(d.path(), &cfg, &ToolSet::new(), None, &vol).contains("<skill_catalog>"));
     let raw = d.path().join("raw.md");
     std::fs::write(&raw, format!("{RAW_MARK}\nOnly this.")).unwrap();
     cfg.system_prompt_file = Some(raw);
     assert_eq!(system_prompt_with(d.path(), &cfg, &tools, None, &vol), "Only this.");
+}
+
+#[test]
+fn a_project_perspectives_override_is_listed_but_not_recommended() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join(".nexo/skills/perspectives");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: Perspectives\ndescription: Project lens\n---\nCustom steps.")
+        .unwrap();
+    let skill = nexo_tools::skill::tool(nexo_core::skills::discover(d.path(), false)).unwrap();
+    assert_eq!(skill.named_skill("perspectives").unwrap().body().unwrap(), "Custom steps.");
+    let tools = ToolSet::new().with(skill);
+    let cfg = AgentConfig { hermetic: true, ..AgentConfig::default() };
+    for window in [None, Some(COMPACT_WINDOW)] {
+        let prompt = system_prompt_for(d.path(), &cfg, &tools, window);
+        let (guide, catalogue) = prompt.split_once("<skill_catalog>\n").unwrap();
+        assert!(!guide.contains("use `perspectives`"));
+        assert!(catalogue.split_once("</skill_catalog>").unwrap().0.to_lowercase().contains("perspectives"));
+    }
 }
 
 #[test]

@@ -227,6 +227,7 @@ mod effort_fx;
 mod frame_cost;
 mod goal_window_and_additions;
 mod goals_todo_strip_and_flashes;
+mod hover_scroll;
 mod keys_row_and_fades;
 mod live_block_height;
 mod monitor_order;

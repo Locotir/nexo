@@ -28,6 +28,8 @@ pub enum CellKind {
 #[serde(rename_all = "snake_case")]
 pub enum CellState {
     Whole,
+    /// Alignment cannot establish whether or how much was retained.
+    Unknown,
     /// Shortened or stubbed.
     Shrunk,
     Dropped,
@@ -39,10 +41,12 @@ pub enum CellState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallMark {
-    /// Sent whole, in the part of the request equal to the one before (the provider serves it from its
-    /// cache while that lasts).
+    /// Sent whole in a repeated message prefix. Legacy wire name: this is only a local cache
+    /// candidate, not a confirmed provider cache hit (system/tools, expiry and billing are unknown).
     Cached,
-    /// Sent whole, after the point where the request changed: paid in full.
+    /// The output's presence or extent could not be established.
+    Unknown,
+    /// Sent whole after the repeated message prefix; does not establish its billed rate.
     Sent,
     /// Sent shortened.
     Cut,
@@ -60,6 +64,15 @@ pub struct ContextCell {
     /// Index into the map's `zones` (0 when there are none).
     #[serde(default)]
     pub zone: u32,
+}
+
+/// Heat on the live map for one prepared request. Keys are zero-based history messages,
+/// not positions within them. Sizes count only quoted text, not JSON provenance or whole sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteHeat {
+    /// Estimated input in use for this call (including the system prompt and tools), not model capacity.
+    pub input_tokens: u64,
+    pub by_message: std::collections::BTreeMap<usize, u64>,
 }
 
 /// A part of the curator's memory: the anchor or one topic of the conversation.
@@ -159,7 +172,7 @@ impl AddedPart {
     }
 }
 
-/// One section of the last request as it was sent (`/sent`): a heading, its text and its size.
+/// One section of the last prepared request's summary (`/sent`): a heading, its text and estimated size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SentSection {
     pub heading: String,

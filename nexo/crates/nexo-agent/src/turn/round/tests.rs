@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn prepared_snapshot_tracks_round_changes_without_replacing_prompt() {
+    let mut req = ModelRequest::new("model", "system", vec![]);
+    let mut snapshot = Some(req.clone());
+    req.temperature = Some(0.25);
+    req.reasoning = Some(ReasoningConfig::Off);
+    req.max_tokens = 123;
+    sync_prepared(&mut snapshot, &req);
+    let saved = snapshot.unwrap();
+    assert_eq!(saved.system, "system");
+    assert_eq!(saved.temperature, req.temperature);
+    assert_eq!(saved.reasoning, req.reasoning);
+    assert_eq!(saved.max_tokens, 123);
+}
+
 fn pick(levels: &[&str]) -> Option<ReasoningConfig> {
     calm_level(&levels.iter().map(|l| l.to_string()).collect::<Vec<_>>(), true)
 }

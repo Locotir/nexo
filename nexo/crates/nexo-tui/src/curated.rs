@@ -12,7 +12,9 @@ use crate::theme::Theme;
 pub const CALLS: usize = 8;
 
 /// The text shown when a call carries nothing from the curator.
-pub const NOTHING: &str = "The curator added nothing to this call.";
+pub const NOTHING: &str = "No curator items reported for this selection.";
+
+const DISCLAIMER: &str = "Curator selection before final fit; not proof of what was sent.";
 
 fn kind_name(k: CuratedKind) -> &'static str {
     match k {
@@ -83,6 +85,7 @@ pub fn lines(theme: &Theme, items: &[CuratedItem], w: usize, title: &str) -> Vec
     let mut out = vec![Line::from(Span::styled(title.to_string(), theme.bold(theme.fg)))];
     if items.is_empty() {
         out.extend(crate::render::wrap::wrap_plain(NOTHING, w.max(10), theme.dim(), &[]));
+        out.extend(crate::render::wrap::wrap_plain(DISCLAIMER, w.max(10), theme.dim(), &[]));
         return out;
     }
     let kept = sorted(items, true);
@@ -97,7 +100,7 @@ pub fn lines(theme: &Theme, items: &[CuratedItem], w: usize, title: &str) -> Vec
             Span::styled(format!("{:>7}", fmt_k(n)), theme.bold(theme.fg)),
         ]));
         if kept.iter().any(|i| i.state == CuratedState::Trimmed) {
-            out.push(Line::from(Span::styled("~ trimmed to fit", theme.dim2())));
+            out.push(Line::from(Span::styled("~ trimmed by curator", theme.dim2())));
         }
     }
     let left = sorted(items, false);
@@ -108,6 +111,7 @@ pub fn lines(theme: &Theme, items: &[CuratedItem], w: usize, title: &str) -> Vec
             out.push(row(theme, i, w));
         }
     }
+    out.extend(crate::render::wrap::wrap_plain(DISCLAIMER, w.max(10), theme.dim(), &[]));
     out
 }
 
@@ -151,10 +155,8 @@ mod tests {
         ];
         for w in [24, 40] {
             let t: Vec<String> = lines(&Theme::dark(), &items, w, "Added").iter().map(text).collect();
-            let rows: Vec<&String> = t
-                .iter()
-                .filter(|l| l.starts_with(|c: char| c.is_ascii_lowercase()) && !l.starts_with("total"))
-                .collect();
+            let rows: Vec<&String> =
+                t.iter().filter(|l| ["recalled", "thread", "memory"].iter().any(|kind| l.starts_with(kind))).collect();
             assert!(rows.len() >= 3, "{t:?}");
             let first = width(rows[0]);
             for r in rows {
@@ -177,7 +179,7 @@ mod tests {
 
     #[test]
     fn nothing_says_so() {
-        let t: Vec<String> = lines(&Theme::dark(), &[], 60, "Added").iter().map(text).collect();
-        assert_eq!(t, vec!["Added".to_string(), NOTHING.to_string()]);
+        let t: Vec<String> = lines(&Theme::dark(), &[], 100, "Added").iter().map(text).collect();
+        assert_eq!(t, vec!["Added".to_string(), NOTHING.to_string(), DISCLAIMER.to_string()]);
     }
 }

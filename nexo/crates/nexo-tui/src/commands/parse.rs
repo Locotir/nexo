@@ -90,7 +90,7 @@ pub enum Command {
     Msg(Option<String>),
     Diff,
     Cost,
-    /// `/sent` (`/request`): the last request as it was sent, by section.
+    /// `/sent` (`/request`): a summary of the last prepared request; delivery is not confirmed.
     Sent,
     Context,
     ContextLive,

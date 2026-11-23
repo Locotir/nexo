@@ -560,3 +560,126 @@ fn a_long_request_never_hides_its_number_in_the_rewind_picker() {
         assert!(rows.contains(n), "{n} missing:\n{rows}");
     }
 }
+
+fn switch_test_model(a: &mut App) {
+    a.handle_agent(AgentEvent::ModelChanged { provider: "mock".into(), model: "n".into() });
+    a.handle_agent(AgentEvent::ModelLimits {
+        provider: "mock".into(),
+        model: "n".into(),
+        pricing: Some(nexo_core::Pricing {
+            input: 1.0,
+            output: 5.0,
+            cache_read: 0.05,
+            cache_write: 1.25,
+            cache_write_1h: 0.0,
+            long: None,
+        }),
+        context_window: Some(272_000),
+        max_output: Some(128_000),
+        source: "catalogue".into(),
+    });
+}
+
+#[test]
+fn switching_models_keeps_unrelated_transcript_heights_and_lines() {
+    let (mut a, _rx) = bare();
+    a.opts.group_tools = false;
+    a.opts.animations = false;
+    let text = a.push(Block::Assistant {
+        text: "## Answer\n\nAn unchanged **markdown** reply.".into(),
+        streaming: false,
+        at: None,
+        started: None,
+        took_ms: None,
+    });
+    let tool = a.push(card("priced", 2));
+    a.marks.insert("priced".into(), nexo_core::CallMark::Sent);
+    a.call_tokens.insert("priced".into(), 1_000_000);
+    let unpriced = a.push(card("unpriced", 2));
+    a.layout(80);
+    let snapshot = |a: &App, i: usize| a.cache[i].as_ref().map(|(w, h, lines, _)| (*w, *h, lines.clone()));
+    let old = snapshot(&a, text);
+    let old_tool = snapshot(&a, unpriced);
+    switch_test_model(&mut a);
+    assert_eq!(snapshot(&a, text), old, "model limits must not discard markdown wrapping");
+    assert_eq!(snapshot(&a, unpriced), old_tool, "unmarked tools do not depend on prices");
+    assert!(a.cache[tool].is_none(), "a priced tool must be rendered at the new rate");
+    let priced_head = head(&mut a, tool);
+    assert!(priced_head.contains("1.00000 $"), "the new price must reach the card: {priced_head:?}");
+    assert!(matches!(a.blocks.last(), Some(Block::Model { model, .. }) if model == "n"));
+}
+
+#[test]
+#[ignore = "manual model-switch latency measurement; no wall-clock assertions"]
+fn measure_model_switch_with_large_transcript() {
+    for count in [100, 1_000, 5_000] {
+        for full_invalidation in [false, true] {
+            let (mut a, _rx) = bare();
+            a.opts.animations = false;
+            for i in 0..count {
+                match i % 4 {
+                    0 => {
+                        a.push(Block::User { text: format!("Investigate issue {i}"), at: None });
+                    }
+                    1 => {
+                        a.push(Block::Assistant {
+                        text: "## Investigation\n\nSome **markdown** and `code`.\n\n```rust\nfn main() { println!(\"hello\"); }\n```\n".repeat(5),
+                        streaming: false, at: None, started: None, took_ms: None,
+                    });
+                    }
+                    2 => {
+                        a.push(Block::Group { folded: true, len: 1 });
+                    }
+                    _ => {
+                        let id = format!("tool-{i}");
+                        a.push(card(&id, 2));
+                        a.marks.insert(id.clone(), nexo_core::CallMark::Sent);
+                        a.call_tokens.insert(id, 1_000);
+                    }
+                }
+            }
+            a.transcript_area = Rect::new(0, 0, 100, 30);
+            a.layout(100);
+            a.scroll_to_end();
+            a.evict_far(a.scroll, 30);
+            let start = Instant::now();
+            switch_test_model(&mut a);
+            if full_invalidation {
+                a.invalidate_all();
+            }
+            let confirmed = start.elapsed();
+            frame(&mut a, 100, 30);
+            eprintln!("mixed model switch: {count} blocks, full_invalidation={full_invalidation}, events={confirmed:?}, first_frame={:?}", start.elapsed());
+        }
+    }
+}
+
+#[test]
+fn switching_models_refreshes_group_plan_labels_and_preserves_scroll() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    for i in 0..60 {
+        a.push(Block::User { text: format!("request {i}"), at: None });
+    }
+    let group = a.push(Block::Group { folded: true, len: 1 });
+    a.push(card("grouped", 1));
+    a.looks[group].spent = 2.0;
+    a.layout(80);
+    assert!(head(&mut a, group).contains("$2.00"));
+    a.transcript_area = Rect::new(0, 0, 80, 10);
+    a.scroll_to_line(30, false);
+    let scroll = a.scroll;
+    let prefix = a.offsets[..60].to_vec();
+    let mut plan = nexo_core::ProviderConfig::new("openai-chat", "http://x/v1", None);
+    plan.login = Some("codex".into());
+    a.opts.providers.push(("mock".into(), plan));
+    for _ in 0..3 {
+        switch_test_model(&mut a);
+        assert!(a.cache[group].is_none(), "the group's plan label must be refreshed");
+        a.layout(80);
+        assert_eq!(a.scroll, scroll);
+        assert_eq!(&a.offsets[..60], &prefix);
+        assert!(!a.follow);
+        assert!(head(&mut a, group).contains("≈$2.00 API"));
+    }
+}

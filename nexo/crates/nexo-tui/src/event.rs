@@ -449,6 +449,8 @@ fn search_key(app: &mut App, k: KeyEvent) {
 }
 
 pub fn mouse(app: &mut App, m: MouseEvent) {
+    // Every mouse event carries the current position, including drag and release.
+    app.pointer_pos = Some((m.column, m.row));
     if app.modal.is_none() && app.diffview.is_some() {
         if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) && app.modal_outside_click(m.column, m.row) {
             app.dirty = true;
@@ -467,6 +469,7 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             } else {
                 app.scroll_by(-(WHEEL_LINES as i32));
                 app.extend_after_scroll();
+                app.pointer_moved(m.column, m.row);
             }
         }
         MouseEventKind::ScrollDown => {
@@ -479,6 +482,7 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             } else {
                 app.scroll_by(WHEEL_LINES as i32);
                 app.extend_after_scroll();
+                app.pointer_moved(m.column, m.row);
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -494,12 +498,12 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            app.pointer_moved(m.column, m.row);
             if app.editor_drag {
                 app.editor_release();
                 return;
             }
             if app.bar_release() {
-                app.pointer_moved(m.column, m.row);
                 return;
             }
             if app.modal.is_none() && app.palette.is_none() {

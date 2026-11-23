@@ -21,7 +21,7 @@ impl App {
             }
             _ => {}
         }
-        let is_call = self.opts.group_tools && matches!(b, Block::Tool { .. });
+        let is_call = self.opts.group_tools && matches!(&b, Block::Tool { name, .. } if name != "skill");
         self.tasks.add(&b, self.blocks.len());
         self.blocks.push(b);
         self.cache.push(None);
@@ -43,7 +43,9 @@ impl App {
         while first > 0 && matches!(self.blocks[first - 1], Block::Reasoning { .. }) {
             first -= 1;
         }
-        let Some(prev) = first.checked_sub(1).filter(|p| matches!(self.blocks[*p], Block::Tool { .. })) else {
+        let Some(prev) =
+            first.checked_sub(1).filter(|p| matches!(&self.blocks[*p], Block::Tool { name, .. } if name != "skill"))
+        else {
             return at;
         };
         if let Some(back) = self.looks[prev].group_back {
@@ -181,18 +183,17 @@ impl App {
         self.dirty = true;
     }
 
-    /// The price of the output of tool call `id` in the last request: its tokens at the cached or the
-    /// full rate, from `Pricing::cost`. None unless the model's prices are all given (input, output,
-    /// cache read), the mark says the output was sent whole, and its tokens are known.
+    /// Estimated base-input-rate cost of a whole tool output, not a billed amount or upper bound. A repeated message
+    /// prefix (`Cached`, the legacy mark name) does not prove a provider cache hit, so it gets no
+    /// inferred discount. Provider usage is aggregate and cannot attribute cache hits to a tool.
+    /// None unless the input rate and this output's estimated token count are known.
     pub(super) fn call_cost(&self, id: &str, m: CallMark) -> Option<f64> {
-        let p = self.limits.as_ref()?.pricing.filter(|p| p.input > 0.0 && p.output > 0.0 && p.cache_read > 0.0)?;
+        let p = self.limits.as_ref()?.pricing.filter(|p| p.input.is_finite() && p.input > 0.0)?;
         let tokens = *self.call_tokens.get(id)?;
-        let usage = match m {
-            CallMark::Cached => nexo_core::stream::Usage { cache_read: tokens, ..Default::default() },
-            CallMark::Sent => nexo_core::stream::Usage { input: tokens, ..Default::default() },
-            _ => return None,
-        };
-        Some(p.cost(&usage))
+        if !matches!(m, CallMark::Cached | CallMark::Sent) {
+            return None;
+        }
+        Some(tokens as f64 * p.input / 1_000_000.0)
     }
 
     pub fn invalidate_all(&mut self) {

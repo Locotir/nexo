@@ -442,6 +442,7 @@ impl Block {
                 output: Some(ToolOutput { display: ToolDisplay::Remembered { scope, items, path, was }, .. }),
                 ..
             } => remembered_card(scope, items, path, was.as_deref(), theme, w),
+            Block::Tool { name, .. } if name == "skill" => skill::card(self, w, theme, o, &mut meta),
             Block::Tool { name, summary, status, progress, output, started, elapsed_ms, folded, args, .. } => {
                 let running = matches!(status, ToolStatus::Running | ToolStatus::Pending);
                 let (icon, istyle) = match status {
@@ -849,6 +850,7 @@ mod jobs;
 mod live_marks;
 mod notice_cards;
 mod output;
+mod skill;
 
 pub use banner::*;
 pub use jobs::*;
