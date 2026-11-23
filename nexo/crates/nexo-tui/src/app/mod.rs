@@ -322,6 +322,8 @@ pub struct App {
     pub show_live: bool,
     /// Each message of the history and how much of it the last call carried.
     pub map: Vec<ContextCell>,
+    /// Local estimates for the last fitted request, absent on older sessions.
+    pub request_composition: Option<[u64; 6]>,
     /// The curator's zones the cells are in (empty without the curator).
     pub map_zones: Vec<ContextZone>,
     /// The topic line above a message of the person that opens or goes back to a topic, by block index:
@@ -602,6 +604,7 @@ impl App {
             show_files: false,
             show_live: false,
             map: Vec::new(),
+            request_composition: None,
             map_zones: Vec::new(),
             topic_heads: std::collections::HashMap::new(),
             map_changed: Vec::new(),
@@ -748,6 +751,7 @@ impl App {
         self.context = None;
         self.context_wait = false;
         self.map.clear();
+        self.request_composition = None;
         self.map_zones.clear();
         self.topic_heads.clear();
         self.map_changed.clear();

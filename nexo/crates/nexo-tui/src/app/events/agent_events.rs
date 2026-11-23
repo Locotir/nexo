@@ -77,6 +77,9 @@ impl App {
             AgentEvent::ContextMap { cells, zones, calls, call_tokens } => {
                 self.on_context_map(cells, zones, calls, call_tokens)
             }
+            AgentEvent::RequestComposition { system, tools, user, assistant, calls, results } => {
+                self.request_composition = Some([system, tools, user, assistant, calls, results]);
+            }
             AgentEvent::Curated { items, relation_quotes, quote_heat } => {
                 self.quote_heat = quote_heat;
                 self.relation_quotes = relation_quotes;

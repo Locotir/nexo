@@ -140,7 +140,8 @@ pub fn context_parts(app: &App, theme: &Theme) -> Vec<(&'static str, &'static st
     let (num, _, _) = app.gauge_view();
     // Map sizes are original estimates, not the payload by kind: even Whole cells
     // cannot account for system/tools or reconcile a last-call total with this map.
-    vec![("◆", "in use (composition unknown)", num, theme.dim)]
+    let label = if app.request_composition.is_some() { "in use (total only)" } else { "in use (composition unknown)" };
+    vec![("◆", label, num, theme.dim)]
 }
 
 fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
@@ -225,6 +226,45 @@ fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
         out.extend(grid);
         out.push(Line::default());
         out.extend(side);
+    }
+    // These estimates describe the fitted request, unlike the history map below.
+    // Do not scale them to the gauge: provider accounting and the local estimator
+    // need not agree, and the gauge can still describe the preceding call.
+    if let Some(counts) = app.request_composition {
+        out.push(Line::default());
+        out.push(Line::from(Span::styled("Fitted request · local estimates", theme.dim())));
+        for (label, n) in
+            ["system prompt", "tool definitions", "user messages", "assistant content", "tool calls", "tool outputs"]
+                .into_iter()
+                .zip(counts)
+        {
+            out.push(Line::from(format!("{label:<20} ~{} tok", fmt_k(n))));
+        }
+        out.push(Line::from(Span::styled("Not provider token counts", theme.dim2())));
+        out.push(Line::from(Span::styled("Skills / MCP share: not identified", theme.dim2())));
+    }
+    // The map describes original history messages, not the fitted request. Keep this
+    // inventory separate from the gauge: shrunk and recalled sizes are not known.
+    if !app.map.is_empty() {
+        use nexo_core::CellKind;
+        let mut totals = [0u64; 4];
+        for cell in &app.map {
+            let i = match cell.kind {
+                CellKind::Request => 0,
+                CellKind::Reply => 1,
+                CellKind::Call => 2,
+                CellKind::Output => 3,
+            };
+            totals[i] = totals[i].saturating_add(cell.tokens);
+        }
+        out.push(Line::default());
+        out.push(Line::from(Span::styled("History originals · estimates, not sent", theme.dim())));
+        for (label, n) in ["user messages", "assistant replies", "tool calls", "tool outputs"].into_iter().zip(totals) {
+            out.push(Line::from(format!("{label:<20} ~{} tok", fmt_k(n))));
+        }
+        out.push(Line::from(Span::styled("Mixed messages counted by map kind", theme.dim2())));
+        out.push(Line::from(Span::styled("System and tools: see /sent", theme.dim2())));
+        out.push(Line::from(Span::styled("Skills / MCP share: not identified", theme.dim2())));
     }
     if let Some(c) = &app.context {
         out.push(Line::default());

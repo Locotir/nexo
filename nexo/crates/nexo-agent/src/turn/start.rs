@@ -1018,6 +1018,7 @@ pub(super) async fn prepare(
     let calls = crate::context_map::calls(&st.history, &cells, &req.messages, same);
     let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
     emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
+    emit(&st.events, crate::context_map::composition(&req));
     // The policy inventory is valid only if the final request kept its view intact.
     let (items, relation_quotes) =
         if unchanged { memory.map(|m| (m.curated, m.relation_quotes)).unwrap_or_default() } else { (Vec::new(), None) };

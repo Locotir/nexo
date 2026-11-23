@@ -131,6 +131,16 @@ pub enum AgentEvent {
         #[serde(default)]
         call_tokens: Vec<(String, u64)>,
     },
+    /// Local estimates for the last fitted request, not provider token usage or proof of delivery.
+    /// The categories are disjoint and describe typed parts, not provenance of skills or MCP.
+    RequestComposition {
+        system: u64,
+        tools: u64,
+        user: u64,
+        assistant: u64,
+        calls: u64,
+        results: u64,
+    },
     /// What the curator put in the call just prepared beyond the conversation, and what it held back
     /// (sent with `ContextMap`; only with the curator; empty when it added nothing).
     Curated {

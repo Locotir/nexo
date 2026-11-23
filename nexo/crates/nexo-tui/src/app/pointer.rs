@@ -706,6 +706,14 @@ impl App {
         self.hover == Hover::Bar(target) || self.bar_drag.is_some_and(|d| d.target == target)
     }
 
+    /// Conversation text stays quiet under the mouse; work cards retain block hover.
+    /// Skills are Tool blocks and subagents are Agent blocks, not assistant replies.
+    pub(crate) fn block_hoverable(&self, i: usize) -> bool {
+        self.blocks.get(i).is_some_and(|b| {
+            !matches!(b, Block::User { .. } | Block::Pending { .. } | Block::Assistant { .. } | Block::Welcome { .. })
+        })
+    }
+
     /// What is under `(x, y)`, topmost first.
     pub fn hover_at(&mut self, x: u16, y: u16) -> Hover {
         use crate::modal::contains;
@@ -744,9 +752,7 @@ impl App {
             }
             let line = self.view_top() + (y - a.y) as usize;
             if let Some(i) = self.block_at_line(line) {
-                if (line == self.offsets[i] && self.foldable(i))
-                    || matches!(self.blocks[i], Block::User { .. } | Block::Assistant { .. })
-                {
+                if self.block_hoverable(i) {
                     return Hover::Head(i);
                 }
             }

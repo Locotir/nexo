@@ -626,3 +626,58 @@ mod tests {
         assert!(tokens.iter().all(|t| t.1 > 0));
     }
 }
+
+/// Disjoint local estimates of the fitted request, classified by part (mixed messages
+/// are not assigned wholesale to one category). They are not provider token counts.
+pub(crate) fn composition(req: &nexo_core::ModelRequest) -> nexo_core::AgentEvent {
+    use nexo_core::{Message, Part, Role};
+    use nexo_core::message::{estimate_tokens, message_tokens};
+    let system = req.system.len() as u64 / 4;
+    let tools = serde_json::to_string(&req.tools).map(|s| s.len() as u64 / 4).unwrap_or(0);
+    let (mut user, mut assistant, mut calls, mut results) = (0u64, 0u64, 0u64, 0u64);
+    let mut base_total = 0u64;
+    for m in &req.messages {
+        let base = message_tokens(m);
+        base_total += base;
+        // Price each typed part independently: linear in payload size even for
+        // large messages. Per-part framing/rounding makes the sum approximate.
+        let empty = message_tokens(&Message::new(m.role, Vec::new()));
+        match m.role { Role::User => user += empty, Role::Assistant => assistant += empty }
+        for part in &m.content {
+            let one = Message::new(m.role, vec![part.clone()]);
+            let delta = message_tokens(&one).saturating_sub(empty);
+            match part {
+                Part::ToolCall { .. } => calls += delta,
+                Part::ToolResult { .. } => results += delta,
+                _ if m.role == Role::User => user += delta,
+                _ => assistant += delta,
+            }
+        }
+    }
+    assistant += estimate_tokens(&req.messages).saturating_sub(base_total);
+    nexo_core::AgentEvent::RequestComposition { system, tools, user, assistant, calls, results }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+    use nexo_core::{Message, ModelRequest, Part, Role};
+
+    #[test]
+    fn fitted_mixed_parts_are_disjoint_and_estimated() {
+        let mut req = ModelRequest::new("model", "system text", vec![
+            Message::new(Role::User, vec![Part::text("question"), Part::tool_result("id", "result content", false)]),
+            Message::new(Role::Assistant, vec![Part::text("reply"), Part::tool_call("id", "read", serde_json::json!({"path":"x"}))]),
+        ]);
+        let unpack = |r: &ModelRequest| match composition(r) {
+            nexo_core::AgentEvent::RequestComposition { system, tools, user, assistant, calls, results } => [system, tools, user, assistant, calls, results],
+            _ => unreachable!(),
+        };
+        let before = unpack(&req);
+        assert!(before[0] > 0 && before[2..].iter().all(|n| *n > 0));
+        req.messages[0].content.pop();
+        let after = unpack(&req);
+        assert_eq!(after[5], 0);
+        assert_eq!(&before[..5], &after[..5]);
+    }
+}

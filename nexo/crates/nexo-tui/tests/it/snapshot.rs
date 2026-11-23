@@ -638,8 +638,117 @@ fn context_overlay_does_not_allocate_gauge_to_original_message_sizes() {
         let rendered = nexo_tui::overlay::lines(&a, 0, 100, 1.0, nexo_agent::session_scan::Period::Week);
         let text = rendered.iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n");
         assert!(text.contains("in use (composition unknown)"), "{text}");
-        assert!(!text.contains("system & tools") && !text.contains("tool output"), "{text}");
+        assert!(!text.contains("system & tools"), "{text}");
+        if !a.map.is_empty() {
+            assert!(text.contains("History originals · estimates, not sent"), "{text}");
+            assert!(text.contains("tool outputs"), "{text}");
+            assert!(text.contains("Mixed messages counted by map kind"), "{text}");
+        }
     }
+}
+
+#[test]
+fn context_overlay_shows_fitted_request_estimates_without_relabeling_the_gauge() {
+    let mut a = app();
+    a.last_call_input = 42_000; // Provider usage is intentionally unlike the local estimate.
+    a.handle_agent(AgentEvent::RequestComposition {
+        system: 101,
+        tools: 202,
+        user: 303,
+        assistant: 404,
+        calls: 505,
+        results: 606,
+    });
+    assert_eq!(a.request_composition, Some([101, 202, 303, 404, 505, 606]));
+    let parts = nexo_tui::overlay::context_parts(&a, &a.theme);
+    assert_eq!(parts.len(), 1, "local estimates must not be apportioned onto the usage grid");
+    assert_eq!(parts[0].1, "in use (total only)");
+    assert_eq!(parts[0].2, 42_000, "local estimates must not replace provider usage");
+    for width in [40, 100] {
+        let rendered = nexo_tui::overlay::lines(&a, 0, width, 1.0, nexo_agent::session_scan::Period::Week);
+        let text = rendered.iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Fitted request · local estimates"), "{text}");
+        assert!(!text.contains("composition unknown"), "{text}");
+        for (label, count) in [
+            ("system prompt", 101),
+            ("tool definitions", 202),
+            ("user messages", 303),
+            ("assistant content", 404),
+            ("tool calls", 505),
+            ("tool outputs", 606),
+        ] {
+            assert!(text.lines().any(|l| l.contains(label) && l.contains(&format!("~{count}"))), "{text}");
+        }
+        assert!(text.contains("Not provider token counts"), "{text}");
+        assert!(text.contains("Skills / MCP share: not identified"), "{text}");
+    }
+    // Exercise the actual modal drawing at both terminal sizes. Its contents scroll.
+    a.run_command(nexo_tui::commands::Command::Context);
+    settled(&mut a);
+    for (width, height) in [(120, 60), (60, 40)] {
+        if let Some(nexo_tui::modal::Modal::Info(info)) = &mut a.modal {
+            info.scroll = 0;
+        }
+        let mut visible = String::new();
+        for _ in 0..8 {
+            visible.push_str(&draw(&mut a, width, height).join("\n"));
+            if let Some(nexo_tui::modal::Modal::Info(info)) = &mut a.modal {
+                info.scroll += 5;
+            }
+        }
+        assert!(visible.contains("Fitted request"), "{visible}");
+        assert!(visible.contains("system prompt"), "{visible}");
+        assert!(visible.contains("tool outputs"), "{visible}");
+        assert!(visible.contains("not identified"), "{visible}");
+    }
+}
+
+#[test]
+fn context_request_estimates_reset_on_history_replay_and_new_session() {
+    let mut a = app();
+    assert_eq!(a.request_composition, None);
+    a.handle_agent(AgentEvent::RequestComposition { system: 1, tools: 0, user: 3, assistant: 0, calls: 0, results: 0 });
+    // SessionChanged is metadata; the following HistoryCleared resets the replay state.
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "new-session".into(), title: "New".into() });
+    a.handle_agent(AgentEvent::HistoryCleared);
+    assert_eq!(a.request_composition, None);
+    let text = nexo_tui::overlay::lines(&a, 0, 100, 1.0, nexo_agent::session_scan::Period::Week)
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains("Fitted request"), "{text}");
+    a.handle_agent(AgentEvent::RequestComposition { system: 0, tools: 0, user: 0, assistant: 0, calls: 0, results: 0 });
+    assert_eq!(a.request_composition, Some([0; 6]), "empty requests are known, not absent");
+    let text = nexo_tui::overlay::lines(&a, 0, 100, 1.0, nexo_agent::session_scan::Period::Week)
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Fitted request · local estimates"), "{text}");
+    assert_eq!(text.lines().filter(|line| line.contains("~0 tok")).count(), 6, "{text}");
+    a.clear_transcript(); // Also used by resume/rewind/new-session history replay.
+    assert_eq!(a.request_composition, None);
+}
+
+#[test]
+fn context_request_composition_render_cost_is_bounded() {
+    use std::time::Instant;
+    let mut a = app();
+    a.handle_agent(AgentEvent::RequestComposition {
+        system: 100,
+        tools: 200,
+        user: 300,
+        assistant: 400,
+        calls: 500,
+        results: 600,
+    });
+    let start = Instant::now();
+    for _ in 0..1000 {
+        std::hint::black_box(nexo_tui::overlay::lines(&a, 0, 100, 1.0, nexo_agent::session_scan::Period::Week));
+    }
+    eprintln!("context composition: 1000 renders in {:?}", start.elapsed());
+    // Timings are reported rather than asserting a machine-specific frame budget.
 }
 
 fn curated_items() -> Vec<nexo_core::CuratedItem> {

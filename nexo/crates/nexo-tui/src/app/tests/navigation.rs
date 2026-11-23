@@ -8,7 +8,7 @@ use nexo_core::subs::{SubInfo, SubState};
 use nexo_supervise::{AgentRow, SourceKind, State};
 
 #[test]
-fn hover_multiline_message_covers_each_content_row() {
+fn hover_multiline_message_stays_quiet_on_each_content_row() {
     let (mut a, _rx) = bare();
     a.opts.animations = false;
     a.push(Block::User { text: "first line\nsecond line".into(), at: None });
@@ -19,13 +19,13 @@ fn hover_multiline_message_covers_each_content_row() {
     let first = a.offsets[0];
     assert!(a.block_at_line(first + 1) == Some(0));
     a.pointer_moved(2, 1 + (first + 1) as u16);
-    assert_eq!(a.hover, Hover::Head(0));
+    assert_eq!(a.hover, Hover::Nothing);
     a.pointer_moved(2, 1 + a.offsets[1] as u16);
     assert_ne!(a.hover, Hover::Head(0));
 }
 
 #[test]
-fn hover_multiline_message_renders_both_rows() {
+fn hover_multiline_message_does_not_change_either_row() {
     let (mut a, _rx) = bare();
     a.opts.animations = false;
     a.push(Block::User { text: "first line\nsecond line".into(), at: None });
@@ -37,8 +37,8 @@ fn hover_multiline_message_renders_both_rows() {
     a.pointer_moved(x, y + 1);
     term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
     let after = term.backend().buffer();
-    assert_ne!(before[(x, y)].bg, after[(x, y)].bg, "first row");
-    assert_ne!(before[(x, y + 1)].bg, after[(x, y + 1)].bg, "second row");
+    assert_eq!(before[(x, y)].style(), after[(x, y)].style(), "first row");
+    assert_eq!(before[(x, y + 1)].style(), after[(x, y + 1)].style(), "second row");
 }
 
 const RUN: &str = "call_1#3";

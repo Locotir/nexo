@@ -163,12 +163,10 @@ fn multiline_pointer_to_frame_latency() {
         a.unlock();
         a.drop_banner();
         for i in 0..blocks {
-            // Markdown assistant messages need a hard break; a soft newline renders as one row.
-            let text = format!("message {i}, first line  \nsecond line of the same message");
-            a.push(if i % 2 == 0 {
-                Block::User { text, at: None }
-            } else {
-                Block::Assistant { text, streaming: false, at: None, started: None, took_ms: None }
+            a.push(Block::Shell {
+                command: format!("echo work-{i}"),
+                output: "first line\nsecond line".into(),
+                exit_code: Some(0),
             });
         }
         let mut term = Term::new(TestBackend::new(100, 36)).unwrap();

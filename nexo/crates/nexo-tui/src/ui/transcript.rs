@@ -86,30 +86,18 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 });
             }
         }
-        if hovered_head == Some(bi)
-            && j < n
-            && (j == 0
-                || matches!(
-                    app.blocks[bi],
-                    crate::render::blocks::Block::User { .. } | crate::render::blocks::Block::Assistant { .. }
-                ))
-            && !(lvl > 0.0 && j == 0)
-        {
-            let style = theme.hover();
-            l = l.patch_style(style);
-            for span in &mut l.spans {
-                span.style = span.style.patch(style);
-            }
+        if hovered_head == Some(bi) && j < n && app.block_hoverable(bi) && !(lvl > 0.0 && j == 0) {
+            let end = text_end(&l);
+            l = style_cols(l, 0, end, theme.hover());
         }
         if let Some(q) = &query {
             l = highlight(l, q, theme.highlight(), current_match == Some(line));
         }
-        if let Some((from, mut to)) = selection.as_ref().and_then(|s| s.covers(line)) {
-            // inside a box the highlight stops at the end of the row, not at the screen edge
-            if to == usize::MAX && selection.as_ref().is_some_and(|s| s.region.is_some() && !s.free) {
-                to = l.width();
+        if let Some((from, to)) = selection.as_ref().and_then(|s| s.covers(line)) {
+            let end = text_end(&l);
+            if from < end {
+                l = style_cols(l, from, to.min(end), theme.highlight());
             }
-            l = style_cols(l, from, to, theme.highlight());
         }
         // the link under the pointer lights up
         if let Some((row, from, to)) = hovered_link.filter(|(row, ..)| *row == line - scroll) {
@@ -171,6 +159,19 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     app.evict_far(scroll, height);
+}
+
+/// Last non-whitespace column, excluding layout padding in code and message rows.
+fn text_end(line: &Line<'_>) -> usize {
+    let mut end = line.width();
+    for span in line.spans.iter().rev() {
+        let trimmed = span.content.trim_end_matches(char::is_whitespace);
+        end -= width(&span.content[trimmed.len()..]);
+        if !trimmed.is_empty() {
+            break;
+        }
+    }
+    end
 }
 
 /// The "new below" pill: lit under the pointer, beating while news arrives.
@@ -254,7 +255,21 @@ pub(super) fn highlight(line: Line<'static>, q: &str, style: Style, current: boo
 
 #[cfg(test)]
 mod bracket_tests {
-    use super::bracket_part;
+    use super::{bracket_part, style_cols, text_end};
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+    };
+
+    #[test]
+    fn highlight_stops_before_padding_across_spans_and_wide_text() {
+        let line = Line::from(vec![Span::raw("  界x"), Span::raw("  "), Span::raw("   ")]);
+        assert_eq!(text_end(&line), 5);
+        let highlighted = style_cols(line, 0, 5, Style::default().bg(Color::Red));
+        assert_eq!(highlighted.spans[0].style.bg, Some(Color::Red));
+        assert!(highlighted.spans[1..].iter().all(|s| s.style.bg != Some(Color::Red)));
+        assert_eq!(text_end(&Line::from("   ")), 0);
+    }
 
     #[test]
     fn bracket_marks_block_endpoints_not_viewport_endpoints() {
