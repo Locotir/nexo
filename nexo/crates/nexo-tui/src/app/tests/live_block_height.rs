@@ -84,6 +84,19 @@ fn live_thinking_never_pushes_the_text_above_it_down_with_animations() {
 
 #[test]
 fn tool_cards_groups_and_thinking_between_calls_never_push_the_text_above_down() {
+    tool_cards_run(0);
+}
+
+/// The same run on a slow machine (or a slow model): the view's glide has a different amount of time to
+/// catch up between two events, and that must never change what the text above does.
+#[test]
+fn tool_cards_groups_and_thinking_never_push_the_text_down_however_long_each_step_takes() {
+    for ms in [30, 200, 1000] {
+        tool_cards_run(ms);
+    }
+}
+
+fn tool_cards_run(step_ms: u64) {
     let mut evs = vec![AgentEvent::ReasoningDelta { text: "first I look at the file\nthen at the other one\n".into() }];
     for n in 0..3 {
         let id = format!("c{n}");
@@ -110,14 +123,19 @@ fn tool_cards_groups_and_thinking_between_calls_never_push_the_text_above_down()
         a.push(Block::Notice { level: Level::Info, text: "MARKER-ABOVE".into() });
         a.handle_agent(AgentEvent::TurnStart { turn: 1 });
         let mut prev: Option<usize> = None;
+        let mut clock = a.now();
         for ev in evs.clone() {
+            if step_ms > 0 {
+                clock += std::time::Duration::from_millis(step_ms);
+                a.fx.clock = Some(clock);
+            }
             a.handle_agent(ev);
             a.tick_frame(false);
             term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
             let rows = crate::ui::rows_of(term.backend().buffer());
             let now = marker_row(&rows);
             if let (Some(p), Some(n)) = (prev, now) {
-                assert!(n <= p, "{w}x{h}: marker moved down from row {p} to {n}:\n{}", rows.join("\n"));
+                assert!(n <= p, "{step_ms}ms {w}x{h}: marker moved down from row {p} to {n}:\n{}", rows.join("\n"));
             }
             prev = now;
         }

@@ -375,7 +375,7 @@ mod tests {
         let parts = copy.hidden("probe", "#[test] fn probe() {}", &[("probe", "probe failed")]);
         assert!(!parts[0].0);
         assert!(parts[0].1.contains("cannot find function `missing_symbol`"), "{}", parts[0].1);
-        assert!(parts[0].1.contains("src/lib.rs"), "{}", parts[0].1);
+        assert!(parts[0].1.contains("src/lib.rs") || parts[0].1.contains("src\\lib.rs"), "{}", parts[0].1);
         assert!(!parts[0].1.contains("probe failed"), "{}", parts[0].1);
     }
 

@@ -544,11 +544,20 @@ impl App {
         // wrapped line that got shorter, and the space it leaves must not be kept (the view would point past
         // the text, a blank screen until the next scroll)
         let hidden = (turn..self.blocks.len()).filter(|&i| self.hidden(i)).count();
+        let height = match self.transcript_area.height {
+            0 => 40,
+            h => h as usize,
+        };
         let held = (self.follow && self.busy)
             .then_some(self.held)
             .flatten()
-            .filter(|h| h.width == width && h.hidden == hidden)
-            .filter(|h| self.offsets.get(h.anchor).is_some_and(|o| *o == h.anchor_off));
+            .filter(|h| h.width == width)
+            .filter(|h| self.offsets.get(h.anchor).is_some_and(|o| *o == h.anchor_off))
+            // a fold that hid calls gives its lines back at once, so the old end is void; but a small drop is
+            // kept as a few lines of space, so the text above stays put whether or not the glide of the view
+            // had caught up with the end (wall-clock luck must not decide whether it jumps). A long drop
+            // would leave the view past the text, a blank screen until the next scroll.
+            .filter(|h| h.hidden == hidden || h.total <= off + height / 4);
         let pin = (live || held.is_some()).then_some(turn);
         self.total_lines = off.max(held.map_or(0, |h| h.total));
         self.held = (self.follow && self.busy).then_some(()).and(pin).map(|anchor| HeldEnd {

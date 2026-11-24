@@ -1212,29 +1212,51 @@ async fn compact_recovery_survives_interruption_and_late_old_writer() {
 #[allow(clippy::await_holding_lock)]
 async fn compact_snapshot_write_failure_does_not_replace_session() {
     let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let old =
+        vec![Message::user("Never delete the logs."), Message::assistant("Understood."), Message::user("Continue.")];
+    // A first, identical compaction in a scratch session reveals the recovery slot's name, which depends
+    // only on the history (the same summary gives the same one).
+    let slot_suffix = {
+        let d = tempfile::tempdir().unwrap();
+        let rt = runtime_in(d.path()).await;
+        let mut st = rt.state.lock().await;
+        st.client = Arc::new(SummaryClient);
+        st.policy = Box::new(crate::context::BuiltIn::new("").unwrap());
+        for m in &old {
+            st.session.append(m).unwrap();
+        }
+        st.history.replace(old.clone());
+        st.policy.view(0, &old).await.unwrap();
+        let path = st.session.path().to_path_buf();
+        assert!(compact_locked(&mut st, 2, &CancellationToken::new()).await);
+        let prefix = format!("{}.curator.compact.", path.file_name().unwrap().to_str().unwrap());
+        let slot = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .find(|n| n.starts_with(&prefix) && !n.ends_with(".tmp"))
+            .expect("the compaction left no recovery slot");
+        slot[path.file_name().unwrap().to_str().unwrap().len() - "jsonl".len()..].to_string()
+    };
     let d = tempfile::tempdir().unwrap();
     let rt = runtime_in(d.path()).await;
     let mut st = rt.state.lock().await;
     st.client = Arc::new(SummaryClient);
     st.policy = Box::new(crate::context::BuiltIn::new("").unwrap());
-    let old =
-        vec![Message::user("Never delete the logs."), Message::assistant("Understood."), Message::user("Continue.")];
     for m in &old {
         st.session.append(m).unwrap();
     }
     st.history.replace(old.clone());
     st.policy.view(0, &old).await.unwrap();
     let path = st.session.path().to_path_buf();
-    // The temp slot parent is inaccessible when replaced with a non-directory.
-    let parent = path.parent().unwrap();
-    let moved = parent.with_extension("moved");
-    std::fs::rename(parent, &moved).unwrap();
-    std::fs::write(parent, b"not a directory").unwrap();
+    // A non-empty directory in the recovery slot's place makes committing it fail on every platform
+    // (renaming a directory that holds open files is refused on Windows, so the parent is left alone).
+    let slot = path.with_extension(&slot_suffix);
+    std::fs::create_dir(&slot).unwrap();
+    std::fs::write(slot.join("occupied"), b"x").unwrap();
     assert!(!compact_locked(&mut st, 2, &CancellationToken::new()).await);
     assert_eq!(st.history.to_vec(), old);
     assert_eq!(st.session.messages(), old);
-    std::fs::remove_file(parent).unwrap();
-    std::fs::rename(&moved, parent).unwrap();
+    std::fs::remove_dir_all(&slot).unwrap();
     assert_eq!(Session::open_path(&path).unwrap().messages(), old);
     std::env::remove_var("NEXO_DATA_DIR");
 }
