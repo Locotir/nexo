@@ -135,10 +135,12 @@ __attribute__((noinline)) int forker(void) {
     return 7;
 }
 __attribute__((noinline)) void stop_here(void) {}
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
     stop_here();
-    printf("main done\n");
-    fflush(stdout);
+    FILE *marker = fopen(argv[1], "w");
+    if (!marker) return 3;
+    if (fputs("main done\n", marker) < 0 || fclose(marker) != 0) return 4;
     return 0;
 }
 "#;
@@ -406,9 +408,10 @@ fn a_parent_let_go_under_follow_child_keeps_no_hardware_watch() {
 fn a_debugger_call_that_forks_under_follow_child_puts_the_thread_back_before_the_parent_is_let_go() {
     let work = tempfile::tempdir().unwrap();
     let Some(exe) = cc(work.path(), "calls", CALLS) else { return };
+    let marker = work.path().join("parent-done");
     let state = tempfile::tempdir().unwrap();
     let s = state.path();
-    call(s, &["run", exe.to_str().unwrap()]);
+    call(s, &["run", exe.to_str().unwrap(), marker.to_str().unwrap()]);
     call(s, &["break", "stop_here"]);
     let at = call(s, &["cont", "--wait", "20"]);
     assert!(at.contains("stop_here"), "{at}");
@@ -417,10 +420,20 @@ fn a_debugger_call_that_forks_under_follow_child_puts_the_thread_back_before_the
     assert!(!c.contains("the program ended during it"), "{c}");
     assert!(c.contains("`forker()` did not return") && c.contains("is back as before the call"), "{c}");
     let id = session_in(&c);
-    // the parent goes on from `stop_here`, as before the call
+    // The active session is the child; the detached parent must resume from `stop_here`.
     let end = call(s, &["cont", "--wait", "20"]);
     assert!(end.contains("exited with code 0"), "{end}");
-    let out = call(s, &["out", "--all"]);
-    assert!(out.contains("main done"), "{out}");
+    // Parent and child share a pipe, so either session may have drained the parent's output.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match std::fs::read_to_string(&marker) {
+            Ok(contents) if contents == "main done\n" => break,
+            Ok(_) => {} // The parent may still be writing the marker.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("cannot read parent marker: {e}"),
+        }
+        assert!(std::time::Instant::now() < deadline, "parent did not complete after being let go");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let _ = call(s, &["-s", &id, "end"]);
 }
