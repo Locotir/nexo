@@ -1,10 +1,10 @@
-use super::oauth::{oauth_poll_error, Poll};
+use super::oauth::{Poll, oauth_poll_error};
 use super::*;
 use base64::Engine;
 use httpmock::prelude::*;
 use nexo_core::auth::{self, Credential};
 use nexo_core::{ErrorKind, ProviderConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -370,5 +370,76 @@ async fn a_renewal_the_server_never_answers_fails_naming_the_login() {
     assert_eq!(e.kind, ErrorKind::Auth);
     for fact in ["codex", "did not answer", "1s"] {
         assert!(e.message.contains(fact), "{fact:?} missing from {:?}", e.message);
+    }
+}
+
+#[tokio::test]
+async fn claude_oauth_headers_are_selected_only_for_oauth() {
+    let mut cfg = ProviderConfig::new("anthropic", "https://api.anthropic.com", None);
+    cfg.headers.insert("Anthropic-Beta".into(), "other-beta".into());
+    let cred = Credential::Oauth {
+        access: "oauth-token".into(),
+        refresh: "refresh".into(),
+        expires: auth::now() + 3600,
+        metadata: BTreeMap::from([("flow".into(), "claude".into())]),
+    };
+    let oauth = apply(&cfg, &cred);
+    let h = crate::anthropic::Anthropic::headers(&oauth, Some(cred.secret()));
+    assert_eq!(h["authorization"], "Bearer oauth-token");
+    assert!(h.get("x-api-key").is_none());
+    assert_eq!(h["anthropic-beta"], "other-beta,oauth-2025-04-20");
+    let again = apply(&oauth, &cred);
+    assert_eq!(again.headers["Anthropic-Beta"], "other-beta,oauth-2025-04-20");
+    let h = crate::anthropic::Anthropic::headers(&cfg, Some("api-key"));
+    assert_eq!(h["x-api-key"], "api-key");
+    assert!(h.get("authorization").is_none());
+    assert_eq!(h["anthropic-beta"], "other-beta");
+    assert!(is_flow("claude"));
+    assert!(login("claude", &|_| {}).await.is_err());
+}
+
+#[tokio::test]
+async fn claude_destination_checked_before_use_and_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("auth.json");
+    for expires in [auth::now() + 3600, 0] {
+        let cred = Credential::Oauth {
+            access: "secret-access".into(),
+            refresh: "secret-refresh".into(),
+            expires,
+            metadata: BTreeMap::from([("flow".into(), "claude".into())]),
+        };
+        auth::set_in(&store, "anthropic", cred).unwrap();
+        for url in [
+            "http://api.anthropic.com",
+            "https://api.anthropic.com.evil.test",
+            "https://api.anthropic.com@evil.test",
+            "https://api.anthropic.com:444",
+            "https://api.anthropic.com/?x=1",
+            "https://evil.test",
+        ] {
+            let mut cfg = ProviderConfig::new("anthropic", url, None);
+            cfg.auth = Some("anthropic".into());
+            let error = prepare_in(&store, &Endpoints::default(), &cfg).await.unwrap_err();
+            assert!(error.message.contains("official Anthropic"), "{url}: {error:?}");
+            assert!(!error.message.contains("secret"));
+        }
+        let mut cfg = ProviderConfig::new("openai-chat", "https://api.anthropic.com", None);
+        cfg.auth = Some("anthropic".into());
+        assert!(prepare_in(&store, &Endpoints::default(), &cfg).await.is_err());
+    }
+    let cred = Credential::Oauth {
+        access: "token".into(),
+        refresh: "refresh".into(),
+        expires: auth::now() + 3600,
+        metadata: BTreeMap::from([("flow".into(), "claude".into())]),
+    };
+    auth::set_in(&store, "anthropic", cred).unwrap();
+    for url in ["https://api.anthropic.com", "https://api.anthropic.com/v1"] {
+        let mut cfg = ProviderConfig::new("anthropic", url, None);
+        cfg.auth = Some("anthropic".into());
+        let (applied, key) = prepare_in(&store, &Endpoints::default(), &cfg).await.unwrap();
+        assert_eq!(key.as_deref(), Some("token"));
+        assert_eq!(applied.extra.get("bearer").and_then(|v| v.as_bool()), Some(true));
     }
 }

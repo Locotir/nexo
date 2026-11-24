@@ -5,9 +5,9 @@ use nexo_core::auth::Credential;
 use nexo_core::{ErrorKind, ProviderConfig, ProviderError};
 
 use super::form;
-use super::oauth::{fail, post, said, tokens, Body};
+use super::oauth::{Body, fail, post, said, tokens};
 use super::xai::XAI_CLIENT;
-use super::{Endpoints, CODEX_CLIENT};
+use super::{CODEX_CLIENT, Endpoints};
 
 /// A fresh access token for `cred`, when its flow has one to give.
 pub async fn refresh(cred: &Credential) -> Result<Credential, ProviderError> {
@@ -15,6 +15,9 @@ pub async fn refresh(cred: &Credential) -> Result<Credential, ProviderError> {
 }
 
 pub async fn refresh_at(at: &Endpoints, cred: &Credential) -> Result<Credential, ProviderError> {
+    if cred.metadata("flow") == Some("claude") {
+        return super::claude::refresh(cred).await;
+    }
     // a login that lives in the Codex CLI's file is renewed together with that file
     if cred.metadata("flow") == Some("codex") {
         if let Some(f) = cred.metadata("source_file") {
@@ -84,10 +87,30 @@ pub async fn prepare_in(
     let Some(mut cred) = auth::read_checked(store).map_err(unreadable)?.remove(name) else {
         return Ok((cfg.clone(), None));
     };
+    validate_claude_destination(cfg, &cred)?;
     if cred.expiring(auth::now(), 60) {
-        cred = renew_locked(store, at, name).await?.unwrap_or(cred);
+        cred = renew_locked(store, at, name, cfg).await?.unwrap_or(cred);
     }
+    validate_claude_destination(cfg, &cred)?;
     Ok((apply(cfg, &cred), Some(cred.secret().to_string())))
+}
+
+// Keep this deliberately strict: no userinfo, alternate ports, queries or proxy paths.
+// This check runs before refresh as well as before returning the access token.
+fn validate_claude_destination(cfg: &ProviderConfig, cred: &Credential) -> Result<(), ProviderError> {
+    if cred.metadata("flow") == Some("claude")
+        && (cfg.protocol != "anthropic"
+            || !matches!(
+                cfg.base_url.as_str(),
+                "https://api.anthropic.com"
+                    | "https://api.anthropic.com/"
+                    | "https://api.anthropic.com/v1"
+                    | "https://api.anthropic.com/v1/"
+            ))
+    {
+        return Err(fail("Claude OAuth requires the official Anthropic API endpoint and protocol"));
+    }
+    Ok(())
 }
 
 /// The whole renewal request, inside the task that holds the store's lock: whatever the server does, the
@@ -101,6 +124,7 @@ pub(super) async fn renew_locked(
     store: &std::path::Path,
     at: &Endpoints,
     name: &str,
+    cfg: &ProviderConfig,
 ) -> Result<Option<Credential>, ProviderError> {
     let f = store.to_path_buf();
     let lock = tokio::task::spawn_blocking(move || auth::lock_in(&f))
@@ -108,6 +132,7 @@ pub(super) async fn renew_locked(
         .map_err(|e| fail(format!("the credential store could not be locked: {e}")))?
         .map_err(|e| fail(format!("the credential store could not be locked: {e}")))?;
     let Some(cred) = lock.get(name) else { return Ok(None) };
+    validate_claude_destination(cfg, &cred)?;
     if !cred.expiring(auth::now(), 60) {
         return Ok(Some(cred));
     }
@@ -136,6 +161,22 @@ pub(super) async fn renew_locked(
 pub fn apply(cfg: &ProviderConfig, cred: &Credential) -> ProviderConfig {
     let mut c = cfg.clone();
     match cred.metadata("flow") {
+        Some("claude") if matches!(cred, Credential::Oauth { .. }) => {
+            c.extra.insert("bearer".into(), toml::Value::Boolean(true));
+            let key = c
+                .headers
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case("anthropic-beta"))
+                .cloned()
+                .unwrap_or_else(|| "anthropic-beta".into());
+            let beta = c.headers.entry(key).or_default();
+            if !beta.split(',').any(|v| v.trim() == "oauth-2025-04-20") {
+                if !beta.trim().is_empty() {
+                    beta.push(',');
+                }
+                beta.push_str("oauth-2025-04-20");
+            }
+        }
         Some("copilot") => {
             if let Some(base) = cred.metadata("base_url") {
                 if c.base_url == crate::copilot::BASE_URL {

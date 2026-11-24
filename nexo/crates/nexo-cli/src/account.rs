@@ -4,7 +4,7 @@
 //! missing, and whether the provider answers) and `nexo guide` (the setup
 //! guide, written for a person or an assistant doing it for them).
 
-use std::io::{BufRead, IsTerminal, Read};
+use std::io::{BufRead, IsTerminal, Read, Write};
 
 use nexo_core::auth::{self, Credential};
 use nexo_core::config::{Config, ProviderConfig};
@@ -50,11 +50,7 @@ pub fn key_source(name: &str, p: &ProviderConfig) -> String {
     if let Some(c) = auth::get(p.auth.as_deref().unwrap_or(name)) {
         return format!("stored {}", c.kind());
     }
-    if p.needs_key() {
-        "missing".into()
-    } else {
-        "-".into()
-    }
+    if p.needs_key() { "missing".into() } else { "-".into() }
 }
 
 /// How to give `name` its key, in one line.
@@ -84,6 +80,9 @@ pub async fn login_cmd(
         println!("\nany other provider takes a key: `nexo providers --all` lists every one nexo knows");
         return Ok(0);
     };
+    if flow == Some("claude") && name != "anthropic" {
+        anyhow::bail!("Claude OAuth is only available for provider anthropic");
+    }
     if !adopt(cfg, name) && flow.is_none() && key.is_none() {
         anyhow::bail!("unknown provider {name:?}; `nexo providers --all` lists them, or give --key to keep one anyway");
     }
@@ -93,21 +92,28 @@ pub async fn login_cmd(
 
     let cred = match flow {
         Some(f) => {
-            if !login::is_flow(&f) {
-                anyhow::bail!("no login flow {f:?}; there are: {}", flows());
-            }
-            println!("logging in to {name} ({f})…");
-            let show = |d: &login::DeviceCode| {
-                if d.code.is_empty() {
-                    // the browser flow: the page is opened, and the answer comes back to this machine
-                    let opened = login::open_url(&d.url);
-                    println!("\n  {}   {}\n", if opened { "opened" } else { "open  " }, d.url);
-                } else {
-                    println!("\n  open   {}\n  enter  {}\n", d.url, d.code);
+            if f == "claude" {
+                if name != "anthropic" {
+                    anyhow::bail!("Claude OAuth is only available for provider anthropic");
                 }
-                println!("waiting for the browser (Ctrl+C gives up)…");
-            };
-            login::login(&f, &show).await.map_err(|e| anyhow::anyhow!("{}", e.message))?
+                claude_login().await?
+            } else {
+                if !login::is_flow(&f) {
+                    anyhow::bail!("no login flow {f:?}; there are: {}", flows());
+                }
+                println!("logging in to {name} ({f})…");
+                let show = |d: &login::DeviceCode| {
+                    if d.code.is_empty() {
+                        // the browser flow: the page is opened, and the answer comes back to this machine
+                        let opened = login::open_url(&d.url);
+                        println!("\n  {}   {}\n", if opened { "opened" } else { "open  " }, d.url);
+                    } else {
+                        println!("\n  open   {}\n  enter  {}\n", d.url, d.code);
+                    }
+                    println!("waiting for the browser (Ctrl+C gives up)…");
+                };
+                login::login(&f, &show).await.map_err(|e| anyhow::anyhow!("{}", e.message))?
+            }
         }
         None => Credential::Api { key: read_key(name, &p, key)? },
     };
@@ -121,6 +127,33 @@ pub async fn login_cmd(
         println!("make it the default: nexo use {name}");
     }
     Ok(0)
+}
+
+/// Claude's unofficial flow is deliberately interactive: no browser, PKCE or network
+/// activity happens before a person explicitly accepts the policy warning.
+async fn claude_login() -> anyhow::Result<Credential> {
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("Claude OAuth requires an interactive terminal for explicit consent");
+    }
+    eprintln!("\n{}", login::claude::WARNING);
+    eprint!("Type YES to accept and continue (anything else cancels): ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    if answer.trim() != "YES" {
+        anyhow::bail!("Claude OAuth cancelled; use an API key instead");
+    }
+    let authorization = login::claude::begin(true).map_err(|e| anyhow::anyhow!("{}", e.message))?;
+    // Never print the authorization URL; redirected output may be retained in logs.
+    if !login::open_url(authorization.url()) {
+        anyhow::bail!("Could not open a browser for Claude OAuth; configure a browser and try again");
+    }
+    eprintln!("Opened the authorization page in your browser.");
+    eprint!("Paste the complete authorization code including #state (hidden): ");
+    std::io::stderr().flush()?;
+    let code = read_hidden()
+        .ok_or_else(|| anyhow::anyhow!("cannot securely read the authorization code from this terminal"))??;
+    authorization.exchange(&code).await.map_err(|e| anyhow::anyhow!("{}", e.message))
 }
 
 fn flows() -> String {
@@ -212,11 +245,7 @@ pub fn list_cmd() -> i32 {
             Credential::Oauth { expires, refresh, .. } if *expires != 0 => {
                 let left = expires.saturating_sub(now);
                 let renew = if refresh.is_empty() { "" } else { ", renewed when used" };
-                if left == 0 {
-                    format!("expired{renew}")
-                } else {
-                    format!("expires in {}{renew}", human(left))
-                }
+                if left == 0 { format!("expired{renew}") } else { format!("expires in {}{renew}", human(left)) }
             }
             _ => String::new(),
         };
@@ -460,6 +489,14 @@ pub fn add_directory(cfg: &mut Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn claude_flow_rejects_other_provider_before_login() {
+        let mut cfg = Config::default();
+        let error = login_cmd(&mut cfg, Some("other"), None, Some("claude")).await.unwrap_err();
+        assert!(error.to_string().contains("only available for provider anthropic"));
+        assert!(!cfg.providers.contains_key("other"));
+    }
 
     #[tokio::test]
     async fn login_without_a_provider_lists_the_logins_and_succeeds() {

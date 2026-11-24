@@ -12,6 +12,7 @@
 //! the one a request goes out with: the key, refreshed when needed, and what
 //! the login learned (the Copilot endpoint, the ChatGPT account).
 
+pub mod claude;
 mod choices;
 mod codex;
 mod copilot;
@@ -40,6 +41,7 @@ use nexo_core::ProviderError;
 
 /// The flows nexo can run, with a line on each.
 pub const FLOWS: &[(&str, &str)] = &[
+    ("claude", "Unofficial Claude Code OAuth (explicit consent required)"),
     ("copilot", "GitHub Copilot subscription (github.com device code)"),
     ("codex", "ChatGPT Plus/Pro/Team subscription: the Codex CLI login if there is one, else the browser"),
     ("codex-browser", "ChatGPT subscription: sign in in the browser (PKCE, callback on localhost:1455)"),
@@ -106,6 +108,7 @@ pub async fn login_at(
     show: &(dyn Fn(&DeviceCode) + Sync),
 ) -> Result<Credential, ProviderError> {
     match flow {
+        "claude" => Err(fail("Claude OAuth requires explicit consent; use the interactive Claude login")),
         "copilot" => copilot(at, show).await,
         "codex" => {
             let file = at.codex_auth.clone().unwrap_or_else(crate::codex::cli_file);
