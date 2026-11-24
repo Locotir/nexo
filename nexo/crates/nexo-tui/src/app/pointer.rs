@@ -351,7 +351,7 @@ impl App {
         let block = self.block_at_line(line)?;
         self.lines(block, self.last_width);
         let local = line - self.offsets[block];
-        if self.looks[block].no_link_row == Some(local) {
+        if self.looks[block].no_link_rows.is_some_and(|(from, to)| (from..to).contains(&local)) {
             return None;
         }
         let col = (x - a.x) as usize;
@@ -379,7 +379,9 @@ impl App {
             if k > 0 {
                 let gap = c.map_or(0, |c| c.gap as usize);
                 text.push_str(&" ".repeat(gap));
-                ul.extend(std::iter::repeat_n(false, gap));
+                // Restore only the underline actually trimmed by the wrapper. A
+                // plain separator between two links must remain a label boundary.
+                ul.extend(std::iter::repeat_n(c.is_some_and(|c| c.gap_underlined), gap));
             }
             let base = ul.len() as isize - skip as isize;
             let mut at = 0;
@@ -399,7 +401,16 @@ impl App {
         // Both bare and Markdown links ultimately contain one of our supported URL prefixes.
         // Test the reconstructed text so even a prefix split across a soft wrap still works.
         if !text.contains("://") && !text.as_bytes().windows(4).any(|w| w.eq_ignore_ascii_case(b"www.")) {
-            self.looks[block].no_link_row = Some(local);
+            // Every row of a complete logical line yields the same negative answer. Cache
+            // that range, not just the last row: vertical motion otherwise rebuilds and
+            // grapheme-scans the entire paragraph at every event. Above 64 rows the bounded
+            // backward scan can see a different window, so keep the old single-row scope.
+            self.looks[block].no_link_rows = Some(
+                first
+                    .checked_sub(self.offsets[block])
+                    .filter(|_| rows.len() <= 64 && rows[0].1.is_none())
+                    .map_or((local, local + 1), |from| (from, from + rows.len())),
+            );
             return None;
         }
         let (skip, delta, end) = *shape.get(line - first)?;
@@ -706,12 +717,9 @@ impl App {
         self.hover == Hover::Bar(target) || self.bar_drag.is_some_and(|d| d.target == target)
     }
 
-    /// Conversation text stays quiet under the mouse; work cards retain block hover.
-    /// Skills are Tool blocks and subagents are Agent blocks, not assistant replies.
+    /// Transcript blocks highlight together; the welcome screen is not a message.
     pub(crate) fn block_hoverable(&self, i: usize) -> bool {
-        self.blocks.get(i).is_some_and(|b| {
-            !matches!(b, Block::User { .. } | Block::Pending { .. } | Block::Assistant { .. } | Block::Welcome { .. })
-        })
+        self.blocks.get(i).is_some_and(|b| !matches!(b, Block::Welcome { .. }))
     }
 
     /// What is under `(x, y)`, topmost first.

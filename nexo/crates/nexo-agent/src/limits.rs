@@ -75,11 +75,14 @@ impl Limits {
     }
 }
 
-/// `map[model]`, or the entry whose key ends with `*` and is a prefix of the model.
+/// `map[model]`, or the longest matching prefix whose key ends with `*`.
 pub fn by_model(map: &BTreeMap<String, u32>, model: &str) -> Option<u32> {
-    map.get(model)
-        .copied()
-        .or_else(|| map.iter().find(|(k, _)| k.ends_with('*') && model.starts_with(&k[..k.len() - 1])).map(|(_, v)| *v))
+    map.get(model).copied().or_else(|| {
+        map.iter()
+            .filter(|(k, _)| k.ends_with('*') && model.starts_with(&k[..k.len() - 1]))
+            .max_by_key(|(k, _)| k.len())
+            .map(|(_, v)| *v)
+    })
 }
 
 /// The limits of `model` under `provider`, whose configuration is `cfg`
@@ -178,6 +181,21 @@ pub fn filled(old: &Limits, new: Limits) -> Option<Limits> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_limits_prefer_exact_then_longest_matching_prefix() {
+        let mut cfg = ProviderConfig::new("openai-chat", "https://example.invalid", None);
+        cfg.context_window.insert("local*".into(), 128_000);
+        cfg.context_window.insert("local-small*".into(), 20_000);
+        cfg.max_output.insert("local*".into(), 16_000);
+        cfg.max_output.insert("local-small*".into(), 2_000);
+        let l = resolve("unlisted-provider", &cfg, "local-small-v1", None);
+        assert_eq!((l.context_window, l.max_output), (Some(20_000), Some(2_000)));
+        cfg.context_window.insert("local-small-v1".into(), 8_000);
+        assert_eq!(resolve("unlisted-provider", &cfg, "local-small-v1", None).context_window, Some(8_000));
+        assert_eq!(by_model(&cfg.context_window, "local-other"), Some(128_000));
+        assert_eq!(by_model(&cfg.context_window, "other"), None);
+    }
 
     #[test]
     fn config_wins_then_preset_then_catalogue_then_vendor() {

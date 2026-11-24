@@ -190,6 +190,25 @@ fn a_picture_in_a_tool_result_rides_as_inline_data_after_the_response() {
 }
 
 #[test]
+fn a_url_picture_in_a_tool_result_rides_after_the_response() {
+    let msgs = vec![
+        Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({}))]),
+        Message::tool_results(vec![Part::ToolResult {
+            call_id: "c1".into(),
+            name: Some("read".into()),
+            content: vec![
+                Part::text("picture"),
+                Part::Image { source: ImageSource::Url { url: "https://example.invalid/image.png".into() } },
+            ],
+            is_error: false,
+        }]),
+    ];
+    let c = contents(&msgs, "gemini-x");
+    assert_eq!(c[1]["parts"][0]["functionResponse"]["response"]["result"], "picture");
+    assert_eq!(c[1]["parts"][1], json!({"fileData": {"fileUri": "https://example.invalid/image.png"}}));
+}
+
+#[test]
 fn pin_a_function_call_is_started_and_ended_in_one_chunk_and_empty_args_are_an_object() {
     let mut p = GeminiParser::default();
     let evs =

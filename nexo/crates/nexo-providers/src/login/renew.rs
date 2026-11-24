@@ -76,8 +76,11 @@ pub async fn prepare_in(
     at: &Endpoints,
     cfg: &ProviderConfig,
 ) -> Result<(ProviderConfig, Option<String>), ProviderError> {
-    if let Some(k) = direct_key(cfg).await {
-        return Ok((cfg.clone(), Some(k)));
+    let claude_only = cfg.auth.as_deref() == Some("anthropic-oauth") || cfg.login.as_deref() == Some("claude");
+    if !claude_only {
+        if let Some(k) = direct_key(cfg).await {
+            return Ok((cfg.clone(), Some(k)));
+        }
     }
     let Some(name) = cfg.auth.as_deref() else { return Ok((cfg.clone(), None)) };
     // a store that cannot be parsed is said so: reading it as empty would send the person to log in again,
@@ -87,9 +90,15 @@ pub async fn prepare_in(
     let Some(mut cred) = auth::read_checked(store).map_err(unreadable)?.remove(name) else {
         return Ok((cfg.clone(), None));
     };
+    if claude_only && cred.metadata("flow") != Some("claude") {
+        return Err(fail("anthropic-oauth requires a Claude OAuth login; run `nexo auth login anthropic-oauth`"));
+    }
     validate_claude_destination(cfg, &cred)?;
     if cred.expiring(auth::now(), 60) {
         cred = renew_locked(store, at, name, cfg).await?.unwrap_or(cred);
+    }
+    if claude_only && cred.metadata("flow") != Some("claude") {
+        return Err(fail("anthropic-oauth requires a Claude OAuth login"));
     }
     validate_claude_destination(cfg, &cred)?;
     Ok((apply(cfg, &cred), Some(cred.secret().to_string())))

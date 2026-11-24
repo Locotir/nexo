@@ -10,6 +10,27 @@ fn fixed_tokens(r: &ModelRequest) -> u64 {
 
 /// `messages` as they go out, as JSON, with the time of each person's message (`[16:13:05`, see `person_clock`)
 /// replaced by `[<T>`: two runs of the same session type their messages in different seconds. Nothing else changes.
+/// What the window fit leaves of old images: each run of them is one omission marker, in place.
+fn omit_images(parts: &mut Vec<Part>) {
+    let mut out = Vec::with_capacity(parts.len());
+    let mut after_image = false;
+    for mut part in std::mem::take(parts) {
+        if matches!(part, Part::Image { .. }) {
+            if !after_image {
+                out.push(Part::text("[Historical image content omitted to fit the context window.]"));
+            }
+            after_image = true;
+            continue;
+        }
+        after_image = false;
+        if let Part::ToolResult { content, .. } = &mut part {
+            omit_images(content);
+        }
+        out.push(part);
+    }
+    *parts = out;
+}
+
 fn sent_without_clock<T: serde::Serialize + ?Sized>(messages: &T) -> String {
     let s = serde_json::to_string(messages).unwrap();
     let b = s.as_bytes();
@@ -880,20 +901,19 @@ async fn the_files_nexo_attaches_by_itself_at_8k_fit_what_the_window_leaves_and_
 }
 
 /// The requests of a session at window `w` (none when `None`) that is given two long messages, compacted with a
-/// summary of `summary_chars` characters, and then given a third message.
-async fn compacted(w: Option<u32>, summary_chars: usize) -> Vec<ModelRequest> {
+/// summary of `summary_chars` characters (or the full reply budget when `None`), then a third message.
+async fn compacted(w: Option<u32>, summary_chars: Option<usize>) -> Vec<ModelRequest> {
     let d = project();
     let client = Scripted::new(vec![
         Reply::Events(uncounted(text("first answer"))),
         Reply::Events(uncounted(text("second answer"))),
-        Reply::Events(uncounted(text(&"s".repeat(summary_chars)))),
-        Reply::Events(uncounted(text("third answer"))),
     ]);
     let mut cfg = cfg_window(w.unwrap_or(200_000));
     if w.is_none() {
         cfg.providers.get_mut("mock").unwrap().context_window.clear();
     }
     cfg.context.policy = "plain".into();
+    let ordinary_reply = w.map_or(cfg.agent.max_tokens, |window| cfg.agent.max_tokens.min((window / 4).max(256)));
     let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
     r.next().await;
     for words in ["first", "second"] {
@@ -901,8 +921,29 @@ async fn compacted(w: Option<u32>, summary_chars: usize) -> Vec<ModelRequest> {
         r.send(AgentCommand::Submit { text: long, attachments: vec![] });
         r.turn().await;
     }
+    // The side call gets half the room remaining after the ordinary request's fixed input and reply.
+    // Match that advertised budget rather than returning a hard-coded oversized "successful" summary.
+    let requests = client.requests();
+    let first = &requests[0];
+    let reply = w.map_or(4_096, |window| {
+        // Admission may reduce first.max_tokens; compaction reserves the configured reply instead.
+        let room = u64::from(window) - fixed_tokens(first) - u64::from(ordinary_reply);
+        4_096.min(window / 2).min((room / 2).max(256) as u32)
+    });
+    // The summariser's conservative contract allows three UTF-8 bytes per requested token.
+    let summary_chars = summary_chars.unwrap_or(reply as usize * 3);
+    client.replies.lock().unwrap().extend([
+        Reply::Events(uncounted(text(&"s".repeat(summary_chars)))),
+        Reply::Events(uncounted(text("third answer"))),
+    ]);
     r.send(AgentCommand::Compact);
-    r.until(|e| matches!(e, AgentEvent::Compacted { .. })).await;
+    let events =
+        r.until(|e| matches!(e, AgentEvent::Compacted { .. } | AgentEvent::Notice { level: Level::Error, .. })).await;
+    assert!(
+        matches!(events.last(), Some(AgentEvent::Compacted { .. })),
+        "expected compaction, not a rejected summary: {events:?}"
+    );
+    assert_eq!(client.requests()[2].max_tokens, reply, "the fixture follows the real summary reply cap");
     r.send(AgentCommand::Submit { text: "and now the lexer".into(), attachments: vec![] });
     r.turn().await;
     r.stop().await;
@@ -913,7 +954,7 @@ async fn compacted(w: Option<u32>, summary_chars: usize) -> Vec<ModelRequest> {
 async fn a_summary_at_8k_is_asked_for_half_of_what_the_window_leaves_and_the_request_after_it_fits() {
     let _g = config_lock().lock().await;
     // a model that fills the whole reply it was allowed
-    let reqs = compacted(Some(8_000), 8_000).await;
+    let reqs = compacted(Some(8_000), None).await;
     let left = 8_000 - fixed_tokens(&reqs[0]) - u64::from(reqs[0].max_tokens);
     let summary = &reqs[2];
     eprintln!("room {left}; summary asked {} tokens", summary.max_tokens);
@@ -922,9 +963,13 @@ async fn a_summary_at_8k_is_asked_for_half_of_what_the_window_leaves_and_the_req
         summary.messages[0].text().contains(&format!("up to {} tokens", summary.max_tokens)),
         "the summary request says its limit"
     );
-    // the summary the model wrote fills what it was given (4 000 characters), then the request after it
+    // The summary fills the actual reply's conservative byte budget and survives in the next request.
     let after = reqs.last().unwrap();
     assert!(after.messages[0].text().contains("[summary]"), "the history was compacted");
+    assert!(
+        after.messages[0].text().contains(&"s".repeat(summary.max_tokens as usize * 3)),
+        "the full budget-sized summary is retained, not silently truncated"
+    );
     let total = total_with_reply(after);
     assert!(total <= 8_000, "the request after the compaction and its reply take {total} tokens of 8000");
 }
@@ -932,9 +977,1515 @@ async fn a_summary_at_8k_is_asked_for_half_of_what_the_window_leaves_and_the_req
 #[tokio::test]
 async fn a_summary_at_200k_is_asked_for_as_before() {
     let _g = config_lock().lock().await;
-    let at_200k = compacted(Some(200_000), 400).await;
-    let unknown = compacted(None, 400).await;
+    let at_200k = compacted(Some(200_000), Some(400)).await;
+    let unknown = compacted(None, Some(400)).await;
     assert_eq!(at_200k[2].max_tokens, 4_096);
     assert_eq!(at_200k[2].max_tokens, unknown[2].max_tokens);
     assert_eq!(at_200k[3].messages[0].text(), unknown[3].messages[0].text(), "the kept messages are the same");
+}
+
+// Isolated audit: exercises the real submit/attachment/render/admission path with no network.
+#[tokio::test]
+async fn audit_irreducible_image_admission() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for words in ["describe", ""] {
+            let d = project();
+            // Valid 1x1 PNG; actual image tokens are deliberately NOT inferred from bytes or dimensions.
+            use base64::Engine;
+            let png = base64::engine::general_purpose::STANDARD
+                .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXioAAAAASUVORK5CYII=")
+                .unwrap();
+            let attachments: Vec<_> = (0..6)
+                .map(|i| {
+                    let path = PathBuf::from(format!("shot-{i}.png"));
+                    std::fs::write(d.path().join(&path), &png).unwrap();
+                    nexo_core::agent::Attachment { path }
+                })
+                .collect();
+            let client = Scripted::new(vec![Reply::Events(uncounted(text("pong")))]);
+            let mut cfg = cfg_window(8_000);
+            cfg.context.policy = policy.into();
+            let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+            let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!("no Ready") };
+            r.send(AgentCommand::Submit { text: words.into(), attachments: attachments.clone() });
+            let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+            let history = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            let images = history.iter().flat_map(|m| &m.content).filter(|p| matches!(p, Part::Image { .. })).count();
+            let history_est = nexo_core::message::estimate_tokens(&history);
+            let told = notices(&evs);
+            println!(
+                "AUDIT policy={policy} words={words:?} window=8000 images={images} saved_conversation_est={history_est} sends={} end={:?} notices={told:?}",
+                client.requests().len(),
+                end_of(&evs)
+            );
+            assert_eq!(images, 6);
+            assert_eq!(
+                client.requests().len(),
+                0,
+                "{policy} {words:?}: irreducible images must not be silently dropped or sent"
+            );
+            assert_eq!(end_of(&evs), TurnEnd::Error);
+            assert!(told.iter().any(|s| s.contains("request over the window") && s.contains("Not sent")), "{told:?}");
+            r.send(AgentCommand::Submit { text: "ping".into(), attachments: vec![] });
+            let next = r.turn().await;
+            println!(
+                "AUDIT recovery policy={policy} words={words:?} sends={} end={:?} notices={:?}",
+                client.requests().len(),
+                end_of(&next),
+                notices(&next)
+            );
+            assert_eq!(
+                client.requests().len(),
+                1,
+                "{policy} {words:?}: ping must recover after rejection: {:?}",
+                notices(&next)
+            );
+            assert_eq!(end_of(&next), TurnEnd::Done);
+            for req in client.requests() {
+                assert_fits(&req, 8_000, 4.0 / 3.0);
+            }
+            let recovered = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            assert!(recovered.starts_with(&history));
+            assert!(client.requests()[0].messages.iter().any(|m| m.text().contains("ping")));
+            // The recovery must not turn admission into a blanket licence to drop current media.
+            r.send(AgentCommand::Submit { text: "keep all six current images and these words".into(), attachments });
+            let refused_again = r.turn().await;
+            assert_eq!(end_of(&refused_again), TurnEnd::Error);
+            assert_eq!(client.requests().len(), 1, "{policy}: a second irreducible turn must not be sent");
+            let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            assert!(saved.starts_with(&recovered));
+            assert!(saved.last().unwrap().text().contains("keep all six current images and these words"));
+            r.stop().await;
+
+            // The smaller outbound view is not a destructive compaction: reopening with enough room
+            // recovers both rejected turns byte-for-byte, including all twelve image sources.
+            let resumed_client = Scripted::new(vec![Reply::Events(uncounted(text("retrieved")))]);
+            let mut cfg = cfg_window(64_000);
+            cfg.context.policy = policy.into();
+            let mut resumed =
+                start_with(resumed_client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+            resumed.next().await;
+            resumed.send(AgentCommand::Submit { text: "inspect the saved images".into(), attachments: vec![] });
+            let evs = resumed.turn().await;
+            assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}: {:?}", notices(&evs));
+            let reqs = resumed_client.requests();
+            assert_eq!(reqs.len(), 1);
+            let pictures = |ms: &[Message]| {
+                ms.iter()
+                    .flat_map(|m| &m.content)
+                    .filter(|p| matches!(p, Part::Image { .. }))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(pictures(&saved).len(), 12);
+            assert_eq!(
+                pictures(&reqs[0].messages),
+                pictures(&saved),
+                "{policy}: original image payloads remain retrievable"
+            );
+            assert!(reqs[0].messages.iter().any(|m| m.text().contains("keep all six current images and these words")));
+            assert!(nexo_agent::Session::open(&id).unwrap().messages().starts_with(&saved));
+            assert_fits(&reqs[0], 64_000, 1.0);
+            resumed.stop().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn audit_one_image_control_admission() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        let d = project();
+        std::fs::write(d.path().join("shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+        let mut cfg = cfg_window(8_000);
+        cfg.context.policy = policy.into();
+        let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit {
+            text: String::new(),
+            attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("shot.png") }],
+        });
+        let evs = r.turn().await;
+        let reqs = client.requests();
+        assert_eq!(reqs.len(), 1, "{policy}: {:?}", notices(&evs));
+        let req = &reqs[0];
+        let raw_input = fixed_tokens(req) + nexo_core::message::estimate_tokens(&req.messages);
+        let fitted_input = (raw_input as f64 * (4.0 / 3.0)).ceil() as u64;
+        let images = req.messages.iter().flat_map(|m| &m.content).filter(|p| matches!(p, Part::Image { .. })).count();
+        println!(
+            "AUDIT control policy={policy} words=empty window=8000 images={images} raw_input_est={raw_input} fitted_input_est={fitted_input} reply={} total={} sends=1 end={:?}",
+            req.max_tokens,
+            fitted_input + u64::from(req.max_tokens),
+            end_of(&evs)
+        );
+        assert_eq!(images, 1);
+        assert_eq!(end_of(&evs), TurnEnd::Done);
+        assert_fits(req, 8_000, 4.0 / 3.0);
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn audit_single_irreducible_image_at_2500() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for image in [false, true] {
+            let d = project();
+            use base64::Engine;
+            let png = base64::engine::general_purpose::STANDARD
+                .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXioAAAAASUVORK5CYII=")
+                .unwrap();
+            std::fs::write(d.path().join("shot.png"), png).unwrap();
+            let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+            let mut cfg = cfg_window(2500);
+            cfg.context.policy = policy.into();
+            let mut r = start_with(client.clone(), cfg, None, d.path(), ToolSet::default()).await;
+            let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!("no Ready") };
+            r.send(AgentCommand::Submit {
+                text: String::new(),
+                attachments: if image {
+                    vec![nexo_core::agent::Attachment { path: PathBuf::from("shot.png") }]
+                } else {
+                    vec![]
+                },
+            });
+            let evs = r.turn().await;
+            let history = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            println!(
+                "AUDIT single policy={policy} image={image} words=empty tools=empty window=2500 sends={} end={:?} notices={:?}",
+                client.requests().len(),
+                end_of(&evs),
+                notices(&evs)
+            );
+            if image {
+                assert_eq!(client.requests().len(), 0);
+                assert_eq!(end_of(&evs), TurnEnd::Error);
+                assert_eq!(
+                    history.iter().flat_map(|m| &m.content).filter(|p| matches!(p, Part::Image { .. })).count(),
+                    1
+                );
+            } else {
+                assert_eq!(client.requests().len(), 1);
+                let req = &client.requests()[0];
+                let raw = fixed_tokens(req) + nexo_core::message::estimate_tokens(&req.messages);
+                println!(
+                    "AUDIT single baseline policy={policy} raw_input_est={raw} reply={} total={}",
+                    req.max_tokens,
+                    (raw as f64 * (4.0 / 3.0)).ceil() as u64 + u64::from(req.max_tokens)
+                );
+                assert_fits(req, 2500, 4.0 / 3.0);
+            }
+            r.stop().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn audit_boundary_duplicate_humans_current_media_and_rewind() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        let d = project();
+        data_dir();
+        let picture = Part::Image {
+            source: nexo_core::message::ImageSource::Base64 {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXioAAAAASUVORK5CYII="
+                    .into(),
+            },
+        };
+        let mut duplicate = Message::user("identical words");
+        duplicate.content.extend(vec![picture.clone(); 6]);
+        let original = vec![duplicate.clone(), duplicate.clone()];
+        let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+        for m in &original {
+            session.append(m).unwrap();
+        }
+        let id = session.id().to_string();
+        drop(session);
+        use base64::Engine;
+        let Part::Image { source: nexo_core::message::ImageSource::Base64 { data, .. } } = &picture else {
+            unreachable!()
+        };
+        std::fs::write(d.path().join("shot.png"), base64::engine::general_purpose::STANDARD.decode(data).unwrap())
+            .unwrap();
+        let client =
+            Scripted::new(vec![Reply::Events(uncounted(text("ok"))), Reply::Events(uncounted(text("rewound ok")))]);
+        let mut cfg = cfg_window(8_000);
+        cfg.context.policy = policy.into();
+        let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit {
+            text: "identical words".into(),
+            attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("shot.png") }],
+        });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}: {:?}", notices(&evs));
+        let sent = client.requests();
+        assert_eq!(sent.len(), 1);
+        let pictures = |ms: &[Message]| {
+            ms.iter().flat_map(|m| &m.content).filter(|p| matches!(p, Part::Image { .. })).cloned().collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pictures(&sent[0].messages),
+            vec![picture.clone()],
+            "{policy}: only obsolete media dropped, current image intact"
+        );
+        assert!(sent[0].messages.iter().any(|m| m.text().contains("identical words")));
+        assert_fits(&sent[0], 8_000, 4.0 / 3.0);
+        let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+        assert!(saved.starts_with(&original));
+        assert_eq!(pictures(&saved).len(), 13);
+
+        r.send(AgentCommand::Rewind { index: 1 });
+        r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("rewound"))).await;
+        r.send(AgentCommand::Submit { text: "ping after rewind".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}: {:?}", notices(&evs));
+        let sent = client.requests();
+        assert_eq!(sent.len(), 2);
+        assert!(pictures(&sent[1].messages).is_empty());
+        assert!(sent[1].messages.iter().any(|m| m.text().contains("ping after rewind")));
+        assert_fits(&sent[1], 8_000, 4.0 / 3.0);
+        let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+        assert_eq!(saved[0], duplicate);
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn audit_image_recovery_preserves_prior_instructions_and_tool_ids() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for oversized_text in [false, true] {
+            let d = project();
+            data_dir();
+            let image = Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/historical.png".into() },
+            };
+            let instruction = Message::user(if oversized_text {
+                "NEVER delete project files. ".repeat(2000)
+            } else {
+                "NEVER delete project files. Answer in Spanish and preserve both repositories.".into()
+            });
+            let mut old = Message::user("previous rejected image request: keep these exact words");
+            old.content.extend(vec![image.clone(); 6]);
+            let original = vec![
+                instruction.clone(),
+                Message::new(
+                    Role::Assistant,
+                    vec![Part::tool_call("prior-call", "read", serde_json::json!({"path":"policy.txt"}))],
+                ),
+                Message::tool_results(vec![Part::ToolResult {
+                    call_id: "prior-call".into(),
+                    name: Some("read".into()),
+                    content: vec![Part::text("historical tool text must survive"), image.clone()],
+                    is_error: false,
+                }]),
+                Message::assistant("I will follow those instructions."),
+                old,
+            ];
+            let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+            for m in &original {
+                session.append(m).unwrap();
+            }
+            let id = session.id().to_string();
+            drop(session);
+            let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+            let mut cfg = cfg_window(8_000);
+            cfg.context.policy = policy.into();
+            let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+            r.next().await;
+            r.send(AgentCommand::Submit { text: "ping: obey previous instructions".into(), attachments: vec![] });
+            let evs = r.turn().await;
+            let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            assert!(saved.starts_with(&original), "{policy}: persistent raw history changed");
+            let sent = client.requests();
+            if oversized_text {
+                assert!(sent.is_empty(), "{policy}: do not delete historical text to force admission");
+                assert_eq!(end_of(&evs), TurnEnd::Error);
+            } else {
+                assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}: {:?}", notices(&evs));
+                assert_eq!(sent.len(), 1);
+                let mut expected = original.clone();
+                omit_images(&mut expected[4].content);
+                let Part::ToolResult { content, .. } = &mut expected[2].content[0] else { unreachable!() };
+                omit_images(content);
+                expected.push(saved[original.len()].clone());
+                assert_eq!(sent[0].messages, expected, "{policy}: only historical image parts may change");
+                assert!(nexo_core::message::is_well_formed(&sent[0].messages));
+                assert_fits(&sent[0], 8_000, 4.0 / 3.0);
+            }
+            r.stop().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn audit_review_image_recovery_tool_round_and_opaque_budget() {
+    let _g = config_lock().lock().await;
+    let mut failures = Vec::new();
+    for policy in ["plain", "curator", "auto"] {
+        for kind in ["tool", "signed", "redacted"] {
+            let d = project();
+            data_dir();
+            std::fs::write(d.path().join("policy.txt"), "Never delete files; answer in Spanish.").unwrap();
+            let mut old = Message::user("Keep this historical instruction verbatim: never delete files.");
+            old.content.extend((0..6).map(|_| Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/not-fetched.png".into() },
+            }));
+            let mut original = vec![old];
+            if !kind.starts_with("tool") {
+                let part = if kind == "signed" {
+                    Part::Reasoning {
+                        text: "thinking".into(),
+                        signature: Some("s".repeat(200_000)),
+                        encrypted: None,
+                        model: Some("m1".into()),
+                    }
+                } else {
+                    Part::RedactedReasoning { data: "r".repeat(200_000), model: Some("m1".into()) }
+                };
+                original.push(Message::new(Role::Assistant, vec![part, Part::text("previous answer")]));
+                let mut nominal = original.clone();
+                nominal.push(Message::user("next"));
+                let hidden: u64 = nominal.iter().map(nexo_core::message::reasoning_tokens).sum();
+                println!(
+                    "REVIEW {policy}/{kind} nominal={} omitted_opaque_tokens={hidden} window=8000",
+                    nexo_core::message::estimate_tokens(&nominal)
+                );
+                assert!(hidden > 8_000);
+            }
+            let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+            for m in &original {
+                session.append(m).unwrap();
+            }
+            let id = session.id().to_string();
+            drop(session);
+            let client = Scripted::new(if kind.starts_with("tool") {
+                vec![
+                    Reply::Events(uncounted(call(
+                        "current-read",
+                        "read",
+                        json!({"path":d.path().join("policy.txt"), "limit":2000}),
+                    ))),
+                    Reply::Events(uncounted(text("He leído la política."))),
+                ]
+            } else {
+                vec![Reply::Events(uncounted(text("unsafe admission")))]
+            });
+            let mut cfg = cfg_window(8_000);
+            cfg.context.policy = policy.into();
+            let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+            r.next().await;
+            r.send(AgentCommand::Submit {
+                text: "consulta policy.txt y conserva todas las instrucciones".into(),
+                attachments: vec![],
+            });
+            let evs = r.turn().await;
+            let sent = client.requests();
+            println!("REVIEW {policy}/{kind} sends={} end={:?} notices={:?}", sent.len(), end_of(&evs), notices(&evs));
+            let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            assert!(saved.starts_with(&original));
+            if kind.starts_with("tool") {
+                if sent.len() != 2 || end_of(&evs) != TurnEnd::Done {
+                    failures.push(format!("{policy}/{kind}: second round blocked"));
+                }
+                for (i, req) in sent.iter().enumerate() {
+                    let mut expected = saved[..original.len() + 1 + i * 2].to_vec();
+                    omit_images(&mut expected[0].content);
+                    assert_eq!(req.messages, expected, "{policy}: complete turn and instructions preserved");
+                    assert!(nexo_core::message::is_well_formed(&req.messages));
+                    assert_fits(req, 8_000, 4.0 / 3.0);
+                    if i == 1 {
+                        assert!(
+                            req.messages.iter().any(|m| m.content.iter().any(|p| {
+                                matches!(p, Part::ToolResult { call_id, content, is_error: false, .. }
+                                if call_id == "current-read" && !nexo_core::message::result_text(content).is_empty())
+                            })),
+                            "the actual successful tool output reaches the second round: {:?}",
+                            req.messages
+                        );
+                    }
+                }
+            } else if !sent.is_empty() || end_of(&evs) != TurnEnd::Error {
+                failures.push(format!("{policy}/{kind}: opaque overbudget request admitted"));
+            }
+            r.stop().await;
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[tokio::test]
+async fn audit_followup_small_signature_and_internal_continuation() {
+    let _g = config_lock().lock().await;
+    let mut failures = Vec::new();
+    for policy in ["plain", "curator", "auto"] {
+        for continuation in [false, true] {
+            let d = project();
+            data_dir();
+            let mut old = Message::user("Never delete files; preserve these words.");
+            old.content.extend((0..6).map(|_| Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() },
+            }));
+            let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+            session.append(&old).unwrap();
+            let id = session.id().to_string();
+            drop(session);
+            let mut signed = vec![
+                StreamEvent::Start { response_id: None, model: Some("m1".into()) },
+                StreamEvent::ReasoningDelta("Plan carefully.".into()),
+                StreamEvent::ReasoningMeta { signature: Some("small-signature".into()), encrypted: None },
+            ];
+            if !continuation {
+                signed.push(StreamEvent::TextDelta("First answer.".into()));
+            }
+            signed.extend([StreamEvent::Finish(FinishReason::Stop), StreamEvent::Done]);
+            let client = Scripted::new(vec![
+                Reply::Events(signed),
+                Reply::Events(uncounted(text("Second answer."))),
+                Reply::Events(uncounted(text("Foreign model answer."))),
+            ]);
+            let mut cfg = cfg_window(8_000);
+            cfg.context.policy = policy.into();
+            cfg.providers.get_mut("mock").unwrap().context_window.insert("m2".into(), 8_000);
+            let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+            r.next().await;
+            r.send(AgentCommand::Submit { text: "First human request.".into(), attachments: vec![] });
+            let first = r.turn().await;
+            if !continuation {
+                assert_eq!(end_of(&first), TurnEnd::Done);
+                r.send(AgentCommand::Submit { text: "Second human request.".into(), attachments: vec![] });
+                let next = r.turn().await;
+                if end_of(&next) != TurnEnd::Done {
+                    failures.push(format!("{policy}: signed followup: {:?}", notices(&next)));
+                }
+            } else if end_of(&first) != TurnEnd::Done {
+                failures.push(format!("{policy}: internal continuation: {:?}", notices(&first)));
+            }
+            if client.requests().len() == 2 {
+                r.send(AgentCommand::SetModel { provider: None, model: "m2".into() });
+                r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+                r.send(AgentCommand::Submit { text: "Continue after model switch.".into(), attachments: vec![] });
+                let next = r.turn().await;
+                assert_eq!(end_of(&next), TurnEnd::Done, "{policy}: {:?}", notices(&next));
+            }
+            let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            assert_eq!(saved[0], old);
+            for req in client.requests() {
+                let last = req.messages.last().unwrap();
+                let end = saved.iter().rposition(|m| m == last).unwrap();
+                let mut expected = saved[..=end].to_vec();
+                omit_images(&mut expected[0].content);
+                assert_eq!(req.messages, expected, "{policy}: complete raw turn/protocol");
+                assert!(nexo_core::message::is_well_formed(&req.messages));
+                assert_fits(&req, 8_000, 4.0 / 3.0);
+            }
+            r.stop().await;
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[tokio::test]
+async fn audit_image_only_history_recovers_with_nonempty_tool_results() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        let d = project();
+        data_dir();
+        let image = Part::Image {
+            source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/historical.png".into() },
+        };
+        let original = vec![
+            Message::user("Keep prior instructions exactly."),
+            Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("image-only-call", "read", serde_json::json!({"path":"shot.png"}))],
+            ),
+            Message::tool_results(vec![Part::ToolResult {
+                call_id: "image-only-call".into(),
+                name: Some("read".into()),
+                content: vec![image.clone(); 6],
+                is_error: false,
+            }]),
+            Message::assistant("Previous image result received."),
+            Message::new(Role::User, vec![image; 6]),
+        ];
+        let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+        for m in &original {
+            session.append(m).unwrap();
+        }
+        let id = session.id().to_string();
+        drop(session);
+        let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+        let mut cfg = cfg_window(8_000);
+        cfg.context.policy = policy.into();
+        let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "ping after image-only history".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}: {:?}", notices(&evs));
+        let sent = client.requests();
+        assert_eq!(sent.len(), 1, "{policy}");
+        let marker = Part::text("[Historical image content omitted to fit the context window.]");
+        let mut expected = original.clone();
+        expected[4].content = vec![marker.clone()];
+        let Part::ToolResult { content, .. } = &mut expected[2].content[0] else { unreachable!() };
+        *content = vec![marker];
+        let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+        expected.push(saved[original.len()].clone());
+        assert_eq!(sent[0].messages, expected, "{policy}: preserve roles, order and tool metadata");
+        assert!(nexo_core::message::is_well_formed(&sent[0].messages));
+        assert!(sent[0].messages.iter().all(|m| !m.content.is_empty()));
+        assert_fits(&sent[0], 8_000, 4.0 / 3.0);
+        assert!(nexo_agent::Session::open(&id).unwrap().messages().starts_with(&original));
+        r.stop().await;
+    }
+}
+
+/// Cold admission ignores foreign opaque reserves omitted by the real serializers.
+/// This is not a provider token-count test.
+#[tokio::test]
+async fn audit_foreign_opaque_reserve_allows_serializer_omission() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for protocol in ["openai-responses", "anthropic"] {
+            let mut control = None;
+            for oversized in [false, true] {
+                let d = project();
+                data_dir();
+                let mut old = Message::user("Never delete files. Preserve this historical instruction.");
+                old.content.extend((0..6).map(|_| Part::Image {
+                    source: nexo_core::message::ImageSource::Url {
+                        url: "https://example.invalid/never-fetched.png".into(),
+                    },
+                }));
+                // Both controls are foreign. Only the opaque payload length changes.
+                let foreign = Part::Reasoning {
+                    text: "FOREIGN_THINKING_MUST_NOT_REACH_WIRE".into(),
+                    signature: Some("FOREIGN_SIGNATURE".repeat(if oversized { 12_500 } else { 1 })),
+                    encrypted: Some("FOREIGN_ENCRYPTED".repeat(if oversized { 12_500 } else { 1 })),
+                    model: Some("other-model".into()),
+                };
+                let original =
+                    vec![old, Message::new(Role::Assistant, vec![foreign.clone(), Part::text("Previous answer.")])];
+                let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+                for m in &original {
+                    session.append(m).unwrap();
+                }
+                let id = session.id().to_string();
+                drop(session);
+                let mut cfg = cfg_window(8_000);
+                cfg.context.policy = policy.into();
+                cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+                let provider_cfg = cfg.providers["mock"].clone();
+                let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+                let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), ToolSet::default()).await;
+                r.next().await;
+                r.send(AgentCommand::Submit {
+                    text: "Continue; obey all previous instructions.".into(),
+                    attachments: vec![],
+                });
+                let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+                let sent = client.requests();
+                let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+                assert!(saved.starts_with(&original), "persistent history must stay intact");
+                let body = |req: &ModelRequest| {
+                    if protocol == "anthropic" {
+                        nexo_providers::anthropic::Anthropic::body(&provider_cfg, req)
+                    } else {
+                        nexo_providers::openai_responses::OpenAiResponses::body(&provider_cfg, req)
+                    }
+                };
+                assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}/{protocol}: {:?}", notices(&evs));
+                assert_eq!(sent.len(), 1);
+                assert_eq!(sent[0].messages[1].content[0], foreign);
+                assert!(sent[0].messages.iter().flat_map(|m| &m.content).all(|p| !matches!(p, Part::Image { .. })));
+                if !oversized {
+                    control = Some(sent[0].clone());
+                } else {
+                    let candidate = &sent[0];
+                    // Compare actual admitted requests, normalizing only per-session metadata.
+                    let mut short = candidate.clone();
+                    short.messages[1].content[0] = control.as_ref().unwrap().messages[1].content[0].clone();
+                    let actual = body(candidate);
+                    assert_eq!(actual, body(&short), "opaque length must have ZERO effect on real wire body");
+                    let wire = serde_json::to_string(&actual).unwrap();
+                    assert!(!wire.contains("FOREIGN_"));
+                    assert!(wire.contains("Never delete files."));
+                    assert!(wire.contains("Previous answer."));
+                    assert!(wire.contains("Continue; obey all previous instructions."));
+                    let opaque_bytes = serde_json::to_vec(&foreign).unwrap().len();
+                    let generic = fixed_tokens(candidate) + nexo_core::message::estimate_tokens(&candidate.messages);
+                    assert!(generic + u64::from(candidate.max_tokens) < 8_000);
+                    assert!(opaque_bytes > 8_000);
+                    assert!(wire.len() as u64 + u64::from(candidate.max_tokens) < 8_000);
+                    println!(
+                        "FOREIGN_OPAQUE_FIXED policy={policy} protocol={protocol} reserve_bytes={opaque_bytes} wire_bytes={} oversized_sends=1",
+                        wire.len()
+                    );
+                }
+                r.stop().await;
+            }
+        }
+    }
+}
+
+/// Sent opaque content in the current tool round must still fail closed.
+#[tokio::test]
+async fn audit_transmitted_opaque_reserve_stays_protected() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for kind in ["anthropic-signed", "anthropic-redacted", "responses-encrypted"] {
+            for oversized in [false, true] {
+                let d = project();
+                data_dir();
+                let payload = "SENT_OPAQUE_".repeat(if oversized { 20_000 } else { 1 });
+                let model = Some("m1".into());
+                let part = if kind == "anthropic-redacted" {
+                    Part::RedactedReasoning { data: payload.clone(), model }
+                } else {
+                    Part::Reasoning {
+                        text: "Visible thinking".into(),
+                        signature: Some(if kind == "responses-encrypted" { "rs_id".into() } else { payload.clone() }),
+                        encrypted: (kind == "responses-encrypted").then(|| payload.clone()),
+                        model,
+                    }
+                };
+                let mut old = Message::user("Never delete files.");
+                old.content.extend((0..6).map(|_| Part::Image {
+                    source: nexo_core::message::ImageSource::Url {
+                        url: "https://example.invalid/not-fetched.png".into(),
+                    },
+                }));
+                let original = vec![old];
+                let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+                session.append(&original[0]).unwrap();
+                let id = session.id().to_string();
+                drop(session);
+                let protocol = if kind.starts_with("anthropic") { "anthropic" } else { "openai-responses" };
+                let mut cfg = cfg_window(8_000);
+                cfg.context.policy = policy.into();
+                cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+                let provider = cfg.providers["mock"].clone();
+                // Produce the opaque block in the current tool round, where Responses echoes it.
+                let mut events = vec![StreamEvent::Start { response_id: None, model: Some("m1".into()) }];
+                match &part {
+                    Part::RedactedReasoning { data, .. } => {
+                        events.push(StreamEvent::RedactedReasoning { data: data.clone() })
+                    }
+                    Part::Reasoning { text, signature, encrypted, .. } => {
+                        events.push(StreamEvent::ReasoningDelta(text.clone()));
+                        events.push(StreamEvent::ReasoningMeta {
+                            signature: signature.clone(),
+                            encrypted: encrypted.clone(),
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+                let path = d.path().join("policy.txt");
+                std::fs::write(&path, "Keep instructions").unwrap();
+                events.extend(call("opaque-read", "read", json!({"path":path})));
+                let client = Scripted::new(vec![Reply::Events(events), Reply::Events(uncounted(text("ok")))]);
+                let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+                r.next().await;
+                r.send(AgentCommand::Submit { text: "Read policy.txt, then continue.".into(), attachments: vec![] });
+                let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+                let sent = client.requests();
+                assert_eq!(
+                    sent.len(),
+                    if oversized { 1 } else { 2 },
+                    "{policy}/{kind}/{oversized}: {:?}",
+                    notices(&evs)
+                );
+                assert_eq!(end_of(&evs), if oversized { TurnEnd::Error } else { TurnEnd::Done });
+                let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+                assert!(saved.starts_with(&original));
+                // Serialize the would-be second request, including real call/result placement.
+                let mut candidate = sent[0].clone();
+                candidate.messages = saved;
+                omit_images(&mut candidate.messages[0].content);
+                let body = if protocol == "anthropic" {
+                    nexo_providers::anthropic::Anthropic::body(&provider, &candidate)
+                } else {
+                    nexo_providers::openai_responses::OpenAiResponses::body(&provider, &candidate)
+                };
+                let wire = serde_json::to_string(&body).unwrap();
+                assert!(wire.contains(&payload), "control must really transmit opaque bytes: {kind}");
+                assert!(wire.contains("Never delete files."));
+                if oversized {
+                    assert!(wire.len() > 8_000);
+                }
+                r.stop().await;
+            }
+        }
+    }
+}
+
+/// Independent cold sessions: exception boundaries must not expand to legacy,
+/// nested or non-exempt protocol data. Small controls serialize the admitted request.
+#[tokio::test]
+async fn audit_opaque_exception_boundaries_cold() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for (protocol, kind) in [
+            ("anthropic", "foreign-redacted"),
+            ("openai-responses", "foreign-redacted"),
+            ("anthropic", "legacy"),
+            ("openai-responses", "legacy"),
+            ("anthropic", "nested-foreign"),
+            ("openai-responses", "nested-foreign"),
+            ("openai", "foreign-nonexempt"),
+        ] {
+            for large in [false, true] {
+                let d = project();
+                data_dir();
+                let payload = "BOUNDARY_OPAQUE_".repeat(if large { 1500 } else { 1 });
+                let part = if kind == "foreign-redacted" {
+                    Part::RedactedReasoning { data: payload.clone(), model: Some("foreign".into()) }
+                } else {
+                    Part::Reasoning {
+                        text: if kind == "nested-foreign" { payload.clone() } else { "visible reasoning".into() },
+                        signature: Some(payload.clone()),
+                        encrypted: Some(payload.clone()),
+                        model: (kind != "legacy").then(|| "foreign".into()),
+                    }
+                };
+                let mut old = Message::user("Never delete files. Keep historical instructions.");
+                old.content.extend((0..6).map(|_| Part::Image {
+                    source: nexo_core::message::ImageSource::Url {
+                        url: "https://example.invalid/never-fetched.png".into(),
+                    },
+                }));
+                let mut original = vec![old];
+                if kind == "nested-foreign" {
+                    original.push(Message::new(Role::Assistant, vec![Part::tool_call("nested", "read", json!({}))]));
+                    original.push(Message::tool_results(vec![Part::ToolResult {
+                        call_id: "nested".into(),
+                        name: Some("read".into()),
+                        content: vec![Part::text("Keep this result"), part.clone()],
+                        is_error: false,
+                    }]));
+                } else {
+                    original.push(Message::new(Role::Assistant, vec![part.clone(), Part::text("Prior answer")]));
+                }
+                let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+                for m in &original {
+                    session.append(m).unwrap();
+                }
+                let id = session.id().to_string();
+                drop(session);
+                let mut cfg = cfg_window(8_000);
+                cfg.context.policy = policy.into();
+                cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+                let provider = cfg.providers["mock"].clone();
+                let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+                let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), ToolSet::default()).await;
+                r.next().await;
+                r.send(AgentCommand::Submit { text: "Continue, preserve instructions.".into(), attachments: vec![] });
+                let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+                let sent = client.requests();
+                let allowed = !large || kind == "foreign-redacted";
+                assert_eq!(sent.len(), usize::from(allowed), "{policy}/{protocol}/{kind}/{large}: {:?}", notices(&evs));
+                assert_eq!(end_of(&evs), if allowed { TurnEnd::Done } else { TurnEnd::Error });
+                assert!(nexo_agent::Session::open(&id).unwrap().messages().starts_with(&original));
+                if allowed && protocol != "openai" {
+                    let req = &sent[0];
+                    assert!(req.messages.iter().any(|m| m.content.contains(&part)) || kind == "nested-foreign");
+                    let body = if protocol == "anthropic" {
+                        nexo_providers::anthropic::Anthropic::body(&provider, req)
+                    } else {
+                        nexo_providers::openai_responses::OpenAiResponses::body(&provider, req)
+                    };
+                    let wire = serde_json::to_string(&body).unwrap();
+                    // Responses omits historical reasoning even without a model tag;
+                    // admission intentionally keeps the legacy reserve conservative.
+                    let transmitted =
+                        kind != "foreign-redacted" && !(protocol == "openai-responses" && kind == "legacy");
+                    assert_eq!(wire.contains(&payload), transmitted, "{protocol}/{kind}: actual outbound body");
+                    assert!(wire.contains("Never delete files."));
+                    assert!(wire.contains("Continue, preserve instructions."));
+                }
+                r.stop().await;
+            }
+        }
+    }
+}
+
+/// The first real usage sample learns a ratio below one. Mixed own + foreign
+/// blocks in its tool continuation must still reserve every own opaque byte.
+#[tokio::test]
+async fn audit_opaque_mixed_foreign_own_learned_low_ratio() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for protocol in ["anthropic", "openai-responses"] {
+            for large in [false, true] {
+                let d = project();
+                data_dir();
+                let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+                let foreign = Part::Reasoning {
+                    text: "FOREIGN_MIXED_TEXT".into(),
+                    signature: Some("FOREIGN_MIXED_".repeat(2000)),
+                    encrypted: Some("FOREIGN_MIXED_".repeat(2000)),
+                    model: Some("foreign".into()),
+                };
+                let prior = Message::new(Role::Assistant, vec![foreign.clone(), Part::text("Prior answer")]);
+                session.append(&Message::user("Never delete files.")).unwrap();
+                session.append(&prior).unwrap();
+                let id = session.id().to_string();
+                drop(session);
+                let payload = "OWN_MIXED_".repeat(if large { 2500 } else { 1 });
+                let path = d.path().join("policy.txt");
+                std::fs::write(&path, "Keep instructions").unwrap();
+                let mut events = vec![
+                    StreamEvent::Start { response_id: None, model: Some("m1".into()) },
+                    StreamEvent::ReasoningDelta("Own thinking".into()),
+                    StreamEvent::ReasoningMeta { signature: Some(payload.clone()), encrypted: Some(payload.clone()) },
+                ];
+                events.extend(
+                    uncounted(call("mixed-read", "read", json!({"path":path})))
+                        .into_iter()
+                        .filter(|event| !matches!(event, StreamEvent::Done)),
+                );
+                events.push(StreamEvent::Usage(Usage { input: 1, output: 1, ..Default::default() }));
+                events.push(StreamEvent::Done);
+                let client = Scripted::new(vec![Reply::Events(events), Reply::Events(uncounted(text("ok")))]);
+                let mut cfg = cfg_window(8_000);
+                cfg.context.policy = policy.into();
+                cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+                let provider = cfg.providers["mock"].clone();
+                let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), nexo_tools::builtin()).await;
+                r.next().await;
+                r.send(AgentCommand::Submit { text: "Read policy.txt then continue.".into(), attachments: vec![] });
+                let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+                let sent = client.requests();
+                let est = fixed_tokens(&sent[0]) + nexo_core::message::estimate_tokens(&sent[0].messages);
+                assert!((1.0 / est as f64).clamp(0.5, 3.0) < 1.0, "usage sample must learn ratio below one");
+                assert_eq!(sent.len(), if large { 1 } else { 2 }, "{policy}/{protocol}/{large}: {:?}", notices(&evs));
+                assert_eq!(end_of(&evs), if large { TurnEnd::Error } else { TurnEnd::Done });
+                for (i, req) in sent.iter().enumerate() {
+                    let body = if protocol == "anthropic" {
+                        nexo_providers::anthropic::Anthropic::body(&provider, req)
+                    } else {
+                        nexo_providers::openai_responses::OpenAiResponses::body(&provider, req)
+                    };
+                    let wire = serde_json::to_string(&body).unwrap();
+                    assert!(!wire.contains("FOREIGN_MIXED_"));
+                    assert!(wire.contains("Never delete files."));
+                    if i == 1 {
+                        assert!(wire.contains(&payload), "own bytes must be in actual second request");
+                    }
+                }
+                assert!(nexo_agent::Session::open(&id).unwrap().messages().contains(&prior));
+                r.stop().await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn audit_historical_image_and_oversized_current_result() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        let d = project();
+        data_dir();
+        let mut old = Message::user("Never delete files; keep this historical instruction.");
+        old.content.extend((0..6).map(|_| Part::Image {
+            source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() },
+        }));
+        let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+        session.append(&old).unwrap();
+        let id = session.id().to_string();
+        drop(session);
+        let client = Scripted::new(vec![
+            Reply::Events(uncounted(call("current-large", "read", json!({"path":"data"})))),
+            Reply::Events(uncounted(text("Recovered after large result."))),
+        ]);
+        let mut cfg = cfg_window(8_000);
+        cfg.context.policy = policy.into();
+        let tools = ToolSet::new().with(Arc::new(Fill(200_000)));
+        let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), tools).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "Read data; preserve all instructions.".into(), attachments: vec![] });
+        let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+        let sent = client.requests();
+        assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}: {:?}", notices(&evs));
+        assert_eq!(sent.len(), 2, "{policy}");
+        let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+        assert_eq!(saved[0], old);
+        let original_result = saved
+            .iter()
+            .flat_map(|m| &m.content)
+            .find(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id == "current-large"))
+            .unwrap();
+        let Part::ToolResult { content, .. } = original_result else { unreachable!() };
+        assert!(nexo_core::message::result_text(content).len() > 100_000, "raw result remains stored");
+        let outgoing = &sent[1];
+        let mut expected = saved[..saved.len() - 1].to_vec();
+        omit_images(&mut expected[0].content);
+        for message in &mut expected {
+            for part in &mut message.content {
+                if let Part::ToolResult { call_id, content, .. } = part {
+                    if call_id == "current-large" {
+                        *content = vec![Part::text(
+                            "[curator] Tool output omitted to fit the context window. Request a smaller range if needed.",
+                        )];
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            outgoing.messages, expected,
+            "{policy}: only historical image and oversized current body may change"
+        );
+        assert!(nexo_core::message::is_well_formed(&outgoing.messages));
+        assert_fits(outgoing, 8_000, 4.0 / 3.0);
+        r.stop().await;
+    }
+}
+
+#[test]
+fn audit_current_foreign_signature_serializer_omission() {
+    for protocol in ["anthropic", "openai-responses"] {
+        let cfg = cfg_window(8_000);
+        let provider = &cfg.providers["mock"];
+        let body = |req: &ModelRequest| {
+            if protocol == "anthropic" {
+                nexo_providers::anthropic::Anthropic::body(provider, req)
+            } else {
+                nexo_providers::openai_responses::OpenAiResponses::body(provider, req)
+            }
+        };
+        let mut req = ModelRequest::new(
+            "m1",
+            "Keep system instructions.",
+            vec![
+                Message::user("Never delete files."),
+                Message::new(
+                    Role::Assistant,
+                    vec![
+                        Part::Reasoning {
+                            text: "FOREIGN_TEXT".into(),
+                            signature: Some("FOREIGN_SIGNATURE".repeat(12_500)),
+                            encrypted: Some("FOREIGN_ENCRYPTED".repeat(12_500)),
+                            model: Some("other".into()),
+                        },
+                        Part::tool_call("current", "read", json!({"path":"data"})),
+                    ],
+                ),
+                Message::tool_results(vec![Part::tool_result("current", "Keep this current result.", false)]),
+            ],
+        );
+        assert!(
+            nexo_core::message::estimate_tokens(&req.messages) > 8_000,
+            "regression needs generic current-turn opaque counting"
+        );
+        let actual = body(&req);
+        req.messages[1].content.remove(0);
+        assert_eq!(actual, body(&req), "{protocol}: removing foreign reasoning must not change actual wire request");
+        let wire = serde_json::to_string(&actual).unwrap();
+        assert!(!wire.contains("FOREIGN_"));
+        for text in ["Keep system instructions.", "Never delete files.", "current", "Keep this current result."] {
+            assert!(wire.contains(text), "{protocol}: missing {text}");
+        }
+        assert!(wire.len() < 8_000);
+    }
+}
+
+/// Cold full-loop admission of foreign reasoning produced in this tool round.
+/// The real serializers, not a token estimate, establish that it is not transmitted.
+#[tokio::test]
+async fn audit_current_foreign_reasoning_cold_loop_serializer_omission() {
+    // Hold the tool round open while a real model switch makes its reasoning foreign.
+    struct SwitchRead {
+        release: Arc<tokio::sync::Notify>,
+        expected_args: Value,
+        result: String,
+    }
+    #[async_trait]
+    impl Tool for SwitchRead {
+        fn name(&self) -> &str {
+            "read"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "read".into(), description: "read policy".into(), parameters: json!({"type":"object"}) }
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Read
+        }
+        fn summary(&self, _args: &Value) -> String {
+            "read policy".into()
+        }
+        async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+            assert_eq!(args, self.expected_args, "the tool must receive the fixture arguments unchanged");
+            self.release.notified().await;
+            ToolOutput::ok(self.result.clone())
+        }
+    }
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for protocol in ["anthropic", "openai-responses"] {
+            let d = project();
+            data_dir();
+            std::fs::write(d.path().join("AGENTS.md"), "Keep system instructions unchanged.").unwrap();
+            let path = d.path().join("policy.txt");
+            // Freeze the oracle before running: neither the saved history nor the outgoing
+            // request may supply the expected call arguments or tool result.
+            let fixture_args = json!({"path": path});
+            let fixture_result = "Keep this current result unchanged.";
+            let fixture_call = Part::tool_call("current-foreign-read", "read", fixture_args.clone());
+            let fixture_output = Part::ToolResult {
+                call_id: "current-foreign-read".into(),
+                name: Some("read".into()),
+                content: vec![Part::text(fixture_result)],
+                is_error: false,
+            };
+            std::fs::write(&path, fixture_result).unwrap();
+            let mut old = Message::user("Never delete files; keep this historical instruction.");
+            old.content.extend((0..6).map(|_| Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/not-fetched.png".into() },
+            }));
+            let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+            session.append(&old).unwrap();
+            let id = session.id().to_string();
+            drop(session);
+            let foreign = Part::Reasoning {
+                text: "FOREIGN_THINKING_MUST_NOT_REACH_WIRE".into(),
+                signature: Some("FOREIGN_SIGNATURE".repeat(12_500)),
+                encrypted: Some("FOREIGN_ENCRYPTED".repeat(12_500)),
+                model: Some("m1".into()),
+            };
+            let Part::Reasoning { text: thinking, signature, encrypted, model } = &foreign else { unreachable!() };
+            let mut events = vec![
+                StreamEvent::Start { response_id: None, model: model.clone() },
+                StreamEvent::ReasoningDelta(thinking.clone()),
+                StreamEvent::ReasoningMeta { signature: signature.clone(), encrypted: encrypted.clone() },
+            ];
+            events.extend(uncounted(call("current-foreign-read", "read", fixture_args.clone())));
+            let client = Scripted::new(vec![
+                Reply::Events(events),
+                Reply::Events(uncounted(text("Continued after foreign reasoning."))),
+            ]);
+            let mut cfg = cfg_window(8_000);
+            cfg.context.policy = policy.into();
+            cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+            cfg.providers.get_mut("mock").unwrap().context_window.insert("m2".into(), 8_000);
+            let provider = cfg.providers["mock"].clone();
+            let release = Arc::new(tokio::sync::Notify::new());
+            let tools = ToolSet::new().with(Arc::new(SwitchRead {
+                release: release.clone(),
+                expected_args: fixture_args.clone(),
+                result: fixture_result.into(),
+            }));
+            let mut r = start_with(client.clone(), cfg, Some(id.clone()), d.path(), tools).await;
+            r.next().await;
+            // Do not name policy.txt here: automatic file inclusion would make the
+            // subsequent read legitimately deduplicate into an unchanged-file note.
+            r.send(AgentCommand::Submit {
+                text: "Read the requested policy; preserve all instructions.".into(),
+                attachments: vec![],
+            });
+            tokio::time::timeout(Duration::from_secs(30), r.until(|e| matches!(e, AgentEvent::ToolStart { .. })))
+                .await
+                .unwrap();
+            r.send(AgentCommand::SetModel { provider: None, model: "m2".into() });
+            tokio::time::timeout(Duration::from_secs(30), r.until(|e| matches!(e, AgentEvent::Effort { .. })))
+                .await
+                .unwrap();
+            release.notify_one();
+            let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+            let sent = client.requests();
+            assert_eq!(end_of(&evs), TurnEnd::Done, "{policy}/{protocol}: {:?}", notices(&evs));
+            assert_eq!(sent.len(), 2, "{policy}/{protocol}: must send after the current tool result");
+            let saved = nexo_agent::Session::open(&id).unwrap().messages().to_vec();
+            assert_eq!(saved[0], old, "persistent images/instructions must not change");
+            assert_eq!(sent[0].model, "m1");
+            assert_eq!(sent[1].model, "m2");
+            let outgoing = &sent[1];
+            for (label, messages) in [("outgoing", &outgoing.messages), ("saved", &saved)] {
+                let calls: Vec<_> =
+                    messages.iter().flat_map(|m| &m.content).filter(|p| matches!(p, Part::ToolCall { .. })).collect();
+                let results: Vec<_> =
+                    messages.iter().flat_map(|m| &m.content).filter(|p| matches!(p, Part::ToolResult { .. })).collect();
+                assert_eq!(calls, vec![&fixture_call], "{policy}/{protocol}/{label}: exact fixture call");
+                assert_eq!(results, vec![&fixture_output], "{policy}/{protocol}/{label}: exact fixture result");
+            }
+            // Secondary consistency check only; the independent fixture checks above
+            // also catch a mutation shared by persisted history and the request.
+            let mut expected = saved[..saved.len() - 1].to_vec();
+            omit_images(&mut expected[0].content);
+            assert_eq!(outgoing.messages, expected, "{policy}/{protocol}: preserve the whole current turn");
+            assert!(nexo_core::message::is_well_formed(&outgoing.messages));
+            let reasoning_message = outgoing.messages.iter().position(|m| m.content.contains(&foreign)).unwrap();
+            let current_user = outgoing
+                .messages
+                .iter()
+                .position(|m| m.text().contains("Read the requested policy; preserve all instructions."))
+                .unwrap();
+            assert!(reasoning_message > current_user, "foreign reasoning must belong to the current turn");
+            assert!(
+                nexo_core::message::estimate_tokens(&outgoing.messages) > 8_000,
+                "generic counting must exceed the window before serializer-aware omission"
+            );
+            let body = |req: &ModelRequest| {
+                if protocol == "anthropic" {
+                    nexo_providers::anthropic::Anthropic::body(&provider, req)
+                } else {
+                    nexo_providers::openai_responses::OpenAiResponses::body(&provider, req)
+                }
+            };
+            let actual = body(outgoing);
+            let mut without_foreign = outgoing.clone();
+            without_foreign.messages[reasoning_message].content.retain(|p| p != &foreign);
+            assert_eq!(actual, body(&without_foreign), "{policy}/{protocol}: omission must be exact on the real wire");
+            // Independent admission arithmetic: all replies are uncounted, so this cold
+            // 8k session uses the 4/3 fallback ratio, not a learned provider ratio.
+            // Once the serializer-omitted block is removed there is no opaque reserve.
+            // This is the documented heuristic, NOT serialized wire bytes as tokens.
+            let estimated_input =
+                fixed_tokens(&without_foreign) + nexo_core::message::estimate_tokens(&without_foreign.messages);
+            let admitted_input = (estimated_input as f64 * (4.0 / 3.0)).ceil() as u64;
+            let room = 8_000u64.checked_sub(admitted_input).expect("estimated input must fit");
+            let ceiling = outgoing.output_ceiling.expect("known window must set an output ceiling");
+            assert!(u64::from(ceiling) <= room, "{policy}/{protocol}: ceiling {ceiling} exceeds remaining {room}");
+            assert!(outgoing.max_tokens >= 256, "{policy}/{protocol}: preserve a useful reply");
+            assert!(outgoing.max_tokens <= ceiling, "{policy}/{protocol}: reply exceeds output ceiling");
+            assert!(
+                admitted_input + u64::from(outgoing.max_tokens) <= 8_000,
+                "{policy}/{protocol}: estimated input {admitted_input} plus reply {} exceeds window",
+                outgoing.max_tokens,
+            );
+            // Check the provider's actual output field, not only ModelRequest: a
+            // serializer must not drop the limit or expand it beyond admission.
+            let output_field = if protocol == "anthropic" { "max_tokens" } else { "max_output_tokens" };
+            let wire_output = actual[output_field].as_u64().expect("wire output limit must be an unsigned integer");
+            assert!(wire_output >= 256, "{policy}/{protocol}: wire must preserve a useful reply");
+            assert!(wire_output <= u64::from(ceiling), "{policy}/{protocol}: wire reply exceeds output ceiling");
+            assert!(
+                wire_output <= room,
+                "{policy}/{protocol}: estimated input {admitted_input} plus wire reply {wire_output} exceeds 8000",
+            );
+
+            // Select by structural type, not by fixture ID: a renamed, duplicated,
+            // or missing call/result must fail even if its text occurs elsewhere.
+            let (items, call_type, result_type) = if protocol == "anthropic" {
+                let items = actual["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|m| m["content"].as_array().unwrap())
+                    .collect::<Vec<_>>();
+                (items, "tool_use", "tool_result")
+            } else {
+                (
+                    actual["input"].as_array().unwrap().iter().collect::<Vec<_>>(),
+                    "function_call",
+                    "function_call_output",
+                )
+            };
+            let calls: Vec<_> = items.iter().copied().filter(|v| v["type"] == call_type).collect();
+            let results: Vec<_> = items.iter().copied().filter(|v| v["type"] == result_type).collect();
+            assert_eq!(calls.len(), 1, "{policy}/{protocol}: exactly one serialized call");
+            assert_eq!(results.len(), 1, "{policy}/{protocol}: exactly one serialized result");
+            let call = calls[0];
+            let result = results[0];
+            assert_eq!(call["name"], "read", "{policy}/{protocol}: fixture tool name");
+            if protocol == "anthropic" {
+                assert_eq!(call["id"], "current-foreign-read", "{policy}/{protocol}: fixture call ID");
+                assert_eq!(call["input"], fixture_args, "{policy}/{protocol}: fixture JSON arguments");
+                assert_eq!(result["tool_use_id"], "current-foreign-read", "{policy}/{protocol}: fixture result ID");
+                assert_eq!(result["content"], fixture_result, "{policy}/{protocol}: fixture result content");
+                assert!(!result.get("is_error").and_then(Value::as_bool).unwrap_or(false));
+            } else {
+                assert_eq!(call["call_id"], "current-foreign-read", "{policy}/{protocol}: fixture call ID");
+                let args: Value =
+                    serde_json::from_str(call["arguments"].as_str().expect("arguments must be JSON text"))
+                        .expect("arguments must decode as JSON");
+                assert_eq!(args, fixture_args, "{policy}/{protocol}: fixture JSON arguments");
+                assert_eq!(result["call_id"], "current-foreign-read", "{policy}/{protocol}: fixture result ID");
+                assert_eq!(result["output"], fixture_result, "{policy}/{protocol}: fixture result content");
+            }
+            let wire = serde_json::to_string(&actual).unwrap();
+            assert!(!wire.contains("FOREIGN_"), "{policy}/{protocol}: no foreign payload on wire");
+            for instruction in [
+                "Keep system instructions unchanged.",
+                "Never delete files; keep this historical instruction.",
+                "Read the requested policy; preserve all instructions.",
+                "current-foreign-read",
+                "Keep this current result unchanged.",
+            ] {
+                assert!(wire.contains(instruction), "{policy}/{protocol}: missing {instruction}");
+            }
+            assert_eq!(outgoing.system, sent[0].system, "system instructions must remain intact");
+            r.stop().await;
+        }
+    }
+}
+
+/// Exercise admission and the actual protocol bodies for a current multimodal tool result.
+#[tokio::test]
+async fn mixed_image_tool_result_survives_small_window_wire_protocols() {
+    struct Picture;
+    #[async_trait]
+    impl Tool for Picture {
+        fn name(&self) -> &str {
+            "picture"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "picture".into(),
+                description: "inspect image".into(),
+                parameters: json!({"type":"object"}),
+            }
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Read
+        }
+        fn summary(&self, _: &Value) -> String {
+            "inspect image".into()
+        }
+        async fn run(&self, _: Value, _: &ToolContext) -> ToolOutput {
+            ToolOutput::ok("current image description").with_images(vec![nexo_core::message::ImageSource::Url {
+                url: "https://example.invalid/current.png".into(),
+            }])
+        }
+    }
+    let _g = config_lock().lock().await;
+    for protocol in ["anthropic", "openai-responses", "openai-chat", "gemini"] {
+        let d = project();
+        data_dir();
+        let mut old = Message::user("Historical instruction: do not delete files.");
+        old.content.extend((0..6).map(|_| Part::Image {
+            source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() },
+        }));
+        let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+        session.append(&old).unwrap();
+        let id = session.id().to_string();
+        drop(session);
+        let args = json!({"path":"current.png"});
+        let client = Scripted::new(vec![
+            Reply::Events(uncounted(call("pic-1", "picture", args.clone()))),
+            Reply::Events(uncounted(text("done"))),
+        ]);
+        let mut cfg = cfg_window(8_000);
+        cfg.context.policy = "plain".into();
+        cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+        let provider = cfg.providers["mock"].clone();
+        let mut r =
+            start_with(client.clone(), cfg, Some(id.clone()), d.path(), ToolSet::new().with(Arc::new(Picture))).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "Inspect the current picture.".into(), attachments: vec![] });
+        let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+        assert_eq!(end_of(&evs), TurnEnd::Done, "{protocol}: {:?}", notices(&evs));
+        let sent = client.requests();
+        assert_eq!(sent.len(), 2, "{protocol}");
+        let req = &sent[1];
+        assert_fits(req, 8_000, 4.0 / 3.0);
+        assert_eq!(nexo_agent::Session::open(&id).unwrap().messages()[0], old);
+        let body = match protocol {
+            "anthropic" => nexo_providers::anthropic::Anthropic::body(&provider, req),
+            "openai-responses" => nexo_providers::openai_responses::OpenAiResponses::body(&provider, req),
+            "openai-chat" => nexo_providers::openai_chat::OpenAiChat::body(&provider, req),
+            _ => nexo_providers::gemini::Gemini::body(&provider, req),
+        };
+        let wire = serde_json::to_string(&body).unwrap();
+        for s in [
+            "Historical instruction: do not delete files.",
+            "Inspect the current picture.",
+            "current image description",
+            "https://example.invalid/current.png",
+        ] {
+            assert!(wire.contains(s), "{protocol} missing {s}: {wire}");
+        }
+        assert!(!wire.contains("https://example.invalid/old.png"), "{protocol}: historical images should be omitted");
+        match protocol {
+            "anthropic" => {
+                let items: Vec<_> = body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|m| m["content"].as_array().unwrap())
+                    .collect();
+                let call = items.iter().position(|p| p["type"] == "tool_use").unwrap();
+                let result = items.iter().position(|p| p["type"] == "tool_result").unwrap();
+                assert!(call < result);
+                assert_eq!(items[call]["id"], "pic-1");
+                assert_eq!(items[call]["input"], args);
+                assert_eq!(items[result]["tool_use_id"], "pic-1");
+                assert_eq!(items[result]["content"][1]["source"]["url"], "https://example.invalid/current.png");
+            }
+            "openai-responses" => {
+                let items = body["input"].as_array().unwrap();
+                let call = items.iter().position(|p| p["type"] == "function_call").unwrap();
+                let result = items.iter().position(|p| p["type"] == "function_call_output").unwrap();
+                assert!(call < result);
+                assert_eq!(items[call]["call_id"], "pic-1");
+                assert_eq!(serde_json::from_str::<Value>(items[call]["arguments"].as_str().unwrap()).unwrap(), args);
+                assert_eq!(items[result]["call_id"], "pic-1");
+                assert_eq!(items[result]["output"][1]["image_url"], "https://example.invalid/current.png");
+            }
+            "openai-chat" => {
+                let items = body["messages"].as_array().unwrap();
+                let call = items.iter().position(|p| p["tool_calls"].is_array()).unwrap();
+                let result = items.iter().position(|p| p["role"] == "tool").unwrap();
+                assert!(call < result);
+                assert_eq!(items[call]["tool_calls"][0]["id"], "pic-1");
+                assert_eq!(
+                    serde_json::from_str::<Value>(
+                        items[call]["tool_calls"][0]["function"]["arguments"].as_str().unwrap()
+                    )
+                    .unwrap(),
+                    args
+                );
+                assert_eq!(items[result]["tool_call_id"], "pic-1");
+                assert_eq!(items[result + 1]["content"][0]["image_url"]["url"], "https://example.invalid/current.png");
+            }
+            _ => {
+                let items: Vec<_> =
+                    body["contents"].as_array().unwrap().iter().flat_map(|m| m["parts"].as_array().unwrap()).collect();
+                let call = items.iter().position(|p| p.get("functionCall").is_some()).unwrap();
+                let result = items.iter().position(|p| p.get("functionResponse").is_some()).unwrap();
+                assert!(call < result);
+                assert_eq!(items[call]["functionCall"]["name"], "picture");
+                assert_eq!(items[call]["functionCall"]["args"], args);
+                assert_eq!(items[result]["functionResponse"]["name"], "picture");
+                assert_eq!(items[result + 1]["fileData"]["fileUri"], "https://example.invalid/current.png");
+            }
+        }
+        r.stop().await;
+    }
+}
+
+/// A real tool's oversized caption and images must be admitted together or not sent.
+#[tokio::test]
+async fn oversized_image_tool_result_is_never_sent_with_truncated_caption() {
+    struct LargePicture;
+    #[async_trait]
+    impl Tool for LargePicture {
+        fn name(&self) -> &str {
+            "large_picture"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name().into(),
+                description: "inspect pictures".into(),
+                parameters: json!({"type":"object"}),
+            }
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Read
+        }
+        fn summary(&self, _: &Value) -> String {
+            "inspect pictures".into()
+        }
+        async fn run(&self, _: Value, _: &ToolContext) -> ToolOutput {
+            ToolOutput::ok(format!("CAPTION_START {} CAPTION_END", "caption detail ".repeat(6000))).with_images(vec![
+                nexo_core::message::ImageSource::Url { url: "https://example.invalid/one.png".into() },
+                nexo_core::message::ImageSource::Url { url: "https://example.invalid/two.png".into() },
+            ])
+        }
+    }
+    let _g = config_lock().lock().await;
+    let caption = format!("CAPTION_START {} CAPTION_END", "caption detail ".repeat(6000));
+    for policy in ["plain", "curator", "auto"] {
+        for window in [8_000, 200_000] {
+            let d = project();
+            data_dir();
+            let client = Scripted::new(vec![
+                Reply::Events(uncounted(call("large-1", "large_picture", json!({})))),
+                Reply::Events(uncounted(text("done"))),
+            ]);
+            let mut cfg = cfg_window(window);
+            cfg.context.policy = policy.into();
+            let mut r =
+                start_with(client.clone(), cfg, None, d.path(), ToolSet::new().with(Arc::new(LargePicture))).await;
+            let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!("no Ready") };
+            r.send(AgentCommand::Submit { text: "Inspect both pictures.".into(), attachments: vec![] });
+            let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+            let sent = client.requests();
+            let saved = nexo_agent::Session::open(&id).unwrap();
+            let result = saved
+                .messages()
+                .iter()
+                .flat_map(|m| &m.content)
+                .find(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id == "large-1"))
+                .expect("tool executed");
+            let Part::ToolResult { content, .. } = result else { unreachable!() };
+            assert_eq!(nexo_core::message::result_text(content), caption);
+            assert_eq!(content.iter().filter(|p| matches!(p, Part::Image { .. })).count(), 2);
+            if sent.len() == 1 {
+                assert_eq!(end_of(&evs), TurnEnd::Error, "{policy}/{window}: {:?}", notices(&evs));
+            } else {
+                assert_eq!(sent.len(), 2, "{policy}/{window}: unexpected retry");
+                assert_eq!(end_of(&evs), TurnEnd::Done);
+                let outgoing = sent[1]
+                    .messages
+                    .iter()
+                    .flat_map(|m| &m.content)
+                    .find(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id == "large-1"))
+                    .expect("sent result");
+                let Part::ToolResult { content: sent_content, .. } = outgoing else { unreachable!() };
+                if window == 200_000 {
+                    assert_eq!(
+                        nexo_core::message::result_text(sent_content),
+                        caption,
+                        "{policy}/{window}: caption must not be shortened"
+                    );
+                    assert_eq!(outgoing, result, "{policy}/{window}: full caption and images in order");
+                } else {
+                    // a request never goes over the window: the text gives way whole, never cut in half,
+                    // and both images stay in their place
+                    let text = nexo_core::message::result_text(sent_content);
+                    assert!(
+                        text == caption || text.starts_with("[curator] Tool output omitted"),
+                        "{policy}/{window}: caption cut in half: {text}"
+                    );
+                    assert_eq!(sent_content.iter().filter(|p| matches!(p, Part::Image { .. })).count(), 2);
+                }
+            }
+            if window == 200_000 {
+                assert_eq!(sent.len(), 2, "{policy}: large-window control must send");
+            }
+            r.stop().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn user_image_and_long_text_are_sent_whole_or_rejected() {
+    let _g = config_lock().lock().await;
+    for policy in ["plain", "curator", "auto"] {
+        for window in [8_000, 64_000, 200_000] {
+            let d = project();
+            std::fs::write(d.path().join("shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+            let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+            let mut cfg = cfg_window(window);
+            cfg.context.policy = policy.into();
+            let mut r = start_with(client.clone(), cfg, None, d.path(), nexo_tools::builtin()).await;
+            r.next().await;
+            let caption = (0..4000).map(|i| format!("line {i}: explain this image in detail\n")).collect::<String>();
+            r.send(AgentCommand::Submit {
+                text: caption.clone(),
+                attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("shot.png") }],
+            });
+            let events = r.turn().await;
+            let requests = client.requests();
+            if requests.is_empty() {
+                assert_eq!(end_of(&events), TurnEnd::Error, "{policy} {window}");
+                assert!(window != 200_000, "large-window control rejected: {:?}", notices(&events));
+            } else {
+                assert_eq!(requests.len(), 1);
+                let message = requests[0]
+                    .messages
+                    .iter()
+                    .find(|m| m.content.iter().any(|p| matches!(p, Part::Image { .. })))
+                    .expect("image must remain in request");
+                assert!(message.text().contains(&caption), "{policy} {window}: user caption was truncated");
+                assert_eq!(end_of(&events), TurnEnd::Done);
+            }
+            r.stop().await;
+        }
+    }
 }

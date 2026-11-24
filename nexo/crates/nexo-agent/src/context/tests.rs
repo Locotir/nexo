@@ -163,6 +163,39 @@ async fn the_setting_left_out_is_said_once_in_the_transcript() {
     assert!(ok.caveat().is_none() && ok.view(0, &history()).await.unwrap().note.is_none());
 }
 
+#[tokio::test]
+async fn prepared_compaction_snapshot_is_isolated_and_restores_pending_state() {
+    let old = vec![
+        Message::user("Never delete the logs."),
+        Message::assistant("Understood."),
+        Message::user("Continue work."),
+        Message::assistant("Ok."),
+    ];
+    let replacement = vec![Message::user("Summary: work done."), old[2].clone(), old[3].clone()];
+    let mut active = BuiltIn::new("").unwrap();
+    active.view(0, &old).await.unwrap();
+    let original = active.save().unwrap()();
+    assert!(active.prepare_compaction_snapshot(&old, 2, &[Message::user("bad tail")]).is_err());
+    let bytes = active.prepare_compaction_snapshot(&old, 2, &replacement).unwrap();
+    let policy: &dyn ContextPolicy = &active;
+    let dispatched = policy.prepare_compaction_snapshot(&old, 2, &replacement).unwrap().unwrap();
+    assert!(policy.prepare_compaction_snapshot(&old, 2, &[Message::user("bad tail")]).is_err());
+    assert!(Plain::default().prepare_compaction_snapshot(&old, 2, &replacement).unwrap().is_none());
+    let mut pending = BuiltIn::new("").unwrap();
+    pending.restore(original);
+    let pending_bytes = pending.prepare_compaction_snapshot(&old, 2, &replacement).unwrap();
+    let mut expected = active;
+    expected.compacted_prefix(&old, 2, 1);
+    let expected_view = expected.view(0, &replacement).await.unwrap();
+    for snapshot in [bytes, dispatched, pending_bytes] {
+        let mut restored = BuiltIn::new("").unwrap();
+        restored.restore(snapshot);
+        let view = restored.view(0, &replacement).await.unwrap();
+        assert_eq!(view.messages, expected_view.messages);
+        assert!(view.messages.iter().any(|m| m.text().contains("Never delete the logs.")));
+    }
+}
+
 /// A user's standing instruction outlives a compaction of the history.
 #[tokio::test]
 async fn a_compacted_history_keeps_the_rules() {
@@ -174,6 +207,113 @@ async fn a_compacted_history_keeps_the_rules() {
     let v = c.view(1000, &h).await.unwrap();
     let text: String = v.messages.iter().map(|m| m.text()).collect();
     assert!(text.contains("Never use unwrap in library code."), "{text}");
+}
+
+#[tokio::test]
+async fn edits_and_rewinds_do_not_keep_removed_rules_even_after_compaction() {
+    let mut c = BuiltIn::new("").unwrap();
+    let mut h = vec![Message::user("Never use unwrap in library code."), Message::assistant("Understood.")];
+    c.view(0, &h).await.unwrap();
+    c.compacted();
+    h = vec![Message::user("Summary: parser work."), Message::assistant("Ok.")];
+    c.view(0, &h).await.unwrap();
+    h.push(Message::user("Never delete the logs."));
+    c.view(0, &h).await.unwrap();
+    h.pop();
+    h.push(Message::user("Continue the work."));
+    let v = c.view(0, &h).await.unwrap();
+    let text: String = v.messages.iter().map(|m| m.text()).collect();
+    assert!(text.contains("Never use unwrap in library code."), "{text}");
+    assert!(!text.contains("Never delete the logs."), "{text}");
+    h[0] = Message::user("Different history.");
+    let v = c.view(0, &h).await.unwrap();
+    let text: String = v.messages.iter().map(|m| m.text()).collect();
+    assert!(!text.contains("Never use unwrap in library code."), "{text}");
+}
+
+#[tokio::test]
+async fn compacted_tail_edits_and_restoration_keep_only_summarized_state() {
+    let old = vec![
+        Message::user("Never delete the logs."),
+        Message::assistant("Understood."),
+        Message::user("Never use unwrap."),
+        Message::assistant("Ok."),
+    ];
+    let mut c = BuiltIn::new("").unwrap();
+    c.view(0, &old).await.unwrap();
+    c.compacted_prefix(&old, 2, 1);
+    let h = vec![Message::user("Summary: parser work."), old[2].clone(), old[3].clone()];
+    let text: String = c.view(0, &h).await.unwrap().messages.iter().map(|m| m.text()).collect();
+    assert!(text.contains("Never delete the logs") && text.contains("Never use unwrap"), "{text}");
+    let saved = c.save().unwrap()();
+    // A second compaction may happen immediately on resume, before the first view.
+    let mut immediate = BuiltIn::new("").unwrap();
+    immediate.restore(saved.clone());
+    immediate.compacted_prefix(&h, 1, 1);
+    let h2 = vec![Message::user("Second summary."), h[1].clone(), h[2].clone()];
+    immediate.view(0, &h2).await.unwrap();
+    let text: String = immediate
+        .view(0, &[h2[0].clone(), Message::user("Continue.")])
+        .await
+        .unwrap()
+        .messages
+        .iter()
+        .map(|m| m.text())
+        .collect();
+    assert!(text.contains("Never delete the logs") && !text.contains("Never use unwrap"), "{text}");
+    for restore in [false, true] {
+        let mut p = if restore {
+            let mut p = BuiltIn::new("").unwrap();
+            p.restore(saved.clone());
+            p.view(0, &h).await.unwrap();
+            p
+        } else {
+            let mut p = BuiltIn::new("").unwrap();
+            p.view(0, &old).await.unwrap();
+            p.compacted_prefix(&old, 2, 1);
+            p.view(0, &h).await.unwrap();
+            p
+        };
+        let changed = vec![h[0].clone(), Message::user("Continue."), h[2].clone()];
+        let text: String = p.view(0, &changed).await.unwrap().messages.iter().map(|m| m.text()).collect();
+        assert!(text.contains("Never delete the logs") && !text.contains("Never use unwrap"), "{text}");
+        let text: String = p.view(0, &changed[..1]).await.unwrap().messages.iter().map(|m| m.text()).collect();
+        assert!(text.contains("Never delete the logs") && !text.contains("Never use unwrap"), "{text}");
+        let text: String = p
+            .view(0, &[Message::user("Different history.")])
+            .await
+            .unwrap()
+            .messages
+            .iter()
+            .map(|m| m.text())
+            .collect();
+        assert!(!text.contains("Never delete the logs"), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn snapshot_is_replaced_after_same_length_rewrite_and_compaction() {
+    let mut c = BuiltIn::new("").unwrap();
+    let original = vec![Message::user("Never delete the logs."), Message::assistant("Understood.")];
+    c.view(0, &original).await.unwrap();
+    c.save().unwrap()();
+    let edited = vec![Message::user("Never use unwrap."), Message::assistant("Understood.")];
+    c.view(0, &edited).await.unwrap();
+    let edited_snapshot = c.save().expect("same-length edit must be saved")();
+    let mut resumed = BuiltIn::new("").unwrap();
+    resumed.restore(edited_snapshot);
+    let text: String = resumed.view(0, &edited).await.unwrap().messages.iter().map(|m| m.text()).collect();
+    assert!(text.contains("Never use unwrap"), "{text}");
+    assert!(!text.contains("Never delete the logs"), "{text}");
+
+    c.compacted();
+    let summary = vec![Message::user("Summary: parser done."), Message::assistant("Ok.")];
+    c.view(0, &summary).await.unwrap();
+    let snapshot = c.save().expect("same-length compaction must be saved")();
+    let mut resumed = BuiltIn::new("").unwrap();
+    resumed.restore(snapshot);
+    let text: String = resumed.view(0, &summary).await.unwrap().messages.iter().map(|m| m.text()).collect();
+    assert!(text.contains("Never use unwrap"), "{text}");
 }
 
 /// A session closed and resumed: the notes come back from the saved history, nothing else holds them.
@@ -592,13 +732,41 @@ async fn a_saved_state_that_does_not_fit_is_ignored() {
     }
 }
 
+#[tokio::test]
+async fn failed_snapshot_write_can_be_retried_without_new_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut policy = BuiltIn::new("").unwrap();
+    policy.view(0, &[Message::user("Remember this.")]).await.unwrap();
+    let job = policy.save().unwrap();
+    assert!(saved::write(&dir.path().join("missing/session.jsonl"), job).is_err());
+    policy.save_failed();
+    let path = dir.path().join("session.jsonl");
+    saved::write(&path, policy.save().expect("failed save must be retried")).unwrap();
+    assert!(saved::read(&path).is_some());
+}
+
+#[test]
+fn abandoned_experimental_compaction_files_are_cleaned() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = dir.path().join("session.jsonl");
+    let compact = session.with_extension("jsonl.curator.compact");
+    let tmp = dir.path().join("session.jsonl.curator.compact.2000000000.1.tmp");
+    std::fs::write(&compact, "old").unwrap();
+    std::fs::write(&tmp, "partial").unwrap();
+    saved::forget(&session);
+    assert!(!compact.exists());
+    if cfg!(unix) {
+        assert!(!tmp.exists());
+    }
+}
+
 /// The state is written next to the session file and read back from there; a session in the trash takes it along.
 #[test]
 fn the_saved_state_sits_next_to_the_session_and_moves_with_it() {
     let dir = tempfile::tempdir().unwrap();
     let session = dir.path().join("20261116-080000-ab12.jsonl");
     std::fs::write(&session, "{}\n").unwrap();
-    saved::write(&session, Box::new(|| b"state".to_vec()));
+    saved::write(&session, Box::new(|| b"state".to_vec())).unwrap();
     assert_eq!(saved::path_for(&session), dir.path().join("20261116-080000-ab12.jsonl.curator"));
     assert_eq!(saved::read(&session).as_deref(), Some(&b"state"[..]));
     let names: Vec<String> =
@@ -637,7 +805,7 @@ fn the_files_of_cut_writes_are_removed_for_their_own_session_only() {
     let old = dir.path().join(format!("20261116-080000-ab12.jsonl.curator.{}.3.tmp", std::process::id() + 1));
     std::fs::write(&old, "half").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
-    saved::write(&session, Box::new(|| b"state".to_vec()));
+    saved::write(&session, Box::new(|| b"state".to_vec())).unwrap();
     saved::sweep(&session);
     assert!(!old.exists());
     assert!(!dead("20261116-080000-ab12", 1).exists());

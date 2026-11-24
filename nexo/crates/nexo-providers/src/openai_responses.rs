@@ -10,7 +10,9 @@ mod tests;
 
 use async_trait::async_trait;
 use input::input_items;
-use nexo_core::{EventStream, ModelInfo, ModelRequest, Protocol, ProviderConfig, ProviderError, ReasoningConfig};
+use nexo_core::{
+    ErrorKind, EventStream, ModelInfo, ModelRequest, Protocol, ProviderConfig, ProviderError, ReasoningConfig,
+};
 pub use parser::{usage, ResponsesParser};
 use serde_json::{json, Value};
 
@@ -67,8 +69,9 @@ impl OpenAiResponses {
         let mut include = Vec::new();
         match req.reasoning {
             Some(ReasoningConfig::Effort(e)) => {
-                // OpenAI's ladder ends at xhigh; "max" is a 400 here.
-                let effort = if e == nexo_core::Effort::Max { "xhigh" } else { e.as_str() };
+                // `max` goes only to a model whose list (the provider's, or the table) has it; elsewhere it is a 400
+                let listed = cfg.efforts.get(&req.model).is_some_and(|l| l.iter().any(|x| x == "max"));
+                let effort = if e == nexo_core::Effort::Max && !listed { "xhigh" } else { e.as_str() };
                 body["reasoning"] = json!({"effort": effort, "summary": "auto"});
                 include.push("reasoning.encrypted_content");
             }
@@ -175,6 +178,61 @@ impl Protocol for OpenAiResponses {
     }
 
     async fn list_models(&self, cfg: &ProviderConfig, key: Option<&str>) -> Result<Vec<ModelInfo>, ProviderError> {
+        if cfg.login.as_deref() == Some("codex") {
+            // Codex uses a different envelope and requires a client version, not /v1/models.
+            let url =
+                format!("{}/models?client_version={}", cfg.base_url.trim_end_matches('/'), env!("CARGO_PKG_VERSION"));
+            let body = http::get_json(&url, OpenAiChat::headers(cfg, key)).await?;
+            let models = crate::probe::codex_models(&body);
+            if models.is_empty() {
+                return Err(ProviderError::new(ErrorKind::Parse, crate::probe::CODEX_EMPTY_CATALOG));
+            }
+            return Ok(models);
+        }
         OpenAiChat.list_models(cfg, key).await
+    }
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+    #[tokio::test]
+    async fn codex_empty_catalog_is_diagnostic() {
+        let server = httpmock::MockServer::start_async().await;
+        let mock = server
+            .mock_async(|when, then| {
+                when.path("/models").query_param("client_version", env!("CARGO_PKG_VERSION"));
+                then.status(200).json_body(json!({"models": []}));
+            })
+            .await;
+        let mut cfg = ProviderConfig::new("openai-responses", &server.base_url(), None);
+        cfg.login = Some("codex".into());
+        let err = OpenAiResponses.list_models(&cfg, Some("synthetic")).await.unwrap_err();
+        assert!(err.to_string().contains("no usable models"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_uses_subscription_route_headers_and_exact_levels() {
+        let server = httpmock::MockServer::start_async().await;
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET)
+                    .path("/backend-api/codex/models")
+                    .query_param("client_version", env!("CARGO_PKG_VERSION"))
+                    .header("authorization", "Bearer synthetic")
+                    .header("chatgpt-account-id", "test-account");
+                then.status(200).json_body(json!({"models":[{
+                    "slug":"new-codex", "supported_reasoning_levels":[{"effort":"xhigh"},{"effort":"ultra"}]
+                }]}));
+            })
+            .await;
+        let mut cfg =
+            ProviderConfig::new("openai-responses", &format!("{}/backend-api/codex", server.base_url()), None);
+        cfg.login = Some("codex".into());
+        cfg.headers.insert("chatgpt-account-id".into(), "test-account".into());
+        let models = OpenAiResponses.list_models(&cfg, Some("synthetic")).await.unwrap();
+        assert_eq!(models[0].efforts, ["xhigh", "ultra"]);
+        mock.assert_async().await;
     }
 }

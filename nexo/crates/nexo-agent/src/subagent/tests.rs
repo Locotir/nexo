@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn subagent_base_requires_observed_evidence() {
+    for requirement in [
+        "Report as fact only what you observed; distinguish inference from evidence",
+        "Cite test or command output you read",
+        "state when a result was not checked or a command failed",
+        "never imply an unrun test passed",
+    ] {
+        assert!(BASE.contains(requirement), "missing {requirement}");
+    }
+}
+
+#[test]
 fn the_read_only_sandbox_sees_home_paths_and_links_leaving_the_project() {
     let d = tempfile::tempdir().unwrap();
     let cwd = d.path().join("proj");
@@ -127,6 +139,39 @@ fn review_is_read_only_and_has_a_findings_contract() {
 }
 
 #[test]
+fn plan_is_read_only_with_a_scoped_verifiable_contract() {
+    let profiles = builtin();
+    let plan = profiles.iter().find(|p| p.name == "plan").unwrap();
+    assert!(plan.read_only && plan.tools.is_none());
+    assert!(plan.model.is_none() && !plan.isolation);
+    assert_eq!(plan.rounds, 24);
+    for requirement in [
+        "smallest viable",
+        "file paths and lines",
+        "dependent steps",
+        "acceptance criteria",
+        "assumptions",
+        "Do not implement",
+    ] {
+        assert!(plan.prompt.contains(requirement), "{requirement}");
+    }
+    let project = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let agents = project.path().join(".nexo/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("plan.md"), "---\nname: plan\ndescription: custom planner\n---\nCustom plan.").unwrap();
+    let trust = config.path().join("trust");
+    assert!(load_from(project.path(), config.path(), &trust, None)
+        .iter()
+        .any(|p| p.name == "plan" && p.source.is_none()));
+    nexo_core::config::trust_project(project.path(), &trust).unwrap();
+    let custom = load_from(project.path(), config.path(), &trust, None);
+    assert_eq!(custom.iter().filter(|p| p.name == "plan").count(), 1);
+    assert!(short_text(&custom).contains("`plan`: custom planner"));
+    assert!(!short_text(&custom).contains("`plan`: read-only"));
+}
+
+#[test]
 fn a_tool_list_that_names_only_task_and_workflow_gives_no_tool_not_all() {
     for list in ["task", "workflow", "[task, workflow]", "\"task\", 'workflow'"] {
         let p = parse(&format!("---\nname: x\ntools: {list}\n---\nB"), "x").unwrap();
@@ -180,7 +225,7 @@ fn a_description_is_cut_to_its_first_clause_and_a_long_one_at_a_comma_or_a_word(
 #[test]
 fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_few_words() {
     let stock =
-        format!("{SHORT} `explore`: read-only; `general` (default): edit. `research`: read-only, checks sources. `review`: read-only, reports findings.");
+        format!("{SHORT} `explore`: read-only; `general` (default): edit. `research`: read-only, checks sources. `review`: read-only, reports findings. `plan`: read-only steps.");
     assert_eq!(short_text(&builtin()), stock);
     let mut kinds = builtin();
     kinds.extend([kind("docs", "Writes the manual. Use after a change."), kind("bare", "")]);
@@ -191,7 +236,7 @@ fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_fe
     kinds.push(kind("explore", "reads the wiki too"));
     assert_eq!(
         short_text(&kinds),
-        format!("{SHORT} `general` (default): edit. `research`: read-only, checks sources. `review`: read-only, reports findings. More kinds for `agent`: `explore`: reads the wiki too.")
+        format!("{SHORT} `general` (default): edit. `research`: read-only, checks sources. `review`: read-only, reports findings. `plan`: read-only steps. More kinds for `agent`: `explore`: reads the wiki too.")
     );
 }
 

@@ -63,7 +63,7 @@ impl App {
                 GoalState::Paused(_) => "goal paused · /goal resume",
                 GoalState::Done => "goal met ✓",
             }),
-            (Some(_), Some(g)) if round > g.round => {
+            (Some(_), Some(g)) if state.is_active() && round > g.round => {
                 self.goal_round_said = Some((round, max));
                 self.flash(&format!("goal: continuing, round {round}/{max}"))
             }
@@ -78,10 +78,11 @@ impl App {
             }
             _ => None,
         };
-        // the more rounds the goal took, the bigger the burst
+        // Duration, not round count: one slow round deserves the same finish as many quick ones.
         let rounds = round.max(self.goal.as_ref().map_or(0, |g| g.round));
         if let Some(kind) = outcome {
-            self.burst_sized(kind, 1 + (rounds / 2).min(2) as u8);
+            let power = crate::fx_burst::goal_power(rounds, self.goal_log.started_ms, nexo_core::mailbox::now_ms());
+            self.burst_sized(kind, power);
         }
         self.goal = text.map(|text| Goal { text, round, max, state });
         if self.goal.is_none() {

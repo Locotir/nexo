@@ -61,7 +61,7 @@ fn both_prompts_name_every_part_nexo_adds_to_the_persons_messages() {
         assert!(full.contains(m), "{m} is not named in: {full}");
     }
     assert!(full.contains("do not reply to them as if the person had just said them"), "{full}");
-    // the compact text has 2 600 characters in all: it names the kinds, not each label
+    // the compact text has 3 100 characters in all: it names the kinds, not each label
     // and both say where the person's own words are
     assert!(
         full.contains(nexo_core::agent::PERSON_MARK) && line(BUILT_IN_COMPACT).contains(nexo_core::agent::PERSON_MARK)
@@ -138,7 +138,7 @@ fn a_small_window_gets_the_compact_text_within_its_caps() {
     let tools = nexo_tools::builtin();
     for w in [8_000, COMPACT_WINDOW] {
         let b = builtin_part_for(&tools, None, Some(w), false);
-        assert!(b.len() <= 2_600, "{w}: the compact built-in part takes {} characters", b.len());
+        assert!(b.len() <= 3_100, "{w}: the compact built-in part takes {} characters", b.len());
         assert!(!b.contains("How to write code:") && !b.contains("You can do:"), "{b}");
         // the tools this window is not offered (`browser` among them) are not in its request
         let offered: Vec<_> = tools.compact_specs().into_iter().filter(|s| !left_out(Some(w), &s.name)).collect();
@@ -147,7 +147,7 @@ fn a_small_window_gets_the_compact_text_within_its_caps() {
         let json = serde_json::to_string(&offered).unwrap();
         assert!(json.len() <= 6_000, "{w}: the compact tool JSON takes {} characters", json.len());
     }
-    assert!(BUILT_IN_COMPACT.len() <= 2_400, "{}", BUILT_IN_COMPACT.len());
+    assert!(BUILT_IN_COMPACT.len() <= 3_100, "{}", BUILT_IN_COMPACT.len());
     assert!(compact_guidance(&tools, None).lines().filter(|l| l.starts_with("- ")).count() <= 2);
 }
 

@@ -418,8 +418,13 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     let mut st = state.lock().await;
     let keep = cut_point(&st.history, index);
     if let Err(e) = st.session.rewind(keep) {
-        notice(&st.events, Level::Error, format!("cannot rewind the session: {e}"));
-        return;
+        if !e.is::<crate::session::NotReopened>() {
+            notice(&st.events, Level::Error, format!("cannot rewind the session: {e}"));
+            return;
+        }
+        // The rename committed the rewind; only reopening for subsequent writes failed.
+        notice(&st.events, Level::Warn, format!("session rewound, but could not reopen it for saving: {e}"));
+        saving(&mut st);
     }
     let dropped = st.history.len().saturating_sub(keep);
     st.history.truncate(keep);

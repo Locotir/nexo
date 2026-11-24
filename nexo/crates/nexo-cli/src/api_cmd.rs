@@ -170,9 +170,9 @@ pub struct Target {
     /// The whole body of the login call: JSON text, or @file.
     #[arg(long = "login-body", value_name = "JSON|@FILE")]
     pub login_body: Option<String>,
-    /// Send the call through your own signed-in browser (the nexo extension, you click Allow): the page on the API's
-    /// origin does the fetch with your session, and no cookie or token leaves the browser. `--via-browser=ID` picks
-    /// one of several browsers.
+    /// Send the call through your own signed-in browser (the nexo extension grants session access automatically):
+    /// the page on the API's origin does the fetch with your session, and no cookie or token leaves the browser.
+    /// Stop the session with Cancel on Chrome's debugging bar. `--via-browser=ID` picks one of several browsers.
     #[arg(long = "via-browser", value_name = "ID", num_args = 0..=1, require_equals = true, default_missing_value = "")]
     pub via_browser: Option<String>,
     /// Print only these values of a JSON answer, as `path<TAB>value` lines: $.a.b, $.items[0].price, $.items[*].id,

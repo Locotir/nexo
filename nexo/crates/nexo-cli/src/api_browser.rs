@@ -361,7 +361,7 @@ pub(crate) async fn run(plan: &Plan, id: &str, cap: usize, timeout_ms: u64) -> R
     let js = script(plan, cap, timeout_ms);
     let id = if id.trim().is_empty() { None } else { Some(id.trim()) };
     let browser = AnyBrowser::connect_user(id, "nexo api").await.map_err(|e| {
-        failed(format!("cannot reach your browser: {e} (the nexo extension must run, and you click Allow)"))
+        failed(format!("cannot reach your browser: {e} (the nexo extension must be running and connected; it grants session access automatically)"))
     })?;
     let reply = in_tab(&browser, &plan.origin, &js, timeout_ms).await;
     let _ = browser.close().await;

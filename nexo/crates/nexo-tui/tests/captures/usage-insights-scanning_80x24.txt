@@ -14,9 +14,9 @@
               │ Approximate · sessions on this machine only      │
               │                                                  │
               │ Scanning local sessions…                         │
+              │                                                  │
               │ Tab · ↑↓ · d/w/m period · Esc close              │
               ╰──────────────────────────────────────────────────╯
-
 
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything

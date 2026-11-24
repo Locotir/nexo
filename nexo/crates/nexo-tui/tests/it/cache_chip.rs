@@ -1,4 +1,4 @@
-//! The status bar says nothing about the cache until it lets a call down; `/context` has the share.
+//! Cache diagnostics are opt-in; the default bar stays quiet and `/context` has the figures.
 
 use std::path::PathBuf;
 
@@ -20,6 +20,7 @@ fn app() -> App {
         model: "deepseek-chat".into(),
         models: vec![("deepseek".into(), "deepseek-chat".into())],
         animations: false,
+        status_line: nexo_tui::ui::STATUS_PIECES.iter().map(|piece| (*piece).to_string()).collect(),
         ..Default::default()
     };
     let mut a = App::new(opts, tx);
@@ -51,6 +52,42 @@ fn rows(a: &mut App, w: u16) -> Vec<String> {
 
 fn bar(a: &mut App, w: u16) -> String {
     rows(a, w).into_iter().find(|r| r.trim_start().starts_with("nexo")).expect("the status bar is on screen")
+}
+
+#[test]
+fn default_bar_stays_quiet_after_repeated_misses_but_context_keeps_the_figures() {
+    let mut a = app();
+    a.opts.status_line.clear();
+    call(&mut a, 2_000, 40_000);
+    for _ in 0..3 {
+        call(&mut a, 31_000, 3_000);
+        assert_eq!(a.cache_miss(), Some(31_000), "the diagnostic remains available");
+        let b = bar(&mut a, 200);
+        assert!(!b.contains("cache miss") && !b.contains("full price"), "{b}");
+    }
+    a.modal = Some(Modal::Info(Box::new(Info::new(0).still(true))));
+    let all = rows(&mut a, 120).join("\n");
+    assert!(all.contains("last call 3k cached, 31k full price"), "{all}");
+}
+
+#[test]
+fn side_calls_cannot_raise_or_clear_the_main_call_diagnostic() {
+    let mut a = app();
+    call(&mut a, 2_000, 40_000);
+    let side = Usage { input: 50_000, ..Default::default() };
+    let mut session = a.session_usage;
+    session += side;
+    a.handle_agent(AgentEvent::Usage { turn: side, call: Usage::default(), session, cost_usd: 0.02 });
+    assert_eq!(a.cache_miss(), None);
+    assert_eq!(a.last_call_input, 42_000);
+    call(&mut a, 31_000, 3_000);
+    assert!(bar(&mut a, 200).contains("cache miss"));
+    let cached_side = Usage { cache_read: 80_000, ..Default::default() };
+    let mut session = a.session_usage;
+    session += cached_side;
+    a.handle_agent(AgentEvent::Usage { turn: cached_side, call: Usage::default(), session, cost_usd: 0.03 });
+    assert_eq!(a.cache_miss(), Some(31_000));
+    assert_eq!(a.last_call_input, 34_000);
 }
 
 #[test]

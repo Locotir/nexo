@@ -230,7 +230,8 @@ fn facts_survive_a_rewritten_history() {
     let opening = [user("Fix the overflow in the parser."), said("On it."), user(RC), said("Understood.")];
     let mut cur = curator();
     let _ = work(&mut cur, &opening, 20, "");
-    // the host compacts the history into a summary that does not hold the fact
+    // the host compacts the history into a summary that does not hold the fact; it announces the compaction
+    cur.compacted();
     let summary = vec![user("Summary: the parser overflow is fixed; the tests pass."), said("Understood.")];
     let (_, standing) = ask(&mut cur, summary, "Add an alias to my shell.");
     assert!(standing.iter().any(|l| l.contains(RC)), "{standing:?}");

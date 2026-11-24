@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn every_preset_has_its_record() {
         for n in crate::presets::names() {
-            if n != "codex" {
+            if n != "codex" && n != "anthropic-oauth" {
                 assert!(get(n).is_some(), "{n}");
             }
         }

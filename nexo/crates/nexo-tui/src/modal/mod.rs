@@ -31,6 +31,8 @@ pub enum PickKind {
     Theme,
     PermissionMode,
     Rewind,
+    /// Source lines retrieved by the session explorer.
+    Explore,
     /// Where a fork starts.
     Fork,
     /// The tree of sessions.

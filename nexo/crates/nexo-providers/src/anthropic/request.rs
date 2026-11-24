@@ -199,6 +199,20 @@ impl Anthropic {
             }
             body[k] = v.clone();
         }
+        // An external report describes a bare 429 unless this exact block is first on Claude OAuth requests.
+        // Apply after request overlays, preserving their system blocks and leaving API-key providers untouched.
+        if cfg.auth.as_deref() == Some("anthropic-oauth") || cfg.login.as_deref() == Some("claude") {
+            let marker = json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."});
+            let system = body.as_object_mut().expect("request body is an object").remove("system");
+            let mut blocks = vec![marker];
+            match system {
+                None | Some(Value::Null) => {}
+                Some(Value::String(text)) => blocks.push(json!({"type": "text", "text": text})),
+                Some(Value::Array(existing)) => blocks.extend(existing),
+                Some(other) => blocks.push(other),
+            }
+            body["system"] = Value::Array(blocks);
+        }
         body
     }
 

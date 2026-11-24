@@ -11,6 +11,8 @@ use nexo_tools::browser::chrome_setup::{
     copy_folder_on_mac, open_extensions, setup, Places, HOST_NAME, MAC_FOLDER_HINT,
 };
 
+const CONNECTION_HINT: &str = "3) click the nexo button in the toolbar to connect. The extension automatically grants access when a nexo session requests it; stop that session with Cancel on Chrome's debugging bar.";
+
 #[derive(Args, Debug)]
 pub struct ChromeSetupArgs {
     /// Write the files and print the steps, but do not open the browser.
@@ -41,9 +43,7 @@ fn execute(a: &ChromeSetupArgs) -> Result<()> {
     for note in &done.notes {
         println!("Note: {note}");
     }
-    println!(
-        "3) click the nexo button in the toolbar. Nothing is controlled until a nexo session asks and you click Allow"
-    );
+    println!("{CONNECTION_HINT}");
     println!("Run `nexo chrome-setup` again after moving or updating nexo, and to refresh the extension's files.");
     if a.no_open {
         return Ok(());
@@ -52,4 +52,33 @@ fn execute(a: &ChromeSetupArgs) -> Result<()> {
         println!("No browser program found on PATH: open chrome://extensions yourself.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONNECTION_HINT;
+
+    #[test]
+    fn connection_hint_explains_automatic_access_and_stop() {
+        assert!(CONNECTION_HINT.contains("automatically grants access"));
+        assert!(CONNECTION_HINT.contains("Cancel on Chrome's debugging bar"));
+        assert!(!CONNECTION_HINT.contains("click Allow"));
+    }
+
+    #[test]
+    fn browser_help_describes_automatic_access_not_an_allow_dialog() {
+        use clap::CommandFactory;
+
+        let mut cli = crate::cli::Args::command();
+        let setup = cli.find_subcommand_mut("chrome-setup").unwrap().render_long_help().to_string();
+        assert!(setup.contains("grants session access automatically"), "{setup}");
+        assert!(!setup.contains("accept once"), "{setup}");
+        let api = cli.find_subcommand_mut("api").unwrap();
+        for name in ["call", "watch"] {
+            let help = api.find_subcommand_mut(name).unwrap().render_long_help().to_string();
+            assert!(help.contains("grants session access automatically"), "{help}");
+            assert!(help.contains("Cancel on Chrome's debugging bar"), "{help}");
+            assert!(!help.contains("click Allow"), "{help}");
+        }
+    }
 }

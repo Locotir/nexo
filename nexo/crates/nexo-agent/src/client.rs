@@ -12,8 +12,10 @@ pub struct Target {
 }
 
 impl Target {
-    pub fn new(provider: impl Into<String>, config: ProviderConfig, model: impl Into<String>) -> Target {
-        Target { inner: Arc::new(Mutex::new((provider.into(), config, model.into()))) }
+    pub fn new(provider: impl Into<String>, mut config: ProviderConfig, model: impl Into<String>) -> Target {
+        let (provider, model) = (provider.into(), model.into());
+        crate::setup::fill_levels(&provider, &mut config, &model);
+        Target { inner: Arc::new(Mutex::new((provider, config, model))) }
     }
 
     /// (provider name, its configuration, model).
@@ -21,9 +23,11 @@ impl Target {
         self.inner.lock().map(|g| g.clone()).unwrap_or_else(|e| e.into_inner().clone())
     }
 
-    pub fn set(&self, provider: impl Into<String>, config: ProviderConfig, model: impl Into<String>) {
+    pub fn set(&self, provider: impl Into<String>, mut config: ProviderConfig, model: impl Into<String>) {
+        let (provider, model) = (provider.into(), model.into());
+        crate::setup::fill_levels(&provider, &mut config, &model);
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        *g = (provider.into(), config, model.into());
+        *g = (provider, config, model);
     }
 
     pub fn model(&self) -> String {

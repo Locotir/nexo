@@ -81,6 +81,9 @@ pub(super) fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
     // along it while the model works (colour only, the comet's head heavy)
     let edge = (!(app.locked && app.input.is_empty())).then(|| rule_tag(app, area.width)).flatten().map(|t| t.0);
     app.paint_crest(f.buffer_mut(), area, edge);
+    if on {
+        app.fx.pulses.paint(f.buffer_mut(), area, &app.theme, now);
+    }
     // the curator let context go: a light carries it out of the map, down the panel's border and along the
     // rule to the curator's label (or the rule's end when the bar has no room for it); colour only
     if let Some(ms) = app.condense_ms().filter(|_| area.width > 0) {

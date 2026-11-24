@@ -1,4 +1,4 @@
-//! Finding the person's browsers and getting their consent: the part of [`RelayBrowser`] before the first tab.
+//! Finding the person's browsers and getting an extension grant: the part of [`RelayBrowser`] before the first tab.
 
 use super::RelayBrowser;
 use crate::{Error, Result};
@@ -47,16 +47,17 @@ fn none_running() -> Error {
     )
 }
 
-/// A session with this browser that the person allowed.
+/// An authenticated session granted access by this browser's extension.
 async fn allowed(dirs: &Dirs, id: &str, name: &str) -> Result<Client> {
     let client = Client::open(dirs, id, AGENT, name).await?;
-    // Nothing is controlled before the person clicks Allow in the browser; this waits for that click.
+    // Wait for the extension's grant before controlling tabs. The shipped extension grants automatically;
+    // it still refuses revoked sessions, and other implementations may ask the person first.
     client.consent().await?;
     Ok(client)
 }
 
-/// Asks every running browser at once; the first one whose person clicks Allow is the one used, and the prompts of
-/// the others are withdrawn when their sessions drop.
+/// Asks every running browser at once; the first one that grants access is used. The other sessions are dropped
+/// (and any pending prompts in extensions that require confirmation are withdrawn).
 async fn any(dirs: &Dirs, name: &str) -> Result<Client> {
     let (found, bad) = client::list(dirs).await;
     match found.as_slice() {
@@ -85,9 +86,10 @@ async fn any(dirs: &Dirs, name: &str) -> Result<Client> {
 
 impl RelayBrowser {
     /// Connects to the person's own browser and opens a first tab. With an `id` (from [`browsers`]) that browser is
-    /// asked; without one every running browser is asked and the first to be allowed is used. `name` is how this
-    /// agent shows in the browser. Waits up to two minutes for the person to click Allow; if they click Deny, or do
-    /// not click, this is an error and nothing was controlled.
+    /// asked; without one every running browser is asked and the first to grant access is used. `name` is how this
+    /// agent shows in the browser. The shipped extension grants authenticated local sessions automatically, without
+    /// a separate Allow dialog. Only this session's tabs are controlled; Chrome's debugging bar can revoke access.
+    /// Waits up to two minutes for the extension's grant; denial or timeout controls nothing.
     pub async fn connect(dirs: &Dirs, id: Option<&str>, name: &str) -> Result<RelayBrowser> {
         let client = match id {
             Some(id) => allowed(dirs, id, name).await?,

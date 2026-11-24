@@ -97,6 +97,90 @@ async fn cancel_unsubscribes_without_killing_job() {
     r.stop().await;
 }
 
+/// Two independent notifications from the same still-running process, with a real
+/// user turn between them. No jobs/output poll or re-subscription drives delivery.
+#[tokio::test]
+async fn listener_survives_user_turn_and_delivers_multiple_live_updates() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call(
+            "bash",
+            "bash",
+            json!({"command":"while [ ! -f first ]; do sleep 0.02; done; echo first-live-update; while [ ! -f second ]; do sleep 0.02; done; echo second-live-update; while [ ! -f finish ]; do sleep 0.02; done", "background":true}),
+        )),
+        Reply::Events(call("subscribe", "monitor", json!({"action":"create", "id":1}))),
+        Reply::Events(text("listening")),
+        Reply::Events(text("first update handled")),
+        Reply::Events(text("user can still talk")),
+        Reply::Events(text("second update handled")),
+        Reply::Events(call("inspect", "monitor", json!({"action":"list"}))),
+        Reply::Events(text("still listening")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), set).await;
+    r.send(AgentCommand::Submit { text: "listen to this process".into(), attachments: vec![] });
+    let initial = r.turn().await;
+    assert!(
+        initial.iter().any(|e| matches!(e,
+            AgentEvent::ToolDone { id, output, .. } if id == "subscribe" && !output.is_error
+        )),
+        "{initial:?}"
+    );
+
+    std::fs::write(d.path().join("first"), "").unwrap();
+    let first = r.turn().await;
+    assert!(
+        first
+            .iter()
+            .any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "first update handled")),
+        "{first:?}"
+    );
+    let first_request = client.requests().last().unwrap().clone();
+    let first_input =
+        first_request.messages.iter().rev().find(|m| m.text().contains("[monitor: shell job ")).unwrap().text();
+    assert!(first_input.contains("first-live-update"), "{first_input}");
+
+    r.send(AgentCommand::Submit { text: "can I talk while it listens?".into(), attachments: vec![] });
+    let human = r.turn().await;
+    assert!(
+        human
+            .iter()
+            .any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "user can still talk")),
+        "{human:?}"
+    );
+
+    std::fs::write(d.path().join("second"), "").unwrap();
+    // A second delivery observes the ten-second cooldown; allow runner scheduling slack.
+    let mut second = Vec::new();
+    loop {
+        let ev = r.raw_within(Duration::from_secs(25)).await;
+        let end = matches!(ev, AgentEvent::TurnEnd { .. });
+        second.push(ev);
+        if end {
+            break;
+        }
+    }
+    assert!(
+        second
+            .iter()
+            .any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "second update handled")),
+        "{second:?}"
+    );
+    let second_request = client.requests().last().unwrap().clone();
+    let second_input =
+        second_request.messages.iter().rev().find(|m| m.text().contains("[monitor: shell job ")).unwrap().text();
+    assert!(second_input.contains("second-live-update"), "{second_input}");
+    assert!(!second_input.contains("first-live-update"), "acknowledged output replayed: {second_input}");
+    assert!(!second_input.contains("Job completion"), "process should still be running: {second_input}");
+
+    r.send(AgentCommand::Submit { text: "inspect subscription".into(), attachments: vec![] });
+    let inspected = r.turn().await;
+    assert!(inspected.iter().any(|e| matches!(e,
+        AgentEvent::ToolDone { id, output, .. } if id == "inspect" && !output.is_error && output.content.contains("1 (listening")
+    )), "{inspected:?}");
+    r.stop().await;
+}
+
 // Wait inside the active turn so ordinary idle completion notifications cannot consume the job.
 // Unlike `jobs output`, this test-only tool does not read or acknowledge anything.
 struct WaitForJob;

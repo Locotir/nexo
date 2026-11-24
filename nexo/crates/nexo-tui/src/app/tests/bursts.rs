@@ -76,6 +76,79 @@ fn a_failure_bursts_red_once() {
 }
 
 #[test]
+fn goal_burst_power_tracks_elapsed_time_and_is_bounded() {
+    use crate::fx_burst::goal_power;
+    let start = 1_000;
+    for (elapsed, power) in [(0, 1), (59_999, 1), (60_000, 2), (299_999, 2), (300_000, 3), (i64::MAX - start, 3)] {
+        assert_eq!(goal_power(1, start, start + elapsed), power);
+    }
+    assert_eq!(goal_power(100, start, start + 10), 1, "rounds are not duration");
+    assert_eq!(goal_power(100, start, start - 1), 1, "clock skew is safe");
+    assert_eq!(goal_power(1, 0, i64::MAX), 1, "missing clocks use rounds");
+    assert_eq!(goal_power(4, 0, i64::MAX), 3);
+
+    for state in [GoalState::Done, GoalState::Paused("the turn failed".into())] {
+        for (elapsed, power) in [(5_000, 1), (120_000, 2), (600_000, 3)] {
+            let mut a = working(Instant::now());
+            a.goal_log.started_ms = nexo_core::mailbox::now_ms() - elapsed;
+            a.handle_agent(goal(state.clone()));
+            assert_eq!(a.fx.burst.unwrap().power, power);
+            assert_eq!(a.fx.burst.unwrap().scale(), 1.0 + 0.5 * (power - 1) as f32);
+        }
+    }
+}
+
+#[test]
+fn a_goal_failure_upgrades_the_turn_burst_without_restarting_it() {
+    let t0 = Instant::now();
+    let mut a = working(t0);
+    a.goal_log.started_ms = nexo_core::mailbox::now_ms() - 600_000;
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Error });
+    let first = a.fx.burst.unwrap();
+    assert_eq!(first.power, 1);
+    fx_at(&mut a, t0, 40);
+    a.handle_agent(goal(GoalState::Paused("the turn failed".into())));
+    let upgraded = a.fx.burst.unwrap();
+    assert_eq!(upgraded.at, first.at);
+    assert_eq!(upgraded.power, 3);
+    a.burst(Kind::Failed);
+    assert_eq!(a.fx.burst.unwrap(), upgraded, "a duplicate cannot downgrade it");
+    fx_at(&mut a, t0, FAIL_MS + 1);
+    assert!(!a.burst_moving(a.now()), "power never extends the timer");
+}
+
+/// Explicit microbenchmark, not a timing assertion dependent on machine load.
+#[test]
+#[ignore = "manual goal burst render timing"]
+fn goal_burst_render_timing() {
+    for kind in [Kind::Met, Kind::Failed] {
+        for power in [1, 3] {
+            let mut a = working(Instant::now());
+            a.opts.home_stars = false;
+            a.burst_sized(kind, power);
+            let t0 = a.now();
+            let mut samples = Vec::with_capacity(200);
+            for i in 0..210 {
+                fx_at(&mut a, t0, 40 + i % 20 * 30);
+                let start = Instant::now();
+                std::hint::black_box(buf_of(&mut a, 120, 40));
+                if i >= 10 {
+                    samples.push(start.elapsed().as_micros());
+                }
+            }
+            samples.sort_unstable();
+            eprintln!(
+                "goal burst {kind:?} power={power}: render n={} p50={}us p95={}us max={}us",
+                samples.len(),
+                samples[100],
+                samples[190],
+                samples[199]
+            );
+        }
+    }
+}
+
+#[test]
 fn no_burst_with_the_motion_or_the_switch_off() {
     let t0 = Instant::now();
     let mut a = working(t0);
@@ -95,6 +168,7 @@ fn a_burst_keeps_off_the_text_and_leaves_the_screen_as_it_was() {
     let both = || {
         let mut a = working(t0);
         a.show_files = true;
+        a.goal_log.started_ms = nexo_core::mailbox::now_ms() - 600_000;
         a
     };
     let (mut a, mut plain) = (both(), both());

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use nexo_core::{Config, ProviderConfig};
+use nexo_core::{Config, ModelInfo, ProviderConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::catalogue::{self, Catalogue};
@@ -26,6 +26,8 @@ struct Stored {
     /// Where it was asked: a list from another address is not this provider's.
     base_url: String,
     models: Vec<String>,
+    #[serde(default)]
+    details: Vec<ModelInfo>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +58,22 @@ fn save(file: &Path, store: &Store) {
 /// The model ids the vendor listed last time for `provider` at `base_url`, from `file`.
 fn listed(store: &Store, provider: &str, base_url: &str) -> Vec<String> {
     store.providers.get(provider).filter(|s| s.base_url == base_url).map(|s| s.models.clone()).unwrap_or_default()
+}
+
+/// Cached vendor metadata, scoped to the configured endpoint. Old id-only caches remain readable.
+pub fn details(provider: &str, base_url: &str, model: &str) -> Option<ModelInfo> {
+    details_from(&cache_file(), provider, base_url, model)
+}
+
+fn details_from(file: &Path, provider: &str, base_url: &str, model: &str) -> Option<ModelInfo> {
+    load(file)
+        .providers
+        .get(provider)
+        .filter(|s| s.base_url == base_url)?
+        .details
+        .iter()
+        .find(|m| m.id == model)
+        .cloned()
 }
 
 /// What `/model` offers, from the files on disk (the catalogue and the vendor lists as last cached).
@@ -110,6 +128,41 @@ where
     F: Fn(ProviderConfig) -> Fut,
     Fut: Future<Output = Result<Vec<String>, String>>,
 {
+    refresh_details(cfg, file, timeout, |p| {
+        let answer = fetch(p);
+        async move { answer.await.map(|ids| ids.into_iter().map(|id| ModelInfo { id, ..Default::default() }).collect()) }
+    }).await
+}
+
+/// Like `refresh`, retaining capabilities and exact effort names rather than only model ids.
+pub async fn refresh_details<F, Fut>(cfg: &Config, file: &Path, timeout: Duration, fetch: F) -> bool
+where
+    F: Fn(ProviderConfig) -> Fut,
+    Fut: Future<Output = Result<Vec<ModelInfo>, String>>,
+{
+    refresh_details_report(cfg, file, timeout, fetch).await.changed
+}
+
+/// Refresh outcome. Failures never include server responses or credentials.
+#[derive(Debug, Default)]
+pub struct RefreshReport {
+    pub changed: bool,
+    pub failures: Vec<(String, RefreshFailure)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RefreshFailure {
+    Timeout,
+    Error,
+    Empty,
+}
+
+/// Refresh lists and report failed attempts without exposing untrusted error bodies.
+pub async fn refresh_details_report<F, Fut>(cfg: &Config, file: &Path, timeout: Duration, fetch: F) -> RefreshReport
+where
+    F: Fn(ProviderConfig) -> Fut,
+    Fut: Future<Output = Result<Vec<ModelInfo>, String>>,
+{
     let store = load(file);
     let mut due: Vec<(String, ProviderConfig)> = Vec::new();
     {
@@ -119,9 +172,12 @@ where
                 continue;
             }
             let fresh = store.providers.get(name).is_some_and(|s| {
-                s.base_url == p.base_url && nexo_core::auth::now().saturating_sub(s.at) < TTL.as_secs()
+                s.base_url == p.base_url
+                    && nexo_core::auth::now().checked_sub(s.at).is_some_and(|age| age < TTL.as_secs())
             });
-            let key = format!("{file:?}|{name}");
+            // A failed endpoint must not delay discovery after the person changes
+            // the provider address. Scope retries exactly like the on-disk metadata.
+            let key = format!("{:?}", (file, name, &p.base_url));
             let recent = tried.iter().any(|(k, t)| *k == key && t.elapsed() < RETRY);
             if fresh || recent {
                 continue;
@@ -132,27 +188,47 @@ where
         }
     }
     if due.is_empty() {
-        return false;
+        return RefreshReport::default();
     }
     let answers = futures::future::join_all(due.into_iter().map(|(name, p)| {
         let ask = fetch(p.clone());
         async move {
-            let r = tokio::time::timeout(timeout, ask).await.ok().and_then(Result::ok);
+            let r = match tokio::time::timeout(timeout, ask).await {
+                Err(_) => Err(RefreshFailure::Timeout),
+                Ok(Err(_)) => Err(RefreshFailure::Error),
+                Ok(Ok(models)) if models.is_empty() => Err(RefreshFailure::Empty),
+                Ok(Ok(models)) => Ok(models),
+            };
             (name, p.base_url, r)
         }
     }))
     .await;
     let mut store = load(file);
     let before = store.clone();
+    let mut failures = Vec::new();
     for (name, base_url, models) in answers {
-        let Some(models) = models.filter(|m| !m.is_empty()) else { continue };
-        store.providers.insert(name, Stored { at: nexo_core::auth::now(), base_url, models });
+        let models = match models {
+            Ok(models) => models,
+            Err(reason) => {
+                failures.push((name, reason));
+                continue;
+            }
+        };
+        store.providers.insert(
+            name,
+            Stored {
+                at: nexo_core::auth::now(),
+                base_url,
+                models: models.iter().map(|m| m.id.clone()).collect(),
+                details: models,
+            },
+        );
     }
     let changed = store != before;
     if changed {
         save(file, &store);
     }
-    changed
+    RefreshReport { changed, failures }
 }
 
 #[cfg(test)]
@@ -184,6 +260,32 @@ mod tests {
               "zzz-no-key":{"models":{"m":{"modalities":{"output":["text"]}}}}}"#,
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn refresh_reports_failures_without_discarding_cached_models() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("models.json");
+        let c = config(&[]);
+        assert!(
+            refresh_details(&c, &file, Duration::from_secs(1), |_| async {
+                Ok(vec![ModelInfo { id: "old".into(), ..Default::default() }])
+            })
+            .await
+        );
+        // Force a stale cache and an independent retry key.
+        let mut store = load(&file);
+        store.providers.get_mut("xai").unwrap().at = 0;
+        let other = d.path().join("stale.json");
+        save(&other, &store);
+        let report = refresh_details_report(&c, &other, Duration::from_secs(1), |_| async {
+            Err("secret server response".into())
+        })
+        .await;
+        assert!(!report.changed);
+        assert_eq!(report.failures, [("xai".into(), RefreshFailure::Error)]);
+        assert_eq!(listed(&load(&other), "xai", &c.providers["xai"].base_url), ["old"]);
+        assert!(!format!("{report:?}").contains("secret"));
     }
 
     #[test]
@@ -230,7 +332,10 @@ mod tests {
         let c = config(&["a"]);
         let mut store = Store::default();
         let base = c.providers["xai"].base_url.clone();
-        store.providers.insert("xai".into(), Stored { at: 1, base_url: base.clone(), models: vec!["old".into()] });
+        store.providers.insert(
+            "xai".into(),
+            Stored { at: 1, base_url: base.clone(), models: vec!["old".into()], ..Default::default() },
+        );
         save(&f, &store);
         let new = |_p: ProviderConfig| async { Ok::<_, String>(vec!["new".to_string()]) };
         assert!(refresh(&c, &f, Duration::from_secs(5), new).await);
@@ -246,6 +351,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn future_timestamp_is_revalidated_without_losing_cached_efforts_on_failure() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("v.json");
+        let c = config(&["a"]);
+        let base = &c.providers["xai"].base_url;
+        let old = ModelInfo { id: "old".into(), efforts: vec!["high".into()], ..Default::default() };
+        let mut store = Store::default();
+        store.providers.insert(
+            "xai".into(),
+            Stored { at: u64::MAX, base_url: base.clone(), models: vec![old.id.clone()], details: vec![old.clone()] },
+        );
+        save(&f, &store);
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        assert!(
+            !refresh_details(&c, &f, Duration::from_secs(1), |_| {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { Err("offline".into()) }
+            })
+            .await
+        );
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(details_from(&f, "xai", base, "old"), Some(old));
+    }
+
+    #[tokio::test]
+    async fn metadata_survives_disk_refresh_failure_and_endpoint_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("v.json");
+        let c = config(&["a"]);
+        let model = ModelInfo { id: "new".into(), efforts: vec!["low".into(), "ultra".into()], ..Default::default() };
+        let expected = model.clone();
+        assert!(
+            refresh_details(&c, &f, Duration::from_secs(1), move |_| {
+                let model = model.clone();
+                async move { Ok(vec![model]) }
+            })
+            .await
+        );
+        assert_eq!(details_from(&f, "xai", &c.providers["xai"].base_url, "new"), Some(expected.clone()));
+        assert_eq!(details_from(&f, "xai", "http://different/v1", "new"), None);
+        assert!(!refresh_details(&c, &f, Duration::from_secs(1), |_| async { Err("offline".into()) }).await);
+        assert_eq!(details_from(&f, "xai", &c.providers["xai"].base_url, "new"), Some(expected));
+        // The original on-disk id-only format still loads.
+        std::fs::write(&f, r#"{"providers":{"xai":{"at":1,"base_url":"old","models":["legacy"]}}}"#).unwrap();
+        assert_eq!(listed(&load(&f), "xai", "old"), ["legacy"]);
+    }
+
+    #[tokio::test]
+    async fn endpoint_change_retries_discovery_and_keeps_efforts_scoped() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("v.json");
+        let mut c = config(&["a"]);
+        let old_base = c.providers["xai"].base_url.clone();
+        let old = ModelInfo { id: "shared".into(), efforts: vec!["high".into()], ..Default::default() };
+        let mut store = Store::default();
+        store.providers.insert(
+            "xai".into(),
+            Stored { at: 1, base_url: old_base.clone(), models: vec![old.id.clone()], details: vec![old.clone()] },
+        );
+        save(&f, &store);
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let fail = |_: ProviderConfig| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err::<Vec<ModelInfo>, String>("offline".into()) }
+        };
+        assert!(!refresh_details(&c, &f, Duration::from_secs(1), fail).await);
+        assert!(!refresh_details(&c, &f, Duration::from_secs(1), fail).await);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "same endpoint must back off");
+        assert_eq!(details_from(&f, "xai", &old_base, "shared"), Some(old));
+
+        let new_base = "http://127.0.0.1:2/v1";
+        c.providers.get_mut("xai").unwrap().base_url = new_base.into();
+        let new = ModelInfo {
+            id: "shared".into(),
+            reasoning: true,
+            efforts: vec!["low".into(), "ultra".into()],
+            ..Default::default()
+        };
+        let expected = new.clone();
+        assert!(
+            refresh_details(&c, &f, Duration::from_secs(1), move |p| {
+                assert_eq!(p.base_url, new_base);
+                let new = new.clone();
+                async move { Ok(vec![new]) }
+            })
+            .await,
+            "changing endpoint must not inherit the failed endpoint's retry delay"
+        );
+        assert_eq!(details_from(&f, "xai", new_base, "shared"), Some(expected));
+        assert_eq!(details_from(&f, "xai", &old_base, "shared"), None);
+        assert_eq!(listed(&load(&f), "xai", new_base), ["shared"]);
+    }
+
+    #[tokio::test]
     async fn offline_keeps_the_cached_list() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("v.json");
@@ -253,7 +452,12 @@ mod tests {
         let mut store = Store::default();
         store.providers.insert(
             "xai".into(),
-            Stored { at: 1, base_url: c.providers["xai"].base_url.clone(), models: vec!["old-one".into()] },
+            Stored {
+                at: 1,
+                base_url: c.providers["xai"].base_url.clone(),
+                models: vec!["old-one".into()],
+                ..Default::default()
+            },
         );
         save(&f, &store);
         let fail = |_p: ProviderConfig| async { Err::<Vec<String>, String>("offline".into()) };

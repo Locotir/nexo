@@ -9,6 +9,8 @@ use crate::toast::Kind;
 
 #[derive(Debug, Default, Clone)]
 pub struct Fx {
+    /// The pulses the work line shows for what happens (see `fx_pulse`).
+    pub pulses: crate::fx_pulse::Pulses,
     /// Tests set this; otherwise the wall clock.
     pub clock: Option<Instant>,
     /// Tests set the `HH:MM` that new messages are stamped with; otherwise the local time.
@@ -172,6 +174,7 @@ impl App {
                 || self.home_moving(now)
                 || self.burst_moving(now)
                 || fx.ink.alive(now)
+                || fx.pulses.alive(now)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS))
                 || fx.queue_gone.iter().any(|(_, t)| motion::within(Some(*t), now, crate::ui::TAKEN_MS)));
         // a toast that only stays on screen asks for the beat (see `load`), not for frames; with the motion off

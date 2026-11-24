@@ -4,7 +4,7 @@ use crate::sorted::FxHashMap;
 use serde_json::{Map, Value};
 
 use crate::hindsight::UKind;
-use crate::json::{est, is_person, opaque_tokens, py_eq, strip_cc};
+use crate::json::{est, is_person, opaque_tokens, py_eq_stripped, strip_cc};
 use crate::learn::MODEL;
 use crate::mechanical::{squeeze, MARK};
 use crate::msg::{blocks, get_str, key_of, person_words};
@@ -63,7 +63,7 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
         let mut nb: Option<Value> = None;
         if let Value::Object(o) = b {
             let t = o.get("type").and_then(Value::as_str);
-            if t == Some("tool_result") && sq && process(o) {
+            if t == Some("tool_result") && sq && process(o) && !crate::curator::has_media(b) {
                 match o.get("content") {
                     Some(Value::String(c)) => {
                         let s = squeeze(c, false);
@@ -159,6 +159,8 @@ impl Engine {
             }
             self.since_nudge = self.since_nudge.saturating_add(1);
         }
+        let raw = std::sync::Arc::new(raw);
+        self.raw_history.push(raw.clone());
         self.last_raw = raw;
         self.tr.mt().add(msg, &mut self.int);
         self.sizes.push(it);
@@ -402,14 +404,47 @@ impl Engine {
         }
     }
 
-    /// Takes in the conversation as the harness sends it: new messages are added; an edited history
-    /// starts the engine over, with the rules of the session carried over; it returns whether it did.
+    /// The next sync receives a compacted history, not an edit or rewind.
+    pub fn compacted(&mut self) {
+        self.compact_pending = true;
+        self.compact_summary_len = None;
+    }
+
+    /// Capture only the old summarized prefix, including any still-valid earlier compacted base.
+    pub fn compacted_prefix(&mut self, old_prefix: &[Value], summary_len: usize) {
+        self.sync(old_prefix);
+        self.compact_pending = true;
+        self.compact_summary_len = Some(summary_len);
+    }
+
+    /// Add new messages or rebuild an edited history. Only explicit compaction carries old state.
     pub fn sync(&mut self, msgs: &[Value]) -> bool {
         let n = self.tr.msgs.len();
-        let rewritten = n > 0 && (msgs.len() < n || !py_eq(&strip_cc(&msgs[n - 1]), &self.last_raw));
+        let same = if self.raw_history.len() == n {
+            msgs.iter().zip(&self.raw_history).take_while(|(m, raw)| py_eq_stripped(m, raw)).count()
+        } else {
+            0
+        };
+        let compacted = std::mem::take(&mut self.compact_pending);
+        let summary_len = self.compact_summary_len.take();
+        let rewritten = compacted || (n > 0 && same < n);
         if rewritten {
-            let rules = std::mem::take(&mut self.rules).carried();
-            let standing = std::mem::take(&mut self.standing).carried();
+            let base = if compacted {
+                // An absent or partial summary cannot justify carrying the state it summarizes.
+                // A partial summary can arise if another compaction arrives before the first sync.
+                if summary_len.unwrap_or(msgs.len()) == 0 || summary_len.is_some_and(|len| len > msgs.len()) {
+                    None
+                } else {
+                    Some((
+                        summary_len.unwrap_or(msgs.len()),
+                        std::mem::take(&mut self.rules).carried(),
+                        std::mem::take(&mut self.standing).carried(),
+                    ))
+                }
+            } else {
+                self.compact_base.take().filter(|(prefix, _, _)| same >= *prefix)
+            };
+            let (rules, standing) = base.as_ref().map(|(_, r, s)| (r.clone(), s.clone())).unwrap_or_default();
             // what the host set (window, tools, time) is not part of the history, and neither is what was
             // learned of the provider: it survives the restart
             let (budget, note_tool, recall_tool) = (self.budget, self.note_tool, self.recall_tool);
@@ -420,7 +455,9 @@ impl Engine {
             *self = Engine::new(self.p.clone());
             self.dump = dump;
             self.rules = rules;
+            self.rules.begin_replay();
             self.standing = standing;
+            self.compact_base = base;
             self.budget = budget;
             self.note_tool = note_tool;
             self.recall_tool = recall_tool;
@@ -433,10 +470,32 @@ impl Engine {
         let last_reply = msgs.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("assistant"));
         let fresh_from = last_reply.map_or(msgs.len().saturating_sub(1).max(1), |r| r + 1);
         for (k, m) in msgs.iter().enumerate().skip(n) {
-            self.rules.replay = rewritten && k < fresh_from;
+            self.rules.replay = if compacted {
+                k < summary_len.unwrap_or(fresh_from) && self.compact_base.is_some()
+            } else {
+                rewritten && self.compact_base.as_ref().is_some_and(|(prefix, _, _)| k < *prefix)
+            };
             self.add(m);
         }
-        self.rules.replay = false;
+        self.rules.end_replay();
         rewritten
+    }
+}
+
+#[cfg(test)]
+mod multimodal_birth_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn squeeze_at_birth_does_not_change_nested_media_results() {
+        let text = "repeated line\n".repeat(200);
+        let result = json!({"type":"tool_result", "tool_use_id":"x", "content":[
+            {"type":"text", "text":text},
+            {"type":"tool_result", "content":[{"type":"image", "source":{"type":"url", "url":"https://example.invalid/a"}}]}
+        ]});
+        let m = json!({"role":"user", "content":[result]});
+        let p = crate::params::params("").unwrap();
+        assert!(at_birth(&m, &p, &|_| Kind::Other, None).is_none());
     }
 }

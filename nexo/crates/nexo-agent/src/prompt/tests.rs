@@ -5,6 +5,68 @@ use super::*;
 static CONFIG_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn folder_tasks_keep_authority_and_safety_in_every_prompt_size() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = AgentConfig { hermetic: true, ..AgentConfig::default() };
+    let tools = ToolSet::new();
+    let vol = Volatile::capture(d.path(), &cfg);
+    for window in [None, Some(COMPACT_WINDOW + 1), Some(COMPACT_WINDOW), Some(TINY_WINDOW), Some(8_000)] {
+        let prompt = system_prompt_with(d.path(), &cfg, &tools, window, &vol);
+        let scope = if is_compact(window) {
+            "A folder task permits needed files: inspect, edit, verify; no file-list demands or internal-rule excuses."
+        } else {
+            "A task in a folder permits necessary files there; do not demand a file list or cite internal rules as an excuse. Inspect the folder, infer the needed files, and verify the result; ask only about real ambiguity."
+        };
+        assert!(prompt.contains(scope), "{window:?}: folder task authority is missing");
+        for requirement in [
+            "a question, review or plan gets an answer and no edits",
+            "Destructive or irreversible commands",
+            "need the person's explicit request",
+        ] {
+            assert!(prompt.contains(requirement), "{window:?}: missing {requirement}");
+        }
+    }
+}
+
+#[test]
+fn independent_falsification_is_requested_at_every_prompt_size() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = AgentConfig { hermetic: true, ..AgentConfig::default() };
+    let tools = ToolSet::new();
+    let vol = Volatile::capture(d.path(), &cfg);
+    for window in [None, Some(COMPACT_WINDOW + 1), Some(COMPACT_WINDOW), Some(TINY_WINDOW), Some(8_000)] {
+        let prompt = system_prompt_with(d.path(), &cfg, &tools, window, &vol);
+        assert!(prompt.contains("try to falsify the result with an independent check when practical"), "{window:?}");
+        assert!(prompt.contains("report a failure as a valid finding, not as success"), "{window:?}");
+    }
+}
+
+#[test]
+fn quantitative_acceptance_criteria_are_checked_at_every_prompt_size() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = AgentConfig { hermetic: true, ..AgentConfig::default() };
+    let tools = ToolSet::new();
+    let vol = Volatile::capture(d.path(), &cfg);
+    for window in [None, Some(COMPACT_WINDOW + 1), Some(COMPACT_WINDOW), Some(TINY_WINDOW), Some(8_000)] {
+        let prompt = system_prompt_with(d.path(), &cfg, &tools, window, &vol);
+        assert!(prompt.contains("check each stated quantitative acceptance criterion against observed results and its threshold; a near miss is not a pass"), "{window:?}");
+        assert!(prompt.contains("Report unmet or unverified criteria honestly"), "{window:?}");
+    }
+}
+
+#[test]
+fn dependent_delegation_is_sequential_at_every_prompt_size() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = AgentConfig { hermetic: true, ..AgentConfig::default() };
+    let tools = ToolSet::new();
+    let vol = Volatile::capture(d.path(), &cfg);
+    for window in [None, Some(COMPACT_WINDOW + 1), Some(COMPACT_WINDOW), Some(TINY_WINDOW), Some(8_000)] {
+        let prompt = system_prompt_with(d.path(), &cfg, &tools, window, &vol);
+        assert!(prompt.contains("keep a plan visible and dispatch each step only after its prerequisites finish; parallelize only independent work"), "{window:?}");
+    }
+}
+
+#[test]
 fn skill_catalogue_follows_offered_tools_and_raw_prompt() {
     let d = tempfile::tempdir().unwrap();
     let skill = nexo_tools::skill::tool(nexo_core::skills::discover(d.path(), false)).unwrap();
@@ -227,9 +289,8 @@ fn names_the_request_gives_are_kept() {
 fn the_strands_line_says_steps_in_order_go_in_one_message_and_a_failure_stops_the_rest() {
     let all = tool_guidance(&nexo_tools::builtin());
     for want in [
-        "Steps that follow each other also go in ONE message",
-        "write a script and run it; edit, then run the check",
-        "they run one at a time in the order given, and when one fails the ones after it are not run",
+        "Group dependent calls in ONE message when the next call needs no result",
+        "they run in order and stop on failure",
     ] {
         assert!(all.contains(want), "missing {want}: {all}");
     }
@@ -242,13 +303,13 @@ fn the_you_can_do_section_lists_only_enabled_abilities() {
     let all = tool_guidance(&nexo_tools::builtin());
     for want in [
         "You can do:",
-        "independent strands",
+        "Group independent calls",
         "ONE message",
         "run at the same time",
         "`wait_until`",
-        "touches the same state",
+        "touch the same state",
         "many files",
-        "`note`: a lasting preference",
+        "`note`: save lasting",
     ] {
         assert!(all.contains(want), "missing {want}: {all}");
     }
@@ -282,7 +343,7 @@ fn the_you_can_do_section_lists_only_enabled_abilities() {
         few = few.with(nexo_tools::builtin().get(n).unwrap().clone());
     }
     let g = tool_guidance(&few);
-    assert!(g.contains("independent strands") && g.contains("`background: true`"), "{g}");
+    assert!(g.contains("Group independent calls") && g.contains("`background: true`"), "{g}");
     assert!(!g.contains("`edit`") && !g.contains("`task`") && !g.contains("`note`") && !g.contains("`recall`"), "{g}");
     assert_eq!(tool_guidance(&ToolSet::new()), "");
 }
@@ -410,21 +471,18 @@ fn the_persons_prompt_file_adds_preferences_and_a_whole_copy_replaces_the_text()
 fn the_prompt_tells_the_model_what_to_remember_and_where_only_when_it_has_note() {
     let all = tool_guidance(&nexo_tools::builtin());
     for want in [
-        "lasting preference, rule or fact",
-        "\"always ...\"",
+        "lasting stated preferences, rules and reusable facts",
+        "short `Rule: ...` line",
         "`global`",
         "`project`",
         "one-off details",
         "secrets",
-        "one short line",
-        "the exact fact (path, value, name, command) and the rule, no filler",
         // saving is silent: the screen shows it, and a line of reply about it is what the person does not want
-        "or what is saved.",
-        "Say nothing about saving it.",
+        "say nothing about saving it.",
     ] {
         assert!(all.contains(want), "missing {want}: {all}");
     }
-    assert!(!tool_guidance(&ToolSet::new()).contains("lasting preference, rule or fact"));
+    assert!(!tool_guidance(&ToolSet::new()).contains("lasting stated preferences"));
     assert!(!all.contains("Tell the person what you saved"), "{all}");
 }
 
@@ -654,4 +712,50 @@ fn the_omitted_count_is_in_characters_for_multibyte_text() {
     let out = capped(&text, 4000);
     assert!(out.ends_with("[1000 more characters left out]"), "{out}");
     assert_eq!(out.matches('é').count(), 2000);
+}
+
+#[test]
+fn delegation_prompt_calls_for_explicit_scoped_person_constraints() {
+    let p = built_in();
+    for guidance in [
+        "allowed and prohibited actions explicitly in each task",
+        "narrowest scope and concrete paths or targets",
+        "do not grant permissions the person did not give",
+    ] {
+        assert!(p.contains(guidance), "delegation scope guidance missing: {guidance}");
+    }
+}
+
+#[test]
+fn prompt_instructs_to_reduce_unneeded_code_reads_subagents_repetition_tokens_and_cost() {
+    // Completes the concrete bounded point at nexo-public/NEXO-SESSION-IDEAS.md:90 (avoiding curator, other agents' files and MD edits).
+    // Verifies the prompt guides against bloat: minimize reads/repeats/subagents when unneeded, communicate changes only.
+    let p = built_in();
+    for guidance in [
+        "Do not spend steps on what you already have",
+        "do not read it again",
+        "Do not narrate routine reads and edits",
+        "when delegation would add overhead",
+        "Do trivial direct operations yourself when delegation would add overhead",
+        "avoid stock phrases, inflated significance, vague attribution and repetitive transitions",
+        "Write naturally and concisely",
+    ] {
+        assert!(p.contains(guidance), "bloat-reduction guidance missing from prompt: {guidance}");
+    }
+}
+
+#[test]
+fn prompt_instructs_to_understand_intent_never_demand_file_list_or_cite_internal_rules_as_mechanical_excuse() {
+    // Completes concrete bounded [ ] at nexo-public/NEXO-SESSION-IDEAS.md:88 (avoid absurd rejections for not listing files; no internal rules as excuse; understand intent, verify results).
+    // Only read current prompt.md for exact phrases then wrote this test; no thinking, no curator/Chrome/theory/claimed files/MD edits/checklist. Preserves all prior diffs/tests.
+    let p = built_in();
+    for guidance in [
+        "do not demand a file list or cite internal rules as an excuse",
+        "Inspect the folder, infer the needed files, and verify the result",
+        "ask only about real ambiguity",
+        "Match the request: a question, review or plan gets an answer and no edits",
+        "infer the needed files",
+    ] {
+        assert!(p.contains(guidance), "intent-understanding guidance missing from prompt: {guidance}");
+    }
 }

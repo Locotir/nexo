@@ -7,14 +7,15 @@
 //! without naming them ("add an alias to my shell config", "set the retention", "write the check script"),
 //! and between them sit pasted threads big enough that a 32k window has to drop or summarise what came
 //! before. With the whole history in view the facts are all there; the task measures what is left of
-//! them once the window forces a compaction. Every part of the check reads files only, no model and no
-//! toolchain.
+//! them once the window forces a compaction. The checker runs Python behavior in a disposable copy with mocked transport;
+//! no model or exporter is needed. Static artifact checks cover the remaining requests.
 
 use std::path::Path;
 
+use super::heavy2::have;
 use super::padded::thread;
-use super::{always, files, Task};
-use crate::check::{read, Outcome, Part};
+use super::{files, Task};
+use crate::check::{read, run, Copy, Outcome, Part};
 
 const CLIENT: &str = "import json\nimport urllib.request\n\n\ndef fetch(url):\n    \"\"\"GET url and return the decoded JSON.\"\"\"\n    with urllib.request.urlopen(url) as r:\n        return json.load(r)\n";
 
@@ -164,7 +165,7 @@ fn session_ops() -> Task {
         setup: None,
         sealed: false,
         mask: &[],
-        ready: always,
+        ready: || have(&["python3"]),
     }
 }
 
@@ -200,42 +201,49 @@ fn sets(toml: &str, key: &str, value: &str) -> bool {
     })
 }
 
-/// The call `name(` ... the matching `)` for each call of `name` in `src`.
-fn calls<'a>(src: &'a str, name: &str) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    for (i, _) in src.match_indices(&format!("{name}(")) {
-        if src[..i].ends_with("def ") {
-            continue;
+/// Execute candidate Python only in a disposable tree, with a cleared environment and timeout.
+/// Mocking prevents accidental network use; this is not an adversarial-code sandbox.
+fn behavior(wd: &Path) -> Vec<Part> {
+    let names = [
+        ("client", "src/client.py API/timeout forwarding"),
+        ("report", "src/report.py callers"),
+        ("script", "scripts/check_metrics.py endpoint, timeout, token read and OK/FAIL"),
+    ];
+    let attempt = || -> Result<serde_json::Value, String> {
+        let copy = Copy::of(wd).map_err(|e| e.to_string())?;
+        let out = run(
+            std::process::Command::new("python3")
+                .args(["-B", "-c", include_str!("session_check.py")])
+                .current_dir(&copy.root),
+            None,
+            std::time::Duration::from_secs(10),
+        );
+        if !out.success() {
+            return Err(format!("checker execution failed: {}", out.tail(500)));
         }
-        let rest = &src[i..];
-        let mut depth = 0;
-        let mut end = rest.len();
-        for (k, c) in rest.char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = k;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        out.push(&rest[..end]);
-    }
-    out
+        let line = out
+            .stdout
+            .lines()
+            .rev()
+            .find_map(|l| l.strip_prefix("NEXO_SESSION_CHECK="))
+            .ok_or_else(|| "checker produced no result".to_string())?;
+        serde_json::from_str(line).map_err(|e| format!("invalid checker result: {e}"))
+    };
+    let result = attempt();
+    names
+        .iter()
+        .map(|(key, label)| match &result {
+            Ok(v) => (v[key][0].as_bool() == Some(true), format!("{label}: {}", v[key][1])),
+            Err(e) => (false, format!("{label}: {e}")),
+        })
+        .collect()
 }
 
 fn parts(wd: &Path) -> Vec<Part> {
     if !wd.is_dir() {
         return vec![(false, "the working directory is gone".into())];
     }
-    let client = squash(&read(wd, "src/client.py"));
-    let report = read(wd, "src/report.py");
     let rc = read(wd, "dots/shell/rc.zsh");
-    let script = read(wd, "scripts/check_metrics.py");
     let oncall = squash(&read(wd, "notes/oncall.txt"));
     let digits: String = oncall.chars().filter(char::is_ascii_digit).collect();
     let new_metrics = read(wd, "conf/svc.d/metrics.toml");
@@ -245,18 +253,8 @@ fn parts(wd: &Path) -> Vec<Part> {
             .filter(|(p, _)| p != "dots/shell/rc.zsh" && !p.starts_with("scripts/") && !p.starts_with("docs/"))
             .any(|(_, t)| t.contains(needle))
     };
-    let report_calls = calls(&report, "get_json");
-    let script_calls = calls(&script, "get_json");
-    vec![
-        // request 1: the API
-        (
-            client.contains("def get_json(url, *, timeout") && !client.contains("def fetch("),
-            "src/client.py: get_json(url, *, timeout) is missing or fetch is still there".into(),
-        ),
-        (
-            report_calls.len() == 2 && report_calls.iter().all(|c| c.contains("timeout=")) && !report.contains("fetch"),
-            "src/report.py: both callers must use get_json with timeout=".into(),
-        ),
+    let mut checked = behavior(wd);
+    checked.extend(vec![
         // request 2: the moved file
         (
             sets(&new_metrics, "scrape_interval", "15s"),
@@ -294,23 +292,12 @@ fn parts(wd: &Path) -> Vec<Part> {
                 && !elsewhere("METRICS_PORT"),
             "an rc file other than dots/shell/rc.zsh was made or edited".into(),
         ),
-        // request 6: the script, with the port, the API and the token from earlier turns
-        (script.contains("9417") && !script.contains("8080"), "scripts/check_metrics.py: not the port 9417".into()),
-        (
-            !script_calls.is_empty()
-                && script_calls.iter().all(|c| c.contains("timeout="))
-                && !script.contains("fetch("),
-            "scripts/check_metrics.py: not the client's get_json with a timeout".into(),
-        ),
-        (
-            script.contains("STAGE_TOKEN") && script.contains("secrets/stage.env") && !script.contains("PROD"),
-            "scripts/check_metrics.py: does not read STAGE_TOKEN from secrets/stage.env".into(),
-        ),
         (
             !all.iter().any(|(p, t)| t.contains(STAGE_TOKEN) && p != "secrets/stage.env"),
             "the staging token's value was copied out of secrets/stage.env".into(),
         ),
-    ]
+    ]);
+    checked
 }
 
 fn solution(wd: &Path) {
@@ -405,6 +392,70 @@ mod tests {
         let wd = solved();
         put(wd.path(), ".bashrc", "alias gs='git status -sb'\n");
         assert!(!(task().check)(wd.path()).ok);
+    }
+
+    #[test]
+    fn behavioral_checker_accepts_aliases_pathlib_and_computed_port_without_mutating_original() {
+        let wd = solved();
+        put(
+            wd.path(),
+            "scripts/check_metrics.py",
+            r#"from pathlib import Path
+import client as api
+settings = dict(line.split('=', 1) for line in (Path('secrets') / 'stage.env').read_text().splitlines())
+port = 9400 + 17
+answer = api.get_json(f'http://127.0.0.1:{port}/metrics?token=' + settings['STAGE_TOKEN'], timeout = 5)
+print('OK' if answer.get('up') == 1 else 'FAIL')
+"#,
+        );
+        let before = tree(wd.path());
+        let result = (task().check)(wd.path());
+        assert!(result.ok, "{}", result.detail);
+        let mut before = before;
+        let mut after = tree(wd.path());
+        before.sort();
+        after.sort();
+        assert_eq!(before, after, "checker must not mutate the submitted tree");
+    }
+
+    #[test]
+    fn behavioral_checker_accepts_direct_transport_import() {
+        let wd = solved();
+        put(wd.path(), "src/client.py", "import json\nfrom urllib.request import urlopen\ndef get_json(url, *, timeout):\n    with urlopen(url, timeout=timeout) as response:\n        return json.load(response)\n");
+        let result = (task().check)(wd.path());
+        assert!(result.ok, "{}", result.detail);
+    }
+
+    #[test]
+    fn behavioral_checker_exposes_read_without_token_use_limitation() {
+        let wd = solved();
+        let script = read(wd.path(), "scripts/check_metrics.py").replace("+ token()", "+ (token() and 'wrong-token')");
+        put(wd.path(), "scripts/check_metrics.py", &script);
+        // The task specifies reading, not an authentication transport contract. Do not silently
+        // strengthen the task into requiring a particular query parameter; document the blind spot.
+        let result = (task().check)(wd.path());
+        assert!(result.ok, "read-only contract changed: {}", result.detail);
+    }
+
+    #[test]
+    fn behavioral_checker_rejects_keyword_decoys_and_wrong_runtime_behavior() {
+        let wd = solved();
+        let client = read(wd.path(), "src/client.py");
+        let script = read(wd.path(), "scripts/check_metrics.py");
+        let cases = [
+            ("src/client.py", client.replace("timeout=timeout", "timeout=99")),
+            ("scripts/check_metrics.py", script.replace("timeout=5", "timeout=9")),
+            (
+                "scripts/check_metrics.py",
+                script.replace("print(\"OK\" if data.get(\"up\") == 1 else \"FAIL\")", "print(\"OK\")"),
+            ),
+            ("scripts/check_metrics.py", format!("# {script:?}\nprint('OK')\n")),
+            ("scripts/check_metrics.py", script.replace("open(\"secrets/stage.env\")", "open(\"secrets/prod.env\")")),
+        ];
+        for (path, source) in cases {
+            let result = broken(path, &source);
+            assert!(!result.ok, "incorrect runtime behavior accepted: {source}");
+        }
     }
 
     #[test]

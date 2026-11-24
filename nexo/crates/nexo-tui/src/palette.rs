@@ -214,17 +214,15 @@ impl Palette {
         }
     }
 
-    /// For the model list, which is only a suggestion: whether Enter takes the listed value, because
-    /// it was moved to or because what was typed is its model name, so the provider comes with it.
+    /// Enter accepts a highlighted model match, including the first result of a provider or partial-name
+    /// query, so its provider comes with it. An empty argument still opens setup unless the selection moved;
+    /// an unlisted name has no current item and is submitted literally.
     pub fn picks_model(&self) -> bool {
         let PaletteKind::Args(c) = &self.kind else { return false };
         if c != "model" {
             return false;
         }
-        let q = self.query.trim();
-        self.current().is_some_and(|v| {
-            self.selected > 0 || (!q.is_empty() && v.rsplit_once('/').is_some_and(|(_, m)| m.eq_ignore_ascii_case(q)))
-        })
+        self.current().is_some() && (self.selected > 0 || !self.query.trim().is_empty())
     }
 
     /// The command whose values are listed, for the argument list.

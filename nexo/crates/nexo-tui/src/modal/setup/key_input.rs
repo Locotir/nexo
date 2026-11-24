@@ -212,6 +212,10 @@ impl Setup {
                     self.field = self.cfg.base_url.clone();
                     return self.probe_cmd();
                 }
+                if it.value == "claude-cli" {
+                    self.error = Some("In a terminal run: nexo auth login anthropic-oauth; then reopen /model".into());
+                    return SetupOut::Nothing;
+                }
                 self.busy = Some("waiting for the browser".to_string());
                 if it.value == "codex-cli" {
                     self.busy = Some("reading the Codex CLI login".into());

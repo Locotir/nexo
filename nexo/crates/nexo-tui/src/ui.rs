@@ -441,7 +441,9 @@ mod tests {
     #[test]
     fn status_pieces_follow_the_configured_order() {
         let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(status_pieces(&[]).len(), 12);
+        assert_eq!(status_pieces(&[]).len(), 11);
+        assert!(!status_pieces(&[]).contains(&"cache"));
+        assert_eq!(status_pieces(&v(&["cache"])), vec!["cache"]);
         assert_eq!(status_pieces(&v(&["Context", "model", "bogus", "context"])), vec!["context", "model"]);
         assert!(status_pieces(&v(&["bogus"])).is_empty());
     }

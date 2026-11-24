@@ -27,7 +27,7 @@ pub(super) fn full_system(st: &State) -> String {
     }
     // the task list is not here: a change in it would change the system text and with it the cached
     // conversation after it. It rides on each request instead (`todo_note`). Goal words are fixed for its life.
-    with_goal(&base, goal_words(st))
+    with_goal(&base, goal_words(st), st.goal_log.brief.as_deref())
 }
 
 /// The person's own words of the goal set, as they typed them: the ones the system prompt pins and the request
@@ -54,9 +54,15 @@ pub(super) fn todo_note(st: &State) -> Option<String> {
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
 /// so pausing or resuming does not cost the cached prefix; what the state is reaches the model as a
 /// line in the person's next message (`goal_state_line`), not as a change here.
-pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
+pub(super) fn with_goal(system: &str, goal: Option<&str>, brief: Option<&str>) -> String {
     let Some(g) = goal else { return system.to_string() };
-    let head = format!("Goal, in the person's words: {g}");
+    let mut head = format!("Goal, in the person's words: {g}");
+    // the check of the goal's words found them unordered or open: its restatement rides beside them, for the goal's life
+    if let Some(b) = brief {
+        head.push_str(&format!(
+            "\nThe same goal ordered by a quick check (unverified: where it differs from the person's words, theirs win):\n{b}"
+        ));
+    }
     format!(
         "{system}\n\n{head}\nKeep working towards this goal across turns. `{GOAL_CONTINUE_MARK}` comes from the loop, \
          not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
@@ -170,6 +176,34 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     }
     emit_goal(&st);
     text
+}
+
+/// The longest the check of a goal's words may take before the goal goes ahead as typed.
+const GOAL_CHECK_SECS: u64 = 20;
+
+/// Asks the model once whether the goal just set needs restructuring (`goal_brief::ask`) and, when it does, keeps the
+/// brief in the goal's log: the system prompt then holds it beside the person's words. A check that fails, runs
+/// out of time, is switched off (`agent.goal_check`) or is not affordable leaves the goal as it was, quietly.
+pub(super) async fn check_goal(state: &Shared, goal: &str) {
+    let (client, target, on) = {
+        let st = state.lock().await;
+        (st.client.clone(), st.target.clone(), st.config.agent.goal_check && !super::background::over_budget(&st))
+    };
+    if !on {
+        return;
+    }
+    let ask = crate::goal_brief::ask(&*client, &target, 1, goal);
+    let Ok(Ok((brief, usage, model))) = tokio::time::timeout(Duration::from_secs(GOAL_CHECK_SECS), ask).await else {
+        return;
+    };
+    let mut st = state.lock().await;
+    let events = st.events.clone();
+    add_usage(&mut st, &events, &model, usage, Usage::default(), UsageKind::GoalCheck);
+    // another goal was set while the check ran: its words are not these
+    if brief.is_some() && st.goal_log.original.as_deref() == Some(goal) {
+        st.goal_log.brief = brief;
+        emit_goal(&st);
+    }
 }
 
 /// Reject stale or unsolicited calls, including calls replayed by an older model request.
@@ -519,8 +553,9 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd, run_queue: bool
 }
 
 /// After a turn that ended on its own, with nothing queued: what to submit to keep working towards
-/// an active goal, while rounds are left. A continuation round that called no tool did nothing
-/// new, so the goal pauses there instead of asking again; the first continuation always runs. A goal set during a
+/// an active goal. Its continuation window renews when the last round made observable progress;
+/// a round with no new successful tool result pauses instead. The first continuation always runs unless
+/// NEXO_GOAL_ROUNDS=0 explicitly disables it. A goal set during a
 /// turn has not been asked yet: its own request comes first, with its files, and is no continuation round.
 pub(super) async fn goal_follow_up(state: &Shared) -> Option<(String, Vec<Attachment>)> {
     let mut st = state.lock().await;
@@ -543,11 +578,17 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<(String, Vec<Attach
         goal_to(&mut st, GoalState::Paused(why), say);
         return None;
     }
-    if st.goal_round >= max {
-        let why = format!("{max} rounds without GOAL DONE");
-        let say = format!("goal paused: {why} · /goal resume gives it {max} more");
+    if max == 0 {
+        let why = "automatic continuation disabled (NEXO_GOAL_ROUNDS=0)".to_string();
+        let say = format!("goal paused: {why} · set a positive continuation window to continue automatically");
         goal_to(&mut st, GoalState::Paused(why), say);
         return None;
+    }
+    if st.goal_round >= max {
+        // The no-progress check above passed: renew only the display window, not the idle watch,
+        // counts, spend/checkpoint budgets or remembered results. Novel tool output is a heuristic,
+        // not proof that the goal advanced; existing loop/error and manual-pause guards still apply.
+        st.goal_round = 0;
     }
     st.goal_round += 1;
     emit_goal(&st);
@@ -574,7 +615,7 @@ const GOAL_REPEATS_SAID: u32 = 2;
 /// The most names the facts list among the repeats.
 const GOAL_REPEATS_NAMED: usize = 3;
 
-/// How much of a goal's recent work made no progress: steps (tool calls) since the last progress, whether the turn in progress made any, what each read-only call returned in this goal (by tool and arguments),
+/// How much of a goal's recent work made no progress: steps (tool calls) since the last progress, whether the turn in progress made any, what each non-write call returned in this goal (by tool and arguments),
 /// and which of those came back the same since the last progress, by what they were on, with how many times.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct GoalIdle {
@@ -652,7 +693,11 @@ pub(super) fn goal_watch(idle: &mut GoalIdle, calls: &[CallWas]) -> GoalStep {
 }
 
 /// What each call of a round was for the goal's progress (see [`CallWas`]); `ok` tells, call by call, whether it
-/// succeeded, and `results` holds their outputs. The calls that only read are remembered in `idle.seen`.
+/// succeeded, and `results` holds their outputs. All calls except explicit writes are remembered in `idle.seen`.
+/// Exec is only a conservative permission/verification classification, not evidence of a mutation: an unknown
+/// command can just query data. Repeating identical arguments and output must not renew the goal forever.
+/// Explicit writes still count as progress; commands can show progress through changed arguments/output or
+/// another novel result in the round. A silent repeated real mutation may therefore need an observable read.
 pub(super) fn goal_calls(
     st: &State,
     idle: &mut GoalIdle,
@@ -667,11 +712,10 @@ pub(super) fn goal_calls(
             if !ok {
                 return CallWas::Failed;
             }
-            let kind = |n: &str, a: &Value| st.tools.get(n).map(|t| t.call_kind(a));
-            if verify::judge(std::slice::from_ref(c), &[true], kind).changed {
+            let (id, name, args) = c;
+            if st.tools.get(name).is_some_and(|t| t.call_kind(args) == ToolKind::Write) {
                 return CallWas::New;
             }
-            let (id, name, args) = c;
             let out = results.iter().find_map(|p| match p {
                 Part::ToolResult { call_id, content, .. } if call_id == id => {
                     Some(content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n"))
@@ -895,8 +939,8 @@ mod goal_tests {
 
     #[test]
     fn the_goal_is_pinned_at_the_end() {
-        assert_eq!(with_goal("base", None), "base");
-        let s = with_goal("base", Some("ship it"));
+        assert_eq!(with_goal("base", None, None), "base");
+        let s = with_goal("base", Some("ship it"), None);
         assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("single line GOAL DONE"));
         assert!(s.contains("single line GOAL WAIT") && !s.contains("goal_brief"));
         assert!(s.contains("`[goal: continue]` comes from the loop"));

@@ -18,7 +18,7 @@ pub use wire::usage;
 pub(crate) use wire::{count, parse_args, temp};
 
 use async_trait::async_trait;
-use nexo_core::{EventStream, ModelInfo, ModelRequest, Protocol, ProviderConfig, ProviderError};
+use nexo_core::{ErrorKind, EventStream, ModelInfo, ModelRequest, Part, Protocol, ProviderConfig, ProviderError};
 
 use crate::http;
 
@@ -26,6 +26,22 @@ use crate::http;
 pub struct OpenAiChat;
 
 pub const ID: &str = "openai-chat";
+
+// Chat tool messages accept only text. Moving an image to a user message
+// loses its tool-result association and may reorder it around parallel calls.
+fn validate_tool_image_order(req: &ModelRequest) -> Result<(), ProviderError> {
+    for message in &req.messages {
+        for part in &message.content {
+            if let Part::ToolResult { content, .. } = part {
+                if crate::result_parts(content).iter().any(|p| matches!(p, Part::Image { .. })) {
+                    return Err(ProviderError::new(ErrorKind::BadRequest,
+                        "OpenAI Chat cannot preserve images in tool results; use a multimodal tool-result protocol instead"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 #[async_trait]
 impl Protocol for OpenAiChat {
@@ -39,6 +55,7 @@ impl Protocol for OpenAiChat {
         key: Option<&str>,
         req: &ModelRequest,
     ) -> Result<EventStream, ProviderError> {
+        validate_tool_image_order(req)?;
         let body =
             http::post_stream(&Self::url(cfg), Self::headers(cfg, key), &Self::body(cfg, req), cfg.idle_timeout())
                 .await?;
@@ -47,18 +64,6 @@ impl Protocol for OpenAiChat {
 
     async fn list_models(&self, cfg: &ProviderConfig, key: Option<&str>) -> Result<Vec<ModelInfo>, ProviderError> {
         let v = http::get_json(&http::openai_url(cfg, "models"), Self::headers(cfg, key)).await?;
-        // Together answers with the bare array
-        let mut out: Vec<ModelInfo> = v["data"]
-            .as_array()
-            .or_else(|| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| m["id"].as_str())
-                    .map(|id| ModelInfo { id: id.to_string(), ..Default::default() })
-                    .collect()
-            })
-            .unwrap_or_default();
-        out.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(out)
+        Ok(crate::probe::openai_models(&v))
     }
 }

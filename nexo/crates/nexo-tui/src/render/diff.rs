@@ -21,7 +21,12 @@ pub fn unified_rows(old: &str, new: &str, start_line: usize, theme: &Theme) -> (
     let skip = start_line.saturating_sub(1);
     let diff = TextDiff::from_lines(old, new);
     let mut out = Vec::new();
-    for (i, group) in diff.grouped_ops(3).iter().enumerate() {
+    let groups = diff.grouped_ops(3);
+    // A diff is one selection region with one decoration offset. Keep its number gutter
+    // the same width in every hunk, including when later hunks cross a digit boundary.
+    let last = groups.iter().flatten().map(|op| op.old_range().end.max(op.new_range().end)).max().unwrap_or(0);
+    let digits = (last + skip).max(1).to_string().len();
+    for (i, group) in groups.iter().enumerate() {
         if i > 0 {
             out.push(Line::from(Span::styled("  ⋯", theme.dim())));
             srcs.push(String::new());
@@ -36,7 +41,6 @@ pub fn unified_rows(old: &str, new: &str, start_line: usize, theme: &Theme) -> (
         out.push(Line::from(Span::styled(format!("@@ -{a},{la} +{b},{lb} @@"), theme.style(theme.hunk))));
         srcs.push(String::new());
         // one gutter: the line's number in the new text, or in the old one for a removed line
-        let digits = (a + la).max(b + lb).max(1).to_string().len();
         for op in group {
             for change in diff.iter_changes(op) {
                 let text = detab(change.value().trim_end_matches('\n'));

@@ -221,6 +221,21 @@ fn num_f64(v: &Value) -> Option<f64> {
     }
 }
 
+/// Compare an incoming value after stripping cache controls against an already stripped value,
+/// without allocating a normalized copy. Scalar semantics are exactly those of `py_eq`.
+pub(crate) fn py_eq_stripped(incoming: &Value, stripped: &Value) -> bool {
+    match (incoming, stripped) {
+        (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| py_eq_stripped(x, y)),
+        (Value::Object(a), Value::Object(b)) => {
+            a.iter().filter(|(k, _)| *k != "cache_control").count() == b.len()
+                && a.iter()
+                    .filter(|(k, _)| *k != "cache_control")
+                    .all(|(k, v)| b.get(k).is_some_and(|w| py_eq_stripped(v, w)))
+        }
+        _ => py_eq(incoming, stripped),
+    }
+}
+
 /// Loose equality of decoded JSON (`1 == 1.0 == true`, maps compared without order).
 pub fn py_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
@@ -248,6 +263,30 @@ pub fn py_eq(a: &Value, b: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stripped_comparison_matches_normalization_and_python_equality() {
+        let values = vec![
+            json!(null),
+            json!(true),
+            json!(1),
+            json!(1.0),
+            json!(0),
+            json!("1"),
+            json!([{"cache_control": {"x": 1}, "n": [true, 2.0]}]),
+            json!([{"n": [1, 2], "cache_control": false}]),
+            json!({"cache_control": 1, "nested": {"cache_control": 2, "x": [1, false]}}),
+            json!({"nested": {"x": [1.0, 0]}}),
+            json!({"nested": {"x": [1, 1]}}),
+            json!({}),
+            json!([]),
+        ];
+        for a in &values {
+            for b in &values {
+                assert_eq!(py_eq_stripped(a, &strip_cc(b)), py_eq(&strip_cc(a), &strip_cc(b)), "{a} vs {b}");
+            }
+        }
+    }
 
     #[test]
     fn reprs() {

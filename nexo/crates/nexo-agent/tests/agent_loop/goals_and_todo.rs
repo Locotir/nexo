@@ -187,31 +187,35 @@ async fn a_continuation_without_tool_calls_ends_the_goal_loop() {
 }
 
 #[tokio::test]
-async fn the_goal_stops_after_its_rounds_and_when_cleared() {
+async fn the_goal_renews_its_rounds_with_progress_then_stops_without_it_and_when_cleared() {
     let dir = test_tmpdir().unwrap();
-    // every round changes a file, so the loop only stops at the cap
+    // Successful writes keep the goal running across two five-round windows.
     let mut replies = vec![Reply::Events(text("still at it"))];
-    for i in 0..5 {
+    for i in 0..11 {
         replies.push(Reply::Events(call(&format!("c{i}"), "write", json!({"path": "a.rs"}))));
         replies.push(Reply::Events(text("still at it")));
     }
+    replies.push(Reply::Events(text("no further tool work")));
     replies.push(Reply::Events(text("again")));
     let client = Scripted::new(replies);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
     r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
     r.send(AgentCommand::SetGoal { text: Some("never done".into()), attachments: vec![] });
     r.turn().await;
-    for round in 1..=5u32 {
+    for round in 1..=12u32 {
         let t = r.turn().await;
-        assert_eq!(goal_of(&t).map(|g| g.1), Some(round), "round {round}");
+        assert_eq!(goal_of(&t).map(|g| g.1), Some((round - 1) % 5 + 1), "round {round}");
     }
-    let warned =
-        r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("rounds without GOAL DONE"))).await;
+    let warned = r
+        .until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("the last round did nothing new")))
+        .await;
+    assert!(notices(&warned).iter().any(|t| t.contains("/goal resume")));
+    assert!(!notices(&warned).iter().any(|t| t.contains("GOAL DONE")));
     assert!(!warned.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })));
     let reset = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
-    assert_eq!(goal_of(&reset).map(|g| g.1), Some(0), "rounds reset after the cap");
-    assert_eq!(goal_state_of(&reset), Some(GoalState::Paused("5 rounds without GOAL DONE".into())));
-    assert_eq!(client.requests().len(), 11, "the first turn and five continuations of two requests each");
+    assert_eq!(goal_of(&reset).map(|g| g.1), Some(0), "rounds reset after no progress");
+    assert_eq!(goal_state_of(&reset), Some(GoalState::Paused("the last round did nothing new".into())));
+    assert_eq!(client.requests().len(), 24, "initial turn, eleven productive continuations and one idle round");
     // clearing the goal: a turn ends and nothing follows
     r.send(AgentCommand::SetGoal { text: None, attachments: vec![] });
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
@@ -221,7 +225,7 @@ async fn the_goal_stops_after_its_rounds_and_when_cleared() {
     r.send(AgentCommand::Shutdown);
     let rest = r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
     assert!(!rest.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. } | AgentEvent::Goal { .. })));
-    assert_eq!(client.requests().len(), 12);
+    assert_eq!(client.requests().len(), 25);
     r.task.await.unwrap().unwrap();
 }
 
@@ -554,7 +558,14 @@ async fn a_paused_goal_shows_its_reason_in_the_next_person_message() {
     r.send(AgentCommand::PauseGoal);
     r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     r.send(AgentCommand::Submit { text: "note this".into(), attachments: vec![] });
-    r.turn().await;
+    let turn = r.turn().await;
+    assert!(
+        !notices(&turn).iter().any(|t| t.starts_with("goal paused")),
+        "ordinary paused turns do not repeat the stop"
+    );
+    r.send(AgentCommand::PauseGoal);
+    let ack = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("already paused"))).await;
+    assert!(!ack.iter().any(|e| matches!(e, AgentEvent::Goal { .. })), "a repeated pause is not a new transition");
     r.stop().await;
     let sent = last_user_of(&client, 1);
     assert!(sent.starts_with("[goal: paused (paused by you), not running; /goal resume goes on]"), "{sent}");
@@ -885,4 +896,62 @@ async fn reopening_legacy_brief_with_original_never_injects_it_as_goal() {
     assert!(!reqs[0].system.contains("Curator"));
     assert!(!last_text_part(&reqs[0]).unwrap_or_default().contains("Curator"));
     r.stop().await;
+}
+
+/// A run with the goal check on: what the scripted model says to it, then the goal's own work.
+async fn checked_goal(replies: Vec<Reply>, goal: &str) -> (Vec<ModelRequest>, Vec<AgentEvent>) {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(replies);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.goal_check = true;
+    let mut r = start(client.clone(), cfg, None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some(goal.into()), attachments: vec![] });
+    let evs = r.turn().await;
+    let log = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.stop().await;
+    (client.requests(), [evs, log].concat())
+}
+
+#[tokio::test]
+async fn a_clear_goal_keeps_the_persons_words_and_gets_no_brief() {
+    let (reqs, evs) =
+        checked_goal(vec![Reply::Events(text("CLEAR")), Reply::Events(text("done\nGOAL DONE"))], "make the tests pass")
+            .await;
+    assert_eq!(reqs.len(), 2, "one check, one round");
+    assert!(reqs[0].system.contains("CLEAR") && reqs[0].tools.is_empty() && reqs[0].max_tokens <= 2048);
+    assert!(reqs[1].system.contains("Goal, in the person's words: make the tests pass"));
+    assert!(!reqs[1].system.contains("ordered by a quick check"));
+    assert_eq!(last_goal_log(&evs).unwrap().brief, None);
+}
+
+#[tokio::test]
+async fn a_messy_goal_gets_a_brief_beside_the_persons_words() {
+    let brief = "REWRITE\nWant: 1. fix the lexer 2. then the parser\nWhy: the build is red\nHow: small commits\nDone when: cargo test passes";
+    let (reqs, evs) =
+        checked_goal(vec![Reply::Events(text(brief)), Reply::Events(text("done\nGOAL DONE"))], "parser lexer fix pls")
+            .await;
+    assert_eq!(reqs.len(), 2);
+    let sys = &reqs[1].system;
+    assert!(sys.contains("Goal, in the person's words: parser lexer fix pls"), "{sys}");
+    assert!(sys.contains("ordered by a quick check") && sys.contains("Want: 1. fix the lexer 2. then the parser"));
+    assert!(sys.contains("Done when: cargo test passes"));
+    let log = last_goal_log(&evs).unwrap();
+    assert_eq!(log.original.as_deref(), Some("parser lexer fix pls"));
+    assert!(log.brief.as_deref().is_some_and(|b| b.starts_with("Want: ")));
+}
+
+#[tokio::test]
+async fn a_failed_goal_check_falls_back_to_the_goal_as_typed_without_a_warning() {
+    let err = ProviderError::new(ErrorKind::Other, "boom");
+    let (reqs, evs) =
+        checked_goal(vec![Reply::Err(err), Reply::Events(text("done\nGOAL DONE"))], "parser lexer fix pls").await;
+    assert_eq!(reqs.len(), 2);
+    assert!(reqs[1].system.contains("parser lexer fix pls") && !reqs[1].system.contains("ordered by a quick check"));
+    assert_eq!(last_goal_log(&evs).unwrap().brief, None);
+    assert!(
+        !evs.iter().any(|e| matches!(e, AgentEvent::Notice { level: Level::Warn | Level::Error, .. })),
+        "{:?}",
+        notices(&evs)
+    );
 }

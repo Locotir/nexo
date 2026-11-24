@@ -635,9 +635,25 @@ fn may_incorporate(guard: Option<(&InboxItem, &CancellationToken)>) -> bool {
 }
 
 /// Bills the usage of an attempt the turn goes on from without keeping its reply.
-pub(super) async fn bill_attempt(state: &Shared, events: &EventTx, model: &str, usage: Usage, call: Usage) {
+pub(super) async fn bill_attempt(
+    state: &Shared,
+    events: &EventTx,
+    model: &str,
+    usage: Usage,
+    call: Usage,
+    pricing: Option<Pricing>,
+) {
     if !usage.is_empty() {
-        add_usage(&mut *state.lock().await, events, model, usage, call, UsageKind::Main);
+        super::host::add_usage_captured(
+            &mut *state.lock().await,
+            events,
+            model,
+            usage,
+            call,
+            pricing,
+            false,
+            UsageKind::Main,
+        );
     }
 }
 
@@ -842,6 +858,7 @@ fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig,
     let short = |s: &str| s.chars().take(256).collect::<String>();
     let mut text = format!("\nCurrent session target: {:?}/{:?}. Configured/preset delegation catalogue (authentication and availability are not checked):", short(provider), short(model));
     let mut catalogue_size = 0;
+    let mut truncated = false;
     for (name, cfg) in &config.providers {
         let explicit = config.explicit_providers.as_ref().and_then(|p| p.get(name));
         let mut models = cfg.models.clone();
@@ -849,6 +866,7 @@ fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig,
             models.push(m.clone());
         }
         models.extend(cfg.effort.keys().cloned());
+        models.extend(cfg.efforts.keys().cloned());
         if let Some(e) = explicit {
             models.extend(e.models.iter().cloned());
             models.extend(e.default_model.iter().cloned());
@@ -857,19 +875,31 @@ fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig,
         models.sort();
         models.dedup();
         let entry = format!(
-            " Provider {name:?}; models {models:?}; effective default {:?}; explicit settings (default, efforts) {:?}.",
+            " Provider {name:?}; models {models:?}; effective default {:?}; effective per-model reasoning defaults {:?}; known valid reasoning levels {:?}; explicit settings (default, efforts) {:?}.",
             cfg.default_model,
+            cfg.effort,
+            cfg.efforts,
             explicit.map(|e| (&e.default_model, &e.effort))
         );
         if catalogue_size + entry.len() > CATALOGUE_LIMIT {
-            text.push_str(" Catalogue truncated due to size; omitted entries are not necessarily unavailable.");
-            break;
+            truncated = true;
+            continue;
         }
         catalogue_size += entry.len();
         text.push_str(&entry);
     }
+    if truncated {
+        text.push_str(" Catalogue truncated due to size; omitted entries are not necessarily unavailable.");
+    }
     let effort = crate::setup::effective_effort(current, model, &config.agent.reasoning);
-    text.push_str(&format!(" Current session reasoning setting: {effort:?} (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model parameters for an explicit target."));
+    text.push_str(&format!(" Current session reasoning setting: {effort:?} (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model/effort parameters for an explicit target. Unknown reasoning levels are not evidence of support; configured levels may be normalized by the provider. Choose model and effort proportional to the work: prefer cheaper adequate targets for routine work and reserve expensive models or high effort for justified complexity, respecting the person's choice and policy."));
+    let limit = if config.agent.on_limit == OnLimit::Checkpoint && config.agent.max_checkpoints != Some(0) {
+        format!(" Main turn checkpoint interval: {} tool rounds (agent.max_turns); a successful checkpoint can reset the round count and continue, subject to checkpoint and other guards.", config.agent.max_turns)
+    } else {
+        format!(" Main turn tool-round limit: {} (agent.max_turns).", config.agent.max_turns)
+    };
+    text.push_str(&limit);
+    text.push_str(" Rounds are not seconds or individual tool calls. Workers have profile-specific round caps and must report when exhausted; background execution does not remove those caps. Split oversized tasks; a capped report is not proof of completion.");
     text
 }
 
@@ -923,11 +953,22 @@ fn mcp_offered_short(st: &mut State) {
 }
 
 /// The request for the next model call, through the context policy.
+#[cfg(test)]
 pub(super) async fn prepare(
     state: &Shared,
     cancel: &CancellationToken,
     no_tool_call: bool,
 ) -> anyhow::Result<(ModelRequest, ProviderConfig, Arc<dyn ModelClient>, u32)> {
+    let (req, cfg, client, retries, _) = prepare_priced(state, cancel, no_tool_call).await?;
+    Ok((req, cfg, client, retries))
+}
+
+/// Like `prepare`, retaining the request's prices before a concurrent model switch can change them.
+pub(super) async fn prepare_priced(
+    state: &Shared,
+    cancel: &CancellationToken,
+    no_tool_call: bool,
+) -> anyhow::Result<(ModelRequest, ProviderConfig, Arc<dyn ModelClient>, u32, Option<Pricing>)> {
     let mut guard = state.lock().await;
     let st = &mut *guard;
     let specs = offered(st);
@@ -1041,7 +1082,7 @@ pub(super) async fn prepare(
         req.extra.insert(key.into(), Value::from(value));
     }
     st.last_request = Some(req.clone());
-    Ok((req, cfg, st.client.clone(), st.config.agent.retries))
+    Ok((req, cfg, st.client.clone(), st.config.agent.retries, prices))
 }
 
 /// The window the view is kept under, in estimated tokens (4 characters a token): `room` provider
@@ -1328,9 +1369,26 @@ mod task_model_context_tests {
         config.explicit_providers = Some([("codex".into(), explicit.clone()), ("removed".into(), removed)].into());
         let mut effective = explicit.clone();
         effective.models.push("gpt-6-astra".into());
+        effective.efforts.insert("cached-only-model".into(), vec!["low".into(), "high".into()]);
+        effective.effort.insert("preset-only-model".into(), "low".into());
         config.providers.insert("codex".into(), effective);
         let text = task_model_context(&config, "codex", &explicit, "active");
-        for s in ["codex", "active", "gpt-6.1-terra", "gpt-6-astra", "medium", "not checked"] {
+        for s in [
+            "codex",
+            "active",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "medium",
+            "not checked",
+            "cached-only-model",
+            "preset-only-model",
+            "known valid reasoning levels",
+            "low",
+            "high",
+            "cheaper adequate",
+            "profile-specific round caps",
+            "not seconds",
+        ] {
             assert!(text.contains(s), "{text}");
         }
         for s in ["removed-model", "secret-command"] {
@@ -1338,6 +1396,36 @@ mod task_model_context_tests {
         }
         let changed = task_model_context(&config, "other", &ProviderConfig::default(), "new-active");
         assert!(changed.contains("new-active") && !changed.contains("\"active\""));
+    }
+
+    #[test]
+    fn checkpoint_policy_is_not_described_as_a_hard_turn_limit() {
+        let mut config = Config::default();
+        config.agent.on_limit = OnLimit::Checkpoint;
+        config.agent.max_checkpoints = Some(2);
+        let text = task_model_context(&config, "p", &ProviderConfig::default(), "m");
+        assert!(text.contains("checkpoint interval"), "{text}");
+        assert!(text.contains("reset the round count"), "{text}");
+        config.agent.max_checkpoints = Some(0);
+        let text = task_model_context(&config, "p", &ProviderConfig::default(), "m");
+        assert!(text.contains("Main turn tool-round limit"), "{text}");
+        assert!(!text.contains("checkpoint interval"), "{text}");
+    }
+
+    #[test]
+    fn oversized_provider_does_not_hide_later_providers() {
+        let mut config = Config::default();
+        config.providers.clear();
+        config
+            .providers
+            .insert("a-large".into(), ProviderConfig { models: vec!["x".repeat(20_000)], ..Default::default() });
+        config
+            .providers
+            .insert("z-small".into(), ProviderConfig { models: vec!["useful-model".into()], ..Default::default() });
+        let text = task_model_context(&config, "p", &ProviderConfig::default(), "m");
+        assert!(text.contains("useful-model"), "{text}");
+        assert!(text.contains("Catalogue truncated"));
+        assert!(text.len() < 13_000);
     }
 
     #[test]

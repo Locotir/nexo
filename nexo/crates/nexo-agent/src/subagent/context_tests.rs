@@ -113,6 +113,212 @@ async fn a_long_sub_agent_run_never_sends_more_than_the_window() {
 }
 
 #[tokio::test]
+async fn plain_and_compact_refuse_an_overgrown_history_before_sending_it() {
+    for policy in ["plain", "compact"] {
+        let client = Scripted::new(16, None);
+        let out = run(client.clone(), policy, 24_000, 1_000).await;
+        assert!(out.is_error && out.content.contains("request not sent"), "{policy}: {out:?}");
+        assert!(out.content.contains("what they changed stays"), "progress must survive: {out:?}");
+        let seen = client.seen.lock().unwrap();
+        assert!(seen.len() > 1 && seen.len() < 17, "{policy}: {} requests", seen.len());
+        for req in seen.iter() {
+            assert_request_fits(req, 24_000);
+            assert!(req.messages[0].text().contains(BRIEF_TASK));
+        }
+    }
+}
+
+fn assert_request_fits(req: &ModelRequest, window: u32) {
+    let raw = crate::turn::fixed_tokens(&req.system, &req.tools) + estimate_tokens(&req.messages);
+    let conservative = (raw as f64 * 4.0 / 3.0).ceil() as u64;
+    assert!(
+        conservative + u64::from(req.max_tokens) <= u64::from(window),
+        "{conservative} + {} > {window}",
+        req.max_tokens
+    );
+    assert_eq!(req.output_ceiling, Some(req.max_tokens));
+}
+
+/// Deliver mail during the first stream, so the next round must recheck even a policy's fresh view.
+struct MailClient {
+    inner: Arc<Scripted>,
+    subs: nexo_core::subs::Subs,
+    parent: bool,
+    text: String,
+}
+
+#[async_trait]
+impl ModelClient for MailClient {
+    async fn stream(
+        &self,
+        cfg: &ProviderConfig,
+        req: &ModelRequest,
+        retries: u32,
+    ) -> Result<EventStream, ProviderError> {
+        let first = self.inner.seen.lock().unwrap().is_empty();
+        let stream = self.inner.stream(cfg, req, retries).await?;
+        if first {
+            let id = self.subs.list()[0].id.clone();
+            if self.parent {
+                self.subs.submit_from_parent(&id, &self.text).unwrap();
+            } else {
+                self.subs.submit(&id, &self.text).unwrap();
+            }
+        }
+        Ok(stream)
+    }
+}
+
+#[tokio::test]
+async fn oversized_mail_is_refused_before_the_next_provider_call() {
+    for policy in ["plain", "compact", "curator"] {
+        for parent in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = ToolContext::new(dir.path().into());
+            let inner = Scripted::new(0, None);
+            let client = Arc::new(MailClient {
+                inner: inner.clone(),
+                subs: ctx.jobs.subs(),
+                parent,
+                text: "MAIL_WORDS_MUST_NOT_BE_SILENTLY_TRUNCATED ".repeat(3000),
+            });
+            let mut cfg = ProviderConfig::default();
+            cfg.context_window.insert("m".into(), 8192);
+            let sub =
+                SubAgent::new(client, Target::new("p", cfg, "m"), &ToolSet::new(), Vec::new(), Default::default())
+                    .with_context(ContextConfig { policy: policy.into(), ..Default::default() });
+            let out = sub.run(json!({"prompt": BRIEF_TASK, "agent":"explore"}), &ctx).await;
+            assert!(out.is_error && out.content.contains("request not sent"), "{policy}, parent={parent}: {out:?}");
+            let seen = inner.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "oversized mail must not reach the provider");
+            assert_request_fits(&seen[0], 8192);
+        }
+    }
+}
+
+/// A cut reply exercises the larger second attempt and the real serializers without a network call.
+struct CutClient(Mutex<Vec<ModelRequest>>);
+#[async_trait]
+impl ModelClient for CutClient {
+    async fn stream(&self, _: &ProviderConfig, req: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        let mut seen = self.0.lock().unwrap();
+        seen.push(req.clone());
+        let finish = if seen.len() == 1 { FinishReason::Length } else { FinishReason::Stop };
+        Ok(Box::pin(futures::stream::iter(vec![
+            StreamEvent::TextDelta("report".into()),
+            StreamEvent::Finish(finish),
+            StreamEvent::Done,
+        ])))
+    }
+}
+
+fn assert_wire_ceiling(req: &ModelRequest) {
+    use nexo_providers::{
+        anthropic::Anthropic, gemini::Gemini, openai_chat::OpenAiChat, openai_responses::OpenAiResponses,
+    };
+    let cfg = ProviderConfig::default();
+    let mut req = req.clone();
+    // Large request-only overlays must not override a worker's physical/reserved room either.
+    req.extra.insert("max_tokens".into(), json!(1_000_000));
+    req.extra.insert("max_completion_tokens".into(), json!(1_000_000));
+    req.extra.insert("max_output_tokens".into(), json!(1_000_000));
+    req.extra.insert("generationConfig".into(), json!({"maxOutputTokens":1_000_000}));
+    let bodies = [
+        (Anthropic::body(&cfg, &req), "max_tokens"),
+        (OpenAiChat::body(&cfg, &req), "max_tokens"),
+        (OpenAiResponses::body(&cfg, &req), "max_output_tokens"),
+    ];
+    for (body, key) in bodies {
+        assert_eq!(body[key].as_u64(), Some(u64::from(req.max_tokens)), "{key}: {body}");
+    }
+    assert_eq!(Gemini::body(&cfg, &req)["generationConfig"]["maxOutputTokens"], json!(req.max_tokens));
+}
+
+#[tokio::test]
+async fn worker_output_ceiling_reaches_providers_and_grows_only_on_a_safe_retry() {
+    for window in [None, Some(4096)] {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Arc::new(CutClient(Mutex::new(Vec::new())));
+        let mut cfg = ProviderConfig::default();
+        if let Some(window) = window {
+            cfg.context_window.insert("claude-sonnet-4-5".into(), window);
+        }
+        cfg.max_output.insert("claude-sonnet-4-5".into(), 1500);
+        let sub = SubAgent::new(
+            client.clone(),
+            Target::new("p", cfg, "claude-sonnet-4-5"),
+            &ToolSet::new(),
+            Vec::new(),
+            Default::default(),
+        )
+        .with_max_tokens(600);
+        let out = sub.run(json!({"prompt":BRIEF_TASK, "agent":"explore"}), &ToolContext::new(dir.path().into())).await;
+        assert!(!out.is_error, "{out:?}");
+        let seen = client.0.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].max_tokens, 600);
+        assert!(seen[1].max_tokens > 600 && seen[1].max_tokens <= 1200);
+        for req in seen.iter() {
+            assert_eq!(req.output_ceiling, Some(req.max_tokens));
+            if let Some(w) = window {
+                assert_request_fits(req, w);
+            }
+            assert_wire_ceiling(req);
+        }
+    }
+}
+
+struct BudgetHost;
+#[async_trait]
+impl Host for BudgetHost {
+    async fn permit(
+        &self,
+        _: &str,
+        _: &str,
+        _: &dyn Tool,
+        _: &Value,
+        _: &CancellationToken,
+        _: Option<crate::hooks::Decision>,
+    ) -> Result<Why, (String, Why)> {
+        Ok(Why::RULE)
+    }
+    async fn reserve(
+        &self,
+        _: &str,
+        _: Option<Pricing>,
+        _: u64,
+        _: u32,
+    ) -> Result<(u32, crate::budget::Flight), String> {
+        Ok((300, crate::budget::Flight::default()))
+    }
+    async fn spent(&self, _: &str, _: Usage, _: Option<Pricing>, _: bool) -> f64 {
+        0.0
+    }
+}
+
+#[tokio::test]
+async fn a_spend_reservation_is_a_hard_wire_ceiling_even_for_modern_claude() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(CutClient(Mutex::new(Vec::new())));
+    let sub = SubAgent::new(
+        client.clone(),
+        Target::new("p", ProviderConfig::default(), "claude-sonnet-4-5"),
+        &ToolSet::new(),
+        Vec::new(),
+        Default::default(),
+    )
+    .with_max_tokens(4096);
+    sub.host.set(Arc::new(BudgetHost)).ok().unwrap();
+    let out = sub.run(json!({"prompt":BRIEF_TASK, "agent":"explore"}), &ToolContext::new(dir.path().into())).await;
+    assert!(!out.is_error, "{out:?}");
+    let seen = client.0.lock().unwrap();
+    assert_eq!(seen.len(), 1, "a reserve-limited cut is not retried");
+    assert_eq!(seen[0].max_tokens, 300);
+    assert_eq!(seen[0].output_ceiling, Some(300));
+    assert_wire_ceiling(&seen[0]);
+}
+
+#[tokio::test]
 async fn a_short_sub_agent_run_sends_the_same_messages_as_plain() {
     let (cur, plain) = (Scripted::new(4, None), Scripted::new(4, None));
     run(cur.clone(), "curator", 128_000, 50).await;
@@ -397,5 +603,115 @@ async fn worktree_skill(tracked: bool) {
         assert!(out.is_error, "{}", out.content);
         assert!(out.content.contains("unavailable in the worker worktree"), "{}", out.content);
         assert!(seen.is_empty());
+    }
+}
+
+/// Codex chooses its own remote output limit. Exercise the local guard without a server.
+struct UncappedClient {
+    mode: &'static str,
+    seen: Mutex<Vec<ModelRequest>>,
+    polled: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl ModelClient for UncappedClient {
+    async fn stream(
+        &self,
+        cfg: &ProviderConfig,
+        req: &ModelRequest,
+        retries: u32,
+    ) -> Result<EventStream, ProviderError> {
+        assert_eq!(retries, 0, "no hidden client retries for an uncapped worker");
+        let body = nexo_providers::openai_responses::OpenAiResponses::body(cfg, req);
+        assert!(body.get("max_output_tokens").is_none(), "Codex rejects this field");
+        let n = {
+            let mut seen = self.seen.lock().unwrap();
+            seen.push(req.clone());
+            seen.len()
+        };
+        if n == 1 {
+            return Ok(Box::pin(futures::stream::iter(call("read", json!({"n":0})))));
+        }
+        // The previous completed tool pair and original task must survive unchanged.
+        assert!(req.messages[0].text().contains(BRIEF_TASK));
+        assert!(req.messages.iter().flat_map(|m| &m.content).any(|p| matches!(p, Part::ToolResult { .. })));
+        let polled = self.polled.clone();
+        let mode = self.mode;
+        if mode == "wire_arguments" {
+            let events = futures::stream::unfold(0usize, move |i| {
+                let polled = polled.clone();
+                async move {
+                    polled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let data = if i == 0 {
+                        json!({"type":"response.output_item.added", "output_index":0,
+                            "item":{"type":"function_call", "call_id":"partial", "name":"read"}})
+                    } else {
+                        json!({"type":"response.function_call_arguments.delta", "output_index":0, "delta":"x".repeat(500)})
+                    };
+                    Some((Ok(nexo_providers::sse::SseEvent { data: data.to_string(), ..Default::default() }), i + 1))
+                }
+            });
+            return Ok(nexo_providers::openai_responses::OpenAiResponses::parse(events));
+        }
+        Ok(Box::pin(futures::stream::unfold(0usize, move |i| {
+            let polled = polled.clone();
+            async move {
+                polled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let ev = match (mode, i) {
+                    ("normal", 0) | ("length", 0) => StreamEvent::TextDelta("bounded report".into()),
+                    ("normal", 1) => StreamEvent::Finish(FinishReason::Stop),
+                    ("length", 1) => StreamEvent::Finish(FinishReason::Length),
+                    ("normal" | "length", _) => StreamEvent::Done,
+                    ("usage", 0) => StreamEvent::Usage(Usage { output: 10000, ..Default::default() }),
+                    ("error", _) => StreamEvent::Error(ProviderError::new(ErrorKind::Network, "broke")),
+                    ("reason", _) => StreamEvent::ReasoningDelta("x".repeat(500)),
+                    ("meta", _) => StreamEvent::ReasoningMeta { signature: None, encrypted: Some("x".repeat(500)) },
+                    ("arguments", 0) => StreamEvent::ToolCallStart { id: "unfinished".into(), name: "read".into() },
+                    ("arguments", _) => {
+                        StreamEvent::ToolCallDelta { id: "unfinished".into(), partial_json: "x".repeat(500) }
+                    }
+                    ("end", _) => StreamEvent::ToolCallEnd {
+                        id: "c".into(),
+                        name: "read".into(),
+                        args: json!({"huge":"x".repeat(5000)}),
+                    },
+                    ("events", _) => StreamEvent::ReasoningDelta(String::new()),
+                    _ => StreamEvent::TextDelta("x".repeat(500)),
+                };
+                Some((ev, i + 1))
+            }
+        })))
+    }
+}
+
+#[tokio::test]
+async fn codex_uncapped_stream_is_bounded_terminal_and_keeps_previous_tool_progress() {
+    for mode in
+        ["text", "reason", "meta", "arguments", "wire_arguments", "end", "events", "usage", "error", "normal", "length"]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = Arc::new(UncappedClient { mode, seen: Mutex::new(Vec::new()), polled: polled.clone() });
+        let mut cfg = ProviderConfig::default();
+        cfg.extra.insert("omit_max_tokens".into(), toml::Value::Boolean(true));
+        let mut tools = ToolSet::new();
+        tools.add(Arc::new(Read(10)));
+        let sub = SubAgent::new(client.clone(), Target::new("p", cfg, "m"), &tools, Vec::new(), Default::default())
+            .with_max_tokens(128)
+            .with_context(ContextConfig { policy: "plain".into(), ..Default::default() });
+        let out = sub.run(json!({"prompt":BRIEF_TASK, "agent":"explore"}), &ToolContext::new(dir.path().into())).await;
+        assert_eq!(client.seen.lock().unwrap().len(), 2, "{mode}: must not resend a guarded or cut response");
+        assert!(polled.load(std::sync::atomic::Ordering::SeqCst) <= 1025, "{mode}: stopped polling");
+        if matches!(mode, "normal" | "length") {
+            assert!(!out.is_error && out.content.contains("bounded report"), "{mode}: {out:?}");
+        } else {
+            assert!(out.is_error && out.content.contains("what they changed stays"), "{mode}: {out:?}");
+            if mode != "error" {
+                assert!(
+                    out.content.contains("local stream guard") && out.content.contains("Remote generation/cost"),
+                    "{mode}: {out:?}"
+                );
+            }
+        }
     }
 }

@@ -425,6 +425,24 @@ fn the_compact_text_names_the_persons_own_browsers() {
 }
 
 #[test]
+fn browser_discovery_instructions_are_present_without_chrome_setup() {
+    let tool = BrowserTool::default();
+    let spec = tool.spec();
+    let compact = tool.compact().expect("compact");
+    for text in [spec.description.as_str(), compact.description] {
+        for rule in ["person's logged-in", "first", "`browsers`", "`select_browser`", "no /chrome", "CAPTCHA"] {
+            assert!(text.contains(rule), "{rule} missing from {text}");
+        }
+    }
+    assert!(compact.description.contains("Discovery grants no access"));
+    assert!(compact.description.len() <= 260, "{}", compact.description.len());
+    assert!(spec.description.contains("without granting access"));
+    assert!(spec.description.contains("Do not connect just because"));
+    // Rendering the instructions must not start or select a browser.
+    assert!(tool.browser.try_lock().unwrap().is_none());
+}
+
+#[test]
 fn the_compact_text_keeps_the_captcha_stop_rule() {
     let tool = BrowserTool::default();
     let c = tool.compact().expect("compact");

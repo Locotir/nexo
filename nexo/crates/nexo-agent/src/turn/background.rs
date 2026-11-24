@@ -9,7 +9,7 @@ fn limit_reached(session: f64, day: f64, session_limit: Option<f64>, day_limit: 
 }
 
 /// `limit_reached` for this session's spending and today's.
-fn over_budget(st: &State) -> bool {
+pub(super) fn over_budget(st: &State) -> bool {
     limit_reached(st.cost, budget::spent_today(), st.budget, st.config.agent.max_cost_day)
 }
 
@@ -419,17 +419,51 @@ pub(super) fn spawn_model_lists(state: &Shared) {
         let file = nexo_providers::modellist::cache_file();
         let ask = |cfg: nexo_core::config::ProviderConfig| {
             let client = client.clone();
-            async move {
-                client.list_models(&cfg).await.map(|l| l.into_iter().map(|m| m.id).collect()).map_err(|e| e.message)
-            }
+            async move { client.list_models(&cfg).await.map_err(|e| e.message) }
         };
         let before = nexo_providers::modellist::choices(&config);
-        nexo_providers::modellist::refresh(&config, &file, Duration::from_secs(8), ask).await;
+        let report =
+            nexo_providers::modellist::refresh_details_report(&config, &file, Duration::from_secs(8), ask).await;
+        for (name, failure) in report.failures {
+            // The active target can change while discovery is in flight.
+            let st = state.lock().await;
+            if let Some(warning) = codex_refresh_warning(&config, &st.target.provider(), &name, failure) {
+                notice(&events, Level::Warn, warning);
+            }
+        }
+        if report.changed {
+            // the lists carry the levels each model takes: the target and the picker learn them now
+            let st = state.lock().await;
+            let (p, c, m) = st.target.get();
+            st.target.set(&p, c, &m);
+            emit(&events, super::settings::effort_event(&st));
+        }
         let after = nexo_providers::modellist::choices(&config);
         if after != before {
             emit(&events, AgentEvent::ModelsListed { models: after });
         }
     });
+}
+
+fn codex_refresh_warning(
+    config: &nexo_core::config::Config,
+    active: &str,
+    name: &str,
+    failure: nexo_providers::modellist::RefreshFailure,
+) -> Option<String> {
+    if name != active || !config.providers.get(name).is_some_and(|p| p.login.as_deref() == Some("codex")) {
+        return None;
+    }
+    let reason = match failure {
+        nexo_providers::modellist::RefreshFailure::Timeout => "timed out",
+        nexo_providers::modellist::RefreshFailure::Error => "failed",
+        nexo_providers::modellist::RefreshFailure::Empty => "returned no models",
+    };
+    Some(codex_discovery_warning(name, reason))
+}
+
+fn codex_discovery_warning(name: &str, reason: &str) -> String {
+    format!("Codex model discovery for {name:?} {reason}; cached or configured models remain available. Run `nexo models` with the failed provider name as an argument for details.")
 }
 
 pub(super) fn spawn_vendor_fill(state: &Shared) {
@@ -494,6 +528,27 @@ pub(super) fn spawn_model_check(state: &Shared) {
 #[cfg(test)]
 mod suggest_tests {
     use super::*;
+
+    #[test]
+    fn codex_refresh_warns_only_for_the_current_codex_provider() {
+        use nexo_providers::modellist::RefreshFailure;
+        let mut config = nexo_core::config::Config::default();
+        let codex = nexo_core::config::ProviderConfig { login: Some("codex".into()), ..Default::default() };
+        config.providers.insert("secondary".into(), codex);
+        config.providers.insert("active".into(), Default::default());
+        for failure in [RefreshFailure::Timeout, RefreshFailure::Error, RefreshFailure::Empty] {
+            assert!(codex_refresh_warning(&config, "active", "secondary", failure).is_none());
+        }
+        assert!(codex_refresh_warning(&config, "secondary", "secondary", RefreshFailure::Error).is_some());
+        assert!(codex_refresh_warning(&config, "active", "active", RefreshFailure::Error).is_none());
+        assert!(codex_refresh_warning(&config, "missing", "missing", RefreshFailure::Error).is_none());
+    }
+
+    #[test]
+    fn codex_discovery_warning_requests_the_failed_provider_without_building_a_command() {
+        let warning = codex_discovery_warning("secondary; $(bad)", "timed out");
+        assert_eq!(warning, "Codex model discovery for \"secondary; $(bad)\" timed out; cached or configured models remain available. Run `nexo models` with the failed provider name as an argument for details.");
+    }
 
     #[test]
     fn the_suggestion_asks_for_the_least_thinking_the_model_takes() {

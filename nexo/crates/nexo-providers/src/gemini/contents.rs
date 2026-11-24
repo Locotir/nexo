@@ -63,13 +63,20 @@ pub(super) fn contents(messages: &[Message], model: &str) -> Vec<Value> {
                         .clone()
                         .or_else(|| names.get(call_id.as_str()).map(|s| s.to_string()))
                         .unwrap_or_else(|| call_id.clone());
-                    let text = nexo_core::message::result_text(content);
+                    let content = crate::result_parts(content);
+                    let text = crate::result_text(&content);
                     let response = if *is_error { json!({"error": text}) } else { json!({"result": text}) };
                     parts.push(json!({"functionResponse": {"name": fname, "response": response}}));
                     // the pictures of the result ride in the same turn, after the response
                     for p in content {
-                        if let Part::Image { source: ImageSource::Base64 { media_type, data } } = p {
-                            parts.push(json!({"inlineData": {"mimeType": media_type, "data": data}}));
+                        match p {
+                            Part::Image { source: ImageSource::Base64 { media_type, data } } => {
+                                parts.push(json!({"inlineData": {"mimeType": media_type, "data": data}}));
+                            }
+                            Part::Image { source: ImageSource::Url { url } } => {
+                                parts.push(json!({"fileData": {"fileUri": url}}));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -126,4 +133,15 @@ fn needs_call_signature(model: &str) -> bool {
         return rest.ends_with("-latest");
     }
     digits.parse::<u32>().is_ok_and(|v| v >= 3)
+}
+
+#[cfg(test)]
+mod nested_result_tests {
+    #[test]
+    fn nested_tool_result_images_are_preserved() {
+        let v = super::contents(&[crate::nested_image_result()], "model");
+        assert_eq!(v[0]["parts"][0]["functionResponse"]["name"], "outer");
+        assert_eq!(v[0]["parts"][0]["functionResponse"]["response"]["error"], "before\nnested\nafter");
+        assert_eq!(v[0]["parts"][1]["fileData"]["fileUri"], "https://example.invalid/p.png");
+    }
 }

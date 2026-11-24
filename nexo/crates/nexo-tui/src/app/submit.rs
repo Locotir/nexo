@@ -330,6 +330,7 @@ impl App {
             self.queued_at = Some(self.now());
             self.flash("queued: joins the turn at its next step · Enter again to stop the turn");
         }
+        self.pulse(if self.busy { crate::fx_pulse::Cue::UserQueued } else { crate::fx_pulse::Cue::UserSent });
         self.pending_stamps.push_back(body.to_string());
         if self.pending_stamps.len() > 20 {
             self.pending_stamps.pop_front();

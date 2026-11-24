@@ -39,23 +39,38 @@ pub(super) fn convert(m: &Message, model: &str, echo: bool) -> Vec<Value> {
             for p in &m.content {
                 match p {
                     Part::ToolResult { call_id, content: c, is_error, .. } => {
-                        let text = nexo_core::message::result_text(c);
-                        let text = if *is_error && !text.to_ascii_lowercase().starts_with("error") {
-                            format!("Error: {text}")
-                        } else {
-                            text
-                        };
-                        // with pictures the output is a list of content items, else a string
+                        let c = crate::result_parts(c);
+                        let text = crate::result_text(&c);
+                        let prefix_error = *is_error && !text.to_ascii_lowercase().starts_with("error");
+                        // Images require a list; keep text runs and images in their original order.
+                        // Adjacent text still uses the same newline separator as a text-only result.
                         let output = if c.iter().any(|p| matches!(p, Part::Image { .. })) {
-                            let mut items = vec![json!({"type": "input_text", "text": text})];
+                            let mut items = Vec::new();
+                            let mut run: Vec<&str> = Vec::new();
+                            let mut prefix = prefix_error;
                             for p in c {
-                                if let Part::Image { source } = p {
-                                    items.push(json!({"type": "input_image", "image_url": image_url(source)}));
+                                match p {
+                                    Part::Text { text } => run.push(text),
+                                    Part::Image { source } => {
+                                        if !run.is_empty() || prefix {
+                                            let text =
+                                                format!("{}{}", if prefix { "Error: " } else { "" }, run.join("\n"));
+                                            items.push(json!({"type": "input_text", "text": text}));
+                                            run.clear();
+                                            prefix = false;
+                                        }
+                                        items.push(json!({"type": "input_image", "image_url": image_url(source)}));
+                                    }
+                                    _ => {}
                                 }
+                            }
+                            if !run.is_empty() || prefix {
+                                let text = format!("{}{}", if prefix { "Error: " } else { "" }, run.join("\n"));
+                                items.push(json!({"type": "input_text", "text": text}));
                             }
                             Value::Array(items)
                         } else {
-                            Value::String(text)
+                            Value::String(if prefix_error { format!("Error: {text}") } else { text })
                         };
                         out.push(json!({"type": "function_call_output", "call_id": call_id, "output": output}));
                     }
@@ -97,4 +112,16 @@ pub(super) fn convert(m: &Message, model: &str, echo: bool) -> Vec<Value> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod nested_result_tests {
+    #[test]
+    fn nested_tool_result_images_are_preserved() {
+        let v = super::convert(&crate::nested_image_result(), "model", false);
+        assert_eq!(v[0]["call_id"], "outer");
+        assert_eq!(v[0]["output"][0]["text"], "Error: before\nnested");
+        assert_eq!(v[0]["output"][1]["image_url"], "https://example.invalid/p.png");
+        assert_eq!(v[0]["output"][2]["text"], "after");
+    }
 }

@@ -6,13 +6,13 @@ the shape before you write it.
 ## Build and check
 
 Rust 1.89 or newer. From `nexo/`, the checks the CI runs: the format check on Linux, the other
-three on Linux and Windows (the macOS job runs the same checks but is not gating yet):
+three on Linux, macOS and Windows (all three hosts gate releases):
 
 ```sh
 cargo fmt --check
-cargo build --workspace
-cargo test --workspace --no-fail-fast
-cargo clippy --workspace --all-targets --keep-going -- -D warnings
+cargo build --workspace --locked
+cargo test --workspace --locked --no-fail-fast
+cargo clippy --workspace --locked --all-targets --keep-going -- -D warnings
 ```
 
 Before pushing, `nexo/tools/pre-push-check.sh` runs those four checks for the local stable
@@ -23,10 +23,33 @@ For example, from `nexo/`:
 CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$HOME/build-cache/nexo-ci" nice tools/pre-push-check.sh
 ```
 
-This is not an automatic Git hook and does not check other operating systems, Rust 1.89,
-`cargo deny`, or the Intel Mac target. Run CI and inspect each job, including macOS and
-advisories, which currently do not gate the overall result. A local pass cannot establish a
-cross-platform pass. Do not set `NEXO_UPDATE_GOLDEN` during validation.
+Use `tools/pre-push-check.sh --full` to also check the Rust 1.89.0 MSRV (all targets) and
+`cargo deny --all-features --locked` (bans, licenses, sources and advisories). Install that
+Rust toolchain and `cargo-deny` first. Full mode treats advisory failures as failures locally,
+even though the CI advisory job remains non-gating because new advisories can appear without
+a dependency change. Policy checks can require network access. Both modes collect all check
+failures rather than hiding clippy behind a failing test; Cargo commands run sequentially to
+avoid contention for the target-directory lock. The three native CI hosts and the MSRV and
+policy jobs already run in parallel.
+
+This is not an automatic Git hook. Neither mode tests other operating systems or the Intel Mac
+target. Run CI and inspect each job, including the non-gating advisories job. A local pass
+cannot establish a cross-platform pass. Do not set `NEXO_UPDATE_GOLDEN` during validation.
+The checker also runs fast, compilation-free regression tests; both `bash` and `python3` must
+be available on `PATH`. To run the suites individually from `nexo/`:
+
+```sh
+sh tools/tests/pre-push-check.sh
+python3 tools/tests/pre-push-process-signals.py
+```
+
+A concrete recent regression was the context-inventory event-order assertion at
+`crates/nexo-agent/tests/agent_loop/provider_limits.rs:567`: CI run
+[45254280847](https://github.com/Locotir/nexo/actions/runs/45254280847) failed on all three
+hosts, not just Windows. Commit `b8b1dedf` fixed the stale expectation;
+[45333537370](https://github.com/Locotir/nexo/actions/runs/45333537370) then passed every job,
+including macOS and advisories. This is why a targeted local test alone is not a workspace
+validation. After macOS passed on main, its temporary non-gating exemption was removed.
 
 The interface tests draw in 24-bit colour: run them from a colour terminal, or with
 `COLORTERM=truecolor` set.

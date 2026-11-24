@@ -33,7 +33,7 @@
  session ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
  /fork                                         new session copied from an earlier point
  /rewind                                       go back to before a message (also Esc Esc)
-                                                     1/51                                                     40 more ↓
+                                                     1/53                                                     42 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                10:00

@@ -119,7 +119,7 @@ const SUMMARY_TOKENS: u32 = 4_096;
 /// The `compact` policy compacts only when the part it would replace holds, besides an earlier
 /// summary, at least this fraction (1/n) of its threshold.
 const COMPACT_MARGIN: u64 = 10;
-/// Continuation rounds a goal gets after a turn ends without `GOAL DONE` (`NEXO_GOAL_ROUNDS`).
+/// Goal continuation display window, renewed with observable progress (`NEXO_GOAL_ROUNDS`; 0 disables).
 const GOAL_ROUNDS: u32 = 5;
 /// What the agent submits by itself to keep working towards the goal.
 pub(crate) const GOAL_CONTINUE: &str = GOAL_CONTINUE_MARK;

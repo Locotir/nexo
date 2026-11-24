@@ -12,6 +12,7 @@ mod work;
 mod curator;
 mod engine;
 mod evidence;
+pub mod explore;
 mod facts;
 mod flat;
 mod goal;

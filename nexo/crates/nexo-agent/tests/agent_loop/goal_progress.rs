@@ -307,3 +307,132 @@ async fn a_supervisor_note_and_the_goal_counts_ride_as_one_text_part() {
     ));
     r.stop().await;
 }
+
+/// Novel successful read results renew the window too: research does not have to edit files.
+#[tokio::test]
+async fn a_research_goal_continues_past_five_rounds_then_finishes() {
+    let dir = test_tmpdir().unwrap();
+    let mut replies = vec![Reply::Events(text("starting"))];
+    for i in 0..7 {
+        replies.extend(reads(i, 1));
+        replies.push(Reply::Events(text(if i == 6 { "reported\nGOAL DONE" } else { "more to check" })));
+    }
+    let client = Scripted::new(replies);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("research the code".into()), attachments: vec![] });
+    for _ in 0..8 {
+        assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+    }
+    let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert_eq!(goal_state_of(&after), Some(GoalState::Done));
+    assert_eq!(client.requests().len(), 15);
+    r.stop().await;
+}
+
+/// A failed command is not progress, even if its arguments differ from earlier calls.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_continuation_with_only_errors_pauses() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("starting")),
+        Reply::Events(call("b1", "bash", json!({"command": "exit 3"}))),
+        Reply::Events(call("b2", "bash", json!({"command": "exit 4"}))),
+        Reply::Events(text("still failing")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("fix the command".into()), attachments: vec![] });
+    r.turn().await;
+    r.turn().await;
+    let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
+    assert_eq!(paused_why(&after).as_deref(), Some("the last round made no progress (2 steps)"));
+    assert_eq!(client.requests().len(), 4, "errors must not start another continuation");
+    r.stop().await;
+}
+
+/// Exec permission is not proof of a mutation. Supply an initial command and twelve identical
+/// successful continuations; stop after the first repeated result, before renewing two windows.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_repeated_unknown_successful_command_pauses_instead_of_renewing() {
+    let dir = test_tmpdir().unwrap();
+    // A shell function queries constant data but is deliberately outside the read-only allowlist.
+    let args = json!({"command": "query() { printf stable; }; query"});
+    assert_eq!(nexo_core::Tool::call_kind(&nexo_tools::bash::Bash, &args), nexo_core::ToolKind::Exec);
+    let mut replies = Vec::new();
+    for i in 0..13 {
+        replies.push(Reply::Events(call(&format!("b{i}"), "bash", args.clone())));
+        replies.push(Reply::Events(text("still investigating")));
+    }
+    let client = Scripted::new(replies);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("investigate the data".into()), attachments: vec![] });
+    for _ in 0..2 {
+        assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+    }
+    let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
+    assert!(paused_why(&after).unwrap().starts_with("the last round made no progress"));
+    assert_eq!(client.requests().len(), 4, "only one continuation; unused script must not run");
+    r.stop().await;
+}
+
+/// The same command can accompany genuine research across two window renewals. Its remembered
+/// result must survive those productive rounds, so once the new reads stop it cannot sustain work.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_repeated_command_with_new_reads_continues_then_pauses_across_windows() {
+    let dir = test_tmpdir().unwrap();
+    let args = json!({"command": "query() { printf stable; }; query"});
+    let mut replies = vec![Reply::Events(text("starting"))];
+    for i in 0..12 {
+        replies.push(Reply::Events(call(&format!("b{i}"), "bash", args.clone())));
+        if i < 11 {
+            replies.extend(reads(i, 1));
+        }
+        replies.push(Reply::Events(text("still investigating")));
+    }
+    let client = Scripted::new(replies);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("investigate the code".into()), attachments: vec![] });
+    for _ in 0..13 {
+        assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+    }
+    let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
+    assert!(paused_why(&after).unwrap().starts_with("the last round made no progress"));
+    assert_eq!(client.requests().len(), 36, "initial turn, eleven productive continuations, one repeat-only");
+    r.stop().await;
+}
+
+/// Identical command arguments with genuinely changing output remain observable progress.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_goal_repeated_command_with_changed_output_continues_then_pauses() {
+    let dir = test_tmpdir().unwrap();
+    let args = json!({"command": "n=$(cat count); if [ \"$n\" -lt 11 ]; then n=$((n + 1)); printf '%s' \"$n\" > count; fi; cat count"});
+    std::fs::write(dir.path().join("count"), "0").unwrap();
+    let mut replies = vec![Reply::Events(text("starting"))];
+    for i in 0..12 {
+        replies.push(Reply::Events(call(&format!("b{i}"), "bash", args.clone())));
+        replies.push(Reply::Events(text("still working")));
+    }
+    let client = Scripted::new(replies);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, dir.path(), set).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("advance the counter".into()), attachments: vec![] });
+    for _ in 0..13 {
+        assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+    }
+    let after = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Paused(_), .. })).await;
+    assert!(paused_why(&after).unwrap().starts_with("the last round made no progress"));
+    assert_eq!(std::fs::read_to_string(dir.path().join("count")).unwrap(), "11");
+    assert_eq!(client.requests().len(), 25);
+    r.stop().await;
+}

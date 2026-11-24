@@ -70,6 +70,7 @@ pub(super) const REPLAY: usize = 2000;
 
 /// The context curator built into nexo, run in process. It keeps the history
 /// it was last given, so each call converts only the messages that changed.
+#[derive(Clone)]
 pub struct BuiltIn {
     cur: nexo_curator::Curator,
     /// The settings it was built with, as `Curator::new` took them.
@@ -92,6 +93,7 @@ pub struct BuiltIn {
     saved_at: usize,
     /// A state saved with the session, for the first view of a resumed one (`ContextPolicy::restore`).
     pending: Option<Vec<u8>>,
+    compact_pending: bool,
 }
 
 impl BuiltIn {
@@ -111,6 +113,7 @@ impl BuiltIn {
             views: 0,
             saved_at: 0,
             pending: None,
+            compact_pending: false,
         })
     }
 
@@ -140,6 +143,32 @@ impl BuiltIn {
                 0
             }
         }
+    }
+
+    /// Prepare snapshot bytes for a prospective compaction without mutating the active policy.
+    /// The caller must commit these bytes atomically with the replacement history, or discard them.
+    pub(crate) fn prepare_compaction_snapshot(
+        &self,
+        old: &[Message],
+        from: usize,
+        replacement: &[Message],
+    ) -> anyhow::Result<Vec<u8>> {
+        let old_values: Vec<_> = old.iter().map(serde_json::to_value).collect::<Result<_, _>>()?;
+        let replacement_values: Vec<_> = replacement.iter().map(serde_json::to_value).collect::<Result<_, _>>()?;
+        let mut copy = self.clone();
+        if copy.pending.is_some() {
+            copy.values = old_values.clone();
+            copy.hashes = old_values.iter().map(nexo_curator::snapshot::message_hash).collect();
+            copy.take_saved();
+        }
+        let prepared =
+            copy.cur.prepare_compaction(&old_values, from, &replacement_values).map_err(anyhow::Error::msg)?;
+        let hashes: Vec<_> = replacement_values.iter().map(nexo_curator::snapshot::message_hash).collect();
+        let covered = prepared.covered();
+        if covered > hashes.len() {
+            anyhow::bail!("prepared curator covers more than the replacement history");
+        }
+        Ok(prepared.save(copy.views, nexo_curator::snapshot::history_hash(&hashes[..covered])).encode())
     }
 
     /// The curator with what of `spec` it can run: a `key=value` it cannot run alone is left out, the
@@ -236,11 +265,17 @@ impl ContextPolicy for BuiltIn {
             (Some(v), Some(s)) if v == s && history.len() >= self.seen.len() => self.seen.len(),
             _ => self.seen.iter().zip(history).take_while(|(a, b)| a == b).count(),
         };
-        // a curator new to this history (a resumed session, the policy turned on mid-way) or sent
-        // back to an earlier point of it (a rewind)
-        let replay = self.seen.is_empty() || (same == history.len() && same < self.seen.len());
+        // A new curator replays a resumed session. A rewind is synchronized directly: replaying
+        // intermediate prefixes could discard the explicitly compacted base before the final view.
+        let replay = self.seen.is_empty() && !self.compact_pending;
+        self.compact_pending = false;
         let fresh = self.seen.is_empty();
         self.seen_version = None;
+        // A rewrite may cover the same number of messages as the last snapshot.
+        // Length alone does not identify the state that was saved.
+        if same < self.seen.len() {
+            self.saved_at = 0;
+        }
         self.seen.truncate(same);
         self.values.truncate(same);
         self.hashes.truncate(same);
@@ -321,6 +356,7 @@ impl ContextPolicy for BuiltIn {
         self.hashes.clear();
         self.saved_at = 0;
         self.pending = None;
+        self.compact_pending = false;
     }
 
     fn save(&mut self) -> Option<super::SaveJob> {
@@ -337,9 +373,54 @@ impl ContextPolicy for BuiltIn {
         self.pending = Some(saved);
     }
 
-    /// The engine notices the rewritten history by itself and starts over on it,
-    /// keeping the user's standing instructions; a fresh engine would lose them.
-    fn compacted(&mut self) {}
+    fn save_failed(&mut self) {
+        self.saved_at = 0;
+    }
+
+    fn compacted(&mut self) {
+        self.saved_at = 0;
+        self.cur.compacted();
+    }
+
+    fn prepare_compaction_snapshot(
+        &self,
+        old: &[Message],
+        from: usize,
+        replacement: &[Message],
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        BuiltIn::prepare_compaction_snapshot(self, old, from, replacement).map(Some)
+    }
+
+    fn accepts_snapshot(&self, bytes: &[u8], history: &[Message]) -> bool {
+        let values: Vec<_> = match history.iter().map(serde_json::to_value).collect::<Result<_, _>>() {
+            Ok(values) => values,
+            Err(_) => return false,
+        };
+        let hashes: Vec<_> = values.iter().map(nexo_curator::snapshot::message_hash).collect();
+        nexo_curator::Curator::restore(self.cur.spec(), bytes, &values, &hashes).is_ok()
+    }
+
+    fn compacted_prefix(&mut self, old_history: &[Message], from: usize, summary_len: usize) {
+        let values: Result<Vec<_>, _> = old_history.iter().map(serde_json::to_value).collect();
+        match values {
+            Ok(values) => {
+                // Restore before truncating, when compaction happens before the first view.
+                if self.pending.is_some() {
+                    self.values = values.clone();
+                    self.hashes = values.iter().map(nexo_curator::snapshot::message_hash).collect();
+                    self.take_saved();
+                    self.pending = None;
+                }
+                self.cur.compacted_prefix(&values[..from.min(values.len())], summary_len);
+                self.saved_at = 0;
+                self.compact_pending = true;
+            }
+            Err(e) => {
+                tracing::warn!("context: could not read compacted prefix: {e}");
+                self.reset();
+            }
+        }
+    }
 }
 
 /// The curator's items for the interface.

@@ -151,7 +151,8 @@ fn historical_quotes_are_on_by_default_and_can_be_switched_back_to_keyword_recal
                 let tail =
                     r.view.last().unwrap()["content"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap();
                 assert!(
-                    tail.contains("Recall (lines of earlier messages") && tail.lines().any(|l| l == quote),
+                    tail.contains("Recall (lines of earlier messages")
+                        && tail.lines().any(|l| l.strip_prefix("> ") == Some(quote)),
                     "{tail}"
                 );
                 assert!(!tail.contains("Historical evidence ("));

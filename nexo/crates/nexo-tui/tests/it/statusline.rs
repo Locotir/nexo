@@ -51,11 +51,13 @@ fn bar(a: &mut App, w: u16, h: u16) -> String {
 }
 
 #[test]
-fn empty_list_means_every_piece_and_unknown_names_are_dropped() {
-    assert_eq!(status_pieces(&[]).len(), 12);
+fn empty_list_means_default_pieces_and_unknown_names_are_dropped() {
+    assert_eq!(status_pieces(&[]).len(), 11);
+    assert!(!status_pieces(&[]).contains(&"cache"));
     let c = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(status_pieces(&c(&["cost", "Model", "cost", "nope"])), vec!["cost", "model"]);
     assert!(status_pieces(&c(&["nope"])).is_empty());
+    assert_eq!(status_pieces(&c(&["cache"])), vec!["cache"]);
 }
 
 #[test]
@@ -87,6 +89,60 @@ fn listed_pieces_only_and_in_the_listed_order() {
     }
     let b = bar(&mut app(&["tokens"]), 200, 60);
     assert!(b.contains("billed") && !b.contains('$') && !b.contains("deepseek"), "{b:?}");
+}
+
+/// Removing the always-visible call count must not discard the underlying usage history.
+/// Exercise the event-to-render path, rather than only checking the configured piece names.
+#[test]
+fn completed_calls_stay_out_of_the_status_bar_at_every_size_and_detail() {
+    use nexo_core::{config::Detail, Usage};
+    use std::time::Instant;
+
+    for detail in [Detail::Full, Detail::Quiet] {
+        for pieces in [&[][..], &["model", "tokens", "cost"][..]] {
+            let mut a = app(pieces);
+            a.opts.detail = detail;
+            let call = Usage { input: 1000, output: 100, ..Default::default() };
+            for n in 1..=3 {
+                let session = Usage { input: n * 1000, output: n * 100, ..Default::default() };
+                a.handle_agent(AgentEvent::Usage { turn: session, call, session, cost_usd: 0.0123 });
+                assert_eq!(a.call_inputs.len(), n as usize);
+                for busy in [false, true] {
+                    a.busy = busy;
+                    a.turn_started = busy.then(Instant::now);
+                    for (w, h) in [(40, 12), (80, 24), (200, 60)] {
+                        let b = bar(&mut a, w, h);
+                        assert!(!b.contains("call"), "{detail:?}, busy={busy}, {w}x{h}: {b:?}");
+                        if w == 200 && (detail == Detail::Full || !pieces.is_empty()) {
+                            assert!(b.contains("billed") && b.contains("$0.0123"), "{b:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn call_count_and_per_call_inputs_remain_available_on_demand() {
+    use nexo_core::Usage;
+    use nexo_tui::commands::Command;
+
+    let mut a = app(&[]);
+    for input in [1000, 2000, 3000] {
+        let call = Usage { input, output: 100, ..Default::default() };
+        a.handle_agent(AgentEvent::Usage { turn: call, call, session: call, cost_usd: 0.0123 });
+    }
+    let history = a.call_inputs.clone();
+    assert_eq!(history, vec![1000, 2000, 3000]);
+    assert!(!bar(&mut a, 200, 60).contains("call"));
+
+    a.run_command(Command::Cost);
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    draw_frame(&mut t, &mut a).unwrap();
+    let screen = rows_of(t.backend().buffer()).join("\n");
+    assert!(screen.contains("sent per call · 3 calls"), "{screen}");
+    assert_eq!(a.call_inputs, history, "opening usage must not consume the call history");
 }
 
 #[test]

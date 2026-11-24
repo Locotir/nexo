@@ -1,6 +1,66 @@
 use super::*;
 
 #[tokio::test]
+async fn rejected_summaries_preserve_history_and_bill_each_attempt_exactly_once() {
+    for oversized_reply in [true, false] {
+        let d = test_tmpdir().unwrap();
+        data_dir();
+        let mut saved = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+        saved.append(&Message::user("original task")).unwrap();
+        if !oversized_reply {
+            let paths = (0..4_000).map(|i| format!("  src/unique_path_{i:04}.rs")).collect::<Vec<_>>().join("\n");
+            saved.append(&Message::user(format!("[files]\nchanged:\n{paths}"))).unwrap();
+        }
+        saved.append(&Message::assistant("original work")).unwrap();
+        let id = saved.id().to_string();
+        let before = serde_json::to_value(saved.messages()).unwrap();
+        drop(saved);
+        let usage =
+            Usage { input: 17, output: if oversized_reply { 4_097 } else { 8 }, cache_read: 3, ..Default::default() };
+        let retry = Usage { input: 11, output: 2, ..Default::default() };
+        let response = || {
+            vec![
+                StreamEvent::RetriedUsage(retry),
+                StreamEvent::TextDelta("valid summary".into()),
+                StreamEvent::Usage(usage),
+                StreamEvent::Finish(FinishReason::Stop),
+                StreamEvent::Done,
+            ]
+        };
+        let client = Scripted::new(vec![Reply::Events(response()), Reply::Events(response())]);
+        let mut cfg = config(PermissionMode::Ask);
+        cfg.providers.get_mut("mock").unwrap().context_window.insert("m1".into(), 16_000);
+        let mut r = start(client.clone(), cfg, Some(id.clone()), d.path()).await;
+        // Drain the resume snapshot (including its zero-delta Usage) before measuring a call.
+        r.until(|e| matches!(e, AgentEvent::ContextMap { .. })).await;
+        for attempt in 1..=2 {
+            r.send(AgentCommand::Compact);
+            let evs = r.until(|e| matches!(e, AgentEvent::Notice { level: Level::Error, .. })).await;
+            let reason = if oversized_reply { "reply budget" } else { "conversation budget" };
+            assert!(notices(&evs).iter().any(|n| n.contains(reason)), "{evs:?}");
+            assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Compacted { .. })));
+            let bills: Vec<_> = evs
+                .iter()
+                .filter_map(|e| match e {
+                    AgentEvent::Usage { turn, call, session, cost_usd } => Some((*turn, *call, *session, *cost_usd)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bills.len(), 1, "one billing event per rejected attempt: {evs:?}");
+            let spent = usage + retry;
+            assert_eq!(bills[0].0, spent);
+            assert_eq!(bills[0].1, Usage::default(), "a summary is not the main request's size");
+            assert_eq!(bills[0].2, (0..attempt).fold(Usage::default(), |sum, _| sum + spent));
+            let price = (spent.input as f64 + 2.0 * spent.output as f64 + 0.1 * spent.cache_read as f64) / 1_000_000.0;
+            assert!((bills[0].3 - attempt as f64 * price).abs() < 1e-9);
+            assert_eq!(serde_json::to_value(nexo_agent::Session::open(&id).unwrap().messages()).unwrap(), before);
+        }
+        assert_eq!(client.requests().len(), 2);
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn a_context_length_error_compacts_once_and_retries() {
     compacts_once_and_retries(ProviderError::new(ErrorKind::ContextLength, "too long")).await;
 }

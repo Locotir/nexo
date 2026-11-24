@@ -41,7 +41,7 @@ mod summariser;
 mod transcript;
 
 pub use kept::{fresh_tokens, keep_recent, kept, summary_parts, Kept};
-pub use summariser::{compact, Compaction, Summariser};
+pub use summariser::{compact, Compaction, CompactionFailure, ImagesInCompactionPrefix, Summariser};
 pub use transcript::{transcript, transcript_chars};
 
 #[cfg(test)]

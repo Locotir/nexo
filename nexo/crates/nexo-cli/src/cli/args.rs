@@ -280,7 +280,7 @@ pub enum Cmd {
     Bin(Box<crate::bin_cmd::BinArgs>),
     /// Run a program under a debugger, or attach to one, and drive it one bounded call at a time: run, break, cont, step, regs, mem, bt, watch, kill (`nexo dbg help`).
     Dbg(crate::dbg_cmd::DbgArgs),
-    /// Connect nexo to the Chrome you are logged in to, through an extension you accept once: writes the native-messaging manifest and opens Chrome on chrome://extensions.
+    /// Connect nexo to the Chrome you are logged in to, through an extension that grants session access automatically: writes the native-messaging manifest and opens Chrome on chrome://extensions.
     ChromeSetup(crate::chrome_setup_cmd::ChromeSetupArgs),
     /// nexo RE, the binary kit: no word prints the map of `nexo bin` (read a file) and `nexo dbg` (run it); a word runs that op or command.
     Re(crate::re_cmd::ReArgs),

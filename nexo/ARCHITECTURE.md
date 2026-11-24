@@ -182,14 +182,17 @@ makes it wait. A waiting goal goes back to active with the person's next
 message, whether it starts a turn or joins one; a paused or done goal stays
 so until `/goal resume` (`ResumeGoal`, which starts a continuation when idle)
 or a new `/goal`. `/goal pause` (`PauseGoal`) holds it. An active goal whose
-reply declared nothing gets `[goal: continue]`, once per round, up to `max`
-rounds (5; `NEXO_GOAL_ROUNDS`); the rules for that mark live in the pinned
+reply declared nothing gets `[goal: continue]`, once per round, in a renewable `max`
+round display window (5; `NEXO_GOAL_ROUNDS`, 0 disables continuation); the rules for that mark live in the pinned
 goal, so the request stays one short line and the TUI shows it as a notice,
 not as the person's message. Progress in a goal's work is something new: an
 edit, a file or range not read before in this goal (or changed since), a search
 with new hits, a command whose output differs; a call that gives back the same
 result as before is a repeat (`GoalIdle`). A continuation round with no progress
-pauses the goal; after the last round it pauses too. From the second repeat (or
+pauses the goal; a productive last round renews the display window without resetting
+remembered results, idle tracking, counts or budgets. This is an observable-tool heuristic,
+not semantic proof of progress: changing output or successful no-op writes can fool it.
+From the second repeat (or
 12 steps with no progress) each request carries the facts as a request-only
 note (`[goal work: no progress for 61 steps, same result again: store.rs ×6,
 commands.rs ×5]`) in place of the generic watch notes on reads and repeated

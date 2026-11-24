@@ -63,11 +63,25 @@ pub(super) fn room_left(st: &State, window: u64, wanted: u32) -> bool {
 pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&str>, extra: u64) -> anyhow::Result<()> {
     req.output_ceiling = st.limits.max_output;
     let Some(window) = st.limits.context_window.map(u64::from) else { return Ok(()) };
+    let (_, provider, _) = st.target.get();
+    let opaque = |ms: &[Message]| opaque_reserve(ms, &provider.protocol, &req.model);
+    let admit = |ms: &[Message]| admission_tokens(ms, &provider.protocol, &req.model);
     let wanted = req.max_tokens;
     let floor = wanted.min(limits::REPLY_FLOOR);
-    let ratio = fit_ratio(st.tok_ratio, window);
+    // Opaque blocks and images are not ordinary prose: learned text ratios must
+    // never discount their reserves, including media reintroduced from raw history.
+    let ratio = fit_ratio(st.tok_ratio, window).map(|r| {
+        if opaque(&st.history) > 0
+            || opaque(&req.messages) > 0
+            || st.history.iter().chain(&req.messages).any(|m| contains_images(&m.content))
+        {
+            r.max(1.0)
+        } else {
+            r
+        }
+    });
     let fixed = fixed_tokens(&req.system, &req.tools);
-    let estimate = |ms: &[Message]| fixed + nexo_core::message::estimate_tokens(ms);
+    let estimate = |ms: &[Message]| fixed.saturating_add(admit(ms));
     st.est_sent = estimate(&req.messages);
     let mut used = provider_tokens(st.est_sent, ratio);
     let useful = wanted.min(limits::REPLY_FLOOR.max((window / 8) as u32));
@@ -84,46 +98,74 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
         // call IDs, input arguments, or the stored transcript. Prefer newer results at equal size.
         // Verify the turn before replacing any of its result bodies.
         let cut = turn_boundary(st, &req.messages, notes);
-        let mut results = Vec::new();
-        for (i, m) in req.messages.iter().enumerate() {
-            for (j, part) in m.content.iter().enumerate() {
-                if let Part::ToolResult { content, .. } = part {
-                    let n = content
-                        .iter()
-                        .map(|p| match p {
-                            Part::Text { text } => text.len(),
-                            _ => 0,
-                        })
-                        .sum::<usize>();
-                    if n > 256 {
-                        results.push((std::cmp::Reverse(n), i, j));
+        let emergency = historical_image_view(st, notes).is_some_and(|messages| {
+            req.messages = messages;
+            st.est_sent = estimate(&req.messages);
+            true
+        });
+        // If raw history contains old media but provenance/shape cannot be proved,
+        // do not fall through to historical-prefix deletion.
+        if !emergency
+            && st
+                .history
+                .get(..st.turn_start)
+                .is_some_and(|history| history.iter().any(|message| contains_images(&message.content)))
+        {
+            req.max_tokens = floor;
+            anyhow::bail!("{}", over_window(st, req, window, ratio));
+        }
+        // Preserve the emergency view's historical prefix. Only proven current-turn
+        // result bodies may be shortened; calls, sibling instructions and IDs stay intact.
+        {
+            let result_start = if emergency { st.turn_start } else { 0 };
+            let mut results = Vec::new();
+            let needs_trim = provider_tokens(st.est_sent, ratio) + u64::from(floor) > window;
+            for (i, m) in req.messages.iter().enumerate().skip(result_start).filter(|_| needs_trim) {
+                for (j, part) in m.content.iter().enumerate() {
+                    if let Part::ToolResult { content, .. } = part {
+                        let Some(n) = trimmable_text_bytes(content) else { continue };
+                        if n > 256 {
+                            results.push((std::cmp::Reverse(n), i, j));
+                        }
                     }
                 }
             }
-        }
-        results.sort_unstable();
-        let mut sizes: Vec<_> = req.messages.iter().map(nexo_core::message::message_tokens).collect();
-        for (_, i, j) in results {
-            let Part::ToolResult { content, .. } = &mut req.messages[i].content[j] else { continue };
-            *content = vec![Part::text(
-                "[curator] Tool output omitted to fit the context window. Request a smaller range if needed.",
-            )];
-            let new = nexo_core::message::message_tokens(&req.messages[i]);
-            st.est_sent = st.est_sent - sizes[i] + new;
-            sizes[i] = new;
-            if provider_tokens(st.est_sent, ratio) + u64::from(wanted) <= window {
-                break;
+            results.sort_unstable();
+            let mut sizes: Vec<_> = req.messages.iter().map(|m| admit(std::slice::from_ref(m))).collect();
+            for (_, i, j) in results {
+                let Part::ToolResult { content, .. } = &mut req.messages[i].content[j] else { continue };
+                // Only text was measured for this reduction. Keep every non-text part
+                // (and its order) rather than silently dropping media or opaque data.
+                let mut marked = false;
+                content.retain_mut(|part| {
+                    if matches!(part, Part::Text { .. }) {
+                        if marked {
+                            return false;
+                        }
+                        *part = Part::text(
+                            "[curator] Tool output omitted to fit the context window. Request a smaller range if needed.",
+                        );
+                        marked = true;
+                    }
+                    true
+                });
+                let new = admit(std::slice::from_ref(&req.messages[i]));
+                st.est_sent = st.est_sent - sizes[i] + new;
+                sizes[i] = new;
+                if provider_tokens(st.est_sent, ratio) + u64::from(wanted) <= window {
+                    break;
+                }
+            }
+            used = provider_tokens(st.est_sent, ratio);
+            // Drop only the prefix before the verified turn, never up to a later queued request or job note.
+            if !emergency && used + u64::from(floor) > window {
+                if let Some(i) = cut.filter(|i| *i > 0) {
+                    req.messages.drain(..i);
+                    st.est_sent = estimate(&req.messages);
+                }
             }
         }
         used = provider_tokens(st.est_sent, ratio);
-        // Drop only the prefix before the verified turn, never up to a later queued request or job note.
-        if used + u64::from(floor) > window {
-            if let Some(i) = cut.filter(|i| *i > 0) {
-                req.messages.drain(..i);
-                st.est_sent = estimate(&req.messages);
-                used = provider_tokens(st.est_sent, ratio);
-            }
-        }
         if used + u64::from(floor) > window {
             req.max_tokens = floor;
             anyhow::bail!("{}", over_window(st, req, window, ratio));
@@ -138,6 +180,148 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     req.output_ceiling = Some(room.min(st.limits.max_output.unwrap_or(u32::MAX)));
     req.max_tokens = wanted.min(req.output_ceiling.unwrap());
     Ok(())
+}
+
+/// Reserve one token per serialized UTF-8 byte of every opaque reasoning block,
+/// in ALL turns, recursively. This deliberately double-counts visible reasoning
+/// and any opaque data already included in the generic estimate. It also counts
+/// JSON escaping (not just Unicode scalar count), signatures and encrypted data,
+/// except top-level foreign blocks that Anthropic and Responses unconditionally omit.
+/// Nested blocks stay conservative: result_text can transmit their readable text.
+/// Other protocols and untagged legacy blocks retain the full reserve. No field is changed.
+/// This is a conservative admission heuristic, not a provider token-count API.
+fn opaque_reserve(messages: &[Message], protocol: &str, model: &str) -> u64 {
+    fn parts(ps: &[Part]) -> u64 {
+        ps.iter()
+            .map(|p| match p {
+                Part::Reasoning { signature, encrypted, .. } if signature.is_some() || encrypted.is_some() => {
+                    serde_json::to_vec(p).map_or(u64::MAX, |s| s.len() as u64)
+                }
+                Part::RedactedReasoning { .. } => serde_json::to_vec(p).map_or(u64::MAX, |s| s.len() as u64),
+                Part::ToolResult { content, .. } => parts(content),
+                _ => 0,
+            })
+            .fold(0, u64::saturating_add)
+    }
+    messages
+        .iter()
+        .map(|m| {
+            m.content
+                .iter()
+                .filter(|p| !matches!(protocol, "anthropic" | "openai-responses") || !p.is_foreign_reasoning(model))
+                .map(|p| parts(std::slice::from_ref(p)))
+                .fold(0, u64::saturating_add)
+        })
+        .fold(0, u64::saturating_add)
+}
+
+fn admission_tokens(messages: &[Message], protocol: &str, model: &str) -> u64 {
+    // The generic estimate includes current-turn signatures as well as visible
+    // reasoning. Exempt exactly the top-level blocks these serializers omit,
+    // keeping the original person frontier (and all nested data) conservative.
+    let generic = if matches!(protocol, "anthropic" | "openai-responses") {
+        let from = nexo_core::message::latest_person(messages).map_or(0, |i| i + 1);
+        messages
+            .iter()
+            .enumerate()
+            .map(|(i, message)| {
+                let filtered;
+                let message = if message.content.iter().any(|p| p.is_foreign_reasoning(model)) {
+                    filtered = Message {
+                        role: message.role,
+                        content: message.content.iter().filter(|p| !p.is_foreign_reasoning(model)).cloned().collect(),
+                    };
+                    &filtered
+                } else {
+                    message
+                };
+                nexo_core::message::message_tokens(message).saturating_add(if i >= from {
+                    nexo_core::message::reasoning_tokens(message)
+                } else {
+                    0
+                })
+            })
+            .fold(0, u64::saturating_add)
+    } else {
+        nexo_core::message::estimate_tokens(messages)
+    };
+    generic.saturating_add(opaque_reserve(messages, protocol, model))
+}
+
+/// The text of a result that can be omitted to make room: its own text parts. Images and opaque blocks stay in
+/// place, in order, and are counted by the caller (a request never goes over the window: the text is what gives);
+/// `None` when the result has no text to give.
+fn trimmable_text_bytes(content: &[Part]) -> Option<usize> {
+    let n = content.iter().map(|p| if let Part::Text { text } = p { text.len() } else { 0 }).sum();
+    (n > 0).then_some(n)
+}
+
+fn contains_images(parts: &[Part]) -> bool {
+    parts.iter().any(|part| match part {
+        Part::Image { .. } => true,
+        Part::ToolResult { content, .. } => contains_images(content),
+        _ => false,
+    })
+}
+
+/// Emergency image-only recovery from raw history, using the recorded source index.
+/// No policy selection, paging, role merging, or synthetic tail can discard historical
+/// instructions. Image-only bodies get an explicit omission marker, never a silent
+/// deletion. Ambiguous frontiers and histories needing protocol repair fail closed.
+fn historical_image_view(st: &State, notes: Option<&str>) -> Option<Vec<Message>> {
+    if st.person_turn_version != Some(st.history.version()) {
+        return None;
+    }
+    let turn = st.history.get(st.turn_start..)?;
+    if !turn.first()?.is_person() {
+        return None;
+    }
+    // Preserve the ENTIRE suffix by recorded source index, including queued asks,
+    // loop-generated text and mixed result/instruction messages. Its contents need
+    // not prove their origin: none of them is removed, merged or transformed.
+    let mut messages = st.history.to_vec();
+    if !nexo_core::message::is_well_formed(&messages) {
+        return None;
+    }
+    fn remove_images(parts: &mut Vec<Part>) -> bool {
+        let mut changed = false;
+        let mut previous_image = false;
+        let mut replacement = Vec::with_capacity(parts.len());
+        for mut part in std::mem::take(parts) {
+            if matches!(part, Part::Image { .. }) {
+                changed = true;
+                // Mark every contiguous run in place, including mixed text/image bodies.
+                // Otherwise the model can mistake incomplete evidence for a complete record.
+                if !previous_image {
+                    replacement.push(Part::text("[Historical image content omitted to fit the context window.]"));
+                }
+                previous_image = true;
+                continue;
+            }
+            previous_image = false;
+            if let Part::ToolResult { content, .. } = &mut part {
+                changed |= remove_images(content);
+            }
+            replacement.push(part);
+        }
+        *parts = replacement;
+        changed
+    }
+    let mut changed = false;
+    for message in &mut messages[..st.turn_start] {
+        changed |= remove_images(&mut message.content);
+        // Pre-existing empty messages are not repaired by this image-only recovery.
+        if message.content.is_empty() {
+            return None;
+        }
+    }
+    if !changed || !nexo_core::message::is_well_formed(&messages) {
+        return None;
+    }
+    if let Some(note) = notes {
+        attach_hidden(&mut messages, note.to_string());
+    }
+    Some(messages)
 }
 
 /// `turn_start` indexes history, not the outbound view. Match the complete tail from the end (including
@@ -175,11 +359,28 @@ fn turn_boundary(st: &State, view: &[Message], notes: Option<&str>) -> Option<us
 /// Silent optional calls use a clone of the last request with new messages. The old ceiling
 /// cannot be reused: skip the optional call if its own reply no longer fits.
 pub(super) fn side_fits(st: &State, req: &mut ModelRequest) -> bool {
-    let Some(w) = st.limits.context_window.map(u64::from) else { return true };
-    let est = fixed_tokens(&req.system, &req.tools) + nexo_core::message::estimate_tokens(&req.messages);
-    let room = w.saturating_sub(provider_tokens(est, fit_ratio(st.tok_ratio, w))) as u32;
+    let Some(w) = st.limits.context_window.map(u64::from) else {
+        req.output_ceiling = st.limits.max_output;
+        return req.max_tokens <= req.output_ceiling.unwrap_or(u32::MAX);
+    };
+    let (_, provider, _) = st.target.get();
+    let est = fixed_tokens(&req.system, &req.tools).saturating_add(admission_tokens(
+        &req.messages,
+        &provider.protocol,
+        &req.model,
+    ));
+    let ratio = fit_ratio(st.tok_ratio, w).map(|r| {
+        if opaque_reserve(&req.messages, &provider.protocol, &req.model) > 0
+            || req.messages.iter().any(|m| contains_images(&m.content))
+        {
+            r.max(1.0)
+        } else {
+            r
+        }
+    });
+    let room = w.saturating_sub(provider_tokens(est, ratio)) as u32;
     req.output_ceiling = Some(room.min(st.limits.max_output.unwrap_or(u32::MAX)));
-    req.max_tokens <= room
+    req.max_tokens <= req.output_ceiling.unwrap()
 }
 
 /// `req`'s messages as the curator would send them under the window, with the room `req`'s reply asked for, and
@@ -241,8 +442,9 @@ fn over_window(st: &State, req: &ModelRequest, window: u64, ratio: Option<f64>) 
     if tools > largest.1 {
         largest = ("the tool list".to_string(), tools);
     }
+    let (_, provider, _) = st.target.get();
     for (i, m) in req.messages.iter().enumerate() {
-        let n = t(nexo_core::message::message_tokens(m));
+        let n = t(admission_tokens(std::slice::from_ref(m), &provider.protocol, &req.model));
         if n > largest.1 {
             largest = (part_name(m, i + 1), n);
         }
@@ -286,6 +488,17 @@ mod tests {
         assert_eq!(provider_tokens(3_000, fit_ratio(None, 8_000)), 4_000);
         assert_eq!(fit_ratio(None, 200_000), None);
         assert_eq!(fit_ratio(Some(1.1), 8_000), Some(1.1), "a learned ratio wins");
+    }
+
+    #[test]
+    fn emergency_trimming_counts_only_text_and_leaves_images_in_place() {
+        let image = Part::Image {
+            source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/a.png".into() },
+        };
+        let parts = vec![Part::text("a".repeat(300)), image.clone(), Part::text("caption b")];
+        assert_eq!(trimmable_text_bytes(&parts), Some(309));
+        assert_eq!(trimmable_text_bytes(&[image]), None);
+        assert_eq!(trimmable_text_bytes(&[Part::text("x".repeat(300))]), Some(300));
     }
 
     #[test]

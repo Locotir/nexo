@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 pub const CODEX: &str = "codex";
 pub const COPILOT: &str = "copilot";
 pub const XAI: &str = "xai";
+pub const CLAUDE: &str = "claude";
 /// The kind of a reading made from the rate-limit headers of a host: `limits:api.openai.com`.
 pub const LIMITS: &str = "limits:";
 
@@ -85,6 +86,7 @@ impl PlanUsage {
             CODEX => "ChatGPT".to_string(),
             COPILOT => "GitHub Copilot".to_string(),
             XAI => "SuperGrok".to_string(),
+            CLAUDE => "Claude".to_string(),
             k => match k.strip_prefix(LIMITS) {
                 Some(host) => format!("{host} rate limits"),
                 None => k.to_string(),

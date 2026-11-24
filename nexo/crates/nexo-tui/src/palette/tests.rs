@@ -37,7 +37,7 @@ fn ranks_commands_and_moves_the_selection() {
 
 #[test]
 fn an_old_name_finds_its_command_and_tab_keeps_the_old_name() {
-    for q in ["context-live", "context-l", "live"] {
+    for q in ["live", "map"] {
         let p = Palette::commands(q, 1);
         let rows: Vec<Row> = (0..p.len()).map(|k| p.row(k)).collect();
         assert_eq!(rows.first().map(|r| r.label.as_str()), Some("context"), "/{q}");
@@ -45,6 +45,19 @@ fn an_old_name_finds_its_command_and_tab_keeps_the_old_name() {
         assert!(p.choice().is_some_and(|c| c.starts_with(q)), "/{q}: {:?}", p.choice());
     }
     assert_eq!(Palette::commands("co", 1).choice(), Some("compact"), "two letters do not reach old names");
+}
+
+#[test]
+fn context_live_is_listed_and_completes_to_the_map_command() {
+    let p = Palette::commands("", 1);
+    assert!((0..p.len()).any(|i| p.row(i).label == "context-live"));
+    for q in ["context-live", "context-l"] {
+        let p = Palette::commands(q, 1);
+        assert_eq!(p.current(), Some("context-live"));
+        assert_eq!(p.choice(), Some("context-live"));
+        assert_eq!(p.row(0).alias, None);
+        assert!(p.row(0).hint.contains("not payload"));
+    }
 }
 
 #[test]
@@ -154,6 +167,29 @@ fn lists_the_values_of_an_argument() {
     let e = arg_values("effort", &[], "", &["low".into(), "max".into()]);
     assert_eq!(e.iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>(), ["default", "low", "max"]);
     assert!(arg_values("theme", &[], "", &[]).iter().any(|(v, _)| v == "light"));
+}
+
+#[test]
+fn enter_picks_the_first_model_match_for_provider_and_partial_queries() {
+    let models = vec![
+        ("xai".into(), "grok-4.3".into()),
+        ("lutheos".into(), "deepseek-flash".into()),
+        ("lutheos".into(), "deepseek-pro".into()),
+    ];
+    for query in ["lutheos", "luth", "deepseek-fla", "lutheos/deepseek-fla", "deepseek-flash"] {
+        let p = Palette::args("model", query, 8, arg_values("model", &models, "xai/grok-4.3", &[]));
+        assert_eq!(p.selected, 0);
+        assert_eq!(p.current(), Some("lutheos/deepseek-flash"));
+        assert!(p.picks_model(), "Enter must accept the highlighted match for {query}");
+    }
+    let mut p = Palette::args("model", "", 8, arg_values("model", &models, "xai/grok-4.3", &[]));
+    assert!(!p.picks_model(), "a blank argument still opens setup");
+    p.down();
+    assert!(p.picks_model(), "an explicitly selected model is accepted");
+    let p = Palette::args("model", "brand-new-unlisted", 8, arg_values("model", &models, "xai/grok-4.3", &[]));
+    assert!(!p.picks_model(), "an unlisted name is submitted literally");
+    let p = Palette::args("rename", "lu", 8, vec![("lutheos".into(), String::new())]);
+    assert!(!p.picks_model(), "free-text commands still submit what was typed");
 }
 
 #[test]

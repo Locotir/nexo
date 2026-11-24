@@ -145,13 +145,24 @@ impl App {
             v.asking = None;
             std::mem::take(&mut v.again)
         };
-        // Preserve a selection only when the entire selected prefix remains unchanged.
-        let old_blocks: Vec<String> = self.blocks.iter().map(|b| format!("{b:?}")).collect();
-        let old_offsets = self.offsets.clone();
-        let old_total_lines = self.total_lines;
+        // Compare the old prefix only when there is interaction state to preserve.
+        // Snapshots can arrive frequently while a sub-agent streams; formatting every
+        // historical block twice otherwise copies the entire transcript needlessly.
         let old_selection = self.selection.take();
         let old_selected = self.selected;
         let old_reveal = self.reveal;
+        let preserve = old_selection.is_some()
+            || old_selected.is_some()
+            || old_reveal.is_some()
+            || self.looks.iter().any(|l| l.folded)
+            || self
+                .blocks
+                .iter()
+                .any(|b| matches!(b, Block::Tool { folded: false, .. } | Block::Group { folded: false, .. }));
+        let old_blocks = if preserve { std::mem::take(&mut self.blocks) } else { Vec::new() };
+        let old_looks = if preserve { std::mem::take(&mut self.looks) } else { Vec::new() };
+        let old_offsets = if old_selection.is_some() { self.offsets.clone() } else { Vec::new() };
+        let old_total_lines = self.total_lines;
         self.read_back = None;
         self.blocks.clear();
         self.tasks = TaskRows::default();
@@ -200,12 +211,138 @@ impl App {
             v.base = n;
             v.grown = 0;
         }
+        // Compare content separately from identity: a completed call is still the
+        // same call, but its changed output may invalidate a text selection.
+        let same_content = |old: &Block, new: &Block| {
+            let mut comparable = new.clone();
+            match (old, &mut comparable) {
+                (
+                    Block::Tool { started, elapsed_ms, folded, .. },
+                    Block::Tool { started: s, elapsed_ms: e, folded: f, .. },
+                ) => {
+                    *s = *started;
+                    *e = *elapsed_ms;
+                    *f = *folded;
+                }
+                (Block::Assistant { started, .. }, Block::Assistant { started: s, .. }) => *s = *started,
+                (Block::Group { folded, .. }, Block::Group { folded: f, .. }) => *f = *folded,
+                _ => {}
+            }
+            format!("{old:?}") == format!("{comparable:?}")
+        };
+        let mut unchanged = old_blocks.iter().zip(&self.blocks).take_while(|(a, b)| same_content(a, b)).count();
+        // A group's header depends on all its members, not just its own fields.
+        // If any member differs, selection must not extend into that header.
+        for (i, block) in old_blocks.iter().enumerate().take(unchanged) {
+            if let Block::Group { len, .. } = block {
+                if i.saturating_add(1).saturating_add(*len) > unchanged {
+                    unchanged = i;
+                    break;
+                }
+            }
+        }
+        // A group is anchored by its first call, not its changing member count.
+        // Check the anchor before mutably borrowing the rebuilt blocks.
+        let group_anchors: Vec<bool> = old_blocks
+            .iter()
+            .zip(&self.blocks)
+            .enumerate()
+            .map(|(i, (old, new))| {
+                matches!((old, new), (Block::Group { .. }, Block::Group { .. }))
+                    && matches!((old_blocks.get(i + 1), self.blocks.get(i + 1)),
+                        (Some(Block::Tool { id: a, .. }), Some(Block::Tool { id: b, .. })) if a == b)
+            })
+            .collect();
+        for (i, ((old, old_look), (new, look))) in
+            old_blocks.iter().zip(&old_looks).zip(self.blocks.iter_mut().zip(&mut self.looks)).enumerate()
+        {
+            let same_identity = match (old, &*new) {
+                (Block::Tool { id: a, .. }, Block::Tool { id: b, .. }) => a == b,
+                (Block::Group { .. }, Block::Group { .. }) => group_anchors[i],
+                _ => same_content(old, new),
+            };
+            if !same_identity {
+                break;
+            }
+            if let (Block::Group { folded, .. }, Block::Group { folded: f, .. }) = (old, &mut *new) {
+                *f = *folded;
+            }
+            if !matches!(old, Block::Tool { .. }) {
+                look.folded = old_look.folded;
+            }
+        }
+        // Tool identities survive inserted group headers, reordering and changed output.
+        // Ambiguous or empty IDs must not transfer interaction state to another call.
+        let mut old_tools = std::collections::HashMap::new();
+        for (i, block) in old_blocks.iter().enumerate() {
+            if let Block::Tool { id, .. } = block {
+                if !id.is_empty() {
+                    old_tools.entry(id.as_str()).and_modify(|v| *v = None).or_insert(Some(i));
+                }
+            }
+        }
+        let mut new_counts = std::collections::HashMap::new();
+        for block in &self.blocks {
+            if let Block::Tool { id, .. } = block {
+                *new_counts.entry(id.as_str()).or_insert(0usize) += 1;
+            }
+        }
+        // Own the unique IDs before borrowing blocks mutably.
+        let unique_new: std::collections::HashSet<String> =
+            new_counts.into_iter().filter(|(_, n)| *n == 1).map(|(id, _)| id.to_owned()).collect();
+        for (new, look) in self.blocks.iter_mut().zip(&mut self.looks) {
+            if let Block::Tool { id, .. } = &*new {
+                if !unique_new.contains(id) {
+                    continue;
+                }
+                if let Some(Some(i)) = old_tools.get(id.as_str()) {
+                    let old = &old_blocks[*i];
+                    let content_unchanged = same_content(old, new);
+                    if let (
+                        Block::Tool { started, elapsed_ms, folded, .. },
+                        Block::Tool { started: s, elapsed_ms: e, folded: f, .. },
+                    ) = (old, new)
+                    {
+                        *s = *started;
+                        if content_unchanged {
+                            *e = *elapsed_ms;
+                        }
+                        *f = *folded;
+                        look.folded = old_looks[*i].folded;
+                    }
+                }
+            }
+        }
+        // A newly inserted group must not hide a previously visible open tool.
+        for i in 0..self.blocks.len() {
+            let Block::Tool { id, folded: false, .. } = &self.blocks[i] else { continue };
+            let Some(Some(old_i)) = old_tools.get(id.as_str()) else { continue };
+            if !unique_new.contains(id) || old_looks[*old_i].group_back.is_some() {
+                continue;
+            }
+            if let Some(group) = self.group_of(i) {
+                if let Block::Group { folded, .. } = &mut self.blocks[group] {
+                    *folded = false;
+                }
+            }
+        }
+        // Content equality alone is insufficient if ambiguous identities prevented
+        // restoring a fold: all subsequent text offsets may have moved.
+        for i in 0..unchanged {
+            let fold_changed = match (&old_blocks[i], &self.blocks[i]) {
+                (Block::Tool { folded: a, .. }, Block::Tool { folded: b, .. })
+                | (Block::Group { folded: a, .. }, Block::Group { folded: b, .. }) => a != b,
+                _ => false,
+            };
+            if fold_changed || old_looks[i].folded != self.looks[i].folded {
+                unchanged = i;
+                break;
+            }
+        }
         if self.search.is_some() {
             self.layout(self.last_width);
             self.rematch();
         }
-        let unchanged =
-            old_blocks.iter().zip(&self.blocks).take_while(|(old, new)| **old == format!("{new:?}")).count();
         self.selected = old_selected.filter(|&i| i < unchanged);
         self.reveal = old_reveal.filter(|&i| i < unchanged);
         self.selection = old_selection.filter(|sel| {

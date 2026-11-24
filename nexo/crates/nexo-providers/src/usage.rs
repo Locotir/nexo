@@ -18,8 +18,12 @@
 //! APIs, `anthropic-ratelimit-*`), per host, under the kind `limits:{host}`: what is left of the requests
 //! and tokens of the current minute.
 //!
+//! Claude subscriptions are read from `GET {api}/api/oauth/usage` (`five_hour`, `seven_day`, each with
+//! `utilization` in percent and `resets_at`), as Claude Code's own usage view does.
+//!
 //! No token is ever stored in, or printed from, anything here.
 
+mod claude;
 mod codex;
 mod copilot;
 mod fetch;
@@ -30,10 +34,11 @@ mod store;
 mod tests;
 mod xai;
 
+pub use claude::claude_from_usage;
 pub use codex::{codex_from_event, codex_from_headers, codex_from_usage};
 pub use copilot::{copilot_from_header, copilot_from_user};
 pub use fetch::{fetch, fetch_in};
 pub use limits::limits_from_headers;
-pub use model::{long_span, short_span, window_label, Item, Meter, PlanUsage, CODEX, COPILOT, LIMITS, XAI};
+pub use model::{long_span, short_span, window_label, Item, Meter, PlanUsage, CLAUDE, CODEX, COPILOT, LIMITS, XAI};
 pub use store::{all, changed, get, host_of, kind_of, reading_for, record, record_event, record_headers};
 pub use xai::xai_from_billing;

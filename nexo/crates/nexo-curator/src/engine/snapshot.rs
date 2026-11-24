@@ -33,10 +33,11 @@ impl Engine {
             return Err("the shortened messages differ".into());
         }
         let mut out: Vec<Value> = msgs.iter().map(strip_cc).collect();
+        self.raw_history = out.iter().cloned().map(std::sync::Arc::new).collect();
         for (i, text) in born {
             out[*i] = serde_json::from_str(text).map_err(|e| format!("message {i}: {e}"))?;
         }
-        self.last_raw = msgs.last().map(strip_cc).unwrap_or(Value::Null);
+        self.last_raw = self.raw_history.last().cloned().unwrap_or_default();
         self.tr.mt().msgs = out;
         // the edits and their ids are in the state; the caches built from them are not
         super::edit_index::sync_edit_caches(&mut self.edit_ids, &mut self.edit_index, &self.edits);
@@ -58,6 +59,79 @@ mod tests {
 
     fn dec<T: DeserializeOwned>(b: &[u8]) -> T {
         options().deserialize(b).unwrap()
+    }
+
+    #[test]
+    fn restored_engine_detects_interior_edits() {
+        let msgs = vec![
+            serde_json::json!({"role":"user", "content":"First"}),
+            serde_json::json!({"role":"assistant", "content":"Old"}),
+            serde_json::json!({"role":"user", "content":"Continue"}),
+        ];
+        let mut e = Engine::new(crate::params("nudge=0").unwrap());
+        e.sync(&msgs);
+        let born = e.born_messages();
+        let mut restored: Engine = dec(&enc(&e));
+        restored.take_history(&msgs, &born).unwrap();
+        assert!(!restored.sync(&msgs));
+        let mut changed = msgs.clone();
+        changed[1]["content"] = serde_json::json!("New");
+        assert!(restored.sync(&changed));
+        let mut fresh = Engine::new(crate::params("nudge=0").unwrap());
+        fresh.sync(&changed);
+        assert_eq!(restored.tr.msgs, fresh.tr.msgs);
+        assert_eq!(restored.view(), fresh.view());
+    }
+
+    #[test]
+    fn restored_compaction_base_survives_tail_edit_but_not_summary_edit() {
+        let user = |text| serde_json::json!({"role":"user", "content":text});
+        let mut e = Engine::new(crate::params("nudge=0").unwrap());
+        e.sync(&[user("Never delete the logs.")]);
+        e.compacted();
+        let summary = vec![user("Summary: parser done.")];
+        e.sync(&summary);
+        let mut history = summary.clone();
+        history.push(user("Never use unwrap."));
+        e.sync(&history);
+        let born = e.born_messages();
+        let mut restored: Engine = dec(&enc(&e));
+        restored.take_history(&history, &born).unwrap();
+        history[1] = user("Continue.");
+        restored.sync(&history);
+        assert!(restored.rules.list.iter().any(|r| r.text.contains("Never delete the logs")));
+        assert!(!restored.rules.list.iter().any(|r| r.text.contains("Never use unwrap")));
+        history[0] = user("Different history.");
+        restored.sync(&history);
+        assert!(restored.rules.list.is_empty());
+    }
+
+    #[test]
+    fn prepared_compaction_restores_without_a_phantom_view() {
+        let user = |text| serde_json::json!({"role":"user", "content":text});
+        let old = vec![user("Never delete the logs."), user("Continue with the parser.")];
+        let replacement = vec![user("Summary: parser started."), old[1].clone()];
+        let mut original = Curator::new("nudge=0").unwrap();
+        original.view(100, &old, 1.0).unwrap();
+        let mut expected = original.clone();
+        expected.compacted_prefix(&old[..1], 1);
+        let mut prepared = original.prepare_compaction(&old, 1, &replacement).unwrap();
+        assert_eq!(original.covered(), old.len());
+        assert_eq!(prepared.covered(), replacement.len());
+        let hashes: Vec<_> = replacement.iter().map(crate::snapshot::message_hash).collect();
+        let bytes = prepared.save(1, crate::snapshot::history_hash(&hashes)).encode();
+        let (mut restored, head) = Curator::restore("nudge=0", &bytes, &replacement, &hashes).unwrap();
+        assert_eq!(head.views, 1);
+        let a = expected.view(100, &replacement, 2.0).unwrap();
+        let b = prepared.view(100, &replacement, 2.0).unwrap();
+        let c = restored.view(100, &replacement, 2.0).unwrap();
+        assert_eq!(a.view, b.view);
+        assert_eq!(a.view, c.view);
+        assert_eq!(a.stats, b.stats);
+        assert_eq!(a.stats, c.stats);
+        assert!(prepared.eng.rules.list.iter().any(|r| r.text.contains("Never delete the logs")));
+        assert!(original.prepare_compaction(&old, 1, &[user("wrong tail")]).is_err());
+        assert!(original.prepare_compaction(&old, old.len() + 1, &replacement).is_err());
     }
 
     /// One request of a recorded session: what is sent, when, and the messages it is over.

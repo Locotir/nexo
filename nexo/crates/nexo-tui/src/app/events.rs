@@ -661,6 +661,7 @@ impl App {
     pub fn handle_agent(&mut self, ev: AgentEvent) {
         crate::trace::agent_event(&ev);
         let _t = crate::trace::span("events");
+        self.pulse_for(&ev);
         // the conversations of sub-agents draw nothing, and cause no redraw, unless one is open
         if ev.is_sub() {
             return self.handle_sub(ev);

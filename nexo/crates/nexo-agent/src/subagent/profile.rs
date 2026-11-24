@@ -11,7 +11,9 @@ passages of the conversation that sent you, picked for it. Trust it, do not read
 says current, and do not quote it back in the report: cite path:line instead.
 Search narrow first: the working directory and the paths the task names, with the search tools; widen one step \
 at a time only when that finds nothing. Never sweep the whole home folder, / or /tmp in one command: it is slow \
-and the person waits for it. Ask for independent reads and searches together in one round.";
+and the person waits for it. Ask for independent reads and searches together in one round. \
+Report as fact only what you observed; distinguish inference from evidence. Cite test or command output you read, \
+and state when a result was not checked or a command failed; never imply an unrun test passed.";
 
 /// Said to a sub-agent whose rounds are over, so its work comes back as a report instead of being lost.
 pub(super) const LAST_ROUND: &str =
@@ -38,12 +40,17 @@ pub(super) const REVIEW: &str =
 Prioritize findings by severity; explain their impact and cite precise file paths and lines. \
 Do not invent findings. State remaining risks and what you could not verify; do not modify files or run commands.";
 
+pub(super) const PLAN: &str =
+    "You are read-only. Inspect the relevant code and constraints, then propose the smallest viable implementation plan. \
+    Cite file paths and lines for existing behavior. Identify dependent steps, tests and acceptance criteria, \
+    risks and unresolved assumptions. Distinguish observations from proposals. Do not implement changes or run commands.";
+
 pub(super) const GENERAL: &str =
     "You can read, edit and run commands. Keep to the task: change only what it needs, check \
 your work (build, tests) when you can, and say in the report exactly which files you changed.";
 
 /// What `task` is for, in the text every request carries.
-pub(super) const SHORT: &str = "Delegate to a sub-agent; it sees no conversation and returns a short report.";
+pub(super) const SHORT: &str = "Delegate a self-contained task; returns a short report.";
 
 /// The most characters of a kind's description in the short text of `task`.
 pub(super) const KIND_CHARS: usize = 60;
@@ -69,7 +76,7 @@ pub(super) fn clause(description: &str, max: usize) -> &str {
     cut.trim_end_matches(|c: char| c.is_whitespace() || ".,;:-".contains(c))
 }
 
-/// The short text of `task`, which every request carries: what it is for, the two built-in kinds in a few
+/// The short text of `task`, which every request carries: what it is for, the built-in kinds in a few
 /// words, and each kind of the person's own by name with the start of its description ([`clause`]). That
 /// list is held to [`KINDS_CHARS`] however many kinds there are: a kind is described while the names of
 /// those after it still fit, then named alone, then only counted.
@@ -89,6 +96,9 @@ pub(super) fn short_text(profiles: &[Profile]) -> String {
     }
     if kept("review") {
         text.push_str(" `review`: read-only, reports findings.");
+    }
+    if kept("plan") {
+        text.push_str(" `plan`: read-only steps.");
     }
     let own: Vec<&Profile> = profiles.iter().filter(|p| !stock.contains(p)).collect();
     if own.is_empty() {
@@ -194,6 +204,18 @@ pub fn builtin() -> Vec<Profile> {
             read_only: true,
             model: None,
             prompt: REVIEW.into(),
+            rounds: 24,
+            source: None,
+            soft_model: false,
+            isolation: false,
+        },
+        Profile {
+            name: "plan".into(),
+            description: "read-only planning: scoped implementation steps, risks and acceptance checks".into(),
+            tools: None,
+            read_only: true,
+            model: None,
+            prompt: PLAN.into(),
             rounds: 24,
             source: None,
             soft_model: false,

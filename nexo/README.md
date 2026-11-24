@@ -397,8 +397,11 @@ bar flashes it. The running session keeps its prompt (the cached prefix does not
 it; while a turn runs it is pinned and checked when the turn ends. The model first
 restates it as you mean it (what, why, how, when it is done) and works from that,
 so a goal typed in a hurry still gets a clear finish line. When a reply ends
-without the line `GOAL DONE` the agent continues by itself, up to five rounds
-(`NEXO_GOAL_ROUNDS`). It stops and tells you why when it needs you (a question
+without the line `GOAL DONE` the agent continues by itself while tools show observable
+progress. The five-round display window (`NEXO_GOAL_ROUNDS`) renews with progress;
+`NEXO_GOAL_ROUNDS=0` disables automatic continuation. Progress means a successful
+change or a new/different tool result, not a semantic guarantee of useful work.
+It stops and tells you why when it needs you (a question
 waits for your answer, and your answer resumes it), when you press Esc, when a
 turn fails or when a round does nothing new; `/goal resume` goes on, `/goal
 pause` holds it, `/goal off` clears it. A question you send while it works is
@@ -730,7 +733,11 @@ The `browser` tool can drive the Chrome, Edge or Brave you already use, with you
 in nexo and press `s`: it registers nexo with your browser and writes the extension to a folder. Then in the
 browser open `chrome://extensions`, turn on Developer mode, click Load unpacked and pick that folder (`c` copies it).
 The panel ticks each step as it happens, and `u` tells the session to use the browser. Without the slash
-command, `nexo chrome-setup` does the same in the shell. Nothing is controlled until you click Allow in the browser.
+command, `nexo chrome-setup` does the same in the shell. Once installed, the extension automatically grants
+connections from authenticated local nexo relay sessions; it does not show a separate Allow dialog. Those sessions
+can use your existing logins in tabs they create, but cannot list or control your other tabs. Chrome's debugging
+bar, the nexo tab group and the ON badge remain visible; Cancel on the debugging bar revokes that session.
+A new session can connect again. Only install the extension if you trust local programs that can read nexo's relay token.
 
 ### Compiled programs
 

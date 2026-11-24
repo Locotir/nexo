@@ -10,17 +10,17 @@ impl App {
             let previous = self.cache_baseline.as_ref().filter(|(provider, model, _, _)| {
                 self.last_call_input > 0 && *provider == self.provider && *model == self.model
             });
-            let seen_cached = previous.is_some_and(|(_, _, _, seen)| *seen);
+            let previously_cached = previous.is_some_and(|(_, _, _, cached)| *cached);
             self.cache_miss_fresh = previous.and_then(|(_, _, before, _)| {
                 let before = (*before).min(input);
                 let fresh = input - cached;
-                (seen_cached
+                (previously_cached
                     && cached < before - cached.min(before)
                     && cached < input - cached
                     && fresh >= crate::app::gauge::CACHE_MISS_FRESH)
                     .then_some(fresh)
             });
-            self.cache_baseline = Some((self.provider.clone(), self.model.clone(), input, seen_cached || cached > 0));
+            self.cache_baseline = Some((self.provider.clone(), self.model.clone(), input, cached > 0));
             self.last_call_input = call.total_input();
             self.last_call_cached = call.cache_read;
             self.call_inputs.push(call.total_input());
@@ -35,10 +35,30 @@ impl App {
         }
         self.turn_usage += turn;
         self.session_usage = session;
-        if cost_usd > self.cost {
-            self.charge_group(cost_usd - self.cost);
-        }
+        // Usage is a session total, including replay and side calls from other providers.
+        // Only GroupCost carries enough provenance to charge a particular group.
         self.cost = cost_usd;
+    }
+
+    pub(super) fn on_group_cost(&mut self, call_ids: &[String], usd: f64, plan: bool) {
+        if call_ids.is_empty() || !usd.is_finite() || usd <= 0.0 {
+            return;
+        }
+        let mut group = None;
+        for id in call_ids {
+            let Some(index) = self.tool_index(id) else { return };
+            let Some(current) = self.group_of(index) else { return };
+            if group.is_some_and(|g| g != current) {
+                return; // a request spanning multiple groups has no single attributable group
+            }
+            group = Some(current);
+        }
+        let Some(group) = group else { return };
+        let look = &mut self.looks[group];
+        look.spent_plan =
+            if look.spent == 0.0 { Some(plan) } else { look.spent_plan.filter(|previous| *previous == plan) };
+        look.spent += usd;
+        self.invalidate(group);
     }
 
     // one parameter per field of the event, so the arm body moves as it was

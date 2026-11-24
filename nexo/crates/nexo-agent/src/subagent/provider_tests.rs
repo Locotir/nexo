@@ -25,8 +25,8 @@ fn cfg(default: &str, models: &[&str]) -> ProviderConfig {
 /// The most tokens the fixed part of a request may take in a window of 8k and 16k, and in one of 32k
 /// (3375 in all three before the tools a small window cannot use well were left out; `ask_user`, which a
 /// session adds, takes about 115 more than these tools).
-const FIXED_8K: u64 = 1_900;
-const FIXED_32K: u64 = 2_400;
+const FIXED_8K: u64 = 2_050;
+const FIXED_32K: u64 = 2_550;
 
 /// The most characters the tools of a new session may take in a request (see the test that reads it). 11 472 until
 /// the browser verbs (back to type_text, and `batch`) went in with 28 more; 11 595 with the four recording verbs
@@ -178,7 +178,7 @@ fn research_gets_web_fetch_but_not_network_tools_or_debug_steering() {
 }
 
 #[test]
-fn review_has_exactly_the_explore_tools_and_no_mutating_tools() {
+fn review_and_plan_have_exactly_the_explore_tools_and_no_mutating_tools() {
     let tools = nexo_tools::builtin();
     let sub =
         SubAgent::new(Arc::new(Mute), Target::new("p", cfg("m", &[]), "m"), &tools, Vec::new(), Default::default());
@@ -189,6 +189,7 @@ fn review_has_exactly_the_explore_tools_and_no_mutating_tools() {
     };
     let review = names("review");
     assert_eq!(review, names("explore"));
+    assert_eq!(names("plan"), names("explore"));
     assert!(review.iter().any(|n| n == "read"));
     for denied in ["bash", "edit", "write", "browser", "debug"] {
         assert!(!review.iter().any(|n| n == denied), "{denied}");
@@ -415,7 +416,7 @@ fn the_default_tools_keep_under_their_schema_ceiling_with_the_rare_ones_still_of
     }
     assert_eq!(
         specs.iter().find(|s| s.name == "task").unwrap().parameters["properties"]["agent"]["enum"],
-        json!(["explore", "general", "research", "review"])
+        json!(["explore", "general", "research", "review", "plan"])
     );
 }
 
@@ -433,7 +434,9 @@ fn task_keeps_its_short_text_with_nineteen_kinds_of_the_persons_own() {
             "task takes {chars} characters, over {TASK_WITH_OWN_KINDS}: {}",
             task.description
         );
-        for name in ["explore", "general", "research", "review"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0)) {
+        for name in
+            ["explore", "general", "research", "review", "plan"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0))
+        {
             assert!(task.description.contains(&format!("`{name}`")), "{name} is not named: {}", task.description);
         }
         // the call takes what the whole text says it takes

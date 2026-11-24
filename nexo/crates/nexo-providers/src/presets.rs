@@ -655,6 +655,11 @@ const CODEX_MODELS: &[&str] = &[
 /// only a subscription login opens (`copilot`, `codex`).
 pub fn presets() -> BTreeMap<String, ProviderConfig> {
     let mut all = written();
+    let mut claude = all["anthropic"].clone();
+    claude.api_key_env = None;
+    claude.login = Some("claude".into());
+    claude.auth = Some("anthropic-oauth".into());
+    all.insert("anthropic-oauth".into(), claude);
     all.insert("copilot".into(), copilot_preset());
     all.insert("codex".into(), codex_preset());
     if let Some(x) = all.get_mut("xai") {
@@ -722,7 +727,7 @@ fn written() -> BTreeMap<String, ProviderConfig> {
 
 /// The names of the presets, in the order they are listed.
 pub fn names() -> Vec<&'static str> {
-    PRESETS.iter().map(|p| p.name).chain(["copilot", "codex"]).collect()
+    PRESETS.iter().map(|p| p.name).chain(["copilot", "codex", "anthropic-oauth"]).collect()
 }
 
 /// A provider by name: a preset, else a directory entry (by its id or an

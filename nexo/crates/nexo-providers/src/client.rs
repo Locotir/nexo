@@ -10,7 +10,7 @@ use nexo_core::{
     ErrorKind, EventStream, ModelInfo, ModelRequest, Protocol, ProviderConfig, ProviderError, StreamEvent,
 };
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
     anthropic::Anthropic, gemini::Gemini, mock::Mock, openai_chat::OpenAiChat, openai_responses::OpenAiResponses,
@@ -172,7 +172,8 @@ impl Client {
 
     /// Forwards the events; a retryable error before any content re-issues the request.
     fn forward(&self, mut inner: EventStream, call: Call, mut attempt: u32) -> EventStream {
-        let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
+        // Bound read-ahead by event count; individual provider events may still be large.
+        let (tx, rx) = mpsc::channel::<StreamEvent>(16);
         let this = self.clone();
         let Call { protocol, cfg, key, req, retries, on_retry } = call;
         tokio::spawn(async move {
@@ -182,7 +183,11 @@ impl Client {
             let mut held: Vec<StreamEvent> = Vec::new();
             'attempts: loop {
                 let mut content = false;
-                while let Some(ev) = inner.next().await {
+                while let Some(ev) = tokio::select! {
+                    biased;
+                    _ = tx.closed() => return,
+                    ev = inner.next() => ev,
+                } {
                     let preamble = matches!(
                         ev,
                         StreamEvent::Start { .. }
@@ -192,6 +197,17 @@ impl Client {
                     );
                     if preamble && !content {
                         held.push(ev);
+                        // A peer may send preamble forever. Bound this second buffer too; once
+                        // exposed, do not retry and duplicate it (including observed usage).
+                        if held.len() < 16 {
+                            continue;
+                        }
+                        for h in held.drain(..) {
+                            if tx.send(h).await.is_err() {
+                                return;
+                            }
+                        }
+                        content = true;
                         continue;
                     }
                     match &ev {
@@ -228,7 +244,12 @@ impl Client {
                                     _ = tokio::time::sleep(wait) => {}
                                     _ = tx.closed() => return, // the caller left: no request to bill
                                 }
-                                match protocol.stream(&cfg, key.as_deref(), &req).await {
+                                let reopened = tokio::select! {
+                                    biased;
+                                    _ = tx.closed() => return,
+                                    result = protocol.stream(&cfg, key.as_deref(), &req) => result,
+                                };
+                                match reopened {
                                     Ok(s) => {
                                         if let (Some(on), false) = (&on_retry, tx.is_closed()) {
                                             on(told.taken());
@@ -239,10 +260,10 @@ impl Client {
                                     Err(e) if this.worth_retrying(&e) && attempt < retries => last = e,
                                     Err(e) => {
                                         for h in held.drain(..) {
-                                            let _ = tx.send(h);
+                                            let _ = tx.send(h).await;
                                         }
-                                        let _ = tx.send(StreamEvent::Error(this.explain(&cfg, key.is_some(), e)));
-                                        let _ = tx.send(StreamEvent::Done);
+                                        let _ = tx.send(StreamEvent::Error(this.explain(&cfg, key.is_some(), e))).await;
+                                        let _ = tx.send(StreamEvent::Done).await;
                                         return;
                                     }
                                 }
@@ -251,12 +272,12 @@ impl Client {
                         _ => {}
                     }
                     for h in held.drain(..) {
-                        if tx.send(h).is_err() {
+                        if tx.send(h).await.is_err() {
                             return;
                         }
                     }
                     let done = matches!(ev, StreamEvent::Done);
-                    if tx.send(ev).is_err() {
+                    if tx.send(ev).await.is_err() {
                         return; // the caller went away
                     }
                     if done {
@@ -264,13 +285,13 @@ impl Client {
                     }
                 }
                 for h in held.drain(..) {
-                    let _ = tx.send(h);
+                    let _ = tx.send(h).await;
                 }
-                let _ = tx.send(StreamEvent::Done);
+                let _ = tx.send(StreamEvent::Done).await;
                 return;
             }
         });
-        Box::pin(UnboundedReceiverStream::new(rx))
+        Box::pin(ReceiverStream::new(rx))
     }
 
     /// A missing key is the usual cause of an auth error: say where one goes.
@@ -590,5 +611,82 @@ impl nexo_core::model_client::ModelClient for Client {
         cfg: &nexo_core::config::ProviderConfig,
     ) -> Result<Vec<nexo_core::provider::ModelInfo>, nexo_core::error::ProviderError> {
         Client::list_models(self, cfg).await
+    }
+}
+
+#[cfg(test)]
+mod bounded_transport_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Poll;
+
+    struct DropSignal(Arc<AtomicUsize>);
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct Producer {
+        polls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+        mode: &'static str,
+    }
+    #[async_trait]
+    impl Protocol for Producer {
+        fn id(&self) -> &'static str {
+            "bounded-test"
+        }
+        async fn stream(
+            &self,
+            _: &ProviderConfig,
+            _: Option<&str>,
+            _: &ModelRequest,
+        ) -> Result<EventStream, ProviderError> {
+            let polls = self.polls.clone();
+            let signal = DropSignal(self.drops.clone());
+            let mode = self.mode;
+            Ok(Box::pin(futures::stream::poll_fn(move |_| {
+                let _keep_alive = &signal;
+                polls.fetch_add(1, Ordering::SeqCst);
+                match mode {
+                    "silent" => Poll::Pending,
+                    "preamble" => Poll::Ready(Some(StreamEvent::ReasoningMeta { signature: None, encrypted: None })),
+                    _ => Poll::Ready(Some(StreamEvent::TextDelta("x".into()))),
+                }
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn real_client_bounds_fast_content_and_preamble_and_cancels_silent_upstream() {
+        for mode in ["text", "preamble", "silent"] {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let drops = Arc::new(AtomicUsize::new(0));
+            let mut registry = Registry::new();
+            registry.register(Arc::new(Producer { polls: polls.clone(), drops: drops.clone(), mode }));
+            let client = Client::new(registry);
+            let cfg = ProviderConfig::new("bounded-test", "http://127.0.0.1:9", None);
+            let req = ModelRequest::new("m", "", vec![]);
+            let stream = client.stream(&cfg, &req, 0).await.unwrap();
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            let before = polls.load(Ordering::SeqCst);
+            assert!(before > 0 && before <= 32, "{mode}: unbounded read-ahead: {before}");
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(polls.load(Ordering::SeqCst), before, "backpressure must stop polling");
+            drop(stream);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while drops.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("closing consumer must drop even a permanently silent upstream");
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
     }
 }

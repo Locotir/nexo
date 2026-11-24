@@ -21,6 +21,9 @@ pub enum Kind {
 pub struct Cont {
     pub line: u32,
     pub gap: u8,
+    /// True only if every trimmed space was underlined in the source runs.
+    /// Neighbouring underlined cells alone do not imply a continuous link label.
+    pub gap_underlined: bool,
     pub deco: u16,
 }
 
@@ -53,6 +56,8 @@ pub struct Meta {
     pub margin: u16,
     /// The first row ends with a right-aligned time stamp span.
     pub stamped: bool,
+    /// Lowercase rendered rows retained only while transcript search is open.
+    pub(crate) search_rows: Option<Vec<String>>,
 }
 
 impl Meta {

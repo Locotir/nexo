@@ -204,6 +204,29 @@ fn diff_copy_keeps_signs_drops_numbers() {
 }
 
 #[test]
+fn diff_copy_partial_selection_in_later_wider_hunk() {
+    let mut a = app();
+    let old = (1..=110).map(|i| format!("line {i}\n")).collect::<String>();
+    let new = old.replace("line 2\n", "First change\n").replace("line 102\n", "Idea separada: preserve this\n");
+    tool(
+        &mut a,
+        "edit",
+        ToolOutput {
+            images: Vec::new(),
+            content: "ok".into(),
+            is_error: false,
+            display: ToolDisplay::Diff { path: "ideas.md".into(), old, new, start_line: 1 },
+        },
+    );
+    shown(&mut a, 80, 40);
+    let line = find(&mut a, "+ Idea");
+    let text = a.line_text(line).unwrap();
+    let col = text[..text.find("Idea").unwrap()].chars().count() as u16;
+    // Both endpoints are inside the content, not in the number/sign gutter.
+    assert_eq!(drag(&mut a, (col, line), (col + 12, line)), "Idea separada");
+}
+
+#[test]
 fn file_view_copy_uses_source_for_truncated_lines() {
     let mut a = app();
     let long = "let a_very_long_binding_name_that_does_not_fit = compute(first_argument, second_argument);";

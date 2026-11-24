@@ -101,7 +101,7 @@ pub struct UiConfig {
     /// The pieces of the status bar and their order, from `model`, `effort`, `dir`, `branch`,
     /// `mode` (permissions), `context` (gauge and %), `curator`, `mem`, `cache`, `plan` (what is left of a
     /// subscription plan), `tokens` and
-    /// `cost`. Empty: all of them in that order. Unknown names are ignored.
+    /// `cost`. Empty: all except the opt-in `cache` diagnostic, in that order. Unknown names are ignored.
     pub status_line: Vec<String>,
     /// `full` (the alternate screen) or `inline` (finished turns go to the terminal's own
     /// scrollback and only the draft and the turn in progress stay live at the bottom).

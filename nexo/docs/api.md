@@ -10,8 +10,9 @@ nexo api call map.json "GET /v1/items" --via-browser
 nexo api call map.json "GET /v1/items" --via-browser=ID --dry-run
 ```
 
-The request goes out of your own browser, where you are already signed in. nexo connects through its extension (you
-click Allow), opens a tab on the API's origin if none of the tabs it knows is there, and runs a `fetch` in that page
+The request goes out of your own browser, where you are already signed in. nexo connects through its installed
+extension automatically (authenticated local relay sessions do not show an Allow dialog), opens a tab on the API's
+origin if none of the tabs it knows is there, and runs a `fetch` in that page
 with `credentials: "include"`, so the cookies of the session ride along. Only the status, the headers (never
 `set-cookie`) and the body come back, with the capture's redaction applied, cut at the usual read cap. The output and
 the exit codes are those of a normal call. The tab nexo opened is closed again.

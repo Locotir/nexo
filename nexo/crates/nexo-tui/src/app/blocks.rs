@@ -95,6 +95,7 @@ impl App {
     }
 
     /// Puts what a model call cost on the latest group of calls of this turn.
+    #[cfg(test)]
     pub(super) fn charge_group(&mut self, usd: f64) {
         let Some(m) = (0..self.blocks.len())
             .rev()
@@ -103,22 +104,33 @@ impl App {
         else {
             return;
         };
-        self.looks[m].spent += usd;
+        let plan = self.opts.providers.iter().find(|(name, _)| *name == self.provider).map(|(_, c)| c.login.is_some());
+        let look = &mut self.looks[m];
+        if !usd.is_finite() || usd < 0.0 {
+            look.spent = f64::NAN;
+            look.spent_plan = None;
+        } else {
+            look.spent_plan = if look.spent == 0.0 { plan } else { look.spent_plan.filter(|p| Some(*p) == plan) };
+            look.spent += usd;
+        }
         self.cache[m] = None;
         self.dirty = true;
     }
 
-    /// What group `i` cost: dollars on a paid API; on a plan, the API value.
+    /// Known attributable subtotal only, never a group total. Earlier singleton requests, replay,
+    /// unpriced calls and requests spanning groups/skill may have no attributable charge.
+    /// Dollars on a paid API; on a plan, the API value.
     fn spend_text(&self, i: usize) -> String {
         let spent = self.looks[i].spent;
-        if spent < 0.00005 {
+        let Some(plan) = self.looks[i].spent_plan else { return String::new() };
+        if !spent.is_finite() || spent < 0.00005 {
             return String::new();
         }
         let usd = if spent >= 1.0 { format!("${spent:.2}") } else { format!("${spent:.4}") };
-        if self.on_plan() {
-            format!(" · ≈{usd} API")
+        if plan {
+            format!(" · known subtotal ≈{usd} API")
         } else {
-            format!(" · {usd}")
+            format!(" · known subtotal {usd}")
         }
     }
 
@@ -299,7 +311,11 @@ impl App {
                 });
             if (end < lo || start > hi) && !busy {
                 *lines = None;
+                // Search rows are small and follow the render cache's invalidation; only
+                // ordinary viewport eviction preserves them.
+                let search_rows = meta.search_rows.take();
                 *meta = Default::default();
+                meta.search_rows = search_rows;
             }
         }
     }
@@ -462,7 +478,7 @@ impl App {
                     l.spans.insert(0, Span::raw(margin.clone()));
                 }
             }
-            self.looks[i].no_link_row = None;
+            self.looks[i].no_link_rows = None;
             self.wrapped = true;
             self.cache[i] = Some((width, lines.len(), Some(lines), meta));
         }
@@ -524,10 +540,15 @@ impl App {
         // so nothing before it is running and only the tail needs a look
         let turn = self.blocks.iter().rposition(Block::starts_request).unwrap_or(0);
         let live = self.blocks[turn..].iter().any(|b| b.is_live());
+        // a run of calls that finishes folds into its group's line: that is a drop of many lines, not a
+        // wrapped line that got shorter, and the space it leaves must not be kept (the view would point past
+        // the text, a blank screen until the next scroll)
+        let hidden = (turn..self.blocks.len()).filter(|&i| self.hidden(i)).count();
         let held = (self.follow && self.busy)
             .then_some(self.held)
             .flatten()
-            .filter(|h| h.width == width && self.offsets.get(h.anchor).is_some_and(|o| *o == h.anchor_off));
+            .filter(|h| h.width == width && h.hidden == hidden)
+            .filter(|h| self.offsets.get(h.anchor).is_some_and(|o| *o == h.anchor_off));
         let pin = (live || held.is_some()).then_some(turn);
         self.total_lines = off.max(held.map_or(0, |h| h.total));
         self.held = (self.follow && self.busy).then_some(()).and(pin).map(|anchor| HeldEnd {
@@ -535,6 +556,7 @@ impl App {
             total: self.total_lines,
             anchor,
             anchor_off: self.offsets[anchor],
+            hidden,
         });
         if let Some((bi, j)) = anchor.filter(|(bi, _)| *bi < self.offsets.len()) {
             let end = self.offsets.get(bi + 1).copied().unwrap_or(self.total_lines);
@@ -724,6 +746,8 @@ impl App {
             self.looks[i].folded = !self.looks[i].folded;
         }
         self.looks[i].opened = self.opts.animations.then(|| (self.now(), before));
+        // a fold or an opening of the person's own takes effect at once: no space is kept for what it gave back
+        self.held = None;
         self.invalidate(i);
         self.selected = Some(i);
     }
@@ -737,6 +761,7 @@ impl App {
         let old_end = self.offsets.get(end).copied().unwrap_or(self.total_lines);
         let was_hidden: Vec<usize> = (m + 1..end).filter(|k| self.hidden(*k)).collect();
         self.blocks[m].toggle_fold();
+        self.held = None;
         self.invalidate(m);
         if folded {
             if self.opts.animations {
@@ -772,6 +797,7 @@ impl App {
                 self.cache[i] = None;
             }
         }
+        self.held = None;
         self.dirty = true;
         self.flash(if any_open {
             "tool groups, tool and thinking bodies folded"
@@ -961,6 +987,9 @@ impl App {
 
     pub fn close_search(&mut self) {
         self.search = None;
+        for (_, _, _, meta) in self.cache.iter_mut().flatten() {
+            meta.search_rows = None;
+        }
         self.dirty = true;
     }
 
@@ -973,13 +1002,51 @@ impl App {
             for i in 0..self.blocks.len() {
                 let off = self.offsets.get(i).copied().unwrap_or(0);
                 let hidden = self.hidden(i);
-                let hit_lines: Vec<usize> = self
-                    .lines(i, width)
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, l)| crate::render::markdown::text_of(l).to_lowercase().contains(&q))
-                    .map(|(j, _)| j)
-                    .collect();
+                // Bound the auxiliary index independently of transcript size. Larger blocks
+                // and histories fall back to the original scan; correctness is unchanged.
+                const MAX_INDEXED_BLOCKS: usize = 8192;
+                const MAX_ROW_BYTES: usize = 512;
+                let indexed = self
+                    .cache
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|(w, _, _, meta)| *w == width && meta.search_rows.is_some());
+                if !indexed && i < MAX_INDEXED_BLOCKS {
+                    // Stop retaining rows as soon as the budget is exceeded. Only one
+                    // normalized row can be temporarily larger than the budget.
+                    let mut rows = Vec::new();
+                    let mut strings_bytes = 0usize;
+                    let mut fits = true;
+                    for line in self.lines(i, width) {
+                        let row = crate::render::markdown::text_of(line).to_lowercase();
+                        strings_bytes = strings_bytes.saturating_add(row.capacity());
+                        rows.push(row);
+                        let size =
+                            rows.capacity().saturating_mul(std::mem::size_of::<String>()).saturating_add(strings_bytes);
+                        if size > MAX_ROW_BYTES {
+                            fits = false;
+                            break;
+                        }
+                    }
+                    if fits {
+                        self.cache[i].as_mut().unwrap().3.search_rows = Some(rows);
+                    }
+                }
+                let mut hit_lines = Vec::new();
+                if let Some(rows) = self
+                    .cache
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .and_then(|(w, _, _, meta)| (*w == width).then_some(meta.search_rows.as_ref()).flatten())
+                {
+                    hit_lines.extend(rows.iter().enumerate().filter_map(|(j, row)| row.contains(&q).then_some(j)));
+                } else {
+                    // No index for this block: scan one row at a time without retaining
+                    // a normalized copy of the whole rendered block.
+                    hit_lines.extend(self.lines(i, width).iter().enumerate().filter_map(|(j, line)| {
+                        crate::render::markdown::text_of(line).to_lowercase().contains(&q).then_some(j)
+                    }));
+                }
                 if hidden {
                     // a call the fold leaves out is found at its group's line, once per group
                     if let (false, Some(m)) = (hit_lines.is_empty(), self.group_of(i)) {

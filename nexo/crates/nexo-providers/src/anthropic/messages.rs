@@ -31,6 +31,7 @@ pub(super) fn convert(m: &Message, model: &str) -> (Value, bool) {
                 content.push(json!({"type": "tool_use", "id": id, "name": name, "input": args}))
             }
             Part::ToolResult { call_id, content: c, is_error, .. } => {
+                let c = crate::result_parts(c);
                 // a result with pictures is a list of blocks, the rest a plain string
                 let body = if c.iter().any(|p| matches!(p, Part::Image { .. })) {
                     let blocks: Vec<Value> = c
@@ -46,7 +47,7 @@ pub(super) fn convert(m: &Message, model: &str) -> (Value, bool) {
                         .collect();
                     Value::Array(blocks)
                 } else {
-                    Value::String(nexo_core::message::result_text(c))
+                    Value::String(crate::result_text(&c))
                 };
                 let mut r = json!({"type": "tool_result", "tool_use_id": call_id, "content": body});
                 if *is_error {
@@ -67,5 +68,19 @@ pub(super) fn image_source(s: &ImageSource) -> Value {
     match s {
         ImageSource::Base64 { media_type, data } => json!({"type": "base64", "media_type": media_type, "data": data}),
         ImageSource::Url { url } => json!({"type": "url", "url": url}),
+    }
+}
+
+#[cfg(test)]
+mod nested_result_tests {
+    #[test]
+    fn nested_tool_result_images_are_preserved() {
+        let (v, _) = super::convert(&crate::nested_image_result(), "model");
+        let r = &v["content"][0];
+        assert_eq!(r["tool_use_id"], "outer");
+        assert_eq!(r["is_error"], true);
+        assert_eq!(r["content"][1]["text"], "nested");
+        assert_eq!(r["content"][2]["source"]["url"], "https://example.invalid/p.png");
+        assert_eq!(r["content"][3]["text"], "after");
     }
 }

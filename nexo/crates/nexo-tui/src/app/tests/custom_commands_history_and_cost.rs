@@ -193,6 +193,85 @@ fn budget_commands_and_the_spend_in_the_title() {
     assert!(top.contains("$0.9000/1.00"), "{top}");
 }
 
+// Plan readings are display-only: even a seemingly current snapshot is not proof of
+// account identity, model coverage or a bound on the next request's quota cost.
+#[test]
+fn percentage_budget_rejection_preserves_dollar_limits_for_every_reading_state() {
+    use nexo_providers::usage::{Meter, PlanUsage};
+
+    let meter = Meter {
+        slot: "secondary".into(),
+        label: "wk".into(),
+        used_pct: 12.0,
+        counts: None,
+        window_minutes: Some(10_080),
+        resets_at: Some(i64::MAX),
+        observed_at: Some(1),
+    };
+    let reading = |meters| PlanUsage { kind: "codex".into(), meters, seen: 1, ..Default::default() };
+    let mut reset = meter.clone();
+    reset.resets_at = Some(1);
+    let mut undated = meter.clone();
+    undated.resets_at = None;
+    undated.observed_at = None;
+    let mut invalid = meter.clone();
+    invalid.used_pct = f64::INFINITY;
+    let readings = [
+        None,
+        Some(reading(vec![meter])),
+        Some(reading(vec![reset])),
+        Some(reading(vec![undated])),
+        Some(reading(vec![invalid])),
+        Some(reading(vec![])),
+    ];
+    for (case, plan) in readings.into_iter().enumerate() {
+        for busy in [false, true] {
+            let (mut a, mut rx) = app();
+            a.plan_usage = plan.clone();
+            a.busy = busy;
+            a.handle_agent(AgentEvent::Budget {
+                session_cost: 0.25,
+                day_cost: 0.75,
+                session_limit: Some(1.5),
+                day_limit: Some(3.0),
+            });
+            let budget = a.budget;
+            for typed in ["/budget 5%", "/budget $5%", "/budget 0%", "/budget 100%", "/budget 5,5%"] {
+                a.input.set_text(typed);
+                a.submit();
+                assert!(rx.try_recv().is_err(), "{case}/{busy}/{typed}: no command or request sent");
+                assert_eq!(a.budget, budget, "{case}/{busy}/{typed}: dollar limits unchanged");
+                assert_eq!(a.plan_usage, plan, "{case}/{busy}/{typed}: no implicit rebase or refresh");
+                assert_eq!(a.busy, busy, "{case}/{busy}/{typed}: does not cancel an active turn");
+                assert!(matches!(a.blocks.last(), Some(Block::Notice { level: Level::Warn, text })
+                    if text.contains("no percentage protection was set")));
+            }
+        }
+    }
+}
+
+#[test]
+fn percentage_budget_rejection_survives_session_and_provider_resets() {
+    let (mut a, mut rx) = app();
+    for event in [
+        AgentEvent::HistoryCleared,
+        AgentEvent::SessionChanged { session_id: "another-session".into(), title: "another".into() },
+        AgentEvent::ModelChanged { provider: "mock".into(), model: "n".into() },
+    ] {
+        a.handle_agent(event);
+        // Model changes may legitimately request other data. Only the rejected command
+        // is required not to send anything or replace the existing dollar protection.
+        while rx.try_recv().is_ok() {}
+        let budget = a.budget;
+        a.input.set_text("/budget 5%");
+        a.submit();
+        assert!(rx.try_recv().is_err());
+        assert_eq!(a.budget, budget);
+        assert!(matches!(a.blocks.last(), Some(Block::Notice { level: Level::Warn, text })
+            if text.contains("no percentage protection was set")));
+    }
+}
+
 #[test]
 fn a_pasted_image_is_kept_and_goes_with_the_request() {
     let d = tempfile::tempdir().unwrap();

@@ -127,6 +127,8 @@ title = "Two"
     let stopper = async {
         let i = until_flow(&mut rx, |i| running(i, "a") && running(i, "b") && fstep(i, "done").state == StepState::Ok)
             .await;
+        // "running" is set before the request reaches the model: stop only once both really started
+        client.until_started(3).await;
         let jobs = c.jobs.subs().stop_flow(&i.id).unwrap();
         assert_eq!(jobs.len(), 2, "a and b are at work");
         for j in jobs {

@@ -464,3 +464,62 @@ fn a_message_with_only_the_start_note_added_shows_no_line() {
     let all = frame(&mut a, 100, 30).join("\n");
     assert!(all.contains("hola") && !all.contains("nexo added") && !all.contains("attached: 0 files"), "{all}");
 }
+
+#[test]
+fn explorer_is_a_local_preview_with_navigable_originals() {
+    let (mut a, mut rx) = app();
+    a.opts.animations = false;
+    a.push(Block::User { text: "alpha 4872 broken".into(), at: None });
+    a.push(Block::User { text: "alpha 4872 fixed".into(), at: None });
+    a.push(Block::User { text: "unrelated filler".into(), at: None });
+    frame(&mut a, 100, 30);
+    a.run_command(Command::Explore(Some("alpha 4872".into())));
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
+    assert_eq!(p.kind, PickKind::Explore);
+    assert!(p.title.contains("PREVIEW, not sent"));
+    assert!(p.items.iter().any(|i| i.label.contains("alpha 4872 fixed")));
+    assert!(p.items.iter().any(|i| i.label.contains("alpha 4872 broken")));
+    assert!(rx.try_recv().is_err(), "search must not send a request");
+    press(&mut a, KeyCode::Enter);
+    assert!(a.modal.is_none(), "Enter navigates to the selected source");
+    assert!(rx.try_recv().is_err(), "navigation must stay local");
+}
+
+#[test]
+fn explorer_sanitizes_quotes_without_changing_originals() {
+    let (mut a, _rx) = app();
+    let original = "alpha 4872 broken \u{202e}";
+    a.blocks.push(Block::User { text: original.into(), at: None });
+    let source = a.blocks.len() - 1;
+    a.blocks.push(Block::User { text: "alpha 4872 fixed".into(), at: None });
+    a.blocks.push(Block::User { text: "unrelated filler".into(), at: None });
+    a.explore(Some("alpha 4872"));
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
+    let label = &p.items.iter().find(|item| item.value == source.to_string()).expect("matching quote").label;
+    assert!(!label.chars().any(crate::render::wrap::unsafe_char), "unsafe label: {label:?}");
+    assert!(label.contains("alpha 4872"));
+    assert!(matches!(&a.blocks[source], Block::User { text, .. } if text == original));
+}
+
+#[test]
+fn explorer_reports_partial_when_scan_budget_is_exhausted_by_unsearchable_blocks() {
+    let (mut a, _rx) = app();
+    a.blocks.push(Block::User { text: "alpha 4872 oldest".into(), at: None });
+    for _ in 0..2001 {
+        a.blocks.push(Block::Pending { text: "not indexed".into() });
+    }
+    a.explore(Some("alpha 4872"));
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
+    assert!(p.title.contains("partial transcript"));
+    assert!(p.items.is_empty(), "oldest block lies outside the scan budget");
+}
+
+#[test]
+fn explorer_reports_partial_when_byte_budget_is_exhausted() {
+    let (mut a, _rx) = app();
+    a.blocks.push(Block::User { text: "alpha 4872 older".into(), at: None });
+    a.blocks.push(Block::User { text: "x".repeat(512 * 1024 + 1), at: None });
+    a.explore(Some("alpha 4872"));
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
+    assert!(p.title.contains("partial transcript"));
+}

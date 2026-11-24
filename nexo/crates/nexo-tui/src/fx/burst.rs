@@ -66,6 +66,20 @@ impl Burst {
     }
 }
 
+/// Goal outcome intensity: one minute earns a wider burst, five minutes the largest.
+/// Old sessions without a start time retain the round-based fallback. Power stays bounded
+/// so a long-running goal never adds unbounded particles or extends the frame timer.
+pub fn goal_power(rounds: u32, started_ms: i64, now_ms: i64) -> u8 {
+    if started_ms <= 0 {
+        return 1 + (rounds / 2).min(2) as u8;
+    }
+    match now_ms.saturating_sub(started_ms) {
+        300_000.. => 3,
+        60_000.. => 2,
+        _ => 1,
+    }
+}
+
 /// Whether a goal paused for `why` stopped on a failure (an error, a limit, the rounds used up, a round that
 /// did nothing), not because the person stopped it (Esc, `/goal pause`) or the model chose a checkpoint.
 pub fn failed(why: &str) -> bool {
@@ -262,7 +276,12 @@ impl App {
             return;
         }
         let now = self.now();
-        if self.fx.burst.is_some_and(|b| b.kind == kind && b.alive(now)) {
+        if let Some(b) = self.fx.burst.as_mut().filter(|b| b.kind == kind && b.alive(now)) {
+            // TurnEnd may start a small failure before Goal supplies its duration. Upgrade
+            // that same burst without restarting it or downgrading an existing stronger one.
+            let upgraded = b.power.max(power.clamp(1, 3));
+            self.dirty |= upgraded != b.power;
+            b.power = upgraded;
             return;
         }
         self.fx.burst = Some(Burst { kind, at: now, power: power.clamp(1, 3) });

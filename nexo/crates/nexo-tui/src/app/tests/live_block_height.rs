@@ -123,3 +123,100 @@ fn tool_cards_groups_and_thinking_between_calls_never_push_the_text_above_down()
         }
     }
 }
+
+/// Two calls, one with a long output, left open while they run.
+fn two_calls_one_long() -> Vec<AgentEvent> {
+    let call = |id: &str| AgentEvent::ToolCall {
+        id: id.into(),
+        name: "bash".into(),
+        args: serde_json::json!({"command": "ls"}),
+        summary: "ls".into(),
+    };
+    let mut evs = vec![
+        call("c1"),
+        AgentEvent::ToolStart { id: "c1".into() },
+        call("c2"),
+        AgentEvent::ToolStart { id: "c2".into() },
+    ];
+    for k in 0..100 {
+        evs.push(AgentEvent::ToolProgress { id: "c1".into(), line: format!("output line {k}") });
+    }
+    evs
+}
+
+/// Draws a frame and checks the view points at real text: the last transcript row is not blank and the
+/// scroll is not past the end of the content.
+fn assert_view_on_text(a: &mut App, term: &mut ratatui::Terminal<ratatui::backend::TestBackend>, what: &str) {
+    a.tick_frame(false);
+    term.draw(|f| crate::ui::draw(f, a)).unwrap();
+    let rows = crate::ui::rows_of(term.backend().buffer());
+    let ta = a.transcript_area;
+    let tr: Vec<String> = rows[ta.y as usize..ta.bottom() as usize]
+        .iter()
+        .map(|r| r.chars().skip(ta.x as usize).take(ta.width as usize - 1).collect())
+        .collect();
+    assert!(tr.iter().any(|r| !r.trim().is_empty()), "{what}: blank transcript");
+    let real = a.offsets.last().copied().unwrap_or(0);
+    assert!(
+        a.total_lines <= real + 8, // offsets.last() is the start of the last block, a few rows short of its end
+        "{what}: total_lines {} kept far past the real content {real}",
+        a.total_lines
+    );
+    assert!(a.scroll <= a.max_scroll(ta.height as usize), "{what}: scroll {} past max", a.scroll);
+    let trailing = tr.iter().rev().take_while(|r| r.trim().is_empty()).count();
+    assert!(trailing < tr.len() / 2, "{what}: {trailing} blank rows at the end:\n{}", tr.join("\n"));
+}
+
+#[test]
+fn a_group_that_folds_when_its_calls_finish_leaves_no_blank_view() {
+    let (mut a, _rx) = bare();
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    for i in 0..60 {
+        a.push(Block::Notice { level: Level::Info, text: format!("filler {i}") });
+    }
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    let mut evs = two_calls_one_long();
+    let i = |a: &App| a.blocks.iter().position(|b| matches!(b, Block::Tool { .. })).unwrap();
+    for ev in evs.drain(..4) {
+        a.handle_agent(ev);
+    }
+    let first = i(&a);
+    a.toggle_block(first);
+    for ev in evs {
+        a.handle_agent(ev);
+        assert_view_on_text(&mut a, &mut term, "while running");
+    }
+    let out: String = (0..100).map(|i| format!("out {i}\n")).collect();
+    for ev in [
+        AgentEvent::ToolDone { id: "c1".into(), output: ToolOutput::ok(out), elapsed_ms: 5 },
+        AgentEvent::ToolDone { id: "c2".into(), output: ToolOutput::ok("x"), elapsed_ms: 5 },
+    ] {
+        a.handle_agent(ev);
+        assert_view_on_text(&mut a, &mut term, "after ToolDone");
+        assert_view_on_text(&mut a, &mut term, "the frame after ToolDone");
+    }
+}
+
+#[test]
+fn folding_by_hand_while_a_turn_streams_leaves_no_blank_view() {
+    let (mut a, _rx) = bare();
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    for i in 0..60 {
+        a.push(Block::Notice { level: Level::Info, text: format!("filler {i}") });
+    }
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    for ev in two_calls_one_long() {
+        a.handle_agent(ev);
+    }
+    let first = a.blocks.iter().position(|b| matches!(b, Block::Tool { .. })).unwrap();
+    a.toggle_block(first);
+    assert_view_on_text(&mut a, &mut term, "after opening a call");
+    a.toggle_block(first);
+    assert_view_on_text(&mut a, &mut term, "after closing a call");
+    a.fold_all();
+    assert_view_on_text(&mut a, &mut term, "after fold_all");
+    if let Some(g) = a.blocks.iter().position(|b| matches!(b, Block::Group { .. })) {
+        a.toggle_group(g);
+        assert_view_on_text(&mut a, &mut term, "after toggling the group");
+    }
+}

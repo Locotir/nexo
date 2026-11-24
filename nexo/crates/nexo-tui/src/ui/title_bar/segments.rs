@@ -397,12 +397,14 @@ fn title_core(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
     build(&steps[steps.len() - 1])
 }
 
-/// Every piece the status bar can draw, in the order it draws them when none is configured.
+/// Every piece the status bar can draw, in default order. The cache diagnostic is opt-in.
 pub const STATUS_PIECES: [&str; 12] =
     ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"];
 
 /// The status bar's pieces in the order they are drawn: the configured list (unknown names and
-/// repeats dropped), or all of them when it is empty. `tokens` and `cost` are drawn on the right.
+/// repeats dropped), or the default pieces when empty. `tokens` and `cost` are drawn on the right.
+/// Low cache reuse alone cannot distinguish expiry, routing or an intentional prefix rewrite;
+/// keep that diagnostic available explicitly without a persistent warning in the default bar.
 pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for n in cfg {
@@ -413,7 +415,7 @@ pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
         }
     }
     if out.is_empty() && cfg.is_empty() {
-        out = STATUS_PIECES.to_vec();
+        out = STATUS_PIECES.iter().copied().filter(|piece| *piece != "cache").collect();
     }
     out
 }

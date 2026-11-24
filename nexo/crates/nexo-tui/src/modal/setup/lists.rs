@@ -2,6 +2,34 @@
 
 use super::*;
 
+// Do not run a key command just to draw a list. It may produce a key and override
+// the stored login, or fail and let the stored login through.
+fn anthropic_auth_hint(c: &ProviderConfig) -> &'static str {
+    let env = c.api_key_env.as_ref().is_some_and(|v| std::env::var(v).is_ok_and(|k| !k.trim().is_empty()));
+    let file = c.api_key_file.as_ref().is_some_and(|p| std::fs::read_to_string(p).is_ok_and(|k| !k.trim().is_empty()));
+    let stored = c.auth.as_deref().and_then(nexo_core::auth::get);
+    anthropic_auth_label(env || file, c.api_key_cmd.is_some(), stored.as_ref())
+}
+
+fn anthropic_auth_label(direct: bool, command: bool, stored: Option<&nexo_core::auth::Credential>) -> &'static str {
+    if direct {
+        "API key (direct)"
+    } else if command {
+        "API key command (may override stored login)"
+    } else {
+        match stored {
+            Some(nexo_core::auth::Credential::Api { .. }) => "API key (stored)",
+            Some(nexo_core::auth::Credential::Oauth { .. })
+                if stored.and_then(|c| c.metadata("flow")) == Some("claude") =>
+            {
+                "Claude OAuth (stored)"
+            }
+            Some(nexo_core::auth::Credential::Oauth { .. }) => "OAuth (stored) — check flow",
+            None => "no stored login or direct API key",
+        }
+    }
+}
+
 impl Setup {
     /// The first list: one fold per provider that is ready (signed in, key found, or a local
     /// server running), then one fold of the providers still to set up, then the row for a
@@ -89,6 +117,11 @@ impl Setup {
                 parts.push(format!("{n} model{}", if n == 1 { "" } else { "s" }));
             }
             parts.push(if used { "● in use".to_string() } else { status });
+            if name == "anthropic" || name == "anthropic-oauth" {
+                if let Some(c) = cfg {
+                    parts.push(anthropic_auth_hint(c).to_string());
+                }
+            }
             let mut rows: Vec<(PickItem, String)> = self
                 .models
                 .iter()
@@ -96,13 +129,26 @@ impl Setup {
                 .map(|(p, m)| {
                     let v = format!("{p}/{m}");
                     let hint = if v == self.current { "● in use" } else { "switch" };
-                    (PickItem { label: format!("   {m}"), value: format!("use:{v}"), hint: hint.into() }, v)
+                    let hint = if name == "anthropic" || name == "anthropic-oauth" {
+                        cfg.map_or_else(|| hint.to_string(), |c| format!("{hint} · {}", anthropic_auth_hint(c)))
+                    } else {
+                        hint.to_string()
+                    };
+                    (PickItem { label: format!("   {m}"), value: format!("use:{v}"), hint }, v)
                 })
                 .collect();
             if let Some(c) = cfg {
                 let again = if c.login.is_some() { "sign in again" } else { "set up again" };
                 rows.push((
-                    PickItem { label: format!("   {again}"), value: format!("new:{name}"), hint: facts(name, c).2 },
+                    PickItem {
+                        label: format!("   {again}"),
+                        value: format!("new:{name}"),
+                        hint: if name == "anthropic" || name == "anthropic-oauth" {
+                            anthropic_auth_hint(c).into()
+                        } else {
+                            facts(name, c).2
+                        },
+                    },
                     format!("set up {name} {again}"),
                 ));
             }
@@ -114,7 +160,15 @@ impl Setup {
             .filter(|(n, _)| !order.contains(n))
             .map(|(n, c)| {
                 (
-                    PickItem { label: format!("   set up {n}"), value: format!("new:{n}"), hint: facts(n, c).2 },
+                    PickItem {
+                        label: format!("   set up {n}"),
+                        value: format!("new:{n}"),
+                        hint: if n == "anthropic" || n == "anthropic-oauth" {
+                            anthropic_auth_hint(c).into()
+                        } else {
+                            facts(n, c).2
+                        },
+                    },
                     format!("set up {n}"),
                 )
             })
@@ -255,5 +309,27 @@ impl Setup {
         if name == self.name && model == self.model && seq == self.seq {
             self.checked(check);
         }
+    }
+}
+
+#[cfg(test)]
+mod anthropic_auth_tests {
+    use super::*;
+    use nexo_core::auth::Credential;
+
+    #[test]
+    fn labels_match_credential_precedence_without_exposing_secrets() {
+        let api = Credential::Api { key: "secret-key".into() };
+        let oauth = Credential::Oauth {
+            access: "secret-token".into(),
+            refresh: String::new(),
+            expires: 0,
+            metadata: [("flow".into(), "claude".into())].into_iter().collect(),
+        };
+        assert_eq!(anthropic_auth_label(false, false, Some(&api)), "API key (stored)");
+        assert_eq!(anthropic_auth_label(false, false, Some(&oauth)), "Claude OAuth (stored)");
+        assert_eq!(anthropic_auth_label(true, true, Some(&oauth)), "API key (direct)");
+        assert!(anthropic_auth_label(false, true, Some(&oauth)).contains("may override"));
+        assert_eq!(anthropic_auth_label(false, false, None), "no stored login or direct API key");
     }
 }

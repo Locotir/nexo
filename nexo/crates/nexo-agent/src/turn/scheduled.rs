@@ -90,12 +90,8 @@ pub(super) async fn hook_done(rt: &mut Runtime, outcome: crate::hooks::Outcome) 
     }
     p.hook = None;
     p.outcome = Some(outcome);
-    notice(
-        &rt.events,
-        Level::Info,
-        format!("loop #{}: hook complete; waiting for admission if the session is busy", p.id),
-    );
     // Admission is deferred to the tick, after queued commands have been considered.
+    // Do not announce a hypothetical wait: admission or a concrete pause follows.
 }
 
 fn stale(rt: &mut Runtime) {
@@ -133,6 +129,8 @@ async fn admit(rt: &mut Runtime) {
     let Some(task) = rt.loops.tasks.iter_mut().find(|t| t.id == p.id && !t.paused) else { return };
     // Measure from admission, not hook start: a long hook cannot cause an immediate rerun.
     task.due = Instant::now() + Duration::from_secs(task.seconds);
+    // Keep the prompt in its History message only, not in a second transcript notice.
+    notice(&rt.events, Level::Info, format!("loop #{}: running scheduled prompt", p.id));
     rt.turn = Some(
         begin_scheduled_turn(&rt.state, p.prompt, p.person, rt.cancel.child_token(), p.outcome.unwrap().context).await,
     );
@@ -279,7 +277,11 @@ pub(super) async fn tick(rt: &mut Runtime) {
         return;
     };
     let (id, prompt, person) = (task.id, task.prompt.clone(), task.person);
-    notice(&rt.events, Level::Info, format!("loop #{id}: running scheduled prompt: {prompt}"));
+    // Hooks can take time (or block). Report preparation, not execution, and only
+    // when a submit hook is configured. The full prompt appears once on admission.
+    if crate::hooks::listens(&config.hooks, "user_prompt_submit") {
+        notice(&rt.events, Level::Info, format!("loop #{id}: preparing scheduled prompt (submit hooks)"));
+    }
     let text = prompt.clone();
     let (hooks, hook_cwd, hook_session) = (config.hooks.clone(), cwd.clone(), session.clone());
     let hook = Box::pin(async move {

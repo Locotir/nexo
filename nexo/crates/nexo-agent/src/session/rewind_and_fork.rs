@@ -57,7 +57,7 @@ impl Session {
         // one temporary name per process: two writers never share it
         let tmp = self.path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
         // a write that fails leaves no partial copy (it holds tool outputs) behind
-        let made = (|| -> anyhow::Result<()> {
+        let made = (|| -> anyhow::Result<u64> {
             let mut f = private_file().write(true).create(true).truncate(true).open(&tmp)?;
             writeln!(f, "{}", serde_json::to_string(&Line::Meta(self.meta.clone()))?)?;
             if !self.meta.title.is_empty() {
@@ -138,12 +138,15 @@ impl Session {
                 writeln!(f, "{}", serde_json::to_string(&Line::Stop { ts: now(), line: line.clone() })?)?;
             }
             f.sync_all()?;
-            Ok(())
+            Ok(f.metadata()?.len())
         })();
-        if let Err(e) = made {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
+        let size = match made {
+            Ok(size) => size,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        };
         // Windows refuses to replace a file that is open: the handle closes first
         self.file = None;
         let renamed = std::fs::rename(&tmp, &self.path);
@@ -153,9 +156,11 @@ impl Session {
         let reopened = reopen(&self.path);
         match renamed {
             Ok(()) => {
-                self.file = Some(reopened.map_err(NotReopened)?);
-                // every output is in the file now, in the form its result allows
+                // Rename committed even when reopening fails: remember the replacement and
+                // clear held outputs so a later retry recognizes our own rewritten file.
                 self.held.clear();
+                self.size = size;
+                self.file = Some(reopened.map_err(NotReopened)?);
                 self.mark();
                 Ok(())
             }

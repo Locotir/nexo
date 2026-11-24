@@ -125,14 +125,18 @@ impl<'t> Renderer<'t> {
                             }
                             return;
                         }
-                        let shown: String = self
+                        let label: Vec<_> = self
                             .runs
                             .iter()
                             .rev()
                             .take_while(|(_, s)| s.add_modifier.contains(Modifier::UNDERLINED))
-                            .map(|(t, _)| t.clone())
+                            .map(|(t, _)| t.as_str())
                             .collect();
-                        if !shown.contains(&url) {
+                        let shown: String = label.into_iter().rev().collect();
+                        // Only an exact address is interactive without the suffix. A label
+                        // containing its address still needs it for the other label cells,
+                        // and the plain suffix separates it from an adjacent link's underline.
+                        if shown != url {
                             self.runs.push((format!(" ({url})"), self.theme.dim()));
                         }
                     }

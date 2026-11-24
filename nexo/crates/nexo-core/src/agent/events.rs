@@ -96,6 +96,14 @@ pub enum AgentEvent {
         session: Usage,
         cost_usd: f64,
     },
+    /// Cost of one completed main request, correlated to the tool calls it produced.
+    /// Not emitted for replay or side calls without a reliable group/billing origin.
+    GroupCost {
+        call_ids: Vec<String>,
+        cost_usd: f64,
+        /// Billing basis captured when the request was prepared, never the current selection.
+        plan: bool,
+    },
     /// What the next model call will see.
     Context {
         view_tokens: u64,

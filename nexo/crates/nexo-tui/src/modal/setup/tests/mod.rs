@@ -614,3 +614,18 @@ fn an_unreachable_local_preset_waits_under_others_not_in_the_first_group() {
     let others = s.groups.iter().find(|g| g.key == OTHERS).expect("an others group");
     assert!(others.rows.iter().any(|(i, _)| i.value == "new:lmstudio"));
 }
+
+#[test]
+fn anthropic_oauth_setup_points_to_safe_terminal_login() {
+    let providers = nexo_providers::presets::presets();
+    let api = providers["anthropic"].clone();
+    let oauth = providers["anthropic-oauth"].clone();
+    assert_eq!(api.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
+    assert_eq!(oauth.login.as_deref(), Some("claude"));
+    assert_eq!(oauth.auth.as_deref(), Some("anthropic-oauth"));
+    assert_eq!(api.models, oauth.models);
+    let mut setup = Setup::new(vec![("anthropic-oauth".into(), oauth)], vec![], "");
+    setup.choose("new:anthropic-oauth");
+    assert_eq!(setup.step, Step::Login);
+    assert!(setup.list.items.iter().any(|item| item.value == "claude-cli" && item.hint.contains("risk warning")));
+}

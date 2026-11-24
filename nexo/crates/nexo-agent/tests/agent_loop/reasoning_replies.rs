@@ -123,6 +123,70 @@ async fn a_stream_cut_inside_the_reasoning_is_sent_again_without_it() {
 }
 
 #[tokio::test]
+async fn failed_attempt_keeps_request_prices_after_provider_switch_before_retry() {
+    for unpriced in [false, true] {
+        let d = test_tmpdir().unwrap();
+        let client = Scripted::new(vec![]);
+        let mut cfg = config(PermissionMode::Ask);
+        let origin = cfg.providers["mock"].pricing["m1"];
+        if unpriced {
+            cfg.providers.get_mut("mock").unwrap().pricing.clear();
+        }
+        let mut other = cfg.providers["mock"].clone();
+        other.base_url = "http://other".into();
+        let mut expensive = origin;
+        expensive.input = 900.0;
+        other.pricing.insert("m1".into(), expensive);
+        cfg.providers.insert("other".into(), other);
+        let mut r = start(client.clone(), cfg, None, d.path()).await;
+        r.next().await;
+        client.replies.lock().unwrap().extend([
+            Reply::Midway(
+                r.handle.commands.clone(),
+                Box::new(AgentCommand::SetModel { provider: Some("other".into()), model: "m1".into() }),
+                broken(vec![reasoning("dropped thought")], 400),
+            ),
+            Reply::Events(text("done")),
+        ]);
+        r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Done);
+        assert_eq!(client.requests().len(), 2);
+        assert_eq!(*client.bases.lock().unwrap(), ["http://mock", "http://other"]);
+        assert_eq!(*client.waits.lock().unwrap(), [1]);
+        let changed = evs
+            .iter()
+            .position(|e| {
+                matches!(e,
+            AgentEvent::ModelChanged { provider, .. } if provider == "other")
+            })
+            .unwrap();
+        let charges: Vec<_> = evs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                AgentEvent::Usage { turn, cost_usd, .. } => Some((i, *turn, *cost_usd)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(charges.len(), 2);
+        assert!(changed < charges[0].0, "switch preceded billing the failed request");
+        let first = Usage { input: 400, output: 7, ..Default::default() };
+        let first_cost = if unpriced { 0.0 } else { origin.cost(&first) };
+        assert_eq!(charges[0].1, first);
+        assert!(
+            (charges[0].2 - first_cost).abs() < 1e-12,
+            "failed request must not borrow replacement provider prices: {:?}",
+            charges
+        );
+        let retry = Usage { input: 1000, output: 100, cache_read: 2000, ..Default::default() };
+        assert!((charges[1].2 - first_cost - expensive.cost(&retry)).abs() < 1e-12);
+        assert_eq!(spent(&evs), first + retry);
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn three_cuts_inside_the_reasoning_stop_with_the_error_after_two_more_tries() {
     let d = test_tmpdir().unwrap();
     let cut = || Reply::Events(broken(vec![reasoning("thinking")], 400));

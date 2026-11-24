@@ -463,3 +463,65 @@ fn codex_pace_tracks_each_merged_slots_own_observation() {
     unknown.observed_at = Some(now + 3602);
     assert!(!plan.fast_pace(&unknown, now + 3601));
 }
+
+#[test]
+fn the_claude_usage_gives_both_windows() {
+    let v = json!({
+        "five_hour": {"utilization": 6.0, "resets_at": "2027-01-15T08:00:00.123456+00:00"},
+        "seven_day": {"utilization": 35, "resets_at": "2027-01-20T10:00:00+00:00"},
+        "seven_day_opus": null, "seven_day_sonnet": {"utilization": 3.0, "resets_at": null},
+        "extra_usage": {"is_enabled": false}});
+    let u = claude_from_usage(&v, NOW).unwrap();
+    assert_eq!(u.kind, CLAUDE);
+    assert_eq!(u.meters.len(), 2);
+    assert_eq!(u.meters[0].short(), "5h 94% left");
+    assert!(u.meters[0].resets_at.is_some());
+    assert_eq!(u.meters[1].short(), "wk 65% left");
+    assert_eq!(u.meters[1].window_minutes, Some(10_080));
+}
+
+#[test]
+fn a_claude_plan_without_windows_gives_nothing() {
+    assert!(claude_from_usage(&json!({"five_hour": null, "seven_day": null}), NOW).is_none());
+    assert!(claude_from_usage(&json!({"error": {"type": "forbidden"}}), NOW).is_none());
+}
+
+#[tokio::test]
+async fn the_claude_plan_is_asked_with_the_oauth_beta_header() {
+    use httpmock::prelude::*;
+    let s = MockServer::start();
+    let m = s.mock(|w, t| {
+        w.method(GET)
+            .path("/api/oauth/usage")
+            .header("authorization", "Bearer tok-c")
+            .header("anthropic-beta", "oauth-2025-04-20");
+        t.status(200).json_body(json!({
+            "five_hour": {"utilization": 40.0, "resets_at": "2099-01-01T00:00:00+00:00"},
+            "seven_day": {"utilization": 10.0, "resets_at": "2099-01-05T00:00:00+00:00"}}));
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("auth.json");
+    let md = BTreeMap::from([("flow".to_string(), "claude".to_string())]);
+    let cred = Credential::Oauth { access: "tok-c".into(), refresh: "r".into(), expires: u64::MAX / 4, metadata: md };
+    auth::set_in(&store, "anthropic-oauth", cred).unwrap();
+    let mut cfg = ProviderConfig::new("anthropic", "https://api.anthropic.com", None);
+    cfg.login = Some("claude".into());
+    cfg.auth = Some("anthropic-oauth".into());
+    let at = Endpoints { anthropic_api: s.base_url(), ..Endpoints::default() };
+    let u = fetch_in(&store, &at, "anthropic-oauth", &cfg).await.unwrap().unwrap();
+    m.assert();
+    assert_eq!(u.meters[0].short(), "5h 60% left");
+    assert_eq!(u.meters[1].short(), "wk 90% left");
+}
+
+/// Live and read-only: `cargo test -p nexo-providers live_claude -- --ignored --nocapture`. Prints percentages only.
+#[tokio::test]
+#[ignore]
+async fn live_claude_usage_from_the_stored_login() {
+    let mut cfg = crate::presets::presets().remove("anthropic-oauth").unwrap();
+    cfg.auth = Some("anthropic-oauth".into());
+    match fetch("anthropic-oauth", &cfg).await {
+        Ok(Some(u)) => println!("LIVE {}", u.detail(nexo_core::auth::now() as i64).join(" | ")),
+        other => println!("LIVE no reading: {:?}", other.map(|o| o.map(|u| u.meters.len())).map_err(|e| e.message)),
+    }
+}

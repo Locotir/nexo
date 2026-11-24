@@ -100,6 +100,33 @@ fn the_thinking_budget_stays_below_max_tokens() {
 }
 
 #[test]
+fn claude_oauth_marker_is_first_and_api_key_body_is_unchanged() {
+    let presets = crate::presets::presets();
+    let oauth = &presets["anthropic-oauth"];
+    let api = &presets["anthropic"];
+    let marker = json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."});
+    let mut req = ModelRequest::new("claude-x", "original system", vec![Message::user("hi")]);
+    let body = Anthropic::body(oauth, &req);
+    assert_eq!(body["system"][0], marker);
+    assert_eq!(body["system"][1]["text"], "original system");
+    assert_eq!(body["system"][1]["cache_control"]["type"], "ephemeral");
+    let api_body = Anthropic::body(api, &req);
+    assert_eq!(api_body["system"].as_array().unwrap().len(), 1);
+    assert_eq!(api_body["system"][0]["text"], "original system");
+
+    req.system.clear();
+    assert_eq!(Anthropic::body(oauth, &req)["system"], json!([marker]));
+    assert!(Anthropic::body(api, &req).get("system").is_none());
+
+    req.extra.insert("system".into(), json!([{"type":"text", "text":"overlay"}]));
+    assert_eq!(Anthropic::body(oauth, &req)["system"], json!([marker, {"type":"text", "text":"overlay"}]));
+    assert_eq!(Anthropic::body(api, &req)["system"], json!([{"type":"text", "text":"overlay"}]));
+    req.extra.insert("system".into(), json!("string overlay"));
+    assert_eq!(Anthropic::body(oauth, &req)["system"], json!([marker, {"type":"text", "text":"string overlay"}]));
+    assert_eq!(Anthropic::body(api, &req)["system"], "string overlay");
+}
+
+#[test]
 fn body_has_system_field_blocks_and_cache_breakpoints() {
     let mut req = ModelRequest::new(
         "claude-x",
@@ -798,4 +825,63 @@ fn xhigh_goes_only_to_the_models_that_take_it_and_the_older_adaptive_ones_get_hi
     }
     let b = Anthropic::body(&cfg, &adaptive_req("claude-opus-4-6", Some(ReasoningConfig::Effort(Effort::Max))));
     assert_eq!(b["output_config"]["effort"], "max");
+}
+
+// Offline HTTP tests exercise the actual URL, headers, parser and error path.
+async fn model_pages(responses: Vec<(u16, &'static str)>) -> (Result<Vec<ModelInfo>, ProviderError>, Vec<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, body) in responses {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0; 1024];
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let n = socket.read(&mut buf).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            requests.push(String::from_utf8(bytes).unwrap());
+            write!(socket, "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                .unwrap();
+        }
+        requests
+    });
+    let cfg = ProviderConfig::new(ID, &format!("http://{addr}"), None);
+    let result = Anthropic.list_models(&cfg, Some("test-key")).await;
+    (result, server.join().unwrap())
+}
+
+#[tokio::test]
+async fn model_pagination_collects_all_and_encodes_cursor() {
+    let (result, requests) = model_pages(vec![
+        (200, r#"{"data":[{"id":"a/ +","display_name":"First","max_input_tokens":123}],"has_more":true,"last_id":"a/ +"}"#),
+        (200, r#"{"data":[{"id":"b","display_name":"Second"}],"has_more":false,"last_id":"b"}"#),
+    ]).await;
+    let models = result.unwrap();
+    assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["a/ +", "b"]);
+    assert_eq!(models[0].context_window, Some(123));
+    assert!(requests[0].starts_with("GET /v1/models?limit=100 "));
+    assert!(requests[1].starts_with("GET /v1/models?limit=100&after_id=a%2F+%2B "));
+    assert!(requests.iter().all(|r| r.to_lowercase().contains("x-api-key: test-key")));
+}
+
+#[tokio::test]
+async fn model_pagination_fails_closed_on_bad_pages() {
+    let first = (200, r#"{"data":[{"id":"a"}],"has_more":true,"last_id":"a"}"#);
+    for second in [
+        (500, "error"),
+        (200, "not json"),
+        (200, r#"{"data":[{"id":"b"}]}"#),
+        (200, r#"{"data":[],"has_more":true,"last_id":null}"#),
+        (200, r#"{"data":[{"id":"a"}],"has_more":true,"last_id":"a"}"#),
+        (200, r#"{"data":[{}],"has_more":false}"#),
+        (200, r#"{"data":[{"id":"b"}],"has_more":true,"last_id":"wrong"}"#),
+    ] {
+        let (result, _) = model_pages(vec![first, second]).await;
+        assert!(result.is_err(), "accepted {second:?}");
+    }
 }

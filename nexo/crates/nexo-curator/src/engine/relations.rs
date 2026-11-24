@@ -1,5 +1,8 @@
 //! Resolve graph hits against the host's original messages, never against shortened tracer output.
 //! Positions are (unit, line). Identical text at different positions retains different provenance.
+#[path = "segments.rs"]
+mod segments;
+
 use std::ops::Range;
 
 use serde_json::{json, Value};
@@ -90,7 +93,7 @@ impl Engine {
         }
     }
 
-    pub(super) fn relation_lines(&mut self, history: &[Value], mut budget: i64) -> Vec<String> {
+    pub(super) fn relation_lines(&mut self, history: &[Value], budget: i64) -> Vec<String> {
         if budget <= 0 || self.index.is_empty() || history.len() != self.tr.msgs.len() {
             return vec![];
         }
@@ -125,12 +128,32 @@ impl Engine {
             },
             eligible,
         );
+        self.admit_relation_lines(history, &picks, budget)
+    }
+
+    /// Budget the unmodified selector first. Context uses only residual tokens/slots and can only
+    /// come from an original quote actually admitted, never from a rejected expensive seed.
+    fn admit_relation_lines(&self, history: &[Value], picks: &[Post], mut budget: i64) -> Vec<String> {
         let mut rows = Vec::new();
-        for p in picks {
+        let mut admitted = Vec::new();
+        // `pending` is later replaced by an owned iterator over the expanded picks.
+        #[allow(clippy::unnecessary_to_owned)]
+        let mut pending = picks.to_vec().into_iter();
+        let mut expanded = !self.p.segments;
+        loop {
+            let p = match pending.next() {
+                Some(p) => p,
+                None if !expanded => {
+                    expanded = true;
+                    pending = segments::expand(&self.index, history, &self.tr.units, &admitted, picks).into_iter();
+                    continue;
+                }
+                None => break,
+            };
             if rows.len() >= REL_OUT || budget <= 0 {
                 break;
             }
-            let u = &tr.units[p.0 as usize];
+            let u = &self.tr.units[p.0 as usize];
             let mi = u.msg;
             let Some(line) = original_line(&self.index, history, &self.tr.units, p) else { continue };
             let kind = match u.kind {
@@ -159,8 +182,121 @@ impl Engine {
             if cost <= budget {
                 budget -= cost;
                 rows.push(line);
+                if !expanded {
+                    admitted.push(p);
+                }
             }
         }
         rows
+    }
+}
+
+#[cfg(test)]
+mod segment_budget_tests {
+    use super::*;
+    use crate::params::params;
+
+    fn fixture(body: &str, question: &str) -> (Engine, Vec<Value>, Vec<Post>) {
+        let history = vec![
+            json!({"role":"user","content":"Audit the museum inventory ledger."}),
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"read-a","name":"read_file","input":{"path":"west/ledger.csv"}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"read-a","content":body}]}),
+            json!({"role":"assistant","content":"Inventory pass completed."}),
+            json!({"role":"user","content":question}),
+        ];
+        let mut e = Engine::new(params("segments=1").unwrap());
+        e.sync(&history);
+        let picks = e.index.relation_pick(
+            |p| {
+                let mut words = Vec::new();
+                if let Some(line) = original_line(&e.index, &history, &e.tr.units, p) {
+                    keys(line, &mut words);
+                }
+                words
+            },
+            |p| e.tr.units[p.0 as usize].kind == UKind::Result,
+        );
+        (e, history, picks)
+    }
+
+    fn cost(rows: &[String]) -> i64 {
+        rows.iter().map(|r| est_str(r) + 2).sum()
+    }
+
+    fn assert_provenance(rows: &[String], body: &str) {
+        for row in rows {
+            let r: Value = serde_json::from_str(row).unwrap();
+            assert_eq!(r["message"], "m00003");
+            assert_eq!(r["block"], 1);
+            assert_eq!(r["call_message"], "m00002");
+            assert_eq!(r["call_block"], 1);
+            assert_eq!(r["call_id"], "read-a");
+            assert_eq!(r["path"], "west/ledger.csv");
+            assert_eq!(body.lines().nth(r["line"].as_u64().unwrap() as usize - 1), r["quote"].as_str());
+        }
+    }
+
+    #[test]
+    fn segments_preserve_three_requested_hits_under_every_token_budget() {
+        let body = "spindle916 receipt amber\nneighbor cobalt\n\nbeacon254 receipt indigo\nneighbor crimson\n\nfinial409 receipt topaz\nneighbor bronze";
+        let (mut e, h, picks) = fixture(body, "Locate spindle916 beacon254 finial409 receipts.");
+        assert_eq!(picks.len(), 3, "fixture must exercise three direct selector hits");
+        e.p.segments = false;
+        let all = e.admit_relation_lines(&h, &picks, 100_000);
+        let exact = cost(&all);
+        assert_eq!(all.len(), 3);
+        for budget in -1..=exact + 250 {
+            e.p.segments = false;
+            let plain = e.admit_relation_lines(&h, &picks, budget);
+            e.p.segments = true;
+            let segment = e.admit_relation_lines(&h, &picks, budget);
+            assert!(segment.starts_with(&plain), "original evidence displaced at budget {budget}");
+            assert!(cost(&segment) <= budget.max(0));
+            assert_provenance(&segment, body);
+        }
+        e.p.segments = true;
+        assert_eq!(e.admit_relation_lines(&h, &picks, exact), all);
+        assert!(e.admit_relation_lines(&h, &picks, exact + 250).len() > all.len());
+    }
+
+    #[test]
+    fn segments_preserve_selector_at_output_limit() {
+        let body: String = (0..REL_OUT).map(|i| format!("spindle916 receipt {i}\nneighbor cobalt {i}\n\n")).collect();
+        let (mut e, h, picks) = fixture(&body, "Locate spindle916 receipts.");
+        assert!(picks.len() >= REL_OUT);
+        e.p.segments = false;
+        let plain = e.admit_relation_lines(&h, &picks, 100_000);
+        assert_eq!(plain.len(), REL_OUT);
+        e.p.segments = true;
+        assert_eq!(e.admit_relation_lines(&h, &picks, 100_000), plain);
+        assert_provenance(&plain, &body);
+    }
+
+    #[test]
+    fn segments_never_quote_neighbors_of_an_unaffordable_anchor() {
+        let body = format!(
+            "spindle916 receipt {}\nneighbor cobalt\n\nbeacon254 receipt indigo\nneighbor crimson",
+            "界".repeat(350)
+        );
+        let (mut e, h, picks) = fixture(&body, "Locate spindle916 beacon254 receipts.");
+        assert_eq!(picks.len(), 2);
+        let anchor = picks.iter().copied().find(|p| p.1 == 0).unwrap();
+        let cheap = picks.iter().copied().find(|p| p.1 == 3).unwrap();
+        e.p.segments = false;
+        let expensive_cost = cost(&e.admit_relation_lines(&h, &[anchor], 100_000));
+        let cheap_cost = cost(&e.admit_relation_lines(&h, &[cheap], 100_000));
+        let neighbor_cost = cost(&e.admit_relation_lines(&h, &[(cheap.0, cheap.1 + 1)], 100_000));
+        e.p.segments = true;
+        for budget in 1..expensive_cost {
+            // No accepted seed: even a neighbor that would fit alone must stay out.
+            assert!(e.admit_relation_lines(&h, &[anchor], budget).is_empty());
+        }
+        let budget = cheap_cost + neighbor_cost;
+        assert!(budget < expensive_cost);
+        let rows = e.admit_relation_lines(&h, &picks, budget);
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|r| !r.contains("neighbor cobalt")));
+        assert!(rows.iter().any(|r| r.contains("neighbor crimson")), "admitted cheap seed may expand");
+        assert_provenance(&rows, &body);
     }
 }

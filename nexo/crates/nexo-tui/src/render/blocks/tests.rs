@@ -19,6 +19,29 @@ fn texts(lines: &[Line]) -> Vec<String> {
 }
 
 #[test]
+fn goal_pause_acknowledgements_are_dim_but_warnings_keep_their_color() {
+    let theme = Theme::nexo();
+    let text = "the goal is already paused · /goal resume goes on";
+    for cols in [24, 80] {
+        let b = Block::Notice { level: Level::Info, text: text.into() };
+        let rows = b.render(cols, &theme, opts());
+        assert!(texts(&rows).join(" ").contains("/goal resume"));
+        assert!(rows
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| !s.content.trim().is_empty())
+            .all(|s| s.style.fg == Some(theme.dim)));
+        let b = Block::Notice { level: Level::Warn, text: text.into() };
+        let rows = b.render(cols, &theme, opts());
+        assert!(rows
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| !s.content.trim().is_empty())
+            .all(|s| s.style.fg == Some(theme.warn)));
+    }
+}
+
+#[test]
 fn clocks_grow_into_minutes_and_hours() {
     let cases = [
         (0, "0s"),

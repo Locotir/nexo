@@ -715,3 +715,77 @@ fn with_the_motion_off_or_on_a_mono_theme_the_new_pieces_are_the_resting_look_to
         }
     }
 }
+
+// ---- the pulses of the work line (see `fx_pulse`)
+
+fn pulse_rule(a: &mut App) -> Vec<Option<ratatui::style::Color>> {
+    let b = buf_of(a, 80, 20);
+    let y = rule_y(&b);
+    (0..80).filter(|x| b[(*x, y)].symbol() == "─").map(|x| b[(x, y)].style().fg).collect()
+}
+
+#[test]
+fn events_pulse_the_work_line_and_the_pulse_dies_by_the_clock() {
+    use crate::fx_pulse::Cue;
+    let t0 = Instant::now();
+    let (mut a, _rx) = app();
+    a.opts.home_stars = false;
+    fx_at(&mut a, t0, 0);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    assert!(a.busy);
+    fx_at(&mut a, t0, 5000);
+    let calm = pulse_rule(&mut a);
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "c".into(),
+        name: "bash".into(),
+        args: serde_json::json!({}),
+        summary: String::new(),
+    });
+    assert!(a.fx.pulses.alive(a.now()));
+    fx_at(&mut a, t0, 5300);
+    let lit = pulse_rule(&mut a);
+    assert_ne!(lit, calm, "the rule shows the tool starting");
+    fx_at(&mut a, t0, 6000);
+    assert!(!a.fx.pulses.alive(a.now()));
+    // no frame is asked for once the pulse is over
+    assert!(!a.tick_fx_with(false) || a.fx.pulses.alive(a.now()));
+    // the motion off: events cost nothing
+    a.opts.animations = false;
+    a.pulse(Cue::UserSent);
+    assert!(!a.fx.pulses.alive(a.now()));
+}
+
+#[test]
+fn a_subagent_launch_and_its_end_pulse_once_each() {
+    use nexo_core::subs::{SubInfo, SubState};
+    let t0 = Instant::now();
+    let (mut a, _rx) = app();
+    fx_at(&mut a, t0, 0);
+    let info = |state| SubInfo {
+        id: "r1".into(),
+        profile: "general".into(),
+        provider: None,
+        model: None,
+        reasoning_effort: None,
+        title: "t".into(),
+        state,
+        started_ms: 0,
+        ended_ms: None,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: 0.0,
+    };
+    a.handle_agent(AgentEvent::SubState { info: info(SubState::Background) });
+    assert!(a.fx.pulses.alive(a.now()), "a launch pulses");
+    fx_at(&mut a, t0, 5000);
+    assert!(!a.fx.pulses.alive(a.now()));
+    // the same state again (the agent repeats it after a lag) is no event
+    a.handle_agent(AgentEvent::SubState { info: info(SubState::Background) });
+    assert!(!a.fx.pulses.alive(a.now()));
+    // its end is one
+    a.handle_agent(AgentEvent::SubState { info: info(SubState::Ok) });
+    assert!(a.fx.pulses.alive(a.now()), "an end pulses");
+    fx_at(&mut a, t0, 9000);
+    a.handle_agent(AgentEvent::SubState { info: info(SubState::Ok) });
+    assert!(!a.fx.pulses.alive(a.now()), "an end already known does not pulse again");
+}

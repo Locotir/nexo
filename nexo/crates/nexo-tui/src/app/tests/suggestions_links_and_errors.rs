@@ -170,6 +170,130 @@ fn a_link_wrapped_over_two_rows_opens_whole_from_either_row() {
 }
 
 #[test]
+fn every_wrapped_markdown_label_cell_is_interactive() {
+    use ratatui::style::Modifier;
+    let url = "https://example.com/guide";
+    for (width, label) in [
+        (24, "read the wrapped guide now"),
+        (24, "read the wrapped 漢字 guide 🙂 now"),
+        (18, "read the wrapped guide now"),
+        (80, "read the wrapped guide now"),
+    ] {
+        let mut a = app_with_reply(&format!("see [{label}]({url}) done"), width);
+        let rows = a.cache[0].as_ref().unwrap().2.as_ref().unwrap();
+        let mut cells = Vec::new();
+        for (row, line) in rows.iter().enumerate() {
+            let mut col = 0;
+            for span in &line.spans {
+                let w = crate::render::wrap::width(&span.content);
+                if span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                    cells.extend((col..col + w).map(|col| (col as u16, row as u16 + 1)));
+                }
+                col += w;
+            }
+        }
+        assert!(!cells.is_empty());
+        if width < 80 {
+            assert!(cells.iter().map(|&(_, y)| y).collect::<std::collections::BTreeSet<_>>().len() >= 2);
+        }
+        for (x, y) in cells {
+            a.looks[0].no_link_rows = None;
+            assert_eq!(a.link_at(x, y).as_deref(), Some(url), "label={label:?}, x={x}, y={y}");
+            a.pointer_moved(x, y);
+            assert!(matches!(a.hover, Hover::Link { .. }), "label={label:?}, x={x}, y={y}");
+            crate::links::take_opened();
+            a.tclick = None; // Each cell is an independent single click, not a double-click selection.
+            click_at(&mut a, x, y, KeyModifiers::NONE);
+            assert_eq!(crate::links::take_opened(), vec![url.to_string()], "x={x}, y={y}");
+        }
+    }
+}
+
+#[test]
+fn wrapped_markdown_labels_keep_their_own_addresses_and_exclude_plain_text() {
+    let mut a = app_with_reply(
+        "[first wrapped label words](https://one.example/a) plain separator [second wrapped label words](https://two.example/b)",
+        24,
+    );
+    for (needle, url) in [("first", "https://one.example/a"), ("second", "https://two.example/b")] {
+        let (x, y) = find_cell(&mut a, needle);
+        assert_eq!(a.link_at(x, y).as_deref(), Some(url));
+    }
+    let (x, y) = find_cell(&mut a, "plain");
+    assert!(a.link_at(x, y).is_none());
+}
+
+#[test]
+fn wrapping_between_adjacent_markdown_links_never_changes_the_clicked_destination() {
+    let first = "https://one.example";
+    let second = "https://two.example";
+    for width in 18..=80 {
+        for label in [format!("read {first}"), format!("read 漢字 🙂 {first}")] {
+            for separator in [" ", "  "] {
+                let mut a = app_with_reply(&format!("[{label}]({first}){separator}[second]({second})"), width);
+                let (x, y) = find_cell(&mut a, "read");
+                crate::links::take_opened();
+                a.pointer_moved(x, y);
+                click_at(&mut a, x, y, KeyModifiers::NONE);
+                let opened = crate::links::take_opened();
+                assert_eq!(opened, vec![first.to_string()], "width={width}, label={label:?}, separator={separator:?}");
+                assert_eq!(a.link_at(x, y).as_deref(), Some(first), "width={width}, label={label:?}");
+                assert!(matches!(a.hover, Hover::Link { .. }), "width={width}, label={label:?}");
+                for (needle, url) in [("https", first), ("second", second)] {
+                    let (x, y) = find_cell(&mut a, needle);
+                    assert_eq!(a.link_at(x, y).as_deref(), Some(url), "width={width}, label={label:?}");
+                    a.pointer_moved(x, y);
+                    assert!(matches!(a.hover, Hover::Link { .. }), "width={width}, label={label:?}");
+                    a.tclick = None;
+                    click_at(&mut a, x, y, KeyModifiers::NONE);
+                    assert_eq!(crate::links::take_opened(), vec![url.to_string()], "width={width}, label={label:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_cell_of_a_markdown_label_containing_its_url_opens_the_same_destination() {
+    use ratatui::style::Modifier;
+    let url = "https://one.example";
+    for width in [18, 24, 80] {
+        for label in [format!("read {url}"), format!("read 漢字 🙂 {url} now"), format!("read **{url}** now")] {
+            let mut a = app_with_reply(&format!("[{label}]({url}) [second](https://two.example) plain"), width);
+            let mut cells = Vec::new();
+            for (row, line) in a.cache[0].as_ref().unwrap().2.as_ref().unwrap().iter().enumerate() {
+                let mut col = 0;
+                for span in &line.spans {
+                    let w = crate::render::wrap::width(&span.content);
+                    if span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                        cells.extend((col..col + w).map(|x| (x as u16, row as u16 + 1)));
+                    }
+                    col += w;
+                }
+            }
+            let (sx, sy) = find_cell(&mut a, "second");
+            assert!(!cells.is_empty());
+            for (x, y) in cells {
+                let destination = if (y, x) >= (sy, sx) { "https://two.example" } else { url };
+                assert_eq!(
+                    a.link_at(x, y).as_deref(),
+                    Some(destination),
+                    "width={width}, label={label:?}, cell=({x},{y})"
+                );
+                a.pointer_moved(x, y);
+                assert!(matches!(a.hover, Hover::Link { .. }));
+                a.tclick = None;
+                crate::links::take_opened();
+                click_at(&mut a, x, y, KeyModifiers::NONE);
+                assert_eq!(crate::links::take_opened(), vec![destination.to_string()]);
+            }
+            let (x, y) = find_cell(&mut a, "plain");
+            assert_eq!(a.link_at(x, y), None);
+        }
+    }
+}
+
+#[test]
 fn a_drag_over_a_link_selects_and_opens_nothing() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut a = app_with_reply("see https://example.com/abc now", 80);

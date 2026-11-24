@@ -51,6 +51,7 @@ impl App {
             AgentEvent::QuestionResolved { id, .. } => self.on_question_resolved(id),
             AgentEvent::PermissionResolved { id, decision } => self.on_permission_resolved(id, decision),
             AgentEvent::Usage { turn, call, session, cost_usd } => self.on_usage(turn, call, session, cost_usd),
+            AgentEvent::GroupCost { call_ids, cost_usd, plan } => self.on_group_cost(&call_ids, cost_usd, plan),
             AgentEvent::Context {
                 view_tokens,
                 history_tokens,

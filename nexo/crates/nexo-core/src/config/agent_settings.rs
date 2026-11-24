@@ -51,6 +51,10 @@ pub struct AgentConfig {
     /// seconds; a check that was slower than that at a start is not run at a start again until a run of it finishes
     /// faster. The failing tests go in the request.
     pub check_at_start: bool,
+    /// Whenever a goal is set, one short request asks the model whether the person's words are clear and ordered enough
+    /// to work from as written (`CLEAR`: they stay as they are) or need restructuring (`REWRITE`: a brief with the sub-tasks
+    /// in order and when it is done rides beside their words). A failed request changes nothing.
+    pub goal_check: bool,
     /// Retries on retryable provider errors.
     pub retries: u32,
     /// Tokens of context over which a conversation that has already paused more than 5 minutes between two
@@ -139,6 +143,7 @@ impl Default for AgentConfig {
             attach_named_files: true,
             attach_budget: 6000,
             check_at_start: true,
+            goal_check: true,
             retries: 4,
             long_cache_over: 50_000,
             subagents: true,

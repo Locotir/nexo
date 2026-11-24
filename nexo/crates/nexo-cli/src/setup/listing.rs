@@ -88,6 +88,27 @@ pub(super) fn shorten(s: &str, n: usize) -> String {
     nexo_core::mail::clip(s, n)
 }
 
+// Provider errors may contain arbitrary remote text, including reflected credentials.
+// Only display locally defined categories and numeric HTTP status here.
+fn models_error_summary(error: &nexo_core::error::ProviderError) -> String {
+    let status = error.status.map(|s| format!(", HTTP {s}")).unwrap_or_default();
+    format!("{}{status}", error.kind.phrase())
+}
+
+fn catalogue_failure(error: &nexo_core::error::ProviderError) -> String {
+    format!(
+        "catalogue not refreshed: {}; check connectivity and retry `nexo models --refresh`",
+        models_error_summary(error)
+    )
+}
+
+fn provider_list_failure(error: &nexo_core::error::ProviderError) -> String {
+    format!(
+        "(the provider's list is not available: {}; check provider setup with `nexo doctor`)",
+        models_error_summary(error)
+    )
+}
+
 /// The limits of every model known under `name`: the configured ones, the
 /// catalogue's and the provider's, with prices and limits resolved the way the
 /// agent resolves them.
@@ -114,7 +135,7 @@ pub async fn print_models(cfg: &Config, provider: Option<&str>, refresh: bool, j
                 c.providers.len(),
                 catalogue::cache_file().display()
             ),
-            Err(e) => say!("catalogue not refreshed: {}", e.message),
+            Err(e) => say!("{}", catalogue_failure(&e)),
         }
     } else if let Some(age) = catalogue::cache_age() {
         say!("catalogue: cached {} day(s) ago ({})", age.as_secs() / 86_400, catalogue::cache_file().display());
@@ -141,7 +162,7 @@ pub async fn print_models(cfg: &Config, provider: Option<&str>, refresh: bool, j
                 Some(list)
             }
             Ok(Err(e)) => {
-                say!("(the provider's list is not available: {})", e.message);
+                say!("{}", provider_list_failure(&e));
                 None
             }
             Err(_) => {
@@ -194,4 +215,26 @@ pub async fn print_models(cfg: &Config, provider: Option<&str>, refresh: bool, j
         );
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexo_core::error::{ErrorKind, ProviderError};
+
+    #[test]
+    fn models_errors_never_display_remote_messages() {
+        let secret = "opaque-Z9q4v2-example";
+        let e = ProviderError::from_http(401, &format!("rejected {secret}\u{1b}[31m"));
+        for output in [catalogue_failure(&e), provider_list_failure(&e)] {
+            assert!(!output.contains(secret));
+            assert!(!output.contains('\u{1b}'));
+            assert!(output.contains("key missing or rejected"));
+            assert!(output.contains("HTTP 401"));
+        }
+        let e = ProviderError::new(ErrorKind::Network, secret);
+        assert_eq!(models_error_summary(&e), "network error");
+        assert!(catalogue_failure(&e).contains("--refresh"));
+        assert!(provider_list_failure(&e).contains("nexo doctor"));
+    }
 }

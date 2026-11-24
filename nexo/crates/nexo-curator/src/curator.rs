@@ -122,6 +122,34 @@ impl Curator {
         }
     }
 
+    /// Mark the next history as a compaction, retaining rules and standing facts that its summary omitted.
+    /// Ordinary edits and rewinds must not call this method. Call it after each successful compaction,
+    /// before the next view (including when the replacement happens to equal the old history).
+    pub fn compacted(&mut self) {
+        self.eng.compacted();
+    }
+
+    /// Notify a compaction with the exact old summarized prefix and the length of its replacement
+    /// prefix in the next history. The unchanged tail must not be included in either prefix.
+    /// Call before the next view; ordinary edits and rewinds must not call this.
+    pub fn compacted_prefix(&mut self, old_prefix: &[Value], summary_len: usize) {
+        self.eng.compacted_prefix(old_prefix, summary_len);
+    }
+
+    /// Prepare a compacted copy without requesting a model view or changing this curator. The caller can
+    /// snapshot the returned copy and commit it together with `replacement`, or discard it on failure.
+    /// `from` is the first retained message in `old`; the replacement must end in that exact tail.
+    pub fn prepare_compaction(&self, old: &[Value], from: usize, replacement: &[Value]) -> Result<Curator, String> {
+        if from > old.len() || replacement.len() < old.len() - from || !replacement.ends_with(&old[from..]) {
+            return Err("compacted history does not retain the specified tail".into());
+        }
+        let summary_len = replacement.len() - (old.len() - from);
+        let mut prepared = self.clone();
+        prepared.eng.compacted_prefix(&old[..from], summary_len);
+        prepared.cal_fresh |= prepared.eng.sync(replacement);
+        Ok(prepared)
+    }
+
     /// The tools the host offers the model (their names). The curator asks for notes through the `note`
     /// tool when there is one, and for lines in the reply when there is not.
     pub fn tools(&mut self, names: &[String]) {
@@ -309,7 +337,7 @@ impl Curator {
         }
     }
 
-    /// The tokens the model takes in one call, less its reply (0: no limit). The view never passes it.
+    /// The tokens the model takes in one call, less its reply (0: no limit). Protected content may exceed it.
     pub fn window(&mut self, tokens: u64) {
         self.window = tokens;
     }
@@ -504,6 +532,18 @@ pub(crate) fn longest(v: &Value, path: &mut Vec<usize>, f: &mut dyn FnMut(&[usiz
     walk(v, None, path, f)
 }
 
+/// Detect media in message or result content, including nested results.
+pub(crate) fn has_media(v: &Value) -> bool {
+    match v {
+        Value::Array(a) => a.iter().any(has_media),
+        Value::Object(o) => {
+            matches!(o.get("type").and_then(Value::as_str), Some("image" | "document"))
+                || o.get("content").is_some_and(has_media)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn walk(v: &Value, key: Option<&str>, path: &mut Vec<usize>, f: &mut dyn FnMut(&[usize], usize)) {
     match v {
         Value::String(s) => {
@@ -520,7 +560,11 @@ pub(crate) fn walk(v: &Value, key: Option<&str>, path: &mut Vec<usize>, f: &mut 
         }
         Value::Object(o) => {
             let kind = o.get("type").and_then(Value::as_str).unwrap_or("");
-            if matches!(kind, "image" | "document" | "thinking" | "redacted_thinking" | "tool_use" | "server_tool_use")
+            if ((kind == "tool_result" || o.get("role").and_then(Value::as_str) == Some("user")) && has_media(v))
+                || matches!(
+                    kind,
+                    "image" | "document" | "thinking" | "redacted_thinking" | "tool_use" | "server_tool_use"
+                )
             {
                 return;
             }
@@ -541,5 +585,41 @@ pub(crate) fn at<'a>(v: &'a mut Value, path: &[usize]) -> Option<&'a mut Value> 
         Value::Array(a) => at(a.get_mut(k)?, rest),
         Value::Object(o) => at(o.values_mut().nth(k)?, rest),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod media_page_tests {
+    use super::*;
+
+    #[test]
+    fn paging_preserves_user_text_with_image_or_document() {
+        for kind in ["image", "document"] {
+            let message = json!({"role":"user", "content":[
+                {"type":"text", "text":"caption ".repeat(4000)},
+                {"type":kind, "source":{"type":"url", "url":"https://example.invalid/a"}}
+            ]});
+            let mut view = vec![message.clone(), json!({"role":"user", "content":"plain ".repeat(5000)})];
+            assert_eq!(page(&mut view, 4000), vec![1]);
+            assert_eq!(view[0], message);
+            assert!(view[1].to_string().contains("left out here"));
+        }
+    }
+
+    #[test]
+    fn paging_preserves_nested_multimodal_results_but_pages_plain_text() {
+        let text = "caption ".repeat(4000);
+        let result = json!({"type":"tool_result", "content":[
+            {"type":"text", "text":text},
+            {"type":"tool_result", "content":[{"type":"image", "source":{"type":"url", "url":"https://example.invalid/a"}}]}
+        ]});
+        let mut view = vec![
+            json!({"role":"user", "content":[result.clone()]}),
+            json!({"role":"user", "content":[{"type":"text", "text":"plain ".repeat(5000)}]}),
+        ];
+        let changed = page(&mut view, 4000);
+        assert_eq!(view[0]["content"][0], result);
+        assert_eq!(changed, vec![1]);
+        assert!(view[1].to_string().contains("left out here"));
     }
 }

@@ -15,11 +15,19 @@ impl Setup {
                 hint: "already signed in on this machine".into(),
             });
         }
-        items.extend(nexo_providers::login::choices(&flow).into_iter().map(|c| PickItem {
-            label: c.label,
-            value: c.flow,
-            hint: c.hint,
-        }));
+        if flow == "claude" {
+            items.push(PickItem {
+                label: "Sign in from a terminal".into(),
+                value: "claude-cli".into(),
+                hint: "Run: nexo auth login anthropic-oauth (risk warning and consent required)".into(),
+            });
+        } else {
+            items.extend(nexo_providers::login::choices(&flow).into_iter().map(|c| PickItem {
+                label: c.label,
+                value: c.flow,
+                hint: c.hint,
+            }));
+        }
         self.list = Picker::new(PickKind::Model, "", items, None);
         self.prompt = None;
         self.step = Step::Login;

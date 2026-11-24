@@ -3,6 +3,79 @@
 use super::*;
 
 #[test]
+fn group_cost_keeps_its_original_billing_basis_after_provider_switch() {
+    for subscription in [false, true] {
+        let (mut a, _rx) = bare();
+        a.opts.animations = false;
+        a.provider = "paid".into();
+        a.opts.providers = vec![("paid".into(), nexo_core::ProviderConfig::new("openai", "http://x", None))];
+        if subscription {
+            a.opts.providers[0].1.login = Some("codex".into());
+        }
+        let group = a.push(Block::Group { folded: true, len: 1 });
+        a.push(card("charged", 1));
+        a.charge_group(2.0);
+        let original = head(&mut a, group);
+        assert!(original.contains("$2.00"), "{original}");
+        assert_eq!(original.contains("API"), subscription, "{original}");
+        a.opts.providers[0].1.login = if subscription { None } else { Some("codex".into()) };
+        a.invalidate_all();
+        let switched = head(&mut a, group);
+        assert_eq!(switched, original, "historical charges must not be relabelled");
+    }
+}
+
+#[test]
+fn group_cost_omits_mixed_billing_and_nonfinite_amounts() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    a.provider = "paid".into();
+    a.opts.providers = vec![("paid".into(), nexo_core::ProviderConfig::new("openai", "http://x", None))];
+    let group = a.push(Block::Group { folded: true, len: 1 });
+    a.push(card("mixed", 1));
+    a.charge_group(2.0);
+    assert!(head(&mut a, group).contains("$2.00"));
+    a.opts.providers[0].1.login = Some("codex".into());
+    a.charge_group(3.0);
+    assert!(!head(&mut a, group).contains('$'), "mixed actual/equivalent totals are not attributable");
+    for amount in [f64::NAN, f64::INFINITY, -1.0] {
+        let (mut a, _rx) = bare();
+        let group = a.push(Block::Group { folded: true, len: 1 });
+        a.push(card("invalid", 1));
+        a.charge_group(amount);
+        let text = head(&mut a, group);
+        assert!(!text.contains('$'), "{amount}: {text}");
+    }
+}
+
+#[test]
+fn group_cost_never_uses_global_weekly_usage_and_omits_unknowns() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    let group = a.push(Block::Group { folded: true, len: 1 });
+    a.push(card("unknown", 1));
+    a.plan_usage = Some(nexo_providers::usage::PlanUsage {
+        kind: "codex".into(),
+        meters: vec![nexo_providers::usage::Meter {
+            slot: "weekly".into(),
+            label: "week".into(),
+            used_pct: 73.0,
+            counts: None,
+            window_minutes: Some(10080),
+            resets_at: None,
+            observed_at: None,
+        }],
+        ..Default::default()
+    });
+    let unpriced = head(&mut a, group);
+    assert!(!unpriced.contains('$') && !unpriced.contains('%'), "{unpriced}");
+    a.provider = "unconfigured".into();
+    a.charge_group(2.0);
+    let unknown = head(&mut a, group);
+    assert!(!unknown.contains('$') && !unknown.contains('%'), "{unknown}");
+}
+
+#[test]
 fn the_last_code_block_is_found() {
     let text = "run this:\n```bash\ncargo test\n```\nthen\n````rust\nfn a() {}\n```\nx\n````\nend";
     assert_eq!(last_code_block(text).as_deref(), Some("fn a() {}\n```\nx"));

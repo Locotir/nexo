@@ -37,3 +37,45 @@ mod vendors_pin;
 pub use client::{registry, Client, Registry};
 pub use nexo_http::build_client;
 pub use presets::presets;
+
+/// Flatten nested tool-result payloads without cloning image data. Nested results are
+/// payload, not independent protocol calls, so only their leaves go on the wire.
+fn result_parts(parts: &[nexo_core::Part]) -> Vec<&nexo_core::Part> {
+    let mut out = Vec::new();
+    let mut stack = vec![parts.iter()];
+    while let Some(iter) = stack.last_mut() {
+        match iter.next() {
+            Some(nexo_core::Part::ToolResult { content, .. }) => stack.push(content.iter()),
+            Some(part) => out.push(part),
+            None => {
+                stack.pop();
+            }
+        }
+    }
+    out
+}
+
+fn result_text(parts: &[&nexo_core::Part]) -> String {
+    parts.iter().filter_map(|p| p.as_text()).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+fn nested_image_result() -> nexo_core::Message {
+    use nexo_core::{ImageSource, Message, Part};
+    let image = Part::Image { source: ImageSource::Url { url: "https://example.invalid/p.png".into() } };
+    Message::tool_results(vec![Part::ToolResult {
+        call_id: "outer".into(),
+        name: None,
+        is_error: true,
+        content: vec![
+            Part::text("before"),
+            Part::ToolResult {
+                call_id: "inner".into(),
+                name: None,
+                is_error: false,
+                content: vec![Part::text("nested"), image],
+            },
+            Part::text("after"),
+        ],
+    }])
+}

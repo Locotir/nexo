@@ -331,15 +331,15 @@ impl JobsView {
     fn detail_lines(&self, w: usize, theme: &Theme) -> Vec<Line<'static>> {
         let Some(j) = self.current() else { return Vec::new() };
         let mut lines = Vec::new();
-        for (i, l) in j.label.lines().enumerate() {
-            let text = truncate(l, w.saturating_sub(if self.monitors { 12 } else { 8 }));
-            let lead = if i == 0 {
-                format!("{} {:<3} ", if self.monitors { "monitor" } else { "job" }, j.id)
-            } else {
-                "        ".into()
-            };
-            lines.push(Line::from(vec![Span::styled(lead, theme.dim()), Span::styled(text, theme.bold(theme.fg))]));
-        }
+        let lead = format!("{} {:<3} ", if self.monitors { "monitor" } else { "job" }, j.id);
+        let rest = vec![Span::raw(" ".repeat(width(&lead)))];
+        let wrapped = crate::render::wrap::wrap_runs(
+            &[(j.label.clone(), theme.bold(theme.fg))],
+            w,
+            &[Span::styled(lead, theme.dim())],
+            &rest,
+        );
+        lines.extend(wrapped);
         if self.monitors {
             lines.push(Line::from(Span::styled(format!("monitor: {}", self.monitor_status(j.id)), theme.dim())));
         }
@@ -358,7 +358,18 @@ impl JobsView {
             lines.push(Line::from(Span::styled("no output yet", theme.dim())));
         }
         for l in tail.lines() {
-            lines.push(Line::from(Span::raw(truncate(&l.replace('\t', "    "), w))));
+            if self.monitors {
+                // The list is a preview, but the detail must not hide the end of
+                // a retained output line: there is no horizontal scrolling here.
+                lines.extend(crate::render::wrap::wrap_runs(
+                    &[(l.replace('\t', "    "), Default::default())],
+                    w,
+                    &[],
+                    &[],
+                ));
+            } else {
+                lines.push(Line::from(Span::raw(truncate(&l.replace('\t', "    "), w))));
+            }
         }
         lines
     }
@@ -431,6 +442,63 @@ mod tests {
         view.set_jobs(vec![job(1), job(3)]);
         assert!(!view.detail);
         assert_eq!(view.scroll, 0);
+    }
+
+    #[test]
+    fn job_detail_wraps_and_preserves_the_full_command() {
+        let command = "cargo test --workspace --all-features -- --nocapture";
+        let job = JobInfo {
+            id: 12,
+            kind: JobKind::Shell,
+            label: command.into(),
+            status: JobStatus::Running,
+            elapsed_ms: 0,
+            lines: 0,
+            held: false,
+        };
+        let view = JobsView::new(vec![job]);
+        let lines = view.detail_lines(22, &Theme::dark());
+        // Ratatui spans include leading/continuation padding; assert the rendered
+        // command by concatenating only non-whitespace content from each row.
+        let shown = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>();
+        let expected = command.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let first_command_row = shown[0].split_once("  ").map(|(_, text)| text).unwrap_or(&shown[0]);
+        let actual = std::iter::once(first_command_row)
+            .chain(shown.iter().skip(1).take_while(|line| line.starts_with("        ")).map(String::as_str))
+            .flat_map(str::chars)
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        assert_eq!(actual, expected, "{shown:?}");
+        assert!(lines.len() > 2, "command should wrap across rows");
+    }
+
+    #[test]
+    fn monitor_detail_preserves_long_output_and_blank_lines() {
+        let job = JobInfo {
+            id: 7,
+            kind: JobKind::Shell,
+            label: "watch.sh".into(),
+            status: JobStatus::Running,
+            elapsed_ms: 0,
+            lines: 3,
+            held: false,
+        };
+        let output = format!("{}END\n\n构建完成", "x".repeat(90));
+        let mut view = JobsView::monitors(vec![job], vec![JobTail { id: 7, ended_ago_ms: None, text: output.clone() }]);
+        view.key(KeyEvent::from(KeyCode::Enter));
+        let theme = Theme::dark();
+        for w in [20, 40, 80] {
+            let lines = view.detail_lines(w, &theme);
+            let body = &lines[lines.iter().position(|l| l.to_string() == "─".repeat(w)).unwrap() + 1..];
+            assert!(body.iter().all(|line| width(&line.to_string()) <= w));
+            assert_eq!(body.iter().map(|line| line.to_string()).collect::<String>(), output.replace('\n', ""));
+            assert!(body.iter().any(|line| line.to_string().is_empty()), "blank line must survive");
+        }
+        // Reading the retained output must not expose a destructive stop key.
+        assert!(matches!(view.key(KeyEvent::from(KeyCode::Char('x'))), ModalOut::Nothing));
     }
 
     #[test]

@@ -589,9 +589,22 @@ pub struct Rules {
     pub turn: usize,
     /// Set while a rewritten history is read anew: the rules found in it are the carried ones, in place.
     pub replay: bool,
+    /// Keys inherited at the start of a summary replay, not rules first found in the summary.
+    #[serde(skip)]
+    replay_carried: std::collections::HashSet<String>,
 }
 
 impl Rules {
+    /// Mark the inherited rules before reading a summary; new rules in it still follow normal ordering.
+    pub(crate) fn begin_replay(&mut self) {
+        self.replay_carried = self.list.iter().map(|r| r.key.clone()).collect();
+    }
+
+    pub(crate) fn end_replay(&mut self) {
+        self.replay = false;
+        self.replay_carried.clear();
+    }
+
     /// Adds a rule; one with the same wording is kept once (the first, in the message that has it now).
     /// Given again after other rules in a new message, it moves to the end with its new turn: it is the
     /// latest word over whatever changed it in between. Found again while a rewritten history is read
@@ -603,7 +616,7 @@ impl Rules {
             self.list[i].restated &= restated;
             let last = i + 1 == self.list.len();
             let was = self.list[i].msg;
-            if last || was == Some(msg) || (was.is_none() && self.replay) {
+            if last || was == Some(msg) || (self.replay && (was.is_none() || self.replay_carried.contains(&k))) {
                 self.list[i].msg.get_or_insert(msg);
             } else {
                 let mut r = self.list.remove(i);
@@ -620,7 +633,7 @@ impl Rules {
     pub fn carried(self) -> Rules {
         let turn = self.list.iter().map(|r| r.turn).max().unwrap_or(0);
         let list = self.list.into_iter().map(|r| Rule { msg: None, ..r }).collect();
-        Rules { list, turn, replay: false }
+        Rules { list, turn, replay: false, replay_carried: Default::default() }
     }
 
     /// The block of the rules ``shown`` takes, or "" when it takes none.

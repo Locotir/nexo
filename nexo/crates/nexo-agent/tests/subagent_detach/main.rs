@@ -248,7 +248,11 @@ impl Tool for Read {
 }
 
 fn tools(probe: &Arc<Probe>) -> ToolSet {
-    ToolSet::new().with(Arc::new(Read)).with(Arc::new(Wait(probe.clone()))).with(Arc::new(Write(probe.clone())))
+    ToolSet::new()
+        .with(Arc::new(Read))
+        .with(Arc::new(Wait(probe.clone())))
+        .with(Arc::new(Write(probe.clone())))
+        .with(Arc::new(nexo_tools::jobs::Jobs))
 }
 
 #[path = "../scratch/mod.rs"]

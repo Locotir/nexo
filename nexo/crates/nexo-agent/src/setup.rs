@@ -78,8 +78,18 @@ pub async fn check(
         });
         sources.push(format!("prices 0 from {}: it runs on your own hardware", probe::kind_label(&probe.kind)));
     }
-    info.efforts = probe::effort_levels(&probe.protocol, &probe.kind, &probe.base_url, model, info.reasoning);
+    if info.efforts.is_empty() {
+        if let Some(cached) = nexo_providers::modellist::details(name, &cfg.base_url, model) {
+            info.efforts = cached.efforts;
+        }
+    }
+    if info.efforts.is_empty() {
+        info.efforts = probe::effort_levels(&probe.protocol, &probe.kind, &probe.base_url, model, info.reasoning);
+    }
 
+    // Discovery can advertise modes our typed request API cannot express. Retain them
+    // in the disk cache, but do not offer/send a made-up equivalent (notably ultra).
+    info.efforts.retain(|l| l == "off" || l == "on" || Effort::parse(l).is_some());
     let mut check = ModelCheck { info, sources, ..Default::default() };
     let level = check.info.efforts.iter().find(|l| *l != "off").cloned();
     let mut outcome = try_once(&client, cfg, model, level.as_deref()).await;
@@ -386,6 +396,56 @@ pub fn save(file: &Path, name: &str, cfg: &ProviderConfig, model: &str) -> anyho
     })
 }
 
+/// Which models the family table of [`probe::effort_levels`] speaks for when no list says: (protocol or host, model
+/// prefix). One row per vendor family that documents `reasoning_effort` / `output_config.effort`; xAI documents it
+/// for grok-4.5 and later only (docs.x.ai reasoning guide). A model outside it keeps what the person configured.
+const TABLE_FAMILIES: &[(&str, &str)] = &[
+    ("anthropic", "claude-"),
+    ("copilot", "claude-"),
+    ("openai-responses", "gpt-"),
+    ("api.openai.com", "gpt-"),
+    ("api.x.ai", "grok-4.5"),
+    ("api.x.ai", "grok-4.6"),
+    ("api.x.ai", "grok-4.7"),
+];
+
+/// The reasoning levels `model` takes at `cfg`: what the provider's own model list said (cached, scoped to the
+/// endpoint), else the vendor family table (a list saved in the configuration may be older than the model's
+/// levels), else what the configuration lists; empty when none is known.
+pub fn resolve_levels(name: &str, cfg: &ProviderConfig, model: &str) -> Vec<String> {
+    let known = |l: &String| l == "off" || l == "on" || Effort::parse(l).is_some();
+    if let Some(d) = nexo_providers::modellist::details(name, &cfg.base_url, model) {
+        let mut listed: Vec<String> = d.efforts.into_iter().filter(known).collect();
+        // the list names the effort levels only: off is offered where it thinks less (Anthropic)
+        let off = cfg.protocol == nexo_providers::anthropic::ID
+            && d.reasoning
+            && nexo_providers::anthropic::off_thinks_less(model);
+        if !listed.is_empty() {
+            if off && !listed.iter().any(|l| l == "off") {
+                listed.insert(0, "off".into());
+            }
+            return listed;
+        }
+    }
+    let m = model.to_ascii_lowercase();
+    let covered = TABLE_FAMILIES
+        .iter()
+        .any(|(k, prefix)| (cfg.protocol == *k || cfg.base_url.contains(k)) && m.starts_with(prefix))
+        && !m.contains("non-reasoning");
+    if covered {
+        return probe::effort_levels(&cfg.protocol, "", &cfg.base_url, model, true);
+    }
+    cfg.efforts.get(model).cloned().unwrap_or_default()
+}
+
+/// Puts [`resolve_levels`] into `cfg.efforts` for `model`, where every reader of the levels looks.
+pub fn fill_levels(name: &str, cfg: &mut ProviderConfig, model: &str) {
+    let levels = resolve_levels(name, cfg, model);
+    if !levels.is_empty() {
+        cfg.efforts.insert(model.to_string(), levels);
+    }
+}
+
 /// The reasoning level in force for `model`: its own, else the agent's.
 pub fn effort_of(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -> Option<String> {
     cfg.effort.get(model).filter(|e| !e.is_empty()).cloned().or_else(|| fallback.clone())
@@ -412,6 +472,25 @@ pub fn effort_clamp_note(cfg: &ProviderConfig, model: &str, fallback: &Option<St
 mod tests {
     use super::*;
     use nexo_core::Pricing;
+
+    #[test]
+    fn levels_come_from_the_family_table_over_a_stale_configured_list() {
+        let mut cfg = ProviderConfig::new("anthropic", "https://api.anthropic.com", None);
+        cfg.efforts.insert("claude-opus-4-8".into(), vec!["off".into(), "low".into(), "high".into()]);
+        let l = resolve_levels("no-such-provider-cached", &cfg, "claude-opus-4-8");
+        assert!(l.iter().any(|x| x == "xhigh") && l.iter().any(|x| x == "max"), "{l:?}");
+        // a model outside the table keeps what is configured
+        cfg.efforts.insert("other".into(), vec!["low".into()]);
+        assert_eq!(resolve_levels("no-such-provider-cached", &cfg, "other"), ["low"]);
+        let mut x = ProviderConfig::new("openai-chat", "https://api.x.ai/v1", None);
+        assert_eq!(resolve_levels("xai-t", &x, "grok-4.7"), ["low", "medium", "high", "xhigh"]);
+        assert_eq!(resolve_levels("xai-t", &x, "grok-4.5"), ["low", "medium", "high"]);
+        assert!(resolve_levels("xai-t", &x, "grok-4").is_empty());
+        x.efforts.insert("grok-4".into(), vec!["low".into()]);
+        assert_eq!(resolve_levels("xai-t", &x, "grok-4"), ["low"]);
+        let o = ProviderConfig::new("openai-responses", "https://api.openai.com/v1", None);
+        assert!(resolve_levels("openai-t", &o, "gpt-6.2-astra").contains(&"max".to_string()));
+    }
 
     /// A provider whose model `m` lists `levels` (none listed when empty) and has `set` as its level.
     fn effort_cfg(levels: &[&str], set: Option<&str>) -> ProviderConfig {

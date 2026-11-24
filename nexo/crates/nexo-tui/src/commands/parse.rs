@@ -92,6 +92,7 @@ pub enum Command {
     Cost,
     /// `/sent` (`/request`): a summary of the last prepared request; delivery is not confirmed.
     Sent,
+    Explore(Option<String>),
     Context,
     ContextLive,
     Theme(Option<String>),
@@ -228,6 +229,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "status" => Command::Status,
         "tools" => Command::Tools,
         "sent" => Command::Sent,
+        "explore" => Command::Explore(arg),
         "hooks" => Command::Hooks,
         "mcp" => Command::Mcp,
         "chrome" => Command::Chrome,

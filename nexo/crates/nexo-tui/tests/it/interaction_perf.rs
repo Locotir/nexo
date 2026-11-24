@@ -222,6 +222,167 @@ fn multiline_pointer_to_frame_latency() {
     }
 }
 
+/// Selection was missing from the timed interaction cases. Alternate extension and
+/// contraction so a no-op drag or a frame that keeps stale highlighting cannot pass.
+/// Uses the same broad median stall guard as the other cases, not an FPS target.
+#[test]
+fn multiline_selection_drag_to_frame_latency() {
+    use crossterm::event::MouseButton;
+
+    for blocks in [1000, 5000] {
+        let cwd = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let opts = TuiOptions { cwd: cwd.path().into(), animations: false, ..Default::default() };
+        let mut a = App::new(opts, tx);
+        a.unlock();
+        a.drop_banner();
+        for i in 0..blocks {
+            a.push(Block::User { text: format!("history {i}"), at: None });
+        }
+        let selected = a.push(Block::User {
+            text: "first selection line\nsecond selection line\nthird selection line".into(),
+            at: None,
+        });
+        let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+        a.follow = true;
+        draw_frame(&mut term, &mut a).unwrap();
+        assert!(a.view_top() > 0);
+        let area = a.transcript_area;
+        let y = area.y + (a.offsets[selected] - a.view_top()) as u16;
+        assert!(y + 2 < area.bottom(), "all three selection rows must be visible");
+        let x = area.x + 5;
+        event::handle(&mut a, mouse(MouseEventKind::Down(MouseButton::Left), area.x + 2, y));
+        draw_frame(&mut term, &mut a).unwrap();
+        // Pressing puts the pointer over this message, so its unselected style
+        // includes hover. Compare contraction against that same visual state.
+        assert_eq!(a.hover, Hover::Head(selected));
+        let unselected = term.backend().buffer()[(x, y + 2)].style();
+        assert_ne!(unselected.bg, Some(a.theme.highlight_bg));
+        let mut drag_times = Vec::with_capacity(N);
+        let mut draw_times = Vec::with_capacity(N);
+        measure_for("select+draw", blocks, |i| {
+            let extended = i % 2 == 0;
+            let end_y = y + if extended { 2 } else { 1 };
+            let ev = mouse(MouseEventKind::Drag(MouseButton::Left), x + 8, end_y);
+            a.dirty = false;
+            let start = Instant::now();
+            event::handle(&mut a, ev);
+            let drag = start.elapsed();
+            let requested_frame = a.dirty;
+            let draw_start = Instant::now();
+            draw_frame(&mut term, &mut a).unwrap();
+            let drawing = draw_start.elapsed();
+            let total = start.elapsed();
+            drag_times.push(drag);
+            draw_times.push(drawing);
+            assert!(requested_frame, "each drag must request its changed selection frame");
+            assert_eq!(a.selection.as_ref().unwrap().head.line, a.offsets[selected] + if extended { 2 } else { 1 });
+            assert_eq!(term.backend().buffer()[(x, y + 1)].bg, a.theme.highlight_bg);
+            if extended {
+                assert_eq!(term.backend().buffer()[(x, y + 2)].bg, a.theme.highlight_bg);
+            } else {
+                assert_eq!(term.backend().buffer()[(x, y + 2)].style(), unselected, "contraction clears old highlight");
+            }
+            let copied = a.selection_text().unwrap();
+            assert!(copied.contains("first selection line"));
+            assert!(copied.contains("second"));
+            assert_eq!(copied.contains("third"), extended);
+            total
+        });
+        report("select-event", blocks, &mut drag_times);
+        report("select-draw", blocks, &mut draw_times);
+        // Do not release: production mouse-up copies to the system clipboard.
+        // This benchmark intentionally measures drag/paint without that external side effect.
+    }
+}
+
+/// Unlike the ignored model-switch diagnostic, this runs in the ordinary suite and
+/// times ModelLimits dispatch and its completed frame separately on mixed history.
+#[test]
+fn model_limits_event_to_frame_latency() {
+    for blocks in [1000, 5000] {
+        let cwd = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let opts = TuiOptions { cwd: cwd.path().into(), animations: false, group_tools: false, ..Default::default() };
+        let mut a = App::new(opts, tx);
+        a.unlock();
+        a.drop_banner();
+        a.provider = "local".into();
+        a.model = "initial".into();
+        for i in 0..blocks {
+            match i % 3 {
+                0 => {
+                    a.push(Block::User { text: format!("history {i}"), at: None });
+                }
+                1 => {
+                    a.push(Block::Assistant {
+                        text: "## Investigation\n\nSome **markdown** and `code`.\n\n```rust\nfn main() {}\n```".into(),
+                        streaming: false,
+                        at: None,
+                        started: None,
+                        took_ms: None,
+                    });
+                }
+                _ => {
+                    let id = format!("priced-{i}");
+                    a.push(Block::Tool {
+                        id: id.clone(),
+                        name: "read".into(),
+                        summary: "inspect source".into(),
+                        args: Default::default(),
+                        status: ToolStatus::Done,
+                        progress: vec![],
+                        output: Some(nexo_core::ToolOutput::ok("first line\nsecond line")),
+                        started: None,
+                        elapsed_ms: Some(1),
+                        folded: false,
+                    });
+                    a.marks.insert(id.clone(), nexo_core::CallMark::Sent);
+                    a.call_tokens.insert(id, 1000);
+                }
+            }
+        }
+        let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+        a.follow = true;
+        draw_frame(&mut term, &mut a).unwrap();
+        assert!(a.view_top() > 0);
+        let mut event_times = Vec::with_capacity(N);
+        let mut draw_times = Vec::with_capacity(N);
+        measure_for("limits+draw", blocks, |i| {
+            let model = format!("limits-{i:02}");
+            let window = if i % 2 == 0 { 128_000 } else { 272_000 };
+            let ev = AgentEvent::ModelLimits {
+                provider: "local".into(),
+                model: model.clone(),
+                pricing: Some(nexo_core::Pricing { input: (i + 1) as f64, output: 5.0, ..Default::default() }),
+                context_window: Some(window),
+                max_output: Some(8192),
+                source: "catalogue".into(),
+            };
+            a.dirty = false;
+            let start = Instant::now();
+            a.handle_agent(ev);
+            let dispatch = start.elapsed();
+            let requested_frame = a.dirty;
+            let draw_start = Instant::now();
+            draw_frame(&mut term, &mut a).unwrap();
+            let drawing = draw_start.elapsed();
+            let total = start.elapsed();
+            event_times.push(dispatch);
+            draw_times.push(drawing);
+            assert!(requested_frame, "new limits must request a frame");
+            assert_eq!(a.model, model);
+            assert_eq!(a.limits.as_ref().unwrap().context_window, Some(window));
+            assert!(matches!(a.blocks.last(), Some(Block::Model { model: current, .. }) if current == &model));
+            let rows = nexo_tui::ui::rows_of(term.backend().buffer()).join("\n");
+            assert!(rows.contains(&format!("local/{model}")), "new model card must actually be painted: {rows}");
+            total
+        });
+        report("limits-event", blocks, &mut event_times);
+        report("limits-draw", blocks, &mut draw_times);
+    }
+}
+
 #[test]
 fn skill_load_event_to_frame_latency() {
     let cwd = tempfile::tempdir().unwrap();
@@ -266,4 +427,142 @@ fn skill_load_event_to_frame_latency() {
         assert!(rows.contains("Skill · Verify | loaded") && !rows.contains("PRIVATE BODY"), "{rows}");
         elapsed
     });
+}
+
+/// Search typing rescans the conversation; measure it separately from painting.
+#[test]
+fn search_edit_to_frame_latency() {
+    for blocks in [1000, 5000] {
+        let cwd = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut a = App::new(TuiOptions { cwd: cwd.path().into(), animations: false, ..Default::default() }, tx);
+        a.unlock();
+        a.drop_banner();
+        for i in 0..blocks {
+            let word = if i % 10 == 0 { "needlex" } else { "needle" };
+            a.push(Block::User { text: format!("history {i} {word}"), at: None });
+        }
+        let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+        draw_frame(&mut term, &mut a).unwrap();
+        a.open_search();
+        for c in "needle".chars() {
+            event::handle(&mut a, Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+        }
+        draw_frame(&mut term, &mut a).unwrap();
+        let mut event_times = Vec::with_capacity(N);
+        let mut draw_times = Vec::with_capacity(N);
+        measure_for("search+draw", blocks, |i| {
+            let narrow = i % 2 == 0;
+            let key = if narrow { KeyCode::Char('x') } else { KeyCode::Backspace };
+            let ev = Event::Key(KeyEvent::new(key, KeyModifiers::NONE));
+            a.dirty = false;
+            let start = Instant::now();
+            event::handle(&mut a, ev);
+            let dispatch = start.elapsed();
+            let requested_frame = a.dirty;
+            let draw_start = Instant::now();
+            draw_frame(&mut term, &mut a).unwrap();
+            let drawing = draw_start.elapsed();
+            let total = start.elapsed();
+            event_times.push(dispatch);
+            draw_times.push(drawing);
+            let search = a.search.as_ref().unwrap();
+            let expected = if narrow { "needlex" } else { "needle" };
+            assert!(requested_frame);
+            assert_eq!(search.query, expected);
+            assert_eq!(search.matches.len(), if narrow { blocks / 10 } else { blocks });
+            let rows = nexo_tui::ui::rows_of(term.backend().buffer()).join("\n");
+            assert!(rows.contains(&format!("search: {expected}")), "{rows}");
+            total
+        });
+        report("search-event", blocks, &mut event_times);
+        report("search-draw", blocks, &mut draw_times);
+    }
+}
+
+/// A resize invalidates layout across the history, unlike a warm redraw.
+#[test]
+fn long_history_resize_to_frame_latency() {
+    for blocks in [1000, 5000] {
+        let cwd = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut a = App::new(TuiOptions { cwd: cwd.path().into(), animations: false, ..Default::default() }, tx);
+        a.unlock();
+        a.drop_banner();
+        for i in 0..blocks {
+            a.push(Block::User { text: format!("history {i} {}", "wrapping text ".repeat(12)), at: None });
+        }
+        let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+        a.follow = true;
+        draw_frame(&mut term, &mut a).unwrap();
+        let mut events = Vec::with_capacity(N);
+        let mut draws = Vec::with_capacity(N);
+        measure_for("resize+draw", blocks, |i| {
+            let width = if i % 2 == 0 { 80 } else { 100 };
+            term.backend_mut().resize(width, 36);
+            a.dirty = false;
+            let start = Instant::now();
+            event::handle(&mut a, Event::Resize(width, 36));
+            let dispatch = start.elapsed();
+            let requested = a.dirty;
+            let draw_start = Instant::now();
+            draw_frame(&mut term, &mut a).unwrap();
+            let drawing = draw_start.elapsed();
+            let total = start.elapsed();
+            events.push(dispatch);
+            draws.push(drawing);
+            assert!(requested);
+            assert_eq!(a.term_width, width);
+            assert!(!a.force_clear);
+            let rows = nexo_tui::ui::rows_of(term.backend().buffer()).join("\n");
+            assert!(rows.contains(&format!("history {}", blocks - 1)), "latest message missing: {rows}");
+            total
+        });
+        report("resize-event", blocks, &mut events);
+        report("resize-draw", blocks, &mut draws);
+    }
+}
+
+/// Streaming deltas must update the visible answer even with a long history.
+/// Time event dispatch separately from the completed TestBackend frame.
+#[test]
+fn long_history_stream_to_frame_latency() {
+    for blocks in [1000, 5000] {
+        let cwd = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut a = App::new(TuiOptions { cwd: cwd.path().into(), animations: false, ..Default::default() }, tx);
+        a.unlock();
+        a.drop_banner();
+        for i in 0..blocks {
+            a.push(Block::User { text: format!("history {i}"), at: None });
+        }
+        let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+        a.follow = true;
+        a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+        draw_frame(&mut term, &mut a).unwrap();
+        assert!(a.view_top() > 0);
+        let mut events = Vec::with_capacity(N);
+        let mut draws = Vec::with_capacity(N);
+        measure_for("stream+draw", blocks, |i| {
+            let word = format!(" chunk{i:02}");
+            let ev = AgentEvent::TextDelta { text: word.clone() };
+            a.dirty = false;
+            let start = Instant::now();
+            a.handle_agent(ev);
+            let dispatch = start.elapsed();
+            let requested = a.dirty;
+            let draw_start = Instant::now();
+            draw_frame(&mut term, &mut a).unwrap();
+            let drawing = draw_start.elapsed();
+            let total = start.elapsed();
+            events.push(dispatch);
+            draws.push(drawing);
+            assert!(requested, "streaming delta must request a frame");
+            let rows = nexo_tui::ui::rows_of(term.backend().buffer()).join("\n");
+            assert!(rows.contains(word.trim()), "new delta must be painted: {rows}");
+            total
+        });
+        report("stream-event", blocks, &mut events);
+        report("stream-draw", blocks, &mut draws);
+    }
 }

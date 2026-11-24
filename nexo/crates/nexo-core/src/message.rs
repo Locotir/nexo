@@ -318,18 +318,52 @@ fn orphans_to_text(mut m: Message, fixes: &mut Vec<String>) -> Message {
     let mut parts = Vec::with_capacity(m.content.len());
     for p in std::mem::take(&mut m.content) {
         match p {
-            Part::ToolResult { name, content, is_error, .. } => {
+            Part::ToolResult { call_id, name, content, is_error } => {
                 let name = name.unwrap_or_else(|| "a call".into());
                 fixes.push(format!("a result of {name} had no call before it; it is kept as text"));
                 let what = if is_error { "error" } else { "output" };
-                parts.push(Part::text(format!("[{what} of {name}]\n{}", result_text(&content))));
-                parts.extend(content.into_iter().filter(|p| matches!(p, Part::Image { .. })));
+                parts.push(Part::text(format!("[{what} of {name} (call {call_id})]\n")));
+                orphan_content(content, &mut parts);
             }
             other => parts.push(other),
         }
     }
     m.content = parts;
     m
+}
+
+// Nested results cannot remain protocol results without their calls. Retain their
+// labels (especially errors), readable text, and images when flattening them.
+fn orphan_content(content: Vec<Part>, parts: &mut Vec<Part>) {
+    fn append(parts: &mut Vec<Part>, value: &str) {
+        if let Some(Part::Text { text }) = parts.last_mut() {
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(value);
+        } else {
+            parts.push(Part::text(value));
+        }
+    }
+    for part in content {
+        match part {
+            Part::ToolResult { call_id, name, content, is_error } => {
+                let what = if is_error { "error" } else { "output" };
+                append(parts, &format!("[{what} of {} (call {call_id})]\n", name.as_deref().unwrap_or("a call")));
+                orphan_content(content, parts);
+                append(parts, &format!("[end result of call {call_id}]"));
+            }
+            Part::ToolCall { id, name, args } => {
+                append(parts, &format!("[call {id} ({name}) with args {args}]"));
+            }
+            image @ Part::Image { .. } => parts.push(image),
+            other => {
+                if let Some(value) = other.as_text() {
+                    append(parts, value);
+                }
+            }
+        }
+    }
 }
 
 /// `content` as a list of parts, or as a plain string meaning one text part.
@@ -610,12 +644,104 @@ mod tests {
         let ms = vec![Message::user("go"), Message::new(Role::User, vec![orphan]), Message::assistant("ok")];
         let (out, fixes) = well_formed(ms);
         assert!(is_well_formed(&out));
-        assert_eq!(out[1].text(), "[output of grep]\n3 matches");
+        assert_eq!(out[1].text(), "[output of grep (call x)]\n3 matches");
         assert!(fixes[0].contains("a result of grep had no call"), "{fixes:?}");
         // the same call answered twice: the second answer is text
         let ms = vec![calls(&["a"]), results(&["a", "a"])];
         let (out, fixes) = well_formed(ms);
         assert!(is_well_formed(&out) && out[1].content.len() == 2 && fixes.len() == 1);
+    }
+
+    #[test]
+    fn orphan_nested_results_keep_images_text_and_error_labels() {
+        let image = |url: &str| Part::Image { source: ImageSource::Url { url: url.into() } };
+        let nested = Part::ToolResult {
+            call_id: "inner".into(),
+            name: Some("read".into()),
+            is_error: true,
+            content: vec![
+                Part::text("failed"),
+                image("inner"),
+                Part::ToolResult {
+                    call_id: "deep".into(),
+                    name: None,
+                    is_error: false,
+                    content: vec![image("deep"), Part::text("detail")],
+                },
+            ],
+        };
+        let orphan = Part::ToolResult {
+            call_id: "outer".into(),
+            name: Some("batch".into()),
+            is_error: false,
+            content: vec![Part::text("before"), image("outer"), nested, Part::text("after")],
+        };
+        let (out, fixes) = well_formed(vec![Message::new(Role::User, vec![orphan])]);
+        assert!(is_well_formed(&out));
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(
+            out[0].content,
+            vec![
+                Part::text("[output of batch (call outer)]\nbefore"),
+                image("outer"),
+                Part::text("[error of read (call inner)]\nfailed"),
+                image("inner"),
+                Part::text("[output of a call (call deep)]\n"),
+                image("deep"),
+                Part::text("detail\n[end result of call deep]\n[end result of call inner]\nafter"),
+            ]
+        );
+    }
+
+    #[test]
+    fn orphan_sibling_results_preserve_text_image_association() {
+        let image = |url: &str| Part::Image { source: ImageSource::Url { url: url.into() } };
+        let result = |id: &str, description: &str| Part::ToolResult {
+            call_id: id.into(),
+            name: Some("read".into()),
+            is_error: false,
+            content: vec![Part::text(description), image(id)],
+        };
+        let outer = Part::ToolResult {
+            call_id: "batch".into(),
+            name: Some("batch".into()),
+            is_error: false,
+            content: vec![result("one", "first image"), result("two", "second image")],
+        };
+        let (out, _) = well_formed(vec![Message::new(Role::User, vec![outer])]);
+        assert_eq!(
+            out[0].content,
+            vec![
+                Part::text("[output of batch (call batch)]\n[output of read (call one)]\nfirst image"),
+                image("one"),
+                Part::text("[end result of call one]\n[output of read (call two)]\nsecond image"),
+                image("two"),
+                Part::text("[end result of call two]"),
+            ]
+        );
+    }
+
+    #[test]
+    fn orphan_outer_ids_and_nested_calls_are_preserved() {
+        let nested_args = serde_json::json!({"query": "hello", "options": [1, {"enabled": true}]});
+        let result = |id: &str, content| Part::ToolResult {
+            call_id: id.into(),
+            name: Some("read".into()),
+            is_error: false,
+            content,
+        };
+        let nested = Part::ToolCall { id: "nested-id".into(), name: "search".into(), args: nested_args.clone() };
+        let (out, _) = well_formed(vec![Message::new(
+            Role::User,
+            vec![
+                result("first", vec![Part::text("before"), nested, Part::text("after")]),
+                result("second", vec![Part::text("other")]),
+            ],
+        )]);
+        assert!(is_well_formed(&out));
+        assert_eq!(out[0].text(), format!(
+            "[output of read (call first)]\nbefore\n[call nested-id (search) with args {nested_args}]\nafter\n\n[output of read (call second)]\nother"
+        ));
     }
 
     #[test]

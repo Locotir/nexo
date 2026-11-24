@@ -20,13 +20,15 @@ impl Tool for BrowserTool {
         ToolSpec {
             name: "browser".into(),
             description: "Drive a browser (Chrome, Chromium or Edge) for what `web_fetch` cannot do: JavaScript pages, \
-                          logins, forms. One `action` per call; the first call starts a clean headless browser, which stays open until `close`. \
+                          logins, forms. One `action` per call; the first page action starts a clean headless browser, which stays open until `close`. \
                           `open{profile=persistent}` keeps logins (window shown to sign in). Page-changing actions return a snapshot, \
                           one line per element, `e3 button \"Submit\"`; act on the refs of the latest one. A `target` is a ref (best), \
                           CSS selector or visible text. Fill a whole form with ONE `fill_batch`. `read_page` reads the page as a tree, \
                           `read_text` its text, `screenshot` shows it, `batch` runs known steps in one call. \
-                          Never use it to get past a CAPTCHA or bot check: stop and tell the person. `browsers` lists the person's own \
-                          logged-in browsers (`select_browser` uses one; the result says the rules)."
+                          Never use it to get past a CAPTCHA or bot check: stop and tell the person. For tasks needing the person's logged-in \
+                          pages, first use `browsers` to discover available browsers without granting access; if listed, no /chrome setup is needed. \
+                          `select_browser` uses one through the extension's access checks; the result says the rules. \
+                          Do not connect just because a browser is installed or listed."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -67,9 +69,9 @@ impl Tool for BrowserTool {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Drive a browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
-                          Headless by default; `browsers` lists the person's logged-in ones for `select_browser`. \
-                          Never get past a CAPTCHA or bot check: stop and tell the person.",
+            description: "Browser: one action/call; refs (`e3 button`). Headless by default. For the person's logged-in pages, \
+                          first `browsers`, then `select_browser`; no /chrome if listed. Discovery grants no access. \
+                          Never bypass CAPTCHA/bot checks: stop and tell the person.",
             params: &[
                 ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?,to?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} find{target} click_xy|double_click|right_click|drag|hover_xy|scroll_xy{to,modifiers?} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording capture_start capture_stop capture_save{path} batch{steps} close browsers select_browser{id} switch_browser"),
                 ("target", "ref (e3), CSS selector or text"),

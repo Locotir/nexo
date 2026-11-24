@@ -98,6 +98,8 @@ pub enum UsageKind {
     Review,
     /// The supervisor's check-in on a session that stopped (`agent.check_in`).
     CheckIn,
+    /// The check of a goal's words, when it is set (`agent.goal_check`).
+    GoalCheck,
     /// Everything spent so far, written in one line when the file is rewritten.
     Sum,
 }
@@ -382,7 +384,7 @@ fn checked_id(id: &str) -> anyhow::Result<&str> {
 
 /// A rewrite replaced the file but could not open it again.
 #[derive(Debug)]
-struct NotReopened(std::io::Error);
+pub(crate) struct NotReopened(std::io::Error);
 
 impl std::fmt::Display for NotReopened {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -395,7 +397,7 @@ impl std::error::Error for NotReopened {}
 #[cfg(test)]
 thread_local! {
     /// Tests make the next reopenings of a session file fail.
-    static FAIL_REOPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static FAIL_REOPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The session file, opened again to append to it.

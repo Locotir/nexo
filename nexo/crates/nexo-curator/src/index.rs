@@ -250,6 +250,11 @@ impl Index {
         let mut held: Vec<(usize, u64)> =
             self.need.iter().filter_map(|k| self.posts.get(k).map(|v| (v.len(), *k))).collect();
         held.sort_unstable();
+        let original: FxHashSet<u64> = held.iter().take(NEED_KEYS).map(|&(_, k)| k).collect();
+        // Request-only keys cannot retrieve history. Do not let them consume the key budget,
+        // even when one historical topic already fits: other topics must compete on the same terms.
+        // Keep original document frequencies and visible-key suppression; refill conservatively below.
+        held.retain(|&(_, k)| self.posts[&k].iter().any(|p| p.0 != self.asked));
         held.truncate(NEED_KEYS);
         let weight = |df: usize| (l / df as f64).ln();
         // few holders is few against the history: early on, a word of every other line is not rare
@@ -272,12 +277,24 @@ impl Index {
                 .filter(|p| p.0 != self.asked && !seen.contains(*p))
                 .filter_map(|&p| {
                     let (mut score, mut named) = (0.0, 0);
-                    for &(d, _) in held.iter().filter(|&&(_, o)| o == k || self.holds(o, p)) {
+                    // New keys must not inflate existing candidates' scores or make incidental
+                    // matches pass the two-key gate (including with common words).
+                    for &(d, _) in held.iter().filter(|&&(_, o)| {
+                        (!original.contains(&k) || original.contains(&o)) && (o == k || self.holds(o, p))
+                    }) {
                         score += weight(d);
                         named += (d <= named_cap) as usize;
                     }
+                    // Refilling the key budget must not turn a lone incidental word into recall.
+                    // Require corroboration by another newly admitted rare key for these candidates.
+                    let corroborated = original.contains(&k)
+                        || held
+                            .iter()
+                            .filter(|&&(d, o)| d <= rare && !original.contains(&o) && self.holds(o, p))
+                            .count()
+                            >= 2;
                     // one rare key is a line by chance (a number that a log line holds), unless it is a unique one
-                    (df <= 2 || named >= 2).then_some((score, p))
+                    (corroborated && (df <= 2 || named >= 2)).then_some((score, p))
                 })
                 .collect();
             cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
@@ -444,6 +461,82 @@ mod tests {
         let mut ix = session();
         ix.want(1500, "Look at the service in topic 5, it took 3 ms");
         assert!(lines(&ix, 4).is_empty(), "{:?}", lines(&ix, 4));
+    }
+
+    #[test]
+    fn visible_key_also_suppresses_a_distinct_old_fact() {
+        let mut ix = Index::default();
+        ix.add(0, "atlas service: never deploy on Fridays");
+        ix.add(1, "atlas service: owner is Morgan");
+        for u in 2..100 {
+            ix.add(u, &format!("unrelated filler line {u}"));
+        }
+        ix.add(100, "What do we know about atlas service?");
+        ix.want(100, "What do we know about atlas service?");
+
+        assert!(ix.pick(4, 10, &mut |_| false).contains(&(0, 0)));
+        // Current limitation: seeing a different atlas fact hides the prohibition.
+        assert!(!ix.pick(4, 10, &mut |p| p.0 == 1).contains(&(0, 0)));
+    }
+
+    #[test]
+    fn request_only_keys_do_not_crowd_out_history_keys() {
+        let mut ix = Index::default();
+        ix.add(0, "atlas service port 2222");
+        for u in 1..100 {
+            ix.add(u, &format!("unrelated filler line {u}"));
+        }
+        let request =
+            format!("{}\natlas service", (0..35).map(|i| format!("queryword{i}")).collect::<Vec<_>>().join("\n"));
+        ix.add(100, &request);
+        ix.want(100, &request);
+        assert_eq!(ix.pick(4, 10, &mut |_| false), vec![(0, 0)]);
+        assert!(ix.pick(4, 10, &mut |p| p.0 == 0).is_empty());
+        assert!(ix.pick(0, 10, &mut |_| false).is_empty());
+        assert!(ix.pick(4, 0, &mut |_| false).is_empty());
+        ix.want(100, "queryword1 queryword2");
+        assert!(ix.pick(4, 10, &mut |_| false).is_empty());
+    }
+
+    #[test]
+    fn refilled_keys_require_more_than_a_lone_incidental_match() {
+        let mut ix = Index::default();
+        ix.add(0, "atlas service port 2222");
+        ix.add(1, "comparison is buggy");
+        for u in 2..100 {
+            ix.add(u, &format!("unrelated filler line {u}"));
+        }
+        let request = format!(
+            "{}\natlas service comparison",
+            (0..35).map(|i| format!("queryword{i}")).collect::<Vec<_>>().join("\n")
+        );
+        ix.add(100, &request);
+        ix.want(100, &request);
+        let picked = ix.pick(4, 10, &mut |_| false);
+        assert!(picked.contains(&(0, 0)), "corroborated topic: {picked:?}");
+        assert!(!picked.contains(&(1, 0)), "incidental match: {picked:?}");
+    }
+
+    #[test]
+    fn request_only_keys_do_not_hide_a_second_topic() {
+        let mut ix = Index::default();
+        ix.add(0, "atlas retry policy forbids network access");
+        ix.add(1, "boreal metrics port 9417");
+        ix.add(2, "boreal metrics port 9418");
+        for u in 3..100 {
+            ix.add(u, &format!("unrelated filler line {u}"));
+        }
+        let request = format!(
+            "{}\natlas boreal metrics",
+            (0..23).map(|i| format!("queryword{i}")).collect::<Vec<_>>().join("\n")
+        );
+        ix.add(100, &request);
+        ix.want(100, &request);
+        let picked = ix.pick(4, 10, &mut |_| false);
+        assert!(picked.contains(&(0, 0)), "first topic: {picked:?}");
+        assert!(picked.contains(&(1, 0)) && picked.contains(&(2, 0)), "second topic: {picked:?}");
+        // A visible revision must still suppress older observations; no conflict inference is added.
+        assert!(!ix.pick(4, 10, &mut |p| p.0 == 2).contains(&(1, 0)));
     }
 
     #[test]

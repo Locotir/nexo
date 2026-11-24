@@ -22,7 +22,11 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap();
     for i in 0..blocks {
-        let text = if i + 1 == blocks { "PTY_FIXTURE_READY".to_owned() } else { format!("history message {i}") };
+        let text = if i + 1 == blocks {
+            "PTY_FIXTURE_READY https://example.com/pty-mouse".to_owned()
+        } else {
+            format!("history message {i}")
+        };
         events.send(AgentEvent::History { index: i, message: Message::user(text) }).unwrap();
     }
     events

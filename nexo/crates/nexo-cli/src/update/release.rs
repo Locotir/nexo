@@ -111,55 +111,41 @@ pub struct Newer {
     pub count: Option<u32>,
 }
 
-/// Up to date (`Some(None)`), a newer release (`Some(Some(..))`), or `None` when nothing could be asked.
-/// The release tag comes from the web redirect; when it is the running commit nothing else is asked. The
-/// API only adds the count of commits (never guessed: without it, none is shown).
+/// Up to date (`Some(None)`), a newer release (`Some(Some(..))`), or `None` when no
+/// release or its comparison could be confirmed. The web redirect and API fallback have identical semantics:
+/// only a published release is an update target; `main` may not have been released yet.
 pub(super) async fn status(commit: &str, src: &Sources) -> Option<Option<Newer>> {
     let (client, probe) = (client(8)?, probe(8)?);
-    let web_tag = tag_via_web(&probe, src).await;
-    if web_tag.as_deref().is_some_and(|t| tag_is_commit(t, commit)) {
+    let tag = match tag_via_web(&probe, src).await {
+        Some(tag) => tag,
+        None => api_release(&client, src).await.ok()?.tag,
+    };
+    if tag_is_commit(&tag, commit) {
         return Some(None);
     }
-    let target = match &web_tag {
-        Some(t) => t.clone(),
-        None => api_release(&client, src).await.map_or_else(|_| "main".to_string(), |r| r.tag),
-    };
-    let count = ahead(&client, src, commit, &target).await;
-    match (web_tag, count) {
-        (_, Some(0)) => Some(None),
-        (Some(tag), count) => Some(Some(Newer { tag, count })),
-        (None, Some(n)) => Some(Some(Newer { tag: target, count: Some(n) })),
-        (None, None) => None,
+    let count = ahead(&client, src, commit, &tag).await?;
+    if count == 0 {
+        Some(None)
+    } else {
+        Some(Some(Newer { tag, count: Some(count) }))
     }
 }
 
-/// How many commits `target` (a release tag, or `main`) is ahead of `commit`.
-/// When GitHub does not know the commit (a build of changes pushed elsewhere, or not yet), the commits
-/// on `main` made after it count instead. `None` when the API cannot say.
+/// How many commits the confirmed release is ahead of `commit`. If the comparison
+/// is unavailable (including an unknown local commit), the status is unknown: commits on
+/// `main` made since the build are not evidence of what was actually published.
 pub(super) async fn ahead(client: &reqwest::Client, src: &Sources, commit: &str, target: &str) -> Option<u32> {
-    let get = |url: String| client.get(url).header("Accept", "application/vnd.github+json").send();
-    let r = get(format!("{}/compare/{commit}...{target}", src.api)).await.ok()?;
-    if r.status().is_success() {
-        let v: serde_json::Value = r.json().await.ok()?;
-        return v.get("ahead_by")?.as_u64().map(|n| n as u32);
-    }
-    let when = env!("NEXO_COMMIT_TIME");
-    if r.status() != reqwest::StatusCode::NOT_FOUND || when == "unknown" {
-        return None;
-    }
-    let r = get(format!("{}/commits?sha=main&per_page=100&since={when}", src.api)).await.ok()?;
+    let r = client
+        .get(format!("{}/compare/{commit}...{target}", src.api))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
     if !r.status().is_success() {
         return None;
     }
     let v: serde_json::Value = r.json().await.ok()?;
-    Some(newer(&v, when))
-}
-
-/// The commits in a GitHub commit list made strictly after `when` (`since` also returns equal ones).
-pub(super) fn newer(list: &serde_json::Value, when: &str) -> u32 {
-    let dates = list.as_array().into_iter().flatten().filter_map(|c| c.pointer("/commit/committer/date")?.as_str());
-    // both are `YYYY-MM-DDTHH:MM:SSZ`, so text order is time order
-    dates.filter(|d| *d > when).count() as u32
+    u32::try_from(v.get("ahead_by")?.as_u64()?).ok()
 }
 
 /// Whether the check is turned off (`[ui] update_check = false`, `NEXO_NO_UPDATE_CHECK`) or cannot

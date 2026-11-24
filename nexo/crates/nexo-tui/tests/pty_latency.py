@@ -2,13 +2,15 @@
 """Unix PTY smoke benchmark of the actual run loop; no Python packages.
 
 From the workspace root (with dependencies already cached for --offline):
-Build: CARGO_TARGET_DIR=target cargo build --offline --locked -j2 -p nexo-tui --example pty_latency
-Run: python3 crates/nexo-tui/tests/pty_latency.py target/debug/examples/pty_latency
-Measures paste injection -> Python recognition of the synchronized frame showing
-its marker, including decoding, cell reconstruction and marker-search overhead;
+Build: CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/home/lctr/build-cache/nexo-session-loop-target nice cargo build --offline --locked -p nexo-tui --example pty_latency
+Run: nice python3 crates/nexo-tui/tests/pty_latency.py /home/lctr/build-cache/nexo-session-loop-target/debug/examples/pty_latency
+Measures paste and SGR mouse-motion injection -> Python recognition of the synchronized frame showing
+its marker / changed link style, including decoding, cell reconstruction and marker-search overhead;
 not pure TUI, frame-receipt or physical display latency. Reconstructs terminal
 cells because ratatui emits only differences. Each clear and paste is acknowledged
-before the next input.
+before the next input. Mouse motion targets a real transcript link: ordinary
+conversation rows intentionally have no hover repaint. Measures hover-on/off
+separately, not physical mouse/display latency, selection, or event-flood throughput.
 The generous 500 ms p95 / 2000 ms max gates catch severe regressions only;
 passing is not a guarantee of interactive fluency or a baseline comparison.
 """
@@ -35,13 +37,16 @@ P95_LIMIT_MS, MAX_LIMIT_MS = 500, 2000
 class Screen:
     """Small cell model for this fixed-size, non-scrolling ratatui fixture.
 
-    Implements cursor movement, erasure and UTF-8 cell widths used by its
+    Implements SGR cell styles, cursor movement, erasure and UTF-8 cell widths used by its
     backend. Unsupported escapes fail closed rather than acknowledge raw bytes.
     Not a general-purpose terminal emulator (no resize, grapheme shaping, etc.).
     """
     def __init__(self):
         self.cells = [[' '] * 100 for _ in range(36)]
         self.row = self.col = 0
+        self.styles = [[None] * 100 for _ in range(36)]
+        self.sgr = {}
+        self.modes = set()
         self.decoder = codecs.getincrementaldecoder('utf-8')()
         self.pending = ''
 
@@ -83,6 +88,8 @@ class Screen:
                     self.cells[self.row][self.col] = ch
                     if width == 2:
                         self.cells[self.row][self.col + 1] = ''
+                    for col in range(self.col, self.col + width):
+                        self.styles[self.row][col] = tuple(sorted(self.sgr.items()))
                     self.col += width
             i += 1
         self.pending = text[i:]
@@ -96,19 +103,57 @@ class Screen:
         if col + 1 < 100 and cells[col + 1] == '':
             cells[col + 1] = ' '
         cells[col] = ' '
+        self.styles[row][col] = tuple(sorted(self.sgr.items()))
 
     def csi(self, params, intermediate, command):
         # SGR and cursor appearance do not modify existing cells.
-        if command == 'm' or (command == 'q' and intermediate == ' '):
+        if command == 'm' and not intermediate:
+            values = [int(p or 0) for p in params.split(';')]
+            i = 0
+            while i < len(values):
+                code = values[i]
+                if code == 0:
+                    self.sgr.clear()
+                elif code in (38, 48, 58):
+                    if i + 1 >= len(values):
+                        raise AssertionError(f'truncated SGR color: {values!r}')
+                    mode = values[i + 1]
+                    size = {2: 3, 5: 1}.get(mode)
+                    if size is None or i + 2 + size > len(values):
+                        raise AssertionError(f'unsupported SGR color: {values!r}')
+                    self.sgr[code] = tuple(values[i + 1:i + 2 + size])
+                    i += 1 + size
+                elif code in (39, 49, 59):
+                    self.sgr.pop({39: 38, 49: 48, 59: 58}[code], None)
+                elif 30 <= code <= 37 or 90 <= code <= 97:
+                    self.sgr[38] = (code,)
+                elif 40 <= code <= 47 or 100 <= code <= 107:
+                    self.sgr[48] = (code,)
+                elif code in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+                    self.sgr[code] = True
+                elif code in (22, 23, 24, 25, 27, 28, 29):
+                    for key in {22: (1, 2), 23: (3,), 24: (4,), 25: (5, 6),
+                                27: (7,), 28: (8,), 29: (9,)}[code]:
+                        self.sgr.pop(key, None)
+                else:
+                    raise AssertionError(f'unsupported SGR code: {code}')
+                i += 1
+            return
+        if command == 'q' and intermediate == ' ':
             return
         if command in 'hl' and params.startswith('?'):
             # Only fixture/backend modes: cursor visibility, mouse reporting,
             # bracketed paste and synchronized output do not affect cell layout.
             harmless = {'?25', '?1000', '?1002', '?1003', '?1006', '?1015', '?2004', '?2026'}
             if not intermediate and params in harmless:
+                if command == 'h':
+                    self.modes.add(params)
+                else:
+                    self.modes.discard(params)
                 return
             if not intermediate and params == '?1049' and command == 'h':
                 self.cells = [[' '] * 100 for _ in range(36)]
+                self.styles = [[None] * 100 for _ in range(36)]
                 self.row = self.col = 0
                 return
             # In particular, origin/autowrap modes and restoring the main screen
@@ -147,11 +192,32 @@ class Screen:
         else:
             raise AssertionError(f'unsupported CSI command {command!r}')
 
+    def locate(self, marker):
+        for y, row in enumerate(self.cells):
+            # Fixture mouse target is ASCII; no wide glyph occurs before it.
+            for x in range(101 - len(marker)):
+                if ''.join(row[x:x + len(marker)]) == marker:
+                    return x, y
+        return None
+
     def contains(self, marker):
         return any(marker in ''.join(row) for row in self.cells)
 
 
 def check_screen():
+    # Style-only diffs must change the observed style, not the text.
+    styled = Screen()
+    styled.feed(b'\x1b[48;2;1;2;3mLINK')
+    normal = styled.styles[0][0]
+    styled.feed(b'\x1b[1;1H\x1b[48;5;')
+    styled.feed(b'123;4mLINK')
+    assert styled.contains('LINK') and styled.styles[0][0] != normal
+    styled.feed(b'\x1b[1;1H\x1b[24;49mLINK')
+    assert styled.styles[0][0] == ()
+    styled.feed(b'\x1b[1;1H\x1b[48;2;1;2;3mLINK')
+    assert styled.styles[0][0] == normal
+    assert styled.locate('LINK') == (0, 0)
+
     # Regression: second frame only replaces the digit, not the whole marker.
     screen = Screen()
     screen.feed(b'\x1b[2;3HP000Z')
@@ -214,6 +280,14 @@ def check_screen():
     assert (screen.row, screen.col) == (0, 2)
 
 
+def report(kind, times, blocks, animations):
+    times = sorted(times)
+    p = lambda n: times[math.ceil(len(times)*n/100)-1]
+    print(f'PTY {kind}-to-Python-recognition (includes observer processing) blocks={blocks} animations={animations} n={len(times)} p50={p(50):.3f} p95={p(95):.3f} p99={p(99):.3f} max={p(100):.3f} ms', flush=True)
+    assert p(95) <= P95_LIMIT_MS, f'{kind}: p95 exceeds smoke limit {P95_LIMIT_MS} ms'
+    assert p(100) <= MAX_LIMIT_MS, f'{kind}: max exceeds smoke limit {MAX_LIMIT_MS} ms'
+
+
 def run(binary, blocks, animations):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 36, 100, 0, 0))
@@ -226,7 +300,7 @@ def run(binary, blocks, animations):
         pending = b''
         screen = Screen()
 
-        def frame_until(marker, present=True, timeout=30):
+        def frame_until(marker=None, present=True, timeout=30, predicate=None):
             nonlocal pending
             deadline = time.monotonic() + timeout
             while True:
@@ -237,7 +311,7 @@ def run(binary, blocks, animations):
                         # Include startup/control bytes preceding BEGIN as well.
                         frame, pending = pending[:end + len(END)], pending[end + len(END):]
                         screen.feed(frame)
-                        if screen.contains(marker) == present:
+                        if (predicate() if predicate is not None else screen.contains(marker) == present):
                             return time.monotonic_ns()
                         continue
                 remaining = deadline - time.monotonic()
@@ -252,6 +326,40 @@ def run(binary, blocks, animations):
                         raise AssertionError('terminal frame exceeds 8 MiB')
         try:
             frame_until('PTY_FIXTURE_READY')
+            # SGR 1006: Cb=35 means motion with no button, coordinates are 1-based.
+            # Demand the actual rendered link's style transition, not merely any
+            # new frame (streaming/animation frames are unrelated acknowledgments).
+            link = 'https://example.com/pty-mouse'
+            frame_until(link)
+            assert {'?1003', '?1006'} <= screen.modes, 'TUI did not enable all-motion SGR mouse reporting'
+            # Freeze follow-tail with a real wheel-up event over the transcript.
+            # Otherwise streaming wraps can move the target between sampling its
+            # coordinates and handling the mouse event (especially with glide).
+            x, y = screen.locate(link)
+            os.write(master, f'\x1b[<64;{x + 2};{y + 1}M'.encode())
+            # Consume startup fades and wheel glide before measuring motion.
+            settle_until = time.monotonic() + 1
+            frame_until(predicate=lambda: time.monotonic() >= settle_until)
+            hover_times, leave_times = [], []
+            for _ in range(N):
+                x, y = screen.locate(link)
+                baseline = screen.styles[y][x]
+                started = time.monotonic_ns()
+                os.write(master, f'\x1b[<35;{x + 2};{y + 1}M'.encode())
+                def link_style_changed():
+                    pos = screen.locate(link)
+                    return pos is not None and screen.styles[pos[1]][pos[0]] != baseline
+                ended = frame_until(marker=f"{link} hover style change", predicate=link_style_changed, timeout=5)
+                hover_times.append((ended - started) / 1e6)
+                started = time.monotonic_ns()
+                os.write(master, b'\x1b[<35;1;1M')
+                def link_style_restored():
+                    pos = screen.locate(link)
+                    return pos is not None and screen.styles[pos[1]][pos[0]] == baseline
+                ended = frame_until(marker=f"{link} baseline style restored", predicate=link_style_restored, timeout=5)
+                leave_times.append((ended - started) / 1e6)
+            report('mouse-hover', hover_times, blocks, animations)
+            report('mouse-leave', leave_times, blocks, animations)
             times = []
             previous = None
             for i in range(N):
@@ -264,11 +372,7 @@ def run(binary, blocks, animations):
                 ended = frame_until(marker)
                 times.append((ended - started) / 1e6)
                 previous = marker
-            times.sort()
-            p = lambda n: times[math.ceil(len(times)*n/100)-1]
-            print(f'PTY paste-to-Python-recognition (includes observer processing) blocks={blocks} animations={animations} n={len(times)} p50={p(50):.3f} p95={p(95):.3f} p99={p(99):.3f} max={p(100):.3f} ms', flush=True)
-            assert p(95) <= P95_LIMIT_MS, f'p95 exceeds smoke limit {P95_LIMIT_MS} ms'
-            assert p(100) <= MAX_LIMIT_MS, f'max exceeds smoke limit {MAX_LIMIT_MS} ms'
+            report('paste', times, blocks, animations)
         finally:
             proc.terminate()
             try:

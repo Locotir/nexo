@@ -84,6 +84,7 @@ fn rules_come_from_what_the_person_wrote_and_a_withdrawal_follows_the_rule_it_ch
     e.sync(&first);
     assert_eq!(rules(&e), ["Never use unwrap.", "you can use unwrap now"]);
     // a compaction: the later word stays after the rule it changes
+    e.compacted();
     e.sync(&[json!({"role": "user", "content": "Summary: the parser is half done."})]);
     assert_eq!(rules(&e), ["Never use unwrap.", "you can use unwrap now"]);
     let block = e.rules.text(|_| true);

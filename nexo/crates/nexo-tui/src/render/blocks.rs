@@ -27,7 +27,7 @@ pub enum GoalSignal {
 
 /// Info notes that only say where the run stands (a goal's state, a queued request starting): drawn dim,
 /// so the blue ones stay for what the person should read.
-const STATUS_NOTES: &[&str] = &["goal ", "goal:", "running the "];
+const STATUS_NOTES: &[&str] = &["goal ", "goal:", "the goal is already paused", "running the "];
 
 pub fn is_status_note(text: &str) -> bool {
     STATUS_NOTES.iter().any(|p| text.starts_with(p))

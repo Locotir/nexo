@@ -200,7 +200,7 @@ fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
     let has = |n: &str| tools.get(n).is_some();
     if has("ls") || has("bash") {
-        lines.push("- The Project block, with the project note a request may start with, is current: use them, not `ls` or `find`.");
+        lines.push("- The Project block and note are current: use them, not `ls` or `find`.");
     }
     let mcp: Vec<&str> = tools.names().filter(|n| n.starts_with("mcp__")).collect();
     if !mcp.is_empty() {
@@ -221,19 +221,19 @@ fn abilities(tools: &ToolSet) -> String {
     let looks = catalog::LOOKING.iter().any(|n| has(n));
     let mut lines = Vec::new();
     if looks {
-        lines.push("- Think in independent strands: independent calls go in ONE message and run at the same time (reads, searches, web, read-only and check commands). Steps that follow each other also go in ONE message when you do not need to see one result to write the next call (write a script and run it; edit, then run the check): they run one at a time in the order given, and when one fails the ones after it are not run. Never run in parallel what touches the same state.");
+        lines.push("- Group independent calls in ONE message to run at the same time. Group dependent calls in ONE message when the next call needs no result: they run in order and stop on failure. Never parallelize calls that touch the same state.");
     }
     if has("bash") {
-        lines.push("- Slow jobs (builds, tests, servers, downloads) use `background: true`; keep working, then `wait_until` a condition, not a fixed sleep.");
+        lines.push("- Slow jobs use `background: true`; keep working, then `wait_until` a condition.");
     }
     if has("edit") || has("write") {
         lines.push("- `edit` and `write` change many files in one call with its check result.");
     }
     if has("task") {
-        lines.push("- `task` sub-agents take side work in parallel: several searches or checks (one call each, all in ONE message), a long job (`background: true`), anything the person asks to hand off. Not for one or two reads.");
+        lines.push("- `task` sub-agents take side work in parallel, long jobs or work the person asks to hand off; not one or two reads.");
     }
     if has("note") {
-        lines.push("- `note`: a lasting preference, rule or fact the person states (\"always ...\", \"my .bashrc is at ...\"), or one you find that matters again (a non-default path or port, something not to touch), is saved as a `Rule: ...` line (one short line: the exact fact (path, value, name, command) and the rule, no filler) with `scope` `global` (all projects) or `project` (this repo). Not one-off details, guesses, secrets or what is saved. Say nothing about saving it.");
+        lines.push("- `note`: save lasting stated preferences, rules and reusable facts as a short `Rule: ...` line with `scope` `global` or `project`. Never save one-off details, guesses or secrets; say nothing about saving it.");
     }
     if lines.is_empty() {
         return String::new();

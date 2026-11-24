@@ -86,13 +86,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 _ => {}
             }
         }
-        let (mut req, cfg, client, retries) = match prepare(&state, &cancel, answer == Answer::Forced).await {
-            Ok(x) => x,
-            Err(e) => {
-                notice(&events, Level::Error, e.to_string());
-                return TurnEnd::Error;
-            }
-        };
+        let (mut req, cfg, client, retries, request_pricing) =
+            match super::start::prepare_priced(&state, &cancel, answer == Answer::Forced).await {
+                Ok(x) => x,
+                Err(e) => {
+                    notice(&events, Level::Error, e.to_string());
+                    return TurnEnd::Error;
+                }
+            };
         if cut_calls > 0 {
             req.temperature = retry_temperature(req.temperature);
         }
@@ -123,7 +124,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let flight = {
             let st = state.lock().await;
             let input = (st.est_sent as f64 * st.tok_ratio.unwrap_or(1.0)).round() as u64;
-            let priced = main_pricing(&st, &req.model);
+            let priced = request_pricing;
             let admitted = budget::admit(
                 st.session.id(),
                 st.cost,
@@ -307,27 +308,27 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             if msg.content.is_empty() {
                 match learn(&state, e, &req.model, req.max_tokens).await {
                     Lesson::Refit if refits < MAX_REFITS => {
-                        bill_attempt(&state, &events, &req.model, usage, call).await;
+                        bill_attempt(&state, &events, &req.model, usage, call, request_pricing).await;
                         refused.insert(refit_key(&cfg, &mut req));
                         refits += 1;
                         continue;
                     }
                     Lesson::Context | Lesson::Refit if curated(&state).await => {
-                        bill_attempt(&state, &events, &req.model, usage, call).await;
+                        bill_attempt(&state, &events, &req.model, usage, call, request_pricing).await;
                         tell_not_fitting(&state, &events, Some(e), refits).await;
                         return TurnEnd::Error;
                     }
                     Lesson::Context | Lesson::Refit if !compacted => {
                         compacted = true;
                         if compact_now(&state, &events, Some(()), &cancel).await {
-                            bill_attempt(&state, &events, &req.model, usage, call).await;
+                            bill_attempt(&state, &events, &req.model, usage, call, request_pricing).await;
                             refused.insert(refit_key(&cfg, &mut req));
                             continue;
                         }
                     }
                     Lesson::Output if !capped => {
                         capped = true;
-                        bill_attempt(&state, &events, &req.model, usage, call).await;
+                        bill_attempt(&state, &events, &req.model, usage, call, request_pricing).await;
                         continue;
                     }
                     _ => {}
@@ -346,7 +347,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         match lost {
             Some(e) if recut < again => {
                 recut += 1;
-                bill_attempt(&state, &events, &req.model, usage, call).await;
+                bill_attempt(&state, &events, &req.model, usage, call, request_pricing).await;
                 let why =
                     "the stream was cut while the model reasoned; that reasoning is dropped and the request sent again";
                 let wait = client.backoff(recut, e);
@@ -367,6 +368,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         // back does not carry thousands of tokens of it into every retry and pull the model back into it
         let kept = if over_budget { without_reasoning(&msg) } else { msg.clone() };
         calm |= over_budget;
+        let mut group_cost = None;
         {
             let mut st = state.lock().await;
             if !kept.content.is_empty() {
@@ -378,7 +380,19 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             }
             if !usage.is_empty() {
                 let model = req.model.clone();
-                add_usage(&mut st, &events, &model, usage, call, UsageKind::Main);
+                // Bill at the original request's prices, including when they were unknown.
+                let cost = super::host::add_usage_captured(
+                    &mut st,
+                    &events,
+                    &model,
+                    usage,
+                    call,
+                    request_pricing,
+                    false,
+                    UsageKind::Main,
+                );
+                // Only a captured price is reliable enough for the per-group event.
+                group_cost = request_pricing.map(|_| cost);
                 drop(flight);
                 // an estimate has no input side: it says nothing about the cache or the token ratio
                 if !estimated {
@@ -544,6 +558,18 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let asked = calls.iter().map(|(_, n, a)| (n.clone(), a.to_string())).collect::<Vec<_>>();
         let kept = calls.clone();
         let (results, cancelled) = run_tools(&state, &events, calls, &cancel).await;
+        // Tool events have now materialised the cards, including calls recovered from text.
+        // Exact IDs prevent late charges from landing on an unrelated, more recent group.
+        if let Some(cost_usd) = group_cost.filter(|c| c.is_finite() && *c > 0.0) {
+            emit(
+                &events,
+                AgentEvent::GroupCost {
+                    call_ids: kept.iter().map(|(id, _, _)| id.clone()).collect(),
+                    cost_usd,
+                    plan: cfg.login.is_some(),
+                },
+            );
+        }
         seen.push(round_hash(&asked, &results));
         // whether each call succeeded, by its result, for what an active goal counts as a change
         let ok: Vec<bool> = kept

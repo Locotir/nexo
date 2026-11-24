@@ -224,7 +224,7 @@ fn selection_label(known: u64, unknown: u64, total: u64) -> String {
 }
 
 /// `/context-live`: the whole history as a grid, a cell per `unit` tokens,
-/// coloured by who wrote it and lit by how much of it the last call sent.
+/// coloured by who wrote it and marked by its locally aligned selection state.
 /// With the curator, the grid is its memory in zones: the anchor, the topic in
 /// progress and the other topics, newest first, each under a line that says
 /// what of it the call takes. Also where the newest cell condensing after a cut is (line, column), for the
@@ -232,7 +232,11 @@ fn selection_label(known: u64, unknown: u64, total: u64) -> String {
 fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     let theme = &app.theme;
     let fmt_k = crate::render::blocks::fmt_k;
-    let mut out = vec![Line::from(Span::styled("context live", Style::default().add_modifier(Modifier::BOLD)))];
+    let mut out = vec![
+        Line::from(Span::styled("context live", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("selection · not payload", theme.dim())),
+        Line::from(Span::styled("/context key · /sent request", theme.dim())),
+    ];
     if let Some(n) = app.relation_quotes {
         let unit = if n == 1 { "quote" } else { "quotes" };
         out.push(Line::from(Span::styled(format!("relations · {n} selected {unit}"), theme.style(theme.accent))));
@@ -274,7 +278,7 @@ fn context_map(app: &App, w: usize, height: usize) -> (Vec<Line<'static>>, Optio
     let rows = height
         .saturating_sub(usize::from(app.relation_quotes.is_some()))
         .saturating_sub(heat.map_or(0, |h| 2 + usize::from(h.input_tokens > 0)))
-        .saturating_sub(if zoned { 10 } else { 9 })
+        .saturating_sub(if zoned { 12 } else { 11 })
         .clamp(2, if zoned { 40 } else { 12 });
     let w = w.max(1);
     // the zones to draw, in order, each with its cells (index into the map)

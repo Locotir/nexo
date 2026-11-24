@@ -130,8 +130,8 @@ fn every_value_has_its_default_in_d_spec_and_the_docs_show_it() {
     for k in INTS.iter().chain(FLOATS).chain(STRS) {
         assert!(d.contains_key(*k) || only.contains(k) || unsupported.contains(k), "{k} has no default in D_SPEC");
     }
-    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../docs/how-it-works.md")).unwrap();
-    assert!(doc.contains(D_SPEC), "docs/how-it-works.md shows another default spec");
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/curator-defaults.md")).unwrap();
+    assert!(doc.contains(D_SPEC), "docs/curator-defaults.md shows another default spec");
 }
 
 #[test]

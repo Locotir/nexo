@@ -42,6 +42,12 @@ per-session confirmation. Chrome's debugging bar remains visible and provides th
 - Cancel on the debugging bar, or closing the browser, ends the session.
 - Logins, passwords, payments and CAPTCHAs stay with the person: the model is told to stop and ask.
 
+## Offline worker smoke test
+
+`node --test tools/chrome-extension-smoke.cjs` exercises the shipped service worker's automatic grant,
+pre-grant request gate, cross-session tab isolation and revocation/no-regrant handlers with stub Chrome APIs.
+It does not start Chrome or the native host and is not a substitute for the real-extension test below.
+
 ## The real-extension test
 
 ```text

@@ -868,6 +868,18 @@ fn refresh_keeps_search_and_selection_on_unchanged_prefix() {
 }
 
 #[test]
+fn refresh_drops_interaction_state_when_prefix_changes() {
+    let (mut a, _rx) = opened(vec![reply("old")]);
+    frame(&mut a, 100, 30);
+    a.selected = Some(0);
+    a.reveal = Some(0);
+    a.selection = Some(crate::select::Selection::new(crate::select::Pos { line: 0, col: 0 }));
+    a.sub_view.as_mut().unwrap().asking = Some(42);
+    answer(&mut a, RUN, vec![reply("changed")], 0);
+    assert!(a.selected.is_none() && a.reveal.is_none() && a.selection.is_none());
+}
+
+#[test]
 fn fast_responses_do_not_trigger_a_snapshot_per_delta() {
     let (mut a, mut rx) = opened(vec![]);
     for _ in 0..100 {
@@ -1169,4 +1181,240 @@ fn live_agent_tick_keeps_height_but_repaints_face_on_run_and_task_card() {
             assert_ne!(new, old, "the blinking face must be repainted");
         }
     }
+}
+
+#[test]
+#[ignore = "manual sub-transcript refresh latency measurement"]
+fn long_sub_refresh_latency() {
+    use std::time::Instant;
+    let items: Vec<_> = (0..1000).map(|i| person(&format!("item {i}: {}", "large text ".repeat(500)))).collect();
+    let (mut a, _rx) = opened(items.clone());
+    assert!(a.selection.is_none() && a.selected.is_none() && a.reveal.is_none());
+    let mut elapsed = Vec::new();
+    for _ in 0..10 {
+        a.sub_view.as_mut().unwrap().asking = Some(42);
+        let transcript = items.clone();
+        let start = Instant::now();
+        answer(&mut a, RUN, transcript, 0);
+        elapsed.push(start.elapsed());
+        assert_eq!(a.blocks.len(), items.len());
+        assert!(matches!(a.blocks.last(), Some(Block::User { text, .. }) if text.starts_with("item 999:")));
+    }
+    elapsed.sort_unstable();
+    eprintln!(
+        "sub refresh 1000 x ~5.5KB: p50={:.3}ms max={:.3}ms",
+        elapsed[4].as_secs_f64() * 1000.0,
+        elapsed[9].as_secs_f64() * 1000.0
+    );
+}
+
+#[test]
+fn refresh_preserves_folded_layout_and_nonempty_selection() {
+    use crate::select::{Pos, Selection};
+    let items = vec![person("first\nsecond\nthird"), reply("selected words")];
+    let (mut a, _) = opened(items.clone());
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    frame(&mut a, 100, 30);
+    assert!(a.looks[0].folded);
+    let line = a.offsets[1];
+    let mut selection = Selection::new(Pos { line, col: 2 });
+    selection.head.col = 6;
+    a.selection = Some(selection.clone());
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, items, 0);
+    frame(&mut a, 100, 30);
+    assert!(a.looks[0].folded);
+    assert_eq!(a.offsets[1], line);
+    assert_eq!(a.selection, Some(selection));
+}
+
+#[test]
+fn refresh_preserves_open_tool_and_selection_but_rejects_changed_content() {
+    use crate::select::{Pos, Selection};
+    let call = SubItem::Call { id: "tool".into(), name: "read".into(), summary: "file".into(), args: "{}".into() };
+    let items = vec![call, reply("selected words")];
+    let (mut a, _) = opened(items.clone());
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    frame(&mut a, 100, 30);
+    assert!(matches!(a.blocks[0], Block::Tool { folded: false, .. }));
+    let line = a.offsets[1];
+    let mut selection = Selection::new(Pos { line, col: 2 });
+    selection.head.col = 6;
+    a.selection = Some(selection.clone());
+    a.selected = Some(1);
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, items.clone(), 0);
+    frame(&mut a, 100, 30);
+    assert!(matches!(a.blocks[0], Block::Tool { folded: false, .. }));
+    assert_eq!(a.offsets[1], line);
+    assert_eq!(a.selection, Some(selection));
+    assert_eq!(a.selected, Some(1));
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![items[0].clone(), reply("different")], 0);
+    assert!(a.selection.is_none());
+    assert!(a.selected.is_none());
+}
+
+#[test]
+#[ignore = "manual snapshot refresh microbenchmark"]
+fn refresh_preservation_cost() {
+    let items: Vec<_> = (0..1000).map(|i| person(&format!("message {i}: {}", "x".repeat(120)))).collect();
+    for preserve in [false, true] {
+        let (mut a, _) = opened(items.clone());
+        let start = std::time::Instant::now();
+        for _ in 0..30 {
+            if preserve {
+                a.selected = Some(0);
+            }
+            a.sub_view.as_mut().unwrap().asking = Some(999);
+            answer(&mut a, RUN, items.clone(), 0);
+        }
+        eprintln!("preserve={preserve}: {:?}/refresh", start.elapsed() / 30);
+    }
+}
+
+#[test]
+fn refresh_completed_tool_keeps_open_but_invalidates_selection() {
+    use crate::select::{Pos, Selection};
+    let call = SubItem::Call { id: "tool".into(), name: "read".into(), summary: "file".into(), args: "{}".into() };
+    let (mut a, _) = opened(vec![call.clone(), reply("after")]);
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    frame(&mut a, 100, 30);
+    a.selection = Some(Selection::new(Pos { line: a.offsets[1], col: 1 }));
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(
+        &mut a,
+        RUN,
+        vec![call, SubItem::Result { id: "tool".into(), ok: true, bytes: 4, output: "done".into() }, reply("after")],
+        0,
+    );
+    assert!(matches!(a.blocks[0], Block::Tool { folded: false, .. }));
+    assert!(a.selection.is_none());
+}
+
+#[test]
+fn refresh_growing_group_preserves_open_state_and_invalidates_selection() {
+    use crate::select::{Pos, Selection};
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "read".into(), summary: id.into(), args: "{}".into() };
+    let (mut a, _) = opened(vec![call("one"), call("two")]);
+    frame(&mut a, 100, 30);
+    let group = a.blocks.iter().position(|b| matches!(b, Block::Group { .. })).unwrap();
+    a.toggle_block(group);
+    a.toggle_block(group + 1);
+    frame(&mut a, 100, 30);
+    assert!(matches!(a.blocks[group], Block::Group { folded: false, len: 2 }));
+    assert!(matches!(a.blocks[group + 1], Block::Tool { folded: false, .. }));
+    a.selection = Some(Selection::new(Pos { line: a.offsets[group], col: 1 }));
+    a.selected = Some(group);
+    a.reveal = Some(group);
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![call("one"), call("two"), call("three")], 0);
+    assert!(matches!(a.blocks[group], Block::Group { folded: false, len: 3 }));
+    assert!(matches!(a.blocks[group + 1], Block::Tool { folded: false, .. }));
+    assert!(a.selection.is_none());
+    assert!(a.selected.is_none());
+    assert!(a.reveal.is_none());
+}
+
+#[test]
+fn refresh_changed_group_member_invalidates_header_selection() {
+    use crate::select::{Pos, Selection};
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "read".into(), summary: id.into(), args: "{}".into() };
+    let (mut a, _) = opened(vec![call("one"), call("two")]);
+    frame(&mut a, 100, 30);
+    let group = a.blocks.iter().position(|b| matches!(b, Block::Group { .. })).unwrap();
+    a.selection = Some(Selection::new(Pos { line: a.offsets[group], col: 1 }));
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(
+        &mut a,
+        RUN,
+        vec![call("one"), SubItem::Result { id: "one".into(), ok: true, bytes: 4, output: "done".into() }, call("two")],
+        0,
+    );
+    assert!(a.selection.is_none());
+}
+
+#[test]
+fn refresh_single_tool_becoming_group_keeps_open_and_clears_selection() {
+    use crate::select::{Pos, Selection};
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "read".into(), summary: id.into(), args: "{}".into() };
+    let (mut a, _) = opened(vec![call("one")]);
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    frame(&mut a, 100, 30);
+    a.selection = Some(Selection::new(Pos { line: a.offsets[0], col: 1 }));
+    a.selected = Some(0);
+    a.reveal = Some(0);
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![call("one"), call("two")], 0);
+    assert!(matches!(&a.blocks[1], Block::Tool { id, folded: false, .. } if id == "one"));
+    assert!(a.selection.is_none());
+    assert!(a.selected.is_none());
+    assert!(a.reveal.is_none());
+}
+
+#[test]
+fn refresh_completed_single_tool_remains_visible_in_new_group() {
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "bash".into(), summary: id.into(), args: "{}".into() };
+    let result = SubItem::Result { id: "one".into(), ok: true, bytes: 19, output: "distinctive content".into() };
+    let (mut a, _) = opened(vec![call("one"), result.clone()]);
+    a.opts.animations = false;
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    let rows = frame(&mut a, 100, 30);
+    assert!(on_screen(&rows, "distinctive content"), "{}", rows.join("\n"));
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![call("one"), result, call("two")], 0);
+    assert!(matches!(a.blocks[0], Block::Group { folded: false, .. }));
+    assert!(!a.hidden(1));
+    assert!(on_screen(&frame(&mut a, 100, 30), "distinctive content"));
+}
+
+#[test]
+fn refresh_duplicate_id_invalidates_selection_after_fold_changes() {
+    use crate::select::{Pos, Selection};
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "read".into(), summary: id.into(), args: "{}".into() };
+    let result = SubItem::Result { id: "one".into(), ok: true, bytes: 4, output: "done".into() };
+    let (mut a, _) = opened(vec![call("one"), result.clone(), reply("selected text")]);
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    frame(&mut a, 100, 30);
+    a.selection = Some(Selection::new(Pos { line: a.offsets[1], col: 1 }));
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![call("one"), result, reply("selected text"), call("one")], 0);
+    assert!(matches!(a.blocks[0], Block::Tool { folded: true, .. }));
+    assert!(a.selection.is_none());
+}
+
+#[test]
+fn refresh_reordered_tools_restore_by_unique_id_not_position() {
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "read".into(), summary: id.into(), args: "{}".into() };
+    let (mut a, _) = opened(vec![call("one"), reply("between"), call("two")]);
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![call("two"), reply("between"), call("one")], 0);
+    assert!(matches!(&a.blocks[0], Block::Tool { id, folded: true, .. } if id == "two"));
+    assert!(matches!(&a.blocks[2], Block::Tool { id, folded: false, .. } if id == "one"));
+}
+
+#[test]
+fn refresh_duplicate_tool_ids_do_not_transfer_fold_state() {
+    let call = |id: &str| SubItem::Call { id: id.into(), name: "read".into(), summary: id.into(), args: "{}".into() };
+    let (mut a, _) = opened(vec![call("one")]);
+    frame(&mut a, 100, 30);
+    a.toggle_block(0);
+    a.sub_view.as_mut().unwrap().asking = Some(999);
+    answer(&mut a, RUN, vec![call("one"), reply("between"), call("one")], 0);
+    assert!(a
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Tool { folded, .. } => Some(*folded),
+            _ => None,
+        })
+        .all(|folded| folded));
 }

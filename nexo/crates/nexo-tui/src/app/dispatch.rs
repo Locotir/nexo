@@ -198,6 +198,7 @@ impl App {
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
             Command::Sent => self.send(AgentCommand::ShowSent),
+            Command::Explore(query) => self.explore(query.as_deref()),
             Command::Hooks => self.send(AgentCommand::ShowHooks),
             Command::Mcp => self.open_mcp(),
             Command::Chrome => self.open_chrome(),

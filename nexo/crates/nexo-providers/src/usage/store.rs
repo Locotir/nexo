@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::codex::{codex_from_event, codex_from_headers};
 use super::copilot::copilot_from_header;
 use super::limits::limits_from_headers;
-use super::model::{slot_rank, PlanUsage, CODEX, COPILOT, LIMITS, XAI};
+use super::model::{slot_rank, PlanUsage, CLAUDE, CODEX, COPILOT, LIMITS, XAI};
 
 static STORE: Mutex<BTreeMap<String, PlanUsage>> = Mutex::new(BTreeMap::new());
 static CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -79,6 +79,7 @@ pub fn kind_of(cfg: &ProviderConfig) -> Option<&'static str> {
         "codex" | "chatgpt" => Some(CODEX),
         "copilot" => Some(COPILOT),
         "xai" => Some(XAI),
+        "claude" => Some(CLAUDE),
         _ => None,
     }
 }

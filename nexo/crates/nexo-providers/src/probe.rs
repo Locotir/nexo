@@ -212,6 +212,26 @@ pub async fn server(cfg: &ProviderConfig, key: Option<&str>) -> Result<ServerPro
             ..Default::default()
         });
     }
+    let mut codex_empty = false;
+    if cfg.login.as_deref() == Some("codex") {
+        let url = format!("{}/models?client_version={}", base.trim_end_matches('/'), env!("CARGO_PKG_VERSION"));
+        if let Ok(answer) = get(&url, bearer(&cfg, key), ASK).await {
+            let models = codex_models(&answer.body);
+            if answer.ok() && models.is_empty() {
+                codex_empty = true;
+            }
+            if answer.ok() && !models.is_empty() {
+                return Ok(ServerProbe {
+                    kind: "subscription".into(),
+                    protocol: cfg.protocol.clone(),
+                    base_url: base,
+                    models,
+                    trail: vec!["Codex: live model catalog and reasoning levels".into()],
+                    ..Default::default()
+                });
+            }
+        }
+    }
     // a subscription backend lists no models to an account: the ones nexo knows are offered, and the
     // test request is the proof that the login works
     if cfg.login.is_some() && !cfg.models.is_empty() {
@@ -220,9 +240,19 @@ pub async fn server(cfg: &ProviderConfig, key: Option<&str>) -> Result<ServerPro
             protocol: cfg.protocol.clone(),
             base_url: base,
             models: cfg.models.iter().map(|m| ModelInfo { id: m.clone(), tools: true, ..Default::default() }).collect(),
-            trail: vec!["subscription: the models nexo knows for this login".into()],
+            trail: if codex_empty {
+                vec![
+                    CODEX_EMPTY_CATALOG.into(),
+                    "subscription: configured models used as fallback; not verified by the catalog".into(),
+                ]
+            } else {
+                vec!["subscription: the models nexo knows for this login".into()]
+            },
             ..Default::default()
         });
+    }
+    if codex_empty {
+        return Err(CODEX_EMPTY_CATALOG.into());
     }
     let root = root_of(&base);
     let mut trail = Vec::new();
@@ -326,26 +356,7 @@ async fn cloud_list(cfg: &ProviderConfig, key: Option<&str>, kind: &str) -> Resu
     };
     match a.status {
         200..=299 => {
-            probe.models = if kind == "anthropic" {
-                a.body["data"]
-                    .as_array()
-                    .map(|ms| {
-                        ms.iter()
-                            .filter_map(|m| {
-                                Some(ModelInfo {
-                                    id: m["id"].as_str()?.to_string(),
-                                    display: m["display_name"].as_str().map(String::from),
-                                    tools: true,
-                                    vision: true,
-                                    ..Default::default()
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                gemini_models(&a.body)
-            };
+            probe.models = if kind == "anthropic" { anthropic_models(&a.body) } else { gemini_models(&a.body) };
             probe.trail.push(format!("{}: {} models", kind_label(kind), probe.models.len()));
             // these lists are never public: an answer with a key is the key accepted
             probe.key_proved = key.is_some();
@@ -362,6 +373,68 @@ async fn cloud_list(cfg: &ProviderConfig, key: Option<&str>, kind: &str) -> Resu
         s => probe.trail.push(format!("{}: {s} {}", kind_label(kind), http::pretty_error(&a.body.to_string()))),
     }
     Ok(probe)
+}
+
+/// Anthropic's model capabilities (API 2026-10-21); absent metadata stays unknown.
+pub fn anthropic_models(body: &Value) -> Vec<ModelInfo> {
+    body["data"]
+        .as_array()
+        .map(|ms| {
+            ms.iter()
+                .filter_map(|m| {
+                    let caps = &m["capabilities"];
+                    let efforts = ["low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .filter(|l| caps["effort"][*l]["supported"] == true)
+                        .map(String::from)
+                        .collect();
+                    Some(ModelInfo {
+                        id: m["id"].as_str()?.into(),
+                        display: m["display_name"].as_str().map(String::from),
+                        context_window: u32_of(&m["max_input_tokens"]),
+                        max_output: u32_of(&m["max_tokens"]),
+                        reasoning: caps["thinking"]["supported"] == true,
+                        efforts,
+                        tools: true,
+                        vision: caps["image_input"]["supported"].as_bool().unwrap_or(true),
+                        ..Default::default()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) const CODEX_EMPTY_CATALOG: &str = "Codex model catalog returned no usable models; Nexo sends its own version as client_version, which may be incompatible. Discovery is not verified.";
+
+/// Codex catalog names are not OpenAI `/models` ids. Keep exact effort names,
+/// including special modes such as `ultra`; never equate them with `max`.
+pub fn codex_models(body: &Value) -> Vec<ModelInfo> {
+    body["models"]
+        .as_array()
+        .map(|ms| {
+            ms.iter()
+                .filter_map(|m| {
+                    if m["visibility"] == "hide" {
+                        return None;
+                    }
+                    let efforts: Vec<String> = m["supported_reasoning_levels"]
+                        .as_array()
+                        .map(|ls| ls.iter().filter_map(|l| l["effort"].as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    Some(ModelInfo {
+                        id: m["slug"].as_str()?.into(),
+                        display: m["display_name"].as_str().map(String::from),
+                        context_window: u32_of(&m["context_window"]),
+                        reasoning: !efforts.is_empty(),
+                        efforts,
+                        tools: true,
+                        ..Default::default()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn gemini_models(body: &Value) -> Vec<ModelInfo> {
@@ -690,7 +763,8 @@ pub fn effort_levels(protocol: &str, kind: &str, base_url: &str, model: &str, re
         });
     }
     if m.contains("gpt-6") {
-        return v(&["low", "medium", "high", "xhigh"]);
+        // OpenAI's reasoning guide lists `max` above `xhigh` for the GPT-6 line
+        return v(&["low", "medium", "high", "xhigh", "max"]);
     }
     v(&["low", "medium", "high"])
 }
@@ -976,6 +1050,62 @@ mod tests {
         });
         let p = server(&cfg("openai-chat", &format!("{}/v1", public.base_url())), Some("wrong")).await.unwrap();
         assert!(!p.key_proved && p.models.len() == 1, "a public list proves nothing: {p:?}");
+    }
+
+    #[tokio::test]
+    async fn codex_empty_catalog_reports_fallback_or_error() {
+        let s = MockServer::start_async().await;
+        let mock = s
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/models")
+                    .query_param("client_version", env!("CARGO_PKG_VERSION"))
+                    .header("authorization", "Bearer synthetic")
+                    .header("chatgpt-account-id", "test-account");
+                then.status(200).json_body(json!({"models": []}));
+            })
+            .await;
+        let mut c = cfg("openai-responses", &s.base_url());
+        c.login = Some("codex".into());
+        c.headers.insert("chatgpt-account-id".into(), "test-account".into());
+        c.models = vec!["configured".into()];
+        let p = server(&c, Some("synthetic")).await.unwrap();
+        assert_eq!(p.models[0].id, "configured");
+        assert!(p.trail.iter().any(|s| s.contains("no usable models")));
+        assert!(p.trail.iter().any(|s| s.contains("fallback")));
+        c.models.clear();
+        assert!(server(&c, Some("synthetic")).await.unwrap_err().contains("no usable models"));
+        mock.assert_calls_async(2).await;
+    }
+
+    #[test]
+    fn dynamic_catalogues_preserve_exact_efforts_and_limits() {
+        let c = codex_models(&json!({"models":[{
+            "slug":"new-model", "context_window":20000,
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"ultra"}]
+        }, {"slug":"hidden", "visibility":"hide"}]}));
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].efforts, ["low", "ultra"]);
+        assert_eq!(c[0].context_window, Some(20000));
+        let a = anthropic_models(&json!({"data":[{
+            "id":"claude-new", "max_input_tokens":30000, "max_tokens":4096,
+            "capabilities":{"thinking":{"supported":true}, "effort":{
+                "low":{"supported":true}, "high":{"supported":false}, "xhigh":{"supported":true}
+            }}
+        }]}));
+        assert_eq!(a[0].efforts, ["low", "xhigh"]);
+        assert!(a[0].reasoning);
+        assert_eq!(a[0].max_output, Some(4096));
+    }
+
+    #[test]
+    fn opus_and_gpt_6_offer_the_levels_above_high() {
+        let a = effort_levels("anthropic", "anthropic", "https://api.anthropic.com", "claude-opus-4-8", true);
+        assert_eq!(a, ["off", "low", "medium", "high", "xhigh", "max"]);
+        let o = effort_levels("anthropic", "anthropic", "https://api.anthropic.com", "claude-opus-4-6", true);
+        assert_eq!(o, ["off", "low", "medium", "high", "max"]);
+        let g = effort_levels("openai-responses", "", "https://api.openai.com/v1", "gpt-6.2-astra", true);
+        assert_eq!(g, ["low", "medium", "high", "xhigh", "max"]);
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub(super) struct Runtime {
     /// (a closed channel answers at once, and the loop would spin).
     pub(super) subs_open: bool,
     /// The write of the context policy's state a resume's replay or a turn's end started (`saved_state`).
-    pub(super) saving: Option<std::thread::JoinHandle<()>>,
+    pub(super) saving: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     pub(super) turn: Option<JoinHandle<TurnEnd>>,
     /// A sign-in waiting for the browser, so Esc in the setup can drop it.
     pub(super) signing_in: Option<tokio::task::AbortHandle>,
@@ -244,7 +244,7 @@ impl Runtime {
                 emit(&st.events, budget_event(&st, budget::spent_today()));
             }
         }
-        let mut saving: Option<std::thread::JoinHandle<()>> = None;
+        let mut saving: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
         if replay {
             settle_replay(&mut *state.lock().await, &mut saving).await;
             restore_model(&state, model_pinned).await;
@@ -446,6 +446,9 @@ fn warn_setup(events: &EventTx, config: &Config, tools: &ToolSet) {
 /// The model's effort levels and, when the model has a fast twin, that fast mode is on.
 fn announce_model(events: &EventTx, config: &Config, provider: &str, model: &str) {
     if let Some(c) = config.providers.get(provider) {
+        let mut c = c.clone();
+        setup::fill_levels(provider, &mut c, model);
+        let c = &c;
         if let Some(n) = setup::effort_clamp_note(c, model, &config.agent.reasoning) {
             notice(events, Level::Info, n);
         }
@@ -476,7 +479,7 @@ fn watch_mcp(hub: Arc<nexo_tools::mcp_hub::McpHub>, events: EventTx) {
 
 /// After a resume's replay: calls left open are closed, and the context policy's saved state and view are
 /// rebuilt, then written again in the background.
-async fn settle_replay(st: &mut State, saving: &mut Option<std::thread::JoinHandle<()>>) {
+async fn settle_replay(st: &mut State, saving: &mut Option<std::thread::JoinHandle<std::io::Result<()>>>) {
     close_open_calls(st);
     if !st.history.is_empty() {
         saved_state::load(st);

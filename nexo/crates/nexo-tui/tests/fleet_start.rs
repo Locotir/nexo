@@ -1,6 +1,6 @@
-//! The status bar's fleet chip is right from the start: the watching begins at startup when the mail root exists,
-//! not at the first `/panel`. This binary owns its process, so it may point the data folder at a fixture and set
-//! the process-wide mailbox; it never reads the real `~/.nexo`.
+//! The status bar's fleet chip never counts other live sessions: they belong to `/panel`, and a bar that says
+//! `7 sessions` because other tools run tells the person nothing about this one. This binary owns its process,
+//! so it may point the data folder at a fixture and set the process-wide mailbox; it never reads the real `~/.nexo`.
 
 #![cfg(unix)]
 
@@ -50,7 +50,7 @@ fn app() -> App {
 }
 
 #[test]
-fn the_chip_counts_another_session_without_opening_the_panel() {
+fn another_live_session_never_lights_the_chip() {
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("NEXO_DATA_DIR", home.path().join("data"));
     std::env::set_var("NEXO_CONFIG_DIR", home.path().join("config"));
@@ -68,12 +68,11 @@ fn the_chip_counts_another_session_without_opening_the_panel() {
     nexo_tui::set_mailbox(own);
 
     let mut a = app();
-    assert!(a.fleet.is_none());
-    let until = Instant::now() + Duration::from_secs(15);
-    while a.fleet.is_none() && Instant::now() < until {
+    // the watch starts at startup and polls once a second: a few polls see the other session
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
         a.tick();
+        assert!(a.fleet.is_none(), "{:?}", a.fleet);
         std::thread::sleep(Duration::from_millis(200));
     }
-    let chip = a.fleet.expect("the chip shows before any /panel");
-    assert_eq!(chip.sessions, 1, "{chip:?}");
 }

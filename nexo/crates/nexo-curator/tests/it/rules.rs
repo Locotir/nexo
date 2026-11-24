@@ -138,7 +138,9 @@ fn a_rewritten_history_keeps_the_rules() {
     let mut msgs = vec![user("Fix the parser."), said("Sure."), user("Never push to main."), said("Understood.")];
     msgs.extend(step(0));
     cur.answer(&json!({"op": "view", "system_tokens": 0, "messages": msgs}), 0.0);
-    // the harness compacts the history: the message with the rule is gone from it
+    // the harness compacts the history: the message with the rule is gone from it (only a compaction the
+    // harness announces carries the rules over; a plain edit or rewind does not)
+    cur.compacted();
     let mut msgs = vec![user("Summary of the work so far: the parser fix is half done."), said("Continuing.")];
     msgs.extend(step(1));
     let r = cur.answer(&json!({"op": "view", "system_tokens": 0, "messages": msgs}), 0.0);

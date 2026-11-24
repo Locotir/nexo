@@ -41,9 +41,25 @@ pub(super) fn add_usage_priced(
     other: bool,
     kind: UsageKind,
 ) -> f64 {
+    let pricing = pricing.or_else(|| main_pricing(st, model));
+    add_usage_captured(st, events, model, usage, call, pricing, other, kind)
+}
+
+/// Bills with exactly the captured prices, including a captured absence of prices. In-flight
+/// requests must not fall back to a target selected after the request was sent.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn add_usage_captured(
+    st: &mut State,
+    events: &EventTx,
+    model: &str,
+    usage: Usage,
+    call: Usage,
+    pricing: Option<Pricing>,
+    other: bool,
+    kind: UsageKind,
+) -> f64 {
     st.usage += usage;
     let (prov, _, _) = st.target.get();
-    let pricing = pricing.or_else(|| main_pricing(st, model));
     let cost = pricing.map(|p| billed(&p, &usage, &call)).unwrap_or(0.0);
     // A limit counts dollars, and a model with no price adds none: say so once instead of letting the limit sit
     // there never firing. A price of 0 is a price (a free or local model), so it does not count as missing.
@@ -75,6 +91,7 @@ pub(super) fn add_usage_priced(
             UsageKind::Compact => "compact",
             UsageKind::Suggest => "suggest",
             UsageKind::CheckIn => "check_in",
+            UsageKind::GoalCheck => "goal_check",
             UsageKind::Review => "review",
             UsageKind::Sum => "sum",
         };

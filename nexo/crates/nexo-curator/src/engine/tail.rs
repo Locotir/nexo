@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::hindsight::UKind;
-use crate::json::{est, est_str};
+use crate::json::{est, est_str, str_chars};
 use crate::msg::{blocks, get_str, person_words, request_words, text_block, text_of};
 use crate::standing::CALL_KEYS;
 use crate::tools::{classify, printed_files, shell_writes, Kind};
@@ -42,6 +42,28 @@ const INFLATE_TO: f64 = 0.99;
 
 /// Characters of a line shown.
 const SHOWN: usize = 300;
+
+/// Recall's compact JSON text block, measured in the same escaped characters as `est`.
+/// A joined line adds its JSON string size: the two quotes are replaced by `\\n`.
+struct RecallSize {
+    chars: usize,
+    limit: i64,
+}
+
+impl RecallSize {
+    fn new(head: &str, limit: i64) -> Self {
+        Self { chars: text_block(head).to_string().chars().count(), limit }
+    }
+
+    fn admit(&mut self, new_header: Option<&str>, line: &str) -> bool {
+        let next = self.chars + new_header.map_or(0, str_chars) + str_chars(line);
+        if (next / 4) as i64 > self.limit {
+            return false;
+        }
+        self.chars = next;
+        true
+    }
+}
 
 /// Whether the text or the tool results of a message's ``content`` hold ``line`` as it is.
 fn holds(content: Option<&Value>, line: &str) -> bool {
@@ -178,40 +200,57 @@ impl Engine {
             texts.insert(*u, t.lines().collect());
         }
         let mut seen = rustc_hash::FxHashSet::default();
-        let first = budget;
-        let mut shown: Vec<(usize, u32, u32, String)> = Vec::new();
+        let head = format!(
+            "Recall (lines of earlier messages that this request names{}):",
+            if self.recall_tool { "; recall m##### brings one back whole" } else { "" }
+        );
+        let mut size = RecallSize::new(&head, budget);
+        let mut labeled = rustc_hash::FxHashSet::default();
+        let mut shown: Vec<(usize, u32, u32, String, String)> = Vec::new();
         for (u, n) in picks {
             let Some(line) = texts.get(&u).and_then(|l| l.get(n as usize)) else { continue };
             let line = line.trim();
-            if line.is_empty() || !seen.insert(line) {
+            if line.is_empty() || !seen.insert((u, line)) {
                 continue;
             }
             let line: String = match line.char_indices().nth(SHOWN) {
                 Some((i, _)) => format!("{}…", &line[..i]),
                 None => line.to_string(),
             };
-            budget -= est_str(&line) + 1;
-            if budget < 0 {
-                break;
+            let unit = &self.tr.units[u as usize];
+            // A single protocol message may hold parallel results AND the person's own text.
+            // Address the actual block; a nearby call/path is not evidence of its origin.
+            let multi = self.tr.msgs[unit.msg]["content"].as_array().is_some_and(|bs| bs.len() > 1);
+            let by = match unit.kind {
+                UKind::User => "person",
+                UKind::Result => "tool",
+                _ => "agent",
+            };
+            let header = if multi {
+                format!("m{:05} (block {}, {by}):", unit.msg + 1, unit.block + 1)
+            } else {
+                format!("m{:05} ({by}):", unit.msg + 1)
+            };
+            let line = format!("> {line}");
+            if !size.admit((!labeled.contains(&u)).then_some(header.as_str()), &line) {
+                continue;
             }
-            shown.push((self.tr.units[u as usize].msg, u, n, line));
+            labeled.insert(u);
+            shown.push((self.tr.units[u as usize].msg, u, n, header, line));
         }
         if inflated {
             self.bump("inflate_wide", 1);
-            self.bump("inflate_tokens", (first - budget).max(0));
+            self.bump("inflate_tokens", if shown.is_empty() { 0 } else { (size.chars / 4) as i64 });
         }
         shown.sort_by_key(|s| (s.0, s.1, s.2));
-        let (mut out, mut at): (Vec<String>, Option<usize>) = (Vec::new(), None);
-        for (mi, u, _, line) in shown {
-            if at != Some(mi) {
-                // who said the message: the person, the agent, or a tool (its output)
-                let by = match self.tr.units[u as usize].kind {
-                    UKind::User => "person",
-                    UKind::Result => "tool",
-                    _ => "agent",
-                };
-                out.push(format!("m{:05} ({by}):", mi + 1));
-                at = Some(mi);
+        if shown.is_empty() {
+            return Vec::new();
+        }
+        let (mut out, mut at) = (vec![head], None);
+        for (_, u, _, header, line) in shown {
+            if at != Some(u) {
+                out.push(header);
+                at = Some(u);
             }
             out.push(line);
         }
@@ -292,18 +331,38 @@ impl Engine {
         } else {
             self.index_lines()
         };
-        if !found.is_empty() {
-            lines.push(format!(
-                "Recall (lines of earlier messages that this request names{}):",
-                if self.recall_tool { "; recall m##### brings one back whole" } else { "" }
-            ));
-            lines.extend(found);
-        }
+        lines.extend(found);
         if lines.is_empty() {
             return;
         }
         let block = text_block(&lines.join("\n"));
         self.tail_tokens = est(&block);
         add_blocks(last, [block]);
+    }
+}
+
+#[cfg(test)]
+mod recall_size_tests {
+    use super::*;
+
+    #[test]
+    fn both_caps_charge_exact_rendered_block_and_leave_rejections_uncharged() {
+        for limit in [LINE_TOKENS, LINE_TOKENS * 2] {
+            let head = "Recall (lines of earlier messages that this request names):";
+            let header = "m00042 (tool):";
+            let next_header = "m00043 (block 1, person):";
+            let mut size = RecallSize::new(head, limit);
+            let line = "> 雪\t\"\\";
+            assert!(size.admit(Some(header), line));
+            let first = format!("{head}\n{header}\n{line}");
+            // Fill to the last character that floors to `limit`, independently of RecallSize.
+            let prefix = format!("{first}\n{next_header}\n> ");
+            let bytes = text_block(&prefix).to_string().chars().count();
+            let fill = "x".repeat(limit as usize * 4 + 3 - bytes);
+            assert!(!size.admit(Some(next_header), &format!("> {fill}x")));
+            assert!(size.admit(Some(next_header), &format!("> {fill}")));
+            assert_eq!(est(&text_block(&format!("{prefix}{fill}"))), limit);
+            assert!(!size.admit(None, "> x"));
+        }
     }
 }

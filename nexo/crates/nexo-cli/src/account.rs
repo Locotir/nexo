@@ -84,9 +84,11 @@ pub async fn login_cmd(
         println!("\nany other provider takes a key: `nexo providers --all` lists every one nexo knows");
         return Ok(0);
     };
-    if flow == Some("claude") && name != "anthropic" {
+    if flow == Some("claude") && !matches!(name, "anthropic" | "anthropic-oauth") {
         anyhow::bail!("Claude OAuth is only available for provider anthropic");
     }
+    // Keep the legacy command, but save new Claude logins under a distinct identity.
+    let name = if name == "anthropic" && flow == Some("claude") { "anthropic-oauth" } else { name };
     if !adopt(cfg, name) && flow.is_none() && key.is_none() {
         anyhow::bail!("unknown provider {name:?}; `nexo providers --all` lists them, or give --key to keep one anyway");
     }
@@ -94,10 +96,21 @@ pub async fn login_cmd(
     let entry = p.auth.clone().unwrap_or_else(|| name.to_string());
     let flow = flow.map(str::to_string).or_else(|| if key.is_none() { p.login.clone() } else { None });
 
+    if name == "anthropic-oauth" && flow.as_deref() != Some("claude") {
+        anyhow::bail!("anthropic-oauth only accepts Claude OAuth; use anthropic for an API key");
+    }
+    // Never overwrite a legacy OAuth login with an API key without a replacement.
+    if name == "anthropic"
+        && flow.is_none()
+        && auth::get(&entry).is_some_and(|c| c.metadata("flow") == Some("claude"))
+        && auth::get("anthropic-oauth").is_none()
+    {
+        anyhow::bail!("anthropic contains a legacy Claude OAuth login; first run `nexo auth login anthropic-oauth` to keep OAuth available");
+    }
     let cred = match flow {
         Some(f) => {
             if f == "claude" {
-                if name != "anthropic" {
+                if name != "anthropic-oauth" {
                     anyhow::bail!("Claude OAuth is only available for provider anthropic");
                 }
                 claude_login().await?

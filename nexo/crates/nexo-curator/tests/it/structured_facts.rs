@@ -1,7 +1,10 @@
 //! Hand-labelled, offline checks. Exact clauses are a deliberately conservative oracle, not a semantic parser.
 //! A clause must survive intact: words scattered across different statements are not sufficient evidence.
 
-use nexo_curator::{sim::events::forgotten, Curator};
+use nexo_curator::{
+    sim::events::{forgotten, lacking_lines, values},
+    Curator,
+};
 use serde_json::{json, Value};
 
 fn user(text: &str) -> Value {
@@ -67,6 +70,37 @@ fn labelled_oracle_rejects_missing_and_inverted_facts() {
         // Conservative by design: a correct paraphrase is not certified by this lexical oracle.
     }
     assert!(!has_clause(&[user("Do not deploy atlas to production.")], CASES[0].required));
+}
+
+// These labels are specific to the fixture, not a general contradiction detector. A view that
+// contains both the correct clause and its contradiction must not pass on presence alone.
+fn labelled_status(view: &[Value], required: &str, forbidden: &str) -> (bool, bool) {
+    (has_clause(view, required), has_clause(view, forbidden))
+}
+
+#[test]
+fn structured_labels_expose_relations_negation_and_conflicting_clauses() {
+    let cases = [
+        ("association", "atlas uses 5433; boreal uses 5432", "atlas uses 5432; boreal uses 5433"),
+        ("negation", "never deploy atlas; deploy boreal", "deploy atlas; never deploy boreal"),
+        ("correction", "atlas uses 5433, not 5432", "atlas uses 5432, not 5433"),
+    ];
+    for (name, required, forbidden) in cases {
+        let expected = user(required);
+        let good = [user(required)];
+        let missing = [user("unrelated")];
+        let reversed = [user(forbidden)];
+        let conflict = [user(required), user(forbidden)];
+        assert_eq!(labelled_status(&good, required, forbidden), (true, false), "{name}: positive");
+        assert_eq!(labelled_status(&missing, required, forbidden), (false, false), "{name}: missing");
+        assert_eq!(labelled_status(&reversed, required, forbidden), (false, true), "{name}: reversed");
+        assert_eq!(labelled_status(&conflict, required, forbidden), (true, true), "{name}: conflict");
+
+        // Value-set coverage sees every token in the inverted statement and reports no missing
+        // lines. This exercises the helper used by denied_values, not a full replay or curator output.
+        assert_eq!(lacking_lines(&expected, &values(&reversed[0])), (0, 1), "{name}: value coverage");
+        assert_eq!(lacking_lines(&expected, &values(&missing[0])), (1, 1), "{name}: missing control");
+    }
 }
 
 #[test]

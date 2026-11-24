@@ -55,21 +55,37 @@ impl Protocol for Anthropic {
     }
 
     async fn list_models(&self, cfg: &ProviderConfig, key: Option<&str>) -> Result<Vec<ModelInfo>, ProviderError> {
-        let url = http::join_versioned(&cfg.base_url, "v1", "models?limit=100");
-        let v = http::get_json(&url, Self::headers(cfg, key)).await?;
-        Ok(v["data"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| {
-                        Some(ModelInfo {
-                            id: m["id"].as_str()?.to_string(),
-                            display: m["display_name"].as_str().map(String::from),
-                            ..Default::default()
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default())
+        use nexo_core::ErrorKind;
+        use std::collections::HashSet;
+
+        let invalid = || ProviderError::new(ErrorKind::Parse, "invalid Anthropic model pagination");
+        let base = http::join_versioned(&cfg.base_url, "v1", "models");
+        let mut url = reqwest::Url::parse(&base).map_err(|_| invalid())?;
+        url.query_pairs_mut().append_pair("limit", "100");
+        let mut models = Vec::new();
+        let mut ids = HashSet::new();
+        let mut cursors = HashSet::new();
+        // A broken or hostile endpoint must not produce an unbounded traversal.
+        for _ in 0..1000 {
+            let v = http::get_json(url.as_str(), Self::headers(cfg, key)).await?;
+            let data = v["data"].as_array().ok_or_else(invalid)?;
+            for model in data {
+                let id = model["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(invalid)?;
+                if !ids.insert(id.to_owned()) {
+                    return Err(invalid());
+                }
+            }
+            let more = v["has_more"].as_bool().ok_or_else(invalid)?;
+            models.extend(crate::probe::anthropic_models(&v));
+            if !more {
+                return Ok(models);
+            }
+            let cursor = v["last_id"].as_str().filter(|id| !id.is_empty()).ok_or_else(invalid)?;
+            if data.last().and_then(|m| m["id"].as_str()) != Some(cursor) || !cursors.insert(cursor.to_owned()) {
+                return Err(invalid());
+            }
+            url.query_pairs_mut().clear().append_pair("limit", "100").append_pair("after_id", cursor);
+        }
+        Err(invalid())
     }
 }

@@ -204,16 +204,23 @@ impl Wrapper<'_> {
     /// A break the layout made: the next row continues this one.
     fn soft(&mut self) {
         let mut gap = 0usize;
+        let mut gap_underlined = true;
         'count: for s in self.cur.iter().rev() {
             for c in s.content.chars().rev() {
                 if !c.is_whitespace() {
                     break 'count;
                 }
                 gap += 1;
+                gap_underlined &= s.style.add_modifier.contains(ratatui::style::Modifier::UNDERLINED);
             }
         }
         self.newline();
-        self.conts.push(Cont { line: self.lines.len() as u32, gap: gap.min(255) as u8, deco: self.rest_w as u16 });
+        self.conts.push(Cont {
+            line: self.lines.len() as u32,
+            gap: gap.min(255) as u8,
+            gap_underlined: gap > 0 && gap_underlined,
+            deco: self.rest_w as u16,
+        });
     }
 
     fn newline(&mut self) {
@@ -432,14 +439,40 @@ mod cont_tests {
     use super::*;
 
     #[test]
+    fn trimmed_gap_underline_comes_from_spaces_not_neighbouring_labels() {
+        use ratatui::style::Modifier;
+        let plain = Style::default();
+        let underlined = plain.add_modifier(Modifier::UNDERLINED);
+        for (spaces, expected) in [
+            (vec![("  ".to_string(), underlined)], true),
+            (vec![("  ".to_string(), plain)], false),
+            (vec![(" ".to_string(), underlined), (" ".to_string(), plain)], false),
+            (vec![(" ".to_string(), plain), (" ".to_string(), underlined)], false),
+        ] {
+            let mut runs = vec![("漢🙂".to_string(), underlined)];
+            runs.extend(spaces);
+            runs.push(("next".to_string(), underlined));
+            let (lines, conts) = wrap_runs_ex(&runs, 6, &[], &[]);
+            assert_eq!(lines.len(), 2);
+            assert_eq!(conts, vec![Cont { line: 1, gap: 2, gap_underlined: expected, deco: 0 }]);
+        }
+    }
+
+    #[test]
     fn marks_the_rows_the_layout_wrapped_and_the_spaces_it_trimmed() {
         let runs = [("one  two three".to_string(), Style::default())];
         let (lines, conts) = wrap_runs_ex(&runs, 7, &[], &[Span::raw("  ")]);
         assert_eq!(lines.len(), 3);
-        assert_eq!(conts, vec![Cont { line: 1, gap: 2, deco: 2 }, Cont { line: 2, gap: 1, deco: 2 }]);
+        assert_eq!(
+            conts,
+            vec![
+                Cont { line: 1, gap: 2, gap_underlined: false, deco: 2 },
+                Cont { line: 2, gap: 1, gap_underlined: false, deco: 2 }
+            ]
+        );
         let runs = [("abcdefghij".to_string(), Style::default())];
         let (_, conts) = wrap_runs_ex(&runs, 5, &[], &[]);
-        assert_eq!(conts, vec![Cont { line: 1, gap: 0, deco: 0 }]);
+        assert_eq!(conts, vec![Cont { line: 1, gap: 0, gap_underlined: false, deco: 0 }]);
         let (lines, conts) = wrap_plain_ex("a\nb c d e", 3, Style::default(), &[]);
         assert_eq!(lines.len(), 3);
         assert!(conts.iter().all(|c| c.line >= 2), "a hard newline is not a wrap");

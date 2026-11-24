@@ -13,7 +13,8 @@ pub(super) fn convert(m: &Message, send_reasoning: bool) -> Vec<Value> {
             for p in &m.content {
                 match p {
                     Part::ToolResult { call_id, content: c, is_error, .. } => {
-                        let text = nexo_core::message::result_text(c);
+                        let c = crate::result_parts(c);
+                        let text = crate::result_text(&c);
                         let text = if *is_error && !text.to_ascii_lowercase().starts_with("error") {
                             format!("Error: {text}")
                         } else {
@@ -82,5 +83,16 @@ pub(crate) fn image_url(source: &ImageSource) -> String {
     match source {
         ImageSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
         ImageSource::Url { url } => url.clone(),
+    }
+}
+
+#[cfg(test)]
+mod nested_result_tests {
+    #[test]
+    fn nested_tool_result_images_are_preserved() {
+        let v = super::convert(&crate::nested_image_result(), false);
+        assert_eq!(v[0]["tool_call_id"], "outer");
+        assert_eq!(v[0]["content"], "Error: before\nnested\nafter");
+        assert_eq!(v[1]["content"][0]["image_url"]["url"], "https://example.invalid/p.png");
     }
 }

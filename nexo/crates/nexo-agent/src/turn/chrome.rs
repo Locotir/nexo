@@ -63,8 +63,8 @@ pub(super) async fn set_up(state: &Shared, events: &EventTx) {
 pub(super) fn use_note(id: &str) -> String {
     format!(
         "nexo note, not from the person's typing: they ran /chrome and connected their own browser (id {id}) \
-         through the nexo extension. The `browser` tool's `select_browser{{\"id\":\"{id}\"}}` uses it; they click \
-         Allow in the browser when it asks."
+         through the nexo extension. The `browser` tool's `select_browser{{\"id\":\"{id}\"}}` uses it; the extension \
+         grants session access automatically. Cancel on Chrome's debugging bar stops that session."
     )
 }
 
@@ -76,4 +76,16 @@ pub(super) async fn use_browser(state: &Shared, events: &EventTx, id: String) {
         st.hook_context.push(note);
     }
     notice(events, Level::Info, "the agent will be told your browser is connected with your next message");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn browser_note_describes_automatic_access_and_stop() {
+        let note = super::use_note("test-browser");
+        assert!(note.contains("select_browser{\"id\":\"test-browser\"}"));
+        assert!(note.contains("grants session access automatically"));
+        assert!(note.contains("Cancel on Chrome's debugging bar"));
+        assert!(!note.contains("Allow"));
+    }
 }

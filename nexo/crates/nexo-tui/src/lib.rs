@@ -75,6 +75,7 @@ pub use fx::goal as fx_goal;
 pub use fx::home as fx_home;
 pub use fx::ignite as fx_ignite;
 pub use fx::panel as panel_fx;
+pub use fx::pulse as fx_pulse;
 pub use fx::starfield as fx_starfield;
 pub use fx::stars as fx_stars;
 pub use fx::stream as fx_stream;

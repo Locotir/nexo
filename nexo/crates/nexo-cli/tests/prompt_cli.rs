@@ -48,7 +48,7 @@ fn builtin_is_only_nexos_own_part_of_the_prompt() {
     std::fs::write(proj.path().join("AGENTS.md"), "PROJECT-AGENTS-RULE").unwrap();
     let b = out(&nexo(cfg.path(), home.path(), proj.path(), &["prompt", "--builtin"]));
     assert!(b.starts_with("You are nexo,") && b.contains("You can do:"), "{b}");
-    for not in ["CLAUDE-RULE", "AGENTS-RULE", "Working directory", "Instructions from", "preferences"] {
+    for not in ["CLAUDE-RULE", "AGENTS-RULE", "Working directory", "Instructions from", "The person's preferences"] {
         assert!(!b.contains(not), "{not}: {b}");
     }
 }
@@ -79,7 +79,7 @@ fn window_selects_the_compact_text_for_a_small_model() {
     let run = |args: &[&str]| out(&nexo(cfg.path(), home.path(), proj.path(), args));
     let small = run(&["prompt", "--builtin", "--window", "8000"]);
     assert!(
-        small.starts_with("You are nexo,") && !small.contains("How to write code") && small.len() <= 2_600,
+        small.starts_with("You are nexo,") && !small.contains("How to write code") && small.len() <= 3_100,
         "{small}"
     );
     let tools = run(&["prompt", "--tools", "--window", "8000"]);

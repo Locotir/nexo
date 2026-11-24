@@ -80,18 +80,6 @@ fn the_new_build_takes_the_old_ones_place_and_nothing_is_left_beside_it() {
 }
 
 #[test]
-fn a_build_github_does_not_know_counts_the_commits_made_after_it() {
-    let list = serde_json::json!([
-        {"commit": {"committer": {"date": "2026-11-04T20:27:00Z"}}},
-        {"commit": {"committer": {"date": "2026-11-04T18:05:00Z"}}},
-        {"commit": {"committer": {"date": "2026-11-04T19:00:00Z"}}},
-    ]);
-    assert_eq!(newer(&list, "2026-11-04T18:05:00Z"), 2);
-    assert_eq!(newer(&list, "2026-11-04T21:00:00Z"), 0);
-    assert_eq!(newer(&serde_json::json!({"message": "x"}), "2026-11-04T18:05:00Z"), 0);
-}
-
-#[test]
 fn only_server_errors_timeouts_and_connection_failures_are_tried_again() {
     assert!(retryable(Some(500), false, false));
     assert!(retryable(Some(504), false, false));
@@ -298,14 +286,14 @@ async fn a_release_tag_equal_to_the_running_commit_is_up_to_date_without_the_api
 }
 
 #[tokio::test]
-async fn a_newer_release_is_told_without_a_count_when_the_api_cannot_give_one() {
+async fn a_release_with_an_unavailable_comparison_is_not_reported_as_newer() {
     let m = Mock::start(|b| {
         vec![redirect(b, "build-def5678"), ("/api/compare/abc1234...build-def5678".into(), rate_limited(0))]
     })
     .await;
     let got = status("abc1234", &m.sources()).await;
-    assert_eq!(got, Some(Some(Newer { tag: "build-def5678".into(), count: None })));
-    // and with the count when the API answers
+    assert_eq!(got, None);
+    // A positive comparison still reports the release.
     let ok = reply_with("200 OK", &[], r#"{"ahead_by":3}"#);
     let m =
         Mock::start(|b| vec![redirect(b, "build-def5678"), ("/api/compare/abc1234...build-def5678".into(), ok)]).await;
@@ -504,5 +492,64 @@ fn the_source_build_is_pinned_to_the_reported_release_tag() {
 fn the_source_build_is_not_pinned_without_a_tag_or_with_an_odd_one() {
     for tag in [None, Some(""), Some("a/b"), Some(".."), Some("x y")] {
         assert!(!install_args(tag).iter().any(|a| a.starts_with("--tag")), "{tag:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_unpublished_main_is_not_reported_as_a_release() {
+    let m =
+        Mock::start(|_| vec![("/api/compare/abc1234...main".into(), reply_with("200 OK", &[], r#"{"ahead_by":3}"#))])
+            .await;
+    assert_eq!(status("abc1234", &m.sources()).await, None);
+    assert_eq!(m.api_calls(), 1, "only the release lookup is justified");
+}
+
+#[tokio::test]
+async fn an_api_release_equal_to_the_running_commit_needs_no_comparison() {
+    let m = Mock::start(|_| {
+        vec![("/api/releases/latest".into(), reply_with("200 OK", &[], r#"{"tag_name":"build-abc1234","assets":[]}"#))]
+    })
+    .await;
+    assert_eq!(status("abc1234deadbeef", &m.sources()).await, Some(None));
+    assert_eq!(m.api_calls(), 1);
+}
+
+#[tokio::test]
+async fn an_api_release_with_an_unavailable_comparison_is_not_reported_as_newer() {
+    for response in [rate_limited(0), reply_with("404 Not Found", &[], "")] {
+        let m = Mock::start(|_| {
+            vec![
+                (
+                    "/api/releases/latest".into(),
+                    reply_with("200 OK", &[], r#"{"tag_name":"build-def5678","assets":[]}"#),
+                ),
+                ("/api/compare/abc1234...build-def5678".into(), response),
+            ]
+        })
+        .await;
+        assert_eq!(status("abc1234", &m.sources()).await, None);
+        assert_eq!(m.api_calls(), 2, "do not substitute unrelated commits on main");
+    }
+}
+
+#[tokio::test]
+async fn an_api_release_uses_its_own_comparison_count() {
+    for count in [0, 3] {
+        let m = Mock::start(|_| {
+            vec![
+                (
+                    "/api/releases/latest".into(),
+                    reply_with("200 OK", &[], r#"{"tag_name":"build-def5678","assets":[]}"#),
+                ),
+                (
+                    "/api/compare/abc1234...build-def5678".into(),
+                    reply_with("200 OK", &[], &format!(r#"{{"ahead_by":{count}}}"#)),
+                ),
+            ]
+        })
+        .await;
+        let expected = (count > 0).then(|| Newer { tag: "build-def5678".into(), count: Some(count) });
+        assert_eq!(status("abc1234", &m.sources()).await, Some(expected));
+        assert_eq!(m.api_calls(), 2);
     }
 }

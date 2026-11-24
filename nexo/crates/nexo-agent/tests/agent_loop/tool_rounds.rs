@@ -747,3 +747,48 @@ async fn a_failed_read_does_not_stop_the_reads_beside_it() {
     assert_eq!((outs[0].0.as_str(), outs[0].1), ("r1", true));
     assert_eq!((outs[1].0.as_str(), outs[1].1, outs[1].2.as_str()), ("r2", false, "read:a.txt"));
 }
+
+#[tokio::test]
+async fn group_cost_captures_request_billing_before_midstream_provider_switch() {
+    for subscription in [false, true] {
+        let d = test_tmpdir().unwrap();
+        let client = Scripted::new(vec![]);
+        let mut cfg = config(PermissionMode::Ask);
+        cfg.providers.get_mut("mock").unwrap().login = subscription.then(|| "codex".into());
+        let mut other = cfg.providers["mock"].clone();
+        other.base_url = "http://other".into();
+        other.login = (!subscription).then(|| "codex".into());
+        other.pricing.get_mut("m1").unwrap().input = 900.0;
+        cfg.providers.insert("other".into(), other);
+        let mut r = start(client.clone(), cfg, None, d.path()).await;
+        r.next().await;
+        client.replies.lock().unwrap().extend([
+            Reply::Midway(
+                r.handle.commands.clone(),
+                Box::new(AgentCommand::SetModel { provider: Some("other".into()), model: "m1".into() }),
+                call("origin", "read", json!({"path": "a"})),
+            ),
+            Reply::Events(text("done")),
+        ]);
+        r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        let changed = evs
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ModelChanged { provider, .. } if provider == "other"))
+            .unwrap();
+        let charged = evs.iter().position(|e| matches!(e, AgentEvent::GroupCost { .. })).unwrap();
+        assert!(changed < charged, "provider changed while original request was in flight");
+        let (ids, usd, plan) = evs
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::GroupCost { call_ids, cost_usd, plan } => Some((call_ids, *cost_usd, *plan)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(ids, &["origin".to_string()]);
+        assert_eq!(plan, subscription);
+        assert!((usd - 0.000020).abs() < 1e-12, "request's original pricing: {usd}");
+        assert!(evs[..charged].iter().any(|e| matches!(e, AgentEvent::ToolDone { id, .. } if id == "origin")));
+        r.stop().await;
+    }
+}

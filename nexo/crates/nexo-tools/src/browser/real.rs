@@ -92,9 +92,12 @@ fn list(found: &[BrowserEntry], bad: &[(String, String)], current: Option<&AnyBr
         ));
     }
     lines.push(
-        "select_browser{id} uses one (the person clicks Allow in it); switch_browser asks every browser at once."
+        "select_browser{id} uses one through the extension's access checks; switch_browser asks every browser at once."
             .into(),
     );
+    if !found.is_empty() {
+        lines.push("Available now: no /chrome setup needed. Listing did not grant access or open any tabs.".into());
+    }
     lines.join("\n")
 }
 
@@ -193,6 +196,7 @@ mod tests {
         assert!(lines[2].ends_with("logged in, in use by nexo in app"), "{text}");
         assert_eq!(lines[3], "  old  not answering: timed out");
         assert!(lines[4].starts_with("select_browser{id}"), "{text}");
+        assert_eq!(lines[5], "Available now: no /chrome setup needed. Listing did not grant access or open any tabs.");
     }
 
     #[test]
@@ -209,6 +213,7 @@ mod tests {
     fn an_empty_list_says_how_to_get_a_browser() {
         let text = list(&[], &[], None);
         assert!(text.contains("/chrome") && text.contains("nexo chrome-setup") && text.contains("headless"), "{text}");
+        assert!(!text.contains("Available now"), "{text}");
         for want in ["Developer mode", "Load unpacked", "chrome-extension"] {
             assert!(text.contains(want), "{want} missing from {text}");
         }

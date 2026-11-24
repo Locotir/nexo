@@ -122,11 +122,28 @@ impl Tool for Jobs {
                 // while the model waits, the screen sees the job's newest output line
                 let read = ctx.jobs.read(id, wait, &ctx.cancel);
                 tokio::pin!(read);
+                // A message/key releases only this wait, never the background worker. Use the same
+                // signal as foreground `task`, so the coordinator can hear the queued message now.
+                let release = async {
+                    match &ctx.detach {
+                        Some(detach) => {
+                            detach.wait().await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::pin!(release);
+                let mut yielded = false;
                 let mut tick = tokio::time::interval(Duration::from_millis(700));
                 let mut shown = String::new();
                 let read = loop {
                     tokio::select! {
+                        biased;
                         r = &mut read => break r,
+                        _ = &mut release, if !wait.is_zero() => {
+                            yielded = true;
+                            break ctx.jobs.read(id, Duration::ZERO, &ctx.cancel).await;
+                        }
                         _ = tick.tick(), if !wait.is_zero() => {
                             if let Some(l) = ctx.jobs.last_line(id).filter(|l| *l != shown) {
                                 ctx.report(one_line(&l, 300));
@@ -140,7 +157,11 @@ impl Tool for Jobs {
                     Some(r) => {
                         let mut text = format!("job {id}: {}, {}", r.info.status.word(), duration(r.info.elapsed_ms));
                         if r.info.status.running() && !wait.is_zero() {
-                            text.push_str(&format!(" (still running after waiting {} s)", wait.as_secs()));
+                            if yielded {
+                                text.push_str(" (wait released for interaction; job continues in the background)");
+                            } else {
+                                text.push_str(&format!(" (still running after waiting {} s)", wait.as_secs()));
+                            }
                         }
                         text.push('\n');
                         if r.new.is_empty() {
@@ -237,6 +258,41 @@ mod tests {
             assert!(Jobs.run(json!({"action": "output"}), &c).await.is_error);
             assert!(Jobs.run(json!({"action": "output", "id": 9}), &c).await.is_error);
             assert_eq!(Jobs.summary(&json!({"action": "output", "id": 2, "wait": 30})), "jobs: output 2 (wait 30 s)");
+        });
+    }
+
+    #[test]
+    fn interaction_releases_a_wait_without_stopping_or_losing_the_agents_output() {
+        crate::util::run_bounded(Duration::from_secs(10), "interaction_releases_jobs_wait", async {
+            for why in [nexo_core::jobs::DetachWhy::Message, nexo_core::jobs::DetachWhy::Key] {
+                let mut c = ToolContext::new(std::env::current_dir().unwrap());
+                let detach = nexo_core::jobs::Detach::default();
+                c.detach = Some(detach.clone());
+                let h = c.jobs.start(JobKind::Agent, "slow worker");
+                let id = h.id();
+                h.line("before interaction");
+                let wait = Jobs.run(json!({"action": "output", "id": id, "wait": 600}), &c);
+                tokio::pin!(wait);
+                // Poll the actual wait first, then fire while it is suspended.
+                tokio::select! {
+                    _ = &mut wait => panic!("a running job must wait"),
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+                detach.fire(why);
+                let out = tokio::time::timeout(Duration::from_secs(1), &mut wait).await.unwrap();
+                assert!(out.content.contains("wait released for interaction"), "{}", out.content);
+                assert!(out.content.contains("before interaction"), "{}", out.content);
+                assert!(!out.content.contains("after waiting 600 s"));
+                assert!(!c.cancel.is_cancelled());
+                assert!(c.jobs.get(id).unwrap().status.running());
+                h.line("after interaction");
+                h.finish(true, "reported");
+                let out = Jobs.run(json!({"action": "output", "id": id, "wait": 600}), &c).await;
+                assert!(out.content.contains("after interaction"), "{}", out.content);
+                assert!(!out.content.contains("before interaction"));
+                assert!(!out.content.contains("wait released"), "ended jobs win over the sticky signal");
+                assert!(c.jobs.take_ended().is_empty(), "the report was consumed exactly once");
+            }
         });
     }
 

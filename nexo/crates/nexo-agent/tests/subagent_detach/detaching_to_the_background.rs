@@ -143,6 +143,39 @@ async fn a_message_while_a_sub_agent_runs_moves_it_to_the_background_and_its_rep
 }
 
 #[tokio::test]
+async fn a_message_releases_jobs_wait_and_the_background_sub_agent_keeps_working() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(
+        vec![
+            Reply::Events(call("t1", "task", bg("explore", "slow look"))),
+            Reply::Events(call("j1", "jobs", json!({"action": "output", "id": 1, "wait": 600}))),
+            Reply::Events(text("answering you")),
+            Reply::Events(text("noted the report")),
+        ],
+        vec![Reply::Events(call("w1", "wait", json!({}))), Reply::Events(text("late report"))],
+    );
+    let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.submit("delegate and wait");
+    until_tool(&client, 1).await;
+    r.until(|e| matches!(e, AgentEvent::ToolStart { id, .. } if id == "j1")).await;
+    r.submit("hello meanwhile");
+    let evs = tokio::time::timeout(Duration::from_secs(5), r.turn()).await.expect("human need not wait 600 seconds");
+    let out = done_of(&evs, "j1").unwrap();
+    assert!(out.contains("wait released for interaction"), "{out}");
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text.contains("answering"))));
+    let reqs = client.main_requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(texts(reqs[2].messages.last().unwrap()).contains("hello meanwhile"));
+    assert_eq!(client.sub_count(), 1, "the worker has not ended or restarted");
+    release(d.path(), "go");
+    r.turn().await;
+    let reqs = client.main_requests();
+    let note = texts(reqs.last().unwrap().messages.last().unwrap());
+    assert!(note.contains("background jobs ended"), "{note}");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_detached_sub_agent_that_ends_while_the_main_agent_works_joins_at_the_next_round() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(

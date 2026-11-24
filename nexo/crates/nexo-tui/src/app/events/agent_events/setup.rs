@@ -81,8 +81,9 @@ impl App {
         self.model = model.clone();
         self.limits = Some(Limits { pricing, context_window, max_output, source: source.clone() });
         // Only tool price tags and group API-value labels use the current model.
-        // Dropping all heights here forces the next frame to re-wrap the entire
-        // transcript (including evicted markdown), making /model scale with history.
+        // Both decorate an existing header without adding rows. Keep their heights:
+        // discarding them makes layout re-render even far-away, evicted tool output.
+        // Drop lines and hit regions so visible cards use the new prices immediately.
         for i in 0..self.blocks.len() {
             let affected = match &self.blocks[i] {
                 Block::Tool { id, .. } => self.marks.contains_key(id),
@@ -90,7 +91,10 @@ impl App {
                 _ => false,
             };
             if affected {
-                self.invalidate(i);
+                if let Some((_, _, lines, meta)) = self.cache[i].as_mut() {
+                    *lines = None;
+                    *meta = Default::default();
+                }
             }
         }
         self.dirty = true;

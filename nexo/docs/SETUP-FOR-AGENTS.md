@@ -44,6 +44,7 @@ A key in the environment, a file or a command always wins over the store.
 
 | Provider name | Subscription | Login |
 |---|---|---|
+| `anthropic-oauth` | Unofficial Claude OAuth; `nexo auth login anthropic-oauth` requires interactive risk acceptance |
 | `copilot` | GitHub Copilot (Pro, Pro+, Business, Enterprise) | `nexo auth login copilot` |
 | `codex` | ChatGPT Plus, Pro or Team | `nexo auth login codex` |
 | `xai` | SuperGrok / X Premium (or `XAI_API_KEY`) | `nexo auth login xai` |
@@ -138,3 +139,7 @@ server.
 | `401` / `auth` error | the key is wrong or the login expired: `nexo auth login <provider>` again |
 | `no Copilot chat access` | the GitHub account has no Copilot plan with chat |
 | `model ... is not in its list` | `nexo models <provider>` and `nexo use <provider> <model>` |
+
+### Anthropic API key versus Claude OAuth
+
+`anthropic` uses the API key (`nexo auth login anthropic --key`, or `ANTHROPIC_API_KEY`). `anthropic-oauth` is a separate selectable provider and credential; sign in interactively with `nexo auth login anthropic-oauth`, then select its models in `/model`. The unofficial OAuth flow can violate provider policies or risk account access: read and explicitly accept the warning during login. OAuth does not use the API-key environment variable. The legacy command `nexo auth login anthropic --flow claude` now saves to `anthropic-oauth`. An existing legacy OAuth login under `anthropic` is not deleted or silently moved; sign in to `anthropic-oauth` before replacing that old entry with an API key.

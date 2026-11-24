@@ -272,7 +272,10 @@ fn use_text(i: &ChromeInfo, told: Option<&str>) -> String {
     match (&i.in_use, told) {
         (Some(d), _) => format!("this session is using {d}"),
         (None, Some(id)) => {
-            format!("this session is not using it yet; the agent was told to use {id} and you click Allow when it asks")
+            format!(
+                "this session is not using it yet; the agent was told to use {id}. The current extension grants access \
+                 automatically; Cancel on Chrome's debugging bar stops this session"
+            )
         }
         (None, None) if !i.running.is_empty() => "this session is not using it: press u".into(),
         (None, None) => "this session is not using it".into(),
@@ -394,7 +397,14 @@ mod tests {
         // `u` sends the id and the line says the agent was told
         let out = v.key(KeyEvent::from(KeyCode::Char('u')), Instant::now());
         assert!(matches!(out, ModalOut::Send(AgentCommand::ChromeUse { id }) if id == "chrome-1"));
-        assert_eq!(text(&v).matches('✓').count(), 4);
+        let t = text(&v);
+        assert_eq!(t.matches('✓').count(), 4);
+        let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(t.contains("this session is not using it yet"), "{t}");
+        assert!(t.contains("the agent was told to use chrome-1"), "{t}");
+        assert!(t.contains("current extension grants access automatically"), "{t}");
+        assert!(t.contains("Cancel on Chrome's debugging bar stops this session"), "{t}");
+        assert!(!t.contains("click Allow"), "{t}");
         // in use by the session
         i.in_use = Some("your own Google Chrome (Linux), id chrome-1".into());
         let t = text(&view(i));

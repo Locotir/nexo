@@ -1,6 +1,7 @@
 //! One test binary for the crate: one `mod` per former `tests/*.rs` file.
 
 mod added;
+mod fragment_matrix;
 mod golden;
 mod h1;
 mod invariants;

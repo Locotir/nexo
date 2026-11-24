@@ -434,3 +434,156 @@ fn only_a_message_that_goes_back_to_a_topic_carries_a_line() {
     // the way back says how much of the earlier topic the model carries again
     assert!(head(&mut a, users[3]).contains("↺ earlier topic · 2 msgs"), "{}", head(&mut a, users[3]));
 }
+
+// Reference scan of rendered rows, deliberately independent of rematch and search_rows.
+fn search_scan_oracle(a: &mut App, query: &str) -> Vec<usize> {
+    let query = query.to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut hits = Vec::new();
+    for i in 0..a.blocks.len() {
+        let offset = a.offsets[i];
+        let hidden = a.hidden(i);
+        let group = a.group_of(i);
+        let rows: Vec<usize> = a
+            .lines(i, a.last_width)
+            .iter()
+            .enumerate()
+            .filter_map(|(row, line)| {
+                let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+                text.to_lowercase().contains(&query).then_some(row)
+            })
+            .collect();
+        if hidden {
+            if !rows.is_empty() {
+                if let Some(group) = group {
+                    hits.push(a.offsets[group]);
+                }
+            }
+        } else {
+            hits.extend(rows.into_iter().map(|row| offset + row));
+        }
+    }
+    hits.sort_unstable();
+    hits.dedup();
+    hits
+}
+
+fn assert_search_oracle(a: &mut App, query: &str) {
+    let expected = search_scan_oracle(a, query);
+    a.search.as_mut().unwrap().query = query.into();
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches, expected, "query {query:?}");
+}
+
+#[test]
+fn search_index_tracks_eviction_edits_width_and_folding() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    for i in 0..100 {
+        a.push(Block::User { text: format!("item {i} alpha beta"), at: None });
+    }
+    a.transcript_area = Rect::new(0, 0, 80, 10);
+    a.layout(80);
+    a.open_search();
+    a.search.as_mut().unwrap().query = "alpha".into();
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches.len(), 100);
+    for query in ["alpha", "BETA", "item 9", "missing", ""] {
+        assert_search_oracle(&mut a, query);
+    }
+    a.search.as_mut().unwrap().query = "alpha".into();
+    a.rematch();
+    a.scroll = a.offsets[99];
+    a.evict_far(a.offsets[99], 10);
+    assert!(a.cache[0].as_ref().unwrap().2.is_none());
+    assert!(a.cache[0].as_ref().unwrap().3.search_rows.is_some());
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches.len(), 100);
+    assert!(a.cache[0].as_ref().unwrap().2.is_none());
+    assert_search_oracle(&mut a, "alpha");
+    if let Block::User { text, .. } = &mut a.blocks[0] {
+        *text = "changed gamma".into();
+    }
+    a.invalidate(0);
+    a.layout(80);
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches.len(), 99);
+    for query in ["alpha", "gamma", "BETA"] {
+        assert_search_oracle(&mut a, query);
+    }
+    a.layout(12);
+    assert_search_oracle(&mut a, "alpha");
+    a.rematch();
+    let indexed = a.search.as_ref().unwrap().matches.clone();
+    for (_, _, _, meta) in a.cache.iter_mut().flatten() {
+        meta.search_rows = None;
+    }
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches, indexed);
+    a.toggle_block(1);
+    a.layout(12);
+    assert_search_oracle(&mut a, "alpha");
+    a.rematch();
+    let indexed = a.search.as_ref().unwrap().matches.clone();
+    for (_, _, _, meta) in a.cache.iter_mut().flatten() {
+        meta.search_rows = None;
+    }
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches, indexed);
+    a.close_search();
+    assert!(a.cache.iter().flatten().all(|(_, _, _, meta)| meta.search_rows.is_none()));
+}
+
+#[test]
+fn search_index_limits_unicode_and_large_block() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    // U+0130 lowercases to two code points, i + combining dot.
+    a.push(Block::User { text: "İSTANBUL".into(), at: None });
+    a.push(Block::User { text: format!("{} İSTANBUL", "x".repeat(4000)), at: None });
+    for _ in 2..8193 {
+        a.push(Block::User { text: "İSTANBUL".into(), at: None });
+    }
+    a.transcript_area = Rect::new(0, 0, 80, 10);
+    a.layout(80);
+    a.open_search();
+    a.search.as_mut().unwrap().query = "i\u{307}stanbul".into();
+    a.rematch();
+    let matches = &a.search.as_ref().unwrap().matches;
+    assert_eq!(matches.len(), 8193);
+    assert_eq!(matches[0], a.offsets[0]);
+    assert!(matches[1] >= a.offsets[1] && matches[1] < a.offsets[2]);
+    assert_eq!(matches[8192], a.offsets[8192]);
+    assert!(a.cache[0].as_ref().unwrap().3.search_rows.is_some());
+    assert!(a.cache[1].as_ref().unwrap().3.search_rows.is_none());
+    assert!(a.cache[8191].as_ref().unwrap().3.search_rows.is_some());
+    assert!(a.cache[8192].as_ref().unwrap().3.search_rows.is_none());
+    for query in ["i\u{307}stanbul", "STAN", "absent"] {
+        assert_search_oracle(&mut a, query);
+    }
+}
+
+#[test]
+fn search_index_byte_budget_boundary() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    for len in 1..=600 {
+        a.push(Block::User { text: format!("hit{}", "x".repeat(len)), at: None });
+    }
+    a.transcript_area = Rect::new(0, 0, 1000, 10);
+    a.layout(1000);
+    a.open_search();
+    a.search.as_mut().unwrap().query = "hit".into();
+    a.rematch();
+    assert_eq!(a.search.as_ref().unwrap().matches, a.offsets[..600]);
+    let indexed: Vec<bool> = a.cache.iter().map(|entry| entry.as_ref().unwrap().3.search_rows.is_some()).collect();
+    let boundary = indexed.iter().position(|indexed| !indexed).unwrap();
+    assert!(boundary > 0);
+    assert!(indexed[..boundary].iter().all(|&v| v));
+    assert!(indexed[boundary..].iter().all(|&v| !v));
+    let rows = a.cache[boundary - 1].as_ref().unwrap().3.search_rows.as_ref().unwrap();
+    let size = rows.capacity() * std::mem::size_of::<String>() + rows.iter().map(String::capacity).sum::<usize>();
+    assert!(size <= 512);
+}

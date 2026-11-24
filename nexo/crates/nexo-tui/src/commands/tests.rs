@@ -102,6 +102,7 @@ fn parses_names_aliases_and_arguments() {
     assert_eq!(parse("/sandbox read-only"), Some(Command::Sandbox(Some(nexo_core::sandbox::SandboxMode::ReadOnly))));
     assert_eq!(parse("/sandbox sideways"), Some(Command::BadArgument("sandbox".into(), "sideways".into())));
     assert_eq!(parse("/system"), Some(Command::Prompt));
+    assert_eq!(parse("/explore status 4872"), Some(Command::Explore(Some("status 4872".into()))));
     assert_eq!(parse("/sent"), Some(Command::Sent));
     assert_eq!(parse("/request"), Some(Command::Sent));
     assert_eq!(parse("/prompt edit"), Some(Command::PromptEdit));
@@ -210,7 +211,6 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         "mouse",
         "timestamps",
         "vim",
-        "context-live",
         "live",
         "map",
         "tree",
@@ -227,7 +227,7 @@ fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
         assert!(lookup(old).is_some(), "/{old} no longer resolves");
         assert!(COMMANDS.iter().all(|s| s.name != old), "/{old} is a menu command");
     }
-    assert_eq!(COMMANDS.len(), 51, "the menu has grown or shrunk: update this on purpose");
+    assert_eq!(COMMANDS.len(), 53, "the menu has grown or shrunk: update this on purpose");
     for old in ["provider", "keys", "config", "yolo"] {
         assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
     }
@@ -258,6 +258,17 @@ fn ranks_primary_names_before_aliases_before_fuzzy_matches() {
         names.starts_with(&["compact", "clear"]) && ["cost", "context", "copy"].iter().all(|n| names.contains(n)),
         "{names:?}"
     );
+}
+
+#[test]
+fn context_live_is_discoverable_without_knowing_its_name() {
+    assert!(names().iter().any(|n| n == "context-live"));
+    let s = COMMANDS.iter().find(|s| s.name == "context-live").unwrap();
+    assert!(s.description.contains("not payload"));
+    assert!(s.description.contains("/context"));
+    assert_eq!(first("context-l"), ("context-live", None));
+    assert_eq!(parse("/context-live"), Some(Command::ContextLive));
+    assert_eq!(parse("/context live"), Some(Command::ContextLive));
 }
 
 #[test]
@@ -314,9 +325,9 @@ fn the_palette_lists_every_command_in_this_exact_order_under_these_headings() {
     let rows: Vec<String> = grouped().iter().map(|(g, i)| format!("{g}/{}", COMMANDS[*i].name)).collect();
     let want = "\
 common/model common/permissions common/resume common/plan common/ultracode common/compact common/clear common/help common/effort \
-session/fork session/rewind session/undo session/rename session/msg session/export session/goal session/queue session/loop \
+session/fork session/rewind session/undo session/rename session/msg session/export session/goal session/queue session/loop session/explore \
 model/logout model/fast model/pricing model/prompt model/memory model/budget \
-context and tools/context context and tools/sent context and tools/cost context and tools/tools context and tools/hooks \
+context and tools/context context and tools/context-live context and tools/sent context and tools/cost context and tools/tools context and tools/hooks \
 context and tools/mcp context and tools/chrome context and tools/skills context and tools/plugins context and tools/jobs \
 context and tools/panel context and tools/team context and tools/todo context and tools/diff context and tools/shared-memory context and tools/init \
 context and tools/review context and tools/commit context and tools/pr context and tools/status \

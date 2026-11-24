@@ -14,14 +14,12 @@ concurrency:
 
 jobs:
   nexo:
-    # nexo is built and tested on Linux and Windows on every push; macOS runs here too but is not claimed as tested until it is green
+    # All three hosts gate releases; macOS passed on main in run 45333537370.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # macOS is new here: its job reports but does not fail the run until it has been green on main (then delete this line)
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     # the interface tests draw in 24-bit colour, as on the terminals nexo targets (a runner sets no TERM)
     env:
       COLORTERM: truecolor
@@ -36,6 +34,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: nexo
+      - name: pre-push checker regression tests (no compilation)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sh tools/tests/pre-push-check.sh
+          python3 tools/tests/pre-push-process-signals.py
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
       # the debugger's 32-bit tests build their programs with `gcc -m32`; without the multilib headers they return early
@@ -43,14 +46,27 @@ jobs:
       - name: 32-bit C headers and libraries for the debugger's 32-bit tests
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
-      - run: cargo build --workspace
-      - run: cargo test --workspace --no-fail-fast
+      # The Rust overview test builds an Intel sample on Apple Silicon; install its std before testing.
+      - name: install Intel Rust target for the macOS tests
+        if: matrix.os == 'macos-latest'
+        run: rustup target add x86_64-apple-darwin
+      - run: cargo build --workspace --locked
+      # This test otherwise returns success when rustc cannot build its sample. Require one executed test and no skip.
+      - name: verify the Rust overview test actually runs on macOS
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p nexo-bin --lib tests_map::overview_follows_a_rust_program_to_its_own_main -- --exact --nocapture 2>&1 | tee /tmp/nexo-rust-overview-test.log
+          grep -F '1 passed; 0 failed' /tmp/nexo-rust-overview-test.log
+          ! grep -F 'skipped: rustc does not build an x86-64 program here' /tmp/nexo-rust-overview-test.log
+      - run: cargo test --workspace --locked --no-fail-fast
       # a failed test step must not hide clippy or the Intel check, so these two run after it either way; --keep-going so one failing target does not hide the lints of the others
-      - run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
+      - run: cargo clippy --workspace --locked --all-targets --keep-going -- -D warnings
         if: success() || failure()
       - name: the Intel Mac build still compiles (the release builds it natively)
         if: (success() || failure()) && matrix.os == 'macos-latest'
-        run: rustup target add x86_64-apple-darwin && cargo check --workspace --target x86_64-apple-darwin
+        run: rustup target add x86_64-apple-darwin && cargo check --workspace --locked --target x86_64-apple-darwin
 
   msrv:
     # the oldest Rust nexo supports (rust-version in nexo/Cargo.toml) must still compile nexo with the locked dependencies; the

@@ -89,6 +89,19 @@ mod cache_tests {
     }
 
     #[test]
+    fn a_past_cache_hit_does_not_keep_causing_miss_warnings() {
+        let mut a = app();
+        usage(&mut a, 0, 100_000);
+        usage(&mut a, 100_000, 0);
+        assert_eq!(a.cache_miss(), Some(100_000));
+        usage(&mut a, 100_000, 0);
+        assert_eq!(a.cache_miss(), None);
+        usage(&mut a, 0, 100_000);
+        usage(&mut a, 100_000, 0);
+        assert_eq!(a.cache_miss(), Some(100_000));
+    }
+
+    #[test]
     fn changing_provider_or_model_starts_a_fresh_segment() {
         let mut a = app();
         usage(&mut a, 2_000, 40_000);

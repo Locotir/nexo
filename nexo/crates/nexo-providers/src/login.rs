@@ -63,6 +63,8 @@ pub struct Endpoints {
     pub xai_issuer: String,
     /// Where SuperGrok's plan credits are read: the Grok CLI's chat proxy.
     pub xai_billing: String,
+    /// Where a Claude login's plan usage is read (`/api/oauth/usage`).
+    pub anthropic_api: String,
     /// The Codex CLI's login file (None: its usual place).
     pub codex_auth: Option<std::path::PathBuf>,
     /// The ports tried for the browser callback.
@@ -79,6 +81,7 @@ impl Default for Endpoints {
             openai_issuer: "https://auth.openai.com".into(),
             xai_issuer: "https://auth.x.ai/oauth2".into(),
             xai_billing: "https://cli-chat-proxy.grok.com/v1".into(),
+            anthropic_api: "https://api.anthropic.com".into(),
             codex_auth: None,
             callback_ports: crate::codex::CALLBACK_PORTS.to_vec(),
             pad: Duration::from_secs(3),

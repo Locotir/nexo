@@ -27,6 +27,64 @@ fn kind_name(k: CuratedKind) -> &'static str {
     }
 }
 
+/// Recovery reported by the history map, restricted to identified inactive topics.
+/// Sizes are original source sizes: a recalled cell does not report the size of its excerpt.
+/// Mixed messages are classified by the map kind, not by individual message parts.
+pub fn recovery_lines(
+    theme: &Theme,
+    cells: &[nexo_core::ContextCell],
+    zones: &[nexo_core::ContextZone],
+    w: usize,
+) -> Vec<Line<'static>> {
+    use nexo_core::{CellKind, CellState};
+    if cells.is_empty() {
+        return Vec::new();
+    }
+    let mut counts = [0u64; 4];
+    let mut sizes = [0u64; 4];
+    let mut topics = std::collections::BTreeSet::new();
+    let mut unidentified = 0u64;
+    for cell in cells.iter().filter(|c| c.state == CellState::Recalled) {
+        let Some(zone) = zones.get(cell.zone as usize) else {
+            unidentified = unidentified.saturating_add(1);
+            continue;
+        };
+        if zone.active {
+            continue;
+        }
+        topics.insert(cell.zone);
+        let i = match cell.kind {
+            CellKind::Request => 0,
+            CellKind::Reply => 1,
+            CellKind::Call => 2,
+            CellKind::Output => 3,
+        };
+        counts[i] = counts[i].saturating_add(1);
+        sizes[i] = sizes[i].saturating_add(cell.tokens);
+    }
+    let mut out =
+        crate::render::wrap::wrap_plain("Old-topic recovery · map evidence", w.max(10), theme.bold(theme.fg), &[]);
+    let summary = format!("{} recalled sources · {} inactive topics", counts.iter().sum::<u64>(), topics.len());
+    out.extend(crate::render::wrap::wrap_plain(&summary, w.max(10), theme.dim(), &[]));
+    for ((label, count), size) in
+        ["user messages", "assistant replies", "tool calls", "tool outputs"].into_iter().zip(counts).zip(sizes)
+    {
+        let text = format!("{label}: {count} · ~{} original tok", fmt_k(size));
+        out.extend(crate::render::wrap::wrap_plain(&text, w.max(10), theme.dim(), &[]));
+    }
+    if unidentified > 0 {
+        let text = format!("{unidentified} recalled sources: topic unknown (excluded)");
+        out.extend(crate::render::wrap::wrap_plain(&text, w.max(10), theme.dim2(), &[]));
+    }
+    out.extend(crate::render::wrap::wrap_plain(
+        "Map kinds classify mixed messages. Original sizes are not recovered payload sizes. Zero means no mapped evidence, not no recovery. See /sent for the request.",
+        w.max(10),
+        theme.dim2(),
+        &[],
+    ));
+    out
+}
+
 /// The items in (or trimmed) when `kept`, else the ones left out; biggest first, ties by name.
 pub fn sorted(items: &[CuratedItem], kept: bool) -> Vec<&CuratedItem> {
     let mut v: Vec<&CuratedItem> = items.iter().filter(|i| (i.state != CuratedState::Out) == kept).collect();
@@ -175,6 +233,50 @@ mod tests {
             vec![it(CuratedKind::Recalled, "read /home/someone/projects/app/src/lexer.rs ×3", 900, CuratedState::Out)];
         let t: Vec<String> = lines(&Theme::dark(), &items, 44, "Added").iter().map(text).collect();
         assert!(t.iter().any(|l| l.contains("lexer.rs ×3")), "{t:?}");
+    }
+
+    #[test]
+    fn recovery_counts_each_kind_only_in_identified_inactive_topics() {
+        use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
+        let zones = vec![
+            ContextZone { label: "old topic".into(), active: false, card: true },
+            ContextZone { label: "current topic".into(), active: true, card: false },
+            ContextZone { label: "another old topic".into(), active: false, card: false },
+        ];
+        let mut cells: Vec<_> = [CellKind::Request, CellKind::Reply, CellKind::Call, CellKind::Output]
+            .into_iter()
+            .map(|kind| ContextCell { kind, tokens: 700, state: CellState::Recalled, zone: 0 })
+            .collect();
+        cells.extend([
+            ContextCell { kind: CellKind::Output, tokens: 300, state: CellState::Recalled, zone: 2 },
+            ContextCell { kind: CellKind::Output, tokens: 9000, state: CellState::Recalled, zone: 1 },
+            ContextCell { kind: CellKind::Output, tokens: 9000, state: CellState::Whole, zone: 0 },
+            ContextCell { kind: CellKind::Output, tokens: 9000, state: CellState::Unknown, zone: 0 },
+            ContextCell { kind: CellKind::Output, tokens: 9000, state: CellState::Shrunk, zone: 0 },
+            ContextCell { kind: CellKind::Output, tokens: 9000, state: CellState::Dropped, zone: 0 },
+            ContextCell { kind: CellKind::Output, tokens: 9000, state: CellState::Recalled, zone: 99 },
+        ]);
+        let t: Vec<_> = recovery_lines(&Theme::dark(), &cells, &zones, 160).iter().map(text).collect();
+        assert!(t.iter().any(|s| s == "5 recalled sources · 2 inactive topics"), "{t:?}");
+        for kind in ["user messages", "assistant replies", "tool calls"] {
+            assert!(t.iter().any(|s| s == &format!("{kind}: 1 · ~700 original tok")), "{t:?}");
+        }
+        assert!(t.iter().any(|s| s == "tool outputs: 2 · ~1.0k original tok"), "{t:?}");
+        assert!(t.iter().any(|s| s.contains("1 recalled sources: topic unknown (excluded)")), "{t:?}");
+        assert!(t.iter().any(|s| s.contains("not recovered payload sizes")), "{t:?}");
+    }
+
+    #[test]
+    fn recovery_without_topic_metadata_is_unknown_and_narrow_lines_wrap() {
+        use nexo_core::{CellKind, CellState, ContextCell};
+        assert!(recovery_lines(&Theme::dark(), &[], &[], 30).is_empty());
+        let cells = [ContextCell { kind: CellKind::Output, tokens: 1000, state: CellState::Recalled, zone: 0 }];
+        let t: Vec<_> = recovery_lines(&Theme::dark(), &cells, &[], 160).iter().map(text).collect();
+        assert!(t.iter().any(|s| s == "0 recalled sources · 0 inactive topics"), "{t:?}");
+        assert!(t.iter().any(|s| s.contains("topic unknown (excluded)")), "{t:?}");
+        for line in &recovery_lines(&Theme::dark(), &cells, &[], 30) {
+            assert!(width(&text(line)) <= 30, "{line:?}");
+        }
     }
 
     #[test]

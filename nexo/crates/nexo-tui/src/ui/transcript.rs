@@ -31,6 +31,7 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let hovered_head = match app.hover {
         Hover::Head(i) => Some(i),
+        Hover::Link { y, .. } if y >= area.y && y < area.bottom() => app.block_at_line(scroll + (y - area.y) as usize),
         _ => None,
     };
     let hovered_link = match app.hover {
@@ -90,6 +91,21 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             let end = text_end(&l);
             l = style_cols(l, 0, end, theme.hover());
         }
+        // the link under the pointer lights up
+        if let Some((row, from, to)) = hovered_link.filter(|(row, ..)| *row == line - scroll) {
+            let _ = row;
+            l = style_cols(
+                l,
+                (from - area.x) as usize,
+                (to - area.x) as usize,
+                theme.hover().add_modifier(if theme.mono {
+                    Modifier::UNDERLINED | Modifier::BOLD
+                } else {
+                    Modifier::UNDERLINED
+                }),
+            );
+        }
+        // Search and selection must keep their background even over a hovered link.
         if let Some(q) = &query {
             l = highlight(l, q, theme.highlight(), current_match == Some(line));
         }
@@ -98,11 +114,6 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             if from < end {
                 l = style_cols(l, from, to.min(end), theme.highlight());
             }
-        }
-        // the link under the pointer lights up
-        if let Some((row, from, to)) = hovered_link.filter(|(row, ..)| *row == line - scroll) {
-            let _ = row;
-            l = style_cols(l, (from - area.x) as usize, (to - area.x) as usize, theme.hover());
         }
         // the person's message: its band is filled to the edge here, on screen only, so copying
         // its text never picks up the padding

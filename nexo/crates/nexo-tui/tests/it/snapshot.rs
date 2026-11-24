@@ -784,10 +784,11 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     assert!(rows[at("recalled")].contains("~900"), "{all}");
     assert!(rows[at("total")].contains("13.6k"), "{all}");
     assert!(at("Left out") > at("total"), "{all}");
-    // The added disclaimer and inventory can extend below the modal's viewport.
-    if let Some(nexo_tui::modal::Modal::Info(i)) = &mut a.modal {
-        i.scroll = 10;
-    }
+    // Reach the remaining inventory through the same scroll path as the keyboard.
+    nexo_tui::event::key(
+        &mut a,
+        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::PageDown, crossterm::event::KeyModifiers::NONE),
+    );
     let scrolled = draw(&mut a, 120, 60).join("\n");
     assert!(scrolled.contains("old notes"), "{scrolled}");
     assert!(scrolled.contains("Curator selection before final fit; not proof of what was sent."), "{scrolled}");
@@ -799,6 +800,50 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     let all = draw(&mut a, 120, 60).join("\n");
     assert!(all.contains("No curator items reported for this selection."), "{all}");
     assert!(all.contains("not proof of what was sent"), "{all}");
+}
+
+#[test]
+fn context_help_remains_reachable_by_keyboard_after_the_selection() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use nexo_tui::modal::Modal;
+
+    for (w, h) in [(120, 60), (80, 24)] {
+        let mut a = app();
+        fill(&mut a);
+        a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None, quote_heat: None });
+        a.run_command(nexo_tui::commands::Command::Context);
+        settled(&mut a);
+        let initial = draw(&mut a, w, h).join("\n");
+        let scroll = |a: &App| match &a.modal {
+            Some(Modal::Info(info)) => info.scroll,
+            _ => panic!("context window closed during scroll"),
+        };
+        assert_eq!(scroll(&a), 0);
+        let mut seen = initial.clone();
+        // Render each step: the renderer clamps at the actual viewport boundary.
+        // Down by one avoids skipping any wrapped help lines on short terminals.
+        let mut reached_end = false;
+        for _ in 0..300 {
+            let before = scroll(&a);
+            nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            seen.push_str(&draw(&mut a, w, h).join("\n"));
+            seen.push('\n');
+            if scroll(&a) == before {
+                reached_end = true;
+                break;
+            }
+        }
+        assert!(reached_end && scroll(&a) > 0, "{w}x{h}: no real scroll boundary reached");
+        for term in ["parser rewrite", "old notes", "/context-live · map key", "Anchor", "Quote heat"] {
+            assert!(seen.contains(term), "{w}x{h}: missing {term}\n{seen}");
+        }
+        // Return through real keys and check that none of the initial data was lost.
+        while scroll(&a) > 0 {
+            nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+            draw(&mut a, w, h);
+        }
+        assert_eq!(draw(&mut a, w, h).join("\n"), initial);
+    }
 }
 
 #[test]
@@ -814,6 +859,53 @@ fn the_live_map_shows_only_the_current_calls_relation_quotes() {
         assert!(screen.contains("context live"), "{screen}");
         assert_eq!(screen.contains("relations ·"), count.is_some());
         assert!(screen.contains(expected), "{screen}");
+    }
+}
+
+#[test]
+fn live_map_help_fits_the_narrow_panel_without_hiding_scale_or_f3() {
+    use nexo_core::agent::QuoteHeat;
+    use nexo_core::{CellKind, CellState, ContextCell, ContextZone};
+    let mut a = app();
+    fill(&mut a);
+    a.show_live = true;
+    a.show_files = false;
+    a.handle_agent(AgentEvent::ContextMap {
+        cells: vec![ContextCell { kind: CellKind::Output, tokens: 100, state: CellState::Whole, zone: 0 }],
+        zones: vec![ContextZone { label: "topic".into(), active: true, card: false }],
+        calls: vec![],
+        call_tokens: vec![],
+    });
+    a.handle_agent(AgentEvent::Curated {
+        items: vec![],
+        relation_quotes: Some(1),
+        quote_heat: Some(QuoteHeat { input_tokens: 1000, by_message: [(0, 10)].into() }),
+    });
+    for theme in ["dark", "mono"] {
+        a.set_theme(theme, false);
+        for w in [100, 119] {
+            assert_eq!(nexo_tui::ui::files_panel_width(w), 30);
+            for h in [24, 40] {
+                let rows = draw(&mut a, w, h);
+                let panel = rows
+                    .iter()
+                    .map(|row| row.chars().skip((w - 30) as usize).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for expected in [
+                    "/context key · /sent request",
+                    "selection · not payload",
+                    "◇ quoted source message",
+                    "dim → bright: 0–1% (capped)",
+                    "tok/cell",
+                    "1+ cells per message",
+                    "you █ reply █ call █ tool",
+                    "F3 curator rows",
+                ] {
+                    assert!(panel.contains(expected), "{theme} {w}x{h}: missing {expected:?}\n{panel}");
+                }
+            }
+        }
     }
 }
 

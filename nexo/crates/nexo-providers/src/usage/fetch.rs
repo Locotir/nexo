@@ -3,9 +3,10 @@ use nexo_core::{ErrorKind, ProviderConfig, ProviderError};
 use reqwest::header::HeaderMap;
 use serde_json::Value;
 
+use super::claude::claude_from_usage;
 use super::codex::codex_from_usage;
 use super::copilot::copilot_from_user;
-use super::model::{PlanUsage, CODEX, XAI};
+use super::model::{PlanUsage, CLAUDE, CODEX, XAI};
 use super::store::{kind_of, record};
 use super::xai::xai_from_billing;
 use crate::login::{self, Endpoints};
@@ -47,6 +48,7 @@ pub async fn fetch_in(
             let v = crate::http::get_json(&format!("{root}/wham/usage"), h).await?;
             codex_from_usage(&v, now)
         }
+        CLAUDE => claude_from_usage(&claude_usage(at, &key).await?, now),
         XAI => xai_from_billing(&xai_billing(at, &key).await?, now),
         _ => {
             let v = copilot_user(at, &key).await?;
@@ -83,4 +85,16 @@ async fn xai_billing(at: &Endpoints, token: &str) -> Result<Value, ProviderError
         h.insert(reqwest::header::AUTHORIZATION, v);
     }
     crate::http::get_json(&format!("{}/billing?format=credits", at.xai_billing.trim_end_matches('/')), h).await
+}
+
+/// `GET {api}/api/oauth/usage` with the Claude login's access token (never logged).
+async fn claude_usage(at: &Endpoints, token: &str) -> Result<Value, ProviderError> {
+    let mut h = HeaderMap::new();
+    h.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("application/json"));
+    h.insert("anthropic-beta", reqwest::header::HeaderValue::from_static("oauth-2025-04-20"));
+    if let Ok(mut v) = format!("Bearer {token}").parse::<reqwest::header::HeaderValue>() {
+        v.set_sensitive(true);
+        h.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    crate::http::get_json(&format!("{}/api/oauth/usage", at.anthropic_api.trim_end_matches('/')), h).await
 }

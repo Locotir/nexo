@@ -321,7 +321,7 @@ fn from_agent(s: &Arc<Shared>, sid: &str, to_agent: &mpsc::UnboundedSender<Value
             if sess.granted {
                 let _ = to_agent.send(json!({"t": "consent", "id": id, "ok": true}));
             } else if sess.consent.is_some() {
-                let _ = to_agent.send(json!({"t": "consent", "id": id, "ok": false, "why": "another request is already waiting for the person"}));
+                let _ = to_agent.send(json!({"t": "consent", "id": id, "ok": false, "why": "another session access request is already waiting for the extension"}));
             } else {
                 sess.consent = Some(id);
                 let _ = s.to_ext.send(json!({"t": "consent", "sid": sid, "name": sess.name}));
@@ -332,7 +332,7 @@ fn from_agent(s: &Arc<Shared>, sid: &str, to_agent: &mpsc::UnboundedSender<Value
                     if let Some(sess) = st.sessions.get_mut(&sid) {
                         if sess.consent == Some(id) {
                             sess.consent = None;
-                            let _ = sess.to_agent.send(json!({"t": "consent", "id": id, "ok": false, "why": "nobody answered the prompt in the browser"}));
+                            let _ = sess.to_agent.send(json!({"t": "consent", "id": id, "ok": false, "why": "the browser extension did not answer the session access request"}));
                             let _ = shared.to_ext.send(json!({"t": "consent_cancel", "sid": sid}));
                         }
                     }
@@ -345,7 +345,7 @@ fn from_agent(s: &Arc<Shared>, sid: &str, to_agent: &mpsc::UnboundedSender<Value
             if !sess.granted {
                 let _ = to_agent.send(res_err(
                     id,
-                    "not allowed: the person has not allowed nexo to control this browser (ask them with connect)",
+                    "not allowed: this session has not been granted browser access (request access with connect)",
                 ));
                 return;
             }

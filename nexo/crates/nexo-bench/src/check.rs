@@ -184,12 +184,40 @@ impl Copy {
                 let passed = out.stdout.lines().any(|l| l.trim() == format!("test {test} ... ok"));
                 let detail = if out.stdout.contains(&format!("test {test} ...")) {
                     format!("{why}: {}", failure_of(&out.stdout, test))
+                } else if out.stderr.lines().any(|l| l.starts_with("error:") || l.starts_with("error[")) {
+                    format!(
+                        "hidden test {test} produced no result: the code does not build with the hidden test: {}",
+                        compiler_error(&out.stderr)
+                    )
                 } else {
-                    format!("{why} (the code does not build with the hidden test: {})", out.tail(400))
+                    format!("hidden test {test} produced no result: {}", out.tail(400))
                 };
                 (passed, detail)
             })
             .collect()
+    }
+}
+
+/// Preserve the first actual compiler diagnostic instead of a tail full of build-script warnings.
+fn compiler_error(stderr: &str) -> String {
+    let mut lines = stderr.lines().skip_while(|l| !l.starts_with("error:") && !l.starts_with("error["));
+    let mut text = lines.next().unwrap_or("").to_string();
+    for line in lines {
+        if line.starts_with("warning:") || line.starts_with("error:") || line.starts_with("error[") {
+            break;
+        }
+        text.push('\n');
+        text.push_str(line);
+        if text.chars().count() >= 2000 {
+            break;
+        }
+    }
+    let mut chars = text.chars();
+    let excerpt: String = chars.by_ref().take(2000).collect();
+    if chars.next().is_some() {
+        format!("{excerpt}…")
+    } else {
+        excerpt
     }
 }
 
@@ -302,6 +330,53 @@ mod tests {
         assert_eq!(o.score, 0.75);
         assert_eq!(o.detail, "b");
         assert_eq!(Outcome::all(vec![(true, "a".into())]).score, 1.0);
+    }
+
+    #[test]
+    fn hidden_tests_report_missing_results_without_claiming_functional_failure() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("src")).unwrap();
+        std::fs::write(
+            project.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(project.path().join("src/lib.rs"), "").unwrap();
+        let copy = Copy::of(project.path()).unwrap();
+        let tests = [("first", "first requirement failed"), ("second", "second requirement failed")];
+        let broken = copy.hidden("broken", "#[test] fn first() {}\n#[test] fn second() { missing(); }", &tests);
+        for (passed, detail) in broken {
+            assert!(!passed);
+            assert!(detail.contains("produced no result") && detail.contains("missing"), "{detail}");
+            assert!(!detail.contains("requirement failed"), "{detail}");
+        }
+        let results =
+            copy.hidden("runs", "#[test] fn first() {}\n#[test] fn second() { panic!(\"fixture panic\"); }", &tests);
+        assert!(results[0].0);
+        assert!(!results[1].0 && results[1].1.contains("second requirement failed"), "{:?}", results[1]);
+    }
+
+    #[test]
+    fn hidden_reports_first_compiler_error_amid_noisy_warnings() {
+        let wd = tempfile::tempdir().unwrap();
+        std::fs::create_dir(wd.path().join("src")).unwrap();
+        std::fs::write(
+            wd.path().join("Cargo.toml"),
+            "[package]\nname='noisy-check'\nversion='0.1.0'\nedition='2021'\n",
+        )
+        .unwrap();
+        std::fs::write(wd.path().join("src/lib.rs"), "pub fn broken() { missing_symbol(); }\n").unwrap();
+        std::fs::write(
+            wd.path().join("build.rs"),
+            "fn main() { for i in 0..150 { println!(\"cargo:warning=note {i}\"); } }\n",
+        )
+        .unwrap();
+        let copy = Copy::of(wd.path()).unwrap();
+        let parts = copy.hidden("probe", "#[test] fn probe() {}", &[("probe", "probe failed")]);
+        assert!(!parts[0].0);
+        assert!(parts[0].1.contains("cannot find function `missing_symbol`"), "{}", parts[0].1);
+        assert!(parts[0].1.contains("src/lib.rs"), "{}", parts[0].1);
+        assert!(!parts[0].1.contains("probe failed"), "{}", parts[0].1);
     }
 
     #[test]

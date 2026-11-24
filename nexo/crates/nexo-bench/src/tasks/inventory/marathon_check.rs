@@ -33,16 +33,33 @@ pub(super) fn marathon_probe() -> String {
         let _ = writeln!(reserve, "    check({}, {loc:?}, &{lines:?}, {want});", stock_expr(&have_plain));
         let t = tonnes_text(r.int(1, 80) as f64 / 8.0, &mut r);
         let _ = writeln!(tonnes, "    check({t:?}, {:?});", ref_tonnes(&t));
-        let price = r.int(1, 500) as f64 / 100.0;
+        let cents = r.int(1, 500);
+        let price = cents as f64 / 100.0;
         let units = if r.chance(0.5) { r.int(1, 99) } else { r.int(100, 3000) };
-        let _ = writeln!(bulk, "    check({price:?}, {units}, {:?});", ref_bulk(price, units));
+        let _ = writeln!(bulk, "    check({price:?}, {units}, {:?});", ref_bulk(cents, units));
         let st = some_stock(&mut r);
         let _ = writeln!(markdown, "    check({}, {:?});", stock_expr(&st), ref_markdown(&st));
     }
+    let atomic_stock: Plain = [
+        ("north", [("bolt", 5), ("nut", 1)].into_iter().collect()),
+        ("south", [("bolt", 9), ("nut", 7)].into_iter().collect()),
+    ]
+    .into_iter()
+    .collect();
+    let _ = writeln!(
+        reserve,
+        "    check({}, \"north\", &[(\"bolt\", 2), (\"nut\", 3)], Err(\"not enough nut at north\".to_string()));",
+        stock_expr(&atomic_stock)
+    );
+    let _ = writeln!(
+        reserve,
+        "    check({}, \"north\", &[(\"bolt\", 2)], Ok(vec![(\"bolt\", 3), (\"nut\", 1)]));",
+        stock_expr(&atomic_stock)
+    );
     for (t, kg) in [("12 lb", 5.443), ("500 g", 0.5)] {
         let _ = writeln!(tonnes, "    check({t:?}, {kg:?});");
     }
-    let _ = writeln!(bulk, "    check(1.0, 100, 95.0);\n    check(2.0, 1000, 1700.0);");
+    let _ = writeln!(bulk, "    check(1.0, 100, 95.0);\n    check(2.0, 1000, 1700.0);\n    check(0.01, 410, 3.9);");
     let _ = writeln!(restock, "    check(&[], 5, &[]);");
     format!(
         r##"#![allow(unused_imports)]
@@ -83,11 +100,23 @@ fn hidden_restock_plan() {{
 #[test]
 fn hidden_reserve() {{
     let check = |mut st: Stock, loc: &str, lines: &[(&str, i64)], want: Result<Vec<(&str, i64)>, String>| {{
+        let before = st.clone();
         let got = reserve(&mut st, loc, lines).map(|_| {{
             want.as_ref().map(|w| w.iter().map(|(i, _)| (*i, units_at(&st, loc, i))).collect::<Vec<_>>()).unwrap_or_default()
         }});
         if got != want {{
             bad(format!("{{loc}} {{lines:?}}, {{want:?}}, {{got:?}}"));
+        }} else if got.is_err() && st != before {{
+            bad(format!("{{loc}} {{lines:?}}, mutated on error"));
+        }}
+        let mut expected = before.clone();
+        if let Ok(items) = &want {{
+            for (item, units) in items {{
+                expected.entry(loc.to_string()).or_default().insert((*item).to_string(), *units);
+            }}
+        }}
+        if st != expected {{
+            bad(format!("{{loc}} {{lines:?}}, expected stock {{expected:?}}, got {{st:?}}"));
         }}
     }};
 {reserve}    verdict();
@@ -217,7 +246,9 @@ pub fn markdown_table(stock: &Stock) -> String {
 /// The total of `units` units at `price` after the bulk discount, rounded once to the cent.
 pub fn bulk_price(price: f64, units: i64) -> f64 {
     let pct = [(1000, 15), (500, 10), (100, 5)].iter().find(|(n, _)| units >= *n).map_or(0, |(_, p)| *p);
-    (price * units as f64 * (100 - pct) as f64 + 0.5) as i64 as f64 / 100.0
+    let cents = price * units as f64 * (100 - pct) as f64;
+    // Compensate for floating-point error at decimal half-cent boundaries.
+    (cents + cents.signum() * cents.abs() * f64::EPSILON * 2.0).round() / 100.0
 }
 "##,
     );

@@ -193,6 +193,12 @@ pub struct Engine {
     plan: Option<(usize, String)>,
     /// The person's standing instructions: session state, kept for as long as the session lasts.
     rules: Rules,
+    /// State inherited from the last explicit compaction, and the history prefix it depends on.
+    compact_base: Option<(usize, Rules, Standing)>,
+    /// The next synchronization is the result of an explicit compaction.
+    compact_pending: bool,
+    /// Length of the replacement prefix; None retains the legacy whole-history contract.
+    compact_summary_len: Option<usize>,
     /// The facts that override a default, kept by target (`standing.rs`), and the tokens of the tail that carries
     /// the due ones in the last view.
     standing: Standing,
@@ -255,7 +261,10 @@ pub struct Engine {
     t0: Option<(f64, usize)>,
     /// The last message taken in, as it came (`take_history` sets it again).
     #[serde(skip)]
-    last_raw: Value,
+    last_raw: Arc<Value>,
+    /// Original normalized messages, including those shortened on ingestion. Shared by speculative clones and rebuilt on restore.
+    #[serde(skip)]
+    raw_history: Vec<Arc<Value>>,
     /// Whether the host offers a `note` tool: the request for notes names it, or asks for the lines in the reply.
     note_tool: bool,
     /// Whether the host offers the `recall` tool, which brings a message back as it was by its `m#####` name.
@@ -420,6 +429,9 @@ impl Engine {
             findings: Vec::new(),
             plan: None,
             rules: Rules::default(),
+            compact_base: None,
+            compact_pending: false,
+            compact_summary_len: None,
             standing: Standing::default(),
             index: Shared::default(),
             tail_tokens: 0,
@@ -450,7 +462,8 @@ impl Engine {
             hidden_recalls: 0,
             unsplit_turn: usize::MAX,
             t0: None,
-            last_raw: Value::Null,
+            last_raw: Arc::new(Value::Null),
+            raw_history: Vec::new(),
             note_tool: true,
             recall_tool: false,
             calls_raw: Vec::new(),

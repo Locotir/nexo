@@ -12,6 +12,7 @@ pub mod goal;
 pub mod home;
 pub mod ignite;
 pub mod panel;
+pub mod pulse;
 pub mod starfield;
 pub mod stars;
 pub mod stream;

@@ -19,10 +19,11 @@ pub fn trash_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     let bin = trash_dir_in(dir);
     std::fs::create_dir_all(&bin)?;
     let to = bin.join(format!("{id}.jsonl"));
-    std::fs::rename(&from, &to)?;
+    if to.exists() {
+        anyhow::bail!("a session {id} is already in the trash");
+    }
+    move_session_with_state(&from, &to)?;
     mark_trashed(&to);
-    // the context state saved with it (`context::saved`) goes with it, or it is dropped
-    move_saved_state(&from, &to);
     move_todo(dir, &trash_dir_in(dir), id);
     Ok(to)
 }
@@ -51,8 +52,7 @@ pub fn restore_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     if to.exists() {
         anyhow::bail!("a session {id} is already there");
     }
-    std::fs::rename(&from, &to)?;
-    move_saved_state(&from, &to);
+    move_session_with_state(&from, &to)?;
     move_todo(&trash_dir_in(dir), dir, id);
     Ok(to)
 }
@@ -67,16 +67,53 @@ fn move_todo(from_dir: &Path, to_dir: &Path, id: &str) {
     }
 }
 
-/// Moves the context state saved with a session (`context::saved`) along with it. It is only ever a shortcut:
-/// one that cannot move is removed, and the session rebuilds it.
-fn move_saved_state(from: &Path, to: &Path) {
-    // a write cut by a crash leaves its file behind: both places lose theirs
-    crate::context::saved::sweep(from);
-    crate::context::saved::sweep(to);
-    let (a, b) = (crate::context::saved::path_for(from), crate::context::saved::path_for(to));
-    if a.is_file() && std::fs::rename(&a, &b).is_err() {
-        crate::context::saved::forget(from);
+/// Link every recovery state before moving the session. A crash on either side of the session rename
+/// leaves a complete copy beside whichever session is authoritative. Never overwrite an existing state.
+fn move_session_with_state(from: &Path, to: &Path) -> anyhow::Result<()> {
+    let name = from.file_name().and_then(|n| n.to_str()).ok_or_else(|| anyhow::anyhow!("invalid session path"))?;
+    let prefix = format!("{name}.curator");
+    let mut linked = Vec::new();
+    let result = (|| -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(from.parent().unwrap_or(Path::new(".")))? {
+            let entry = entry?;
+            let file = entry.file_name();
+            let Some(file) = file.to_str() else { continue };
+            let Some(suffix) = file.strip_prefix(&prefix) else { continue };
+            // Only committed snapshots, never a temporary write or another session's files.
+            let compact =
+                suffix.strip_prefix(".compact.").and_then(|s| s.split_once('.')).is_some_and(|(count, hash)| {
+                    count.parse::<usize>().is_ok() && hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                });
+            if !suffix.is_empty() && !compact {
+                continue;
+            }
+            let dest = to.parent().unwrap_or(Path::new(".")).join(file);
+            match std::fs::hard_link(entry.path(), &dest) {
+                Ok(()) => linked.push((entry.path(), dest, true)),
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        && std::fs::read(entry.path())? == std::fs::read(&dest)? =>
+                {
+                    linked.push((entry.path(), dest, false));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        std::fs::rename(from, to)?;
+        Ok(())
+    })();
+    if result.is_ok() {
+        for (source, _, _) in &linked {
+            let _ = std::fs::remove_file(source);
+        }
+    } else {
+        for (_, dest, created) in &linked {
+            if *created {
+                let _ = std::fs::remove_file(dest);
+            }
+        }
     }
+    result
 }
 
 /// The sessions in the trash, newest first.

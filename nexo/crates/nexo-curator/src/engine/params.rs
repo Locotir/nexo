@@ -5,6 +5,8 @@
 pub struct Params {
     /// Quote bounded historical evidence linked by rare keys, with tool-call provenance when unambiguous.
     pub relations: bool,
+    /// Experimental bounded, file-scoped neighboring evidence (not a freshness guarantee).
+    pub segments: bool,
     pub threshold: f64,
     pub protect: i64,
     pub check: i64,

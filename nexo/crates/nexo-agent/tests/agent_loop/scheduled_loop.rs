@@ -71,8 +71,19 @@ async fn scheduled_prompt_runs_the_blocking_submit_hook() {
     cfg.hooks.push(hook_cfg("user_prompt_submit", None, "echo 'loop denied by policy' >&2; exit 2"));
     let mut r = start(client.clone(), cfg, None, d.path()).await;
     r.send(loop_cmd("60s forbidden work"));
-    notice_containing(&mut r, "loop #1: running scheduled prompt").await;
-    notice_containing(&mut r, "loop denied by policy").await;
+    let events = r
+        .until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("loop #1 paused: prompt was blocked")))
+        .await;
+    assert!(events.iter().any(
+        |e| matches!(e, AgentEvent::Notice { text, .. } if text == "loop #1: preparing scheduled prompt (submit hooks)")
+    ));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("loop denied by policy"))));
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("running scheduled prompt") || text.contains("forbidden work"))));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::History { message, .. } if message.text().contains("forbidden work"))));
     assert!(client.requests().is_empty(), "a denied scheduled prompt must not call the model");
     r.stop().await;
 }
@@ -206,6 +217,51 @@ async fn time_limit_pauses_scheduled_loop_until_person_resumes() {
     assert_eq!(client.requests().len(), 1);
     r.send(loop_cmd("resume 1"));
     notice_containing(&mut r, "loop #1 resumed").await;
+    r.stop().await;
+}
+
+// The event stream is the TUI transcript's source: retain one complete, selectable
+// History message, with textual loop attribution rather than duplicated prompt notices.
+#[tokio::test]
+async fn scheduled_transcript_keeps_one_full_prompt_and_one_running_notice() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done"))]);
+    let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
+    let prompt = "Continúa lo pendiente: café, 日本語.\nConserva esta segunda línea sin truncar.";
+    r.send(loop_cmd(&format!("60s {prompt}")));
+    let events = r.turn().await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::History { message, .. } if message.text().contains(prompt)))
+            .count(),
+        1,
+        "the full Unicode/multiline prompt must remain available in history"
+    );
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Notice { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.iter().filter(|text| **text == "loop #1: running scheduled prompt").count(), 1);
+    assert!(
+        !notices.iter().any(|text| text.contains(prompt)
+            || text.contains("preparing scheduled prompt")
+            || text.contains("hook complete")
+            || text.contains("waiting for admission")),
+        "{notices:?}"
+    );
+    let running = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice { text, .. } if text == "loop #1: running scheduled prompt"))
+        .unwrap();
+    let history = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::History { message, .. } if message.text().contains(prompt)))
+        .unwrap();
+    assert!(running < history, "textual loop attribution must precede the prompt");
     r.stop().await;
 }
 

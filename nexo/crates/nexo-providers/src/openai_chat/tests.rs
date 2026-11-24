@@ -320,3 +320,30 @@ fn pin_an_error_body_is_shown_as_type_and_message() {
         "{evs:?}"
     );
 }
+
+#[tokio::test]
+async fn tool_images_are_rejected_before_network_including_nested_and_parallel_results() {
+    use nexo_core::{ErrorKind, Protocol};
+    let image = || Part::Image { source: ImageSource::Url { url: "https://example.invalid/image.png".into() } };
+    let result = |id: &str, content| Part::ToolResult { call_id: id.into(), name: None, content, is_error: false };
+    let cases = vec![
+        vec![result("a", vec![Part::text("before"), image(), Part::text("after")])],
+        vec![result("a", vec![Part::text("before"), image()])],
+        vec![result("a", vec![result("inner", vec![image()])])],
+        vec![result("a", vec![image()]), result("b", vec![Part::text("other")])],
+    ];
+    for parts in cases {
+        let req = ModelRequest::new("test", "", vec![Message::tool_results(parts)]);
+        let err = match OpenAiChat.stream(&cfg(), None, &req).await {
+            Err(err) => err,
+            Ok(_) => panic!("unexpectedly sent request"),
+        };
+        assert_eq!(err.kind, ErrorKind::BadRequest);
+        assert!(err.message.contains("cannot preserve images"));
+        assert!(!err.is_retryable());
+    }
+    let text = ModelRequest::new("test", "", vec![Message::tool_results(vec![result("a", vec![Part::text("ok")])])]);
+    assert!(super::validate_tool_image_order(&text).is_ok());
+    let user_image = ModelRequest::new("test", "", vec![Message::new(Role::User, vec![image()])]);
+    assert!(super::validate_tool_image_order(&user_image).is_ok());
+}

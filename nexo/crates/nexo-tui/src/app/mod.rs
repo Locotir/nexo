@@ -33,6 +33,7 @@ mod blocks;
 mod cmd_support;
 mod dispatch;
 mod events;
+mod explore;
 mod gauge;
 mod keys;
 mod lines;
@@ -67,13 +68,15 @@ pub const GUESS_WINDOW: u64 = 128_000;
 type Rendered = (usize, usize, Option<Vec<Line<'static>>>, crate::regions::Meta);
 
 /// The end of the transcript as the last layout held it while a reply streamed (see `App::held`): the width,
-/// the height, and the live block whose start must not have moved.
+/// the height, and the live block whose start must not have moved. `hidden` is how many blocks of the turn
+/// were left out then: when it changes, a group folded or opened its calls and the old end is void.
 #[derive(Clone, Copy)]
 pub(super) struct HeldEnd {
     pub width: usize,
     pub total: usize,
     pub anchor: usize,
     pub anchor_off: usize,
+    pub hidden: usize,
 }
 
 /// The width, scroll line and block count a layout chose the blocks near the view for.
@@ -785,8 +788,8 @@ struct Look {
     /// When a tool card stopped running, and whether it was running at the last tick.
     done_at: Option<Instant>,
     was_live: bool,
-    /// Last wrapped row known to contain no link, relative to this cached render.
-    no_link_row: Option<usize>,
+    /// Wrapped rows known to contain no link, relative to this cached render (end exclusive).
+    no_link_rows: Option<(usize, usize)>,
     /// When the thinking of a reasoning block closed (its header settles), and when a turn was interrupted
     /// at this block (its rail warms).
     ended: Option<Instant>,
@@ -795,4 +798,6 @@ struct Look {
     group_back: Option<u32>,
     /// A group's share of the session cost (dollars, or the API value on a plan).
     spent: f64,
+    /// Billing basis captured when charged; None for unknown or mixed actual/API value.
+    spent_plan: Option<bool>,
 }

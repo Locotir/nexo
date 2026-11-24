@@ -58,9 +58,11 @@ pub(super) fn ref_markdown(stock: &Plain) -> String {
     rows.join("\n")
 }
 
-pub(super) fn ref_bulk(price: f64, units: i64) -> f64 {
+/// Exact decimal oracle for generated prices, which are integer cents.
+pub(super) fn ref_bulk(price_cents: i64, units: i64) -> f64 {
     let pct = TIERS.iter().find(|(n, _)| units >= *n).map_or(0, |(_, p)| *p);
-    (price * units as f64 * (100 - pct) as f64 + 0.5) as i64 as f64 / 100.0
+    let hundredths_of_cent = price_cents * units * (100 - pct);
+    ((hundredths_of_cent + 50) / 100) as f64 / 100.0
 }
 
 pub(super) fn some_items(r: &mut Rng, lo: i64, hi: i64) -> Vec<(&'static str, i64)> {
@@ -115,9 +117,10 @@ pub(super) fn bulk_units(r: &mut Rng) -> i64 {
 }
 
 pub(super) fn ex_bulk(r: &mut Rng) -> String {
-    let price = r.int(1, 500) as f64 / 100.0;
+    let cents = r.int(1, 500);
+    let price = cents as f64 / 100.0;
     let units = bulk_units(r);
-    format!("| {price} | {units} | {} |", ref_bulk(price, units))
+    format!("| {price} | {units} | {} |", ref_bulk(cents, units))
 }
 
 pub(super) fn ex_markdown(r: &mut Rng) -> String {

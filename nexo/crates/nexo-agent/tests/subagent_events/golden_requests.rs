@@ -23,8 +23,10 @@ fn a_windows_temp_path_is_blanked_in_every_form_it_takes_in_a_request() {
     assert!(!text.contains(r"C:\Users\x\Temp\.tmpA"));
 }
 
+// The historical transcript stays byte-for-byte unchanged. The fixture now also pins the hard
+// output ceiling: adapters must not enlarge a worker's reserved reply behind the window guard.
 #[tokio::test]
-async fn the_requests_of_a_run_nobody_writes_into_are_the_bytes_they_were_before_sub_agents_could_be_watched() {
+async fn the_requests_of_a_run_nobody_writes_into_keep_the_transcript_and_a_hard_output_ceiling() {
     let (main, subs) = the_scripted_run().await;
     assert!(main.as_array().unwrap().len() >= 4 && subs.as_array().unwrap().len() >= 4);
     matches_golden(&main, "main_requests.json");
@@ -92,6 +94,60 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
     assert_eq!((info.id.as_str(), info.profile.as_str(), info.title.as_str()), ("t1#1", "explore", "look around"));
     assert_eq!((info.state, info.tokens_in, info.tokens_out), (SubState::Ok, 250, 50));
     assert!(info.ended_ms.is_some_and(|e| e >= info.started_ms));
+}
+
+/// A model can emit a tool that was not offered: the runtime, not the persona,
+/// must enforce the planner's permissions and still let it finish its report.
+#[tokio::test]
+async fn plan_runtime_refuses_writes_and_project_escape_but_can_read_and_report() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(
+        vec![],
+        vec![
+            Reply::Events(call("w1", "write", json!({"path":"src/lib.rs", "hold":true}))),
+            Reply::Events(call("r1", "read", json!({"path":"../secret"}))),
+            Reply::Events(call("r2", "read", json!({"path":"src/lib.rs"}))),
+            Reply::Events(text("Plan: inspect src/lib.rs, then add a regression test.")),
+        ],
+    );
+    let (agent, ctx) = (task_tool(&client), call_ctx(d.path(), "plan1"));
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        agent.run(task("plan", "Plan the smallest fix; do not implement."), &ctx),
+    )
+    .await
+    .expect("a forbidden write must not enter the waiting tool");
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.content.starts_with("Plan: inspect src/lib.rs"), "{out:?}");
+    assert_eq!(client.probe.tools.load(Ordering::SeqCst), 0);
+    let requests = client.sub_requests();
+    assert_eq!(requests.len(), 4);
+    for req in &requests {
+        assert_eq!(req.model, "m1");
+        assert!(req.tools.iter().any(|t| t.name == "read"));
+        assert!(!req.tools.iter().any(|t| t.name == "write"));
+        assert!(req.system.contains("smallest viable implementation plan"));
+    }
+    let result = |req: &ModelRequest, id: &str| {
+        req.messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|part| match part {
+                nexo_core::message::Part::ToolResult { call_id, content, is_error, .. } if call_id == id => {
+                    Some((*is_error, nexo_core::message::result_text(content)))
+                }
+                _ => None,
+            })
+            .expect("tool result in the next request")
+    };
+    let (is_error, after_write) = result(&requests[1], "w1");
+    assert!(is_error && after_write.contains("has no tool `write`"), "{after_write}");
+    let (is_error, after_escape) = result(&requests[2], "r1");
+    assert!(is_error && after_escape.contains("outside the project"), "{after_escape}");
+    assert_eq!(result(&requests[3], "r2"), (false, "contents".into()));
+    let info = ctx.jobs.subs().list().pop().unwrap();
+    assert_eq!((info.profile.as_str(), info.state), ("plan", SubState::Ok));
+    assert_eq!((info.provider.as_deref(), info.model.as_deref()), (Some("mock"), Some("m1")));
 }
 
 #[tokio::test]

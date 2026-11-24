@@ -57,6 +57,24 @@ pub trait ContextPolicy: Send {
     fn compacted(&mut self) {
         self.reset()
     }
+    /// A compaction replaced `old_history[..from]` with `summary_len` messages, leaving the rest unchanged.
+    fn compacted_prefix(&mut self, _old_history: &[Message], _from: usize, _summary_len: usize) {
+        self.compacted();
+    }
+    /// Prepare the policy state for a prospective compaction without changing the active policy.
+    /// Bytes must be committed together with `replacement`; `None` means no persistent policy state.
+    fn prepare_compaction_snapshot(
+        &self,
+        _old: &[Message],
+        _from: usize,
+        _replacement: &[Message],
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    /// Whether a saved state is usable with this history and this policy's settings.
+    fn accepts_snapshot(&self, _bytes: &[u8], _history: &[Message]) -> bool {
+        false
+    }
     /// The history was replaced (compaction, a new session).
     fn reset(&mut self);
     /// Tokens of history above which the loop should compact (the `compact` policy).
@@ -120,6 +138,8 @@ pub trait ContextPolicy: Send {
     /// What `save` wrote for this session, before the first view of a resumed one: that view starts from it
     /// when it still fits the history, and rebuilds the state as before when it does not.
     fn restore(&mut self, _saved: Vec<u8>) {}
+    /// Permit a later retry when a synchronous save failed.
+    fn save_failed(&mut self) {}
 }
 
 mod describe;

@@ -357,6 +357,50 @@ fn a_picture_in_a_tool_result_is_an_input_image_in_its_output() {
 }
 
 #[test]
+fn tool_result_interleaving_and_text_only_contract() {
+    use nexo_core::message::ImageSource;
+    let image = |url: &str| Part::Image { source: ImageSource::Url { url: url.into() } };
+    let result =
+        |call_id: &str, content, is_error| Part::ToolResult { call_id: call_id.into(), name: None, content, is_error };
+    let req = ModelRequest::new(
+        "gpt-5",
+        "",
+        vec![
+            Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("c1", "read", json!({})), Part::tool_call("c2", "read", json!({}))],
+            ),
+            Message::tool_results(vec![
+                result(
+                    "c1",
+                    vec![
+                        Part::text("first"),
+                        image("https://example.invalid/a.png"),
+                        Part::text("second"),
+                        image("https://example.invalid/b.png"),
+                        Part::text("last"),
+                    ],
+                    true,
+                ),
+                result("c2", vec![Part::text("one"), Part::text("two")], true),
+            ]),
+        ],
+    );
+    let body = OpenAiResponses::body(&ProviderConfig::new(ID, "https://api.openai.com/v1", None), &req);
+    assert_eq!(
+        body["input"][2],
+        json!({"type": "function_call_output", "call_id": "c1", "output": [
+            {"type": "input_text", "text": "Error: first"},
+            {"type": "input_image", "image_url": "https://example.invalid/a.png"},
+            {"type": "input_text", "text": "second"},
+            {"type": "input_image", "image_url": "https://example.invalid/b.png"},
+            {"type": "input_text", "text": "last"}
+        ]})
+    );
+    assert_eq!(body["input"][3], json!({"type": "function_call_output", "call_id": "c2", "output": "Error: one\ntwo"}));
+}
+
+#[test]
 fn pin_a_tool_call_split_over_chunks_ends_with_the_joined_arguments() {
     let mut p = ResponsesParser::default();
     let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
@@ -579,4 +623,14 @@ fn the_top_levels_are_sent_as_the_highest_effort_openai_names() {
         let b = OpenAiResponses::body(&ProviderConfig::new(ID, "https://api.openai.com/v1", None), &req);
         assert_eq!(b["reasoning"]["effort"], sent);
     }
+}
+
+#[test]
+fn max_is_sent_only_where_the_model_lists_it() {
+    let mut req = ModelRequest::new("gpt-6.2-astra", "sys", vec![Message::user("hi")]);
+    req.reasoning = Some(ReasoningConfig::Effort(nexo_core::Effort::Max));
+    let mut cfg = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+    assert_eq!(OpenAiResponses::body(&cfg, &req)["reasoning"]["effort"], "xhigh");
+    cfg.efforts.insert("gpt-6.2-astra".into(), vec!["high".into(), "xhigh".into(), "max".into()]);
+    assert_eq!(OpenAiResponses::body(&cfg, &req)["reasoning"]["effort"], "max");
 }

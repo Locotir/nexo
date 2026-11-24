@@ -174,8 +174,8 @@ fn presets_hold_the_protocol_address_and_key_variable_they_held() {
             "{name}"
         );
     }
-    assert_eq!(all.len(), want.len() + 2, "the written ones plus copilot and codex");
-    let order: Vec<&str> = want.iter().map(|w| w.0).chain(["copilot", "codex"]).collect();
+    assert_eq!(all.len(), want.len() + 3, "the written ones plus copilot and codex");
+    let order: Vec<&str> = want.iter().map(|w| w.0).chain(["copilot", "codex", "anthropic-oauth"]).collect();
     assert_eq!(presets::names(), order);
     assert_eq!(all["copilot"].protocol, "copilot");
     assert_eq!(all["copilot"].api_key_env, None);

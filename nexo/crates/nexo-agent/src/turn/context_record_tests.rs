@@ -19,6 +19,21 @@ impl ModelClient for Idle {
     }
 }
 
+struct SummaryReply;
+
+#[async_trait::async_trait]
+impl ModelClient for SummaryReply {
+    async fn stream(&self, _: &ProviderConfig, _: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        use nexo_core::stream::{FinishReason, StreamEvent};
+        Ok(Box::pin(futures::stream::iter(vec![
+            StreamEvent::TextDelta("summary".into()),
+            StreamEvent::Usage(Usage { input: 17, output: 3, ..Default::default() }),
+            StreamEvent::Finish(FinishReason::Stop),
+            StreamEvent::Done,
+        ])))
+    }
+}
+
 /// A policy whose view always fails.
 struct Failing;
 
@@ -118,6 +133,96 @@ async fn runtime_in(d: &Path) -> Runtime {
         model_pinned: false,
     };
     Runtime::build(ends.events, setup).await.unwrap()
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn compact_persistence_failure_keeps_original_image_tail_and_positions() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let (mut handle, ends) = channels();
+    let mut st = rt.state.lock().await;
+    st.client = Arc::new(SummaryReply);
+    st.events = ends.events;
+    let tail = Message::new(
+        Role::User,
+        vec![
+            Part::text("current"),
+            Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/tail.png".into() },
+            },
+        ],
+    );
+    let history = vec![Message::user("earlier task"), Message::assistant("earlier work"), tail];
+    for m in &history {
+        st.session.append(m).unwrap();
+    }
+    st.history.replace(history.clone());
+    st.checkpoints.push((2, PathBuf::from("test"), None));
+    st.turn_start = 2;
+    st.person_at = 2;
+    let path = st.session.path().to_path_buf();
+    let tmp = path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
+    std::fs::create_dir(&tmp).unwrap();
+    assert!(!super::compaction::compact_locked(&mut st, 2, &CancellationToken::new()).await);
+    assert_eq!(st.history.to_vec(), history);
+    assert_eq!(st.session.messages(), history);
+    assert_eq!(crate::session::Session::open_path(&path).unwrap().messages(), history);
+    assert_eq!(st.checkpoints[0].0, 2);
+    assert_eq!((st.turn_start, st.person_at), (2, 2));
+    assert_eq!(st.session.usage().input, 17);
+    let mut events = Vec::new();
+    while let Ok(event) = handle.events.try_recv() {
+        events.push(event);
+    }
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::Compacted { .. })));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Notice { level: Level::Error, .. })));
+    std::fs::remove_dir(tmp).unwrap();
+    assert!(super::compaction::compact_locked(&mut st, 2, &CancellationToken::new()).await);
+    assert_eq!(st.history.to_vec(), st.session.messages());
+    assert!(st.history.to_vec().last().unwrap().content.ends_with(&history.last().unwrap().content));
+    assert_eq!(crate::session::Session::open_path(&path).unwrap().messages(), st.history.to_vec());
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn compact_reopen_failure_keeps_committed_history_and_recovers_saving() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let (mut handle, ends) = channels();
+    let mut st = rt.state.lock().await;
+    st.client = Arc::new(SummaryReply);
+    st.events = ends.events;
+    let tail = Message::new(
+        Role::User,
+        vec![Part::Image {
+            source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/tail.png".into() },
+        }],
+    );
+    let history = vec![Message::user("earlier task"), Message::assistant("earlier work"), tail.clone()];
+    for m in &history {
+        st.session.append(m).unwrap();
+    }
+    st.history.replace(history);
+    crate::session::FAIL_REOPEN.with(|f| f.set(true));
+    let done = super::compaction::compact_locked(&mut st, 2, &CancellationToken::new()).await;
+    crate::session::FAIL_REOPEN.with(|f| f.set(false));
+    assert!(done, "rename committed despite failed reopen");
+    assert_eq!(st.history.to_vec(), st.session.messages());
+    assert!(st.history.to_vec().last().unwrap().content.ends_with(&tail.content));
+    assert_eq!(crate::session::Session::open_path(st.session.path()).unwrap().messages(), st.history.to_vec());
+    let mut events = Vec::new();
+    while let Ok(event) = handle.events.try_recv() {
+        events.push(event);
+    }
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Compacted { .. })));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Notice { level: Level::Error, .. })));
+    st.session.append(&Message::assistant("after")).unwrap();
+    assert!(!st.session.is_lost());
+    std::env::remove_var("NEXO_DATA_DIR");
 }
 
 #[tokio::test]
@@ -339,5 +444,919 @@ async fn window_guard_omitted_read_can_be_read_again_at_a_smaller_range() {
     super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
     assert_ne!(req.messages.last(), st.history.last(), "the guard actually omitted the read");
     assert!(st.reads.after_read(&path, "a.txt", Some(99), 1, "c2", usize::MAX).is_none(), "line 99 was not sent");
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_image_recovery_preserves_text_and_fails_closed_after_repair_or_history_change() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(1000);
+    st.system.clear();
+    let ask = Message::user("identical human words");
+    let old = Message::new(
+        Role::User,
+        vec![
+            Part::text("historical instruction: preserve these exact words"),
+            Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() },
+            },
+        ],
+    );
+    let historical_text = Message::new(
+        Role::User,
+        vec![
+            Part::text("historical instruction: preserve these exact words"),
+            Part::text("[Historical image content omitted to fit the context window.]"),
+        ],
+    );
+    st.history.replace(vec![ask.clone(), old.clone(), ask.clone()]);
+    st.turn_start = 2;
+    st.person_turn_version = Some(st.history.version());
+    // Simulate all prior transforms including a misleading duplicate in the prefix and
+    // an altered current request. The fresh render must take history[2], not that duplicate.
+    let merged = Message::user(format!("{} transformed current tail", "x".repeat(8000)));
+    let request = || {
+        let mut req = ModelRequest::new("m1", "", vec![merged.clone()]);
+        req.max_tokens = 256;
+        req
+    };
+    let mut req = request();
+    super::window_fit::fit(&mut st, &mut req, Some("request-only note"), 0).await.unwrap();
+    let mut expected = vec![ask.clone(), historical_text.clone(), ask.clone()];
+    attach_hidden(&mut expected, "request-only note".into());
+    assert_eq!(req.messages, expected);
+    assert_eq!(st.history[2], ask, "outgoing recovery never mutates the transcript");
+
+    st.person_turn_version = None;
+    assert!(super::window_fit::fit(&mut st, &mut request(), None, 0).await.is_err());
+    st.person_turn_version = Some(st.history.version());
+    st.history.replace(vec![old.clone(), ask.clone()]); // stale history version: rewind/rewrite
+    assert!(super::window_fit::fit(&mut st, &mut request(), None, 0).await.is_err());
+    st.turn_start = 1;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = request();
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
+    assert_eq!(req.messages, vec![historical_text, ask.clone()], "fresh history frontier works after rewind");
+
+    st.history.push(Message::user("queued ask must not be omitted"));
+    let mut queued_req = request();
+    super::window_fit::fit(&mut st, &mut queued_req, None, 0).await.unwrap();
+    assert_eq!(queued_req.messages.last(), st.history.last(), "queued text is preserved, not classified or dropped");
+    st.history.replace(vec![
+        old,
+        Message::new(Role::Assistant, vec![Part::tool_call("c", "read", serde_json::json!({}))]),
+        ask,
+    ]);
+    st.turn_start = 2;
+    st.person_turn_version = Some(st.history.version());
+    assert!(
+        super::window_fit::fit(&mut st, &mut request(), None, 0).await.is_err(),
+        "repair inserts a result: boundary invalidated, do not cut"
+    );
+    // An image-only historical message keeps its position with a clear omission marker.
+    st.history.replace(vec![
+        Message::new(
+            Role::User,
+            vec![Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/only.png".into() },
+            }],
+        ),
+        Message::user("current request"),
+    ]);
+    st.turn_start = 1;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = ModelRequest::new("m1", "", st.history.to_vec());
+    req.max_tokens = 256;
+    let original = st.history.to_vec();
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
+    assert_eq!(
+        req.messages,
+        vec![Message::user("[Historical image content omitted to fit the context window.]"), original[1].clone(),]
+    );
+    assert_eq!(st.history.to_vec(), original);
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_image_only_history_preserves_roles_and_tool_structure() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(1000);
+    st.system.clear();
+    let image =
+        Part::Image { source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/only.png".into() } };
+    let marker = Part::text("[Historical image content omitted to fit the context window.]");
+    for role in [Role::User, Role::Assistant] {
+        let original = vec![
+            Message::user("Keep this instruction verbatim."),
+            Message::new(role, vec![image.clone(), image.clone()]),
+            Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("image-call", "read", serde_json::json!({"path":"shot.png"}))],
+            ),
+            Message::tool_results(vec![Part::ToolResult {
+                call_id: "image-call".into(),
+                name: Some("read".into()),
+                content: vec![
+                    Part::text("before"),
+                    image.clone(),
+                    Part::text("between"),
+                    image.clone(),
+                    Part::text("after"),
+                ],
+                is_error: true,
+            }]),
+            Message::user("current request"),
+        ];
+        st.history.replace(original.clone());
+        st.turn_start = 4;
+        st.person_turn_version = Some(st.history.version());
+        let mut req = ModelRequest::new("m1", "", original.clone());
+        req.max_tokens = 256;
+        super::window_fit::fit(&mut st, &mut req, Some("request-only note"), 0).await.unwrap();
+        let mut expected = original.clone();
+        expected[1].content = vec![marker.clone()];
+        let Part::ToolResult { content, .. } = &mut expected[3].content[0] else { unreachable!() };
+        *content =
+            vec![Part::text("before"), marker.clone(), Part::text("between"), marker.clone(), Part::text("after")];
+        attach_hidden(&mut expected, "request-only note".into());
+        assert_eq!(req.messages, expected, "{role:?}: only image bodies may change");
+        assert!(req.messages.iter().all(|m| !m.content.is_empty()));
+        assert!(nexo_core::message::is_well_formed(&req.messages));
+        assert_eq!(st.history.to_vec(), original, "raw image payloads remain persisted");
+    }
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_image_recovery_counts_all_opaque_bytes_and_preserves_mixed_continuations() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(2000);
+    st.system.clear();
+    st.tok_ratio = Some(0.01); // a learned prose ratio must not discount opaque bytes
+    for large in [false, true] {
+        for kind in ["signed", "encrypted", "redacted", "nested"] {
+            let payload = if large { "\"\\\n🦀".repeat(1000) } else { "small".into() };
+            let opaque = match kind {
+                "signed" | "nested" => Part::Reasoning {
+                    text: "think".into(),
+                    signature: Some(payload),
+                    encrypted: None,
+                    model: Some("m1".into()),
+                },
+                "encrypted" => Part::Reasoning {
+                    text: "think".into(),
+                    signature: None,
+                    encrypted: Some(payload),
+                    model: Some("m1".into()),
+                },
+                _ => Part::RedactedReasoning { data: payload, model: Some("m1".into()) },
+            };
+            let mut old = Message::user("Never delete files.");
+            old.content.extend((0..6).map(|_| Part::Image {
+                source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() },
+            }));
+            let mut history = vec![old];
+            if kind == "nested" {
+                history
+                    .push(Message::new(Role::Assistant, vec![Part::tool_call("prior", "read", serde_json::json!({}))]));
+                history.push(Message::tool_results(vec![Part::ToolResult {
+                    call_id: "prior".into(),
+                    name: Some("read".into()),
+                    content: vec![Part::text("keep this result"), opaque],
+                    is_error: false,
+                }]));
+            } else {
+                history.push(Message::new(Role::Assistant, vec![opaque, Part::text("prior answer")]));
+            }
+            st.turn_start = history.len();
+            history.extend([
+                Message::user("current human instruction"),
+                Message::new(
+                    Role::Assistant,
+                    vec![Part::tool_call("c", "read", serde_json::json!({"path":"policy.txt"}))],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![
+                        Part::tool_result("c", "entire result", false),
+                        Part::text("internal instruction: summarize now"),
+                    ],
+                ),
+                Message::user("queued human request must survive as well"),
+            ]);
+            st.history.replace(history.clone());
+            st.person_turn_version = Some(st.history.version());
+            // Simulate an oversized policy render; recovery must use source provenance.
+            let mut req = ModelRequest::new("m2", "", vec![Message::user("x".repeat(1_000_000))]);
+            req.max_tokens = 256;
+            let result = super::window_fit::fit(&mut st, &mut req, None, 0).await;
+            if large {
+                assert!(result.is_err(), "{kind}: escaped/multibyte opaque payload must not be discounted");
+            } else {
+                result.unwrap();
+                history[0].content.retain(|p| !matches!(p, Part::Image { .. }));
+                history[0].content.push(Part::text("[Historical image content omitted to fit the context window.]"));
+                assert_eq!(req.messages, history, "{kind}: all non-image parts and full turn retained");
+                assert!(nexo_core::message::is_well_formed(&req.messages));
+                assert!(
+                    st.est_sent > nexo_core::message::estimate_tokens(&req.messages),
+                    "reserve includes opaque bytes even in historical/nested blocks"
+                );
+            }
+            assert_eq!(st.history[0].content.len(), 7, "raw images remain persisted");
+        }
+    }
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_images_are_not_discounted_by_low_text_ratio() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(2000);
+    st.limits.max_output = None;
+    st.system.clear();
+    st.tok_ratio = Some(0.01);
+    let image = Part::Image {
+        source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/image.png".into() },
+    };
+    for nested in [false, true] {
+        let part = if nested {
+            Part::ToolResult {
+                call_id: "c".into(),
+                name: Some("read".into()),
+                content: vec![image.clone()],
+                is_error: false,
+            }
+        } else {
+            image.clone()
+        };
+        let message = Message::new(Role::User, vec![part.clone(), part]);
+        let mut req = ModelRequest::new("model", "", vec![message.clone()]);
+        req.max_tokens = 256;
+        assert!(!super::window_fit::side_fits(&st, &mut req), "nested={nested}");
+        st.history.replace(vec![message]);
+        st.turn_start = 0;
+        assert!(super::window_fit::fit(&mut st, &mut req, None, 0).await.is_err(), "nested={nested}");
+    }
+    // Text-only requests retain the learned ratio.
+    let mut req = ModelRequest::new("model", "", vec![Message::user("x".repeat(8000))]);
+    req.max_tokens = 256;
+    assert!(super::window_fit::side_fits(&st, &mut req));
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_recovered_current_images_keep_their_reserve() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(2000);
+    st.limits.max_output = None;
+    st.system.clear();
+    st.tok_ratio = Some(0.01);
+    let image = Part::Image {
+        source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/image.png".into() },
+    };
+    let history = vec![
+        Message::new(Role::User, vec![Part::text("old"), image.clone()]),
+        Message::new(Role::Assistant, vec![Part::text("old answer")]),
+        Message::new(Role::User, vec![Part::text("current"), image.clone(), image]),
+    ];
+    assert!(nexo_core::message::is_well_formed(&history));
+    st.history.replace(history.clone());
+    st.turn_start = 2;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = ModelRequest::new("model", "", vec![Message::user("x".repeat(1_000_000))]);
+    req.max_tokens = 256;
+    assert!(super::window_fit::fit(&mut st, &mut req, None, 0).await.is_err());
+    assert_eq!(
+        req.messages[0].content,
+        vec![Part::text("old"), Part::text("[Historical image content omitted to fit the context window.]")],
+        "only historical images are removed"
+    );
+    assert_eq!(req.messages[2], history[2], "current images must survive recovery");
+    assert!(nexo_core::message::is_well_formed(&req.messages));
+    assert_eq!(st.history.to_vec(), history, "recovery must not modify stored history");
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_nested_historical_images_are_replaced_in_place() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(1000);
+    st.system.clear();
+    let image =
+        Part::Image { source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() } };
+    let marker = Part::text("[Historical image content omitted to fit the context window.]");
+    let nested = |content| Part::ToolResult {
+        call_id: "inner".into(),
+        name: Some("nested-read".into()),
+        is_error: true,
+        content,
+    };
+    let outer = |content| Part::ToolResult { call_id: "c".into(), name: Some("read".into()), is_error: false, content };
+    let history = vec![
+        Message::user("read"),
+        Message::new(Role::Assistant, vec![Part::tool_call("c", "read", serde_json::json!({"path":"old"}))]),
+        Message::tool_results(vec![outer(vec![
+            Part::text("outer before"),
+            image.clone(),
+            nested(vec![
+                Part::text("inner before"),
+                image.clone(),
+                image.clone(),
+                Part::text("inner after"),
+                image.clone(),
+            ]),
+            image.clone(),
+            Part::text("outer after"),
+        ])]),
+        Message::user("current request"),
+    ];
+    assert!(nexo_core::message::is_well_formed(&history));
+    st.history.replace(history.clone());
+    st.turn_start = 3;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = ModelRequest::new("m1", "", history.clone());
+    req.max_tokens = 256;
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
+    let mut expected = history.clone();
+    expected[2] = Message::tool_results(vec![outer(vec![
+        Part::text("outer before"),
+        marker.clone(),
+        nested(vec![Part::text("inner before"), marker.clone(), Part::text("inner after"), marker.clone()]),
+        marker,
+        Part::text("outer after"),
+    ])]);
+    assert_eq!(req.messages, expected, "only historical image runs are replaced, at each nesting level");
+    assert!(nexo_core::message::is_well_formed(&req.messages));
+    assert_eq!(st.history.to_vec(), history, "the raw transcript remains intact");
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_nested_images_in_paired_result_keep_their_reserve() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(2000);
+    st.limits.max_output = None;
+    st.system.clear();
+    st.tok_ratio = Some(0.01);
+    let image = Part::Image {
+        source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/image.png".into() },
+    };
+    let history = vec![
+        Message::user("read"),
+        Message::new(Role::Assistant, vec![Part::tool_call("c", "read", serde_json::json!({}))]),
+        Message::tool_results(vec![Part::ToolResult {
+            call_id: "c".into(),
+            name: Some("read".into()),
+            is_error: false,
+            content: vec![
+                Part::text("mixed"),
+                Part::ToolResult {
+                    call_id: "inner".into(),
+                    name: Some("read".into()),
+                    is_error: false,
+                    content: vec![Part::text("nested"), image.clone(), image],
+                },
+            ],
+        }]),
+    ];
+    assert!(nexo_core::message::is_well_formed(&history));
+    st.history.replace(history.clone());
+    st.turn_start = 0;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = ModelRequest::new("model", "", history.clone());
+    req.max_tokens = 256;
+    assert!(!super::window_fit::side_fits(&st, &mut req));
+    assert!(super::window_fit::fit(&mut st, &mut req, None, 0).await.is_err());
+    assert_eq!(req.messages, history);
+    assert_eq!(st.history.to_vec(), history);
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn side_admission_respects_model_limit_and_discards_stale_ceiling() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    let mut req = ModelRequest::new("model", "", vec![Message::user("hello")]);
+    req.max_tokens = 200;
+    st.limits.max_output = Some(100);
+    for window in [Some(10_000), None] {
+        st.limits.context_window = window;
+        req.output_ceiling = Some(1);
+        assert!(!super::window_fit::side_fits(&st, &mut req));
+        assert_eq!(req.output_ceiling, Some(100));
+        st.limits.max_output = Some(300);
+        assert!(super::window_fit::side_fits(&st, &mut req));
+        assert_eq!(req.output_ceiling, Some(300));
+        st.limits.max_output = Some(100);
+    }
+    st.limits.context_window = None;
+    st.limits.max_output = None;
+    req.output_ceiling = Some(1);
+    assert!(super::window_fit::side_fits(&st, &mut req));
+    assert_eq!(req.output_ceiling, None);
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+/// Optional calls use the configured protocol and request model (not the active
+/// target model), and low learned prose ratios cannot discount retained reserves.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_opaque_side_fits_exception_boundaries() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.limits.context_window = Some(2000);
+    st.limits.max_output = Some(512);
+    st.tok_ratio = Some(0.01);
+    for protocol in ["anthropic", "openai-responses", "openai"] {
+        let (name, mut provider, _) = st.target.get();
+        provider.protocol = protocol.into();
+        st.target.set(name, provider, "active-model-not-request-model");
+        for kind in ["foreign", "foreign-redacted", "own", "legacy", "nested-foreign", "mixed"] {
+            for large in [false, true] {
+                let payload = "opaque_".repeat(if large { 400 } else { 1 });
+                let foreign = Part::Reasoning {
+                    text: "foreign text".into(),
+                    signature: Some(payload.clone()),
+                    encrypted: None,
+                    model: Some("foreign-model".into()),
+                };
+                let own = Part::Reasoning {
+                    text: "own text".into(),
+                    signature: Some(payload.clone()),
+                    encrypted: None,
+                    model: (kind != "legacy").then(|| "request-model".into()),
+                };
+                let parts = match kind {
+                    "foreign" => vec![foreign],
+                    "foreign-redacted" => {
+                        vec![Part::RedactedReasoning { data: payload, model: Some("foreign-model".into()) }]
+                    }
+                    "nested-foreign" => vec![Part::ToolResult {
+                        call_id: "nested".into(),
+                        name: Some("read".into()),
+                        content: vec![foreign],
+                        is_error: false,
+                    }],
+                    "mixed" => vec![foreign, own],
+                    _ => vec![own],
+                };
+                let mut req = ModelRequest::new("request-model", "", vec![Message::new(Role::Assistant, parts)]);
+                req.max_tokens = 256;
+                let before = req.messages.clone();
+                let exempt = matches!(protocol, "anthropic" | "openai-responses")
+                    && matches!(kind, "foreign" | "foreign-redacted");
+                let expected = !large || exempt;
+                assert_eq!(super::window_fit::side_fits(&st, &mut req), expected, "{protocol}/{kind}/{large}");
+                assert_eq!(req.messages, before, "admission must not mutate optional messages");
+                assert_eq!(req.max_tokens, 256);
+                if expected {
+                    assert_eq!(req.output_ceiling, Some(512));
+                } else {
+                    assert_eq!(req.output_ceiling, Some(0));
+                }
+            }
+        }
+    }
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_image_recovery_trims_only_current_results() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(1500);
+    st.system.clear();
+    let mut old = Message::user("Never delete files.");
+    old.content.push(Part::Image {
+        source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/old.png".into() },
+    });
+    let original = vec![
+        old,
+        Message::new(Role::Assistant, vec![Part::tool_call("prior", "read", serde_json::json!({}))]),
+        Message::tool_results(vec![Part::tool_result("prior", "historical output must survive".repeat(12), false)]),
+        Message::user("Read current data; keep instructions."),
+        Message::new(Role::Assistant, vec![Part::tool_call("current", "read", serde_json::json!({"path":"data"}))]),
+        Message::new(
+            Role::User,
+            vec![
+                Part::tool_result("current", "x".repeat(20_000), true),
+                Part::text("Internal instruction must survive."),
+            ],
+        ),
+        Message::user("Queued instruction must survive."),
+    ];
+    st.history.replace(original.clone());
+    st.turn_start = 3;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = ModelRequest::new("m1", "", original.clone());
+    req.max_tokens = 256;
+    super::window_fit::fit(&mut st, &mut req, Some("request note"), 0).await.unwrap();
+    let mut expected = original.clone();
+    expected[0].content.pop();
+    expected[0].content.push(Part::text("[Historical image content omitted to fit the context window.]"));
+    let Part::ToolResult { content, .. } = &mut expected[5].content[0] else { unreachable!() };
+    *content =
+        vec![Part::text("[curator] Tool output omitted to fit the context window. Request a smaller range if needed.")];
+    attach_hidden(&mut expected, "request note".into());
+    assert_eq!(req.messages, expected);
+    assert_eq!(st.history.to_vec(), original);
+    assert!(nexo_core::message::is_well_formed(&req.messages));
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_current_foreign_signature_is_not_transmitted() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(2000);
+    st.system.clear();
+    for protocol in ["anthropic", "openai-responses", "openai"] {
+        let (name, mut provider, _) = st.target.get();
+        provider.protocol = protocol.into();
+        st.target.set(name, provider, "m1");
+        for foreign in [true, false] {
+            let original = vec![
+                Message::user("Preserve instructions."),
+                Message::new(
+                    Role::Assistant,
+                    vec![
+                        Part::Reasoning {
+                            text: "thinking".into(),
+                            signature: Some("s".repeat(40_000)),
+                            encrypted: None,
+                            model: Some(if foreign { "other" } else { "m1" }.into()),
+                        },
+                        Part::tool_call("c", "read", serde_json::json!({})),
+                    ],
+                ),
+                Message::tool_results(vec![Part::tool_result("c", "short result", false)]),
+            ];
+            st.history.replace(original.clone());
+            st.turn_start = 0;
+            st.person_turn_version = Some(st.history.version());
+            let mut req = ModelRequest::new("m1", "", original.clone());
+            req.max_tokens = 256;
+            let allowed = foreign && protocol != "openai";
+            assert_eq!(
+                super::window_fit::fit(&mut st, &mut req, None, 0).await.is_ok(),
+                allowed,
+                "{protocol}/{foreign}"
+            );
+            assert_eq!(super::window_fit::side_fits(&st, &mut req), allowed, "side {protocol}/{foreign}");
+            assert_eq!(req.messages, original);
+            assert_eq!(st.history.to_vec(), original);
+        }
+    }
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_mixed_tool_result_trims_only_text_and_fails_if_opaque_still_overflows() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(4000);
+    st.system.clear();
+    for large in [false, true] {
+        let image = Part::Image {
+            source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/current.png".into() },
+        };
+        let opaque = Part::RedactedReasoning {
+            data: if large { "opaque".repeat(1000) } else { "small".into() },
+            model: Some("m1".into()),
+        };
+        let original = vec![
+            Message::user("inspect"),
+            Message::new(Role::Assistant, vec![Part::tool_call("c", "read", serde_json::json!({}))]),
+            Message::tool_results(vec![Part::ToolResult {
+                call_id: "c".into(),
+                name: Some("read".into()),
+                content: vec![Part::text("a".repeat(12000)), image.clone(), Part::text("tail"), opaque.clone()],
+                is_error: true,
+            }]),
+        ];
+        st.history.replace(original.clone());
+        st.turn_start = 0;
+        st.person_turn_version = Some(st.history.version());
+        let mut req = ModelRequest::new("m1", "", original.clone());
+        req.max_tokens = 256;
+        let result = super::window_fit::fit(&mut st, &mut req, None, 0).await;
+        assert_eq!(result.is_err(), large, "{result:?}");
+        if large {
+            assert!(result.unwrap_err().to_string().contains("request over the window"));
+        }
+        let mut expected = original.clone();
+        let Part::ToolResult { content, .. } = &mut expected[2].content[0] else { unreachable!() };
+        *content = vec![
+            Part::text("[curator] Tool output omitted to fit the context window. Request a smaller range if needed."),
+            image,
+            opaque,
+        ];
+        assert_eq!(req.messages, expected);
+        assert_eq!(st.history.to_vec(), original);
+    }
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn admission_multiple_mixed_results_incrementally_fit_same_message() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    st.limits.context_window = Some(7000);
+    st.system.clear();
+    let (name, mut provider, _) = st.target.get();
+    provider.protocol = "openai".into();
+    st.target.set(name, provider, "m1");
+    let image = Part::Image {
+        source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/current.png".into() },
+    };
+    let opaque = Part::RedactedReasoning { data: "opaque".into(), model: Some("m1".into()) };
+    let original = vec![
+        Message::user("inspect"),
+        Message::new(
+            Role::Assistant,
+            (0..3).map(|i| Part::tool_call(format!("c{i}"), "read", serde_json::json!({}))).collect(),
+        ),
+        Message::tool_results(vec![
+            Part::ToolResult {
+                call_id: "c0".into(),
+                name: Some("read".into()),
+                content: vec![image.clone(), Part::text("a".repeat(12000)), opaque.clone(), Part::text("tail")],
+                is_error: false,
+            },
+            Part::ToolResult {
+                call_id: "c1".into(),
+                name: Some("read".into()),
+                content: vec![opaque.clone(), Part::text("b".repeat(10000)), image.clone(), Part::text("tail")],
+                is_error: true,
+            },
+            Part::tool_result("c2", "c".repeat(3000), false),
+        ]),
+    ];
+    st.history.replace(original.clone());
+    st.turn_start = 0;
+    st.person_turn_version = Some(st.history.version());
+    let mut req = ModelRequest::new("m1", "", original.clone());
+    req.max_tokens = 256;
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.unwrap();
+    let marker =
+        Part::text("[curator] Tool output omitted to fit the context window. Request a smaller range if needed.");
+    let mut expected = original.clone();
+    let Part::ToolResult { content, .. } = &mut expected[2].content[0] else { unreachable!() };
+    *content = vec![image.clone(), marker.clone(), opaque.clone()];
+    let Part::ToolResult { content, .. } = &mut expected[2].content[1] else { unreachable!() };
+    *content = vec![opaque.clone(), marker, image];
+    assert_eq!(req.messages, expected);
+    assert_eq!(st.history.to_vec(), original);
+    assert_eq!(
+        st.est_sent,
+        nexo_core::message::estimate_tokens(&expected) + 2 * serde_json::to_vec(&opaque).unwrap().len() as u64
+    );
+    assert!(super::window_fit::provider_tokens(st.est_sent, Some(4.0 / 3.0)) + u64::from(req.max_tokens) <= 7000);
+    assert_eq!(req.max_tokens, 256);
+    assert!(nexo_core::message::is_well_formed(&req.messages));
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn compact_recovery_survives_interruption_and_late_old_writer() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.client = Arc::new(SummaryClient);
+    st.policy = Box::new(crate::context::BuiltIn::new("").unwrap());
+    let old = vec![
+        Message::user("Never delete the logs."),
+        Message::assistant("Understood."),
+        Message::user("Continue work."),
+        Message::assistant("Ok."),
+    ];
+    for m in &old {
+        st.session.append(m).unwrap();
+    }
+    st.history.replace(old.clone());
+    st.policy.view(0, &old).await.unwrap();
+    let old_snapshot = st.policy.save().unwrap()();
+    let path = st.session.path().to_path_buf();
+    assert!(compact_locked(&mut st, 2, &CancellationToken::new()).await);
+    let replacement = Session::open_path(&path).unwrap().messages().to_vec();
+    // Simulate a delayed background save and a restart immediately after the session rename.
+    crate::context::saved::write(&path, Box::new(move || old_snapshot)).unwrap();
+    st.history.replace(replacement.clone());
+    st.policy = Box::new(crate::context::BuiltIn::new("").unwrap());
+    super::saved_state::load(&mut st);
+    let view = st.policy.view(0, &replacement).await.unwrap();
+    assert!(view.messages.iter().any(|m| m.text().contains("Never delete the logs.")));
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn compact_snapshot_write_failure_does_not_replace_session() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.client = Arc::new(SummaryClient);
+    st.policy = Box::new(crate::context::BuiltIn::new("").unwrap());
+    let old =
+        vec![Message::user("Never delete the logs."), Message::assistant("Understood."), Message::user("Continue.")];
+    for m in &old {
+        st.session.append(m).unwrap();
+    }
+    st.history.replace(old.clone());
+    st.policy.view(0, &old).await.unwrap();
+    let path = st.session.path().to_path_buf();
+    // The temp slot parent is inaccessible when replaced with a non-directory.
+    let parent = path.parent().unwrap();
+    let moved = parent.with_extension("moved");
+    std::fs::rename(parent, &moved).unwrap();
+    std::fs::write(parent, b"not a directory").unwrap();
+    assert!(!compact_locked(&mut st, 2, &CancellationToken::new()).await);
+    assert_eq!(st.history.to_vec(), old);
+    assert_eq!(st.session.messages(), old);
+    std::fs::remove_file(parent).unwrap();
+    std::fs::rename(&moved, parent).unwrap();
+    assert_eq!(Session::open_path(&path).unwrap().messages(), old);
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+struct SummaryClient;
+
+#[async_trait::async_trait]
+impl ModelClient for SummaryClient {
+    async fn stream(&self, _: &ProviderConfig, _: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        Ok(Box::pin(futures::stream::iter(vec![StreamEvent::TextDelta("summary".into())])))
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn compact_rewrite_io_failure_keeps_history_and_indices() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.client = Arc::new(SummaryClient);
+    let history = vec![Message::user("task"), Message::assistant("work"), Message::user("next")];
+    for message in &history {
+        st.session.append(message).unwrap();
+    }
+    st.history.replace(history.clone());
+    st.checkpoints.push((2, PathBuf::from("test"), None));
+    st.turn_start = 2;
+    st.person_at = 2;
+    let path = st.session.path().to_path_buf();
+    let tmp = path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
+    std::fs::create_dir(&tmp).unwrap();
+    assert!(!compact_locked(&mut st, 2, &CancellationToken::new()).await);
+    assert_eq!(st.history.to_vec(), history);
+    assert_eq!(st.session.messages(), history);
+    assert_eq!(st.checkpoints[0].0, 2);
+    assert_eq!((st.turn_start, st.person_at), (2, 2));
+    assert_eq!(Session::open_path(&path).unwrap().messages(), history);
+    std::fs::remove_dir(tmp).unwrap();
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn compact_reopen_failure_keeps_replaced_file_and_memory_aligned() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    let (mut handle, ends) = channels();
+    st.events = ends.events;
+    st.client = Arc::new(SummaryClient);
+    let history = vec![Message::user("task"), Message::assistant("work"), Message::user("next")];
+    for message in &history {
+        st.session.append(message).unwrap();
+    }
+    st.session.hold_output("held-call", &nexo_core::tool::ToolOutput::ok("held output"));
+    st.history.replace(history.clone());
+    st.turn_start = 2;
+    st.person_at = 2;
+    let path = st.session.path().to_path_buf();
+    crate::session::FAIL_REOPEN.with(|f| f.set(true));
+    let result = compact_locked(&mut st, 2, &CancellationToken::new()).await;
+    crate::session::FAIL_REOPEN.with(|f| f.set(false));
+    assert!(result);
+    assert_ne!(st.history.to_vec(), history);
+    assert_eq!(st.session.messages(), st.history.to_vec());
+    assert_eq!(Session::open_path(&path).unwrap().messages(), st.history.to_vec());
+    assert_eq!((st.turn_start, st.person_at), (0, 0));
+    assert!(std::iter::from_fn(|| handle.events.try_recv().ok()).any(|e| matches!(e, AgentEvent::Compacted { .. })));
+
+    // Losing our lock after the rename must not make our own replacement look like another writer's.
+    std::fs::remove_file(path.with_extension("jsonl.lock")).unwrap();
+    let next = Message::tool_results(vec![Part::tool_result("held-call", "held output", false)]);
+    st.session.append(&next).unwrap();
+    assert!(!st.session.is_lost());
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(text.matches(r#"{"type":"tool_output""#).count(), 1, "{text}");
+    assert_eq!(Session::open_path(&path).unwrap().messages().last(), Some(&next));
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn rewind_reopen_failure_keeps_history_aligned_and_recovers_after_lock_loss() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let (mut handle, ends) = channels();
+    let history = vec![Message::user("task"), Message::assistant("work"), Message::user("next")];
+    let path = {
+        let mut st = rt.state.lock().await;
+        st.events = ends.events;
+        for message in &history {
+            st.session.append(message).unwrap();
+        }
+        st.history.replace(history.clone());
+        st.turn_start = 2;
+        st.person_at = 2;
+        st.session.path().to_path_buf()
+    };
+    crate::session::FAIL_REOPEN.with(|f| f.set(true));
+    super::commands::rewind(&rt.state, 2).await;
+    crate::session::FAIL_REOPEN.with(|f| f.set(false));
+    let mut st = rt.state.lock().await;
+    assert_eq!(st.history.to_vec(), history[..2]);
+    assert_eq!(st.session.messages(), &history[..2]);
+    assert_eq!(Session::open_path(&path).unwrap().messages(), &history[..2]);
+    assert_eq!((st.turn_start, st.person_at), (0, 0));
+    let events: Vec<_> = std::iter::from_fn(|| handle.events.try_recv().ok()).collect();
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Notice { level: Level::Warn, text, .. } if text.contains("rewound") && text.contains("reopen"))));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { level: Level::Error, text, .. } if text.contains("cannot rewind"))));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::HistoryCleared)));
+
+    std::fs::remove_file(path.with_extension("jsonl.lock")).unwrap();
+    let next = Message::user("after rewind");
+    st.session.append(&next).unwrap();
+    assert!(!st.session.is_lost());
+    let mut expected = history[..2].to_vec();
+    expected.push(next);
+    assert_eq!(Session::open_path(&path).unwrap().messages(), expected);
     std::env::remove_var("NEXO_DATA_DIR");
 }

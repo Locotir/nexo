@@ -16,6 +16,7 @@ fn at(s: &MockServer) -> Endpoints {
         openai_issuer: s.base_url(),
         xai_issuer: s.base_url(),
         xai_billing: s.base_url(),
+        anthropic_api: s.base_url(),
         codex_auth: Some(std::path::PathBuf::from("/nonexistent/nexo-test/auth.json")),
         callback_ports: vec![0],
         pad: Duration::ZERO,
@@ -442,4 +443,36 @@ async fn claude_destination_checked_before_use_and_refresh() {
         assert_eq!(key.as_deref(), Some("token"));
         assert_eq!(applied.extra.get("bearer").and_then(|v| v.as_bool()), Some(true));
     }
+}
+
+#[tokio::test]
+async fn anthropic_oauth_identity_ignores_direct_key_and_keeps_separate_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("auth.json");
+    let oauth = Credential::Oauth {
+        access: "oauth-test".into(),
+        refresh: String::new(),
+        expires: 0,
+        metadata: [("flow".into(), "claude".into())].into_iter().collect(),
+    };
+    auth::set_in(&store, "anthropic", Credential::Api { key: "api-test".into() }).unwrap();
+    auth::set_in(&store, "anthropic-oauth", oauth).unwrap();
+    let mut cfg = crate::presets::presets()["anthropic-oauth"].clone();
+    let keyfile = dir.path().join("key");
+    std::fs::write(&keyfile, "direct-api-test").unwrap();
+    cfg.api_key_file = Some(keyfile);
+    let (prepared, key) = super::prepare_in(&store, &Endpoints::default(), &cfg).await.unwrap();
+    assert_eq!(key.as_deref(), Some("oauth-test"));
+    let headers = crate::anthropic::Anthropic::headers(&prepared, key.as_deref());
+    assert_eq!(headers.get("authorization").and_then(|v| v.to_str().ok()), Some("Bearer oauth-test"));
+    assert!(!headers.contains_key("x-api-key"));
+    let mut api = crate::presets::presets()["anthropic"].clone();
+    api.api_key_env = None;
+    api.auth = Some("anthropic".into());
+    let (prepared, key) = super::prepare_in(&store, &Endpoints::default(), &api).await.unwrap();
+    assert_eq!(key.as_deref(), Some("api-test"));
+    let headers = crate::anthropic::Anthropic::headers(&prepared, key.as_deref());
+    assert_eq!(headers.get("x-api-key").and_then(|v| v.to_str().ok()), Some("api-test"));
+    auth::set_in(&store, "anthropic-oauth", Credential::Api { key: "wrong".into() }).unwrap();
+    assert!(super::prepare_in(&store, &Endpoints::default(), &cfg).await.is_err());
 }

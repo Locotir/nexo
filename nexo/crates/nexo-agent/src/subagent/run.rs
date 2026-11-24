@@ -2,8 +2,10 @@ use super::*;
 
 /// Times a round whose model call broke off is asked again before the sub-agent gives up.
 pub(super) const ROUND_RETRIES: u32 = 3;
-/// The longest wait before asking again, whatever the server said.
-pub(super) const MAX_WAIT: Duration = Duration::from_secs(60);
+
+fn retry_wait(e: &ProviderError, attempt: u32) -> Duration {
+    e.retry_after.unwrap_or(Duration::from_secs(2u64 << attempt))
+}
 
 /// Why a request of a round gave no reply.
 pub(super) enum Failure {
@@ -13,6 +15,86 @@ pub(super) enum Failure {
     /// The reply broke off at the output limit with no call under way: what it wrote (maybe nothing, when it was
     /// still reasoning), which `rounds` asks again with more room or keeps as the report.
     Cut(String),
+    /// A local resource watchdog stopped an uncapped backend. Never resend this round.
+    Guarded(&'static str),
+}
+
+fn uncapped(cfg: &ProviderConfig) -> bool {
+    // Credential shaping happens inside the client, after this decision. A stored
+    // credential may add Codex's default even without a login hint. Guard all
+    // unresolved store-backed configurations conservatively; explicit false is
+    // preserved by login::apply. This is not a remote token/spend guarantee.
+    cfg.extra.get("omit_max_tokens").and_then(|v| v.as_bool()).unwrap_or(cfg.auth.is_some())
+}
+
+/// A local byte/event/time bound, NOT a token limit or a guarantee of remote spend. Count even
+/// ignored reasoning and argument fragments before retaining text, calls or UI deltas. Dropping the
+/// stream also drops the parser's partial calls. No partial call may execute after this guard fires.
+struct StreamGuard {
+    bytes: usize,
+    events: usize,
+    deadline: tokio::time::Instant,
+}
+
+impl StreamGuard {
+    fn new(req: &ModelRequest) -> Self {
+        Self {
+            bytes: (req.max_tokens as usize).saturating_mul(16).clamp(1024, 8 * 1024 * 1024),
+            events: (req.max_tokens as usize).saturating_mul(4).clamp(1024, 262_144),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(300),
+        }
+    }
+
+    fn observe(&mut self, ev: &StreamEvent) -> bool {
+        use std::io::Write;
+        // Serializing into a bounded counter avoids allocating another copy of a completed argument.
+        struct Counter(usize);
+        impl Write for Counter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if bytes.len() > self.0 {
+                    return Err(std::io::Error::other("stream byte budget exhausted"));
+                }
+                self.0 -= bytes.len();
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        if self.events == 0 {
+            return false;
+        }
+        self.events -= 1;
+        let size = match ev {
+            StreamEvent::TextDelta(d) | StreamEvent::ReasoningDelta(d) | StreamEvent::RedactedReasoning { data: d } => {
+                d.len()
+            }
+            StreamEvent::ToolCallStart { id, name } => id.len().saturating_add(name.len()),
+            StreamEvent::ToolCallDelta { id, partial_json } => id.len().saturating_add(partial_json.len()),
+            StreamEvent::ToolCallEnd { id, name, args } => {
+                let mut counter = Counter(self.bytes);
+                if serde_json::to_writer(&mut counter, args).is_err() {
+                    return false;
+                }
+                self.bytes = counter.0;
+                id.len().saturating_add(name.len())
+            }
+            StreamEvent::ReasoningMeta { signature, encrypted } => {
+                signature.as_ref().map_or(0, String::len).saturating_add(encrypted.as_ref().map_or(0, String::len))
+            }
+            StreamEvent::Start { response_id, model } => {
+                response_id.as_ref().map_or(0, String::len).saturating_add(model.as_ref().map_or(0, String::len))
+            }
+            _ => 0,
+        };
+        match self.bytes.checked_sub(size) {
+            Some(left) => {
+                self.bytes = left;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// The line a report cut at the output limit ends with: `n` is the size asked for, `why` what stopped the ask
@@ -41,6 +123,126 @@ fn fit_task(prompt: &str, window: Option<u32>, reply: u32, fixed: u64, brief: u6
     let kept = crate::prompt::fit::head(prompt, cap);
     let note = format!("task cut to {} of {whole} characters for a {w}-token window", kept.chars().count());
     (kept.to_string(), Some(note))
+}
+
+/// Reserve opaque blocks in every turn, including nested tool results. The generic estimate
+/// excludes old signatures, although a worker's history may still send them back. Count all
+/// protocols conservatively rather than guessing which serializer will omit a block.
+fn admission_media(parts: &[Part]) -> (u64, bool) {
+    parts.iter().fold((0u64, false), |(total, images), part| {
+        let (reserve, image) = match part {
+            Part::Reasoning { signature, encrypted, .. } if signature.is_some() || encrypted.is_some() => {
+                (serde_json::to_vec(part).map_or(u64::MAX, |bytes| bytes.len() as u64), false)
+            }
+            Part::RedactedReasoning { .. } => {
+                (serde_json::to_vec(part).map_or(u64::MAX, |bytes| bytes.len() as u64), false)
+            }
+            Part::ToolResult { content, .. } => admission_media(content),
+            Part::Image { .. } => (0, true),
+            _ => (0, false),
+        };
+        (total.saturating_add(reserve), images || image)
+    })
+}
+
+/// Admit the final, protocol-repaired request, not the policy's token estimate. Plain and Compact do
+/// not enforce a window, and a failed policy falls back to the full history. Keep every input word:
+/// shorten only the reply, or refuse before reserving money or opening a provider stream.
+/// Returns the raw input estimate (for usage learning) and the physical room for a retry's reply.
+fn admit_request(
+    req: &mut ModelRequest,
+    limits: &crate::limits::Limits,
+    learned: Option<f64>,
+) -> Result<(u64, u32), String> {
+    let (opaque, images) = req.messages.iter().fold((0u64, false), |(total, images), message| {
+        let (reserve, has_image) = admission_media(&message.content);
+        (total.saturating_add(reserve), images || has_image)
+    });
+    let estimated = crate::turn::fixed_tokens(&req.system, &req.tools)
+        .saturating_add(nexo_core::message::estimate_tokens(&req.messages))
+        .saturating_add(opaque);
+    let mut room = limits.max_output.unwrap_or(u32::MAX);
+    if let Some(window) = limits.context_window {
+        // Match the main turn's conservative first estimate for small windows. A provider count
+        // learned on a previous round replaces it; never let a policy's stale count admit a request.
+        let ratio = learned.unwrap_or(if crate::prompt::is_compact(Some(u64::from(window))) { 4.0 / 3.0 } else { 1.0 });
+        // Learned prose ratios cannot discount the nominal image or opaque reserve.
+        let ratio = if images || opaque > 0 { ratio.max(1.0) } else { ratio };
+        let input = (estimated as f64 * ratio).ceil() as u64;
+        let floor = req.max_tokens.min(crate::limits::REPLY_FLOOR);
+        if input.saturating_add(u64::from(floor)) > u64::from(window) {
+            return Err(format!(
+                "sub-agent request not sent: preserving its messages needs about {input} input tokens \
+                 for a {window}-token context window, plus {floor} for the reply; ask for a narrower task or shorter message"
+            ));
+        }
+        room = room.min((u64::from(window) - input) as u32);
+    }
+    req.max_tokens = req.max_tokens.min(room);
+    // Also needed with an unknown window: adapters may otherwise increase a deliberately small
+    // reply, and a known model output cap must still hold.
+    req.output_ceiling = Some(req.max_tokens);
+    Ok((estimated, room))
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    fn request() -> ModelRequest {
+        let mut req = ModelRequest::new("m", "system", vec![Message::user("words ".repeat(1000))]);
+        req.max_tokens = 1024;
+        req
+    }
+
+    #[test]
+    fn only_the_reply_is_shortened_and_the_learned_count_is_respected() {
+        let mut req = request();
+        let original = serde_json::to_value(&req.messages).unwrap();
+        let estimate =
+            crate::turn::fixed_tokens(&req.system, &req.tools) + nexo_core::message::estimate_tokens(&req.messages);
+        let input = estimate * 2;
+        let limits = crate::limits::Limits { context_window: Some(input as u32 + 400), ..Default::default() };
+        let (sent, room) = admit_request(&mut req, &limits, Some(2.0)).unwrap();
+        assert_eq!(sent, estimate);
+        assert_eq!(room, 400);
+        assert_eq!(req.max_tokens, 400);
+        assert_eq!(req.output_ceiling, Some(400));
+        assert_eq!(serde_json::to_value(&req.messages).unwrap(), original);
+        assert!(admit_request(&mut request(), &limits, Some(3.0)).unwrap_err().contains("request not sent"));
+    }
+
+    #[test]
+    fn worker_admission_preserves_nested_media_and_old_opaque_reserves() {
+        use nexo_core::message::{ImageSource, Role};
+        let image = Part::Image { source: ImageSource::Url { url: "https://example.test/image".into() } };
+        let nested = Part::ToolResult { call_id: "c".into(), name: None, content: vec![image], is_error: false };
+        let mut req = ModelRequest::new("m", "system", vec![Message::new(Role::User, vec![nested])]);
+        req.max_tokens = 300;
+        let plain =
+            crate::turn::fixed_tokens(&req.system, &req.tools) + nexo_core::message::estimate_tokens(&req.messages);
+        let limits = crate::limits::Limits { context_window: Some(plain as u32 + 255), ..Default::default() };
+        assert!(admit_request(&mut req, &limits, Some(0.1)).is_err());
+
+        let old = Part::RedactedReasoning { data: "x".repeat(4000), model: None };
+        let mut req =
+            ModelRequest::new("m", "system", vec![Message::new(Role::Assistant, vec![old]), Message::user("next")]);
+        req.max_tokens = 300;
+        let plain =
+            crate::turn::fixed_tokens(&req.system, &req.tools) + nexo_core::message::estimate_tokens(&req.messages);
+        let limits = crate::limits::Limits { context_window: Some(plain as u32 + 1000), ..Default::default() };
+        assert!(admit_request(&mut req, &limits, Some(0.1)).is_err());
+    }
+
+    #[test]
+    fn an_unknown_window_still_has_a_hard_model_output_cap() {
+        let mut req = request();
+        let limits = crate::limits::Limits { max_output: Some(300), ..Default::default() };
+        let (_, room) = admit_request(&mut req, &limits, None).unwrap();
+        assert_eq!(room, 300);
+        assert_eq!(req.max_tokens, 300);
+        assert_eq!(req.output_ceiling, Some(300));
+    }
 }
 
 /// A message the person or the parent sent a sub-agent joins its conversation as a user message: after the
@@ -311,11 +513,13 @@ impl Run {
                 }
             }
         }
+        let opening = messages[0].clone();
         let mut tok_ratio: Option<f64> = None;
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
         let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
         for round in 0..=rounds {
             // what a person wrote to this sub-agent joins it here, between its rounds
+            let mut inbox_words = Vec::new();
             if let Some(s) = &self.sub {
                 for item in s.take_inbox() {
                     let text = match &item {
@@ -324,6 +528,7 @@ impl Run {
                         _ => continue,
                     };
                     s.item(item);
+                    inbox_words.push(Message::user(text.clone()));
                     join_person(&mut messages, text);
                 }
             }
@@ -334,9 +539,20 @@ impl Run {
                     m.content.push(Part::text(LAST_ROUND));
                 }
             }
+            if !inbox_words.is_empty() {
+                // A policy may turn a large new user block into a recall pointer. Refuse an
+                // impossible mailbox delivery before that can hide its size or original words.
+                inbox_words.insert(0, opening.clone());
+                let mut minimum = ModelRequest::new(model.clone(), system.clone(), inbox_words);
+                minimum.tools = specs.clone();
+                minimum.max_tokens = reply.min(crate::limits::REPLY_FLOOR);
+                admit_request(&mut minimum, &limits, tok_ratio)
+                    .map_err(|why| format!("{why}{}", progress(&messages, round, rounds)))?;
+            }
             policy.tools(&names);
             if let Some(w) = limits.context_window.filter(|w| *w > reply) {
-                policy.window(crate::turn::view_window(w - reply, tok_ratio));
+                let ratio = tok_ratio.or_else(|| compact.then_some(4.0 / 3.0));
+                policy.window(crate::turn::view_window(w - reply, ratio));
             }
             if let Some(p) = prices {
                 policy.prices(p.input, p.cache_read);
@@ -345,7 +561,7 @@ impl Run {
             let view = match policy.view(system_tokens, &messages).await {
                 Ok(v) => v,
                 Err(e) => {
-                    say(format!("context policy failed ({e}); sending everything"));
+                    say(format!("context policy failed ({e}); checking the full history against the window"));
                     crate::context::View {
                         tokens: nexo_core::message::estimate_tokens(&messages),
                         messages: messages.clone(),
@@ -365,7 +581,6 @@ impl Run {
             } else {
                 view
             };
-            let sent_tokens = system_tokens + view.tokens;
             let (sent, _) = nexo_core::message::well_formed(view.messages);
             let mut req = ModelRequest::new(model.clone(), system.clone(), sent);
             req.tools = specs.clone();
@@ -373,6 +588,8 @@ impl Run {
             req.session_id = Some(cache_id.clone());
             // the level set for this model holds for its sub-agents too (their own model's, when it differs)
             req.reasoning = crate::turn::reasoning_of(&effort);
+            let (sent_tokens, output_room) = admit_request(&mut req, &limits, tok_ratio)
+                .map_err(|why| format!("{why}{}", progress(&messages, round, rounds)))?;
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away
             let mut tries = 0u32;
@@ -386,7 +603,7 @@ impl Run {
                 let hold = match &self.host {
                     Some(h) => match h.reserve(&model, prices, sent_tokens, req.max_tokens).await {
                         Ok((cap, hold)) => {
-                            req.max_tokens = cap;
+                            req.max_tokens = req.max_tokens.min(cap);
                             Some(hold)
                         }
                         // what it did stays with the failure, as for any other one of a round; a cut reply that
@@ -401,6 +618,9 @@ impl Run {
                     },
                     None => None,
                 };
+                // For adapters accepting a limit, preserve admission and the spend reservation. Refresh on
+                // every attempt, including the larger retry after a reply cut at the output limit.
+                req.output_ceiling = Some(req.max_tokens);
                 let (got, usage) = self.ask(&cfg, &req, ctx).await;
                 let mut cost = 0.0;
                 if let (Some(h), false) = (&self.host, usage.is_empty()) {
@@ -422,6 +642,14 @@ impl Run {
                 match got {
                     Ok(reply) => break reply,
                     Err(Failure::Stopped) => return Err(stopped(&messages)),
+                    Err(Failure::Guarded(why)) => {
+                        return Err(format!(
+                            "sub-agent stopped by local stream guard ({why}); this backend does not accept a client \
+                         output limit. The stream was dropped without executing this round's calls or retrying. \
+                         Remote generation/cost may continue and final usage may be unavailable.{}",
+                            progress(&messages, round, rounds)
+                        ))
+                    }
                     Err(Failure::Cut(t)) => {
                         let n = req.max_tokens;
                         match first_cut.take() {
@@ -434,12 +662,9 @@ impl Run {
                             }
                             None => {
                                 // twice the room, and no more than the window leaves after what is sent
-                                let fits = limits.context_window.map_or(u32::MAX, |w| {
-                                    u32::try_from(u64::from(w).saturating_sub(sent_tokens)).unwrap_or(u32::MAX)
-                                });
-                                let room = limits.reply_room(self.max_tokens, 2).min(fits);
+                                let room = limits.reply_room(self.max_tokens, 2).min(output_room);
                                 // (a reserve that lowered the first ask would lower this one too)
-                                if room <= n || n < reply {
+                                if uncapped(&cfg) || room <= n || n < reply {
                                     cut_at = Some((n, None));
                                     break (t, Vec::new());
                                 }
@@ -448,9 +673,12 @@ impl Run {
                             }
                         }
                     }
-                    Err(Failure::Model(e)) if e.is_retryable() && tries < ROUND_RETRIES => {
+                    Err(Failure::Model(e))
+                        if !uncapped(&cfg) && self.client.worth_retrying(&e) && tries < ROUND_RETRIES =>
+                    {
                         tries += 1;
-                        let wait = e.retry_after.unwrap_or(Duration::from_secs(2u64 << tries)).min(MAX_WAIT);
+                        // Never shorten a server's requested delay. The client decides whether it is worth waiting.
+                        let wait = retry_wait(&e, tries);
                         say(format!("the model call broke off ({}); asking again in {}s", e.human(), wait.as_secs()));
                         tokio::select! {
                             _ = tokio::time::sleep(wait) => {}
@@ -611,7 +839,24 @@ impl Run {
         ctx: &ToolContext,
     ) -> (Result<(String, Vec<(String, String, Value)>), Failure>, Usage) {
         let mut usage = Usage::default();
-        let mut stream = match self.client.stream(cfg, req, 2).await {
+        let mut guard = uncapped(cfg).then(|| StreamGuard::new(req));
+        let deadline = guard.as_ref().map(|g| g.deadline);
+        let timed_out = async {
+            match deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => futures::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(timed_out);
+        let opened = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return (Err(Failure::Stopped), usage),
+            _ = &mut timed_out => return (Err(Failure::Guarded("request deadline")), usage),
+            // The round owns its retry budget, including failures after partial output. Disabling
+            // client retries prevents multiplying attempts and resetting the server's delay policy.
+            result = self.client.stream(cfg, req, 0) => result,
+        };
+        let mut stream = match opened {
             Ok(s) => s,
             Err(e) => return (Err(Failure::Model(e)), usage),
         };
@@ -624,8 +869,24 @@ impl Run {
             let ev = tokio::select! {
                 biased;
                 _ = ctx.cancel.cancelled() => return (Err(Failure::Stopped), usage),
+                _ = &mut timed_out => return (Err(Failure::Guarded("request deadline")), usage),
                 ev = stream.next() => ev,
             };
+            // Account every received bill BEFORE a resource guard can reject its event.
+            // Never invent usage for events not received or a missing final remote bill.
+            if let Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) = &ev {
+                usage += *u;
+            }
+            if let Some(g) = &mut guard {
+                if let Some(StreamEvent::Usage(u)) = &ev {
+                    if u.output.max(u.reasoning) > u64::from(req.max_tokens) {
+                        return (Err(Failure::Guarded("reported output exceeded local allowance")), usage);
+                    }
+                }
+                if ev.as_ref().is_some_and(|ev| !g.observe(ev)) {
+                    return (Err(Failure::Guarded("byte/event allowance")), usage);
+                }
+            }
             match ev {
                 Some(StreamEvent::TextDelta(d)) => {
                     if let Some(s) = &self.sub {
@@ -639,7 +900,7 @@ impl Run {
                     open = open.saturating_sub(1);
                     calls.push((id, name, args));
                 }
-                Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) => usage += u,
+                Some(StreamEvent::Usage(_) | StreamEvent::RetriedUsage(_)) => {}
                 Some(StreamEvent::Error(e)) => return (Err(Failure::Model(e)), usage),
                 Some(StreamEvent::Done) | None => {
                     if cut {
@@ -844,5 +1105,186 @@ impl Run {
         let mut f = crate::hooks::tool_fields(name, args);
         f["agent"] = json!(self.profile.name);
         f
+    }
+}
+
+#[cfg(test)]
+mod late_login_guard_tests {
+    use super::*;
+    use nexo_core::model_client::ModelClient;
+    use nexo_core::provider::EventStream;
+
+    struct LateLogin(bool);
+    #[async_trait]
+    impl ModelClient for LateLogin {
+        async fn stream(
+            &self,
+            cfg: &ProviderConfig,
+            req: &ModelRequest,
+            retries: u32,
+        ) -> Result<EventStream, ProviderError> {
+            assert_eq!(retries, 0, "late Codex credentials must not enable hidden retries");
+            assert!(!cfg.extra.contains_key("omit_max_tokens"));
+            // The real credential shaper inserts the flag only inside the client.
+            let cred = nexo_core::auth::Credential::Oauth {
+                access: "test-only".into(),
+                refresh: String::new(),
+                expires: 0,
+                metadata: [("flow".into(), "codex".into())].into(),
+            };
+            let effective = nexo_providers::login::apply(cfg, &cred);
+            assert!(uncapped(&effective));
+            let body = nexo_providers::openai_responses::OpenAiResponses::body(&effective, req);
+            assert!(body.get("max_output_tokens").is_none());
+            let evs = (0..1024).map(|_| StreamEvent::ReasoningDelta(String::new())).chain([
+                if self.0 {
+                    StreamEvent::RetriedUsage(Usage { input: 11, output: 7, ..Default::default() })
+                } else {
+                    StreamEvent::Usage(Usage { input: 11, output: 7, ..Default::default() })
+                },
+                StreamEvent::Done,
+            ]);
+            Ok(Box::pin(futures::stream::iter(evs)))
+        }
+    }
+
+    #[tokio::test]
+    async fn late_login_is_guarded_and_the_usage_crossing_event_limit_is_preserved() {
+        let cfg = ProviderConfig { auth: Some("stored-login".into()), ..Default::default() };
+        assert!(uncapped(&cfg));
+        for retried in [false, true] {
+            let sub = Run {
+                client: Arc::new(LateLogin(retried)),
+                target: Target::new("p", cfg.clone(), "m"),
+                provider: None,
+                model: None,
+                effort: None,
+                checkout: None,
+                skill: None,
+                tools: ToolSet::new(),
+                profile: profile::builtin().remove(0),
+                host: None,
+                claims: Default::default(),
+                label: String::new(),
+                id: String::new(),
+                sub: None,
+                context: None,
+                max_tokens: 128,
+            };
+            let mut req = ModelRequest::new("m", "", vec![]);
+            req.max_tokens = 128;
+            let (result, usage) = sub.ask(&cfg, &req, &ToolContext::new(std::env::temp_dir())).await;
+            assert!(matches!(result, Err(Failure::Guarded("byte/event allowance"))));
+            assert_eq!((usage.input, usage.output), (11, 7));
+        }
+        let mut capped = cfg;
+        capped.extra.insert("omit_max_tokens".into(), toml::Value::Boolean(false));
+        assert!(!uncapped(&capped), "explicit false is respected by credential shaping too");
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use nexo_core::model_client::ModelClient;
+    use nexo_core::provider::EventStream;
+    use std::sync::Mutex;
+
+    struct Failing {
+        delay: Duration,
+        ceiling: Duration,
+        in_stream: bool,
+        attempts: Mutex<Vec<tokio::time::Instant>>,
+    }
+
+    #[async_trait]
+    impl ModelClient for Failing {
+        async fn stream(
+            &self,
+            _: &ProviderConfig,
+            _: &ModelRequest,
+            retries: u32,
+        ) -> Result<EventStream, ProviderError> {
+            assert_eq!(retries, 0, "only the round may retry");
+            self.attempts.lock().unwrap().push(tokio::time::Instant::now());
+            let mut e = ProviderError::new(ErrorKind::RateLimit, "busy");
+            e.retry_after = Some(self.delay);
+            if self.in_stream {
+                Ok(Box::pin(futures::stream::iter(vec![
+                    StreamEvent::TextDelta("partial".into()),
+                    StreamEvent::Error(e),
+                ])))
+            } else {
+                Err(e)
+            }
+        }
+        fn worth_retrying(&self, e: &ProviderError) -> bool {
+            e.is_retryable() && e.retry_after.is_none_or(|delay| delay <= self.ceiling)
+        }
+    }
+
+    fn worker(client: Arc<Failing>) -> SubAgent {
+        SubAgent::new(
+            client,
+            Target::new("p", ProviderConfig::default(), "m"),
+            &ToolSet::new(),
+            Vec::new(),
+            Default::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn retry_budget_and_server_delay_apply_before_and_during_stream() {
+        for in_stream in [false, true] {
+            let delay = Duration::from_millis(30);
+            let client =
+                Arc::new(Failing { delay, ceiling: Duration::from_secs(120), in_stream, attempts: Mutex::new(vec![]) });
+            let ctx = ToolContext::new(std::env::temp_dir());
+            let out = worker(client.clone()).run(json!({"prompt":"test", "agent":"explore"}), &ctx).await;
+            assert!(out.is_error);
+            let attempts = client.attempts.lock().unwrap();
+            assert_eq!(attempts.len(), 4);
+            for pair in attempts.windows(2) {
+                assert!(pair[1].duration_since(pair[0]) >= delay);
+            }
+        }
+    }
+
+    #[test]
+    fn server_wait_is_never_shortened() {
+        let mut e = ProviderError::new(ErrorKind::RateLimit, "busy");
+        for seconds in [60, 120, 600] {
+            e.retry_after = Some(Duration::from_secs(seconds));
+            assert_eq!(retry_wait(&e, 1), Duration::from_secs(seconds));
+        }
+        e.retry_after = None;
+        assert_eq!(retry_wait(&e, 1), Duration::from_secs(4));
+    }
+
+    #[tokio::test]
+    async fn long_retry_after_obeys_ceiling_and_cancellation() {
+        for seconds in [60, 120, 600] {
+            let client = Arc::new(Failing {
+                delay: Duration::from_secs(seconds),
+                ceiling: Duration::from_secs(120),
+                in_stream: false,
+                attempts: Mutex::new(vec![]),
+            });
+            let ctx = ToolContext::new(std::env::temp_dir());
+            let cancel = ctx.cancel.clone();
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                cancel.cancel();
+            });
+            let out = worker(client.clone()).run(json!({"prompt":"test", "agent":"explore"}), &ctx).await;
+            cancel_task.abort();
+            assert!(out.is_error);
+            assert_eq!(client.attempts.lock().unwrap().len(), 1, "retry after {seconds}s");
+            if seconds <= 120 {
+                assert!(ctx.cancel.is_cancelled());
+            } else {
+                assert!(!ctx.cancel.is_cancelled());
+            }
+        }
     }
 }

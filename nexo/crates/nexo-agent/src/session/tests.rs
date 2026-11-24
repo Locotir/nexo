@@ -2115,3 +2115,27 @@ fn a_file_without_a_context_line_or_a_fallback_reads_as_before() {
     assert_eq!((r.messages().len(), r.usage().input, r.usage().output), (1, 150, 15));
     assert!((r.cost() - 0.3).abs() < 1e-9);
 }
+
+#[test]
+fn trash_and_restore_preserve_compaction_slots_and_reject_conflicts() {
+    let d = tempfile::tempdir().unwrap();
+    let id = "20260101-000001-abcd";
+    let session = d.path().join(format!("{id}.jsonl"));
+    std::fs::write(&session, b"session").unwrap();
+    let slot_name = format!("{id}.jsonl.curator.compact.2.0123456789abcdef");
+    let slot = d.path().join(&slot_name);
+    std::fs::write(&slot, b"recovery").unwrap();
+    let bin = trash_dir_in(d.path());
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join(&slot_name), b"different").unwrap();
+    assert!(trash_in(d.path(), id).is_err());
+    assert_eq!(std::fs::read(&slot).unwrap(), b"recovery");
+    assert!(session.exists());
+    std::fs::write(bin.join(&slot_name), b"recovery").unwrap();
+    trash_in(d.path(), id).unwrap();
+    assert!(!slot.exists());
+    assert_eq!(std::fs::read(bin.join(&slot_name)).unwrap(), b"recovery");
+    restore_in(d.path(), id).unwrap();
+    assert_eq!(std::fs::read(slot).unwrap(), b"recovery");
+    assert!(!bin.join(slot_name).exists());
+}

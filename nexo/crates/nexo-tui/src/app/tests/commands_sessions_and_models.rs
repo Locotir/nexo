@@ -490,6 +490,48 @@ fn picking_a_model_of_another_provider_switches_the_provider_too() {
 }
 
 #[test]
+fn enter_on_the_first_filtered_model_switches_from_xai_to_lutheos() {
+    for command in ["model", "models", "m"] {
+        for query in ["lutheos", "luth", "deepseek-fla", "lutheos/deepseek-fla"] {
+            let (mut a, mut rx) = app();
+            a.provider = "xai".into();
+            a.model = "grok-4.3".into();
+            a.opts.models = vec![
+                ("xai".into(), "grok-4.3".into()),
+                ("lutheos".into(), "deepseek-flash".into()),
+                ("lutheos".into(), "deepseek-pro".into()),
+            ];
+            a.input.set_text(&format!("/{command} {query}"));
+            a.refresh_palette();
+            let p = a.palette.as_ref().expect("a filtered model list");
+            assert_eq!(p.selected, 0);
+            assert_eq!(p.current(), Some("lutheos/deepseek-flash"));
+            crate::event::handle(
+                &mut a,
+                crossterm::event::Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            );
+            assert!(
+                matches!(rx.try_recv(), Ok(AgentCommand::SetModel { provider: Some(p), model })
+                    if p == "lutheos" && model == "deepseek-flash"),
+                "Enter must send the highlighted provider/model for /{command} {query}"
+            );
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn an_unlisted_model_still_submits_the_literal_name() {
+    let (mut a, mut rx) = app();
+    a.input.set_text("/models brand-new-unlisted");
+    a.refresh_palette();
+    assert!(a.palette.is_none());
+    crate::event::handle(&mut a, crossterm::event::Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetModel { provider: None, model })
+        if model == "brand-new-unlisted"));
+}
+
+#[test]
 fn a_model_name_only_another_provider_has_goes_to_that_provider() {
     let (mut a, mut rx) = two_luna();
     a.opts.models.retain(|(p, m)| !(p == "refuseless" && m == "luna"));
@@ -603,7 +645,7 @@ fn switching_models_keeps_unrelated_transcript_heights_and_lines() {
     switch_test_model(&mut a);
     assert_eq!(snapshot(&a, text), old, "model limits must not discard markdown wrapping");
     assert_eq!(snapshot(&a, unpriced), old_tool, "unmarked tools do not depend on prices");
-    assert!(a.cache[tool].is_none(), "a priced tool must be rendered at the new rate");
+    assert!(matches!(&a.cache[tool], Some((_, _, None, _))), "keep height but refresh the price");
     let priced_head = head(&mut a, tool);
     assert!(priced_head.contains("1.00000 $"), "the new price must reach the card: {priced_head:?}");
     assert!(matches!(a.blocks.last(), Some(Block::Model { model, .. }) if model == "n"));
@@ -613,7 +655,7 @@ fn switching_models_keeps_unrelated_transcript_heights_and_lines() {
 #[ignore = "manual model-switch latency measurement; no wall-clock assertions"]
 fn measure_model_switch_with_large_transcript() {
     for count in [100, 1_000, 5_000] {
-        for full_invalidation in [false, true] {
+        for invalidation in ["keep_heights", "old_targeted", "full"] {
             let (mut a, _rx) = bare();
             a.opts.animations = false;
             for i in 0..count {
@@ -641,21 +683,31 @@ fn measure_model_switch_with_large_transcript() {
             a.transcript_area = Rect::new(0, 0, 100, 30);
             a.layout(100);
             a.scroll_to_end();
+            frame(&mut a, 100, 30);
             a.evict_far(a.scroll, 30);
             let start = Instant::now();
             switch_test_model(&mut a);
-            if full_invalidation {
+            if invalidation == "full" {
                 a.invalidate_all();
+            } else if invalidation == "old_targeted" {
+                // Reproduce the previous model-limits path on the same fixture/build.
+                for i in 0..a.blocks.len() {
+                    if matches!(&a.blocks[i], Block::Group { .. })
+                        || matches!(&a.blocks[i], Block::Tool { id, .. } if a.marks.contains_key(id))
+                    {
+                        a.invalidate(i);
+                    }
+                }
             }
             let confirmed = start.elapsed();
             frame(&mut a, 100, 30);
-            eprintln!("mixed model switch: {count} blocks, full_invalidation={full_invalidation}, events={confirmed:?}, first_frame={:?}", start.elapsed());
+            eprintln!("mixed model switch: {count} blocks, invalidation={invalidation}, events={confirmed:?}, first_frame={:?}", start.elapsed());
         }
     }
 }
 
 #[test]
-fn switching_models_refreshes_group_plan_labels_and_preserves_scroll() {
+fn switching_models_preserves_original_group_billing_labels_and_scroll() {
     let (mut a, _rx) = bare();
     a.opts.animations = false;
     for i in 0..60 {
@@ -663,7 +715,8 @@ fn switching_models_refreshes_group_plan_labels_and_preserves_scroll() {
     }
     let group = a.push(Block::Group { folded: true, len: 1 });
     a.push(card("grouped", 1));
-    a.looks[group].spent = 2.0;
+    a.opts.providers.push(("mock".into(), nexo_core::ProviderConfig::new("openai-chat", "http://x/v1", None)));
+    a.charge_group(2.0);
     a.layout(80);
     assert!(head(&mut a, group).contains("$2.00"));
     a.transcript_area = Rect::new(0, 0, 80, 10);
@@ -672,14 +725,82 @@ fn switching_models_refreshes_group_plan_labels_and_preserves_scroll() {
     let prefix = a.offsets[..60].to_vec();
     let mut plan = nexo_core::ProviderConfig::new("openai-chat", "http://x/v1", None);
     plan.login = Some("codex".into());
+    a.opts.providers.retain(|(name, _)| name != "mock");
     a.opts.providers.push(("mock".into(), plan));
     for _ in 0..3 {
         switch_test_model(&mut a);
-        assert!(a.cache[group].is_none(), "the group's plan label must be refreshed");
+        assert!(matches!(&a.cache[group], Some((_, _, None, _))), "keep height but refresh the plan label");
         a.layout(80);
         assert_eq!(a.scroll, scroll);
         assert_eq!(&a.offsets[..60], &prefix);
         assert!(!a.follow);
-        assert!(head(&mut a, group).contains("≈$2.00 API"));
+        let text = head(&mut a, group);
+        assert!(text.contains("$2.00") && !text.contains("API"), "{text}");
+    }
+}
+
+#[test]
+fn switching_models_keeps_evicted_tool_heights_and_updates_prices_when_revisited() {
+    for width in [40, 100] {
+        let (mut a, _rx) = bare();
+        a.opts.animations = false;
+        a.opts.group_tools = false;
+        let mut tools = Vec::new();
+        for i in 0..200 {
+            a.push(Block::User { text: format!("Inspect file {i}"), at: None });
+            let id = format!("read-{i}");
+            let mut tool = card(&id, 100);
+            if let Block::Tool { folded, .. } = &mut tool {
+                *folded = false;
+            }
+            let at = a.push(tool);
+            a.marks.insert(id.clone(), nexo_core::CallMark::Sent);
+            a.call_tokens.insert(id, 1_000_000);
+            tools.push(at);
+        }
+        a.transcript_area = Rect::new(0, 0, width, 20);
+        a.layout(width as usize);
+        a.scroll_to_end();
+        frame(&mut a, width, 20);
+        a.evict_far(a.scroll, 20);
+        let first = tools[0];
+        assert!(matches!(&a.cache[first], Some((_, _, None, _))));
+        let heights: Vec<_> = tools.iter().map(|&i| a.cache[i].as_ref().unwrap().1).collect();
+        let mut pricing = nexo_core::Pricing {
+            input: 1.0,
+            output: 5.0,
+            cache_read: 0.05,
+            cache_write: 1.25,
+            cache_write_1h: 0.0,
+            long: None,
+        };
+        for (model, rate) in [("cheap", Some(1.0)), ("expensive", Some(9.0)), ("unknown", None), ("cheap", Some(1.0))] {
+            a.handle_agent(AgentEvent::ModelChanged { provider: "mock".into(), model: model.into() });
+            pricing.input = rate.unwrap_or(1.0);
+            a.handle_agent(AgentEvent::ModelLimits {
+                provider: "mock".into(),
+                model: model.into(),
+                pricing: rate.map(|_| pricing),
+                context_window: Some(272_000),
+                max_output: Some(128_000),
+                source: "catalogue".into(),
+            });
+            frame(&mut a, width, 20);
+            for (&i, &height) in tools.iter().zip(&heights) {
+                assert_eq!(a.cache[i].as_ref().unwrap().1, height, "price labels cannot change height");
+            }
+            assert!(
+                matches!(&a.cache[first], Some((_, _, None, _))),
+                "offscreen output must not be re-rendered by layout"
+            );
+            // Revisit the evicted card; the new rate, not the previous model's, must be drawn.
+            let rendered = head(&mut a, first);
+            if let Some(rate) = rate {
+                assert!(rendered.contains(&format!("~{rate:.5} $")), "{rendered}");
+            } else {
+                assert!(!rendered.contains(" $"), "unknown prices must remove the old estimate: {rendered}");
+            }
+            assert_eq!(a.lines(first, width as usize).len(), heights[0]);
+        }
     }
 }

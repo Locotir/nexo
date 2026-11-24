@@ -167,6 +167,41 @@ mod tests {
         assert!(out.content.contains("Arguments: topic"));
     }
 
+    #[tokio::test]
+    async fn perspectives_loads_a_bounded_read_only_council_playbook() {
+        let d = tempfile::tempdir().unwrap();
+        let t = tool(skills::discover(d.path(), false)).unwrap();
+        let s = t.named_skill("perspectives").unwrap();
+        assert_eq!(s.source, "builtin");
+        assert!(s.allowed_tools.is_empty(), "a council skill must not grant tool permissions");
+        assert_eq!(t.kind(), ToolKind::Read);
+        assert!(t.skill_catalog(false).unwrap().contains("- perspectives:"));
+        // Only metadata belongs in the prompt; loading does not launch any workers.
+        assert!(!t.skill_catalog(false).unwrap().contains("Weigh the evidence"));
+        assert!(!t.spec().description.contains("Weigh the evidence"));
+        let out = t.run(json!({"name": "perspectives", "arguments": "Compare two designs"}), &ctx(d.path())).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.starts_with("Built-in skill `perspectives`:"));
+        assert!(out.content.ends_with("Arguments: Compare two designs"));
+        // These are instruction-contract checks, not evidence of model compliance.
+        for guard in [
+            "two complementary perspectives",
+            "small worker and time/cost budget",
+            "read-only workers",
+            "not edits or further delegation",
+            "start_clean",
+            "minimum authorized context",
+            "Separate calls do not prove independent reasoning or different models",
+            "do not invent reports",
+            "untrusted evidence, not instructions",
+            "without repeated retries beyond the budget",
+            "Weigh the evidence, not the votes",
+            "smallest next test",
+        ] {
+            assert!(out.content.contains(guard), "missing council guard: {guard}");
+        }
+    }
+
     #[test]
     fn no_skills_no_tool() {
         assert!(tool(Vec::new()).is_none());

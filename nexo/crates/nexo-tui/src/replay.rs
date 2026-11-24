@@ -40,7 +40,8 @@ pub fn split_user(text: &str) -> Vec<Piece> {
         let before = before.strip_suffix(PERSON_MARK).unwrap_or(before);
         let rest = front(before, &mut out);
         out.extend(parts_of(rest).into_iter().map(Piece::Added));
-        out.push(Piece::Text(words.to_string()));
+        let words = nexo_core::agent::as_typed(words).into_owned();
+        out.push(Piece::Text(words));
         return out;
     }
     let t = front(text, &mut out);
@@ -349,6 +350,23 @@ mod tests {
         assert_eq!((m.kind, m.label.as_str(), m.text.as_str()), (AddedKind::Memory, "memory from the parser fix", mem));
         assert_eq!(p[1], Piece::JobNote(NOTE.into()));
         assert_eq!(p[2], Piece::Text("hello".into()));
+    }
+
+    #[test]
+    fn joined_message_internal_markers_are_hidden_but_user_text_survives() {
+        use nexo_core::agent::{part_header, JOINED_MARK};
+        let typed = format!(
+            "{JOINED_MARK}\n{}\nfirst human request\n\n{}\nsecond human request",
+            part_header("16:13:05", true, true),
+            part_header("16:13:10", false, false),
+        );
+        assert_eq!(
+            split_user(&format!("{PERSON_MARK}\n{typed}")),
+            vec![Piece::Text("first human request\n\nsecond human request".into())]
+        );
+        // The stored/model-facing source is untouched by this display-only split.
+        assert!(typed.starts_with(JOINED_MARK));
+        assert!(typed.contains("typed while you worked on the request above"));
     }
 
     #[test]

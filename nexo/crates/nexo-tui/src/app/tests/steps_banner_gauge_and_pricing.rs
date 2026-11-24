@@ -117,6 +117,24 @@ fn a_todo_result_fills_the_list_and_the_goal_follows_the_agent() {
 }
 
 #[test]
+fn inactive_goal_snapshots_never_announce_continuation_or_repeat_the_pause() {
+    let (mut a, _rx) = app();
+    for state in [GoalState::Paused("interrupted".into()), GoalState::Waiting, GoalState::Done] {
+        let goal =
+            |round| AgentEvent::Goal { text: Some("pass the tests".into()), round, max: 5, state: state.clone() };
+        a.handle_agent(goal(0));
+        let before = a.status.as_ref().map(|s| s.0.clone());
+        let blocks = a.blocks.len();
+        a.handle_agent(goal(1));
+        a.handle_agent(goal(1));
+        assert_eq!(a.status.as_ref().map(|s| s.0.clone()), before);
+        assert_eq!(a.blocks.len(), blocks, "unchanged inactive snapshots add no transcript lines");
+        assert_eq!(a.goal.as_ref().unwrap().round, 1, "the latest snapshot is still kept");
+        assert_eq!(a.goal.as_ref().unwrap().state, state);
+    }
+}
+
+#[test]
 fn a_cut_of_the_view_lights_the_curator_label_and_goes_away() {
     let (mut a, _rx) = app();
     let t0 = a.opened;

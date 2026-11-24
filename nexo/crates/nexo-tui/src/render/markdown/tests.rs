@@ -114,6 +114,22 @@ fn quotes_links_and_long_lines_wrap() {
 }
 
 #[test]
+fn only_exact_url_labels_omit_the_address_suffix() {
+    let url = "https://one.example";
+    for label in [url.to_string(), "https://**one**.example".to_string()] {
+        assert_eq!(texts(&format!("[{label}]({url})"), 120), vec![url.to_string()]);
+    }
+    for label in [format!("read {url}"), format!("read **{url}** now"), format!("{url}/more")] {
+        let visible = label.replace("**", "");
+        assert_eq!(texts(&format!("[{label}]({url})"), 120), vec![format!("{visible} ({url})")]);
+    }
+    assert_eq!(
+        texts(&format!("[read {url}]({url})[second](https://two.example)"), 120),
+        vec![format!("read {url} ({url})second (https://two.example)")]
+    );
+}
+
+#[test]
 fn a_long_code_line_always_ends_in_an_ellipsis_whatever_the_width() {
     let md = "```rust\nlet value = compute(first_argument, second_argument, third_argument);\n```";
     for w in 10..40 {

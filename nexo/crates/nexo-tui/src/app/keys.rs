@@ -522,6 +522,20 @@ impl App {
                         self.send(AgentCommand::Resume { id: value.clone() });
                         self.flash(&format!("resuming {value}…"));
                     }
+                    PickKind::Explore => {
+                        if let Ok(i) = value.parse::<usize>() {
+                            if i < self.blocks.len() {
+                                if let Some(group) = self.group_of(i).filter(|&g| self.is_folded(g)) {
+                                    self.toggle_group(group);
+                                }
+                                if self.is_folded(i) {
+                                    self.toggle_block(i);
+                                }
+                                self.scroll_into_view(i);
+                                self.flash("source block · preview, not a sent request");
+                            }
+                        }
+                    }
                     PickKind::Rewind => {
                         if let Ok(index) = value.parse::<usize>() {
                             let text = self

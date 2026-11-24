@@ -206,13 +206,12 @@ pub(super) fn waits(r: &AgentRow) -> bool {
     attention(r.state) && unheld(r)
 }
 
-/// What the status bar's fleet chip counts: lanes that are on, this session's sub-agents at work, other live
-/// sessions, and rows that need the person.
+/// What the status bar's fleet chip counts: lanes that are on, this session's sub-agents at work, and rows that
+/// need the person. Other live sessions (of nexo or another tool) stay in `/panel`, not on the bar.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FleetCount {
     pub lanes: usize,
     pub subs: usize,
-    pub sessions: usize,
     pub need: usize,
 }
 
@@ -225,31 +224,26 @@ impl FleetCount {
             match Kind::of(r) {
                 Kind::Lane => c.lanes += usize::from(r.lane.as_ref().is_some_and(|l| l.runner || l.state == "running")),
                 Kind::Sub => c.subs += usize::from(live),
-                Kind::Peer | Kind::Other => c.sessions += usize::from(live),
-                Kind::This | Kind::Job => {}
+                Kind::Peer | Kind::Other | Kind::This | Kind::Job => {}
             }
             c.need += usize::from(needs_you(r));
         }
         c
     }
 
-    /// Nothing besides this session is live, and it runs no sub-agent: the chip stays off.
+    /// No lane is on, no sub-agent runs and nothing needs the person: the chip stays off.
     pub fn is_empty(&self) -> bool {
-        self.lanes + self.subs + self.sessions + self.need == 0
+        self.lanes + self.subs + self.need == 0
     }
 
     /// `◉ 2 lanes · 3 subs · 1 needs you`, the parts that are not zero.
     pub fn text(&self, ascii: bool) -> String {
         let n = |k: usize, one: &str, many: &str| (k > 0).then(|| format!("{k} {}", if k == 1 { one } else { many }));
-        let parts: Vec<String> = [
-            n(self.lanes, "lane", "lanes"),
-            n(self.subs, "sub", "subs"),
-            n(self.sessions, "session", "sessions"),
-            n(self.need, "needs you", "need you"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let parts: Vec<String> =
+            [n(self.lanes, "lane", "lanes"), n(self.subs, "sub", "subs"), n(self.need, "needs you", "need you")]
+                .into_iter()
+                .flatten()
+                .collect();
         format!("{} {}", if ascii { "o" } else { "◉" }, parts.join(" · "))
     }
 }
