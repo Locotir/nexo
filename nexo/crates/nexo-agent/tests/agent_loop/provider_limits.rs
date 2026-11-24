@@ -563,8 +563,10 @@ async fn each_call_reports_its_inventory_after_the_map_and_plain_clears_it() {
     r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
     let evs = r.turn().await;
     let at = evs.iter().position(|e| matches!(e, AgentEvent::ContextMap { .. })).expect("a map");
-    // a short conversation adds nothing, and the event still says so
-    assert!(matches!(&evs[at + 1], AgentEvent::Curated { items, .. } if items.is_empty()), "{evs:?}");
+    // Composition describes the final request between its map and policy inventory.
+    assert!(matches!(evs.get(at + 1), Some(AgentEvent::RequestComposition { .. })), "{evs:?}");
+    // A short conversation adds nothing, and the event still says so.
+    assert!(matches!(evs.get(at + 2), Some(AgentEvent::Curated { items, .. }) if items.is_empty()), "{evs:?}");
     r.stop().await;
 
     let client = Scripted::new(vec![Reply::Events(text("one"))]);
@@ -573,9 +575,10 @@ async fn each_call_reports_its_inventory_after_the_map_and_plain_clears_it() {
     r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
     let evs = r.turn().await;
     let at = evs.iter().position(|e| matches!(e, AgentEvent::ContextMap { .. })).expect("a map");
+    assert!(matches!(evs.get(at + 1), Some(AgentEvent::RequestComposition { .. })), "{evs:?}");
     // Plain must clear any inventory left by a previously selected curator policy.
     assert!(
-        matches!(&evs[at + 1], AgentEvent::Curated { items, relation_quotes: None, quote_heat: None } if items.is_empty()),
+        matches!(evs.get(at + 2), Some(AgentEvent::Curated { items, relation_quotes: None, quote_heat: None }) if items.is_empty()),
         "{evs:?}"
     );
     r.stop().await;
