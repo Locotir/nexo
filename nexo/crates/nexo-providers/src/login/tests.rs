@@ -1,10 +1,10 @@
-use super::oauth::{Poll, oauth_poll_error};
+use super::oauth::{oauth_poll_error, Poll};
 use super::*;
 use base64::Engine;
 use httpmock::prelude::*;
 use nexo_core::auth::{self, Credential};
 use nexo_core::{ErrorKind, ProviderConfig};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;

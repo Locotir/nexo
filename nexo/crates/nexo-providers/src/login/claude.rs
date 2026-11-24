@@ -27,7 +27,9 @@ pub struct Authorization {
 
 impl Authorization {
     /// Open only after the user has accepted the warning; never log this URL.
-    pub fn url(&self) -> &str { &self.url }
+    pub fn url(&self) -> &str {
+        &self.url
+    }
 
     /// Exchange the pasted `code#state`; reject a missing or mismatched state.
     pub async fn exchange(self, code: &str) -> Result<Credential, ProviderError> {
@@ -37,7 +39,8 @@ impl Authorization {
     /// As `exchange`, with an injectable token endpoint for offline tests.
     async fn exchange_at(self, token_url: &str, raw: &str) -> Result<Credential, ProviderError> {
         let raw = raw.trim();
-        let (code, state) = raw.split_once('#')
+        let (code, state) = raw
+            .split_once('#')
             .ok_or_else(|| fail("Claude authorization state is missing; paste the complete code and start again"))?;
         if state != self.state {
             return Err(fail("Claude authorization state does not match; start again"));
@@ -46,9 +49,12 @@ impl Authorization {
             return Err(fail("Claude authorization code is empty or invalid"));
         }
         let body = form(&[
-            ("grant_type", "authorization_code"), ("code", code),
-            ("code_verifier", &self.verifier), ("client_id", CLIENT_ID),
-            ("redirect_uri", REDIRECT_URI), ("state", &self.state),
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("code_verifier", &self.verifier),
+            ("client_id", CLIENT_ID),
+            ("redirect_uri", REDIRECT_URI),
+            ("state", &self.state),
         ]);
         request(token_url, body, None).await
     }
@@ -57,14 +63,20 @@ impl Authorization {
 /// Consent must be an explicit affirmative response to `WARNING`. This function
 /// does no network I/O, and refusal does not generate an authorization request.
 pub fn begin(consent: bool) -> Result<Authorization, ProviderError> {
-    if !consent { return Err(fail("Claude OAuth consent was not granted")); }
+    if !consent {
+        return Err(fail("Claude OAuth consent was not granted"));
+    }
     let pkce = nexo_http::pkce::pkce();
     // An independent random value; never expose the PKCE verifier in the URL.
     let state = nexo_http::pkce::pkce().verifier;
     let query = form(&[
-        ("code", "true"), ("response_type", "code"), ("client_id", CLIENT_ID),
-        ("redirect_uri", REDIRECT_URI), ("scope", SCOPE),
-        ("code_challenge", &pkce.challenge), ("code_challenge_method", "S256"),
+        ("code", "true"),
+        ("response_type", "code"),
+        ("client_id", CLIENT_ID),
+        ("redirect_uri", REDIRECT_URI),
+        ("scope", SCOPE),
+        ("code_challenge", &pkce.challenge),
+        ("code_challenge_method", "S256"),
         ("state", &state),
     ]);
     Ok(Authorization { url: format!("{AUTHORIZE_URL}?{query}"), verifier: pkce.verifier, state })
@@ -77,7 +89,9 @@ pub async fn refresh(cred: &Credential) -> Result<Credential, ProviderError> {
 }
 
 async fn refresh_at(token_url: &str, cred: &Credential) -> Result<Credential, ProviderError> {
-    let Credential::Oauth { refresh, .. } = cred else { return Err(fail("not a Claude OAuth credential")); };
+    let Credential::Oauth { refresh, .. } = cred else {
+        return Err(fail("not a Claude OAuth credential"));
+    };
     if cred.metadata("flow") != Some("claude") || refresh.is_empty() {
         return Err(fail("Claude OAuth refresh token unavailable; sign in again"));
     }
@@ -90,15 +104,22 @@ async fn request(url: &str, body: String, old: Option<&Credential>) -> Result<Cr
     // these may contain credentials or an echoed authorization code.
     // 307/308 redirects preserve POST bodies, including refresh tokens and PKCE
     // verifiers. Never follow redirects from the token endpoint.
-    let client = crate::tls::build_client(|| reqwest::Client::builder()
-        .user_agent(crate::http::USER_AGENT)
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .read_timeout(std::time::Duration::from_secs(300))
-        .redirect(reqwest::redirect::Policy::none()))
+    let client = crate::tls::build_client(|| {
+        reqwest::Client::builder()
+            .user_agent(crate::http::USER_AGENT)
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::none())
+    })
+    .map_err(|_| fail("Claude OAuth token request failed"))?;
+    let response = client
+        .post(url)
+        .header("accept", "application/json")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
         .map_err(|_| fail("Claude OAuth token request failed"))?;
-    let response = client.post(url).header("accept", "application/json")
-        .header("content-type", "application/x-www-form-urlencoded").body(body)
-        .send().await.map_err(|_| fail("Claude OAuth token request failed"))?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         return Err(fail(format!("Claude OAuth token request failed (HTTP {status})")));
@@ -110,12 +131,21 @@ async fn request(url: &str, body: String, old: Option<&Credential>) -> Result<Cr
 fn parse_tokens(value: &Value, old: Option<&Credential>) -> Result<Credential, ProviderError> {
     let invalid = || fail("Claude OAuth token response was invalid");
     let access = value.get("access_token").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(invalid)?;
-    let refresh = value.get("refresh_token").and_then(Value::as_str).filter(|s| !s.is_empty())
-        .or_else(|| match old { Some(Credential::Oauth { refresh, .. }) if !refresh.is_empty() => Some(refresh.as_str()), _ => None })
+    let refresh = value
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or(match old {
+            Some(Credential::Oauth { refresh, .. }) if !refresh.is_empty() => Some(refresh.as_str()),
+            _ => None,
+        })
         .ok_or_else(invalid)?;
     let seconds = value.get("expires_in").and_then(Value::as_u64).filter(|n| *n > 0).ok_or_else(invalid)?;
     let expires = auth::now().checked_add(seconds).ok_or_else(invalid)?;
-    let mut metadata = match old { Some(Credential::Oauth { metadata, .. }) => metadata.clone(), _ => BTreeMap::new() };
+    let mut metadata = match old {
+        Some(Credential::Oauth { metadata, .. }) => metadata.clone(),
+        _ => BTreeMap::new(),
+    };
     metadata.insert("flow".into(), "claude".into());
     Ok(Credential::Oauth { access: access.into(), refresh: refresh.into(), expires, metadata })
 }
@@ -145,24 +175,38 @@ mod tests {
     #[tokio::test]
     async fn exchange_refresh_and_redact() {
         let server = MockServer::start_async().await;
-        let exchange = server.mock_async(|when, then| {
-            when.method(POST).path("/exchange").body_includes("grant_type=authorization_code").body_includes("code=secretcode").body_includes("code_verifier=").body_includes("state=");
-            then.status(200).json_body(json!({"access_token":"access", "refresh_token":"old", "expires_in":3600}));
-        }).await;
+        let exchange = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/exchange")
+                    .body_includes("grant_type=authorization_code")
+                    .body_includes("code=secretcode")
+                    .body_includes("code_verifier=")
+                    .body_includes("state=");
+                then.status(200).json_body(json!({"access_token":"access", "refresh_token":"old", "expires_in":3600}));
+            })
+            .await;
         let a = begin(true).unwrap();
         let code = format!("secretcode#{}", a.state);
         let cred = a.exchange_at(&server.url("/exchange"), &code).await.unwrap();
         exchange.assert_async().await;
         assert_eq!(cred.metadata("flow"), Some("claude"));
         assert!(cred.expiring(auth::now() + 3600, 0));
-        let refresh = server.mock_async(|when, then| {
-            when.method(POST).path("/refresh").body_includes("refresh_token=old");
-            then.status(200).json_body(json!({"access_token":"new", "refresh_token":"rotated", "expires_in":100}));
-        }).await;
+        let refresh = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/refresh").body_includes("refresh_token=old");
+                then.status(200).json_body(json!({"access_token":"new", "refresh_token":"rotated", "expires_in":100}));
+            })
+            .await;
         let renewed = refresh_at(&server.url("/refresh"), &cred).await.unwrap();
         refresh.assert_async().await;
         assert!(matches!(renewed, Credential::Oauth { ref refresh, .. } if refresh == "rotated"));
-        let bad = server.mock_async(|when, then| { when.path("/bad"); then.status(400).body("secretcode old access"); }).await;
+        let bad = server
+            .mock_async(|when, then| {
+                when.path("/bad");
+                then.status(400).body("secretcode old access");
+            })
+            .await;
         let err = refresh_at(&server.url("/bad"), &cred).await.unwrap_err().to_string();
         bad.assert_async().await;
         assert!(!err.contains("old") && !err.contains("secretcode") && !err.contains("access"));
@@ -177,15 +221,26 @@ mod tests {
     async fn token_requests_never_follow_redirects() {
         let origin = MockServer::start_async().await;
         let destination = MockServer::start_async().await;
-        let leaked = destination.mock_async(|when, then| { when.any_request(); then.status(200); }).await;
+        let leaked = destination
+            .mock_async(|when, then| {
+                when.any_request();
+                then.status(200);
+            })
+            .await;
         for status in [301, 302, 303, 307, 308] {
             let path = format!("/redirect{status}");
-            let redirect = origin.mock_async(|when, then| {
-                when.method(POST).path(&path);
-                then.status(status).header("location", &destination.url("/leak"));
-            }).await;
-            let cred = Credential::Oauth { access: "a".into(), refresh: "secret".into(), expires: 0,
-                metadata: BTreeMap::from([("flow".into(), "claude".into())]) };
+            let redirect = origin
+                .mock_async(|when, then| {
+                    when.method(POST).path(&path);
+                    then.status(status).header("location", destination.url("/leak"));
+                })
+                .await;
+            let cred = Credential::Oauth {
+                access: "a".into(),
+                refresh: "secret".into(),
+                expires: 0,
+                metadata: BTreeMap::from([("flow".into(), "claude".into())]),
+            };
             let err = refresh_at(&origin.url(&path), &cred).await.unwrap_err().to_string();
             assert!(err.contains(&format!("HTTP {status}")));
             redirect.assert_async().await;

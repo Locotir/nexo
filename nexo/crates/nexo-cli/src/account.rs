@@ -50,7 +50,11 @@ pub fn key_source(name: &str, p: &ProviderConfig) -> String {
     if let Some(c) = auth::get(p.auth.as_deref().unwrap_or(name)) {
         return format!("stored {}", c.kind());
     }
-    if p.needs_key() { "missing".into() } else { "-".into() }
+    if p.needs_key() {
+        "missing".into()
+    } else {
+        "-".into()
+    }
 }
 
 /// How to give `name` its key, in one line.
@@ -245,7 +249,11 @@ pub fn list_cmd() -> i32 {
             Credential::Oauth { expires, refresh, .. } if *expires != 0 => {
                 let left = expires.saturating_sub(now);
                 let renew = if refresh.is_empty() { "" } else { ", renewed when used" };
-                if left == 0 { format!("expired{renew}") } else { format!("expires in {}{renew}", human(left)) }
+                if left == 0 {
+                    format!("expired{renew}")
+                } else {
+                    format!("expires in {}{renew}", human(left))
+                }
             }
             _ => String::new(),
         };

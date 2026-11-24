@@ -5,9 +5,9 @@ use nexo_core::auth::Credential;
 use nexo_core::{ErrorKind, ProviderConfig, ProviderError};
 
 use super::form;
-use super::oauth::{Body, fail, post, said, tokens};
+use super::oauth::{fail, post, said, tokens, Body};
 use super::xai::XAI_CLIENT;
-use super::{CODEX_CLIENT, Endpoints};
+use super::{Endpoints, CODEX_CLIENT};
 
 /// A fresh access token for `cred`, when its flow has one to give.
 pub async fn refresh(cred: &Credential) -> Result<Credential, ProviderError> {

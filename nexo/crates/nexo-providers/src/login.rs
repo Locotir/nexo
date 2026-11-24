@@ -12,8 +12,8 @@
 //! the one a request goes out with: the key, refreshed when needed, and what
 //! the login learned (the Copilot endpoint, the ChatGPT account).
 
-pub mod claude;
 mod choices;
+pub mod claude;
 mod codex;
 mod copilot;
 mod oauth;
