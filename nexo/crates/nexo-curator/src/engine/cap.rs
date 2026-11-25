@@ -746,7 +746,16 @@ impl Engine {
         self.kept_tokens = kept + est_str(&self.rules_shown);
         if self.p.ledger != 0 {
             // the ledger takes what the rules, the findings and the pinned files leave of 80% of the view
+            // and what the messages that stay leave of the room the view has before the window cut starts (`window_span`): the tail is
+            // reserved first and the ledger spends what is left. Past it the window cut runs on the next request
+            // and takes the newest outputs back out of the view to make room for lines of older ones.
             let budget = self.p.ledger.min((0.8 * target) as i64 - self.kept_tokens);
+            let budget = if self.budget > 0 {
+                let msgs = self.sizes_now().iter().sum::<i64>() - est_str(&self.map_text);
+                budget.min(self.window_span().0 - self.head.max(0) - msgs - self.kept_tokens)
+            } else {
+                budget
+            };
             let text = self.ledger_text(budget);
             if !text.is_empty() {
                 self.base_map += "\n\n";
