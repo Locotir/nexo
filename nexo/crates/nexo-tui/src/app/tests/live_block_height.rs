@@ -238,3 +238,88 @@ fn folding_by_hand_while_a_turn_streams_leaves_no_blank_view() {
         assert_view_on_text(&mut a, &mut term, "after toggling the group");
     }
 }
+
+/// Draws a frame and checks the transcript shows text and the scroll is not past the end.
+fn assert_text_in_view(a: &mut App, term: &mut ratatui::Terminal<ratatui::backend::TestBackend>, what: &str) {
+    a.tick_frame(false);
+    term.draw(|f| crate::ui::draw(f, a)).unwrap();
+    let rows = crate::ui::rows_of(term.backend().buffer());
+    let ta = a.transcript_area;
+    let tr = &rows[ta.y as usize..ta.bottom() as usize];
+    assert!(tr.iter().any(|r| !r.trim().is_empty()), "{what}: blank transcript");
+    assert!(a.scroll <= a.max_scroll(ta.height as usize), "{what}: scroll {} past max", a.scroll);
+    let trailing = tr.iter().rev().take_while(|r| r.trim().is_empty()).count();
+    assert!(trailing < tr.len() / 2, "{what}: {trailing} blank rows at the end:\n{}", tr.join("\n"));
+}
+
+#[test]
+fn a_long_reply_that_folds_when_it_ends_leaves_no_blank_view() {
+    for animations in [false, true] {
+        for (w, h) in [(100, 30), (80, 24)] {
+            let (mut a, _rx) = bare();
+            a.opts.animations = animations;
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            for i in 0..60 {
+                a.push(Block::Notice { level: Level::Info, text: format!("filler {i}") });
+            }
+            a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+            let mut clock = a.now();
+            for k in 0..80 {
+                clock += std::time::Duration::from_millis(40);
+                a.fx.clock = Some(clock);
+                a.handle_agent(AgentEvent::ReasoningDelta { text: format!("thought {k}\n") });
+                assert_text_in_view(&mut a, &mut term, "thinking");
+            }
+            for k in 0..120 {
+                clock += std::time::Duration::from_millis(40);
+                a.fx.clock = Some(clock);
+                a.handle_agent(AgentEvent::TextDelta { text: format!("reply line {k}\n\n") });
+                assert_text_in_view(&mut a, &mut term, "streaming the reply");
+            }
+            a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+            for n in 0..30 {
+                clock += std::time::Duration::from_millis(40);
+                a.fx.clock = Some(clock);
+                assert_text_in_view(&mut a, &mut term, &format!("frame {n} after the reply ended"));
+            }
+            let last = a.blocks.iter().rposition(|b| matches!(b, Block::Assistant { .. })).unwrap();
+            if a.foldable(last) {
+                a.toggle_block(last);
+                assert_text_in_view(&mut a, &mut term, "after folding the reply");
+            }
+        }
+    }
+}
+
+#[test]
+fn folding_a_long_reply_the_view_had_scrolled_into_leaves_no_blank_view() {
+    for animations in [false, true] {
+        let (mut a, _rx) = bare();
+        a.opts.animations = animations;
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        for i in 0..20 {
+            a.push(Block::Notice { level: Level::Info, text: format!("filler {i}") });
+        }
+        a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+        let text: String = (0..150).map(|k| format!("reply line {k}\n\n")).collect();
+        a.handle_agent(AgentEvent::TextDelta { text });
+        a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+        assert_text_in_view(&mut a, &mut term, "after the reply");
+        a.scroll_by(-120);
+        assert_text_in_view(&mut a, &mut term, "scrolled up");
+        let last = a.blocks.iter().rposition(|b| matches!(b, Block::Assistant { .. })).unwrap();
+        let mut clock = a.now();
+        a.toggle_block(last);
+        for _ in 0..12 {
+            clock += std::time::Duration::from_millis(100);
+            a.fx.clock = Some(clock);
+            assert_text_in_view(&mut a, &mut term, "while the reply folds");
+        }
+        a.toggle_block(last);
+        for _ in 0..12 {
+            clock += std::time::Duration::from_millis(100);
+            a.fx.clock = Some(clock);
+            assert_text_in_view(&mut a, &mut term, "while the reply opens");
+        }
+    }
+}
