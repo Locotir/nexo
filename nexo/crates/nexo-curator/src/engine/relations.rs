@@ -108,8 +108,11 @@ impl Engine {
         let tr = self.tr.clone();
         let eligible = |p: Post| {
             let mi = tr.units[p.0 as usize].msg;
+            // The accidental-hit guard is for outputs: what the person or the agent wrote in prose (a rule, a
+            // correction, a decision) is not a large unrelated output, so it may cross a topic change.
+            let prose = tr.units[p.0 as usize].kind != UKind::Result;
             *allowed.entry(mi).or_insert_with(|| {
-                if mi >= last || (changed && !self.goal.goes_on(mi)) {
+                if mi >= last || (changed && !prose && !self.goal.goes_on(mi)) {
                     return false;
                 }
                 let whole = vis.binary_search(&mi).is_ok()
