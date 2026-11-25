@@ -49,7 +49,10 @@ async fn long_goal(spec: &str) -> Vec<ModelRequest> {
             let said = format!("Hola. Sigo con r{round}s{k}");
             replies.push(Reply::Events(said_and_call(&said, &format!("c{n}"), &format!("f{n}"))));
         }
-        replies.push(Reply::Events(text(&format!("Hola. Sigo con r{round}: listo"))));
+        // the last round declares the goal met: otherwise the loop starts a seventh round on its own right after the
+        // sixth turn's end, and whether its request reaches the mock before the shutdown lands depends on the machine
+        let close = if round == 5 { "\nGOAL DONE" } else { "" };
+        replies.push(Reply::Events(text(&format!("Hola. Sigo con r{round}: listo{close}"))));
     }
     let client = Scripted::new(replies);
     let mut cfg = config(PermissionMode::Auto);
