@@ -219,9 +219,10 @@ fn skip_without_chrome() -> bool {
     none
 }
 
-/// Retries `read` for up to 3 seconds; events cross a channel and may land a moment after the page ran.
+/// Retries `read` for up to 10 seconds; events cross a channel and may land a moment after the page ran, and a
+/// busy Windows runner has been seen to take more than 3 seconds.
 async fn eventually<T>(mut read: impl AsyncFnMut() -> Option<T>) -> T {
-    for _ in 0..60 {
+    for _ in 0..200 {
         if let Some(v) = read().await {
             return v;
         }
