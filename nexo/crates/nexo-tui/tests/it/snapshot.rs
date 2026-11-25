@@ -661,9 +661,10 @@ fn context_overlay_shows_fitted_request_estimates_without_relabeling_the_gauge()
     });
     assert_eq!(a.request_composition, Some([101, 202, 303, 404, 505, 606]));
     let parts = nexo_tui::overlay::context_parts(&a, &a.theme);
-    assert_eq!(parts.len(), 1, "local estimates must not be apportioned onto the usage grid");
-    assert_eq!(parts[0].1, "in use (total only)");
-    assert_eq!(parts[0].2, 42_000, "local estimates must not replace provider usage");
+    assert_eq!(parts.len(), 6, "each kind of content gets its colour");
+    assert_eq!(parts[0].1, "system prompt");
+    assert_eq!(parts.iter().map(|p| p.2).sum::<u64>(), 42_000, "the split keeps the provider total");
+    assert!(parts.windows(2).all(|w| w[0].2 < w[1].2), "shares follow the estimates: {parts:?}");
     for width in [40, 100] {
         let rendered = nexo_tui::overlay::lines(&a, 0, width, 1.0, nexo_agent::session_scan::Period::Week);
         let text = rendered.iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n");

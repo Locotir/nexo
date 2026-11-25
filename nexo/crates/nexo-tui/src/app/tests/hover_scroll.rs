@@ -74,7 +74,7 @@ fn drag_and_release_track_pointer_for_later_frames() {
 }
 
 #[test]
-fn assistant_wrapped_rows_hover() {
+fn assistant_reply_rows_stay_plain() {
     let (mut a, _rx) = bare();
     a.opts.animations = false;
     a.push(Block::Assistant {
@@ -90,7 +90,7 @@ fn assistant_wrapped_rows_hover() {
     assert_eq!(a.block_at_line(a.offsets[0] + 1), Some(0));
     for y in 1..=4 {
         a.pointer_moved(2, y);
-        assert_eq!(a.hover, Hover::Head(0));
+        assert_eq!(a.hover, Hover::Nothing, "the model's reply is not highlighted");
     }
 }
 
@@ -288,7 +288,7 @@ fn work_blocks_hover_on_all_content_rows_and_clear_on_reply() {
             );
         }
         a.pointer_moved(area.x + 2, area.y + a.offsets[1] as u16);
-        assert_eq!(a.hover, Hover::Head(1));
+        assert_eq!(a.hover, Hover::Nothing, "the reply below stays plain");
         term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
         for j in 0..n {
             let y = area.y + j as u16;
@@ -314,7 +314,7 @@ fn conversation_click_and_multiline_selection_work_with_hover() {
     a.layout(80);
     a.settle(20);
     a.pointer_moved(2, 1);
-    assert_eq!(a.hover, Hover::Head(0));
+    assert_eq!(a.hover, Hover::Nothing, "the reply is not highlighted, yet still clicks and folds");
     a.click_block(0, 0);
     assert_eq!(a.selected, Some(0));
     a.click_block(0, 0);
@@ -331,7 +331,7 @@ fn conversation_click_and_multiline_selection_work_with_hover() {
 }
 
 #[test]
-fn conversation_rows_highlight_including_pending_and_streaming() {
+fn conversation_rows_highlight_including_pending() {
     for width in [24, 100] {
         for block in [
             Block::User {
@@ -339,20 +339,6 @@ fn conversation_rows_highlight_including_pending_and_streaming() {
                 at: None,
             },
             Block::Pending { text: "first line\nsecond line with enough words to wrap on narrow screens".into() },
-            Block::Assistant {
-                text: "first line  \nsecond line with enough words to wrap on narrow screens".into(),
-                streaming: false,
-                at: None,
-                started: None,
-                took_ms: None,
-            },
-            Block::Assistant {
-                text: "first line  \nsecond line with enough words to wrap on narrow screens".into(),
-                streaming: true,
-                at: None,
-                started: None,
-                took_ms: None,
-            },
         ] {
             let (mut a, _rx) = bare();
             a.opts.animations = false;
@@ -401,7 +387,7 @@ fn assistant_link_remains_interactive_with_block_hover() {
     assert!(matches!(a.hover, Hover::Link { .. }));
     assert!(a.link_hit(col, 1).is_some());
     a.pointer_moved(0, 1);
-    assert_eq!(a.hover, Hover::Head(0));
+    assert_eq!(a.hover, Hover::Nothing);
 }
 
 /// TestBackend timings isolate event handling and CPU drawing, not PTY/display latency.

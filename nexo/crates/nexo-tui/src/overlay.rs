@@ -135,13 +135,35 @@ pub fn lines(app: &App, tab: usize, w: usize, t: f64, period: Period) -> Vec<Lin
     }
 }
 
-/// Gauge total as (glyph, label, tokens, colour), without an unsupported breakdown.
+/// Gauge total as (glyph, label, tokens, colour). With the fitted request's local estimates the total is split
+/// by their shares, so each kind of content gets its colour; the parts always add up to the gauge total.
 pub fn context_parts(app: &App, theme: &Theme) -> Vec<(&'static str, &'static str, u64, Color)> {
     let (num, _, _) = app.gauge_view();
-    // Map sizes are original estimates, not the payload by kind: even Whole cells
-    // cannot account for system/tools or reconcile a last-call total with this map.
-    let label = if app.request_composition.is_some() { "in use (total only)" } else { "in use (composition unknown)" };
-    vec![("◆", label, num, theme.dim)]
+    // Map sizes are original estimates, not the payload by kind: only the fitted request
+    // composition (system, tools, messages as sent) can split the gauge.
+    let Some(counts) = app.request_composition.filter(|c| c.iter().sum::<u64>() > 0 && num > 0) else {
+        return vec![("◆", "in use (composition unknown)", num, theme.dim)];
+    };
+    let kinds = [
+        ("system prompt", theme.accent),
+        ("tool definitions", theme.info),
+        ("user messages", theme.user),
+        ("assistant replies", theme.assistant),
+        ("tool calls", theme.warn),
+        ("tool outputs", theme.success),
+    ];
+    let total: u64 = counts.iter().sum();
+    let mut left = num;
+    let mut parts = Vec::new();
+    for (k, ((label, colour), n)) in kinds.into_iter().zip(counts).enumerate() {
+        let last = counts[k + 1..].iter().all(|&m| m == 0);
+        let share = if last { left } else { ((num as u128 * n as u128) / total as u128) as u64 };
+        left = left.saturating_sub(share);
+        if n > 0 {
+            parts.push(("◆", label, share, colour));
+        }
+    }
+    parts
 }
 
 fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {

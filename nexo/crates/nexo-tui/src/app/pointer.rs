@@ -717,9 +717,10 @@ impl App {
         self.hover == Hover::Bar(target) || self.bar_drag.is_some_and(|d| d.target == target)
     }
 
-    /// Transcript blocks highlight together; the welcome screen is not a message.
+    /// Transcript blocks highlight together, every row of them. The model's replies stay plain to read,
+    /// and the welcome screen is not a message.
     pub(crate) fn block_hoverable(&self, i: usize) -> bool {
-        self.blocks.get(i).is_some_and(|b| !matches!(b, Block::Welcome { .. }))
+        self.blocks.get(i).is_some_and(|b| !matches!(b, Block::Welcome { .. } | Block::Assistant { .. }))
     }
 
     /// What is under `(x, y)`, topmost first.
