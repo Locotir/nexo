@@ -150,7 +150,11 @@ fn check_hidden(
         "{name}: no card in the last view: {}",
         view.chars().take(600).collect::<String>()
     );
-    assert!(!view.contains(original), "{name}: the original content is still in the view");
+    if let Some(at) = view.find(original) {
+        let from = view[..at].char_indices().rev().nth(300).map_or(0, |(i, _)| i);
+        let around: String = view[from..].chars().take(500).collect();
+        panic!("{name}: the original content is still in the view: …{around}");
+    }
 }
 
 #[test]

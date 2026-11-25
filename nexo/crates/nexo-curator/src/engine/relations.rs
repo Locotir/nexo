@@ -15,6 +15,10 @@ use crate::json::{est_str, is_person};
 use crate::msg::{get_str, request_words};
 use crate::tools::{classify, Kind};
 
+/// Longest text the person or the agent wrote that still counts as prose (a rule, a correction, a
+/// decision) and may cross a topic change. Above it, a written text is a paste of data.
+const PROSE_TOKENS: i64 = 400;
+
 fn source<'a>(m: &'a Value, u: &Unit) -> Option<&'a str> {
     let content = m.get("content")?;
     match u.kind {
@@ -108,9 +112,10 @@ impl Engine {
         let tr = self.tr.clone();
         let eligible = |p: Post| {
             let mi = tr.units[p.0 as usize].msg;
-            // The accidental-hit guard is for outputs: what the person or the agent wrote in prose (a rule, a
-            // correction, a decision) is not a large unrelated output, so it may cross a topic change.
-            let prose = tr.units[p.0 as usize].kind != UKind::Result;
+            // The accidental-hit guard is for large outputs: a short text the person or the agent wrote (a rule,
+            // a correction, a decision) may cross a topic change. A long paste is data, like an output.
+            let u = &tr.units[p.0 as usize];
+            let prose = u.kind != UKind::Result && u.tokens <= PROSE_TOKENS;
             *allowed.entry(mi).or_insert_with(|| {
                 if mi >= last || (changed && !prose && !self.goal.goes_on(mi)) {
                     return false;
