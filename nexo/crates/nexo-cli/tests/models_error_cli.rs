@@ -24,6 +24,8 @@ fn models_http_error_does_not_echo_remote_secret_in_text_or_json() {
                     Err(e) => panic!("provider request not received: {e}"),
                 }
             };
+            // On Windows an accepted socket inherits the listener's non-blocking mode; read would fail with WouldBlock.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut request = [0; 4096];
             let n = stream.read(&mut request).unwrap();
