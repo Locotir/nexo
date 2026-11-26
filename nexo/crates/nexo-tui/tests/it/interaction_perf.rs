@@ -566,3 +566,47 @@ fn long_history_stream_to_frame_latency() {
         report("stream-draw", blocks, &mut draws);
     }
 }
+
+/// Drawing progress and typing while the progress cue is on screen: same 100×36 terminal and scene.
+#[test]
+fn progress_animation_frame_and_typing_latency() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let opts = TuiOptions { cwd: cwd.path().into(), animations: true, home_stars: false, ..Default::default() };
+    let mut a = App::new(opts, tx);
+    a.theme = nexo_tui::theme::Theme::nexo();
+    a.unlock();
+    a.drop_banner();
+    for i in 0..CARDS {
+        a.push(Block::User { text: format!("history {i}"), at: None });
+    }
+    let t0 = Instant::now();
+    a.fx.clock = Some(t0);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "bench".into(),
+        name: "bash".into(),
+        args: serde_json::json!({}),
+        summary: String::new(),
+    });
+    a.handle_agent(AgentEvent::ToolStart { id: "bench".into() });
+    let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+    draw_frame(&mut term, &mut a).unwrap();
+    let mut draws = Vec::with_capacity(N);
+    let mut keys = Vec::with_capacity(N);
+    for i in 0..N {
+        let base = t0 + Duration::from_secs(5 + i as u64 * 2);
+        a.fx.clock = Some(base);
+        a.handle_agent(AgentEvent::ToolProgress { id: "bench".into(), line: format!("step {i}") });
+        a.fx.clock = Some(base + Duration::from_millis(80));
+        assert!(a.fx.pulses.alive(a.now()), "measuring a live progress pulse");
+        draws.push(frame(&mut a, &mut term, |_| {}));
+        let ev = Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        keys.push(frame(&mut a, &mut term, |a| event::handle(a, ev)));
+        let y = a.editor_area.y;
+        let draft: String = (0..100).map(|x| term.backend().buffer()[(x, y)].symbol()).collect();
+        assert!(draft.contains(&"x".repeat(i + 1)), "{draft}");
+    }
+    report("pulse-frame", CARDS, &mut draws);
+    report("pulse-type", CARDS, &mut keys);
+}

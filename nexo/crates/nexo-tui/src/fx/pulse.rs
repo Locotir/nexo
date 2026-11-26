@@ -21,6 +21,7 @@ pub enum Cue {
     SubFailed,
     SkillLoaded,
     ToolStarted,
+    ToolProgress,
     ToolAnswered,
     ToolFailed,
     UserSent,
@@ -115,12 +116,13 @@ const fn fx(cue: Cue, shape: Shape, tone: Tone, ms: u64, peak: f32, gap_ms: u64,
 }
 
 /// Every event and its pulse. One row per `Cue`, in the order of the enum.
-pub const TABLE: [Effect; 13] = [
+pub const TABLE: [Effect; 14] = [
     fx(Cue::SubLaunched, Shape::Split, Tone::Accent2, 900, 0.95, 0, false),
     fx(Cue::SubDone, Shape::Merge, Tone::Success, 800, 0.9, 0, false),
     fx(Cue::SubFailed, Shape::Merge, Tone::Error, 900, 0.95, 0, false),
     fx(Cue::SkillLoaded, Shape::Ripple { at: 15 }, Tone::Warn, 800, 0.85, 0, true),
     fx(Cue::ToolStarted, Shape::Run { rev: false, width: 10.0 }, Tone::Accent, 600, 0.9, 80, true),
+    fx(Cue::ToolProgress, Shape::Ripple { at: 85 }, Tone::Info, 350, 0.7, 800, true),
     fx(Cue::ToolAnswered, Shape::Run { rev: true, width: 7.0 }, Tone::Info, 500, 0.8, 80, true),
     fx(Cue::ToolFailed, Shape::Flash, Tone::Error, 700, 0.7, 0, true),
     fx(Cue::UserSent, Shape::Ripple { at: 90 }, Tone::Accent2, 750, 0.9, 0, false),
@@ -316,6 +318,17 @@ mod tests {
             q.push(Cue::SubLaunched, at(t0, 1000 + i as u64));
         }
         assert_eq!(q.live.iter().flatten().count(), SLOTS);
+    }
+
+    #[test]
+    fn progress_pulses_expire_before_the_global_gap() {
+        let t0 = Instant::now();
+        let mut p = Pulses::default();
+        assert!(p.push(Cue::ToolProgress, t0));
+        assert!(p.alive(at(t0, 349)));
+        assert!(!p.alive(at(t0, 350)));
+        assert!(!p.push(Cue::ToolProgress, at(t0, 799)));
+        assert!(p.push(Cue::ToolProgress, at(t0, 800)));
     }
 
     #[test]

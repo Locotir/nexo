@@ -1,4 +1,5 @@
 use super::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
@@ -255,40 +256,52 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let frame = app.spinner;
     // the mode keeps its colour while the agent works
     let border = theme.style(rule_colour(theme, app.permission_mode));
-    let mut spans = vec![
-        Span::styled("─ ", border),
-        Span::styled(SPINNER[frame % SPINNER.len()].to_string(), theme.bold(theme.accent)),
-        Span::raw(" "),
-    ];
-    let word = format!("{verb}…");
-    let n = word.chars().count() as f32;
+    // Leave the tag untouched, even when the activity itself is longer than the available row.
+    let room = rule_tag(app, w.min(u16::MAX as usize) as u16).map_or(w, |(x, _)| (x as usize).saturating_sub(1));
+    let mut spans = if room >= 6 {
+        vec![
+            Span::styled("─ ", border),
+            Span::styled(SPINNER[frame % SPINNER.len()].to_string(), theme.bold(theme.accent)),
+            Span::raw(" "),
+        ]
+    } else {
+        Vec::new()
+    };
+    let prefix: usize = spans.iter().map(|s| width(&s.content)).sum();
+    let verb = crate::render::wrap::clean(verb);
+    let mut word = format!("{verb}…");
+    let word_room = room.saturating_sub(prefix);
+    if width(&word) > word_room {
+        word = truncate(&word, word_room);
+    }
+    let n = word.graphemes(true).count() as f32;
     // the light runs left to right, rests a moment, and starts again
     let pos = (frame as f32 * 0.42) % (n + 10.0) - 3.0;
-    for (i, c) in word.chars().enumerate() {
+    for (i, c) in word.graphemes(true).enumerate() {
         let near = (1.0 - ((i as f32 - pos).abs() / 3.0)).max(0.0);
         let colour = crate::motion::fade(theme, theme.accent, theme.fg, near);
         spans.push(Span::styled(c.to_string(), Style::default().fg(colour).add_modifier(Modifier::BOLD)));
     }
     let secs = app.turn_started.map(|t| app.now().saturating_duration_since(t).as_millis() as u64).unwrap_or(0);
-    // segments in order of worth: a narrow line drops whole ones from the end of this list
-    // (the token count first, then the hint) instead of cutting a word or leaving a lone `·`
+    // Keep the complete activity first, then the interrupt hint, clock and token count.
+    // Display the retained segments in their usual order, without partial hints or separators.
     let time = crate::render::blocks::fmt_secs(secs / 1000);
     let toks = (app.streamed_chars > 0).then(|| format!("↓ {} tok", fmt_k((app.streamed_chars / 4) as u64)));
-    let mut parts: Vec<String> = vec![time, "Esc interrupt".to_string()];
-    parts.extend(toks);
-    let head: usize = spans.iter().map(|s| width(&s.content)).sum();
-    // the tag at the right of the rule (level, size of the draft) is drawn over it: the segments stop short of it
-    let room = rule_tag(app, w.min(u16::MAX as usize) as u16).map_or(w, |(x, _)| (x as usize).saturating_sub(1));
-    let fits = |p: &[String]| head + 2 + p.iter().map(|s| width(s)).sum::<usize>() + 3 * (p.len() - 1) <= room;
-    let mut keep = parts.len();
-    while keep > 0 && !fits(&parts[..keep]) {
-        keep -= 1;
-    }
-    parts.truncate(keep);
-    // on screen the count sits before the hint, as it always has
-    if keep == 3 {
-        parts.swap(1, 2);
-    }
+    let mut left = room.saturating_sub(prefix + width(&word));
+    let mut gap = 2; // outer spaces for the first segment; " · " between subsequent segments
+    let mut keep = |label: &str| {
+        let need = gap + width(label);
+        if need > left {
+            return false;
+        }
+        left -= need;
+        gap = 3;
+        true
+    };
+    let hint = keep("Esc interrupt").then_some("Esc interrupt");
+    let clock = keep(&time).then_some(time.as_str());
+    let count = toks.as_deref().filter(|s| keep(s));
+    let parts: Vec<_> = [clock, count, hint].into_iter().flatten().collect();
     if !parts.is_empty() {
         let rest = format!(" {} ", parts.join(" · "));
         spans.push(Span::styled(rest, theme.dim()));

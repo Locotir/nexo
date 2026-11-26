@@ -13,6 +13,10 @@ nexo                                         # the full-screen interface (TUI)
 nexo -p "run the tests and fix what fails"   # headless: prints the reply
 ```
 
+During a turn, the line above the draft shows what Nexo is doing. A short ripple means a running tool sent a new
+progress line. On narrow terminals, `Esc interrupt` takes priority over the timer and token count. To turn off the
+ripple, set `animations = false` under `[ui]`.
+
 The context policy is set in `~/.nexo/config.toml` (`%USERPROFILE%\.nexo\config.toml` on Windows):
 
 ```toml

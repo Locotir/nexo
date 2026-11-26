@@ -789,3 +789,88 @@ fn a_subagent_launch_and_its_end_pulse_once_each() {
     a.handle_agent(AgentEvent::SubState { info: info(SubState::Ok) });
     assert!(!a.fx.pulses.alive(a.now()), "an end already known does not pulse again");
 }
+
+fn progress(a: &mut App, id: &str, line: &str) {
+    a.handle_agent(AgentEvent::ToolProgress { id: id.into(), line: line.into() });
+}
+
+fn progress_fixture(t0: Instant) -> App {
+    let (mut a, _rx) = app();
+    a.theme = crate::theme::Theme::dark();
+    a.opts.home_stars = false;
+    fx_at(&mut a, t0, 0);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "progress".into(),
+        name: "bash".into(),
+        args: serde_json::json!({}),
+        summary: String::new(),
+    });
+    a.handle_agent(AgentEvent::ToolStart { id: "progress".into() });
+    a.input.set_text("draft retained");
+    fx_at(&mut a, t0, 5000);
+    a
+}
+
+#[test]
+fn tool_progress_paints_only_rule_ink_then_settles() {
+    let t0 = Instant::now();
+    let mut a = progress_fixture(t0);
+    let cursor = a.input.cursor_offset();
+    progress(&mut a, "progress", "first line");
+    fx_at(&mut a, t0, 5080);
+    let lit = draw(&mut a);
+    // Identical time, progress text and work wave; remove just the event pulse for the control.
+    let pulses = std::mem::take(&mut a.fx.pulses);
+    let calm = draw(&mut a);
+    a.fx.pulses = pulses;
+    let y = rule_y(&lit);
+    assert_eq!(y, rule_y(&calm));
+    assert_eq!(row_text(&lit, y), row_text(&calm, y));
+    assert!((0..lit.area.width).any(|x| lit[(x, y)].symbol() == "─" && lit[(x, y)].fg != calm[(x, y)].fg));
+    assert!(plain_text(&lit).iter().any(|row| row.contains("draft retained")));
+    assert_eq!(a.input.cursor_offset(), cursor);
+    fx_at(&mut a, t0, 7000);
+    assert!(!a.fx.pulses.alive(a.now()), "the pulse expires");
+}
+
+#[test]
+fn tool_progress_ignores_ineligible_events_and_repeats() {
+    let t0 = Instant::now();
+    let mut a = progress_fixture(t0);
+    for (id, line) in [("missing", "new"), ("progress", " \t")] {
+        progress(&mut a, id, line);
+        assert!(!a.fx.pulses.alive(a.now()), "{id:?} {line:?}");
+    }
+    progress(&mut a, "progress", "first");
+    fx_at(&mut a, t0, 7000);
+    progress(&mut a, "progress", "first");
+    assert!(!a.fx.pulses.alive(a.now()), "repeated progress");
+    a.handle_agent(AgentEvent::ToolDone {
+        id: "progress".into(),
+        output: nexo_core::ToolOutput::ok("done"),
+        elapsed_ms: 1,
+    });
+    fx_at(&mut a, t0, 9000);
+    progress(&mut a, "progress", "after done");
+    assert!(!a.fx.pulses.alive(a.now()), "finished tool");
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "pending".into(),
+        name: "bash".into(),
+        args: serde_json::json!({}),
+        summary: String::new(),
+    });
+    fx_at(&mut a, t0, 11000);
+    progress(&mut a, "pending", "not started");
+    assert!(!a.fx.pulses.alive(a.now()), "pending tool");
+    for (busy, motion, mono) in [(false, true, false), (true, false, false), (true, true, true)] {
+        let mut a = progress_fixture(t0);
+        a.busy = busy;
+        a.opts.animations = motion;
+        if mono {
+            a.theme = crate::theme::Theme::mono();
+        }
+        progress(&mut a, "progress", "new");
+        assert!(!a.fx.pulses.alive(a.now()), "busy={busy} motion={motion} mono={mono}");
+    }
+}

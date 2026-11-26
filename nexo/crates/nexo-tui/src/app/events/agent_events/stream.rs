@@ -156,13 +156,21 @@ impl App {
 
     pub(super) fn on_tool_progress(&mut self, id: String, line: String) {
         if let Some(i) = self.tool_index(&id) {
-            if let Block::Tool { progress, .. } = &mut self.blocks[i] {
+            let mut pulse = false;
+            if let Block::Tool { status, started, progress, .. } = &mut self.blocks[i] {
+                pulse = matches!(status, ToolStatus::Running)
+                    && started.is_some()
+                    && !line.trim().is_empty()
+                    && progress.last() != Some(&line);
                 progress.push(line);
                 if progress.len() > MAX_PROGRESS {
                     progress.remove(0);
                 }
             }
             self.invalidate(i);
+            if pulse {
+                self.pulse(crate::fx::pulse::Cue::ToolProgress);
+            }
         }
     }
 

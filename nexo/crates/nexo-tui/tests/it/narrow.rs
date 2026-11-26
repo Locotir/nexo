@@ -104,6 +104,63 @@ fn the_draft_size_on_the_rule_never_cuts_the_working_line() {
     }
 }
 
+/// Quiet has no other interrupt hint: keep it whole even when the clock no longer fits.
+#[test]
+fn activity_prefers_interrupt_to_clock_when_narrow() {
+    let mut a = app();
+    a.opts.detail = nexo_core::config::Detail::Quiet;
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    let rows = draw(&mut a, 30, 15);
+    let rule = rows.iter().find(|r| r.contains("Thinking…")).expect("working line");
+    assert!(rule.contains("Esc interrupt"), "{rule:?}");
+    assert!(!rule.contains(" · "), "clock or dangling separator: {rule:?}");
+}
+
+/// A long activity is clipped at grapheme boundaries before the overlaid draft and effort tag.
+#[test]
+fn long_unicode_activity_stays_clear_of_the_tag() {
+    let mut a = app();
+    a.opts.detail = nexo_core::config::Detail::Quiet;
+    a.effort = Some("high".into());
+    a.input.set_text(&"draft ".repeat(80));
+    a.handle_agent(AgentEvent::Preparing { what: format!("preparing e\u{301}👩‍💻 {}", "界".repeat(80)) });
+    let rows = draw(&mut a, 60, 20);
+    let rule = rows.iter().find(|r| r.contains("Preparing")).expect("working line");
+    assert!(rule.contains("e\u{301}") && rule.contains('👩') && rule.contains('💻'), "{rule:?}");
+    assert!(!rule.contains('\u{200d}'), "the terminal must not receive a joiner: {rule:?}");
+    assert!(rule.contains('…') && rule.contains("◆ high") && rule.contains("chars"), "{rule:?}");
+    assert!(!rule.contains("Esc") && !rule.contains(" ·  "), "{rule:?}");
+}
+
+/// With space, retain the full activity and the original clock, tokens, hint order.
+#[test]
+fn generous_activity_keeps_all_segments() {
+    let mut a = app();
+    a.handle_agent(AgentEvent::Preparing { what: "preparing the complete request".into() });
+    a.streamed_chars = 400;
+    let line = nexo_tui::ui::activity_line(&a, &a.activity().unwrap(), 100);
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("Preparing the complete request…"), "{text:?}");
+    let clock = text.find("0s").expect("clock");
+    let tokens = text.find("↓ 100 tok").expect("tokens");
+    let esc = text.find("Esc interrupt").expect("hint");
+    assert!(clock < tokens && tokens < esc, "{text:?}");
+}
+
+/// Tiny widths show the activity, not a broken spinner or an invented shortcut.
+#[test]
+fn tiny_activity_does_not_leave_shortcut_fragments() {
+    let a = app();
+    for w in 1..=20 {
+        let line = nexo_tui::ui::activity_line(&a, "Thinking", w);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.contains("Esc") && !text.contains('·'), "{w}: {text:?}");
+        if (2..6).contains(&w) {
+            assert!(text.starts_with('T'), "{w}: {text:?}");
+        }
+    }
+}
+
 /// A folded result that hides a single row said `1 more lines`.
 #[test]
 fn a_fold_hiding_one_row_says_line_not_lines() {
