@@ -77,6 +77,21 @@ impl App {
         detail: Option<String>,
     ) {
         crate::trace::totals("context");
+        // The signed label is the engine's own delta, not a difference in history or usage.
+        // A first context, a policy switch and replay while idle are not live changes.
+        // Usage adds billed output to the visual history, so it cannot validate the engine delta.
+        let live_delta =
+            self.busy && policy == "curator" && self.context.as_ref().is_some_and(|prev| prev.policy == policy);
+        let sign = crate::fx_condense::delta_sign(&label);
+        if live_delta && self.fx_on() {
+            if let Some(positive) = sign {
+                self.fx.curator_delta.start(self.now(), positive);
+            } else {
+                self.fx.curator_delta = Default::default();
+            }
+        } else {
+            self.fx.curator_delta = Default::default();
+        }
         // the view shrank while the history did not: the curator let something go
         if let Some(prev) = &self.context {
             let dropped = prev.view_tokens.saturating_sub(view_tokens);
@@ -85,6 +100,8 @@ impl App {
                 // the map of this call arrives right after: what it was until now is what its cells condense from
                 self.fx.cut_from = self.map.iter().map(|c| c.state).collect();
                 self.fx.cut_shown = false;
+                // Its light belongs to this event, never to a later recall or a change of policy.
+                self.fx.curator_delta.map_cut = policy == "curator" && prev.policy == policy && sign != Some(true);
             }
         }
         self.context_wait = false;

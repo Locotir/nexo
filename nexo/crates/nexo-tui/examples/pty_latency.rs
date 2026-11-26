@@ -3,7 +3,22 @@ use nexo_core::agent::{channels, AgentEvent};
 use nexo_core::message::Message;
 use nexo_core::permission::PermissionMode;
 use nexo_tui::TuiOptions;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+fn context(view: u64, history: u64, blocks: usize, label: &str) -> AgentEvent {
+    AgentEvent::Context {
+        view_tokens: view,
+        history_tokens: history,
+        history_bytes: history * 4,
+        view_bytes: view * 4,
+        messages_in_view: blocks,
+        messages_total: blocks,
+        policy: "curator".into(),
+        note: None,
+        label: label.into(),
+        detail: None,
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,11 +51,33 @@ async fn main() -> anyhow::Result<()> {
             problem: None,
         })
         .unwrap();
+    events
+        .send(AgentEvent::Effort {
+            model: "test".into(),
+            current: Some("high".into()),
+            levels: vec!["low".into(), "medium".into(), "high".into()],
+        })
+        .unwrap();
+    events.send(context(4000, 8000, blocks, "curator")).unwrap();
     tokio::spawn(async move {
         // Keep the input receiver and sender alive while continuously producing events.
         let _ends = ends;
         events.send(AgentEvent::TurnStart { turn: 1 }).unwrap();
+        let mut next_context = Instant::now() + Duration::from_secs(1);
+        let (mut view, mut history) = (4000, 8000);
+        let mut positive = true;
         loop {
+            if Instant::now() >= next_context {
+                // Both views grow, so the separate map-cut animation stays out of the sample.
+                history += 700;
+                view += if positive { 1300 } else { 100 };
+                let label = if positive { "curator +600 tok" } else { "curator -600 tok" };
+                if events.send(context(view, history, blocks, label)).is_err() {
+                    break;
+                }
+                positive = !positive;
+                next_context = Instant::now() + Duration::from_secs(2);
+            }
             if events.send(AgentEvent::TextDelta { text: ".".into() }).is_err() {
                 break;
             }
@@ -54,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
             provider: "mock".into(),
             model: "test".into(),
             animations,
+            status_line: vec!["curator".into(), "effort".into()],
             hints: false,
             complete_words: false,
             ..Default::default()

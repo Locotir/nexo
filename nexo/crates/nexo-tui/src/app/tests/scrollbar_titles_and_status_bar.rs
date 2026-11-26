@@ -186,6 +186,109 @@ fn title_pieces_leave_in_order_and_the_session_name_is_bounded() {
 }
 
 #[test]
+fn signed_curator_keeps_its_place_by_shortening_the_model_first() {
+    use crate::render::wrap::width;
+    use crossterm::event::MouseEventKind as K;
+    for theme in [crate::theme::Theme::dark(), crate::theme::Theme::light()] {
+        for label in ["curator +987 tok", "curator -987 tok"] {
+            let (mut a, _rx) = app();
+            a.theme = theme.clone();
+            a.opts.detail = nexo_core::config::Detail::Quiet;
+            a.opts.animations = false;
+            a.provider = "anthropic".into();
+            a.model = "claude-opus-4-6".into();
+            a.effort = Some("high".into());
+            a.busy = true;
+            a.turn_started = Some(Instant::now());
+            a.handle_agent(AgentEvent::Context {
+                view_tokens: 400,
+                history_tokens: 1000,
+                history_bytes: 4000,
+                view_bytes: 1600,
+                messages_in_view: 1,
+                messages_total: 1,
+                policy: "curator".into(),
+                note: None,
+                label: label.into(),
+                detail: None,
+            });
+            for w in [80u16, 100, 120] {
+                let rows = frame(&mut a, w, 12);
+                let bar = &rows[a.status_row as usize];
+                assert!(bar.contains(label), "{w}: {bar}");
+                assert!(bar.contains("claude-opus-4-6") && bar.contains("◆ high"), "{w}: {bar}");
+                let find = |h| a.status_hits.iter().find(|(_, hit)| *hit == h).map(|(r, _)| *r).unwrap();
+                let model = find(StatusHit::Model);
+                let effort = find(StatusHit::Effort);
+                let gauge = find(StatusHit::Gauge);
+                let label_byte = bar.find(label).unwrap();
+                let label_col = width(&bar[..label_byte]) as u16;
+                assert!(label_byte > usize::from(label_col), "Unicode makes byte offsets differ from columns");
+                assert_eq!(
+                    model.x,
+                    width(&bar[..bar.find("claude-opus-4-6").unwrap()]) as u16
+                        - if bar.contains("anthropic/claude-opus-4-6") { "anthropic/".len() as u16 } else { 0 }
+                );
+                assert!(model.x + model.width <= effort.x && effort.x + effort.width <= gauge.x);
+                assert!(gauge.x <= label_col && label_col + width(label) as u16 <= gauge.x + gauge.width);
+                for (r, hit) in a.status_hits.clone() {
+                    assert!(r.x + r.width <= w, "{w}: {hit:?}");
+                    assert_eq!(a.status_hit(r.x), Some(hit));
+                    assert_eq!(a.status_hit(r.x + r.width - 1), Some(hit));
+                }
+                pointer(&mut a, K::Moved, effort.x + 1, effort.y);
+                assert_eq!(a.hover, Hover::Status(StatusHit::Effort));
+            }
+            // Explicitly omitting curator must not bring it back through the new candidate.
+            a.opts.status_line = vec!["model".into(), "effort".into(), "mode".into(), "context".into()];
+            assert!(!frame(&mut a, 80, 12)[a.status_row as usize].contains(label));
+        }
+    }
+}
+
+#[test]
+fn unsigned_curator_does_not_gain_priority_over_the_provider_name() {
+    let (mut a, _rx) = app();
+    a.opts.detail = nexo_core::config::Detail::Full;
+    a.provider = "anthropic".into();
+    a.model = "claude-opus-4-6".into();
+    a.effort = Some("high".into());
+    a.handle_agent(AgentEvent::Context {
+        view_tokens: 400,
+        history_tokens: 1000,
+        history_bytes: 4000,
+        view_bytes: 1600,
+        messages_in_view: 1,
+        messages_total: 1,
+        policy: "curator".into(),
+        note: None,
+        label: "curator idle".into(),
+        detail: None,
+    });
+    let text = |a: &App, w| {
+        crate::ui::title_segments(a, w)
+            .iter()
+            .flat_map(|g| g.iter().map(|s| s.text.clone()))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    // Find a width at which dropping the provider actually makes room for the signed label.
+    let narrow: Vec<_> = (40..120).map(|w| (w, text(&a, w))).collect();
+    a.context.as_mut().unwrap().label = "curator +987 tok".into();
+    assert!(
+        narrow.iter().any(|(w, unsigned)| {
+            let signed = text(&a, *w);
+            unsigned.contains("anthropic/claude-opus-4-6")
+                && !unsigned.contains("curator idle")
+                && signed.contains("claude-opus-4-6")
+                && !signed.contains("anthropic/claude-opus-4-6")
+                && signed.contains("curator +987 tok")
+        }),
+        "only the signed delta earns priority over the provider prefix"
+    );
+}
+
+#[test]
 fn the_scrollback_text_holds_every_block_wrapped_with_the_screen_gaps() {
     let (mut a, _rx) = app();
     a.push(Block::Assistant { text: "first answer".into(), streaming: false, at: None, started: None, took_ms: None });

@@ -35,6 +35,7 @@ pub(in crate::ui) fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<String>) {
+    app.fx.curator_delta.visible = false;
     app.status_hits.clear();
     app.fx.cut_col.set(None);
     if area.height == 0 {
@@ -190,7 +191,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     // the name holds the bar's right end: before it yields, it pushes the cost ("API value") off,
     // the one right-side piece ranked below it. It never costs a title segment, and shows whole or not at all.
     let cut_ms = app.condense_ms();
-    let policy = policy_text(app, cut_ms);
+    let policy = policy_text(app);
     let groups_at = |app: &App, avail| segments::with_policy(app, avail, policy.as_deref());
     let name_fits = |label: &str, dropped: usize, app: &App| -> bool {
         let avail = w.saturating_sub((full_w - dropped) + notes_w);
@@ -223,6 +224,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     let mut used = brand_width(app);
     let mut hits = Vec::new();
     let mut landing = None;
+    let mut curator_wave = None;
     'outer: for (gi, g) in groups.iter().enumerate() {
         let sep = " │ ";
         if used + width(sep) > avail {
@@ -273,7 +275,7 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
         };
         let mut run: Option<(StatusHit, usize, usize)> = None;
         for (i, s) in g.iter().enumerate() {
-            let shown = match (&model_cut, i) {
+            let mut shown = match (&model_cut, i) {
                 (Some(t), 0) => t.clone(),
                 _ => s.text.clone(),
             };
@@ -288,27 +290,44 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
                     run = h.map(|h| (h, used, sw));
                 }
             }
-            // the light of a cut lands over the curator's figure (over the label when it has none)
-            if cut_ms.is_some() && policy.as_deref() == Some(shown.trim_start()) {
-                let at = shown.rfind(" -").map_or(shown.len() - shown.trim_start().len(), |i| i + 1);
-                let x = area.x + used as u16;
-                let start = x + (sw - width(shown.trim_start())) as u16;
-                let sign = x + width(&shown[..at]) as u16;
-                app.fx.cut_col.set(Some(sign));
-                landing = Some((start..x + sw as u16, sign));
+            let is_policy = policy.as_deref() == Some(shown.trim_start());
+            if is_policy {
+                if app.fx.curator_delta.alive(now) && crate::fx_condense::delta_sign(shown.trim_start()).is_some() {
+                    let x = area.x + used as u16;
+                    let start = x + (sw - width(shown.trim_start())) as u16;
+                    curator_wave = Some(start..x + sw as u16);
+                }
+                // Only the context that caused this map cut owns its landing.
+                if cut_ms.is_some() && app.fx.curator_delta.map_cut {
+                    let at = shown.rfind(" -").map_or(shown.len() - shown.trim_start().len(), |i| i + 1);
+                    let x = area.x + used as u16;
+                    let start = x + (sw - width(shown.trim_start())) as u16;
+                    let sign = x + width(&shown[..at]) as u16;
+                    app.fx.cut_col.set(Some(sign));
+                    landing = Some((start..x + sw as u16, sign));
+                }
+                // A live delta owns its clock even after expiry; never fall back to the map then.
+                if app.fx_on() {
+                    let roll_ms = if app.fx.curator_delta.at.is_some() {
+                        app.fx.curator_delta.elapsed(now).map(|ms| crate::fx_condense::ROLL_FROM_MS + ms)
+                    } else if app.fx.curator_delta.map_cut {
+                        cut_ms
+                    } else {
+                        None
+                    };
+                    if let Some(ms) = roll_ms {
+                        let lead = shown.len() - shown.trim_start().len();
+                        shown = format!("{}{}", &shown[..lead], crate::fx_condense::roll_label(&shown[lead..], ms));
+                    }
+                }
             }
             used += sw;
             let m = h.map(lit).unwrap_or_else(Modifier::empty);
-            // the top reasoning level's `◆` pops and breathes: its own span, the same cells
-            let mark = if is_effort_seg(s) { app.effort_mark(s.style.fg.unwrap_or(theme.accent2)) } else { None };
-            // the line under a hovered piece starts at its first mark, not under the blank before it
+            // Animate only the existing effort chip; keep its hit area and hover underline.
+            let chip = if is_effort_seg(s) { app.effort_chip_spans(&shown, s.style, m) } else { None };
             let lead = shown.len() - shown.trim_start().len();
-            if let Some(c) = mark {
-                let (blank, rest) = shown.split_at(lead);
-                let (glyph, rest) = rest.split_at('◆'.len_utf8());
-                spans.push(Span::styled(blank.to_string(), s.style));
-                spans.push(Span::styled(glyph.to_string(), s.style.fg(c).add_modifier(m)));
-                spans.push(Span::styled(rest.to_string(), s.style.add_modifier(m)));
+            if let Some(chip) = chip {
+                spans.extend(chip);
             } else if !m.is_empty() && lead > 0 && lead < shown.len() {
                 spans.push(Span::styled(shown[..lead].to_string(), s.style));
                 spans.push(Span::styled(shown[lead..].to_string(), s.style.add_modifier(m)));
@@ -345,6 +364,10 @@ fn draw_title_rest(f: &mut Frame, app: &mut App, area: Rect, label: Option<Strin
     if app.fx_on() {
         if let (Some((cols, sign)), Some(ms)) = (landing, cut_ms) {
             pulse::landing(f.buffer_mut(), theme, area.y, cols, sign, ms);
+        }
+        if let (Some(cols), Some(ms)) = (curator_wave, app.fx.curator_delta.elapsed(now)) {
+            pulse::curator(f.buffer_mut(), theme, area.y, cols, ms, app.fx.curator_delta.positive);
+            app.fx.curator_delta.visible = true;
         }
         // The signature belongs only to the turn that actually finished, never to the next turn.
         if let Some(at) = app.fx.turn_done.filter(|&at| !app.busy && app.turn_started.is_none_or(|start| start <= at)) {

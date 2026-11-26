@@ -25,6 +25,30 @@ pub(super) fn landing(buf: &mut Buffer, theme: &Theme, y: u16, cols: Range<u16>,
     }
 }
 
+/// A directional crest crosses the label, with a bold head visible without relying on hue.
+pub(super) fn curator(buf: &mut Buffer, theme: &Theme, y: u16, cols: Range<u16>, ms: u64, positive: bool) {
+    let p = ms as f32 / fx_condense::DELTA_MS as f32;
+    if p >= 1.0 || cols.is_empty() {
+        return;
+    }
+    let travel = if positive { p } else { 1.0 - p };
+    let head = travel * cols.end.saturating_sub(cols.start + 1) as f32;
+    // Snap only the bold head: a half-column must not leave both cells unbolded.
+    let bold_head = head.round() as u16;
+    let envelope = (p * 8.0).min(1.0) * ((1.0 - p) * 5.0).min(1.0);
+    let ink = if positive { theme.warn } else { theme.success };
+    let start = cols.start;
+    for x in cols {
+        let distance = ((x - start) as f32 - head).abs();
+        let k = (1.0 - distance / 2.0).max(0.0) * envelope;
+        let cell = &mut buf[(x, y)];
+        cell.fg = motion::fade(theme, cell.fg, ink, k * 0.9);
+        if x - start == bold_head && envelope > 0.25 {
+            cell.modifier.insert(ratatui::style::Modifier::BOLD);
+        }
+    }
+}
+
 /// On a successful turn, a green tip with an accent-coloured tail signs the four brand letters
 /// from left to right. It rides the same clock as the turn-end glow on the separator.
 pub(super) fn signature(buf: &mut Buffer, theme: &Theme, area: Rect, elapsed: Duration) {

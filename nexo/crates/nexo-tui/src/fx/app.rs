@@ -21,6 +21,8 @@ pub struct Fx {
     pub turn_done: Option<Instant>,
     /// The curator just cut the view: the tokens it let go and when (shown by the gauge, fading).
     pub cut: Option<(u64, Instant)>,
+    /// Signed movement reported by the curator, independent of the map cut.
+    pub curator_delta: crate::fx_condense::Delta,
     /// What each message of the context map was before that cut, so its cells condense to the new state;
     /// where the newest of them was drawn this frame, and the column of the curator's label (see
     /// `fx_condense`).
@@ -33,15 +35,10 @@ pub struct Fx {
     /// from the old colour to the new one.
     pub mode_at: Option<Instant>,
     pub mode_from: Option<nexo_core::permission::PermissionMode>,
-    /// When the reasoning level last became the top one: a comet runs the rule into the level's tag, which
-    /// lights up, and the `◆` pops (see `fx_effort`). The breath of the `◆` while a turn runs at that level:
-    /// since when, and the time the work stopped (the breath finishes its cycle).
+    /// The effort chip's change animation and working breath (see `fx_effort`).
     pub effort_at: Option<Instant>,
     pub breath_from: Option<Instant>,
     pub breath_stop: Option<Instant>,
-    /// The band along the rule while a turn runs at that level: since when, and when the work stopped.
-    pub band_from: Option<Instant>,
-    pub band_stop: Option<Instant>,
     /// The slash command the draft starts with, once it names a real one, and since when: it
     /// lights up once.
     pub cmd_lit: Option<(String, Instant)>,
@@ -174,6 +171,7 @@ impl App {
                 || self.home_moving(now)
                 || self.burst_moving(now)
                 || fx.ink.alive(now)
+                || (fx.curator_delta.visible && fx.curator_delta.alive(now))
                 || fx.pulses.alive(now)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS))
                 || fx.queue_gone.iter().any(|(_, t)| motion::within(Some(*t), now, crate::ui::TAKEN_MS)));

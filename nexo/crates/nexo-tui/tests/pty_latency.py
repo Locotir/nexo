@@ -326,6 +326,12 @@ def run(binary, blocks, animations):
                         raise AssertionError('terminal frame exceeds 8 MiB')
         try:
             frame_until('PTY_FIXTURE_READY')
+            # Only the last row is the status bar, not the draft or transcript.
+            # Both signs must actually be drawn, with the known effort chip, before timing.
+            for sign in ('+', '-'):
+                frame_until(marker=f'curator {sign}600 tok and effort high in status bar',
+                            predicate=lambda: f'curator {sign}600 tok' in ''.join(screen.cells[35])
+                            and '◆ high' in ''.join(screen.cells[35]))
             # SGR 1006: Cb=35 means motion with no button, coordinates are 1-based.
             # Demand the actual rendered link's style transition, not merely any
             # new frame (streaming/animation frames are unrelated acknowledgments).
@@ -362,7 +368,18 @@ def run(binary, blocks, animations):
             report('mouse-leave', leave_times, blocks, animations)
             times = []
             previous = None
+            # Time pastes during each wave: the first frame with its sign starts the phase clock.
+            def signed(sign):
+                bar = ''.join(screen.cells[35])
+                return f'curator {sign}' in bar and '◆ high' in bar
+            phase_end = 0
             for i in range(N):
+                sign = '+' if i < N // 2 else '-'
+                if i == N // 2 or time.monotonic() >= phase_end:
+                    other = '-' if sign == '+' else '+'
+                    frame_until(predicate=lambda: signed(other))
+                    frame_until(predicate=lambda: signed(sign))
+                    phase_end = time.monotonic() + 0.7
                 if previous is not None:
                     os.write(master, b'\x15')
                     frame_until(previous, present=False)
@@ -370,6 +387,7 @@ def run(binary, blocks, animations):
                 started = time.monotonic_ns()
                 os.write(master, b'\x1b[200~' + marker.encode() + b'\x1b[201~')
                 ended = frame_until(marker)
+                assert signed(sign), f'paste was not acknowledged during the {sign} phase'
                 times.append((ended - started) / 1e6)
                 previous = marker
             report('paste', times, blocks, animations)

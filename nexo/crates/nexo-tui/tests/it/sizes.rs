@@ -371,16 +371,16 @@ fn a_long_line_in_the_editor_is_wrapped_not_hidden() {
     }
 }
 
-/// The reasoning level sits on the rule above the editor, at the right, and the draft stays whole.
+/// The reasoning level never appears on the editor rule.
 #[test]
-fn the_thinking_level_sits_on_the_editor_rule() {
+fn the_thinking_level_is_not_on_the_editor_rule() {
     for (w, h) in SIZES {
         let mut a = scene("empty");
         a.effort = Some("high".into());
         let rows = capture(&mut a, w, h);
         let input = rows.iter().position(|r| r.starts_with('›')).expect("an input line");
         let rule = &rows[input - 1];
-        assert!(rule.contains("◆ high") && rule.trim_end().ends_with('─'), "{w}x{h}: no level on the rule: {rule:?}");
+        assert!(!rule.contains("◆ high"), "{w}x{h}: level on the rule: {rule:?}");
     }
 }
 

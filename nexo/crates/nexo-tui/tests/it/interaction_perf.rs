@@ -567,6 +567,105 @@ fn long_history_stream_to_frame_latency() {
     }
 }
 
+/// Compare Curator's two directions on the same long-history scene. Setup and
+/// Context dispatch are outside the timers; the injected clock advances through
+/// the cue rather than repeatedly rendering its first frame.
+#[test]
+fn curator_animation_frame_and_typing_latency() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let opts = TuiOptions {
+        cwd: cwd.path().into(),
+        animations: true,
+        home_stars: false,
+        detail: nexo_core::config::Detail::Full,
+        status_line: vec!["effort".into(), "curator".into()],
+        ..Default::default()
+    };
+    let mut a = App::new(opts, tx);
+    a.theme = nexo_tui::theme::Theme::nexo();
+    a.handle_agent(AgentEvent::Effort {
+        model: "test".into(),
+        current: Some("high".into()),
+        levels: ["low", "medium", "high"].map(String::from).into(),
+    });
+    a.unlock();
+    a.drop_banner();
+    for i in 0..CARDS {
+        a.push(Block::User { text: format!("history {i}"), at: None });
+    }
+    let context = |view: u64, history: u64, label: &str| AgentEvent::Context {
+        view_tokens: view,
+        history_tokens: history,
+        history_bytes: history * 4,
+        view_bytes: view * 4,
+        messages_in_view: 100,
+        messages_total: 1000,
+        policy: "curator".into(),
+        note: None,
+        label: label.into(),
+        detail: None,
+    };
+    let t0 = Instant::now();
+    a.fx.clock = Some(t0);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.tick_fx();
+    let mut term = Term::new(TestBackend::new(100, 36)).unwrap();
+    draw_frame(&mut term, &mut a).unwrap();
+    assert!(a.view_top() > 0);
+    for (direction_index, (direction, before, after, sign, label)) in
+        [("up", 4_000, 26_000, '+', "curator +10k tok"), ("down", 14_000, 16_000, '-', "curator -10k tok")]
+            .into_iter()
+            .enumerate()
+    {
+        let check_bar = |term: &Term, settled: bool| {
+            let buf = term.backend().buffer();
+            let bar: String = (0..100).map(|x| buf[(x, 35)].symbol()).collect();
+            assert!(bar.contains("◆ high"), "{bar}");
+            let figure = bar.split_once("curator").expect("visible Curator").1.trim_start();
+            assert!(figure.starts_with(sign) && figure.contains("k tok"), "{bar}");
+            if settled {
+                assert!(bar.contains(label), "{bar}");
+            }
+        };
+        let mut draws = Vec::with_capacity(N);
+        let mut keys = Vec::with_capacity(N);
+        for i in 0..N {
+            let base = t0 + Duration::from_secs(20 + (direction_index * N + i) as u64 * 10);
+            // Restore the same prior context and empty draft for each sample.
+            // Add 12k of history: even the -10k case grows in absolute view size, so neither
+            // arm triggers the separate map-cut effect.
+            a.fx.clock = Some(base);
+            a.handle_agent(context(before, 18_000, "curator"));
+            a.fx.clock = Some(base + Duration::from_secs(5));
+            draw_frame(&mut term, &mut a).unwrap();
+            a.handle_agent(context(after, 30_000, label));
+            // Measure both arms after their first visible frame.
+            draw_frame(&mut term, &mut a).unwrap();
+            let sample = base + Duration::from_millis(5180 + i as u64 * 30);
+            a.fx.clock = Some(sample);
+            a.tick_fx();
+            draws.push(frame(&mut a, &mut term, |_| {}));
+            check_bar(&term, false);
+            let ev = Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+            a.fx.clock = Some(sample + Duration::from_millis(16));
+            a.tick_fx();
+            keys.push(frame(&mut a, &mut term, |a| event::handle(a, ev)));
+            check_bar(&term, false);
+            let y = a.editor_area.y;
+            let draft: String = (0..100).map(|x| term.backend().buffer()[(x, y)].symbol()).collect();
+            assert!(draft.contains('x'), "{draft}");
+            event::handle(&mut a, Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+            assert!(a.input.text().is_empty());
+            a.fx.clock = Some(base + Duration::from_secs(9));
+            draw_frame(&mut term, &mut a).unwrap();
+            check_bar(&term, true);
+        }
+        report(&format!("curator-{direction}-frame"), CARDS, &mut draws);
+        report(&format!("curator-{direction}-type"), CARDS, &mut keys);
+    }
+}
+
 /// Drawing progress and typing while the progress cue is on screen: same 100×36 terminal and scene.
 #[test]
 fn progress_animation_frame_and_typing_latency() {

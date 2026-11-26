@@ -116,7 +116,7 @@ fn activity_prefers_interrupt_to_clock_when_narrow() {
     assert!(!rule.contains(" · "), "clock or dangling separator: {rule:?}");
 }
 
-/// A long activity is clipped at grapheme boundaries before the overlaid draft and effort tag.
+/// A long activity is clipped at grapheme boundaries before the overlaid draft counter.
 #[test]
 fn long_unicode_activity_stays_clear_of_the_tag() {
     let mut a = app();
@@ -128,7 +128,7 @@ fn long_unicode_activity_stays_clear_of_the_tag() {
     let rule = rows.iter().find(|r| r.contains("Preparing")).expect("working line");
     assert!(rule.contains("e\u{301}") && rule.contains('👩') && rule.contains('💻'), "{rule:?}");
     assert!(!rule.contains('\u{200d}'), "the terminal must not receive a joiner: {rule:?}");
-    assert!(rule.contains('…') && rule.contains("◆ high") && rule.contains("chars"), "{rule:?}");
+    assert!(rule.contains('…') && !rule.contains("◆ high") && rule.contains("chars"), "{rule:?}");
     assert!(!rule.contains("Esc") && !rule.contains(" ·  "), "{rule:?}");
 }
 

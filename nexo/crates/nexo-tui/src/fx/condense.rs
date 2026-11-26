@@ -1,7 +1,7 @@
 //! The curator lets context go, shown at a glance: the cells of the context map that it cut condense a step at
 //! a time (`█ ▓ ▒ ░ ·`, oldest first, so the wave ends at the newest), a light carries the freed space out of
 //! the map, down the panel's border and along the rule to the curator's label, and the label's figure counts
-//! up to what was let go as the light lands. Only glyphs of the map and colours change: no text moves, no row
+//! up to what was let go as the light lands. The map glyphs and label figure change, but no text moves, no row
 //! is added, and once it is over every cell is the settled one.
 //!
 //! Every frame is a pure function of the time since the cut, so a test can ask for any of them. With
@@ -145,14 +145,16 @@ pub fn paint(buf: &mut Buffer, theme: &Theme, path: &[(u16, u16)], ms: u64) {
     }
 }
 
-/// The curator's label `ms` after a cut: the figure of what it let go (`-12k` in `curator -12k tok`) shows 0
+/// The signed curator figure (`-12k` or `+12k`) shows 0
 /// until the light lands, then counts up to its value in `ROLL_MS`, padded to its final width so nothing
 /// beside it moves. A label without such a figure, and every label once the count is over, is shown as it is.
 pub fn roll_label(label: &str, ms: u64) -> String {
     let rolled = || -> Option<String> {
         let body = label.strip_suffix(" tok")?;
         let (head, fig) = body.rsplit_once(' ')?;
-        let num = fig.strip_prefix('-')?;
+        delta_sign(label)?;
+        let sign = fig.chars().next()?;
+        let num = &fig[1..];
         let suffix = num.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
         let digits = &num[..num.len() - suffix.len()];
         let value: f64 = digits.parse().ok()?;
@@ -161,16 +163,88 @@ pub fn roll_label(label: &str, ms: u64) -> String {
         if t >= 1.0 {
             return None;
         }
-        let shown = format!("-{:.places$}{suffix}", value * crate::anim::ease_out(t));
-        Some(format!("{head} {} tok", fixed(&shown, fig)))
+        let shown = format!("{:.places$}{suffix}", value * crate::anim::ease_out(t));
+        Some(format!("{head} {sign}{} tok", fixed(&shown, num)))
     };
     rolled().unwrap_or_else(|| label.to_string())
+}
+
+/// Only the engine's signed curator label is evidence of a change in its window.
+/// `idle` is also a valid base label when a recall returns the whole history.
+pub fn delta_sign(label: &str) -> Option<bool> {
+    let body = label.strip_suffix(" tok")?;
+    let (base, figure) = body.rsplit_once(' ')?;
+    if !matches!(base, "curator" | "curator idle") {
+        return None;
+    }
+    let (positive, number) =
+        if let Some(n) = figure.strip_prefix('+') { (true, n) } else { (false, figure.strip_prefix('-')?) };
+    let number = number.strip_suffix('k').or_else(|| number.strip_suffix('M')).unwrap_or(number);
+    let mut parts = number.split('.');
+    let whole = parts.next()?;
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(frac) = parts.next() {
+        if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    if parts.next().is_some() || !number.bytes().any(|b| matches!(b, b'1'..=b'9')) {
+        return None;
+    }
+    Some(positive)
+}
+
+/// One bounded wave; every new event starts a fresh animation.
+#[derive(Debug, Clone, Default)]
+pub struct Delta {
+    pub at: Option<std::time::Instant>,
+    pub positive: bool,
+    /// The last title layout actually drew the active wave.
+    pub visible: bool,
+    /// The latest context event caused the map cut whose light lands on the label.
+    pub map_cut: bool,
+}
+
+pub const DELTA_MS: u64 = 1200;
+impl Delta {
+    pub fn start(&mut self, now: std::time::Instant, positive: bool) {
+        self.at = Some(now);
+        self.positive = positive;
+        self.map_cut = false;
+    }
+    pub fn elapsed(&self, now: std::time::Instant) -> Option<u64> {
+        let ms = now.saturating_duration_since(self.at?).as_millis() as u64;
+        (ms < DELTA_MS).then_some(ms)
+    }
+    pub fn alive(&self, now: std::time::Instant) -> bool {
+        self.elapsed(now).is_some()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use CellState::*;
+
+    #[test]
+    fn signed_engine_labels_only() {
+        for label in ["curator -950 tok", "curator +1.2k tok", "curator idle +2.0M tok"] {
+            assert!(delta_sign(label).is_some(), "{label}");
+        }
+        for label in [
+            "curator",
+            "curator idle",
+            "plain +2k tok",
+            "curator off -2k tok",
+            "curator +0 tok",
+            "curator +NaN tok",
+            "curator +1kk tok",
+        ] {
+            assert_eq!(delta_sign(label), None, "{label}");
+        }
+    }
 
     #[test]
     fn a_dropped_cell_steps_down_the_whole_ladder_one_glyph_every_eighty_ms() {
@@ -240,12 +314,12 @@ mod tests {
         for ms in (0..=CONDENSE_MS).step_by(50) {
             assert_eq!(w(roll_label(label, ms).as_str()), w(label), "{ms} ms: {}", roll_label(label, ms));
         }
-        assert_eq!(roll_label(label, 0), "curator  -0k tok");
+        assert_eq!(roll_label(label, 0), "curator - 0k tok");
         assert_eq!(roll_label(label, ROLL_FROM_MS + ROLL_MS), label);
         let mid = roll_label("curator -3.2k tok", ROLL_FROM_MS + ROLL_MS / 2);
         assert!(mid.starts_with("curator -") && mid != "curator -3.2k tok", "{mid}");
         // a label without a figure stays as it is
         assert_eq!(roll_label("curator", 0), "curator");
-        assert_eq!(roll_label("curator +2k tok", 0), "curator +2k tok");
+        assert_eq!(roll_label("curator +2k tok", 0), "curator +0k tok");
     }
 }

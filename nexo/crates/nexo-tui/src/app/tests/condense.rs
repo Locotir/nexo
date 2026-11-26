@@ -106,9 +106,9 @@ fn a_cut_condenses_the_map_runs_a_light_to_the_label_and_leaves_the_text_alone()
         assert_eq!(row(&b, rule), row(&q, rule), "{ms} ms");
         stepped |= (0..rule).any(|y| row(&b, y).contains('▓'));
         lit_rule |= (0..200).any(|x| b[(x, rule)].modifier.contains(Modifier::BOLD) && b[(x, rule)] != q[(x, rule)]);
-        // the label keeps its width while its figure counts up
+        // The authoritative signed figure stays stable throughout the map animation.
         let label = curator_label(&a);
-        assert_eq!(label.chars().count(), LABEL.chars().count(), "{ms} ms: {label:?}");
+        assert_eq!(label, LABEL, "{ms} ms");
         if ms == 1000 {
             let col = a.fx.cut_col.get().expect("the bar drew the label");
             landed = b[(col, rule)].modifier.contains(Modifier::BOLD);

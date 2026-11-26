@@ -78,10 +78,6 @@ pub(super) fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
         },
     };
     f.render_widget(Paragraph::new(line), area);
-    // the hardest reasoning level: a comet runs the rule into the tag once when it is set, a band drifts
-    // along it while the model works (colour only, the comet's head heavy)
-    let edge = (!(app.locked && app.input.is_empty())).then(|| rule_tag(app, area.width)).flatten().map(|t| t.0);
-    app.paint_crest(f.buffer_mut(), area, edge);
     if on {
         app.fx.pulses.paint(f.buffer_mut(), area, &app.theme, now);
     }
@@ -376,24 +372,9 @@ pub fn wave(theme: &Theme, n: usize, secs: f32) -> Vec<Span<'static>> {
     out
 }
 
-/// The tag on the rule above the box, at the right: the reasoning level and, for a long or multiline draft,
-/// its size. Where it starts, counted from the left of a row `width` wide, and its text (blanks at both
-/// ends). A narrow row drops the level first, then the size.
+/// The draft counter on the rule above the box, when it fits whole.
 pub(super) fn rule_tag(app: &App, width: u16) -> Option<(u16, String)> {
-    let mut tags: Vec<String> = Vec::new();
-    if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
-        tags.push(format!("◆ {e}"));
-    }
-    if let Some(c) = crate::input::counter(&app.input) {
-        tags.push(c);
-    }
-    while !tags.is_empty() {
-        let label = format!(" {} ", tags.join(" · "));
-        let w = crate::render::wrap::width(&label) as u16;
-        if width > w + 6 {
-            return Some((width - w - 1, label));
-        }
-        tags.remove(0);
-    }
-    None
+    let label = format!(" {} ", crate::input::counter(&app.input)?);
+    let w = crate::render::wrap::width(&label) as u16;
+    (width > w + 6).then(|| (width - w - 1, label))
 }

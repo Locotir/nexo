@@ -642,7 +642,8 @@ switches to the model.
 **Effort.** `/effort` picks among the levels the model takes (`/effort high`, `/effort default`), worked out
 from the protocol and the server and confirmed by the test request: OpenAI's `reasoning_effort`, Anthropic's
 and Gemini's thinking budgets, Ollama's `off`/`on` (`low`/`medium`/`high` on gpt-oss), none for models whose
-reasoning is fixed. The choice is kept per model and shown in the status bar (`◆ high`).
+reasoning is fixed. The choice is kept per model. Its status bar chip (`◆ high`) lights when you change it;
+at the highest level its colour moves while the model works. The draft stays clear.
 
 **Fast.** `/fast` switches to the model's fast version on the same provider and back (the same name plus
 `-fast`, `_fast`, `-highspeed`, `-ultraspeed` or `-turbo`, looked up in the configured models and the provider's
@@ -904,10 +905,11 @@ each marked by what the call takes of it (`◐` parts brought back, `▭` only a
 card, `○` nothing), so you see, of all it holds, what it is taking. When the
 curator lets messages go, their cells step down to what is left of them, oldest
 first, a light carries the cut along the border and the rule to its label in
-the title bar, and the figure there counts up to the tokens freed; the text
-never moves, and with `[ui] animations = false` the map and the label show the
-end state at once. With `plain` everything is sent; with `compact` the older half is summarised when
-the history passes `compact_at` tokens.
+the status bar. There, a wave follows the signed count: `+` for tokens brought back
+into view, `-` for tokens freed. New conversation tokens are counted separately.
+With `[ui] animations = false` the map and the label show their end state at once.
+With `plain` everything is sent; with `compact` the older half is summarised when the history
+passes `compact_at` tokens.
 
 ### Benchmark
 

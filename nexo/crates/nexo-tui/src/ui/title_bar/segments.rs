@@ -5,12 +5,13 @@ use super::*;
 /// The segments of the title bar, most important first within the drop
 /// order: `(model, mode[, goal], gauge, mem, branch, directory)`; when the
 /// bar does not fit, the directory goes first, then the branch, then the
-/// memory, then the gauge's counts, then the model is shortened.
+/// memory, then the gauge's counts. A signed Curator delta can shorten the model
+/// before the label is dropped; otherwise the original drop order remains.
 pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
-    with_policy(app, avail, policy_text(app, app.condense_ms()).as_deref())
+    with_policy(app, avail, policy_text(app).as_deref())
 }
 
-/// All fits and the final paint in a frame share one sample of the rolling label.
+/// Fit against the final label; the rolling digits are painted inside that space.
 pub(super) fn with_policy(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
     let mut groups = title_core(app, avail, policy);
     // quiet: `? help` ends the bar, the first piece to go when it is tight
@@ -125,25 +126,24 @@ fn title_core(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
     };
     let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: lit_if(3, theme.bar_fg, base) });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: lit_if(4, theme.dim, base.fg(theme.dim)) };
-    // A cut lands on its figure (the ripple is painted after fitting). The label warms up under
-    // the ripple and cools back to its own ink. Reduced motion always shows the settled label.
-    let policy_seg = policy.filter(|_| !lean).map(|p| {
+    // The signed figure is already the final, authoritative event value. Keep its width and sign stable.
+    let signed = policy.and_then(crate::fx_condense::delta_sign).is_some();
+    let policy_seg = policy.filter(|_| !lean || signed).map(|p| {
         let now = app.now();
-        let style = match app
-            .fx
-            .cut
-            .filter(|c| app.opts.animations && crate::motion::within(Some(c.1), now, crate::motion::CUT_MS))
-        {
-            Some((_, at)) => {
-                let land = crate::fx_condense::LIGHT_TO_MS;
-                let after = (now.saturating_duration_since(at).as_millis() as u64).saturating_sub(land) as f32;
-                let warmth = (after / crate::motion::POP_MS as f32).min(1.0)
-                    * (1.0 - after / (crate::motion::CUT_MS - land) as f32);
-                base.fg(crate::motion::fade(theme, theme.accent2, theme.success, 0.85 * warmth))
-                    .add_modifier(Modifier::BOLD)
+        let mut style = base.fg(theme.accent2);
+        // A real map cut leaves a warm afterglow as its separate light lands on the figure.
+        if let Some((_, at)) = app.fx.cut.filter(|&(_, at)| {
+            app.fx.curator_delta.map_cut && app.fx_on() && crate::motion::within(Some(at), now, crate::motion::CUT_MS)
+        }) {
+            let land = crate::fx_condense::LIGHT_TO_MS;
+            let after = (now.saturating_duration_since(at).as_millis() as u64).saturating_sub(land) as f32;
+            let warmth =
+                (after / crate::motion::POP_MS as f32).min(1.0) * (1.0 - after / (crate::motion::CUT_MS - land) as f32);
+            style = style.fg(crate::motion::fade(theme, theme.accent2, theme.success, 0.85 * warmth));
+            if app.fx.curator_delta.at.is_none() {
+                style = style.add_modifier(Modifier::BOLD);
             }
-            None => base.fg(theme.accent2),
-        };
+        }
         Seg { text: p.to_string(), style }
     });
     // a chip only when the cache let the last call down (the share itself is in /context)
@@ -285,14 +285,25 @@ fn title_core(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
         hint: true,
         todo: true,
     };
-    // the steps up to this one keep the whole model name, the gauge and the mode
-    const LAST_WHOLE_STEP: usize = 5;
+    // Through this step the gauge and mode stay, so dropped pieces can be restored.
+    const LAST_RESTORE_STEP: usize = 6;
     let steps = [
         Keep { ..all },
         Keep { dir: false, hint: false, ..all },
         Keep { dir: false, hint: false, branch: false, ..all },
         Keep { dir: false, hint: false, branch: false, mem: false, todo: false, ..all },
         Keep { dir: false, hint: false, branch: false, mem: false, todo: false, counts: false, ..all },
+        // A real signed delta gets a chance to fit with the unqualified model name.
+        Keep {
+            dir: false,
+            hint: false,
+            branch: false,
+            mem: false,
+            todo: false,
+            counts: false,
+            short_model: true,
+            ..all
+        },
         Keep {
             dir: false,
             hint: false,
@@ -359,12 +370,15 @@ fn title_core(app: &App, avail: usize, policy: Option<&str>) -> Vec<Vec<Seg>> {
         },
     ];
     for (i, k) in steps.iter().enumerate() {
+        if i == 5 && !(signed && order.contains(&"curator")) {
+            continue;
+        }
         let c = build(k);
         if segs_width(app, &c) <= avail {
-            // the steps drop pieces together, so the last one may have left room: while the model is
-            // whole and the gauge and mode stay, a piece it took out comes back where it fits, the
+            // The steps drop pieces together, so the last one may have left room: while the
+            // gauge and mode stay, a piece it took out comes back where it fits, the
             // one that matters most first (the order the steps drop them in, reversed)
-            if i > LAST_WHOLE_STEP {
+            if i > LAST_RESTORE_STEP {
                 return c;
             }
             let mut keep = *k;
@@ -420,16 +434,12 @@ pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
     out
 }
 
-/// What the policy does ("curator", "curator -12k tok", "curator idle"), not only its name; while a cut plays,
-/// with its figure counting up (see `fx_condense`).
-pub(super) fn policy_text(app: &App, cut_ms: Option<u64>) -> Option<String> {
+/// The final policy label, used for layout before any animation is painted.
+pub(super) fn policy_text(app: &App) -> Option<String> {
     let c = app.context.as_ref()?;
     let p = if c.label.is_empty() { c.policy.clone() } else { c.label.clone() };
     if p.is_empty() {
         return None;
     }
-    Some(match cut_ms {
-        Some(ms) => crate::fx_condense::roll_label(&p, ms),
-        None => p,
-    })
+    Some(p)
 }

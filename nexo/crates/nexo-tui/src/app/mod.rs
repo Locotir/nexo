@@ -752,6 +752,7 @@ impl App {
         self.turn_usage = Usage::default();
         self.cost = 0.0;
         self.context = None;
+        self.fx.curator_delta = Default::default();
         self.context_wait = false;
         self.map.clear();
         self.request_composition = None;

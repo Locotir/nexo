@@ -29,9 +29,10 @@ policy = "curator"                           # auto | plain | compact | curator
 `auto`, the default, is the curator. `plain` sends the whole history; `compact` summarises once a request
 reaches `compact_at` input tokens (**100000** by default, counted as the provider counts them), as often
 as needed, keeping the task statement and the files touched. The status bar shows what the policy is doing:
-`curator -12k tok` (this call's view is 12k tokens smaller than the one before; `curator +3.0k tok` when old
-messages came back), `curator idle` while the whole history is still cheaper to send than to rewrite,
-`curator off`, or `plain`. The figure is tokens, not a percentage, and `/context` says why. The view never passes the model's window, so a long session does not end in an error from the provider.
+`curator -12k tok` means it freed 12k tokens; `curator +3.0k tok` means it brought 3.0k back into view.
+The animation follows the sign. New conversation tokens do not count toward either figure. `/context` explains
+what changed. In full detail you can also see `curator idle`, `curator off`, or `plain`. The view never
+passes the model's window, so a long session does not end in an error from the provider.
 
 ## The benchmark: `nexo bench`
 

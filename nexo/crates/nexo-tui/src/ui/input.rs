@@ -26,17 +26,11 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         paint_chips(f, app, editor, top);
     }
     paint_complete(f, app, editor);
-    // on the rule above the box, at the right: the reasoning level and, for a long or
-    // multiline draft, its size; never over the text
+    // A long or multiline draft gets a size counter on the rule, never over the text.
     if let Some((x, label)) = rule_tag(app, area.width).filter(|_| area.y > 0) {
         let w = crate::render::wrap::width(&label) as u16;
         let r = Rect { x: area.x + x, y: area.y - 1, width: w, height: 1 };
-        // at the top level the letters wear a gradient (see `fx_effort`); otherwise the tag is dim
-        let tag = match app.effort_tag_spans(&label, theme.dim2()) {
-            Some(spans) => Paragraph::new(Line::from(spans)),
-            None => Paragraph::new(Span::styled(label, theme.dim2())),
-        };
-        f.render_widget(tag, r);
+        f.render_widget(Paragraph::new(Span::styled(label, theme.dim2())), r);
     }
     // an empty box says what it takes, or shows the suggested next message (Tab or → takes it whole)
     if app.input.is_untouched() && app.palette.is_none() && editor.width > 4 {
