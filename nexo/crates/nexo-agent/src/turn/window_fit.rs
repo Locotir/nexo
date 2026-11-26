@@ -183,7 +183,8 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
 }
 
 /// Reserve one token per serialized UTF-8 byte of every opaque reasoning block,
-/// in ALL turns, recursively. This deliberately double-counts visible reasoning
+/// recursively. Responses omits top-level reasoning before the latest person message;
+/// other protocols may send it. This deliberately double-counts visible reasoning
 /// and any opaque data already included in the generic estimate. It also counts
 /// JSON escaping (not just Unicode scalar count), signatures and encrypted data,
 /// except top-level foreign blocks that Anthropic and Responses unconditionally omit.
@@ -203,11 +204,18 @@ fn opaque_reserve(messages: &[Message], protocol: &str, model: &str) -> u64 {
             })
             .fold(0, u64::saturating_add)
     }
+    let turn = nexo_core::message::latest_person(messages).unwrap_or(0);
     messages
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, m)| {
             m.content
                 .iter()
+                .filter(|p| {
+                    !(protocol == "openai-responses"
+                        && i < turn
+                        && matches!(p, Part::Reasoning { .. } | Part::RedactedReasoning { .. }))
+                })
                 .filter(|p| !matches!(protocol, "anthropic" | "openai-responses") || !p.is_foreign_reasoning(model))
                 .map(|p| parts(std::slice::from_ref(p)))
                 .fold(0, u64::saturating_add)
@@ -512,5 +520,33 @@ mod tests {
         assert_eq!(part_name(&result, 3), "the read result in message 3");
         assert_eq!(part_name(&Message::user("hi"), 1), "your message (message 1)");
         assert_eq!(part_name(&Message::assistant("ok"), 2), "a reply of the model (message 2)");
+    }
+}
+
+#[cfg(test)]
+mod opaque_tests {
+    use super::*;
+    use nexo_core::Role;
+
+    #[test]
+    fn responses_reserves_current_but_not_old_encrypted_reasoning() {
+        let opaque =
+            Part::Reasoning { text: String::new(), signature: None, encrypted: Some("E".repeat(188_423)), model: None };
+        let history = vec![
+            Message { role: Role::User, content: vec![Part::text("x".repeat(348_000))] },
+            Message { role: Role::Assistant, content: vec![opaque.clone(), Part::text("answer")] },
+            Message { role: Role::User, content: vec![Part::text("continue")] },
+        ];
+        let after = admission_tokens(&history, "openai-responses", "m");
+        let before = after + serde_json::to_vec(&opaque).unwrap().len() as u64;
+        println!("session-shaped admission before={before} after={after}");
+        assert!(before > 272_000 && after < 272_000);
+        assert_eq!(opaque_reserve(&history, "openai-responses", "m"), 0);
+        assert!(opaque_reserve(&history, "anthropic", "m") > 188_423);
+        assert!(opaque_reserve(&history, "gemini", "m") > 188_423);
+        let mut current = history;
+        current.push(Message { role: Role::Assistant, content: vec![opaque] });
+        assert!(opaque_reserve(&current, "openai-responses", "m") > 188_423);
+        assert!(admission_tokens(&current, "openai-responses", "m") > 272_000);
     }
 }

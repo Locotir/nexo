@@ -1787,7 +1787,10 @@ async fn audit_opaque_exception_boundaries_cold() {
                 r.send(AgentCommand::Submit { text: "Continue, preserve instructions.".into(), attachments: vec![] });
                 let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
                 let sent = client.requests();
-                let allowed = !large || kind == "foreign-redacted";
+                // Responses never sends top-level reasoning from before the latest person
+                // message, so a large legacy block there is no reason to refuse the request.
+                let allowed =
+                    !large || kind == "foreign-redacted" || (protocol == "openai-responses" && kind == "legacy");
                 assert_eq!(sent.len(), usize::from(allowed), "{policy}/{protocol}/{kind}/{large}: {:?}", notices(&evs));
                 assert_eq!(end_of(&evs), if allowed { TurnEnd::Done } else { TurnEnd::Error });
                 assert!(nexo_agent::Session::open(&id).unwrap().messages().starts_with(&original));
@@ -1800,8 +1803,7 @@ async fn audit_opaque_exception_boundaries_cold() {
                         nexo_providers::openai_responses::OpenAiResponses::body(&provider, req)
                     };
                     let wire = serde_json::to_string(&body).unwrap();
-                    // Responses omits historical reasoning even without a model tag;
-                    // admission intentionally keeps the legacy reserve conservative.
+                    // Responses omits historical reasoning even without a model tag.
                     let transmitted =
                         kind != "foreign-redacted" && !(protocol == "openai-responses" && kind == "legacy");
                     assert_eq!(wire.contains(&payload), transmitted, "{protocol}/{kind}: actual outbound body");
@@ -2488,4 +2490,37 @@ async fn user_image_and_long_text_are_sent_whole_or_rejected() {
             r.stop().await;
         }
     }
+}
+
+#[tokio::test]
+async fn old_own_encrypted_reasoning_does_not_block_responses_request() {
+    let _g = config_lock().lock().await;
+    let d = project();
+    data_dir();
+    let opaque = Part::Reasoning {
+        text: String::new(),
+        signature: Some("rs_old".into()),
+        encrypted: Some("E".repeat(188_423)),
+        model: Some("m1".into()),
+    };
+    let mut session = nexo_agent::Session::create(d.path(), "mock", "m1").unwrap();
+    session.append(&Message::user("Earlier request")).unwrap();
+    session.append(&Message::new(Role::Assistant, vec![opaque, Part::text("Earlier answer")])).unwrap();
+    let id = session.id().to_string();
+    drop(session);
+    let mut cfg = cfg_window(8_000);
+    cfg.providers.get_mut("mock").unwrap().protocol = "openai-responses".into();
+    let provider = cfg.providers["mock"].clone();
+    let client = Scripted::new(vec![Reply::Events(uncounted(text("ok")))]);
+    let mut r = start_with(client.clone(), cfg, Some(id), d.path(), ToolSet::default()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "Continue".into(), attachments: vec![] });
+    let evs = tokio::time::timeout(Duration::from_secs(30), r.turn()).await.unwrap();
+    assert_eq!(end_of(&evs), TurnEnd::Done, "{:?}", notices(&evs));
+    let sent = client.requests();
+    assert_eq!(sent.len(), 1);
+    let wire = nexo_providers::openai_responses::OpenAiResponses::body(&provider, &sent[0]).to_string();
+    assert!(!wire.contains(&"E".repeat(1000)));
+    assert!(wire.contains("Earlier answer"));
+    r.stop().await;
 }
