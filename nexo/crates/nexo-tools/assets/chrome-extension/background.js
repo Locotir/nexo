@@ -222,14 +222,23 @@ function onHost(msg) {
 
 function openSession(sid, name) {
   if (sessions.has(sid) || !sid) return;
-  sessions.set(sid, { name: name || "nexo", granted: false, revoked: false, tabs: new Set() });
+  sessions.set(sid, { name: name || "nexo", granted: false, revoked: false, tabs: new Set(), blanks: new Set() });
 }
 
 function closeSession(sid) {
   const s = sessions.get(sid);
   if (!s) return;
-  // The tabs stay open for the person; nexo just lets go of them (and Chrome's debugging bar goes away).
-  for (const tab of [...s.tabs]) release(tab);
+  // Only close tabs we created that have never navigated and are still blank.
+  for (const tab of [...s.tabs]) {
+    if (s.blanks.has(tab)) {
+      chrome.tabs.get(tab).then((t) => {
+        if (s.blanks.has(tab) && t.url === "about:blank" && (!t.pendingUrl || t.pendingUrl === "about:blank")) {
+          return chrome.tabs.remove(tab);
+        }
+      }).catch(() => {});
+    }
+    release(tab);
+  }
   sessions.delete(sid);
   paint();
 }
@@ -296,11 +305,17 @@ async function createTab(sid, s) {
   try {
     tab = await chrome.tabs.create({ url: "about:blank", active: true });
   } catch (e) {
-    // No browser window is open: make one.
-    const win = await chrome.windows.create({ url: "about:blank", focused: true });
-    tab = win.tabs[0];
+    const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+    const win = windows.find((w) => w.focused) || windows[0];
+    if (win) {
+      tab = await chrome.tabs.create({ windowId: win.id, url: "about:blank", active: true });
+    } else {
+      const created = await chrome.windows.create({ url: "about:blank", focused: true });
+      tab = created.tabs[0];
+    }
   }
   own(sid, s, tab.id);
+  s.blanks.add(tab.id);
   try {
     await attach(tab.id);
   } catch (e) {
@@ -317,7 +332,7 @@ async function listTabs(s) {
   for (const id of s.tabs) {
     try {
       const t = await chrome.tabs.get(id);
-      list.push({ tab: id, title: text(t.title, 300), url: text(t.url || t.pendingUrl, 2000), active: Boolean(t.active) });
+      list.push({ tab: id, title: text(t.title, 300), url: text(t.url || t.pendingUrl, 2000), active: Boolean(t.active), untouched: s.blanks.has(id) && t.url === "about:blank" && (!t.pendingUrl || t.pendingUrl === "about:blank") });
     } catch (e) {
       /* closed meanwhile */
     }
@@ -346,6 +361,7 @@ async function command(p) {
   // A tab in the background does not paint, and a picture of it would never come: show it first.
   if (method === "Page.captureScreenshot" || method === "Page.startScreencast") await show(p.tab);
   const params = p.params && typeof p.params === "object" ? p.params : {};
+  if (method === "Page.navigate" && params.url !== "about:blank") sessions.get(tabOwner.get(p.tab))?.blanks.delete(p.tab);
   const result = await chrome.debugger.sendCommand({ tabId: p.tab }, method, params);
   return result === undefined ? {} : result;
 }
@@ -417,6 +433,13 @@ function groupTab(tab) {
       /* a popup window cannot hold a group; the tab is nexo's all the same */
     });
 }
+
+// Remember any navigation, including one initiated by the person or by the page.
+chrome.tabs.onUpdated.addListener((tab, change) => {
+  if ((change.url && change.url !== "about:blank") || (change.pendingUrl && change.pendingUrl !== "about:blank")) {
+    sessions.get(tabOwner.get(tab))?.blanks.delete(tab);
+  }
+});
 
 // A page of a session opened a window or followed a link to a new tab: it is the same session's tab.
 chrome.tabs.onCreated.addListener(async (tab) => {

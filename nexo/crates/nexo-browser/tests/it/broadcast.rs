@@ -98,7 +98,7 @@ fn start(dirs: &Dirs, id: &str, name: &str, answer: Answer) -> Script {
                         }
                         "cdp" => json!({"t": "res", "sid": msg["sid"], "id": msg["id"], "r": {}}),
                         "tabs.list" => json!({"t": "res", "sid": msg["sid"], "id": msg["id"], "r":
-                            {"tabs": [{"tab": 1, "title": "t", "url": "about:blank", "active": true}]}}),
+                            {"tabs": if s.opened.load(Ordering::SeqCst) > 0 { vec![json!({"tab": 1, "title": "t", "url": "about:blank", "active": true})] } else { vec![] }}}),
                         _ => json!({"t": "res", "sid": msg["sid"], "id": msg["id"], "e": "scripted browser"}),
                     };
                     let _ = out.send(reply);
@@ -145,7 +145,7 @@ async fn the_first_browser_whose_person_allows_is_the_one_used() {
     assert_eq!(a.seen.asked.load(Ordering::SeqCst), 1, "every browser was asked");
     assert_eq!(b.seen.asked.load(Ordering::SeqCst), 1);
     assert_eq!(a.seen.opened.load(Ordering::SeqCst), 0, "nothing was opened in the browser that said no");
-    assert_eq!(b.seen.opened.load(Ordering::SeqCst), 1);
+    assert_eq!(b.seen.opened.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -190,6 +190,7 @@ async fn cancel_on_the_debugging_bar_ends_only_that_session() {
     listed(&dirs, 1).await;
     let first = RelayBrowser::connect(&dirs, Some("alpha"), "agent-one").await.unwrap();
     assert!(first.is_alive());
+    first.navigate("about:blank").await.unwrap();
     // Chrome detaches the tab the session opened because the person pressed Cancel on the bar.
     let detached = json!({"t": "ev", "tab": 1, "sid": "s1", "m": "Nexo.detached", "p": {"reason": "canceled_by_user"}});
     chrome.out.send(detached).unwrap();

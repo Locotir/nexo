@@ -316,16 +316,13 @@ fn bad_index(index: usize) -> Error {
 }
 
 impl RelayBrowser {
-    /// Takes a session that already has the person's consent and opens its first tab.
+    /// Takes a session that already has the person's consent; tabs are opened lazily.
     pub(crate) async fn start(client: Client) -> Result<RelayBrowser> {
         let events = client.take_events().ok_or_else(|| Error::Page("the connection has no event stream".into()))?;
         let inner = Arc::new(Inner { client, buffers: Buffers::default(), state: Mutex::new(State::default()) });
         let pump = tokio::spawn(pump(Arc::clone(&inner), events));
         let browser = RelayBrowser { inner, pump };
         browser.adopt_existing().await?;
-        if lock(&browser.inner.state).tabs.is_empty() {
-            browser.open_tab("about:blank").await?;
-        }
         Ok(browser)
     }
 
@@ -355,7 +352,7 @@ impl RelayBrowser {
     }
 
     /// The session's tabs as the extension lists them: id, title, url, whether it is the window's selected tab.
-    async fn listed(&self) -> Result<Vec<(i64, String, String)>> {
+    async fn listed(&self) -> Result<Vec<(i64, String, String, bool)>> {
         let reply = self.inner.req("tabs.list", json!({})).await?;
         Ok(reply
             .get("tabs")
@@ -364,7 +361,12 @@ impl RelayBrowser {
                 list.iter()
                     .filter_map(|t| {
                         let id = t.get("tab").and_then(Value::as_i64)?;
-                        Some((id, str_of(t, "title").to_string(), str_of(t, "url").to_string()))
+                        Some((
+                            id,
+                            str_of(t, "title").to_string(),
+                            str_of(t, "url").to_string(),
+                            t["untouched"].as_bool().unwrap_or(false),
+                        ))
                     })
                     .collect()
             })
@@ -372,14 +374,14 @@ impl RelayBrowser {
     }
 
     /// Brings the local tab order in line with the browser's list: new ones are appended, gone ones dropped.
-    fn reconcile(&self, listed: &[(i64, String, String)]) {
+    fn reconcile(&self, listed: &[(i64, String, String, bool)]) {
         let mut st = lock(&self.inner.state);
         let live: HashSet<i64> = listed.iter().map(|t| t.0).collect();
         let gone: Vec<i64> = st.tabs.iter().copied().filter(|t| !live.contains(t)).collect();
         for tab in gone {
             forget(&mut st, tab);
         }
-        for (tab, _, _) in listed {
+        for (tab, _, _, _) in listed {
             if !st.tabs.contains(tab) {
                 st.tabs.push(*tab);
             }
@@ -391,6 +393,23 @@ impl RelayBrowser {
 
     /// A new tab in nexo's tab group, made the active one; returns its index.
     async fn open_tab(&self, url: &str) -> Result<usize> {
+        if url != "about:blank" {
+            let listed = self.listed().await?;
+            self.reconcile(&listed);
+            if let Some((tab, _, _, _)) =
+                listed.iter().find(|(_, _, url, untouched)| *untouched && url == "about:blank")
+            {
+                let tab = *tab;
+                self.inner.req("tabs.activate", json!({"tab": tab})).await?;
+                let index = {
+                    let mut st = lock(&self.inner.state);
+                    st.current = Some(tab);
+                    st.tabs.iter().position(|t| *t == tab).unwrap_or(0)
+                };
+                self.go(tab, &normalize(url)).await?;
+                return Ok(index);
+            }
+        }
         let reply = self.inner.req("tabs.create", json!({"url": "about:blank"})).await?;
         let tab = reply
             .get("tab")
@@ -431,7 +450,10 @@ impl RelayBrowser {
     }
 
     pub async fn navigate(&self, url: &str) -> Result<()> {
-        self.go(self.tab()?, &normalize(url)).await
+        match self.tab() {
+            Ok(tab) => self.go(tab, &normalize(url)).await,
+            Err(_) => self.open_tab(url).await.map(|_| ()),
+        }
     }
 
     /// PNG bytes of the viewport, or of the whole page (up to 16000 px tall).
@@ -667,7 +689,7 @@ impl RelayBrowser {
         stopped.and(summary)
     }
 
-    /// Ends the session: the debugger is detached and the tabs nexo opened stay open in the browser.
+    /// Ends the session: untouched blank tabs are closed; pages stay open for the person.
     pub async fn close(self) -> Result<()> {
         let recording = lock(&self.inner.state).sink.take();
         if let (Some(sink), Ok(tab)) = (recording, self.tab()) {

@@ -10,7 +10,7 @@ function worker() {
   const event = () => ({ addListener() {} });
   const sent = [];
   const chrome = {
-    tabs: { onCreated: event(), onRemoved: event() },
+    tabs: { onCreated: event(), onRemoved: event(), onUpdated: event() },
     debugger: { onEvent: event(), onDetach: event() },
     alarms: { create() {}, onAlarm: event() },
     runtime: { onStartup: event(), onInstalled: event() },
@@ -63,4 +63,35 @@ test('Cancel revokes access and a subsequent grant cannot undo it', async () => 
   // A fresh session is intentionally a new grant, not a persistent browser-wide ban.
   run('openSession("s2", "new"); askConsent("s2")');
   assert.equal(sent.pop().ok, true);
+});
+
+test('tab creation retries a normal window and never creates a window when one exists', async () => {
+  const { run } = worker();
+  run(`
+    openSession('s', 'test');
+    globalThis.calls = [];
+    chrome.tabs.create = async (p) => { calls.push(p); if (!p.windowId) throw Error('popup'); return {id: 8, windowId:p.windowId}; };
+    chrome.windows = { getAll: async () => [{id:1}, {id:2, focused:true}], create: async () => { throw Error('unexpected window'); } };
+    chrome.debugger.attach = async () => {};
+    chrome.tabGroups = { query: async () => [], update: async () => {} };
+    chrome.tabs.group = async () => 1;
+  `);
+  await run(`createTab('s', sessions.get('s'))`);
+  assert.equal(run('calls.length'), 2);
+  assert.equal(run('calls[1].windowId'), 2);
+});
+
+test('session release removes only never-navigated blank tabs', async () => {
+  const { run } = worker();
+  run(`
+    openSession('s', 'test');
+    own('s', sessions.get('s'), 1); own('s', sessions.get('s'), 2); own('s', sessions.get('s'), 3);
+    sessions.get('s').blanks.add(1); sessions.get('s').blanks.add(2);
+    globalThis.removed = [];
+    chrome.tabs.get = async (id) => ({url: id === 2 ? 'https://example.com' : 'about:blank'});
+    chrome.tabs.remove = async (id) => { removed.push(id); };
+    closeSession('s');
+  `);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(Array.from(run('removed')), [1]);
 });

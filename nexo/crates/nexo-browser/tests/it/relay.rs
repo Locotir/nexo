@@ -13,7 +13,7 @@ use nexo_browser::{browsers, Error, RecordOptions, RelayBrowser, Wait};
 use nexo_relay::chunk::{self, Reassembler};
 use nexo_relay::{endpoint, frame, token, Dirs};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,7 @@ struct TabMap {
     ids: HashMap<i64, (String, String)>,
     by_session: HashMap<String, i64>,
     by_target: HashMap<String, i64>,
+    blanks: HashSet<i64>,
 }
 
 /// What the real extension does with `chrome.debugger`, done with raw commands, plus a log of what it was asked.
@@ -80,6 +81,7 @@ impl Fake {
             "tabs.create" => {
                 let r = self.cdp.call("Target.createTarget", json!({"url": "about:blank"}), None).await?;
                 let tab = self.attach(r["targetId"].as_str().ok_or("no target")?).await?;
+                self.tabs.lock().unwrap().blanks.insert(tab);
                 Ok(json!({"tab": tab}))
             }
             "tabs.list" => {
@@ -91,7 +93,7 @@ impl Fake {
                     .flatten()
                     .filter_map(|i| {
                         let tab = t.by_target.get(i["targetId"].as_str()?)?;
-                        Some(json!({"tab": tab, "title": i["title"], "url": i["url"], "active": false}))
+                        Some(json!({"tab": tab, "title": i["title"], "url": i["url"], "active": false, "untouched": t.blanks.contains(tab) && i["url"] == "about:blank"}))
                     })
                     .collect();
                 Ok(json!({"tabs": list}))
@@ -126,6 +128,9 @@ impl Fake {
                 self.reached.fetch_add(1, Ordering::SeqCst);
                 let (_, session) = self.ids(p["tab"].as_i64().ok_or("no tab")?)?;
                 let method = p["method"].as_str().ok_or("no method")?;
+                if method == "Page.navigate" && p["params"]["url"] != "about:blank" {
+                    self.tabs.lock().unwrap().blanks.remove(&p["tab"].as_i64().ok_or("no tab")?);
+                }
                 self.cdp.call(method, p["params"].clone(), Some(&session)).await
             }
             other => Err(format!("unknown request {other}")),
@@ -358,8 +363,7 @@ async fn drives_the_page_and_keeps_to_its_own_tabs() {
 
     // The person's own tab (Chrome's first one) is not listed and is not touched.
     let tabs = b.tabs().await.unwrap();
-    assert_eq!(tabs.len(), 1, "{tabs:?}");
-    assert!(tabs[0].active);
+    assert!(tabs.is_empty(), "{tabs:?}");
 
     b.navigate(&format!("{base}/")).await.unwrap();
     let text = b.read_text(None).await.unwrap();
@@ -543,9 +547,9 @@ async fn two_sessions_do_not_see_each_others_tabs() {
     assert_eq!(b.others(), ["agent-a"]);
     a.navigate(&format!("http://127.0.0.1:{}/second", rig.port)).await.unwrap();
     assert_eq!(a.tabs().await.unwrap().len(), 1);
-    assert_eq!(b.tabs().await.unwrap().len(), 1);
+    assert_eq!(b.tabs().await.unwrap().len(), 0);
     assert_eq!(a.tabs().await.unwrap()[0].title, "Second page");
-    assert_eq!(b.tabs().await.unwrap()[0].url, "about:blank");
+
     let (found, _) = browsers(&rig.dirs).await;
     assert_eq!(found[0].in_use.len(), 2, "{found:?}");
     a.close().await.unwrap();
@@ -564,4 +568,18 @@ async fn closing_the_browser_ends_the_session_with_a_clear_error() {
     until("the session to notice", || async move { !br.is_alive() }).await;
     let err = b.navigate("about:blank").await.unwrap_err().to_string();
     assert!(err.contains("closed") || err.contains("connection"), "{err}");
+}
+
+#[tokio::test]
+async fn lazy_tabs_and_reuse_of_untouched_blank() {
+    let rig = rig_or_skip!(true);
+    let b = RelayBrowser::connect(&rig.dirs, None, "agent-one").await.unwrap();
+    assert!(b.tabs().await.unwrap().is_empty());
+    let url = format!("http://127.0.0.1:{}/", rig.port);
+    assert_eq!(b.tab_new(&url).await.unwrap(), 0);
+    assert_eq!(b.tabs().await.unwrap().len(), 1);
+    assert_eq!(b.tab_new("about:blank").await.unwrap(), 1);
+    assert_eq!(b.tab_new(&url).await.unwrap(), 1);
+    assert_eq!(b.tabs().await.unwrap().len(), 2);
+    b.close().await.unwrap();
 }
