@@ -29,7 +29,7 @@ impl Tool for ControlTool {
     }
     fn spec(&self) -> ToolSpec {
         let (description, properties) = if self.name == "goal" {
-            ("Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.", json!({"action":{"type":"string","enum":["set","clear","pause","resume","show"]},"text":{"type":"string","description":"Goal text for set."}}))
+            ("Manage this session's goal. Setting or resuming a goal may start further model turns. Future tool calls require their own permissions.", json!({"action":{"type":"string","enum":["set","clear","pause","resume","show","done","wait"]},"text":{"type":"string","description":"Goal text for set; what the person must answer or do for wait."}}))
         } else if self.name == "monitor" {
             ("Monitor an existing background bash job, including retained output and jobs that have already finished, and deliver output automatically as untrusted context when idle. Start commands with bash, which applies bash permissions. Session-local and bounded.", json!({"action":{"type":"string","enum":["create","list","show","resume","cancel"]},"id":{"type":"integer","minimum":1,"description":"Existing shell job ID. Show inspects bounded output. Resume discards the uncertain failed delivery, retaining later output; never restarts the job."}}))
         } else {
@@ -124,6 +124,28 @@ pub(super) async fn handle(rt: &mut Runtime, req: Request) {
             "resume" => {
                 resume_goal(&rt.state, true).await;
                 ToolOutput::ok("goal resume requested")
+            }
+            "done" | "wait" => {
+                let mut st = rt.state.lock().await;
+                if st.goal.is_none() {
+                    ToolOutput::ok("no goal")
+                } else if !st.goal_state.is_active() {
+                    ToolOutput::ok("goal is not active")
+                } else if action == "wait"
+                    && !req
+                        .args
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| !s.trim().is_empty() && s.len() <= 16000)
+                {
+                    ToolOutput::error("wait text must be 1–16000 bytes")
+                } else if action == "done" {
+                    goal_to(&mut st, GoalState::Done, "goal met · /goal resume reopens it, /goal off clears it".into());
+                    ToolOutput::ok("goal met")
+                } else {
+                    goal_to(&mut st, GoalState::Waiting, String::new());
+                    ToolOutput::ok("goal waiting for the person")
+                }
             }
             "show" => {
                 let st = rt.state.lock().await;

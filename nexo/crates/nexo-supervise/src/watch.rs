@@ -286,7 +286,12 @@ fn claims_done(reply: &str) -> bool {
 
 /// What the end of a turn shows: `history` is the slice from the start of the request, `reply` the last words.
 pub fn scan_end(history: &[Message], reply: &str) -> Vec<Finding> {
-    if hands_over(reply) {
+    // Only an accepted wait call hands the word over; rejected or inactive calls do not.
+    let goal_wait = steps(history).iter().any(|s| {
+        s.name == "goal" && s.args.get("action").and_then(Value::as_str) == Some("wait") && s.result == Some(false)
+            && history.iter().flat_map(|m| &m.content).any(|p| matches!(p, Part::ToolResult { call_id, content, .. } if call_id == &s.id && content.iter().any(|p| p.as_text() == Some("goal waiting for the person"))))
+    });
+    if goal_wait || hands_over(reply) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -449,6 +454,15 @@ mod tests {
         let back = json!({"path": "a.rs", "edits": [{"old_string": "two", "new_string": "one"}]});
         let h = hist(&[("edit", many, false, "ok"), ("edit", back, false, "ok")]);
         assert_eq!(kinds(&scan_rounds(&h)), ["undo"]);
+    }
+
+    #[test]
+    fn accepted_wait_tool_hands_over_but_inactive_or_rejected_does_not() {
+        let pending = ("todo", json!({"items":[{"content":"work", "status":"pending"}]}), false, "ok");
+        let wait = |err, result| ("goal", json!({"action":"wait", "text":"choose"}), err, result);
+        assert!(scan_end(&hist(&[pending.clone(), wait(false, "goal waiting for the person")]), "Stopped.").is_empty());
+        assert!(!scan_end(&hist(&[pending.clone(), wait(false, "goal is not active")]), "Stopped.").is_empty());
+        assert!(!scan_end(&hist(&[pending, wait(true, "goal waiting for the person")]), "Stopped.").is_empty());
     }
 
     #[test]

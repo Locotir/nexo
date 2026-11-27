@@ -440,7 +440,9 @@ async fn on_clear(rt: &mut Runtime) {
 /// files, when that turn ends, and the turn's reply does not judge it.
 pub(super) async fn on_set_goal(rt: &mut Runtime, text: Option<String>, attachments: Vec<Attachment>) {
     if let Some(goal) = set_goal(&rt.state, text).await {
-        check_goal(&rt.state, &goal).await;
+        let state = rt.state.clone();
+        let checked_goal = goal.clone();
+        tokio::spawn(async move { check_goal(&state, &checked_goal).await });
         let request = format!("{GOAL_SET_MARK} {goal}");
         if rt.turn.is_some() {
             {

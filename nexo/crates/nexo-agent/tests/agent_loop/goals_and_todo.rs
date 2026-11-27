@@ -955,3 +955,18 @@ async fn a_failed_goal_check_falls_back_to_the_goal_as_typed_without_a_warning()
         notices(&evs)
     );
 }
+
+#[tokio::test]
+async fn slow_goal_check_does_not_delay_the_turn() {
+    let dir = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![Reply::Hang(vec![]), Reply::Events(text("working\nGOAL DONE"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.goal_check = true;
+    let mut r = start(client, cfg, None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("work".into()), attachments: vec![] });
+    let events =
+        tokio::time::timeout(std::time::Duration::from_secs(3), r.turn()).await.expect("goal turn blocked by check");
+    assert!(text_of(&events).contains("working"));
+    r.stop().await;
+}

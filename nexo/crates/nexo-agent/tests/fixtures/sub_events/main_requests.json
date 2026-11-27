@@ -72,12 +72,14 @@
                 "clear",
                 "pause",
                 "resume",
-                "show"
+                "show",
+                "done",
+                "wait"
               ]
             },
             "text": {
               "type": "string",
-              "description": "Goal text for set."
+              "description": "Goal text for set; what the person must answer or do for wait."
             }
           },
           "required": [
@@ -354,12 +356,14 @@
                 "clear",
                 "pause",
                 "resume",
-                "show"
+                "show",
+                "done",
+                "wait"
               ]
             },
             "text": {
               "type": "string",
-              "description": "Goal text for set."
+              "description": "Goal text for set; what the person must answer or do for wait."
             }
           },
           "required": [
@@ -667,12 +671,14 @@
                 "clear",
                 "pause",
                 "resume",
-                "show"
+                "show",
+                "done",
+                "wait"
               ]
             },
             "text": {
               "type": "string",
-              "description": "Goal text for set."
+              "description": "Goal text for set; what the person must answer or do for wait."
             }
           },
           "required": [
@@ -998,12 +1004,14 @@
                 "clear",
                 "pause",
                 "resume",
-                "show"
+                "show",
+                "done",
+                "wait"
               ]
             },
             "text": {
               "type": "string",
-              "description": "Goal text for set."
+              "description": "Goal text for set; what the person must answer or do for wait."
             }
           },
           "required": [

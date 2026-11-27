@@ -155,3 +155,41 @@ async fn model_loop_prompt_is_not_presented_as_person_words() {
     assert!(!msg.contains(nexo_core::agent::PERSON_MARK), "{msg}");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn goal_signal_calls_change_only_active_goals() {
+    for action in ["done", "wait"] {
+        let d = test_tmpdir().unwrap();
+        let args = json!({"action":action, "text":"Please choose"});
+        let client = Scripted::new(vec![
+            Reply::Events(call("signal", "goal", args.clone())),
+            Reply::Events(call("again", "goal", args)),
+            Reply::Events(text("Finished speaking.")),
+        ]);
+        let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
+        r.send(AgentCommand::SetGoal { text: Some("work".into()), attachments: vec![] });
+        let evs = r.turn().await;
+        assert!(!done(&evs, "signal").is_error);
+        assert!(done(&evs, "again").content.contains("not active"));
+        let expected = if action == "done" { GoalState::Done } else { GoalState::Waiting };
+        assert_eq!(goal_state_of(&evs), Some(expected));
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn goal_signal_without_goal_does_nothing() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("done", "goal", json!({"action":"done"}))),
+        Reply::Events(call("wait", "goal", json!({"action":"wait", "text":"choose"}))),
+        Reply::Events(text("finished")),
+    ]);
+    let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(done(&evs, "done").content, "no goal");
+    assert_eq!(done(&evs, "wait").content, "no goal");
+    assert!(goal_state_of(&evs).is_none());
+    r.stop().await;
+}

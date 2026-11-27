@@ -65,11 +65,11 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>, brief: Option<&str>) -
     }
     format!(
         "{system}\n\n{head}\nKeep working towards this goal across turns. `{GOAL_CONTINUE_MARK}` comes from the loop, \
-         not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
-         single line GOAL DONE; if nothing is left to do, say so and end with that line. When you cannot go on \
-         without the person (a question only they can answer, a decision, an approval, access you lack), ask it and \
-         end your reply with the single line GOAL WAIT: <what you need>. This line is hidden and shown as a badge; put the \
-         question for the person above it. Do not stop for what you \
+         not the person: the goal is not marked done yet, so go on. When it is fully met, call the goal tool \
+         with action done; if nothing is left to do, say so. When you cannot go on without the person \
+         (a question only they can answer, a decision, an approval, access you lack), ask them in your reply \
+         and call the goal tool with action wait and text describing what you need. Do not write signal lines. \
+         When the goal is met or paused, do not signal anything. Do not stop for what you \
          can decide or check yourself. A message the person sends while you work comes first: answer it plainly, \
          then go on. Only an explicit new /goal changes the goal."
     )
@@ -906,8 +906,8 @@ mod goal_tests {
     fn the_goal_is_pinned_at_the_end() {
         assert_eq!(with_goal("base", None, None), "base");
         let s = with_goal("base", Some("ship it"), None);
-        assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("single line GOAL DONE"));
-        assert!(s.contains("single line GOAL WAIT") && !s.contains("goal_brief"));
+        assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("with action done"));
+        assert!(s.contains("with action wait") && !s.contains("goal_brief"));
         assert!(s.contains("`[goal: continue]` comes from the loop"));
     }
 
