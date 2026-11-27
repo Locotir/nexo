@@ -163,18 +163,20 @@ fn runs(r: &Reply, h: &[Value]) -> Result<Vec<Option<usize>>, String> {
         return Err(format!("{} cells for {} messages", cells.len(), h.len()));
     }
     let mut map = vec![None; h.len()];
-    let (mut k, mut prev): (usize, Option<&str>) = (0, None);
+    let (mut k, mut prev): (usize, Option<(&str, bool)>) = (0, None);
     let mut n = 0;
     for i in 0..h.len() {
         if cells[i].state == State::Out {
             continue;
         }
         let ro = role(&h[i]);
-        if prev != Some(ro) {
+        // Tool results and a following person ask must stay separate even with the same role.
+        let run = (ro, ro == "user" && has_result(&h[i]));
+        if prev != Some(run) {
             if prev.is_some() {
                 k += 1;
             }
-            prev = Some(ro);
+            prev = Some(run);
             n += 1;
             if r.view.get(k).map(role) != Some(ro) {
                 return Err(format!("run {k} has role {ro} but the view message does not"));

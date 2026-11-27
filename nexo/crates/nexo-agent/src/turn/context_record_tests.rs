@@ -1424,3 +1424,110 @@ async fn a_curator_view_that_passes_the_window_by_a_little_is_cut_again_not_refu
     assert!(st.est_sent < 8000, "{} estimated tokens", st.est_sent);
     std::env::remove_var("NEXO_DATA_DIR");
 }
+
+/// Offline diagnostic; takes a scratch copy, never the live session directory.
+#[tokio::test]
+#[ignore]
+#[allow(clippy::await_holding_lock)]
+async fn copied_session_admission_diagnostic() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = std::env::var("NEXO_REPRO_SESSION").expect("scratch session path");
+    assert!(!path.contains("/.nexo/"));
+    let lines: Vec<serde_json::Value> =
+        std::fs::read_to_string(path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let messages: Vec<Message> = lines
+        .iter()
+        .filter(|v| v["type"] == "message")
+        .map(|v| serde_json::from_value(v["message"].clone()).unwrap())
+        .collect();
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    let mut cfg = ProviderConfig::new("openai-responses", "http://offline.invalid", None);
+    cfg.models = vec!["gpt-6.2-astra".into()];
+    st.target = Target::new("codex", cfg.clone(), "gpt-6.2-astra");
+    st.limits.context_window = Some(272_000);
+    st.history.replace(messages.clone());
+    st.policy = Box::new(context::BuiltIn::lenient("relations=1"));
+    st.system = "s".repeat(4_799 * 4);
+    st.tools = nexo_tools::builtin();
+    let view = start::view_now(&mut st, 0).await;
+    println!("RAW messages={} latest_person={:?} estimate={} CURATOR messages={} latest_person={:?} estimate={} view_tokens={}", messages.len(), nexo_core::message::latest_person(&messages), nexo_core::message::estimate_tokens(&messages), view.messages.len(), nexo_core::message::latest_person(&view.messages), nexo_core::message::estimate_tokens(&view.messages), view.tokens);
+    let mut req = ModelRequest::new("gpt-6.2-astra", st.system.clone(), view.messages);
+    req.tools = st.tools.specs();
+    req.max_tokens = 256;
+    let old_opaque: u64 = req
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|p| {
+            matches!(p, Part::Reasoning { .. } | Part::RedactedReasoning { .. }) && !p.is_foreign_reasoning(&req.model)
+        })
+        .map(|p| serde_json::to_vec(p).unwrap().len() as u64)
+        .sum();
+    println!(
+        "OLD_ALGORITHM conversation={} opaque_reserve={} total_with_reported_fixed_and_reply={}",
+        nexo_core::message::estimate_tokens(&req.messages) + old_opaque,
+        old_opaque,
+        nexo_core::message::estimate_tokens(&req.messages) + old_opaque + 4_799 + 13_908 + 256
+    );
+    let body = nexo_providers::openai_responses::OpenAiResponses::body(&cfg, &req);
+    println!(
+        "WIRE bytes={} input_bytes={} reasoning_items={}",
+        serde_json::to_vec(&body).unwrap().len(),
+        serde_json::to_vec(&body["input"]).unwrap().len(),
+        body["input"].as_array().unwrap().iter().filter(|p| p["type"] == "reasoning").count()
+    );
+    for (i, m) in req.messages.iter().enumerate() {
+        let parts: Vec<_> = m
+            .content
+            .iter()
+            .map(|p| {
+                let v = serde_json::to_value(p).unwrap();
+                (v["type"].as_str().unwrap().to_string(), serde_json::to_vec(p).unwrap().len())
+            })
+            .collect();
+        println!(
+            "MESSAGE {} {:?} generic={} opaque={} parts={:?}",
+            i + 1,
+            m.role,
+            nexo_core::message::message_tokens(m),
+            nexo_core::message::reasoning_tokens(m),
+            parts
+        );
+    }
+    let result = super::window_fit::fit(&mut st, &mut req, None, 0).await;
+    println!(
+        "FIT result={result:?} est_sent={} system={} tools={} conversation={} reply={}",
+        st.est_sent,
+        req.system.len() / 4,
+        serde_json::to_vec(&req.tools).unwrap().len() / 4,
+        st.est_sent.saturating_sub(start::fixed_tokens(&req.system, &req.tools)),
+        req.max_tokens
+    );
+    std::env::remove_var("NEXO_DATA_DIR");
+}
+
+#[tokio::test]
+async fn curator_preserves_person_frontier_after_results_for_admission_and_wire() {
+    let opaque = Part::Reasoning {
+        text: "summary".into(),
+        signature: None,
+        encrypted: Some("E".repeat(300_000)),
+        model: Some("m".into()),
+    };
+    let history = vec![
+        Message::user("Inspect the report."),
+        Message::new(Role::Assistant, vec![opaque, Part::tool_call("c", "read", serde_json::json!({}))]),
+        Message::tool_results(vec![Part::tool_result("c", "report", false)]),
+        Message::user("Continue with the report."),
+    ];
+    let mut curator = context::BuiltIn::lenient("relations=1");
+    let view = curator.view(0, &history).await.unwrap();
+    assert_eq!(nexo_core::message::latest_person(&view.messages), Some(view.messages.len() - 1));
+    let req = ModelRequest::new("m", "", view.messages);
+    let cfg = ProviderConfig::new("openai-responses", "http://offline.invalid", None);
+    let body = nexo_providers::openai_responses::OpenAiResponses::body(&cfg, &req);
+    assert!(!serde_json::to_string(&body).unwrap().contains("encrypted_content"));
+    assert!(nexo_core::message::estimate_tokens(&req.messages) < 1000);
+}

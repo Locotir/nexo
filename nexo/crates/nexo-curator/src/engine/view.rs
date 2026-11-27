@@ -455,7 +455,7 @@ impl Engine {
         self.sizes_now().iter().skip(from).sum()
     }
 
-    /// The view: the visible messages, consecutive ones of the same role joined.
+    /// The view: consecutive same-role messages joined without hiding person/ tool-result boundaries.
     pub fn render(&mut self) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::new();
         for &mi in self.visible().iter() {
@@ -464,7 +464,13 @@ impl Engine {
                 None => self.tr.msgs[mi].clone(),
             };
             if let Some(prev) = out.last_mut() {
-                if prev.get("role") == m.get("role") {
+                // A person message after tool results starts a new turn. Combining
+                // them hides that frontier from serializers (and their token guards),
+                // causing historical opaque reasoning to be sent and reserved again.
+                let results = |v: &Value| blocks(v.get("content")).iter().any(|b| get_str(b, "type") == "tool_result");
+                if prev.get("role") == m.get("role")
+                    && (m.get("role").and_then(Value::as_str) != Some("user") || results(prev) == results(&m))
+                {
                     let mut bs = blocks(prev.get("content")).into_owned();
                     bs.extend(blocks(m.get("content")).iter().cloned());
                     prev["content"] = Value::Array(bs);
