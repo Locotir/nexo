@@ -96,7 +96,24 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     // curator cuts it again, smaller each time by what the last view went over, before any refusal
     let mut shrink = 0u64;
     let mut tries = 0;
-    while used + u64::from(useful) > window
+    // Prefer image-only historical recovery to a curator view that may
+    // omit an entire tool result. Only use it when it already fits the reply floor.
+    let mut recovered_images = false;
+    if used + u64::from(useful) > window {
+        if let Some(messages) = historical_image_view(st, notes) {
+            let tokens = estimate(&messages);
+            let recovered = provider_tokens(tokens, ratio);
+            if recovered + u64::from(floor) <= window {
+                req.messages = messages;
+                st.est_sent = tokens;
+                st.fit_tokens = Some(nexo_core::message::estimate_tokens(&req.messages));
+                used = recovered;
+                recovered_images = true;
+            }
+        }
+    }
+    while !recovered_images
+        && used + u64::from(useful) > window
         && (!fitted || used + u64::from(floor) > window)
         && tries < FIT_TRIES
         && !known_too_long(st)
