@@ -45,11 +45,25 @@ impl Palette {
                     }
                 }
                 let names: Vec<String> = self.custom.iter().map(|(n, _)| n.clone()).collect();
+                let mut by_name = Vec::new();
                 for (k, (i, h)) in fuzzy::rank_hits(&self.query, &names).into_iter().enumerate() {
+                    by_name.push(i);
                     ranked.push(COMMANDS.len() + i);
                     self.aliases.push(None);
                     self.hits.push(h);
                     self.groups.push((blank && k == 0).then(|| "your commands".to_string()));
+                }
+                // your own commands are found by their description too, after the name matches
+                if !blank {
+                    let q = self.query.trim().to_lowercase();
+                    for (i, (_, d)) in self.custom.iter().enumerate() {
+                        if !by_name.contains(&i) && commands::in_description(&q, d) {
+                            ranked.push(COMMANDS.len() + i);
+                            self.aliases.push(None);
+                            self.hits.push(Vec::new());
+                            self.groups.push(None);
+                        }
+                    }
                 }
                 self.ranked = ranked;
             }

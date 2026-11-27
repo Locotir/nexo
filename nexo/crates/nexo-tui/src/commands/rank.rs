@@ -17,8 +17,9 @@ pub struct Ranked {
 
 /// The commands `query` can mean, best first: a prefix of a primary name,
 /// then a prefix of an alias, then a prefix of an old name that still works,
-/// then a fuzzy match of the name, then of an alias; ties keep the table's
-/// order. An empty query lists everything, by group.
+/// then a fuzzy match of the name, then of an alias, then every word of the
+/// query found in the description; ties keep the table's order. An empty
+/// query lists everything, by group.
 pub fn rank(query: &str) -> Vec<Ranked> {
     let q = query.trim().to_ascii_lowercase();
     if q.is_empty() {
@@ -30,7 +31,7 @@ pub fn rank(query: &str) -> Vec<Ranked> {
             .find(|(old, p, _)| *p == parent && q.chars().count() >= HIDDEN_MIN && old.starts_with(&q))
             .map(|(old, _, _)| *old)
     };
-    let mut tiers: [Vec<Ranked>; 5] = Default::default();
+    let mut tiers: [Vec<Ranked>; 6] = Default::default();
     for (index, s) in COMMANDS.iter().enumerate() {
         if s.name.starts_with(&q) {
             tiers[0].push(Ranked { index, via_alias: None, hits: hits(&q, s.name) });
@@ -42,9 +43,18 @@ pub fn rank(query: &str) -> Vec<Ranked> {
             tiers[3].push(Ranked { index, via_alias: None, hits: hits(&q, s.name) });
         } else if let Some(a) = s.aliases.iter().find(|a| subsequence(&q, a)) {
             tiers[4].push(Ranked { index, via_alias: Some(a), hits: hits(&q, a) });
+        } else if in_description(&q, s.description) {
+            tiers[5].push(Ranked { index, via_alias: None, hits: Vec::new() });
         }
     }
     tiers.into_iter().flatten().collect()
+}
+
+/// Whether every word of `q` (already lowercase) appears in `description`.
+pub fn in_description(q: &str, description: &str) -> bool {
+    let d = description.to_lowercase();
+    let mut words = q.split_whitespace().peekable();
+    words.peek().is_some() && words.all(|w| d.contains(w))
 }
 
 /// Whether the characters of `q` appear in `s` in order.

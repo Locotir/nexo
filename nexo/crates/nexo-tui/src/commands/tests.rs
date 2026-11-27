@@ -250,6 +250,10 @@ fn ranks_primary_names_before_aliases_before_fuzzy_matches() {
     assert_eq!(first("q"), ("quit", None), "the name's own prefix, not the alias");
     assert_eq!(first("cmpct"), ("compact", None), "a fuzzy name still matches");
     assert!(rank("zzz").is_empty());
+    let by_desc: Vec<_> = rank("search session").iter().map(|r| COMMANDS[r.index].name).collect();
+    assert!(by_desc.contains(&"explore"), "every word found in the description: {by_desc:?}");
+    let tail = rank("curator");
+    assert!(tail.iter().any(|r| COMMANDS[r.index].name == "explore" && r.hits.is_empty()), "a description match lights no letters");
     assert_eq!(rank("").len(), COMMANDS.len());
     assert_eq!(rank("cmpct")[0].hits, vec![0, 2, 3, 5, 6], "the letters it matched");
     assert_eq!(rank("ses")[0].hits, vec![0, 1, 2], "in the alias it matched through");
