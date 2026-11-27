@@ -4,6 +4,10 @@ Ranked by what each should save for the work it takes. `FEATURES.md` lists what 
 Effort: S (a day or less), M (a few days), L (a week or more). "Measure" says how to tell it worked; most
 can be measured offline on recorded sessions (of several harnesses, nexo among them) before any live run.
 
+### Proposed: account-aware model and effort discovery
+
+Discover capabilities per provider, login type and account. Codex first: verify the authenticated ChatGPT backend `GET /models?client_version=…` with nexo's own session; parse `models[].slug` and `supported_reasoning_levels` separately from the OpenAI API `data` schema. Cache efforts with model IDs, source and freshness; never cache credentials. Label offline/stale and configured-only entries. Verify the actual Responses payload for `max`; do not silently translate it to `xhigh`. Investigate `ultra` delegation separately from reasoning effort. For Claude Code, Grok Build and others, verify each provider's supported discovery mechanism before advertising account availability. Acceptance: schema fixtures, cache round-trip, account switch, expired login, outgoing effort and a fresh authenticated refresh distinguishable from a cached CLI result. No live entitlement check claimed here.
+
 Status as of 2026-11-16, checked against the code. "Shipped" means the behaviour in the idea exists and has a test; "partial" says what exists and what is missing; "open" means nothing in the code does it. Ideas 1 to 14 below keep their original wording, so a "partial" row is the place to read what is left.
 
 | # | Status | What the code does today |
@@ -56,3 +60,109 @@ Make `/panel` read like a mobile agent dashboard: one card per live session with
 (working, waiting for you, done, blocked), the latest conclusion in one line, a progress mark, and the
 requests pinned to it; open a card for its events, todo and mail; message, pause or resume from the card.
 Conclusions first, no step-by-step log on the card. To be designed before any code.
+
+## Propuestas de apps para vender (Microsoft Store y App Store)
+
+Datos tomados el 2026-11-18. Fuentes: API pública de apps.microsoft.com (búsqueda, fichas y reseñas, EE. UU.),
+`StorePrep/portfolio/SALES.md`, `StorePrep/research/ideas/NICHOS-20261118.md` y webs citadas.
+[V] = lo he visto en la fuente. [I] = deducido, falta probarlo.
+
+### Lo que dicen tus ventas (30 días, 278 $ brutos, 25 ventas)
+
+| Qué vende | Qué no vende |
+|---|---|
+| Herramientas generales y grandes a 20-27 $ con prueba: PDF Pro 120,85 $, Video Pro 72,46 $, CAD Tools 27,16 $, Docs Pro 24,33 $ [V] | Visores de nicho: INDD Viewer, AI File Viewer, Folio. Tienen 8-12 pruebas cada uno y 0 ventas [V] |
+
+Regla que sale de aquí: trabajo que mucha gente busca, líder flojo en la Store, precio de 20-40 $ con prueba.
+El tráfico orgánico llega solo si la palabra que busca la gente («iphone backup», «transcribe audio») te pone arriba.
+
+### Ranking
+
+| # | App | Tienda | Precio | Esfuerzo | Por qué gana |
+|---|---|---|---|---|---|
+| 1 | Gestor de iPhone para Windows, pago único | Microsoft | 39,99 $ | L | La app oficial de Apple tiene 2,2 ★ y la de pago líder pasó a suscripción |
+| 2 | Transcriptor local de audio y vídeo | Microsoft | 24,99 $ | M | MacWhisper vende mucho en Mac y no existe en Windows |
+| 3 | Foto de pasaporte con precio claro | App Store | 4,99 $ | S | Los líderes cobran 18-20 $ por foto y tienen un 34 % de reseñas malas |
+| 4 | Árbol genealógico sin conexión, con póster | Microsoft | 24,99 $ | M | Público fiel durante años; las apps de la Store son flojas |
+
+### 1. Gestor de iPhone para Windows (copia, fotos, mensajes)
+
+Qué hace: copia de seguridad del iPhone sin pedir actualizar iOS, ver la copia por dentro, sacar fotos (HEIC a JPG),
+exportar mensajes y WhatsApp a PDF, pasar música. Todo local, sin cuenta, un solo pago.
+
+Datos:
+- Apple Devices (la app oficial): **2,2 ★ con 1.952 valoraciones**; de sus 100 últimas reseñas (2026-09-05 a 2026-11-18), **90 son de 1-2 ★** [V].
+- Quejas repetidas: «quería hacer una copia, me obligó a actualizar y me bloqueó el iPhone», «no puedo sacar mis archivos», «para pasar una canción me pide otra copia» [V].
+- iTunes: 3,1 ★ con 29.000 valoraciones [V].
+- Rivales en la Store: Coolmuster 4,0 (6 val.), Dr.Fone 3,1 (79), FoneBackup 0 [V]. **No hay ninguno bueno.**
+- iMazing (el líder fuera de la Store) es **solo suscripción desde junio de 2025**: 29,99 $/año un iPhone, 49,99 $/año cinco [V webs de precios]. En r/iMazing piden «licencia para siempre de 40-70 $» [V].
+- Las búsquedas «iphone backup», «iphone transfer» e «iphone manager» devuelven Apple Devices arriba [V]: quien busca ya está enfadado.
+
+Cómo:
+- libimobiledevice (LGPL-2.1, enlace dinámico) habla con el servicio Apple Mobile Device que instala Apple Devices [I, probar en la VM].
+- Reutiliza tu motor PDF para exportar mensajes y tu motor de foto para HEIC.
+
+Riesgos:
+- ⚠️ Necesita el driver de Apple instalado; falta comprobar que una app de la Store puede usarlo [I].
+- ⚠️ Apple puede cambiar el protocolo con una versión de iOS: hay que mantenerla.
+- Legal bajo: son los datos del propio usuario, nunca salen del PC.
+
+### 2. Transcriptor local (audio y vídeo a texto y subtítulos)
+
+Qué hace: arrastras un audio o vídeo, sale el texto con tiempos, quién habla, subtítulos SRT/VTT, Word y PDF.
+Sin internet, sin límite de minutos, un pago.
+
+Datos:
+- MacWhisper (solo Mac, un desarrollador): unas **300.000 copias a 59-64 €** según una web que lo recoge; un rastreador de Gumroad le estima 595.600 ventas [V web, cifras no oficiales].
+- «MacWhisper for Windows» es una búsqueda con artículos propios: no hay versión para Windows [V].
+- Líderes de la Store: Transcribe 4,6 ★ (2.087) y Speech to Text 4,7 (1.004) [V]. Son de nube con límite de minutos: «grabé la reunión y al transcribir salió el muro de pago», «me pide reseña antes de probarla» [V].
+- Rival real: WizWhisp, offline y gratis, 4,8 ★ con **solo 155 valoraciones** [V]. Su queja: corta el texto en trozos de 5-10 segundos [V].
+- Transcriptores de pago en la Store: Quick Transcribe 8,79 $ y Open Transcriber 5,59 $, **0 reseñas** [V].
+
+Cómo:
+- whisper.cpp o Parakeet en local, con GPU o NPU si hay.
+- Editor con el audio sincronizado, párrafos por persona, exportar con tus motores de Docs y PDF.
+- Mejor que WizWhisp en: quién habla, carpeta entera de una vez, editor, párrafos limpios.
+
+Riesgos:
+- ⚠️ Modelos pesados (de 150 MB a 1,5 GB): descarga al primer uso.
+- Ya lo tenías apuntado (I026, I209, I929) pero sin estudiar; con estos datos merece MARKET.md.
+
+### 3. Foto de pasaporte y carné (iPhone)
+
+Qué hace: foto con el iPhone, recorte por país, fondo blanco, hoja 4x6 para imprimir en una tienda por céntimos.
+Precio a la vista desde la primera pantalla, fotos ilimitadas.
+
+Datos (de `NICHOS-20261118.md`):
+- 4 líderes con **16.700 a 25.500 valoraciones** cada uno [V iTunes].
+- **230 de 677 reseñas de 2026 son de 1-2 ★ (34 %)** [V].
+- Cobran **17,99-20 $ por foto**, a menudo al final del proceso; unas 78 quejas de eso y 45 de «gratis que no lo es» [V].
+
+Cómo: detección de cara de Apple (Vision), plantillas por país, motor de foto propio. Unos 15 días según el estudio.
+
+Riesgos: ⚠️ si la foto es rechazada, la culpa cae en la app. No prometer «aceptación garantizada».
+
+### 4. Árbol genealógico sin conexión, con póster gigante
+
+Qué hace: abre y edita archivos GEDCOM, sin internet, e imprime el árbol en varias hojas A4 con marcas de corte (idea I004).
+
+Datos:
+- En la Store: My Family Tree 4,1 ★ (200), EZ Genealogy 3,2 (17), Family Tree Builder Pro 2,8 (11) [V].
+- Quejas de My Family Tree: se cuelga, «pide internet solo para abrir mi GEDCOM», «la versión vieja era más fácil» [V].
+- Fuera de la Store se paga: RootsMagic 39,95 $, Family Tree Maker unos 80 $ [V webs de reseñas].
+- Quien hace genealogía usa el mismo programa muchos años: cliente para mucho tiempo [I].
+
+Riesgos: ⚠️ demanda en la Store más pequeña que las tres de arriba; ya había un estudio flojo (I441, 19/30).
+
+### No repetir
+
+Scanbird (impresoras y escáner sin drivers) ya está en marcha en StorePrep: sigue siendo buena, no la dupliques.
+
+### Ideas sueltas de antes
+
+- Marcar ventanas del PC para que no salgan en capturas ni compartir pantalla (flag OS, ej Google Meet).
+- Nicho iOS: calculadora tubería fontaneros, examen radioaficionado, calculadora gas instaladores, examen piloto drones, test naturalización alemán, reglas navegación.
+- Impresión: póster grande en varias A4 con marcas corte, fotos carnet por país imprimir A4/10x15, etiquetas envío 4x6 a impresora térmica, calendarios imprimibles.
+- Visores sin programa original: archivos .ai Illustrator, .indd InDesign, .pub Publisher.
+- Oficina sin suscripción: docs, hojas, presentaciones pago único, visor facturas XML.
+- Otras: transcripción local sin conexión, alertas auroras/ríos/terremotos, freno gasto IA devs, app oficina IA local.
