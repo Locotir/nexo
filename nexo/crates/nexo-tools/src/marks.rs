@@ -108,12 +108,14 @@ fn added_with_locale(old: &str, new: &str, locale: bool) -> Option<String> {
 /// Keep unchanged characters, but remove newly inserted invisible controls.
 pub fn strip_added(old: &str, new: &str) -> (String, String) {
     use similar::{ChangeTag, TextDiff};
-    // Myers can be quadratic on rewrites. Never remove anything if the diff is too large.
-    const MAX_DIFF_BYTES: usize = 4096;
+    // A char diff costs memory per character and Myers can be quadratic on rewrites:
+    // above the cap nothing is removed, and the timeout bounds the rest. A timed-out
+    // diff only reports coarser inserts, and marks the old text has are kept anyway.
+    const MAX_DIFF_BYTES: usize = 256 * 1024;
     if old.len().saturating_add(new.len()) > MAX_DIFF_BYTES {
         return (new.to_owned(), String::new());
     }
-    let diff = TextDiff::from_chars(old, new);
+    let diff = TextDiff::configure().timeout(std::time::Duration::from_millis(200)).diff_chars(old, new);
     let mut cleaned = String::with_capacity(new.len());
     let mut removed = BTreeMap::<char, (usize, Vec<usize>)>::new();
     let mut line = 1usize;
