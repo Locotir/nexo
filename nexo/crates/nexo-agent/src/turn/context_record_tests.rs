@@ -1382,3 +1382,45 @@ async fn rewind_reopen_failure_keeps_history_aligned_and_recovers_after_lock_los
     assert_eq!(Session::open_path(&path).unwrap().messages(), expected);
     std::env::remove_var("NEXO_DATA_DIR");
 }
+
+/// The curator's own view is measured in its estimate; admission counts images and opaque reasoning stricter, so a
+/// view can pass the window by a little. With images in the history the request is not refused then: the fitting
+/// curator cuts it again under the window (the view that went over is the request as built here).
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_curator_view_that_passes_the_window_by_a_little_is_cut_again_not_refused() {
+    let _g = crate::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let rt = runtime_in(d.path()).await;
+    let mut st = rt.state.lock().await;
+    st.policy = Box::new(context::BuiltIn::lenient(""));
+    assert!(st.policy.fits_window());
+    st.limits.context_window = Some(8000);
+    st.limits.max_output = None;
+    st.system = "You are a test.".into();
+    let image =
+        Part::Image { source: nexo_core::message::ImageSource::Url { url: "https://example.invalid/shot.png".into() } };
+    let big = "fn main() { println!(\"line\"); }\n".repeat(1200);
+    st.history.replace(vec![
+        Message::new(Role::User, vec![Part::text("look at this screenshot"), image]),
+        Message::assistant("I see a login form."),
+        Message::user("read big.rs"),
+        Message::new(
+            Role::Assistant,
+            vec![Part::text("reading it"), Part::tool_call("c1", "read", serde_json::json!({"path": "big.rs"}))],
+        ),
+        Message::tool_results(vec![Part::tool_result("c1", big.clone(), false)]),
+        Message::assistant("read it"),
+        Message::user("now say hi"),
+    ]);
+    st.turn_start = 6;
+    let (_, _, model) = st.target.get();
+    let mut req = ModelRequest::new(model, st.system.clone(), st.history.to_vec());
+    req.max_tokens = 256;
+    super::window_fit::fit(&mut st, &mut req, None, 0).await.expect("cut again, not refused");
+    let sent = serde_json::to_string(&req.messages).unwrap();
+    assert!(!sent.contains(&big), "the 38 000-char result went whole");
+    assert!(sent.contains("now say hi"), "the person's newest words go as written");
+    assert!(st.est_sent < 8000, "{} estimated tokens", st.est_sent);
+    std::env::remove_var("NEXO_DATA_DIR");
+}

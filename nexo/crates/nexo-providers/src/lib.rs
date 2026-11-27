@@ -33,6 +33,8 @@ pub mod usage;
 pub mod vendors;
 #[cfg(test)]
 mod vendors_pin;
+pub mod wire;
+mod wire_report;
 
 pub use client::{registry, Client, Registry};
 pub use nexo_http::build_client;

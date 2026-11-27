@@ -1,6 +1,13 @@
 use super::*;
 
 pub(super) fn emit(events: &EventTx, ev: AgentEvent) {
+    // `nexo --wire`: what the person was warned of stands in the report beside the requests around it
+    if let AgentEvent::Notice { level: level @ (Level::Warn | Level::Error), text, .. } = &ev {
+        if nexo_providers::wire::on() {
+            let kind = if matches!(level, Level::Error) { "error" } else { "warn" };
+            nexo_providers::wire::note(kind, serde_json::json!({ "text": text }));
+        }
+    }
     let _ = events.send(ev);
 }
 

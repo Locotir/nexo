@@ -1241,6 +1241,7 @@ async fn view_with_map(st: &mut State, extra_tokens: u64, announce_map: bool) ->
         st.policy.prices(p.input, p.cache_read);
     }
     st.policy.history_version(st.history.version());
+    let mut failed = None;
     let mut view = match st.policy.view(system_tokens, &st.history).await {
         Ok(v) => {
             st.view_failed = false;
@@ -1248,6 +1249,7 @@ async fn view_with_map(st: &mut State, extra_tokens: u64, announce_map: bool) ->
         }
         Err(e) => {
             st.view_failed = true;
+            failed = Some(format!("{e:#}"));
             notice(&st.events, Level::Warn, format!("context policy failed ({e}); sending everything"));
             View { messages: st.history.to_vec(), tokens: st.history.tokens(), note: None, memory: None }
         }
@@ -1270,6 +1272,23 @@ async fn view_with_map(st: &mut State, extra_tokens: u64, announce_map: bool) ->
     let last = std::mem::replace(&mut st.last_view, (history_tokens, view.tokens));
     st.fit_tokens = None;
     st.est_sent = system_tokens + view.tokens;
+    if nexo_providers::wire::on() {
+        nexo_providers::wire::note(
+            "view",
+            serde_json::json!({
+                "policy": st.policy.name(),
+                "history_tokens": history_tokens,
+                "view_tokens": view.tokens,
+                "system_tokens": system_tokens,
+                "ceiling": view_ceiling(st),
+                "ratio": st.tok_ratio,
+                "messages_in_view": view.messages.len(),
+                "messages_total": st.history.len(),
+                "failed": failed,
+                "note": view.note,
+            }),
+        );
+    }
     let (label, detail) = crate::context::describe_since(st.policy.as_ref(), history_tokens, view.tokens, Some(last));
     emit(
         &st.events,

@@ -29,6 +29,9 @@ pub(super) fn check_words(st: &State, specs: &[nexo_core::provider::ToolSpec], e
     Ok(())
 }
 
+/// How many views the fitting curator cuts before the request is refused as over the window.
+const FIT_TRIES: u32 = 3;
+
 /// What a request takes, in the provider's tokens as far as they are known: `est` estimated tokens (4 characters a
 /// token) through the ratio learned from the provider's counts.
 pub(super) fn provider_tokens(est: u64, ratio: Option<f64>) -> u64 {
@@ -88,13 +91,29 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     // a policy that keeps to the window only does when its view ran: after it failed the request carries the whole
     // history, and the fitting curator is what still brings it under the window
     let fitted = st.policy.fits_window() && !st.view_failed;
-    if used + u64::from(useful) > window && !fitted && !known_too_long(st) {
-        if let Some((messages, tokens)) = curator_view(st, req, notes, extra, ratio).await {
-            st.fit_tokens = Some(tokens);
-            req.messages = messages;
-            st.est_sent = estimate(&req.messages);
-            used = provider_tokens(st.est_sent, ratio);
+    // a fitting policy's view is measured in its own estimate; admission also counts opaque reasoning byte for byte
+    // and never discounts images below 1.0, so its view can still pass the window by a little. Then the fitting
+    // curator cuts it again, smaller each time by what the last view went over, before any refusal
+    let mut shrink = 0u64;
+    let mut tries = 0;
+    while used + u64::from(useful) > window
+        && (!fitted || used + u64::from(floor) > window)
+        && tries < FIT_TRIES
+        && !known_too_long(st)
+    {
+        tries += 1;
+        let Some((messages, tokens)) = curator_view(st, req, notes, extra, ratio, shrink).await else { break };
+        st.fit_tokens = Some(tokens);
+        req.messages = messages;
+        st.est_sent = estimate(&req.messages);
+        used = provider_tokens(st.est_sent, ratio);
+        let over = (used + u64::from(floor)).saturating_sub(window);
+        if over == 0 {
+            break;
         }
+        // the overshoot in estimated tokens, with a margin: the next view goes under it, not to its edge
+        let r = ratio.unwrap_or(1.0).max(f64::EPSILON);
+        shrink += (over as f64 / r * 1.1) as u64 + 256;
     }
     if used + u64::from(floor) > window {
         // Keep this turn's tools usable even when many results land in one round. Never change
@@ -115,7 +134,9 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
                 .is_some_and(|history| history.iter().any(|message| contains_images(&message.content)))
         {
             req.max_tokens = floor;
-            anyhow::bail!("{}", over_window(st, req, window, ratio));
+            let message = over_window(st, req, window, ratio);
+            wire_fit(window, used, floor, tries, shrink, Some(&message));
+            anyhow::bail!("{message}");
         }
         // Preserve the emergency view's historical prefix. Only proven current-turn
         // result bodies may be shortened; calls, sibling instructions and IDs stay intact.
@@ -171,7 +192,9 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
         used = provider_tokens(st.est_sent, ratio);
         if used + u64::from(floor) > window {
             req.max_tokens = floor;
-            anyhow::bail!("{}", over_window(st, req, window, ratio));
+            let message = over_window(st, req, window, ratio);
+            wire_fit(window, used, floor, tries, shrink, Some(&message));
+            anyhow::bail!("{message}");
         }
         st.fit_tokens = Some(nexo_core::message::estimate_tokens(&req.messages));
     }
@@ -182,7 +205,23 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     let room = (window - used) as u32;
     req.output_ceiling = Some(room.min(st.limits.max_output.unwrap_or(u32::MAX)));
     req.max_tokens = wanted.min(req.output_ceiling.unwrap());
+    wire_fit(window, used, req.max_tokens, tries, shrink, None);
     Ok(())
+}
+
+/// `nexo --wire`: how this request was fitted under the window, beside the request itself in the report.
+fn wire_fit(window: u64, used: u64, reply: u32, tries: u32, shrink: u64, refused: Option<&str>) {
+    if !nexo_providers::wire::on() {
+        return;
+    }
+    let over = (used + u64::from(reply)).saturating_sub(window);
+    nexo_providers::wire::note(
+        "fit",
+        serde_json::json!({"window": window, "used": used, "reply": reply, "tries": tries, "shrink": shrink, "over": over}),
+    );
+    if let Some(message) = refused {
+        nexo_providers::wire::note("refused", serde_json::json!({ "message": message }));
+    }
 }
 
 /// Reserve one token per serialized UTF-8 byte of every opaque reasoning block,
@@ -403,6 +442,7 @@ async fn curator_view(
     notes: Option<&str>,
     extra: u64,
     ratio: Option<f64>,
+    shrink: u64,
 ) -> Option<(Vec<Message>, u64)> {
     let window = st.limits.context_window?;
     let reply = req.max_tokens;
@@ -414,7 +454,7 @@ async fn curator_view(
     let cur = st.fit_view.get_or_insert_with(|| context::BuiltIn::lenient("recall=0;relations=0"));
     cur.tools(&names);
     if window > reply {
-        cur.window(view_window(window - reply, ratio));
+        cur.window(view_window(window - reply, ratio).saturating_sub(shrink).max(1));
     }
     if let Some(p) = prices {
         cur.prices(p.input, p.cache_read);

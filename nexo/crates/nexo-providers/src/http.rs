@@ -133,12 +133,27 @@ pub async fn post_stream(
     body: &Value,
     idle: Option<Duration>,
 ) -> Result<BodyStream, ProviderError> {
+    let mut wire = crate::wire::begin(url, &headers, body);
     let sending = stream_client()?.post(url).headers(headers).json(body).send();
     let resp = match idle {
-        Some(limit) => tokio::time::timeout(limit, sending).await.map_err(|_| quiet(limit, "no answer"))?,
-        None => sending.await,
+        Some(limit) => tokio::time::timeout(limit, sending)
+            .await
+            .map_err(|_| quiet(limit, "no answer"))
+            .and_then(|r| r.map_err(net_error)),
+        None => sending.await.map_err(net_error),
+    };
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(w) = wire.take() {
+                w.fail(&e.to_string());
+            }
+            return Err(e);
+        }
+    };
+    if let Some(w) = wire.as_mut() {
+        w.status(resp.status().as_u16());
     }
-    .map_err(net_error)?;
     // the plan figures ride on every response, an error one (the limit reached) included
     crate::usage::record_headers(url, resp.headers());
     let status = resp.status().as_u16();
@@ -151,11 +166,18 @@ pub async fn post_stream(
             None => resp.text().await.ok(),
         }
         .unwrap_or_default();
+        if let Some(w) = wire.take() {
+            w.fail(&text);
+        }
         let mut e = ProviderError::from_http(status, &pretty_error(&text));
         e.retry_after = retry_after;
         return Err(e);
     }
     let body: BodyStream = Box::pin(resp.bytes_stream().map_err(|e| e.to_string()));
+    let body = match wire {
+        Some(w) => w.tee(body),
+        None => body,
+    };
     Ok(match idle {
         Some(limit) => within(body, limit),
         None => body,

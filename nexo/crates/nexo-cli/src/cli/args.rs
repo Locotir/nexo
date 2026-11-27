@@ -58,6 +58,10 @@ pub struct Args {
     /// Inline mode: finished turns go to the terminal's own scrollback, only the draft and the turn in progress stay live.
     #[arg(long)]
     pub inline: bool,
+    /// Record every request to the model as sent, with its answer, and a live report (`report.html`) beside them:
+    /// in DIR, else ~/.nexo/wire. The files hold the whole conversation; keys are left out. See `nexo wire`.
+    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+    pub wire: Option<PathBuf>,
     /// Run the session in a new git worktree on branch nexo/<name> (default: a short random name); kept if it changed, removed if not.
     #[arg(short = 'w', long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     pub worktree: Option<String>,
@@ -255,6 +259,8 @@ pub enum Cmd {
         #[command(subcommand)]
         what: crate::audit_cmd::AuditCmd,
     },
+    /// The recordings `--wire` makes: print where the newest report is, or open it.
+    Wire(crate::wire_cmd::WireArgs),
     /// Install, list, update and switch plugins (bundles of commands, agents, skills, hooks and MCP servers).
     Plugin {
         #[command(subcommand)]

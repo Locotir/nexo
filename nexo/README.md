@@ -82,6 +82,7 @@ More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo
 | `nexo review` | review the current diff for CI (see Git commands) |
 | `nexo mcp`, `nexo plugin`, `nexo worktree` | MCP servers, plugins ([docs/PLUGINS.md](docs/PLUGINS.md)), the worktrees nexo made ([docs/WORKTREES.md](docs/WORKTREES.md)) |
 | `nexo audit` | the local audit log of tool calls and requests ([docs/AUDIT.md](docs/AUDIT.md)) |
+| `nexo --wire` / `nexo wire --open` | record every request to the model as sent, with its answer, and a live report of the context and window decisions ([docs/WIRE.md](docs/WIRE.md)) |
 | `nexo supervise` | watch long-running sessions and answer their hooks |
 | `nexo team` | lanes: named sessions that run on their own in the background ([docs/TEAM.md](docs/TEAM.md)) |
 | `nexo acp` | run as an Agent Client Protocol server for editors ([docs/ACP.md](docs/ACP.md)) |

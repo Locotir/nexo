@@ -3,6 +3,11 @@
 use super::*;
 
 pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
+    // before any request: the providers read the variable once, and the sub-agents and team members this
+    // session starts inherit it
+    if let Some(dir) = &args.wire {
+        crate::wire_cmd::start(dir, &cwd);
+    }
     // These commands never read the configuration, so a file that cannot be parsed must not stop them:
     // they are what a person runs to find the file (`config path`), start over (`config init`) or
     // read what is stored beside it.
@@ -29,6 +34,8 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         }
         Some(Cmd::Auth { what: AuthCmd::List }) => return Ok(crate::account::list_cmd()),
         Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
+        // reads only the recordings: a configuration that cannot be parsed does not stop it
+        Some(Cmd::Wire(a)) => return crate::wire_cmd::run(a),
         Some(Cmd::Export(a)) => return crate::export_cmd::run(a, &cwd),
         Some(Cmd::Sessions { here, limit, what: None | Some(SessionsCmd::List) }) => {
             return Ok(setup::print_sessions(*here, *limit))
@@ -192,9 +199,9 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Review { .. }) => {}
         None => {}
         // handled before the configuration is read
-        Some(Cmd::Config { .. } | Cmd::Guide | Cmd::Auth { what: AuthCmd::List } | Cmd::Worktree { .. }) => {
-            return Ok(0)
-        }
+        Some(
+            Cmd::Config { .. } | Cmd::Guide | Cmd::Auth { what: AuthCmd::List } | Cmd::Worktree { .. } | Cmd::Wire(_),
+        ) => return Ok(0),
         Some(Cmd::Export(_) | Cmd::Sessions { .. }) => return Ok(0),
         Some(Cmd::Supervise { .. }) => return Ok(0),
         Some(Cmd::Bin(_)) => return Ok(0),

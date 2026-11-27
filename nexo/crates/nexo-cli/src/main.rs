@@ -35,6 +35,7 @@ mod setup;
 mod supervise;
 mod team;
 mod update;
+mod wire_cmd;
 mod worktree;
 
 /// The stack of the thread the CLI runs on: what Linux gives a main thread.
