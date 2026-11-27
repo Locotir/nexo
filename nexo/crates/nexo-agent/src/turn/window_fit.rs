@@ -85,7 +85,10 @@ pub(super) async fn fit(st: &mut State, req: &mut ModelRequest, notes: Option<&s
     st.est_sent = estimate(&req.messages);
     let mut used = provider_tokens(st.est_sent, ratio);
     let useful = wanted.min(limits::REPLY_FLOOR.max((window / 8) as u32));
-    if used + u64::from(useful) > window && !st.policy.fits_window() && !known_too_long(st) {
+    // a policy that keeps to the window only does when its view ran: after it failed the request carries the whole
+    // history, and the fitting curator is what still brings it under the window
+    let fitted = st.policy.fits_window() && !st.view_failed;
+    if used + u64::from(useful) > window && !fitted && !known_too_long(st) {
         if let Some((messages, tokens)) = curator_view(st, req, notes, extra, ratio).await {
             st.fit_tokens = Some(tokens);
             req.messages = messages;
