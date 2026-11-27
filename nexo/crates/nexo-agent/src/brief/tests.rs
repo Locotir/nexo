@@ -390,3 +390,9 @@ async fn briefing_does_not_stall_runtime_heartbeat() {
     assert!(result.is_some());
     assert!(latency < Duration::from_millis(200), "runtime heartbeat stalled: {latency:?}");
 }
+
+#[tokio::test]
+async fn panicking_briefing_worker_returns_no_brief() {
+    let result = tokio::task::spawn_blocking(|| -> Option<Brief> { panic!("briefing failure") }).await;
+    assert!(finish_briefing(result).is_none());
+}

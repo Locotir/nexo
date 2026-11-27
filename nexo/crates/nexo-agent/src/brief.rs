@@ -161,7 +161,17 @@ pub async fn build(task: &str, history: &Arc<Vec<Message>>, cwd: &Path, cfg: &Br
     // Selection, the copy of the history and the disk checks are synchronous and can take seconds on
     // long sessions. Keep all of that off Tokio's workers, including single-worker runtimes.
     let (task, history, cwd, cfg) = (task.to_owned(), Arc::clone(history), cwd.to_owned(), cfg.clone());
-    tokio::task::spawn_blocking(move || build_sync(&task, &history, &cwd, &cfg)).await.expect("briefing worker failed")
+    finish_briefing(tokio::task::spawn_blocking(move || build_sync(&task, &history, &cwd, &cfg)).await)
+}
+
+fn finish_briefing(result: Result<Option<Brief>, tokio::task::JoinError>) -> Option<Brief> {
+    match result {
+        Ok(brief) => brief,
+        Err(error) => {
+            tracing::warn!(%error, "briefing worker failed");
+            None
+        }
+    }
 }
 
 fn build_sync(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfig) -> Option<Brief> {
