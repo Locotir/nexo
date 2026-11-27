@@ -374,6 +374,22 @@ impl Run {
         }
     }
 
+    /// [`ContextPolicy::view`] off the runtime. The policy is not `Sync`, so the blocking thread
+    /// cannot borrow it: it only turns the new messages into the values the curator reads.
+    async fn view_off_runtime(
+        &self,
+        policy: &mut Box<dyn crate::context::ContextPolicy>,
+        system_tokens: u64,
+        messages: &[Message],
+    ) -> anyhow::Result<crate::context::View> {
+        let fresh = policy.fresh_tail(messages).to_vec();
+        let values =
+            tokio::task::spawn_blocking(move || fresh.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>())
+                .await
+                .map_err(|e| anyhow::anyhow!("context view worker failed: {e}"))??;
+        policy.view_with(system_tokens, messages, values).await
+    }
+
     /// [`Run::go`]; `cut` gets the line that says the task was cut to fit the window, when it was.
     async fn rounds(
         &self,
@@ -566,7 +582,9 @@ impl Run {
                 policy.prices(p.input, p.cache_read);
             }
             policy.calls_left(Some((rounds - round + 1) as u64));
-            let view = match policy.view(system_tokens, &messages).await {
+            // Serializing the new messages is synchronous and grows with the history. A blocking
+            // pool thread keeps that off the runtime the TUI shares; the policy stays here.
+            let view = match self.view_off_runtime(&mut policy, system_tokens, &messages).await {
                 Ok(v) => v,
                 Err(e) => {
                     say(format!("context policy failed ({e}); checking the full history against the window"));

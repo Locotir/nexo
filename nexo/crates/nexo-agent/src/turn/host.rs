@@ -215,10 +215,12 @@ impl crate::subagent::Host for StateHost {
         }
     }
 
-    async fn history(&self) -> Vec<Message> {
+    async fn history(&self) -> Arc<Vec<Message>> {
+        // The session lock only covers taking the shared snapshot. Copying every message is the
+        // caller's work, off this lock and off the runtime.
         match self.state.upgrade() {
-            Some(state) => state.lock().await.history.to_vec(),
-            None => Vec::new(),
+            Some(state) => state.lock().await.history.shared(),
+            None => Arc::new(Vec::new()),
         }
     }
 

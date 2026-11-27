@@ -23,6 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nexo_core::config::AgentConfig;
 use nexo_core::message::{Message, Part, Role};
@@ -153,13 +154,13 @@ pub fn tokens(text: &str) -> usize {
 
 /// The briefing for `task`, from `history` (the conversation that sends the
 /// sub-agent); None when off or when the conversation holds nothing for it.
-pub async fn build(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfig) -> Option<Brief> {
+pub async fn build(task: &str, history: &Arc<Vec<Message>>, cwd: &Path, cfg: &BriefConfig) -> Option<Brief> {
     if cfg.tokens == 0 || history.is_empty() || task.trim().is_empty() {
         return None;
     }
-    // Selection and disk checks are synchronous and can take seconds on long
-    // sessions. Keep them off Tokio's workers, including single-worker runtimes.
-    let (task, history, cwd, cfg) = (task.to_owned(), history.to_vec(), cwd.to_owned(), cfg.clone());
+    // Selection, the copy of the history and the disk checks are synchronous and can take seconds on
+    // long sessions. Keep all of that off Tokio's workers, including single-worker runtimes.
+    let (task, history, cwd, cfg) = (task.to_owned(), Arc::clone(history), cwd.to_owned(), cfg.clone());
     tokio::task::spawn_blocking(move || build_sync(&task, &history, &cwd, &cfg)).await.expect("briefing worker failed")
 }
 

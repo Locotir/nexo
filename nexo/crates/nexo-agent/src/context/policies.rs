@@ -256,94 +256,26 @@ impl ContextPolicy for BuiltIn {
         Some(self.spec.clone())
     }
 
-    async fn view(&mut self, system_tokens: u64, history: &[Message]) -> anyhow::Result<View> {
-        let hint = self.hint.take();
-        // the time the view is sent, which tells what the provider's cache still keeps
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-        // the same version and no fewer messages: only appends happened, what was seen still holds
-        let same = match (hint, self.seen_version) {
+    fn fresh_tail<'a>(&self, history: &'a [Message]) -> &'a [Message] {
+        // The same version and no fewer messages: only appends happened, so what was seen still holds.
+        let same = match (self.hint, self.seen_version) {
             (Some(v), Some(s)) if v == s && history.len() >= self.seen.len() => self.seen.len(),
             _ => self.seen.iter().zip(history).take_while(|(a, b)| a == b).count(),
         };
-        // A new curator replays a resumed session. A rewind is synchronized directly: replaying
-        // intermediate prefixes could discard the explicitly compacted base before the final view.
-        let replay = self.seen.is_empty() && !self.compact_pending;
-        self.compact_pending = false;
-        let fresh = self.seen.is_empty();
-        self.seen_version = None;
-        // A rewrite may cover the same number of messages as the last snapshot.
-        // Length alone does not identify the state that was saved.
-        if same < self.seen.len() {
-            self.saved_at = 0;
-        }
-        self.seen.truncate(same);
-        self.values.truncate(same);
-        self.hashes.truncate(same);
-        for m in &history[same..] {
-            let v = serde_json::to_value(m)?;
-            self.hashes.push(nexo_curator::snapshot::message_hash(&v));
-            self.values.push(v);
-            self.seen.push(m.clone());
-        }
-        self.seen_version = hint;
-        // the replies taken again before this view (`ContextPolicy::save` writes the state only after some)
-        let mut replayed = 0;
-        if replay {
-            // a resumed session starts from the curator saved with it, when it still fits the history, and
-            // takes only the replies after the messages it covers
-            let from = if fresh { self.take_saved() } else { 0 };
-            self.pending = None;
-            // takes the decisions it would have taken while the session ran: one view per model
-            // reply, at the history that reply answered. The view it sends next is then the one the
-            // open session sent, cuts and marks alike, and the provider's cache still holds. Past
-            // REPLAY replies, the older ones are taken in one step.
-            let points: Vec<usize> =
-                (from.max(1)..history.len()).filter(|&p| p > from && history[p].role == Role::Assistant).collect();
-            replayed = points.len().min(REPLAY);
-            for &p in &points[points.len().saturating_sub(REPLAY)..] {
-                self.views += 1;
-                if let Err(e) = self.cur.view(system_tokens, &self.values[..p], now) {
-                    anyhow::bail!("the built-in curator failed: {e}");
-                }
-            }
-        }
-        self.views += 1;
-        let r = match self.cur.view(system_tokens, &self.values, now) {
-            Ok(r) => r,
-            Err(e) => anyhow::bail!("the built-in curator failed: {e}"),
-        };
-        if fresh && self.saved_at > 0 && replayed == 0 {
-            // the saved state took no reply again: the one saved is as good to start from, so it is not written over
-            self.saved_at = self.cur.covered();
-        }
-        let messages = r.view.into_iter().map(serde_json::from_value).collect::<Result<Vec<Message>, _>>()?;
-        // what the curator moved: the messages the conversation appended are always "in", every call,
-        // and would hide the rest
-        self.moved = (r.back, r.removed);
-        let zone = |z: &nexo_curator::Zone| nexo_core::ContextZone {
-            label: z.label.to_string(),
-            active: z.active,
-            card: z.card,
-        };
-        let cell = |c: &nexo_curator::Cell| MemoryCell {
-            zone: u32::try_from(c.zone).unwrap_or(u32::MAX),
-            tokens: u64::try_from(c.tokens).unwrap_or(0),
-            state: c.state.as_str().to_string(),
-        };
-        let memory = Some(Memory {
-            zones: r.memory.zones.iter().map(zone).collect(),
-            cells: r.memory.cells.iter().map(cell).collect(),
-            curated: curated_items(&r.curated),
-            relation_quotes: r.relation_quotes,
-        });
-        let note = match &self.caveat {
-            Some(c) if !self.told => {
-                self.told = true;
-                Some(c.clone())
-            }
-            _ => None,
-        };
-        Ok(View { messages, tokens: r.tokens.max(0) as u64, note, memory })
+        &history[same..]
+    }
+
+    async fn view_with(
+        &mut self,
+        system_tokens: u64,
+        history: &[Message],
+        values: Vec<serde_json::Value>,
+    ) -> anyhow::Result<View> {
+        self.view_prepared(system_tokens, history, Some(values)).await
+    }
+
+    async fn view(&mut self, system_tokens: u64, history: &[Message]) -> anyhow::Result<View> {
+        self.view_prepared(system_tokens, history, None).await
     }
 
     fn reset(&mut self) {
@@ -420,6 +352,109 @@ impl ContextPolicy for BuiltIn {
                 self.reset();
             }
         }
+    }
+}
+
+impl BuiltIn {
+    async fn view_prepared(
+        &mut self,
+        system_tokens: u64,
+        history: &[Message],
+        prepared: Option<Vec<serde_json::Value>>,
+    ) -> anyhow::Result<View> {
+        let hint = self.hint.take();
+        // the time the view is sent, which tells what the provider's cache still keeps
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        // the same version and no fewer messages: only appends happened, what was seen still holds
+        let same = match (hint, self.seen_version) {
+            (Some(v), Some(s)) if v == s && history.len() >= self.seen.len() => self.seen.len(),
+            _ => self.seen.iter().zip(history).take_while(|(a, b)| a == b).count(),
+        };
+        // A new curator replays a resumed session. A rewind is synchronized directly: replaying
+        // intermediate prefixes could discard the explicitly compacted base before the final view.
+        let replay = self.seen.is_empty() && !self.compact_pending;
+        self.compact_pending = false;
+        let fresh = self.seen.is_empty();
+        self.seen_version = None;
+        // A rewrite may cover the same number of messages as the last snapshot.
+        // Length alone does not identify the state that was saved.
+        if same < self.seen.len() {
+            self.saved_at = 0;
+        }
+        self.seen.truncate(same);
+        self.values.truncate(same);
+        self.hashes.truncate(same);
+        let tail = &history[same..];
+        // `prepared` is that tail, serialized off the runtime. It must cover the tail exactly.
+        let mut prepared = prepared.filter(|v| v.len() == tail.len()).into_iter().flatten();
+        for m in tail {
+            let v = match prepared.next() {
+                Some(v) => v,
+                None => serde_json::to_value(m)?,
+            };
+            self.hashes.push(nexo_curator::snapshot::message_hash(&v));
+            self.values.push(v);
+            self.seen.push(m.clone());
+        }
+        self.seen_version = hint;
+        // the replies taken again before this view (`ContextPolicy::save` writes the state only after some)
+        let mut replayed = 0;
+        if replay {
+            // a resumed session starts from the curator saved with it, when it still fits the history, and
+            // takes only the replies after the messages it covers
+            let from = if fresh { self.take_saved() } else { 0 };
+            self.pending = None;
+            // takes the decisions it would have taken while the session ran: one view per model
+            // reply, at the history that reply answered. The view it sends next is then the one the
+            // open session sent, cuts and marks alike, and the provider's cache still holds. Past
+            // REPLAY replies, the older ones are taken in one step.
+            let points: Vec<usize> =
+                (from.max(1)..history.len()).filter(|&p| p > from && history[p].role == Role::Assistant).collect();
+            replayed = points.len().min(REPLAY);
+            for &p in &points[points.len().saturating_sub(REPLAY)..] {
+                self.views += 1;
+                if let Err(e) = self.cur.view(system_tokens, &self.values[..p], now) {
+                    anyhow::bail!("the built-in curator failed: {e}");
+                }
+            }
+        }
+        self.views += 1;
+        let r = match self.cur.view(system_tokens, &self.values, now) {
+            Ok(r) => r,
+            Err(e) => anyhow::bail!("the built-in curator failed: {e}"),
+        };
+        if fresh && self.saved_at > 0 && replayed == 0 {
+            // the saved state took no reply again: the one saved is as good to start from, so it is not written over
+            self.saved_at = self.cur.covered();
+        }
+        let messages = r.view.into_iter().map(serde_json::from_value).collect::<Result<Vec<Message>, _>>()?;
+        // what the curator moved: the messages the conversation appended are always "in", every call,
+        // and would hide the rest
+        self.moved = (r.back, r.removed);
+        let zone = |z: &nexo_curator::Zone| nexo_core::ContextZone {
+            label: z.label.to_string(),
+            active: z.active,
+            card: z.card,
+        };
+        let cell = |c: &nexo_curator::Cell| MemoryCell {
+            zone: u32::try_from(c.zone).unwrap_or(u32::MAX),
+            tokens: u64::try_from(c.tokens).unwrap_or(0),
+            state: c.state.as_str().to_string(),
+        };
+        let memory = Some(Memory {
+            zones: r.memory.zones.iter().map(zone).collect(),
+            cells: r.memory.cells.iter().map(cell).collect(),
+            curated: curated_items(&r.curated),
+            relation_quotes: r.relation_quotes,
+        });
+        let note = match &self.caveat {
+            Some(c) if !self.told => {
+                self.told = true;
+                Some(c.clone())
+            }
+            _ => None,
+        };
+        Ok(View { messages, tokens: r.tokens.max(0) as u64, note, memory })
     }
 }
 

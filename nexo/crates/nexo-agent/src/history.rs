@@ -8,6 +8,7 @@
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use nexo_core::message::{latest_person, message_tokens, reasoning_tokens, Message};
 
@@ -72,7 +73,7 @@ impl Sent {
 
 #[derive(Default)]
 pub struct History {
-    messages: Vec<Message>,
+    messages: Arc<Vec<Message>>,
     /// The JSON length, the `message_tokens` and the `reasoning_tokens` of each message.
     sizes: Vec<(u64, u64, u64)>,
     bytes: u64,
@@ -106,14 +107,14 @@ impl History {
         self.sizes.push(s);
         self.bytes += s.0;
         self.tokens += s.1;
-        self.messages.push(m);
+        Arc::make_mut(&mut self.messages).push(m);
     }
 
     pub fn truncate(&mut self, len: usize) {
         if len >= self.messages.len() {
             return;
         }
-        self.messages.truncate(len);
+        Arc::make_mut(&mut self.messages).truncate(len);
         self.sizes.truncate(len);
         self.version = next_version();
         self.totals();
@@ -125,7 +126,7 @@ impl History {
 
     pub fn replace(&mut self, messages: Vec<Message>) {
         self.sizes = messages.iter().map(sizes).collect();
-        self.messages = messages;
+        self.messages = Arc::new(messages);
         self.version = next_version();
         self.totals();
     }
@@ -133,7 +134,7 @@ impl History {
     /// Any other change, made on the messages themselves.
     #[cfg(test)]
     pub fn edit<R>(&mut self, f: impl FnOnce(&mut Vec<Message>) -> R) -> R {
-        let r = f(&mut self.messages);
+        let r = f(Arc::make_mut(&mut self.messages));
         self.sizes = self.messages.iter().map(sizes).collect();
         self.version = next_version();
         self.totals();
@@ -171,6 +172,12 @@ impl History {
     /// The JSON bytes of the whole history.
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// The messages, shared so a caller copies them after dropping the session lock. A later
+    /// mutation copies the vec for itself; this Arc keeps the messages as they are now.
+    pub fn shared(&self) -> Arc<Vec<Message>> {
+        Arc::clone(&self.messages)
     }
 }
 

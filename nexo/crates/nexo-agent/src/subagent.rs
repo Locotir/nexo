@@ -102,9 +102,10 @@ pub trait Host: Send + Sync {
     /// reserved at; none: priced as the main agent prices `model`. `other`: it ran on another provider than the
     /// main agent's (the audit log says so).
     async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>, other: bool) -> f64;
-    /// The conversation so far, to brief the sub-agent from.
-    async fn history(&self) -> Vec<Message> {
-        Vec::new()
+    /// The conversation so far, to brief the sub-agent from. Shared so the caller copies it off the
+    /// session lock and off the runtime.
+    async fn history(&self) -> Arc<Vec<Message>> {
+        Arc::new(Vec::new())
     }
     /// The sub-agent is about to write `path`: what it holds now, for a rewind.
     async fn before_write(&self, _path: PathBuf) {}

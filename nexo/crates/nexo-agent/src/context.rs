@@ -53,6 +53,21 @@ pub trait ContextPolicy: Send {
     /// as the last view's, with no fewer messages, says only appends happened. Optional; without it
     /// the policy compares the whole history.
     fn history_version(&mut self, _version: u64) {}
+    /// The tail `view` has not seen, so its serialization can run off the runtime. The default is
+    /// the whole history.
+    fn fresh_tail<'a>(&self, history: &'a [Message]) -> &'a [Message] {
+        history
+    }
+    /// [`Self::view`] with the new messages already turned into values. The default ignores them and
+    /// views as usual: only a policy whose view is the serialization uses them.
+    async fn view_with(
+        &mut self,
+        system_tokens: u64,
+        history: &[Message],
+        _values: Vec<serde_json::Value>,
+    ) -> anyhow::Result<View> {
+        self.view(system_tokens, history).await
+    }
     /// The loop replaced the history with a summary of it (compaction).
     fn compacted(&mut self) {
         self.reset()

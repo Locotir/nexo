@@ -42,7 +42,7 @@ pub async fn brief_cmd(
     cfg: &nexo_agent::brief::BriefConfig,
     json: bool,
 ) -> anyhow::Result<i32> {
-    let history = load_messages(conversation)?;
+    let history = std::sync::Arc::new(load_messages(conversation)?);
     let started = std::time::Instant::now();
     let brief = nexo_agent::brief::build(task, &history, cwd, cfg).await;
     let ms = started.elapsed().as_millis() as u64;

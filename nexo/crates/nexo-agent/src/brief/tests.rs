@@ -234,7 +234,7 @@ async fn a_lexical_brief_keeps_its_budget() {
     let d = tempfile::tempdir().unwrap();
     let (_, _, h) = session(d.path());
     let cfg = BriefConfig { tokens: 800, engine: Engine::Lexical, ..BriefConfig::default() };
-    let b = build("Fix parse_line_7 in src/parser.rs", &h, d.path(), &cfg).await.unwrap();
+    let b = build("Fix parse_line_7 in src/parser.rs", &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
     assert_eq!(b.engine, "lexical");
     assert!(b.tokens <= 800, "{}", b.tokens);
     assert!(b.text.starts_with("<briefing>") && b.text.ends_with("</briefing>"));
@@ -242,8 +242,8 @@ async fn a_lexical_brief_keeps_its_budget() {
     assert!(b.text.contains("(current) ---"), "{}", b.text);
     assert!(b.line().starts_with("briefed: ") && b.line().ends_with("· lexical"), "{}", b.line());
     let off = BriefConfig { tokens: 0, ..cfg.clone() };
-    assert!(build("Fix parse_line_7", &h, d.path(), &off).await.is_none());
-    assert!(build("Fix parse_line_7", &[], d.path(), &cfg).await.is_none());
+    assert!(build("Fix parse_line_7", &Arc::new(h.clone()), d.path(), &off).await.is_none());
+    assert!(build("Fix parse_line_7", &Arc::new(Vec::new()), d.path(), &cfg).await.is_none());
 }
 
 #[tokio::test]
@@ -262,7 +262,7 @@ async fn a_brief_keeps_its_budget_with_many_labels_and_text_of_several_bytes_a_l
     for engine in [Engine::Lexical, Engine::Curator] {
         for budget in [600, 1500, 3000] {
             let cfg = BriefConfig { tokens: budget, engine, check_disk: false };
-            let b = build(task, &h, d.path(), &cfg).await.unwrap();
+            let b = build(task, &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
             // at 600 the ledger (request and files) takes what a read with its long label would need
             assert!(b.spans > 0 || budget == 600, "{engine:?} {budget}\n{}", b.text);
             assert!(b.tokens <= budget, "{engine:?} {budget}: {} tokens", b.tokens);
@@ -276,7 +276,7 @@ async fn a_brief_comes_from_the_curator_by_default() {
     let (_, _, h) = session(d.path());
     for engine in [Engine::Auto, Engine::Curator] {
         let cfg = BriefConfig { tokens: 1500, engine, ..BriefConfig::default() };
-        let b = build("Fix parse_line_7 in src/parser.rs", &h, d.path(), &cfg).await.unwrap();
+        let b = build("Fix parse_line_7 in src/parser.rs", &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
         assert_eq!(b.engine, "curator", "{}", b.text);
         assert!(b.tokens <= 1500, "{}", b.tokens);
         assert!(b.text.contains("parse_line_7"), "{}", b.text);
@@ -292,7 +292,7 @@ async fn the_latest_request_the_ledger_states_is_not_an_excerpt_too() {
     let task = "List each retry_limit of src/config.rs with its value";
     for engine in [Engine::Lexical, Engine::Curator] {
         let cfg = BriefConfig { tokens: 1500, engine, ..BriefConfig::default() };
-        let b = build(task, &h, d.path(), &cfg).await.unwrap();
+        let b = build(task, &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
         assert_eq!(b.text.matches("stays under 10").count(), 1, "{engine:?}\n{}", b.text);
         assert!(b.text.contains("The person's latest request: Check that every retry_limit"), "{}", b.text);
         assert!(b.text.contains("retry_limit_"), "{engine:?}: the budget goes to the reads\n{}", b.text);
@@ -302,7 +302,7 @@ async fn the_latest_request_the_ledger_states_is_not_an_excerpt_too() {
         format!("Check that every retry_limit in src/config.rs stays under 10. {}", "Keep the order. ".repeat(40));
     h.push(Message::user(long));
     let cfg = BriefConfig { tokens: 3000, engine: Engine::Lexical, ..BriefConfig::default() };
-    let b = build(task, &h, d.path(), &cfg).await.unwrap();
+    let b = build(task, &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
     assert!(b.text.matches("stays under 10").count() >= 2, "{}", b.text);
 }
 
@@ -381,7 +381,7 @@ async fn briefing_does_not_stall_runtime_heartbeat() {
     tokio::task::yield_now().await;
     let worker = tokio::spawn(async move {
         let started = Instant::now();
-        let brief = build("Investigate parser component_249 token_13", &h, d.path(), &cfg).await;
+        let brief = build("Investigate parser component_249 token_13", &Arc::new(h.clone()), d.path(), &cfg).await;
         (started.elapsed(), brief)
     });
     let latency = timer.await.unwrap();

@@ -220,6 +220,7 @@ mod small_window;
 #[cfg(unix)]
 mod start_feedback;
 mod sub_agents;
+mod sub_setup_stall;
 mod tool_rounds;
 mod ultracode;
 
@@ -355,9 +356,20 @@ impl Running {
     }
 
     async fn until(&mut self, f: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
+        self.until_within(f, Duration::from_secs(10)).await
+    }
+
+    /// As `until`, but each event may take `wait`. A long resume emits nothing until the
+    /// session is read back, which can pass the usual 10 s.
+    async fn until_within(&mut self, f: impl Fn(&AgentEvent) -> bool, wait: Duration) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         loop {
-            let ev = self.next().await;
+            let ev = loop {
+                match self.raw_within(wait).await {
+                    AgentEvent::Idle { .. } | AgentEvent::Preparing { .. } => continue,
+                    ev => break ev,
+                }
+            };
             let hit = f(&ev);
             out.push(ev);
             if hit {
