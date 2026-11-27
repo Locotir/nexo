@@ -27,7 +27,7 @@ Headless runs are saved as sessions but marked, so they stay out of `/resume`.
 | `--add-dir PATH` | One more folder the file tools may read and write without asking. Repeatable; it also works without `-p`, for the interactive screen; `/add-dir PATH` adds one mid-session. |
 | `--json-schema FILE\|JSON` | The final answer must be JSON that validates against the schema. |
 | `-i FILE`, `--image FILE` | Attach an image (PNG, JPEG, GIF or WebP) to the first request. Repeatable; it also works without `-p`. |
-| `--permission-mode`, `--yolo`, `--model`, `--provider`, `--cwd`, `--continue`, `--resume` | As in the interface. |
+| `--permission-mode`, `--yolo`, `--model`, `--provider`, `--cwd`, `--continue`, `--resume` | As in the interface. `--provider` alone runs that provider's own default model, not the model set for the previous one; `--model provider/model` switches the provider too. |
 | `-n TITLE`, `--name TITLE` | Name the session this run writes (or, with `--resume` or `--continue`, rename that one). Empty is refused with exit 2. |
 
 Nobody can be asked in a headless run: a tool call that needs permission is refused (the model sees "Permission denied") unless the mode is `yolo` or an allow rule covers it.

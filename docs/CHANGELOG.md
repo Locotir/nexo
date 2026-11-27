@@ -10,6 +10,7 @@ CI builds a release on every push to `main` and names it `build-<commit>` (the l
 - `nexo --wire` records every request to the model as sent, with its answer, the curator's view and the window fit, and keeps a live report beside them; `nexo wire --open` opens it (see `nexo/docs/WIRE.md`).
 
 ### Fixed
+- Choosing another provider (`--provider`, `NEXO_PROVIDER`, or a project `config.toml` that names one and no model) runs that provider's own default model, not the model set for the previous one. `--provider X --model M` is `X/M`, and `--model provider/model` switches the provider too. A `task` that names a provider and no model uses that provider's default.
 - A curator view that passed the model's window by a little, with images in the history, was refused ("request over the window") with no way out: the curator now cuts it again, up to three times, before refusing.
 - After the context policy failed, the whole history was sent with no fitting; the fitting curator now brings it under the window.
 

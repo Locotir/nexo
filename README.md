@@ -68,7 +68,7 @@ nexo                             # full-screen interface
 nexo -p "run the tests and fix what fails"   # headless: prints the reply
 nexo --continue                  # resume the latest session here
 nexo doctor                      # checks files, provider, model and key with one live call
-nexo --provider ollama --model qwen3:8b       # no key: a local model
+nexo --provider ollama --model qwen3:8b       # no key: a local model. --provider alone runs that provider's own default, not the model set for the previous one
 ```
 
 <p align="center"><img src="docs/img/demo.svg" width="880" alt="nexo fixing a failing test in the terminal"></p>

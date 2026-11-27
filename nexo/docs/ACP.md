@@ -8,7 +8,8 @@ asks you before nexo edits or runs something.
 Set nexo up once in a terminal first (`nexo doctor` checks it): a provider and a key, or
 `nexo auth login`. The editor cannot sign in for nexo.
 
-Options before the word `acp` apply to every session: `nexo --provider openai --model gpt-5 acp`,
+Options before the word `acp` apply to every session: `nexo --provider openai --model gpt-5 acp`
+(`--provider` alone runs that provider's own default model, not the model set for the previous one),
 `nexo --permission-mode accept-edits acp`, `nexo --log /tmp/nexo-acp.log acp`.
 Nothing but protocol JSON goes to stdout; logs go to stderr and to `--log`.
 

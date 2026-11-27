@@ -87,6 +87,12 @@ nexo models deepseek --json               # the same as JSON
 (`nexo config path` shows where). For one run only: `nexo --provider X --model Y`
 or `NEXO_PROVIDER` / `NEXO_MODEL`.
 
+`--provider X` alone runs X's own default model, not the model set for the previous provider
+(`nexo --provider xai` is `xai/grok-4.7`). `--provider X --model M` is `X/M`. `--model xai/grok-4.7`
+switches the provider too. `NEXO_PROVIDER`, and a project `.nexo/config.toml` that names another
+provider and no model, do not carry the old model over. A `task` call that names a provider and no
+model uses that provider's default, not the conversation's model.
+
 A project's own `.nexo/config.toml` cannot set a provider's address or key source, MCP servers, hooks,
 allow rules or commands until the project is trusted (`nexo config trust`); the session says what it left out.
 

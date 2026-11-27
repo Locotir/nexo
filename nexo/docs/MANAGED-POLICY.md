@@ -74,7 +74,8 @@ command = "/usr/local/bin/audit-command"
 - `permissions.deny`, `permissions.allow`, `permissions.sandbox`, `permissions.sandbox_forced`,
   `permissions.sandbox_network`, `permissions.sandbox_write_dirs`
 - `providers.allow|deny`, `models.allow|deny`: globs (`*`, `?`, case-insensitive). Models match `model` and
-  `provider/model`. Checked at `/model`, `--model`, and for sub-agents.
+  `provider/model`. Checked at `/model`, `--model`, and for sub-agents. A named provider without a model
+  runs that provider's own default, not the model set for the previous one.
 - `mcp.allow|deny` (server names), `mcp.allow_commands|deny_commands` (command line or url)
 - `allow_user_hooks`, `allow_project_hooks`, `forced_hooks`
 - `extensions.{user,project}_{skills,commands,plugins}`: a plugin has the scope it was installed with (`nexo plugin install --scope project`, or a bare `nexo plugin install` for what the project asks for; otherwise `user`). A forbidden scope cannot install (`nexo plugin install` is refused) and its plugins load nothing: no commands, agents, skills, hooks or MCP servers.

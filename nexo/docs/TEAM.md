@@ -25,7 +25,7 @@ Lanes live in `team.toml`, next to `config.toml`:
 [[lane]]
 name = "WINDOWS"                  # letters, digits, - and _
 dir = "~/work/StorePrep"          # the folder the lane works in
-model = "deepseek/deepseek-chat"  # optional: provider/model; the folder's config decides otherwise
+model = "deepseek/deepseek-chat"  # optional: provider/model; the folder's config decides otherwise. A provider named without a model runs that provider's own default
 mode = "accept-edits"             # optional: ask, accept-edits, plan, yolo, read-only
 every = "15m"                     # optional: a round every 30s, 15m, 2h (start to start); none: mail only
 max_spend_day = 2.0               # optional: dollars a day, rounds and mail together

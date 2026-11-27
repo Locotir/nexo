@@ -52,7 +52,8 @@ PowerShell; `/status` shows which), and keys typed in `/model` go to `%USERPROFI
 export DEEPSEEK_API_KEY=...     # or OPENAI_API_KEY, GEMINI_API_KEY, XAI_API_KEY, GROQ_API_KEY, ...
 cd your/project
 nexo                            # picks the first provider whose key is present
-nexo --provider openai --model gpt-5
+nexo --provider openai --model gpt-5   # that pair; --provider alone runs the provider's own default
+nexo --model xai/grok-4.7              # provider/model switches the provider too
 nexo "fix the failing test"     # opens the session and sends this first
 nexo -i shot.png "why is this red?"   # attaches an image to that first request (also with -p)
 nexo -p "what does this repository do?"            # headless: prints the reply (exit codes and JSON: docs/HEADLESS.md)
@@ -66,6 +67,10 @@ printf %s "$KEY" | nexo bench --upstream URL --model M --key - --out bench-out  
 ```
 
 Local servers need no key: `nexo --provider ollama --model qwen3:8b`.
+`--provider NAME` alone runs that provider's own default model, not the model set for the previous
+provider (`nexo --provider xai` is xai's default, `grok-4.7`, not whatever model was configured before).
+`--provider NAME --model MODEL` runs that pair. `--model provider/model` switches the provider too.
+`NEXO_PROVIDER`, and a project `.nexo/config.toml` that names another provider and no model, do the same.
 With a subscription instead of a key: `nexo auth login copilot` (or `codex`
 for ChatGPT Plus/Pro: it reuses the Codex CLI login if there is one, else
 opens the browser; `/model` offers the same), then `nexo use copilot`. `nexo doctor` checks the
@@ -245,8 +250,10 @@ Read the change and list what is wrong with it, worst first.
 
 The model is told each of your kinds by name with the start of its `description`: the first clause, 60
 characters at most, so say first what the kind is for. A call that names a kind there is not is answered
-with every kind and its whole description. A profile's `model` selects a model on the conversation's provider;
-without one it inherits the conversation model. An explicit `task` model overrides the profile, subject to
+with every kind and its whole description. A profile's `model` selects a model on the provider the call runs on;
+without one it inherits the conversation model. A `task` that names another `provider` and no `model`
+runs that provider's own default instead, not the conversation model (a profile `model` still applies).
+An explicit `task` model overrides the profile, subject to
 provider configuration and managed policy. Profiles do not grant tools or permissions the session lacks.
 
 When the `task` schema offers `skill`, pass an available skill's name and optional `skill_arguments` to load
@@ -339,7 +346,7 @@ cursor when none is ticked; or `/shared-memory <id> [focus]`) and its notes (`Fi
 `Decision:` lines), its constraints, files and failing commands, and the excerpts that bear on the focus (its
 goal or title by default), about 4k tokens at most (shared among the sessions picked together), go with your next message, once. Nothing earlier is
 rewritten, so the cached prefix holds. `/shared-memory off` drops what waits. The coordination notes agents keep are `/shared-memory read [epoch]` and `/shared-memory write <text>`.
-A session reopens (`--resume`, `--continue`, `/resume`) on the provider and model it last used, if that provider is usable and still lists the model; else one line says so and the current model stays. An explicit `--model`, `--provider`, `NEXO_MODEL` or `NEXO_PROVIDER` wins, and neither your default nor your config file changes.
+A session reopens (`--resume`, `--continue`, `/resume`) on the provider and model it last used, if that provider is usable and still lists the model; else one line says so and the current model stays. An explicit `--model`, `--provider`, `NEXO_MODEL` or `NEXO_PROVIDER` wins, and neither your default nor your config file changes. `--provider` or `NEXO_PROVIDER` alone means that provider's own default, not the model the session last used.
 
 Before a write or a command the permission dialog shows the diff or the
 command: `y` once, `a` always (a rule is remembered), `n` deny. Rules look
@@ -439,6 +446,8 @@ background, so it looks the same in any terminal (without 24-bit colour: the nea
 `~/.nexo/config.toml` (user) and `.nexo/config.toml` (project; wins key by key:
 a project's `[context] reader_at` leaves your `curator_spec` and `policy` alone, a price it sets for one
 model leaves your others, and a key it sets to its default value still wins).
+A project file that sets `provider` to another one and does not set `model` does not keep the model of
+the old provider: the new one's own default runs. The same provider keeps its model.
 A key nexo does not read (a typo such as `curator_specs`, a section that does not exist, a setting since
 retired) does not stop it: the session opens with a notice naming the key and the closest one it reads,
 and `nexo doctor` lists it. Your own `~/.nexo` is never taken for a project, even when your home is kept in git.
@@ -550,7 +559,7 @@ These are read at start. Where a variable matches a flag, the flag wins.
 | `NEXO_NO_ALT_SCREEN`, `NEXO_INLINE` | `1` is `--no-alt-screen` and `--inline` |
 | `NEXO_ASCII` | `1` forces the plain-ASCII symbols, `0` forbids them; by default they are on for the Linux console, a locale that is not UTF-8 and the legacy Windows console |
 | `NEXO_COLORS` | `truecolor` (or `24bit`), `256`, `16` (or `ansi`): the colour depth, instead of what `COLORTERM` and `TERM` say |
-| `NEXO_PROVIDER`, `NEXO_MODEL` | the same as `--provider` and `--model` |
+| `NEXO_PROVIDER`, `NEXO_MODEL` | the same as `--provider` and `--model`: another provider drops the model set for the previous one, unless `NEXO_MODEL` names one |
 | `NEXO_PERMISSION_MODE`, `NEXO_SANDBOX` | the same as `--permission-mode` and `--sandbox` |
 | `NEXO_CONTEXT`, `NEXO_CURATOR_SPEC` | the same as `--context` and `--curator-spec` |
 | `NEXO_BROWSER` | the browser executable the `browser` tool uses, ahead of the search for an installed one |
