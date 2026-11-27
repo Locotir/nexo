@@ -157,7 +157,7 @@ fn the_compact_prompt_keeps_the_safety_rules() {
     for want in ["secrets", "destructive", "only the person", "explicit request", "information"] {
         assert!(b.contains(want), "missing {want}: {b}");
     }
-    assert!(b.starts_with("you are nexo,"), "{b}");
+    assert!(b.starts_with("you are a coding agent"), "{b}");
 }
 
 #[test]

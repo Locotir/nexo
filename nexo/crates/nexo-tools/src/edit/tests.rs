@@ -498,3 +498,23 @@ async fn a_failed_later_change_says_its_line_numbers_count_the_text_after_the_ea
     let out = Edit.run(json!({"path": "f.txt", "edits": edits}), &c).await;
     assert!(out.is_error && !out.content.contains("in memory"), "{}", out.content);
 }
+
+#[tokio::test]
+async fn edit_reports_new_marks() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    std::fs::write(d.path().join("a.txt"), "abc").unwrap();
+    let out = Edit.run(json!({"path":"a.txt", "old_string":"abc", "new_string":"a—b"}), &c).await;
+    assert!(out.content.contains("new marks of machine-written text:"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn edit_strips_only_added_invisibles_and_keeps_existing_joiners() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    let path = d.path().join("a.txt");
+    std::fs::write(&path, "old\u{200b} 👩\u{200d}💻 end").unwrap();
+    let out = Edit.run(json!({"path":"a.txt", "old_string":"end", "new_string":"new\u{200b} 👨\u{200d}💻"}), &c).await;
+    assert!(out.content.contains("removed newly added invisible characters"), "{}", out.content);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "old\u{200b} 👩\u{200d}💻 new 👨\u{200d}💻");
+}

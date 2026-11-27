@@ -47,7 +47,7 @@ fn builtin_is_only_nexos_own_part_of_the_prompt() {
     let (cfg, home, proj) = setup("");
     std::fs::write(proj.path().join("AGENTS.md"), "PROJECT-AGENTS-RULE").unwrap();
     let b = out(&nexo(cfg.path(), home.path(), proj.path(), &["prompt", "--builtin"]));
-    assert!(b.starts_with("You are nexo,") && b.contains("You can do:"), "{b}");
+    assert!(b.starts_with("You are a coding agent") && b.contains("You can do:"), "{b}");
     for not in ["CLAUDE-RULE", "AGENTS-RULE", "Working directory", "Instructions from", "The person's preferences"] {
         assert!(!b.contains(not), "{not}: {b}");
     }
@@ -63,7 +63,7 @@ fn tools_lists_each_definition_the_model_gets() {
     // not offered in a normal session: plan mode and goals only
     assert!(!t.contains("=== exit_plan ===") && !t.contains("=== goal_brief ==="), "{t}");
     assert!(t.contains("\nparameters:\n{\n") && t.contains("\"type\": \"object\""), "{t}");
-    assert!(!t.contains("You are nexo,"), "tools only, not the prompt");
+    assert!(!t.contains("You are a coding agent"), "tools only, not the prompt");
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn window_selects_the_compact_text_for_a_small_model() {
     let run = |args: &[&str]| out(&nexo(cfg.path(), home.path(), proj.path(), args));
     let small = run(&["prompt", "--builtin", "--window", "8000"]);
     assert!(
-        small.starts_with("You are nexo,") && !small.contains("How to write code") && small.len() <= 3_100,
+        small.starts_with("You are a coding agent") && !small.contains("How to write code") && small.len() <= 3_100,
         "{small}"
     );
     let tools = run(&["prompt", "--tools", "--window", "8000"]);

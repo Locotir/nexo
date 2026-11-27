@@ -390,7 +390,7 @@ fn carries_directory_instructions_and_extra() {
     std::fs::create_dir(d.path().join(".git")).unwrap();
     let cfg = AgentConfig { system_prompt_extra: Some("Answer in Spanish.".into()), ..Default::default() };
     let p = system_prompt(d.path(), &cfg, &ToolSet::new());
-    assert!(p.starts_with("You are nexo"));
+    assert!(p.starts_with("You are a coding agent"));
     assert!(p.contains(&format!("Working directory: {}", d.path().display())));
     assert!(p.contains(&format!("\nSystem: {}", std::env::consts::OS)), "{p}");
     assert!(p.contains("\nGit: this folder is a git repository"), "{p}");
@@ -435,7 +435,7 @@ fn the_persons_prompt_file_adds_preferences_and_a_whole_copy_replaces_the_text()
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("NEXO_CONFIG_DIR", home.path());
     let cfg = AgentConfig::default();
-    assert!(system_prompt(d.path(), &cfg, &ToolSet::new()).starts_with("You are nexo"));
+    assert!(system_prompt(d.path(), &cfg, &ToolSet::new()).starts_with("You are a coding agent"));
     // preferences: the built-in text stays first, they come last, the comments are not sent
     std::fs::write(home.path().join("prompt.md"), format!("{PREFS_TEMPLATE}Mine.\n<!-- note -->Short answers.\n"))
         .unwrap();

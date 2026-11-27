@@ -39,7 +39,7 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "hello there")));
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let req = &client.requests()[0];
-    assert!(req.system.starts_with("You are nexo"));
+    assert!(req.system.starts_with("You are a coding agent"));
     // The supplied tools, sub-agent, question and shared-memory tools are available;
     // the plan's approval is only in plan mode.
     let names = req.tools.iter().map(|t| t.name.as_str()).collect::<std::collections::BTreeSet<_>>();

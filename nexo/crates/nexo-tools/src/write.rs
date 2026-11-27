@@ -120,7 +120,6 @@ impl Tool for Write {
         // a file too large to load: only its head is read, for the binary check, and the diff starts empty
         let huge = tokio::fs::metadata(&path).await.map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false);
         let read = if huge { read_head(&path).await } else { tokio::fs::read(&path).await };
-        let mut same = false;
         let mut format_note = String::new();
         let old = match read {
             // UTF-16 text looks binary (a NUL in every other byte); the fact is what the file is
@@ -143,12 +142,19 @@ impl Tool for Write {
             Ok(_) if huge => Some(String::new()),
             Ok(b) => {
                 // the file is valid UTF-8 here, so `same` is a plain byte compare
-                same = b == content.as_bytes();
                 format_note = format_change(&b, content).map(|n| format!("; {n}")).unwrap_or_default();
                 Some(String::from_utf8_lossy(&b).into_owned())
             }
             Err(_) => None,
         };
+        // A huge old file was not read in full, so do not guess which characters are new.
+        let (cleaned, stripped) = if huge {
+            (content.to_string(), String::new())
+        } else {
+            crate::marks::strip_added(old.as_deref().unwrap_or(""), content)
+        };
+        let content = cleaned.as_str();
+        let same = old.as_deref().is_some_and(|o| !huge && o == content);
         // the size of what is replaced (a huge file was read only in part: its size is the file's own)
         let old_bytes = match &old {
             Some(_) if huge => tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0),
@@ -156,7 +162,7 @@ impl Tool for Write {
             None => 0,
         };
         if same {
-            return ToolOutput::error(format!("write: {shown} already has this content; nothing to write"));
+            return ToolOutput::error(format!("write: {shown} already has this content; nothing to write{stripped}"));
         }
         if let Some(why) = ctx.seen.unseen(&path) {
             // lines `read` cut stay cut however often it is called: reading again would only repeat the refusal
@@ -222,6 +228,9 @@ impl Tool for Write {
             _ => crate::edit::whole(content).unwrap_or_default(),
         };
         let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
+        let marks =
+            if huge { None } else { crate::marks::added_for_path(old.as_deref().unwrap_or(""), content, &path) };
+        let marks = marks.map(|m| format!("\n{m}")).unwrap_or_default();
         // a step-level check after the whole step covers a source file inside the project folder only
         let diag = if crate::edit_check::step_covers(ctx, &path) {
             String::new()
@@ -233,7 +242,7 @@ impl Tool for Write {
             None => String::new(),
         };
         ToolOutput::ok(format!(
-            "{what} {shown}: file now has {} ({} bytes), {was}{}{format_note}{new_folders}{now}{diag}{proof}",
+            "{what} {shown}: file now has {} ({} bytes), {was}{}{format_note}{new_folders}{now}{stripped}{marks}{diag}{proof}",
             nexo_core::count(lines, "line"),
             content.len(),
             crate::edit::VERIFIED
@@ -608,5 +617,25 @@ mod format_tests {
         assert!(!replace(b"a\r\n", "b\r\n").await.contains("the file it replaced"));
         assert!(!replace(b"a\n", "b\n").await.contains("the file it replaced"));
         assert!(!replace(b"\xEF\xBB\xBFa\n", "\u{FEFF}b\n").await.contains("the file it replaced"));
+    }
+}
+
+#[cfg(test)]
+mod marks_tests {
+    use super::*;
+    #[tokio::test]
+    async fn strips_new_invisible_characters_on_write() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Write.run(json!({"path":"a.txt", "content":"a\u{200b}b"}), &c).await;
+        assert!(out.content.contains("removed newly added invisible characters"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "ab");
+    }
+    #[tokio::test]
+    async fn write_reports_new_marks() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Write.run(json!({"path":"a.txt", "content":"a—b"}), &c).await;
+        assert!(out.content.contains("new marks of machine-written text:"), "{}", out.content);
     }
 }

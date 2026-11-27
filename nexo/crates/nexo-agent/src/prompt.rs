@@ -78,8 +78,7 @@ pub use nexo_core::paths::PREFS_TEMPLATE;
 /// Whether a prompt file is a whole prompt of its own rather than preferences: one set in the
 /// config, or one that starts like the built-in text (the copies earlier versions made).
 fn replaces(cfg: &AgentConfig, text: &str) -> bool {
-    let opening = built_in().split(',').next().unwrap_or_default();
-    cfg.system_prompt_file.is_some() || text.starts_with(opening)
+    cfg.system_prompt_file.is_some() || text.starts_with("You are a coding agent") || text.starts_with("You are nexo,")
 }
 
 /// `text` without its `<!-- ... -->` comments.

@@ -21,6 +21,7 @@ pub mod jobs;
 pub mod ls;
 pub mod lsp;
 pub mod mail;
+mod marks;
 pub mod mcp;
 pub use mcp::{http as mcp_http, hub as mcp_hub, oauth as mcp_oauth};
 pub mod note;

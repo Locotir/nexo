@@ -65,8 +65,10 @@ pub(super) async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Resul
         }
         Err(e) => return Err(e),
     };
+    let (edited, stripped) = crate::marks::strip_added(&text, &edited);
+    let note = format!("{note}{stripped}");
     if edited == text {
-        return Err(format!("edit: {shown} would not change; the new text is already there"));
+        return Err(format!("edit: {shown} would not change; the new text is already there{stripped}"));
     }
     write_atomic(&path, edited.as_bytes()).await.map_err(|e| format!("edit: cannot write {shown}: {e}"))?;
     if tokio::fs::read(&path).await.ok().as_deref() != Some(edited.as_bytes()) {
@@ -96,8 +98,9 @@ async fn blocks(written: &[Done], ctx: &ToolContext) -> String {
     let mut text = String::new();
     for d in written {
         let diag = diag_of(d, ctx).await;
+        let marks = crate::marks::added_for_path(&d.old, &d.new, &d.path).map(|m| format!("\n{m}")).unwrap_or_default();
         text.push_str(&format!(
-            "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}\n",
+            "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{marks}{diag}\n",
             d.shown, d.note, d.added, d.removed, d.diff, d.now
         ));
     }
@@ -113,8 +116,9 @@ pub(super) async fn run_one(args: &Value, ctx: &ToolContext) -> ToolOutput {
         Err(e) => return ToolOutput::error(e),
     };
     let diag = diag_of(&d, ctx).await;
+    let marks = crate::marks::added_for_path(&d.old, &d.new, &d.path).map(|m| format!("\n{m}")).unwrap_or_default();
     ToolOutput::ok(format!(
-        "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}",
+        "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{marks}{diag}",
         d.shown, d.note, d.added, d.removed, d.diff, d.now
     ))
     // the whole file, before and after: the diff numbers from its first line
