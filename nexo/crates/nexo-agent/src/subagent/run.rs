@@ -384,14 +384,22 @@ impl Run {
         cut: &mut Option<String>,
     ) -> Result<String, String> {
         let (main_provider, main_cfg, main_model) = self.target.get();
+        // on another provider with no model named, that provider's own default runs, never the main model
+        let elsewhere = self.provider.as_ref().filter(|(name, _)| *name != main_provider).map(|(_, cfg)| cfg);
+        let (home_cfg, home_model) = match elsewhere {
+            Some(cfg) => (cfg, super::provider::listed(cfg).next().map(str::to_string)),
+            None => (&main_cfg, Some(main_model.clone())),
+        };
         let model = self
             .model
             .clone()
             .or_else(|| {
                 let m = self.profile.model.clone()?;
-                (!self.profile.soft_model || m == main_model || main_cfg.models.contains(&m)).then_some(m)
+                (!self.profile.soft_model || Some(&m) == home_model.as_ref() || home_cfg.models.contains(&m))
+                    .then_some(m)
             })
-            .unwrap_or(main_model);
+            .or(home_model)
+            .ok_or_else(|| "that provider lists no model: name one with `model`".to_string())?;
         // a model the managed policy forbids does not run, as a sub-agent either
         {
             let on = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());

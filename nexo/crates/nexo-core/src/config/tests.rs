@@ -49,6 +49,34 @@ cache_read = 0.028
     assert_eq!(cfg.agent.max_turns, 200, "defaults fill what is not said");
 }
 
+#[test]
+fn another_provider_runs_its_own_default_model() {
+    let text = r#"
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+[providers.anthropic]
+models = ["claude-sonnet-5-5"]
+[providers.xai]
+default_model = "grok-4"
+models = ["grok-4", "grok-4.7"]
+"#;
+    let mut cfg = Config::parse(text).unwrap();
+    assert_eq!(cfg.pick().unwrap(), ("anthropic".into(), "claude-sonnet-5-5".into()));
+    cfg.use_provider("anthropic");
+    assert_eq!(cfg.pick().unwrap().1, "claude-sonnet-5-5", "the same provider keeps its model");
+    cfg.use_provider("xai");
+    assert_eq!(cfg.pick().unwrap(), ("xai".into(), "grok-4".into()));
+    // a project file naming another provider alone
+    let mut cfg = Config::parse(text).unwrap();
+    merge_text(&mut cfg, "provider = \"xai\"\n");
+    assert_eq!(cfg.pick().unwrap(), ("xai".into(), "grok-4".into()));
+    // a provider and a model named together both run
+    let mut cfg = Config::parse(text).unwrap();
+    cfg.use_provider("xai");
+    cfg.model = Some("grok-4.7".into());
+    assert_eq!(cfg.pick().unwrap(), ("xai".into(), "grok-4.7".into()));
+}
+
 /// `text` parsed, merged onto `cfg` as a file would be.
 fn merge_text(cfg: &mut Config, text: &str) {
     cfg.merge(Config::parse(text).unwrap(), &toml::from_str(text).unwrap());

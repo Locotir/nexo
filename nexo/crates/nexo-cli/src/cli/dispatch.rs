@@ -130,11 +130,11 @@ pub(super) async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             return crate::account::use_cmd(&mut config, provider, model.as_deref(), *force)
         }
         Some(Cmd::Doctor { offline }) => {
-            if let Some(p) = &args.provider {
-                config.provider = Some(p.clone());
-            }
-            if let Some(m) = &args.model {
-                config.model = Some(m.clone());
+            // the provider and model a run would pick, `--model provider/model` included; a missing key is reported below
+            if args.provider.is_some() || args.model.is_some() {
+                let picked = setup::pick_with(&config, args.provider.as_deref(), args.model.as_deref(), false)?;
+                config.use_provider(&picked.provider);
+                config.model = Some(picked.model);
             }
             return crate::account::doctor(&cwd, &config, *offline).await;
         }

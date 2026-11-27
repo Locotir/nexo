@@ -362,6 +362,12 @@ impl Config {
                     }
                 }
                 overlay(&mut base, &over, said);
+                // a file that names another provider without a model does not keep the model set for the old one
+                let new_provider =
+                    over.get("provider").and_then(toml::Value::as_str).filter(|_| said.contains_key("provider"));
+                if new_provider.is_some_and(|p| self.provider.as_deref() != Some(p)) && !said.contains_key("model") {
+                    base.remove("model");
+                }
                 match toml::Value::Table(base).try_into::<Config>() {
                     Ok(mut merged) => {
                         merged.permissions.allow = std::mem::take(&mut self.permissions.allow);
@@ -383,7 +389,7 @@ impl Config {
 
     pub fn apply_env(&mut self) {
         if let Ok(v) = std::env::var("NEXO_PROVIDER") {
-            self.provider = Some(v);
+            self.use_provider(&v);
         }
         if let Ok(v) = std::env::var("NEXO_MODEL") {
             self.model = Some(v);
@@ -399,17 +405,31 @@ impl Config {
         }
     }
 
+    /// Switches to `provider`. The configured model belongs to the provider it was set with, so a
+    /// switch to another provider drops it: that provider's own default runs unless a model is named.
+    pub fn use_provider(&mut self, provider: &str) {
+        if self.provider.as_deref() != Some(provider) {
+            self.model = None;
+        }
+        self.provider = Some(provider.to_string());
+    }
+
     /// The provider and model to use: what is configured, else the first
-    /// provider whose key is present, else the first provider.
+    /// provider whose key is present, else the first provider. The configured
+    /// model is used only with the configured provider.
     pub fn pick(&self) -> Option<(String, String)> {
-        let name = self
-            .provider
-            .clone()
-            .filter(|p| self.providers.contains_key(p))
+        let chosen = self.provider.clone().filter(|p| self.providers.contains_key(p));
+        let own_model = chosen.is_some();
+        let name = chosen
             .or_else(|| self.providers.iter().find(|(n, p)| p.needs_key() && p.ready(n)).map(|(k, _)| k.clone()))
             .or_else(|| self.providers.keys().next().cloned())?;
         let p = &self.providers[&name];
-        let model = self.model.clone().or_else(|| p.default_model.clone()).or_else(|| p.models.first().cloned())?;
+        let model = self
+            .model
+            .clone()
+            .filter(|_| own_model)
+            .or_else(|| p.default_model.clone())
+            .or_else(|| p.models.first().cloned())?;
         Some((name, model))
     }
 }

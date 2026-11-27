@@ -88,7 +88,7 @@ pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow
 }
 
 /// `pick`, with `need_key` false for what only reads the catalogue (`nexo pricing`): the key is not asked for.
-pub(super) fn pick_with(
+pub(crate) fn pick_with(
     cfg: &Config,
     provider: Option<&str>,
     model: Option<&str>,
@@ -97,7 +97,7 @@ pub(super) fn pick_with(
     let (provider_given, model_given) = (provider.is_some(), model.is_some());
     let mut c = cfg.clone();
     if let Some(p) = provider {
-        c.provider = Some(p.to_string());
+        c.use_provider(p);
         if !c.providers.contains_key(p) {
             anyhow::bail!("unknown provider {p:?}; `nexo providers` lists them");
         }
@@ -107,7 +107,7 @@ pub(super) fn pick_with(
         // was asked for by that name and the model id itself holds the slash, as on a gateway)
         match m.split_once('/') {
             Some((p, rest)) if provider.is_none() && c.providers.contains_key(p) && !on_gateway(&c, m) => {
-                c.provider = Some(p.to_string());
+                c.use_provider(p);
                 c.model = Some(rest.to_string());
             }
             _ => c.model = Some(m.to_string()),
