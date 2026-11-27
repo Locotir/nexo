@@ -1,21 +1,43 @@
 use super::*;
 
-#[test]
-fn the_goal_lines_become_a_badge_and_never_show_bare() {
-    assert_eq!(goal_signal("All set.\n\nGOAL DONE\n", false), ("All set.", Some(GoalSignal::Done)));
-    assert_eq!(goal_signal("Waiting on you.\n**GOAL WAIT**", false), ("Waiting on you.", Some(GoalSignal::Wait)));
-    assert_eq!(goal_signal("GOAL WAIT", false), ("", Some(GoalSignal::Wait)));
-    assert_eq!(goal_signal("text\nGOAL W", true), ("text", None), "held back while it streams");
-    assert_eq!(goal_signal("text\nGOAL W", false), ("text\nGOAL W", None), "a finished reply keeps it");
-    assert_eq!(goal_signal("the GOAL DONE marker", false), ("the GOAL DONE marker", None));
-    let b =
-        Block::Assistant { text: "Ok.\n\nGOAL WAIT".into(), streaming: false, at: None, started: None, took_ms: None };
-    let shown = texts(&b.render(80, &Theme::nexo(), opts())).join("\n");
-    assert!(!shown.contains("GOAL WAIT") && shown.contains("goal waiting for your answer"), "{shown}");
-}
-
 fn texts(lines: &[Line]) -> Vec<String> {
     lines.iter().map(markdown::text_of).collect()
+}
+
+#[test]
+fn goal_signal_is_hidden() {
+    use nexo_core::agent::GoalSignalKind;
+    for (input, body, kind, note) in [
+        ("All set.\n\nGOAL DONE\n", "All set.", GoalSignalKind::Done, None),
+        ("Waiting on you.\n**GOAL WAIT**", "Waiting on you.", GoalSignalKind::Wait, None),
+        ("GOAL WAIT: falta el código\nSee you.", "See you.", GoalSignalKind::Wait, Some("falta el código")),
+        ("GOAL DONE — all tests pass", "", GoalSignalKind::Done, Some("all tests pass")),
+    ] {
+        let (actual, signal) = goal_signal(input, false);
+        assert_eq!(actual, body);
+        let signal = signal.unwrap();
+        assert_eq!(signal.kind, kind);
+        assert_eq!(signal.note, note);
+    }
+    assert_eq!(goal_signal("text\nGOAL W", true).0, "text");
+    assert_eq!(goal_signal("text\nGOAL W", false).0, "text\nGOAL W");
+    let hedge = "GOAL DONE once the build passes";
+    assert_eq!(goal_signal(hedge, false), (hedge.to_string(), None));
+}
+
+#[test]
+fn goal_badge_shows_note_without_machine_marker() {
+    let b = Block::Assistant {
+        text: "Please enter the code.\nGOAL WAIT: falta el código\nThank you.".into(),
+        streaming: false,
+        at: None,
+        started: None,
+        took_ms: None,
+    };
+    let rendered = texts(&b.render(80, &Theme::nexo(), opts())).join(" ");
+    assert!(rendered.contains("waiting for you · falta el código"), "{rendered}");
+    assert!(rendered.contains("Thank you."), "{rendered}");
+    assert!(!rendered.contains("GOAL WAIT"), "{rendered}");
 }
 
 #[test]

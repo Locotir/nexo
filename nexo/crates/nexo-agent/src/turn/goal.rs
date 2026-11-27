@@ -68,7 +68,8 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>, brief: Option<&str>) -
          not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
          single line GOAL DONE; if nothing is left to do, say so and end with that line. When you cannot go on \
          without the person (a question only they can answer, a decision, an approval, access you lack), ask it and \
-         end your reply with the single line GOAL WAIT: the work waits for their answer. Do not stop for what you \
+         end your reply with the single line GOAL WAIT: <what you need>. This line is hidden and shown as a badge; put the \
+         question for the person above it. Do not stop for what you \
          can decide or check yourself. A message the person sends while you work comes first: answer it plainly, \
          then go on. Only an explicit new /goal changes the goal."
     )
@@ -93,54 +94,18 @@ pub(super) fn goal_state_line(st: &State) -> Option<String> {
 
 /// Whether a reply declares the goal met: `GOAL DONE` opens one of its last few non-empty lines (`signal`).
 pub(super) fn goal_done(text: &str) -> bool {
-    signal(text, "GOAL DONE")
+    nexo_core::agent::parse_goal_signal(text, Some(nexo_core::agent::GoalSignalKind::Done)).is_some()
 }
 
 /// Whether a reply stops for the person: `GOAL WAIT`, read as `GOAL DONE` is, or a last line that is
 /// a question (models end a reply with one when they wait for an answer, whether told to or not).
 pub(super) fn goal_wait(text: &str) -> bool {
-    if signal(text, "GOAL WAIT") {
+    if nexo_core::agent::parse_goal_signal(text, Some(nexo_core::agent::GoalSignalKind::Wait)).is_some() {
         return true;
     }
     let last = text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("");
     let bare = last.trim_end_matches(['*', '_', '`', ')', '"', '\'', '»', ' ']);
     !last.starts_with("```") && (bare.ends_with('?') || bare.ends_with('？'))
-}
-
-/// How many of a reply's last non-empty lines may hold `GOAL DONE` or `GOAL WAIT` (a closing sentence or two
-/// can follow the line).
-const SIGNAL_LINES: usize = 3;
-
-/// Words that, right after `GOAL DONE` or `GOAL WAIT` and its separator, make the line a promise or a condition
-/// and not the signal (`GOAL DONE, cuando acabe la build`), in English and Spanish.
-const SIGNAL_HEDGES: [&str; 15] = [
-    "yet", "once", "when", "if", "will", "not", "until", "after", "aún", "todavía", "cuando", "si", "no", "hasta",
-    "después",
-];
-
-/// `word` (upper case) as the start of one of the last `SIGNAL_LINES` non-empty lines of a reply, read last first.
-/// The line may carry markdown or quote marks in front and a short note after (`GOAL DONE — all tests pass`,
-/// `GOAL DONE (42 green)`, `GOAL DONE ✅`), but the word must stand apart: not the start of a longer word, not
-/// followed by plain words, and not by a hedge (`GOAL DONE, cuando acabe la build`).
-pub(super) fn signal(text: &str, word: &str) -> bool {
-    text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(SIGNAL_LINES).any(|l| signal_line(l, word))
-}
-
-/// Whether `line` opens with `word` as a signal; see [`signal`].
-fn signal_line(line: &str, word: &str) -> bool {
-    let line = line.trim_start_matches(['*', '_', '`', '"', '\'', '>', '#', '-', ' ']);
-    // `get` is None inside a multi-byte character, and `word` is ASCII
-    let Some(head) = line.get(..word.len()) else { return false };
-    if !head.eq_ignore_ascii_case(word) {
-        return false;
-    }
-    let rest = line[word.len()..].trim_start();
-    // plain words after the word (or a longer word, `GOAL DONEX`) are no signal: a separator or the end follows
-    if rest.chars().next().is_some_and(char::is_alphanumeric) {
-        return false;
-    }
-    let next: String = rest.chars().skip_while(|c| !c.is_alphanumeric()).take_while(|c| c.is_alphanumeric()).collect();
-    !SIGNAL_HEDGES.contains(&next.to_lowercase().as_str())
 }
 
 /// Pins (or clears) the goal; gives back the goal set, for the caller to start the work.

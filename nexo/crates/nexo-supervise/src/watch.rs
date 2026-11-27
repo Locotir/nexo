@@ -254,7 +254,9 @@ pub fn scan_rounds(history: &[Message]) -> Vec<Finding> {
 fn hands_over(reply: &str) -> bool {
     let last = reply.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("");
     let bare = last.trim_end_matches(['*', '_', '`', ')', '"', '\'', ' ']);
-    bare.ends_with('?') || bare.ends_with('？') || last.to_ascii_uppercase().contains("GOAL WAIT")
+    bare.ends_with('?')
+        || bare.ends_with('？')
+        || nexo_core::agent::parse_goal_signal(reply, Some(nexo_core::agent::GoalSignalKind::Wait)).is_some()
 }
 
 /// Whether the reply says the work is finished.

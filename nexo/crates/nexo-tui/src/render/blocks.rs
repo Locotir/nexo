@@ -18,13 +18,6 @@ use super::markdown;
 use super::wrap::{truncate, width, wrap_plain, wrap_plain_ex};
 use crate::regions::{Kind, Meta, Region};
 
-/// The goal loop's closing line of a reply (`GOAL DONE`, `GOAL WAIT`), read as the agent loop reads it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GoalSignal {
-    Done,
-    Wait,
-}
-
 /// Info notes that only say where the run stands (a goal's state, a queued request starting): drawn dim,
 /// so the blue ones stay for what the person should read.
 const STATUS_NOTES: &[&str] = &["goal ", "goal:", "the goal is already paused", "running the "];
@@ -36,21 +29,28 @@ pub fn is_status_note(text: &str) -> bool {
 /// A reply without its closing `GOAL DONE` / `GOAL WAIT` line, and which one it was. While the reply
 /// streams in, a last line that is still on its way to one of them (`GOAL`, `GOAL W`) is held back too,
 /// so the bare words never flash on screen.
-pub fn goal_signal(text: &str, streaming: bool) -> (&str, Option<GoalSignal>) {
+pub fn goal_signal(text: &str, streaming: bool) -> (String, Option<nexo_core::agent::GoalSignal<'_>>) {
+    if let Some(signal) = nexo_core::agent::parse_goal_signal(text, None) {
+        let before = text[..signal.line.start].trim_end();
+        let after = text[signal.line.end..].trim_start_matches(['\r', '\n']);
+        let body = if before.is_empty() {
+            after.to_string()
+        } else if after.is_empty() {
+            before.to_string()
+        } else {
+            format!("{before}\n{after}")
+        };
+        return (body, Some(signal));
+    }
     let body = text.trim_end();
     let cut = body.rfind('\n').map_or(0, |i| i + 1);
     let last = body[cut..].trim().trim_end_matches(['.', '!', '*', '`', '_']).trim_start_matches(['*', '`', '_']);
     let up = last.to_ascii_uppercase();
-    let sig = match up.as_str() {
-        "GOAL DONE" => Some(GoalSignal::Done),
-        "GOAL WAIT" => Some(GoalSignal::Wait),
-        _ => None,
-    };
     let partial = streaming && !up.is_empty() && ("GOAL DONE".starts_with(&up) || "GOAL WAIT".starts_with(&up));
-    if sig.is_some() || partial {
-        (body[..cut].trim_end(), sig)
+    if partial {
+        (body[..cut].trim_end().to_string(), None)
     } else {
-        (text, None)
+        (text.to_string(), None)
     }
 }
 
@@ -332,7 +332,7 @@ impl Block {
                 // the loop's `GOAL DONE` / `GOAL WAIT` line is for the agent loop, not the person: it is
                 // shown as a badge in the goal's colours instead of the bare words
                 let (text, signal) = goal_signal(text, *streaming);
-                let (mut lines, m) = markdown::render_as_meta(text, w.saturating_sub(2), theme, o.interpreted);
+                let (mut lines, m) = markdown::render_as_meta(&text, w.saturating_sub(2), theme, o.interpreted);
                 meta = m;
                 meta.add_deco(2);
                 if lines.is_empty() {
@@ -357,16 +357,22 @@ impl Block {
                     }
                 }
                 if let Some(sig) = signal {
-                    let (icon, label, colour) = match sig {
-                        GoalSignal::Done => ("✓", "goal met", theme.success),
-                        GoalSignal::Wait => ("⏸", "goal waiting for your answer · reply to resume", theme.warn),
+                    let (icon, label, colour) = match sig.kind {
+                        nexo_core::agent::GoalSignalKind::Done => ("✓", "goal met", theme.success),
+                        nexo_core::agent::GoalSignalKind::Wait => ("⏸", "waiting for you", theme.warn),
                     };
                     if lines.last().is_some_and(|l| l.spans.iter().any(|s| !s.content.trim().is_empty())) {
                         lines.push(Line::default());
                     }
                     lines.push(Line::from(vec![
                         Span::styled(format!("{icon} "), theme.bold(colour)),
-                        Span::styled(label, theme.style(colour)),
+                        Span::styled(
+                            match sig.note {
+                                Some(note) => format!("{label} · {note}"),
+                                None => label.to_string(),
+                            },
+                            theme.style(colour),
+                        ),
                     ]));
                 }
                 for (i, l) in lines.iter_mut().enumerate() {

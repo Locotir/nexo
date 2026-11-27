@@ -36,6 +36,84 @@ pub fn headed_file(line: &str) -> Option<&str> {
     Some(path.trim_end()).filter(|p| !p.is_empty())
 }
 
+/// A goal loop signal, intended for nexo rather than the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalSignalKind {
+    Done,
+    Wait,
+}
+
+/// A signal line and its optional human-readable note, borrowed from the reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalSignal<'a> {
+    pub kind: GoalSignalKind,
+    pub line: std::ops::Range<usize>,
+    pub note: Option<&'a str>,
+}
+
+/// Find a signal in the last three non-empty lines, optionally restricted to a kind.
+pub fn parse_goal_signal(text: &str, kind: Option<GoalSignalKind>) -> Option<GoalSignal<'_>> {
+    const HEDGES: [&str; 15] = [
+        "yet", "once", "when", "if", "will", "not", "until", "after", "aún", "todavía", "cuando", "si", "no", "hasta",
+        "después",
+    ];
+    let mut offset = text.len();
+    text.split_inclusive('\n')
+        .rev()
+        .filter_map(|line| {
+            offset -= line.len();
+            let content = line.trim_end_matches('\n').trim_end_matches('\r');
+            (!content.trim().is_empty()).then_some((offset, content))
+        })
+        .take(3)
+        .find_map(|(start, content)| {
+            let line = content.trim().trim_start_matches(['*', '_', '`', '"', '\'', '>', '#', '-', ' ']);
+            for (candidate, word) in [(GoalSignalKind::Done, "GOAL DONE"), (GoalSignalKind::Wait, "GOAL WAIT")] {
+                if kind.is_some_and(|k| k != candidate)
+                    || !line.get(..word.len()).is_some_and(|h| h.eq_ignore_ascii_case(word))
+                {
+                    continue;
+                }
+                let rest = line[word.len()..].trim_start();
+                if rest.chars().next().is_some_and(char::is_alphanumeric) {
+                    continue;
+                }
+                let next: String =
+                    rest.chars().skip_while(|c| !c.is_alphanumeric()).take_while(|c| c.is_alphanumeric()).collect();
+                if HEDGES.contains(&next.to_lowercase().as_str()) {
+                    continue;
+                }
+                let note = rest.trim_matches(|c: char| {
+                    c.is_whitespace()
+                        || matches!(c, ':' | '—' | '-' | '(' | ')' | '*' | '_' | '`' | '"' | '\'' | ',' | '.' | '!')
+                });
+                return Some(GoalSignal {
+                    kind: candidate,
+                    line: start..start + content.len(),
+                    note: (!note.is_empty()).then_some(note),
+                });
+            }
+            None
+        })
+}
+
+#[cfg(test)]
+mod goal_signal_tests {
+    use super::*;
+
+    #[test]
+    fn goal_signal_ranges_notes_and_hedges() {
+        let text = "Hello\n**GOAL WAIT: código**\nBye";
+        let signal = parse_goal_signal(text, None).unwrap();
+        assert_eq!(signal.kind, GoalSignalKind::Wait);
+        assert_eq!(&text[signal.line], "**GOAL WAIT: código**");
+        assert_eq!(signal.note, Some("código"));
+        assert!(parse_goal_signal("GOAL DONE — once ready", None).is_none());
+        assert!(parse_goal_signal("GOAL DONE\na\nb\nc", None).is_none());
+        assert_eq!(parse_goal_signal("GOAL DONE (42 green)", None).unwrap().note, Some("42 green"));
+    }
+}
+
 /// What the loop sends in the person's place to start a goal; the person's words follow it.
 pub const GOAL_SET_MARK: &str = "[goal set]";
 /// What the loop sends in the person's place to keep a goal going.
