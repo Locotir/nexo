@@ -851,36 +851,18 @@ pub(super) fn window_of(limits: &crate::limits::Limits) -> Option<u64> {
     limits.context_window.map(u64::from)
 }
 
-/// Effective delegation catalogue in request metadata, without credential material.
-/// The active target can change during the session; catalogue entries are not access guarantees.
-fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig, model: &str) -> String {
+/// Delegation catalogue appended to the `task` tool: one line per provider, no credentials.
+/// The active target can change during the session; a line is not an access guarantee.
+fn task_model_context(config: &Config, provider: &str, _current: &ProviderConfig, model: &str) -> String {
     const CATALOGUE_LIMIT: usize = 12_000;
-    let short = |s: &str| s.chars().take(256).collect::<String>();
-    let mut text = format!("\nCurrent session target: {:?}/{:?}. Configured/preset delegation catalogue (authentication and availability are not checked):", short(provider), short(model));
+    let short = |s: &str| one_line(s).chars().take(256).collect::<String>();
+    let mut text =
+        format!("\nCurrent session target: {}/{}. Auth and availability not checked.", short(provider), short(model));
     let mut catalogue_size = 0;
     let mut truncated = false;
     for (name, cfg) in &config.providers {
         let explicit = config.explicit_providers.as_ref().and_then(|p| p.get(name));
-        let mut models = cfg.models.clone();
-        if let Some(m) = &cfg.default_model {
-            models.push(m.clone());
-        }
-        models.extend(cfg.effort.keys().cloned());
-        models.extend(cfg.efforts.keys().cloned());
-        if let Some(e) = explicit {
-            models.extend(e.models.iter().cloned());
-            models.extend(e.default_model.iter().cloned());
-            models.extend(e.effort.keys().cloned());
-        }
-        models.sort();
-        models.dedup();
-        let entry = format!(
-            " Provider {name:?}; models {models:?}; effective default {:?}; effective per-model reasoning defaults {:?}; known valid reasoning levels {:?}; explicit settings (default, efforts) {:?}.",
-            cfg.default_model,
-            cfg.effort,
-            cfg.efforts,
-            explicit.map(|e| (&e.default_model, &e.effort))
-        );
+        let entry = format!("\n{}", catalogue_line(name, cfg, explicit));
         if catalogue_size + entry.len() > CATALOGUE_LIMIT {
             truncated = true;
             continue;
@@ -889,18 +871,103 @@ fn task_model_context(config: &Config, provider: &str, current: &ProviderConfig,
         text.push_str(&entry);
     }
     if truncated {
-        text.push_str(" Catalogue truncated due to size; omitted entries are not necessarily unavailable.");
+        text.push_str("\nCatalogue truncated due to size; omitted entries are not necessarily unavailable.");
     }
-    let effort = crate::setup::effective_effort(current, model, &config.agent.reasoning);
-    text.push_str(&format!(" Current session reasoning setting: {effort:?} (None means unspecified). Sub-agents use their provider's per-model effort, not the session fallback. Use task provider/model/effort parameters for an explicit target. Unknown reasoning levels are not evidence of support; configured levels may be normalized by the provider. Choose model and effort proportional to the work: prefer cheaper adequate targets for routine work and reserve expensive models or high effort for justified complexity, respecting the person's choice and policy."));
+    text.push('\n');
+    text.push_str("task takes provider/model/effort; prefer the cheapest adequate target; honor the person's choice.");
     let limit = if config.agent.on_limit == OnLimit::Checkpoint && config.agent.max_checkpoints != Some(0) {
-        format!(" Main turn checkpoint interval: {} tool rounds (agent.max_turns); a successful checkpoint can reset the round count and continue, subject to checkpoint and other guards.", config.agent.max_turns)
+        format!(
+            " Main turn checkpoint interval: {} tool rounds; a checkpoint can reset the round count.",
+            config.agent.max_turns
+        )
     } else {
-        format!(" Main turn tool-round limit: {} (agent.max_turns).", config.agent.max_turns)
+        format!(" Main turn tool-round limit: {}.", config.agent.max_turns)
     };
     text.push_str(&limit);
-    text.push_str(" Rounds are not seconds or individual tool calls. Workers have profile-specific round caps and must report when exhausted; background execution does not remove those caps. Split oversized tasks; a capped report is not proof of completion.");
     text
+}
+
+/// A name or id on one catalogue line: control characters would break the line, and nothing else is escaped.
+fn one_line(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+/// Model ids the line must name: listed models, the default, chosen efforts, known levels, and the same from
+/// explicit settings. Known levels on the explicit snapshot are not a second list; the effective map is.
+fn catalogue_models(cfg: &ProviderConfig, explicit: Option<&ProviderConfig>) -> Vec<String> {
+    let mut models = cfg.models.clone();
+    models.extend(cfg.default_model.iter().cloned());
+    models.extend(cfg.effort.keys().cloned());
+    models.extend(cfg.efforts.keys().cloned());
+    if let Some(e) = explicit {
+        models.extend(e.models.iter().cloned());
+        models.extend(e.default_model.iter().cloned());
+        models.extend(e.effort.keys().cloned());
+    }
+    models.sort();
+    models.dedup();
+    models
+}
+
+/// `a=low|medium|high (default high)` for each model that has known levels, a chosen effort, or both.
+fn effort_field(cfg: &ProviderConfig) -> String {
+    let mut names: Vec<&str> =
+        cfg.efforts.keys().map(String::as_str).chain(cfg.effort.keys().map(String::as_str)).collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let levels = cfg.efforts.get(name).map(|v| v.iter().map(|s| one_line(s)).collect::<Vec<_>>().join("|"));
+            let chosen = cfg.effort.get(name).map(|s| one_line(s));
+            let shown = one_line(name);
+            match (levels.as_deref().filter(|s| !s.is_empty()), chosen) {
+                (Some(levels), Some(chosen)) => Some(format!("{shown}={levels} (default {chosen})")),
+                (Some(levels), None) => Some(format!("{shown}={levels}")),
+                (None, Some(chosen)) => Some(format!("{shown} (default {chosen})")),
+                (None, None) => None,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The explicit `(default, effort)` tuple, only when it differs from the effective values.
+fn explicit_field(e: &ProviderConfig) -> String {
+    let default = e.default_model.as_deref().map(one_line).unwrap_or_else(|| "unset".to_string());
+    let effort = if e.effort.is_empty() {
+        "unset".to_string()
+    } else {
+        e.effort.iter().map(|(k, v)| format!("{}={}", one_line(k), one_line(v))).collect::<Vec<_>>().join(", ")
+    };
+    format!("explicit default {default}, effort {effort}")
+}
+
+fn catalogue_line(name: &str, cfg: &ProviderConfig, explicit: Option<&ProviderConfig>) -> String {
+    let models = catalogue_models(cfg, explicit);
+    let mut parts = Vec::new();
+    if let Some(m) = &cfg.default_model {
+        parts.push(format!("default {}", one_line(m)));
+    }
+    if !models.is_empty() {
+        let listed = models.iter().map(|m| one_line(m)).collect::<Vec<_>>().join(", ");
+        parts.push(format!("models {listed}"));
+    }
+    let efforts = effort_field(cfg);
+    if !efforts.is_empty() {
+        parts.push(format!("efforts {efforts}"));
+    }
+    if let Some(e) = explicit {
+        if e.default_model != cfg.default_model || e.effort != cfg.effort {
+            parts.push(explicit_field(e));
+        }
+    }
+    let name = one_line(name);
+    if parts.is_empty() {
+        name
+    } else {
+        format!("{name}: {}", parts.join("; "))
+    }
 }
 
 /// The tools the model is offered: `exit_plan` only in plan mode, `recall` only when the policy asks for it.
@@ -1393,28 +1460,36 @@ mod task_model_context_tests {
         config.providers.insert("codex".into(), effective);
         let text = task_model_context(&config, "codex", &explicit, "active");
         for s in [
-            "codex",
-            "active",
+            "Current session target: codex/active",
             "gpt-6.1-terra",
             "gpt-6-astra",
-            "medium",
+            "cached-only-model=low|high",
+            "preset-only-model (default low)",
+            "gpt-6.1-terra (default medium)",
+            "explicit default unset, effort gpt-6.1-terra=medium",
             "not checked",
-            "cached-only-model",
-            "preset-only-model",
-            "known valid reasoning levels",
+            "medium",
             "low",
             "high",
-            "cheaper adequate",
-            "profile-specific round caps",
-            "not seconds",
+            "cheapest adequate",
+            "task takes provider/model/effort",
+            "honor the person's choice",
         ] {
-            assert!(text.contains(s), "{text}");
+            assert!(text.contains(s), "missing {s} in {text}");
         }
-        for s in ["removed-model", "secret-command"] {
-            assert!(!text.contains(s), "{text}");
+        for s in ["removed-model", "secret-command", "Some(", "None"] {
+            assert!(!text.contains(s), "unexpected {s} in {text}");
         }
         let changed = task_model_context(&config, "other", &ProviderConfig::default(), "new-active");
-        assert!(changed.contains("new-active") && !changed.contains("\"active\""));
+        assert!(changed.contains("Current session target: other/new-active"), "{changed}");
+        assert!(!changed.contains("codex/active") && !changed.contains("\"active\""), "{changed}");
+        let mut matched = config.clone();
+        let effective = matched.providers.get("codex").unwrap().clone();
+        matched.explicit_providers.as_mut().unwrap().get_mut("codex").unwrap().default_model =
+            effective.default_model.clone();
+        matched.explicit_providers.as_mut().unwrap().get_mut("codex").unwrap().effort = effective.effort.clone();
+        let same = task_model_context(&matched, "codex", &explicit, "active");
+        assert!(!same.contains("explicit "), "{same}");
     }
 
     #[test]
@@ -1458,5 +1533,39 @@ mod task_model_context_tests {
         assert!(text.len() < 13_000);
         assert!(text.contains("Catalogue truncated"));
         assert!(text.contains("not checked"));
+    }
+
+    /// Same shape as a wide preset list: 25 providers, 6 models, small effort maps, a key command that must not appear.
+    #[test]
+    fn wide_catalogue_lists_every_provider_and_no_secrets() {
+        let mut config = Config::default();
+        config.providers.clear();
+        for i in 0..25 {
+            let mut p = ProviderConfig {
+                api_key_cmd: Some("secret-command".into()),
+                default_model: Some("m0".into()),
+                models: (0..6).map(|m| format!("m{m}")).collect(),
+                ..Default::default()
+            };
+            p.efforts.insert("m0".into(), vec!["low".into(), "medium".into(), "high".into()]);
+            p.efforts.insert("m1".into(), vec!["low".into(), "high".into()]);
+            p.effort.insert("m0".into(), "high".into());
+            p.effort.insert("m1".into(), "low".into());
+            config.providers.insert(format!("p{i:02}"), p);
+        }
+        let text = task_model_context(&config, "p00", &ProviderConfig::default(), "m0");
+        assert!(!text.contains("secret-command"), "{text}");
+        assert!(!text.contains("Some(") && !text.contains("None"), "{text}");
+        for i in 0..25 {
+            assert!(text.contains(&format!("\np{i:02}: ")), "{text}");
+        }
+        assert!(text.contains("m0=low|medium|high (default high)"), "{text}");
+        assert!(text.contains("not checked"), "{text}");
+        let mut fixture = Config::default();
+        let mut mock = ProviderConfig::new("mock", "http://mock", None);
+        mock.models = vec!["m1".into()];
+        fixture.providers.insert("mock".into(), mock);
+        let fixture_text = task_model_context(&fixture, "mock", &ProviderConfig::default(), "m1");
+        eprintln!("catalogue chars fixture {} wide {}", fixture_text.len(), text.len());
     }
 }
