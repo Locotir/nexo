@@ -108,10 +108,16 @@ fn added_with_locale(old: &str, new: &str, locale: bool) -> Option<String> {
 /// Keep unchanged characters, but remove newly inserted invisible controls.
 pub fn strip_added(old: &str, new: &str) -> (String, String) {
     use similar::{ChangeTag, TextDiff};
+    // Myers can be quadratic on rewrites. Never remove anything if the diff is too large.
+    const MAX_DIFF_BYTES: usize = 4096;
+    if old.len().saturating_add(new.len()) > MAX_DIFF_BYTES {
+        return (new.to_owned(), String::new());
+    }
     let diff = TextDiff::from_chars(old, new);
     let mut cleaned = String::with_capacity(new.len());
     let mut removed = BTreeMap::<char, (usize, Vec<usize>)>::new();
     let mut line = 1usize;
+    let mut offset = 0usize;
     for change in diff.iter_all_changes() {
         if change.tag() == ChangeTag::Delete {
             continue;
@@ -119,8 +125,13 @@ pub fn strip_added(old: &str, new: &str) -> (String, String) {
         for c in change.value().chars() {
             let invisible = MARKS[..8].iter().any(|&(a, b, _)| (a..=b).contains(&(c as u32)));
             let keep_bom = c == '\u{feff}' && cleaned.is_empty();
-            let existing_joiner = c == '\u{200d}' && old.contains(c);
-            if change.tag() == ChangeTag::Insert && invisible && !keep_bom && !existing_joiner {
+            let end = offset + c.len_utf8();
+            let before = new[..offset].chars().next_back();
+            let after = new[end..].chars().next();
+            // Only ASCII surroundings are unambiguous. This preserves emoji and tag
+            // sequences, joining scripts, RTL marks, and all other non-Latin text.
+            let ascii_context = before.is_none_or(|ch| ch.is_ascii()) && after.is_none_or(|ch| ch.is_ascii());
+            if change.tag() == ChangeTag::Insert && invisible && !keep_bom && !old.contains(c) && ascii_context {
                 let entry = removed.entry(c).or_default();
                 entry.0 += 1;
                 if entry.1.last() != Some(&line) && entry.1.len() < 5 {
@@ -132,6 +143,7 @@ pub fn strip_added(old: &str, new: &str) -> (String, String) {
             if c == '\n' {
                 line += 1;
             }
+            offset = end;
         }
     }
     let details = removed
@@ -156,6 +168,25 @@ pub fn strip_added(old: &str, new: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::added;
+    #[test]
+    fn preserves_unicode_sequences_and_removes_ascii_strays() {
+        for text in ["👨\u{200d}👩", "می\u{200c}روم", "א\u{200f}ב", "🏴\u{e0067}\u{e0062}\u{e007f}", "क\u{200d}ष"]
+        {
+            assert_eq!(super::strip_added("", text).0, text);
+        }
+        assert_eq!(super::strip_added("", "a\u{200b}b").0, "ab");
+        assert_eq!(super::strip_added("prefix\u{200b}suffix", "\u{200b}prefixsuffix").0, "\u{200b}prefixsuffix");
+    }
+
+    #[test]
+    fn large_rewrite_is_preserved_without_diffing() {
+        let old = "a".repeat(1024 * 1024);
+        let new = format!("{}\u{200b}x", "b".repeat(1024 * 1024));
+        let start = std::time::Instant::now();
+        assert_eq!(super::strip_added(&old, &new).0, new);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
     #[test]
     fn reports_counts_and_lines() {
         let s = added("", "a—\nb\u{200b}\nc—").unwrap();

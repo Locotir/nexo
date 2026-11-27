@@ -66,7 +66,6 @@ pub(super) async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Resul
         Err(e) => return Err(e),
     };
     let (edited, stripped) = crate::marks::strip_added(&text, &edited);
-    let note = format!("{note}{stripped}");
     if edited == text {
         return Err(format!("edit: {shown} would not change; the new text is already there{stripped}"));
     }
@@ -78,6 +77,7 @@ pub(super) async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Resul
     let (added, removed, diff) = unified(&text, &edited, &shown);
     let now = now_text(&text, &edited);
     let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
+    let now = format!("{now}{stripped}");
     Ok(Done { shown, path, note, added, removed, diff, now, old: text, new: edited })
 }
 

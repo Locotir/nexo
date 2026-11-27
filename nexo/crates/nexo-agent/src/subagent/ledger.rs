@@ -237,3 +237,18 @@ fn ended(answer: Option<&(String, bool)>) -> String {
     }
     "exit 0".into()
 }
+
+#[cfg(test)]
+mod edit_summary_tests {
+    use super::Effects;
+
+    #[test]
+    fn parses_edit_summary_with_removal_note_on_following_line() {
+        let mut effects = Effects::default();
+        assert!(effects.parse(
+            "edited a.txt: +2 −1 lines, verified\nremoved newly added invisible characters: 1 zero-width space"
+        ));
+        assert_eq!(effects.files[0].path, "a.txt");
+        assert_eq!((effects.files[0].added, effects.files[0].removed), (2, 1));
+    }
+}

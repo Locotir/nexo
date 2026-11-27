@@ -514,7 +514,8 @@ async fn edit_strips_only_added_invisibles_and_keeps_existing_joiners() {
     let c = ToolContext::new(d.path().to_path_buf());
     let path = d.path().join("a.txt");
     std::fs::write(&path, "old\u{200b} 👩\u{200d}💻 end").unwrap();
-    let out = Edit.run(json!({"path":"a.txt", "old_string":"end", "new_string":"new\u{200b} 👨\u{200d}💻"}), &c).await;
+    let out = Edit.run(json!({"path":"a.txt", "old_string":"end", "new_string":"new\u{2060} 👨\u{200d}💻"}), &c).await;
     assert!(out.content.contains("removed newly added invisible characters"), "{}", out.content);
+    assert!(out.content.lines().next().unwrap().contains(": +"), "{}", out.content);
     assert_eq!(std::fs::read_to_string(path).unwrap(), "old\u{200b} 👩\u{200d}💻 new 👨\u{200d}💻");
 }
