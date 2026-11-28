@@ -431,11 +431,8 @@ impl BuiltIn {
         // what the curator moved: the messages the conversation appended are always "in", every call,
         // and would hide the rest
         self.moved = (r.back, r.removed);
-        let zone = |z: &nexo_race::Zone| nexo_core::ContextZone {
-            label: z.label.to_string(),
-            active: z.active,
-            card: z.card,
-        };
+        let zone =
+            |z: &nexo_race::Zone| nexo_core::ContextZone { label: z.label.to_string(), active: z.active, card: z.card };
         let cell = |c: &nexo_race::Cell| MemoryCell {
             zone: u32::try_from(c.zone).unwrap_or(u32::MAX),
             tokens: u64::try_from(c.tokens).unwrap_or(0),

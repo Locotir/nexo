@@ -59,8 +59,7 @@ fn restored_differs(name: &str, points: &[usize]) -> Option<String> {
     assert!(!saved.is_empty(), "{name}: no view at the points");
     for (k, bytes) in saved {
         let msgs = &reqs[k].msgs;
-        let (mut back, head) =
-            Race::restore("", &bytes, msgs, &hashes(msgs)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (mut back, head) = Race::restore("", &bytes, msgs, &hashes(msgs)).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(head.covered as usize, back.covered(), "{name}");
         for (j, r) in reqs.iter().enumerate().skip(k + 1) {
             let got = back.answer(&r.send, r.now);

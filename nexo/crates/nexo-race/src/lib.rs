@@ -9,7 +9,6 @@ pub mod sim;
 #[macro_use]
 mod work;
 
-mod race;
 mod engine;
 mod evidence;
 pub mod explore;
@@ -28,6 +27,7 @@ mod memory;
 mod msg;
 pub mod optimum;
 mod params;
+mod race;
 mod rules;
 #[cfg(test)]
 mod rules_battery;
@@ -38,7 +38,6 @@ mod textops;
 mod tools;
 mod words;
 
-pub use race::{Race, Reply};
 pub use engine::{keywords, label, Added, AddedKind, AddedState};
 pub use memory::{Cell, Memory, State, Zone};
 pub use msg::{
@@ -46,13 +45,14 @@ pub use msg::{
     START_NOTE_HEAD,
 };
 pub use params::D_SPEC;
+pub use race::{Race, Reply};
 pub use words::{distinctive_words, word_kind, LostTally, WordKind};
 
 // The tests reach the curator's private parts through `super::*`.
 #[cfg(test)]
 use {
-    race::page,
     params::{params, parse_params, FLOATS, INTS, ONLY, STRS},
+    race::page,
 };
 
 /// Names any model knows without reading them in the conversation, one per line.

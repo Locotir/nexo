@@ -1,6 +1,6 @@
-# Curator defaults
+# RACE defaults
 
-The built-in curator starts from this specification, before user overrides. The
+The built-in RACE engine starts from this specification, before user overrides. The
 source of truth is `D_SPEC` in `crates/nexo-race/src/params.rs`; a unit test
 checks that this copy stays in sync. `segments=0` leaves experimental segments
 disabled by default.
