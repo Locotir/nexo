@@ -12,6 +12,10 @@ pub enum AgentEvent {
         cwd: PathBuf,
         permission_mode: PermissionMode,
     },
+    /// Number of messages about to be replayed.
+    HistoryReplay {
+        total: usize,
+    },
     /// A message of the history (on resume, and the echo of a submission).
     History {
         index: usize,

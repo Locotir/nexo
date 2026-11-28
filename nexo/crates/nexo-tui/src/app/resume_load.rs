@@ -31,6 +31,7 @@ const CARD_H: u16 = 7;
 #[derive(Debug, Default)]
 pub(crate) struct ResumeArm {
     on: bool,
+    expected: Option<usize>,
 }
 
 /// A resume whose history is still arriving or still being laid out.
@@ -45,6 +46,10 @@ pub(crate) struct ResumeLoad {
     /// The line count `pump` measured for each block, at the width it measured it. A later `height`
     /// of the same block at that width must agree: the cover and the transcript share one count.
     heights: Vec<(usize, usize)>,
+    /// Message boundaries in block coordinates; the last message is pending until the next or seal.
+    expected: Option<usize>,
+    boundaries: Vec<usize>,
+    pending: bool,
 }
 
 impl App {
@@ -55,18 +60,48 @@ impl App {
             return;
         }
         self.resume_arm.on = false;
-        let load = self.resume_load.get_or_insert(ResumeLoad { done: 0, total: 0, sealed: false, heights: Vec::new() });
+        let load = self.resume_load.get_or_insert_with(|| ResumeLoad {
+            done: 0,
+            total: 0,
+            sealed: false,
+            heights: Vec::new(),
+            expected: self.resume_arm.expected.take(),
+            boundaries: Vec::new(),
+            pending: false,
+        });
+        load.pending = true;
         load.total = self.blocks.len();
         self.dirty = true;
+    }
+
+    /// Record the end of the preceding message, including any replayed tool blocks.
+    pub(super) fn resume_message_boundary(&mut self) {
+        if let Some(load) = &mut self.resume_load {
+            if load.pending {
+                load.boundaries.push(self.blocks.len());
+                load.pending = false;
+            }
+        }
+    }
+
+    /// Only a replay following a clear raises the cover, as with older agents.
+    pub(super) fn announce_resume_load(&mut self, total: usize) {
+        if self.resume_arm.on {
+            self.resume_arm.expected = Some(total);
+        }
     }
 
     /// The transcript was cleared: the history that follows, if any, is a replay.
     pub(super) fn arm_resume_load(&mut self) {
         self.resume_arm.on = true;
+        self.resume_arm.expected = None;
     }
 
     /// The replay is over. What is already wrapped shows at once; the rest finishes under the cover.
     pub(super) fn finish_resume_load(&mut self) {
+        self.resume_message_boundary();
+        self.resume_arm.on = false;
+        self.resume_arm.expected = None;
         let Some(load) = &mut self.resume_load else { return };
         load.sealed = true;
         self.dirty = true;
@@ -75,6 +110,7 @@ impl App {
     /// Esc while the cover is up: stop the agent and show what is laid out so far.
     pub(super) fn cancel_resume_load(&mut self) {
         self.resume_arm.on = false;
+        self.resume_arm.expected = None;
         self.resume_load = None;
         self.context_wait = false;
         self.words.defer(false);
@@ -144,13 +180,19 @@ pub(crate) fn draw_resume_cover(f: &mut Frame, app: &App, area: Rect) {
     let y = area.y + area.height.saturating_sub(h) / 2;
     let card = Rect { x, y, width: w, height: h };
 
-    let total = load.total.max(1);
-    let pct = (load.done as u64 * 100 / total as u64).min(100);
+    let (done, total) = if let Some(expected) = load.expected {
+        let done = load.boundaries.partition_point(|&end| end <= load.done)
+            + usize::from(load.pending && load.done >= load.total);
+        (done.min(expected), expected.max(1))
+    } else {
+        (load.done, load.total.max(1))
+    };
+    let pct = (done as u64 * 100 / total as u64).min(100);
     let spin = if app.opts.animations { SPINNER[app.spinner % SPINNER.len()] } else { "·" };
     let title = format!("{spin}  Loading session");
-    let count = format!("{pct}%    {} / {total}", load.done);
+    let count = format!("{pct}%    {done} / {total}");
     let bar_w = (w as usize).saturating_sub(4).clamp(8, 40);
-    let filled = (bar_w * load.done / total).min(bar_w);
+    let filled = (bar_w * done / total).min(bar_w);
     let frame = if app.opts.animations { app.spinner } else { 0 };
 
     let mut lines = vec![

@@ -161,6 +161,7 @@ fn grouped_tool_results_keep_the_height_the_cover_counted() {
     let (mut a, _rx) = bare();
     a.opts.group_tools = true;
     a.handle_agent(AgentEvent::HistoryCleared);
+    a.handle_agent(AgentEvent::HistoryReplay { total: 3 });
     a.handle_agent(AgentEvent::History { index: 0, message: Message::user("look around") });
     a.handle_agent(AgentEvent::History {
         index: 1,
@@ -248,4 +249,31 @@ fn mid_session_replay_finishes_before_context_rebuild() {
         a.tick_frame(false);
     }
     assert!(a.resume_load.is_none(), "the usage summary ends the replay without waiting for context or Esc");
+}
+
+#[test]
+fn announced_resume_total_tracks_laid_out_messages_and_clears() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::HistoryCleared);
+    a.handle_agent(AgentEvent::HistoryReplay { total: 20 });
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("first") });
+    for _ in 0..8 {
+        a.tick_frame(false);
+    }
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    draw_frame(&mut term, &mut a).unwrap();
+    let text = rows_of(term.backend().buffer()).join("\n");
+    assert!(text.contains("1 / 20"), "{text}");
+    assert!(text.contains("5%"), "{text}");
+    for i in 1..20 {
+        a.handle_agent(AgentEvent::History { index: i, message: Message::user(format!("message {i}")) });
+    }
+    replay_tail(&mut a, 20);
+    for _ in 0..100 {
+        if a.resume_load.is_none() {
+            break;
+        }
+        a.tick_frame(false);
+    }
+    assert!(a.resume_load.is_none(), "cover clears without Esc");
 }

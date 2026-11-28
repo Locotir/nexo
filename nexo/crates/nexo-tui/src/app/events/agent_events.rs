@@ -31,6 +31,7 @@ impl App {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
                 self.on_ready(session_id, provider, model, cwd, permission_mode)
             }
+            AgentEvent::HistoryReplay { total } => self.announce_resume_load(total),
             AgentEvent::History { index, message } => self.on_history(index, message),
             AgentEvent::Added { index, parts } => self.added(index, parts),
             AgentEvent::Sent { model, sections } => self.on_sent(model, sections),

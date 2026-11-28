@@ -97,6 +97,9 @@ async fn a_session_is_resumed_with_its_history_and_tool_outputs() {
             .any(|e| matches!(e, AgentEvent::Context { messages_total: 4, history_tokens, .. } if *history_tokens > 0)),
         "a resumed session shows its context before the first call"
     );
+    let announcement = evs.iter().position(|e| matches!(e, AgentEvent::HistoryReplay { total: 4 })).unwrap();
+    let first_history = evs.iter().position(|e| matches!(e, AgentEvent::History { .. })).unwrap();
+    assert!(announcement < first_history, "the total precedes the replay");
     let hist: Vec<usize> = evs
         .iter()
         .filter_map(|e| if let AgentEvent::History { index, .. } = e { Some(*index) } else { None })

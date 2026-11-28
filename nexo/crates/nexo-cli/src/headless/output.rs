@@ -91,9 +91,9 @@ pub fn color_ok() -> bool {
 }
 
 /// The line the legacy JSON output prints for an event. The events about a sub-agent run's own conversation
-/// are for the interface: they are not printed.
+/// and replay progress are for the interface: they are not printed.
 pub(super) fn legacy_line(ev: &AgentEvent) -> Option<String> {
-    if ev.is_sub() {
+    if ev.is_sub() || matches!(ev, AgentEvent::HistoryReplay { .. }) {
         return None;
     }
     serde_json::to_string(ev).ok()
@@ -184,6 +184,7 @@ mod tests {
         for e in &subs {
             assert_eq!(legacy_line(e), None, "{e:?}");
         }
+        assert_eq!(legacy_line(&AgentEvent::HistoryReplay { total: 42 }), None);
         let line = legacy_line(&AgentEvent::TextDelta { text: "hi".into() }).unwrap();
         assert!(line.contains("\"text_delta\""), "{line}");
     }

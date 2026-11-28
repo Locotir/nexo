@@ -5,6 +5,7 @@ use super::*;
 /// The recorded conversation, as the interface would have seen it live:
 /// every message, the calls with their outputs, and the session's usage.
 pub(super) fn replay_history(events: &EventTx, session: &Session, tools: &ToolSet) {
+    emit(events, AgentEvent::HistoryReplay { total: session.messages().len() });
     for (index, m) in session.messages().iter().enumerate() {
         emit(events, AgentEvent::History { index, message: m.clone() });
         if m.role == Role::Assistant {
