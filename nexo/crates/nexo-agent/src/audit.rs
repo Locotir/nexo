@@ -17,10 +17,12 @@ use std::sync::Mutex;
 use std::thread::JoinHandle;
 
 use nexo_core::config::AuditConfig;
+use nexo_core::message::Message;
+use nexo_core::provider::ModelRequest;
 use nexo_core::stream::Usage;
 use serde_json::{json, Value};
 
-use crate::scrub::{scrub, touches_env_file};
+use crate::scrub::{scrub, scrub_value, touches_env_file};
 
 /// The longest args summary kept in a line.
 const SUMMARY_CHARS: usize = 200;
@@ -146,9 +148,13 @@ pub struct RequestRecord<'a> {
     pub cost_usd: f64,
 }
 
+/// A line to write, and the request file of its session when it goes there instead of the log.
+type Line = (Option<String>, String);
+
 struct Inner {
     user: String,
-    tx: Mutex<Option<Sender<String>>>,
+    tx: Mutex<Option<Sender<Line>>>,
+    requests: bool,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -198,7 +204,8 @@ impl Audit {
         if !cfg.enabled {
             return None;
         }
-        let (tx, rx) = channel::<String>();
+        let (tx, rx) = channel::<(Option<String>, String)>();
+        let requests = cfg.requests;
         let cfg = cfg.clone();
         let thread = std::thread::Builder::new()
             .name("nexo-audit".into())
@@ -207,14 +214,22 @@ impl Audit {
                 let mut warned = false;
                 // a log in the data folder is the user's alone; one the admin pointed somewhere else is left as set
                 let private = own_folder(&cfg);
-                for line in rx {
+                for (session, line) in rx {
                     let ts = serde_json::from_str::<Value>(&line)
                         .ok()
                         .and_then(|v| v.get("ts").and_then(Value::as_str).map(String::from))
                         .unwrap_or_default();
-                    let path = target(&cfg, &dir, &ts);
+                    let path = if let Some(session) = &session {
+                        let base = configured(&cfg)
+                            .map(expand)
+                            .and_then(|p| p.parent().map(Path::to_path_buf))
+                            .unwrap_or_else(|| dir.clone());
+                        base.join("requests").join(format!("{session}.jsonl"))
+                    } else {
+                        target(&cfg, &dir, &ts)
+                    };
                     if open.as_ref().map(|(p, _)| p != &path).unwrap_or(true) {
-                        let file = open_log(&path, private);
+                        let file = open_log(&path, private || session.is_some());
                         match file {
                             Ok(f) => open = Some((path.clone(), f)),
                             Err(e) => {
@@ -237,6 +252,7 @@ impl Audit {
             .ok()?;
         let inner = std::sync::Arc::new(Inner {
             user: user_name(),
+            requests,
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
         });
@@ -248,7 +264,25 @@ impl Audit {
 
     fn send(&self, v: Value) {
         if let Some(tx) = self.inner.tx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            let _ = tx.send(v.to_string());
+            let _ = tx.send((None, v.to_string()));
+        }
+    }
+
+    pub fn exchange(&self, session: &str, provider: &str, request: &ModelRequest, reply: &Message, usage: Usage) {
+        if !self.inner.requests
+            || session.is_empty()
+            || !session.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return;
+        }
+        let mut v = json!({
+            "ts": stamp(), "session": session, "provider": provider, "model": request.model, "call": "main",
+            "request": request, "reply": reply,
+            "usage": {"tokens_in": usage.input + usage.cache_write, "tokens_out": usage.output, "tokens_cached": usage.cache_read},
+        });
+        scrub_value(&mut v);
+        if let Some(tx) = self.inner.tx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let _ = tx.send((Some(session.to_string()), v.to_string()));
         }
     }
 
@@ -421,6 +455,35 @@ pub fn files(cfg: &AuditConfig) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn exchange_is_opt_in_and_scrubs_secrets() {
+        let d = tempfile::tempdir().unwrap();
+        let req = ModelRequest::new("model", "full system text", vec![Message::user("token=secret123456789")]);
+        let reply = Message::assistant("the reply");
+        for enabled in [false, true] {
+            let dir = d.path().join(if enabled { "on" } else { "off" });
+            let cfg = AuditConfig { enabled: true, requests: enabled, ..Default::default() };
+            let audit = Audit::start(&cfg, dir.clone()).unwrap();
+            audit.exchange("session-1", "provider", &req, &reply, Usage::default());
+            drop(audit);
+            let folder = dir.join("requests");
+            if !enabled {
+                assert!(!folder.exists());
+                continue;
+            }
+            let path = folder.join("session-1.jsonl");
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.lines().count(), 1);
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["request"]["system"], "full system text");
+            assert_eq!(value["reply"]["content"][0]["text"], "the reply");
+            assert!(!text.contains("secret123456789"));
+            assert!(text.contains("[redacted]"));
+            #[cfg(unix)]
+            assert_eq!((mode(&folder), mode(&path)), (0o700, 0o600));
+        }
+    }
+
     #[cfg(unix)]
     fn mode(p: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
@@ -493,7 +556,7 @@ mod tests {
         // no path, or a blank one: the month file goes in the folder nexo owns
         for (i, path) in [None, Some("  ".to_string())].into_iter().enumerate() {
             let dir = d.path().join(format!("audit{i}"));
-            write_one_line(&AuditConfig { enabled: true, path }, dir.clone());
+            write_one_line(&AuditConfig { enabled: true, path, ..Default::default() }, dir.clone());
             let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
             assert_eq!(files.len(), 1, "{files:?}");
             assert_eq!((mode(&dir), mode(&files[0])), (0o700, 0o600));
@@ -505,7 +568,7 @@ mod tests {
         let file = shared.join("audit.jsonl");
         std::fs::write(&file, b"").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let cfg = AuditConfig { enabled: true, path: Some(file.display().to_string()) };
+        let cfg = AuditConfig { enabled: true, path: Some(file.display().to_string()), ..Default::default() };
         write_one_line(&cfg, d.path().join("never-made"));
         assert_eq!((mode(&shared), mode(&file)), (0o755, 0o640));
         assert_eq!(std::fs::read_to_string(&file).unwrap().lines().count(), 1);
@@ -528,7 +591,7 @@ mod tests {
         }
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("a.jsonl");
-        let cfg = AuditConfig { enabled: true, path: Some(f.display().to_string()) };
+        let cfg = AuditConfig { enabled: true, path: Some(f.display().to_string()), ..Default::default() };
         let a = Audit::from_config(&cfg).unwrap();
         // a task the process never drops: `exit` would not run its destructor
         let held = a.clone();

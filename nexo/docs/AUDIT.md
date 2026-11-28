@@ -40,6 +40,7 @@ In `config.toml`:
 ```toml
 [audit]
 enabled = true
+requests = true  # optional; keep model requests and replies, off by default
 path = "~/.nexo/audit/nexo.jsonl"   # optional; default ~/.nexo/audit/YYYY-MM.jsonl, one file a month
 ```
 
@@ -71,6 +72,12 @@ Model request:
 - `call` is `main`, `sub` (a sub-agent), `reader`, `compact`, `suggest` or `review`.
 - `tokens_in` counts input that was not served from the cache (cache writes included); `tokens_cached` is the cache read.
 - `cost_usd` uses the prices nexo knows (0 when there are none).
+
+With `requests = true`, main model calls also go to `~/.nexo/audit/requests/<session id>.jsonl`
+(or `requests/` next to the configured `path`). Each line has the full request, including system text,
+messages and tool specs, the kept reply, and usage. This does not cover sub-agent or other auxiliary
+model calls, or calls that fail before a reply stream starts. Requests and replies are pattern-scrubbed,
+but redaction is not perfect and the files may contain sensitive conversation data. Review before sharing.
 
 A sub-agent's tool calls are logged like the main agent's (same session, its own `decision` and `by`); `exit_code` is not set for them. Its model requests are `sub`.
 

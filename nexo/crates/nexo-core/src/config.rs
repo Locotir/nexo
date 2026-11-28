@@ -58,6 +58,8 @@ pub struct Config {
 #[serde(default)]
 pub struct AuditConfig {
     pub enabled: bool,
+    /// Keep model requests and replies in a separate file per session (off by default).
+    pub requests: bool,
     /// The file to append to (none: `~/.nexo/audit/YYYY-MM.jsonl`, one file per month).
     pub path: Option<String>,
 }

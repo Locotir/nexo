@@ -304,6 +304,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if cut && c.error.is_none() {
             leave_out_cut_args(&mut msg);
         }
+        let kept = if over_budget { without_reasoning(&msg) } else { msg.clone() };
+        {
+            let st = state.lock().await;
+            if let Some(audit) = &st.audit {
+                let (provider, _, _) = st.target.get();
+                audit.exchange(st.session.id(), &provider, &req, &kept, usage);
+            }
+        }
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
                 match learn(&state, e, &req.model, req.max_tokens).await {
@@ -366,7 +374,6 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         }
         // a reply cut at the budget said nothing: its thinking is not kept, so a provider that sends reasoning
         // back does not carry thousands of tokens of it into every retry and pull the model back into it
-        let kept = if over_budget { without_reasoning(&msg) } else { msg.clone() };
         calm |= over_budget;
         let mut group_cost = None;
         {
