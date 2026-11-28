@@ -7,11 +7,11 @@ this page was written is `cdeb98a`.
 
 Nothing is claimed that is not in a table here. Where a figure comes from a lab log that is not in this
 repository, the table says so and describes the method. Figures from the earlier implementation of the
-curator (the thesis engine from which `nexo-curator` was ported, unpublished) are labelled as such.
+curator (the thesis engine from which `nexo-race` was ported, unpublished) are labelled as such.
 
-## What the curator is held to
+## What RACE is held to
 
-The design (see [`context-curator.md`](context-curator.md)) puts four things above cost: the curator is
+The design (see [`race.md`](race.md)) puts four things above cost: RACE is
 never switched off, there is no sawtooth and no lossy summary, every fact the call needs goes into each
 call, and the cache prefix stays stable. Not forgetting ranks above cost. The tables below are read
 against that: a cost that rises while forgotten facts fall is kept on purpose.
@@ -28,11 +28,11 @@ against that: a cost that rises while forgotten facts fall is kept on purpose.
 
 ## Cold replay and scale (2026-11-09)
 
-**Method.** The cold tests need no model and no money. A recorded or generated session is fed to the curator
-request by request, as the host does, and what the curator would have sent is scored.
+**Method.** The cold tests need no model and no money. A recorded or generated session is fed to RACE
+request by request, as the host does, and what RACE would have sent is scored.
 
 - *Cold replay.* The 22 fixtures of the lab set (recorded and synthetic sessions; the public ones are in
-  `nexo/crates/nexo-curator/tests/fixtures/`) replay through `examples/replay.rs` with the default spec.
+  `nexo/crates/nexo-race/tests/fixtures/`) replay through `examples/replay.rs` with the default spec.
   A shell script of the lab runs them all and sums the lines. Columns: the priced cost of the view, the
   number of forgotten words (distinctive words of a reply that the whole history held and the view did not),
   and the largest view. The script is not in this repository.
@@ -44,7 +44,7 @@ request by request, as the host does, and what the curator would have sent is sc
   request's, which is what a prefix cache reads), time per request. The model window is a flag.
 
 Reproduce the scale line for 32k (from `nexo/`):
-`cargo run --release -p nexo-curator --features sim --example scale -- --topics 1000 --hops 0 --seed 1 --window 32k`.
+`cargo run --release -p nexo-race --features sim --example scale -- --topics 1000 --hops 0 --seed 1 --window 32k`.
 I ran it at `cdeb98a` on 2026-11-09: recall 100.0/100.0, fijos 100.0, view maximum 19,579 tokens,
 31.57M tokens sent, 0.5243 $ at the example's DeepSeek price, prefix 99.2 %, 1.98 ms median and 25.92 ms p99
 per request, 93 MB at most; the plain arm of the same session sends 374.84M tokens, 2.3404 $, with a
@@ -81,7 +81,7 @@ met at 10M tokens: four loops that scan the whole history remain.
 
 ## Replay of the public fixtures (2026-11-09)
 
-The 7 whole-history recordings `bench-*-full*.jsonl` replayed through the curator with its default spec at
+The 7 whole-history recordings `bench-*-full*.jsonl` replayed through RACE with its default spec at
 `cdeb98a` (`examples/replay.rs`; tokens estimated at four characters per token; I ran every line today):
 
 | fixture | requests | whole history | curator | change |
@@ -96,7 +96,7 @@ The 7 whole-history recordings `bench-*-full*.jsonl` replayed through the curato
 | **all** | | **8.52M** | **6.85M** | **-19.6 %** |
 
 Every fixture shows `forgotten 0 words`. Reproduce one with
-`cargo run --release -p nexo-curator --features sim --example replay -- crates/nexo-curator/tests/fixtures/<file>.jsonl --quiet`
+`cargo run --release -p nexo-race --features sim --example replay -- crates/nexo-race/tests/fixtures/<file>.jsonl --quiet`
 (from `nexo/`; the `total over all requests` line). The replay cannot show how a model reacts to the view;
 only a live run does. The previous version of this page, measured on an older build, read -26 % for the same files. The
 smaller saving is probably because an epoch waits for the cost rule instead of cutting at each request
@@ -181,10 +181,10 @@ cover all 16 tasks and are not changed.
 about 8 tasks, each with one attempt; adaptive-rejection-sampler fails for all five arms in both rounds and
 configure-git-webserver for four of five in round A. This is a tie, not a ranking.
 
-**In round B the curator never acted.** Its largest view was 25,936 tokens (25,777 in round A) against a
+**In round B RACE never acted.** Its largest view was 25,936 tokens (25,777 in round A) against a
 window of 131,072, and all 222 `curated` events of round B have empty `items`. So round B tells nothing
-about the curator's cutting: nexo here is a harness with a stable prefix and short prompts (22k tokens per
-call on average, against 39k for Codex), not a curator under pressure. Prompts of 22k to 39k tokens
+about RACE's cutting: nexo here is a harness with a stable prefix and short prompts (22k tokens per
+call on average, against 39k for Codex), not RACE under pressure. Prompts of 22k to 39k tokens
 are far below a 128k window, so the cap rarely had occasion to bite any arm (Inferred).
 
 **Compactions seen in the logs.** nexo 0 and 0. Codex 0 and 0 (its window was verified at 124,518 in
@@ -221,7 +221,7 @@ log-summary-date-ranges, db-wal-recovery, build-pmars, adaptive-rejection-sample
 ## Against Claude Code on the same model (2026-11-10)
 
 `claude-sonnet-5-5` on both sides, nexo `bf57ed4`, 5 tasks, 3 runs each. Index of calls, tokens and dollars, 1.00 is best:
-nexo 1.00, Claude Code 1.47; nexo completed every task and cost less in every run. Short sessions: the curator's eviction is not measured there.
+nexo 1.00, Claude Code 1.47; nexo completed every task and cost less in every run. Short sessions: RACE's eviction is not measured there.
 Plan, tables, checks and limits: [`bench/RESULTS.md`](bench/RESULTS.md).
 
 ## Against Codex CLI on the same model (2026-11-10)
@@ -230,7 +230,7 @@ Plan, tables, checks and limits: [`bench/RESULTS.md`](bench/RESULTS.md).
 
 ## Live paired runs
 
-The last paid paired run of the curator against plain: `deepseek-flash`, nexo `575380d` (before the epoch
+The last paid paired run of RACE against plain: `deepseek-flash`, nexo `575380d` (before the epoch
 change), 2026-11-09, 5 tasks, stopped by its 4 $ budget at 12 of 19 repetitions (60 pairs, 4.002 $).
 The target set for it (H1) is not met:
 
@@ -242,7 +242,7 @@ The target set for it (H1) is not met:
 
 All of it comes from one task, `vuln-hunt` (plain 8.2 steps and 0.92 score at 0.404 $; curator 19.2 steps and
 0.58 at 0.877 $). The other four tasks sit at 0.85 to 1.05 times the steps with score 1.00 in both arms.
-At the run's end the curator also had 59 `done` and 1 `max_steps` stops against 60 `done` and 1 budget stop
+At the run's end RACE also had 59 `done` and 1 `max_steps` stops against 60 `done` and 1 budget stop
 for plain. This run predates the cost rewrite, the 95 % ceiling, the index and the epochs; those were
 measured only in the cold tests above. A live run with them is pending (Unknown).
 
@@ -315,7 +315,7 @@ just in time, lines that share a name with what has just arrived lost at every b
 
 **Time.** Fitted on 688 live DeepSeek requests (R² 0.94): 1.17 s + 0.023 s per 1k uncached + 0.008 s per
 1k cached + 2.98 s per 1k output tokens. Input is 8–9% of the model's time, so with the same calls no
-curator makes the agent more than ×1.09 faster (Amdahl); finishing sooner needs fewer calls and shorter
+RACE makes the agent more than ×1.09 faster (Amdahl); finishing sooner needs fewer calls and shorter
 answers.
 
 
@@ -323,7 +323,7 @@ answers.
 
 These figures are from nexo (`nexo-curator` at the commit that added the predictor, before the epoch
 rewrite of 2026-11-09), not from the earlier engine; the replay was not repeated since. The data is 656 nexo sessions recorded whole and replayed cold through the
-curator with its default settings and a 40-step limit per request (`examples/replay.rs --bank`), split
+RACE with its default settings and a 40-step limit per request (`examples/replay.rs --bank`), split
 by length: xs up to 5 requests (222 sessions), s up to 20 (167), m up to 80 (185), l up to 300 (63),
 xl up to 1000 (14), xxl over 1000 (5). The recordings are not published. The measure of harm is a
 **lost reply**: a reply of the recorded session that repeats a distinctive word which the curated view
@@ -339,7 +339,7 @@ request names it, whether its thread is active, who last held each of its words.
 is on both sides. At the 4-call horizon: log loss 0.205 (base rate 0.325; the heuristic it replaced
 1.46), AUC 0.904 (0.824 for that heuristic). At the ever horizon: 0.290 and 0.896 (1.04 and 0.799). An
 ablation puts half of the gain on the extra data and half on the last-holder features. The weights ship
-in `nexo-curator/data/model.json`; `examples/needfit.rs` refits them.
+in `nexo-race/data/model.json`; `examples/needfit.rs` refits them.
 
 **Closing priced by need.** The predictor enters the rent rule when a request is closed: a step is
 worth its chance of reuse at the rent horizon times the price of the call that would bring it back,
@@ -370,13 +370,13 @@ the oracle in xl and xxl (505 against 540, 166 against 164).
 
 ![Replies that lost a word they needed, by session length: before, now, and the hindsight oracle](img/belady-gap.svg)
 
-## Earlier build: compaction against the curator
+## Earlier build: compaction against RACE
 
-The long-session tables below were measured on 2026-11-04 on an earlier build of the curator (before epochs and the
+The long-session tables below were measured on 2026-11-04 on an earlier build of RACE (before epochs and the
 ceiling; commit not recorded here). They are the last measurements of these four arms and the live
 side of the comparison with compaction; they were not repeated.
 
-### A heavy session: compaction at 100k and 200k against the curator
+### A heavy session: compaction at 100k and 200k against RACE
 
 `marathon-heavy` (the marathon with twenty times the examples, so the history passes 200k tokens
 without any policy), `deepseek-flash`, temperature 0, three runs per arm, `--max-steps 200`.
@@ -393,7 +393,7 @@ without any policy), `deepseek-flash`, temperature 0, three runs per arm, `--max
 Compaction at 100k lost the task twice. Once its summary dropped the list of tests that failed at the
 start, which the last request asks for; once it summarised, read a large specification again, passed
 100k again and summarised again, 28 times, until the step cap. Compaction at 200k never started: the
-runs stayed under its limit, so it ran as plain with fewer steps. The curator was right in every run,
+runs stayed under its limit, so it ran as plain with fewer steps. RACE was right in every run,
 cheaper than plain in every run (−45% on the mean) and than compaction at 100k in every run; against
 compaction at 200k the means differ by less than the runs do.
 
@@ -425,14 +425,14 @@ Five runs per arm (three heavy, two noisy):
 
 ![Five runs per arm, four arms](img/scoreboard.svg)
 
-Five runs are few: the curator's lead in cost over compaction at 200k is smaller than the spread
+Five runs are few: RACE's lead in cost over compaction at 200k is smaller than the spread
 between runs. What holds in every run is that it never lost the task and never sent more than 105k.
 
 ### A pasted-log session
 
-`marathon-pasted` (the user pastes long logs into the messages), one run per arm. The curator solved
+`marathon-pasted` (the user pastes long logs into the messages), one run per arm. RACE solved
 it ($0.769, largest request 213k); compaction at 200k did not ($0.628, three summaries). A second
-curator run on a later build did not solve it ($0.348): the hidden test did not compile against the
+RACE run on a later build did not solve it ($0.348): the hidden test did not compile against the
 interface it wrote. One run each cannot rank the arms; it is listed so no result is left out.
 
 ## Threats to validity

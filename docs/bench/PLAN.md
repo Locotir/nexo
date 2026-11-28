@@ -28,7 +28,7 @@ Both sides run in the same container image (Debian, Python 3, Node, git). nexo i
 | Next turn of a long task | same line plus `-c` (latest session of the folder) | same line plus `--resume <session id>` |
 | Config | `hermetic = true`, `reasoning = "medium"`, `[web] enabled = false`, `max_cost` set, `max_tokens` left at default | `--safe-mode` (no CLAUDE.md, skills, plugins, hooks, MCP, memory) and a new empty `CLAUDE_CONFIG_DIR` |
 | Web tools | off | off (`WebSearch`, `WebFetch` disallowed) |
-| Context management | nexo's own defaults, including its context curator | Claude Code's own defaults, including auto-compact at its default threshold. Nothing is tuned |
+| Context management | nexo's own defaults, including RACE | Claude Code's own defaults, including auto-compact at its default threshold. Nothing is tuned |
 | Access | API key | subscription token from `claude setup-token` |
 
 `M` is 25 for visual tasks and 40 for long tasks (per turn).

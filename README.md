@@ -27,7 +27,7 @@
 curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh    # Linux and macOS; Windows and source below
 ```
 
-nexo is a terminal coding agent written in Rust, for any model provider. Its context curator keeps long sessions
+nexo is a terminal coding agent written in Rust, for any model provider. Its RACE (Relation-Aware Context Engine) keeps long sessions
 small without summaries: the whole history stays on disk, and the model is sent only what the next step needs.
 It runs as a full-screen TUI, headless for scripts and CI, or inside editors over the Agent Client Protocol (ACP).
 
@@ -77,7 +77,7 @@ nexo --provider ollama --model qwen3:8b       # no key: a local model. --provide
 
 The status bar shows context use and cost, and you can click it. The screen stays quiet by default;
 `[ui] detail = "full"` brings back every figure and key hint. Each session reopens on its own provider and model.
-Pick a policy in `~/.nexo/config.toml`: `[context] policy = "curator"` (`auto | plain | compact | curator`).
+Pick a policy in `~/.nexo/config.toml`: `[context] policy = "race"` (`auto | plain | compact | race`).
 
 ## Proof
 
@@ -129,7 +129,7 @@ Same model, same tasks. Each chart has its date, and what it does not show is on
 <details>
 <summary>Setup and limits</summary>
 
-2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks. The combined index is 1.05 and 1.04, where 1.00 would mean best on all three. nexo is not the lowest in every column: in round A dsh costs less in dollars. Every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B the curator never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Correction 2026-11-10: the Hermes run of circuit-fibsqrt in round A ended with an error and recorded no usage, so it was counted as zero; its usage is now read from the agent's own log. [Details](docs/results.md#harness-race-2026-11-09).
+2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks. The combined index is 1.05 and 1.04, where 1.00 would mean best on all three. nexo is not the lowest in every column: in round A dsh costs less in dollars. Every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B RACE never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Correction 2026-11-10: the Hermes run of circuit-fibsqrt in round A ended with an error and recorded no usage, so it was counted as zero; its usage is now read from the agent's own log. [Details](docs/results.md#harness-race-2026-11-09).
 
 </details>
 
@@ -144,10 +144,10 @@ comes back by itself; your rules stay pinned; a resumed session gets the same vi
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/flow-dark.svg">
-  <img alt="Where the curator sits: the whole history on disk, the curator, and the view the model gets: prompt, Project block, anchor, a view that only grows between epochs, and a tail built for each call" src="docs/img/flow.svg" width="760">
+  <img alt="Where RACE sits: the whole history on disk, RACE, and the view the model gets: prompt, Project block, anchor, a view that only grows between epochs, and a tail built for each call" src="docs/img/flow.svg" width="760">
 </picture>
 
-Engine and every setting: [`docs/how-it-works.md`](docs/how-it-works.md). What the marks on each tool card mean: [reading the screen](docs/how-it-works.md#reading-the-screen-the-mark-on-each-tool-card). Diagrams: [`docs/context-curator.md`](docs/context-curator.md). Policy `compact` exists if you prefer it.
+Engine and every setting: [`docs/how-it-works.md`](docs/how-it-works.md). What the marks on each tool card mean: [reading the screen](docs/how-it-works.md#reading-the-screen-the-mark-on-each-tool-card). Diagrams: [`docs/race.md`](docs/race.md). Policy `compact` exists if you prefer it.
 
 ## What else it does
 

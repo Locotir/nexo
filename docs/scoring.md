@@ -1,4 +1,4 @@
-# How the curator is scored
+# How RACE is scored
 
 This is the scoring protocol for every result in the report. It is fixed
 **before** the runs it judges. A change to it is recorded in the log at the end,
@@ -14,7 +14,7 @@ solves fewer tasks has not won.
 | Term | Meaning |
 |---|---|
 | **task** | one benchmark task (a task of `nexo bench`): files, the user's turns, an automatic checker and a reference solution |
-| **arm** | one way of building the context sent upstream. `full` (send everything, the baseline; `plain` in `nexo bench`) or a curator setting such as `D` |
+| **arm** | one way of building the context sent upstream. `full` (send everything, the baseline; `plain` in `nexo bench`) or a RACE setting such as `D` |
 | **run** | one (task, arm, model, repetition). The agent works the task from a fresh copy of its files |
 | **model** | the upstream LLM. Results are reported **per model**, never pooled across models |
 
@@ -87,7 +87,7 @@ simulated agent of an earlier, unpublished implementation.
   - the proved **lower bound** on any policy;
   - the **share of the oracle saving captured**, which is objective O7 of the
     proposal.
-- **Cold tests (no model)**: the curator's view is scored on generated sessions with questions that need
+- **Cold tests (no model)**: RACE's view is scored on generated sessions with questions that need
   facts from far back (`examples/scale.rs`, cold mode). *Recall* is the share of questions whose needed
   lines are in the view; *standing facts* the share of tasks whose supposed default has its fact in the
   view; *prefix* the median share of a request's prefix equal to the previous request's. These do not
@@ -142,7 +142,7 @@ verdict.
 ## 8. Where the evidence stands (pilot, DeepSeek)
 
 This pilot is the last run scored under §2 and §3. It was measured with the earlier implementation, before
-2026-10-30 (no commit), on a different curator tuning from today's. Later evidence is in
+2026-10-30 (no commit), on a different RACE tuning from today's. Later evidence is in
 [`results.md`](results.md): a paired live run at `575380d` on 2026-11-09 that did not meet its target, and
 a 16-task harness race that ranks nothing. Neither was scored by §2.
 

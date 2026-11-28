@@ -4,6 +4,10 @@ CI builds a release on every push to `main` and names it `build-<commit>` (the l
 `nexo --version` prints the same commit. The version in `nexo/Cargo.toml` is 0.2.0 since 2026-11-17
 (0.1.0 before). Dates are commit dates; newest first.
 
+## Unreleased
+
+- The built-in context engine is now called RACE; `race` is the policy name and `curator` remains an alias.
+
 ## 2026-11-27
 
 ### Added

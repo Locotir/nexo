@@ -15,7 +15,7 @@ Pro). Its usage is billed and shown as `suggest`.
 
 ## What it never does
 
-- It does not enter the session history, the saved session or the context curator: the next real request is
+- It does not enter the session history, the saved session or RACE: the next real request is
   built from the history alone.
 - It runs no tools: a reply that calls one is dropped, nothing is executed or asked.
 - It fires no hooks.

@@ -33,7 +33,7 @@ together reach every provider a coding harness is asked for today.
 ## 2. What is the same everywhere (the unified model)
 
 The adapters translate to and from **one** internal representation. It is the
-representation the curator already uses (role + content blocks), so curated
+representation RACE already uses (role + content blocks), so curated
 views travel unchanged to any provider.
 
 ### Request
@@ -232,7 +232,7 @@ done_reason, prompt_eval_count, eval_count}`; tool calls arrive whole; the
 same events. Only worth an adapter for options `/v1` does not expose
 (`num_ctx`, `keep_alive`).
 
-## 4. Prompt caches: the part the curator is for
+## 4. Prompt caches: the part RACE is for
 
 | Vendor | Cache | Minimum | Reported as |
 |---|---|---|---|
@@ -245,7 +245,7 @@ same events. Only worth an adapter for options `/v1` does not expose
 All of them key on a byte-identical prefix: system, tools, then messages in
 order. A curator that only ever appends, or rewrites at the moments the
 cache has expired anyway, keeps the hit rate; one that edits the middle of
-the history pays the whole prompt again. That is the cost model the curator
+the history pays the whole prompt again. That is the cost model RACE
 in this repository optimises, and why its view is applied *before* the
 adapter: the adapter never reorders or rewrites what it is given.
 
@@ -282,7 +282,7 @@ cached.
 4. usage read from the last chunk even when `choices` is empty;
 5. tool-call argument fragments joined per call `index`/`id` before parsing;
 6. finish reason normalised; a turn with any tool call is `tool_use`;
-7. no reordering, trimming or rewriting of the messages given (the curator's job);
+7. no reordering, trimming or rewriting of the messages given (RACE's job);
 8. `retry-after` honoured; a context-length 400 reported as such;
 9. a recorded fixture of a real stream per protocol in the tests, replayed
    through the parser.

@@ -10,7 +10,7 @@ only crates in the layers above its own; new code must not add an edge that poin
 | Low | `nexo-bin` (binmagic), `nexo-browser-host` (relay), `nexo-providers` (core, http) | leaves |
 | Mid | `nexo-dbg` (bin), `nexo-browser` (relay, browser-host), `nexo-supervise` (core, providers) | low |
 | Tools | `nexo-tools` | core, binmagic, dbg, browser, relay, http, bin |
-| Engine | `nexo-agent` | core, providers, curator, tools, supervise, binmagic |
+| Engine | `nexo-agent` | core, providers, RACE, tools, supervise, binmagic |
 | Interface | `nexo-tui` | core, agent, supervise, providers |
 | Binary | `nexo-cli`, `nexo-bench` | everything |
 

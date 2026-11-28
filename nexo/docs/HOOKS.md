@@ -118,4 +118,4 @@ hook that should only judge sub-agents checks `agent` in the JSON. A `pre_tool` 
 
 ## Not covered
 
-The curator's own fold is not a hook point: `pre_compact` fires when nexo compacts the history.
+RACE's own fold is not a hook point: `pre_compact` fires when nexo compacts the history.

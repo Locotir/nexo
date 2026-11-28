@@ -1819,9 +1819,9 @@ dependencies = [
  "nexo-bin",
  "nexo-binmagic",
  "nexo-core",
- "nexo-race",
  "nexo-dbg",
  "nexo-providers",
+ "nexo-race",
  "nexo-supervise",
  "nexo-tools",
  "pulldown-cmark",
@@ -1860,8 +1860,8 @@ dependencies = [
  "futures",
  "nexo-agent",
  "nexo-core",
- "nexo-race",
  "nexo-providers",
+ "nexo-race",
  "nexo-tools",
  "regex",
  "serde",
@@ -1995,21 +1995,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexo-race"
-version = "0.2.0"
-dependencies = [
- "fancy-regex",
- "indexmap",
- "nexo-race",
- "postcard",
- "regex",
- "rustc-hash",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "nexo-dbg"
 version = "0.2.0"
 dependencies = [
@@ -2055,6 +2040,21 @@ dependencies = [
  "toml",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "nexo-race"
+version = "0.2.0"
+dependencies = [
+ "fancy-regex",
+ "indexmap",
+ "nexo-race",
+ "postcard",
+ "regex",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2142,8 +2142,8 @@ dependencies = [
  "libc",
  "nexo-agent",
  "nexo-core",
- "nexo-race",
  "nexo-providers",
+ "nexo-race",
  "nexo-supervise",
  "nucleo-matcher",
  "pulldown-cmark",

@@ -1,7 +1,7 @@
 # nexo in your editor (Agent Client Protocol)
 
 `nexo acp` runs nexo as an [Agent Client Protocol](https://agentclientprotocol.com) server on
-stdin and stdout. An editor starts it, and nexo works there with the same loop, curator, tools and
+stdin and stdout. An editor starts it, and nexo works there with the same loop, RACE, tools and
 sessions as in the terminal. The editor draws the conversation, the tool calls and the diffs, and
 asks you before nexo edits or runs something.
 

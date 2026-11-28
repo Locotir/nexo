@@ -129,7 +129,7 @@ Every word nexo puts on screen follows the rules in [docs/READABLE-TEXT.md](docs
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/settings mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `F3` | list what the curator added to a model call (again: the call before) |
+| `F3` | list what RACE added to a model call (again: the call before) |
 | `F4`, `/diff` | the side diff panel (selected edit, else the latest); `/diff` opens the diff viewer |
 | `Ctrl+L` | redraw the screen |
 | `F1`, `?` (empty draft) | the key help; `[ui.keys]` remaps `search`, `help`, `files` and the other actions (`search = "ctrl+s"`) |
@@ -144,7 +144,7 @@ rings the terminal's bell when it ends, with a desktop notification where the te
 
 The status bar answers clicks: the model opens the model picker, the effort `/effort`, the permission mode its picker, the gauge `/context`, the cost `/usage`, `◎ goal` the goal window (your words and the restatement, round, state, time, spend and each interruption with its reason; `r` or Resume goes on). On the keys row, `todo d/t` opens `/todo`, `⚙ N jobs` `/jobs`, `⊕ mem` the shared memory that waits (`/memory share list`), `◷ N queued` `/queue` and the session name `/resume`. Each is underlined under the pointer; `Esc` closes the list.
 
-The **Usage** tab of `/usage` ends with "What's contributing to your usage?": nexo reads the sessions saved on this machine and ranks what cost the most as a percentage, each row with one change under it (calls over 150k tokens of context, cache misses, tool output re-sent most, spend by model and project, history the curator left out), then a table of the biggest sessions. `d`, `w` and `m` pick today, 7 days or 30. Shares overlap, so they do not add up to 100%.
+The **Usage** tab of `/usage` ends with "What's contributing to your usage?": nexo reads the sessions saved on this machine and ranks what cost the most as a percentage, each row with one change under it (calls over 150k tokens of context, cache misses, tool output re-sent most, spend by model and project, history RACE left out), then a table of the biggest sessions. `d`, `w` and `m` pick today, 7 days or 30. Shares overlap, so they do not add up to 100%.
 
 Motion (smooth scroll, fades, the glow under a working agent, the mark that ignites as a session opens, the satellites that circle a session in `/panel` while its sub-agents or lanes run) is off with `[ui] animations = false`: the opening then shows its end state from the first frame, as it does when you press any key while it plays, and the satellites stand still. Messages carry a dim `HH:MM` and replies their duration; `[ui] timestamps = false` or `/settings timestamps` hides them.
 
@@ -269,7 +269,7 @@ operations where the extra worker would cost more than doing the operation direc
 conversation what bears on its task and puts it ahead of the task, at most `[agent] subagent_brief` tokens
 (3000; `0` turns it off): the facts (the latest request, rules given earlier, files read and written with a
 read marked `current` while it matches the disk, commands still failing, the todo plan) and excerpts of tool
-outputs and messages that hold the task's words, picked by the curator's selection
+outputs and messages that hold the task's words, picked by RACE's selection
 (`subagent_brief_engine = "auto"` or `"curator"`) or by word overlap alone (`"lexical"`). The same conversation
 and task give the same briefing. The sub-agent is told not to read again what is marked current, and its
 report comes back cut at about 2000 tokens. A line says what it was handed: `briefed: 2.1k tok, 6 spans, 5
@@ -340,7 +340,7 @@ prints the findings (read-only mode) and exits 1 on a high-severity finding, 3 w
 
 **Sessions.** In the `/resume` list, `Del` marks a session and a second `Del` moves it to the trash (a folder
 inside the sessions folder; nothing is erased): `/undelete` brings back the last one, `/undelete <id>` any of
-them, and `nexo sessions delete|restore <id>...` does the same from the shell. `nexo sessions size` shows what the sessions, the curator state saved beside them and the trash take, and `nexo sessions prune --older-than 90d` lists the sessions not written for that long (`--headless`: only those `nexo -p` started); with `--yes` it moves them to the trash, and `--trash` instead deletes for good what is that old in the trash. Files a crash left next to the sessions are cleared in the background at each start, and a session that holds only its first line (nothing was ever said) and was not written for a day is moved to the trash. `/shared-memory` shares what another
+them, and `nexo sessions delete|restore <id>...` does the same from the shell. `nexo sessions size` shows what the sessions, RACE state saved beside them and the trash take, and `nexo sessions prune --older-than 90d` lists the sessions not written for that long (`--headless`: only those `nexo -p` started); with `--yes` it moves them to the trash, and `--trash` instead deletes for good what is that old in the trash. Files a crash left next to the sessions are cleared in the background at each start, and a session that holds only its first line (nothing was ever said) and was not written for a day is moved to the trash. `/shared-memory` shares what another
 session knows with this one: pick it (Space ticks several sessions, Enter takes the ticked ones, or the row under the
 cursor when none is ticked; or `/shared-memory <id> [focus]`) and its notes (`Finding:`, `Plan:`,
 `Decision:` lines), its constraints, files and failing commands, and the excerpts that bear on the focus (its
@@ -413,7 +413,7 @@ It stops and tells you why when it needs you (a question
 waits for your answer, and your answer resumes it), when you press Esc, when a
 turn fails or when a round does nothing new; `/goal resume` goes on, `/goal
 pause` holds it, `/goal off` clears it. A question you send while it works is
-answered before the work goes on. The curator takes care of what the model *remembers*; the
+answered before the work goes on. RACE takes care of what the model *remembers*; the
 list and the goal take care of what it is *aiming at*.
 
 ### Plan mode and questions
@@ -505,7 +505,7 @@ mode = "ask"                         # ask | accept-edits | plan | yolo | read-o
 allow = ["read", "grep", "glob", "bash(git status*)"]
 
 [context]
-policy = "auto"                      # auto | plain | curator | compact
+policy = "auto"                      # auto | plain | race | compact
 
 [mcp.filesystem]
 command = "npx"
@@ -812,28 +812,28 @@ in your editor (who you are, your machine and stack, how you like answers;
 at another file; `system_prompt_extra` appends text. Edits apply from the
 next request.
 
-### The curator
+### RACE
 
-`policy = "curator"` runs the context curator and sends the model its curated
-view instead of the whole history. The curator is built into nexo (the
+`policy = "race"` runs RACE and sends the model its curated
+view instead of the whole history. RACE is built into nexo (the
 `nexo-race` crate), runs in process and needs nothing else installed; each
 call costs a few milliseconds and only the messages that changed are
-converted. `auto`, the default, is the curator, everywhere; a setting in
-`curator_spec` the curator cannot run is left out (the rest still applies),
+converted. `auto`, the default, is RACE, everywhere; a setting in
+`curator_spec` RACE cannot run is left out (the rest still applies),
 and a warning names it.
 
 By default the view is pure: the model gets no order the whole history would
-not give it. With `directives=1` the curator also adds its efficiency
+not give it. With `directives=1` RACE also adds its efficiency
 directives at the end of the system prompt (batch independent calls, read
 only what is needed, check once, close in three lines, do not cut test
-output, write `Finding:` and `Plan:` lines for the curator to keep); they are
+output, write `Finding:` and `Plan:` lines for RACE to keep); they are
 the same on every request, so they stay in the cache, and a raw prompt file
 (`<!-- nexo: raw -->`) is left without them.
 `/prompt` and `nexo prompt` show them.
 
 ```toml
 [context]
-policy = "curator"                   # auto | plain | compact | curator
+policy = "race"                   # auto | plain | compact | race
 # curator_spec = "eoq=15000;ledger=10000"   # change the engine's settings
 # working_set = "10000/0/0"         # target/cap/hard tokens of the view (default: cost rule, ceiling at 95 % of the window)
 ```
@@ -846,10 +846,10 @@ The status bar says what the policy is doing, next to the gauge:
 
 | Label | Meaning |
 |---|---|
-| `curator` | the curator is on; this call changed the window by too little to name |
+| `curator` | RACE is on; this call changed the window by too little to name |
 | `curator -12k tok` / `curator +3.0k tok` | this call's view is 12k tokens smaller (or 3.0k larger, when old messages came back) than the one before, new messages counted out |
-| `curator idle` | the whole history still costs less to send than to rewrite: a rewrite pays the provider's prompt cache again, so the curator steps in as the history grows (in recorded sessions, from 30k to 70k tokens) |
-| `curator off` | the curator stopped; every call sends the whole history (the reason is in `/context`) |
+| `curator idle` | the whole history still costs less to send than to rewrite: a rewrite pays the provider's prompt cache again, so RACE steps in as the history grows (in recorded sessions, from 30k to 70k tokens) |
+| `curator off` | RACE stopped; every call sends the whole history (the reason is in `/context`) |
 | `plain` | every call sends the whole history; when `auto` chose it, a warning says why |
 
 Each tool card in the transcript also says, at the right of its first line, what the last model call
@@ -859,7 +859,7 @@ did with that card's output:
 |---|---|---|
 | `● cached` | sent whole, inside the part of the request that did not change since the call before, so the provider serves it from its prompt cache | about a tenth of the normal price |
 | `● full price` | sent whole, after the point where the request changed, so the provider reads it again | the normal input price |
-| `◐ trimmed` | sent shortened: the curator selected lines such as errors, results, and the first and last lines and left a note saying what was cut | less than whole |
+| `◐ trimmed` | sent shortened: RACE selected lines such as errors, results, and the first and last lines and left a note saying what was cut | less than whole |
 | `○` | set aside: not sent this time; the model did not see it in this call. It is still in the history, with its name, and nothing is lost. Every card of an answered request usually stands here, so it is the glyph alone | nothing |
 | `↺ recalled` | it had been set aside and came back, whole or in part, because the model asked for it (`recall`) or the work turned back to it | as `full price` for what came back |
 
@@ -867,8 +867,8 @@ A card with no mark was not part of the last call's decision (for example it is 
 
 On `● cached` and `● full price` the card adds what that output cost in the last request (`0.00150 $`: its tokens at the cached or the full input price), when the model's input, output and cached prices are all known and the line has room for it; with a price missing, or on a narrow terminal, only the mark shows.
 
-`/context` and `/status` add the sentence behind the label. Omitted messages have names such as `m00042`; when offered, `recall` retrieves text from session history, subject to its output limits and representation. Curator builds a limited view rather than replacing session history. Nexo attempts to fit requests within the known window by dropping or shortening history, but estimates and provider limits do not guarantee acceptance. A shortened output can retain its beginning and end with a cut marker. Configuration fallbacks are
-said, never silent: a `curator_spec` setting the curator cannot run or an
+`/context` and `/status` add the sentence behind the label. Omitted messages have names such as `m00042`; when offered, `recall` retrieves text from session history, subject to its output limits and representation. RACE builds a limited view rather than replacing session history. Nexo attempts to fit requests within the known window by dropping or shortening history, but estimates and provider limits do not guarantee acceptance. A shortened output can retain its beginning and end with a cut marker. Configuration fallbacks are
+said, never silent: a `curator_spec` setting RACE cannot run or an
 unknown policy name shows a warning in the transcript and in the log. A history
 that stopped between a tool call and its result (a session closed or killed
 mid-step) is mended before it is sent: the missing result is represented as not run.
@@ -884,12 +884,12 @@ view, each within its budget in tokens (0 turns it off):
 - `rules=` **the rules block**: the person's standing instructions, whole
   (lines with never, always, don't, from now on, nunca, siempre, prohibido,
   recuerda, a partir de ahora …) and the lines the model restates as
-  `Rule: …`. The curator tries to retain recognized rules, giving them priority over
+  `Rule: …`. RACE tries to retain recognized rules, giving them priority over
   the ledger when the anchor is short of room. Recognition and inclusion are
   bounded; a correction is not guaranteed to remain visible on every call;
 - `notes=` the model's own `Finding:` and `Plan:` lines, in its text or in a
   `note` call, so settled facts are not worked out again (oldest out first).
-  After `nudge=N` steps without a note (off by default, `nudge=0`) the curator
+  After `nudge=N` steps without a note (off by default, `nudge=0`) RACE
   appends one request for the notes to the end of the last tool result (a
   `note` call when that tool is offered, lines of the reply when not), never
   inside the cached prefix, at most once per `nudge` steps, not between two
@@ -902,18 +902,18 @@ view, each within its budget in tokens (0 turns it off):
   edit or a failed write drops it, a new write replaces it.
 
 The ledger takes what they leave. The blocks that left the view are not stored
-as text anywhere: they live in the anchor of the curated view. The curator's
+as text anywhere: they live in the anchor of the curated view. RACE's
 state is saved in `<id>.jsonl.curator` beside the session file, so a resume
 replays only the later replies; the session file itself is unchanged, and the
 state file goes to the trash with the session.
 
 `/context-live` shows, beside the transcript, a map of the whole history with
 what each call sends (whole, cut, left out) and the cells that just changed
-flashing. With the curator it is the curator's whole memory in zones: the
+flashing. With RACE it is the engine's whole memory in zones: the
 anchor, the topic in progress (`●`, sent), and the other topics newest first,
 each marked by what the call takes of it (`◐` parts brought back, `▭` only a
-card, `○` nothing), so you see, of all it holds, what it is taking. When the
-curator lets messages go, their cells step down to what is left of them, oldest
+card, `○` nothing), so you see, of all it holds, what it is taking. When
+RACE lets messages go, their cells step down to what is left of them, oldest
 first, a light carries the cut along the border and the rule to its label in
 the status bar. There, a wave follows the signed count: `+` for tokens brought back
 into view, `-` for tokens freed. New conversation tokens are counted separately.

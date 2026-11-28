@@ -1,14 +1,14 @@
-# How the curator works
+# How RACE works
 
 
-nexo keeps the whole conversation; the curator decides the **view**, what the next model call is sent.
+nexo keeps the whole conversation; RACE decides the **view**, what the next model call is sent.
 Each message is processed once, when it arrives, and nothing is recomputed per call. The code is in
-`nexo/crates/nexo-curator` (`engine.rs` and `engine/` the view, `goal.rs` the threads, `ledger.rs` the ledger,
-`mechanical.rs` the squeeze), and its learned weights ship in `nexo-curator/data/model.json`. The
+`nexo/crates/nexo-race` (`engine.rs` and `engine/` the view, `goal.rs` the threads, `ledger.rs` the ledger,
+`mechanical.rs` the squeeze), and its learned weights ship in `nexo-race/data/model.json`. The
 principles it keeps, in short: it is never switched off; no sawtooth and no lossy summary; every fact the
 call needs goes into the call; the cache prefix is stable; the view may inflate up to about 99 % of the
 window for a call that needs it (ceiling 95 %); not forgetting ranks above cost. Details and the code
-paths are in [`context-curator.md`](context-curator.md).
+paths are in [`race.md`](race.md).
 
 - **Squeeze at birth** (`birth=squeeze`). The output of a process (a command, an unknown tool) is squeezed
   mechanically the moment it arrives, so the squeeze never breaks the cache later: ANSI codes and progress
@@ -23,7 +23,7 @@ paths are in [`context-curator.md`](context-curator.md).
   comes when keeping the view's growth costs more than sending a new prefix once, or when the view
   reaches the ceiling (below). At an epoch everything that waited happens in one batch: answered requests
   close, dead outputs leave, the view is cut to the target. A new message from the person does not start
-  an epoch. See [`context-curator.md`](context-curator.md) for the rule and a diagram.
+  an epoch. See [`race.md`](race.md) for the rule and a diagram.
 - **The cost rule** (`fire_point` in `engine/window.rs`). Keeping a token costs `ρ` of an uncached token
   on every later call (`ρ` is the provider's cache price over its input price when the host gave it, else
   `ratio=0.1`). A rewrite that lands on `L` tokens sends that prefix uncached once, at
@@ -69,7 +69,7 @@ paths are in [`context-curator.md`](context-curator.md).
   samples long requests at the start, middle and end; it indexes a bounded prefix and, for eligible inputs
   up to 4 MiB, a bounded suffix of source lines. Unindexed gaps, long or partial lines, ranking and the
   output budget can hide relevant evidence. With `relations=0`,
-  Curator uses the previous keyword-only `Recall` block instead; that mode can expand a broad request up to
+  RACE uses the previous keyword-only `Recall` block instead; that mode can expand a broad request up to
   99 % of the window for that call only.
 - **What a request needs that left** (`named`, `recall`). A step that read a file the request names stays
   or comes back as text at the end of the view; the model can also ask for a message by name
@@ -85,7 +85,7 @@ paths are in [`context-curator.md`](context-curator.md).
     latest plan), written in its text or passed to the `note` tool, whose call is the note itself (a model
     that only calls tools answers a tool); the directives ask for them, so a settled fact is not worked
     out again. With `nudge=N` (off by default: a request for notes made early fixed wrong readings in
-    measured runs) the curator does not rely on the model obeying: after N steps without a note it
+    measured runs) RACE does not rely on the model obeying: after N steps without a note it
     appends one request for the notes to the end of the last tool result (a `note` call when the host
     offers that tool, lines of the reply when it does not; never inside the cached prefix, at most once
     per N steps, only the latest request stays in view and it leaves once a note answers it). The request waits while the agent reads a file in parts (a read with a range), up to
@@ -101,7 +101,7 @@ paths are in [`context-curator.md`](context-curator.md).
     person or the agent wrote weighs twice a tool's output;
   - **the map**: the requests that moved out, each with the agent's closing reply, and the files changed
     and commands run in them.
-- **Pockets (off by default).** With `pockets=1` the curator takes the provider to keep more than the
+- **Pockets (off by default).** With `pockets=1` RACE takes the provider to keep more than the
   last request: the last view sent on each topic (its pocket) lives `life` seconds. Back on a topic whose
   pocket lives, the switch costs nothing, and only a pocket that is gone counts as a miss. Nothing more
   is cut for it: the setting for long work that needs all it holds and is taken up again later. How long
@@ -112,9 +112,9 @@ paths are in [`context-curator.md`](context-curator.md).
   replayed with a request every 30 s and a 2 h pause every 40, input cost falls up to 14 %, but up to
   2.8 times as many words the agent used later had left the view. `ttl` and `cold` are not settings.
   The blocks that left the view are not stored as text anywhere: they come back by the agent reading the
-  file or running the command again. The curator's state is saved in `<id>.jsonl.curator` beside the
+  file or running the command again. RACE's state is saved in `<id>.jsonl.curator` beside the
   session, so a resume replays only later replies; the session file is unchanged.
-- **Directives (off by default).** With `directives=1` the curator appends its efficiency directives to the
+- **Directives (off by default).** With `directives=1` RACE appends its efficiency directives to the
   system prompt, identical on every request so they stay cached; `nexo prompt` shows them. The default view
   is pure: the model gets no order the whole history would not give it.
 
@@ -133,7 +133,7 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `rules=N` | `2000` | the person's standing instructions and `Rule:` lines, whole |
 | `notes=N` | `3000` | the agent's `Finding:` and `Plan:` lines |
 | `pin=N` | `4000` | the files the request names, as last read, and the files the agent wrote, as last written |
-| `nudge=N` | `0` | steps without a note (a `Finding:`/`Plan:` line or a `note` call) before the curator asks for one (0 turns it off) |
+| `nudge=N` | `0` | steps without a note (a `Finding:`/`Plan:` line or a `note` call) before RACE asks for one (0 turns it off) |
 | `close=N` | `2` | an answered request keeps only the request and its reply; the calls made for it leave by the rent rule |
 | `margin=M` | `2.25` | a cut (idle steps, unused outputs, the cap) is made only when what it saves is `M` times what rewriting the view behind it costs |
 | `named=1` | on | a step that read a file the latest request names stays |
@@ -158,7 +158,7 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `protect=M` | `12` | the last `M` messages never leave the view |
 
 A spec is `key=value` pairs separated by `;` (a value may hold a comma), laid
-over the default; every number is 0 or more. A pair the curator cannot run (an unknown name, a value of
+over the default; every number is 0 or more. A pair RACE cannot run (an unknown name, a value of
 the wrong kind, or a setting it does not support, such as `ttl=60`) is left out, the rest still applies,
 and a warning names it.
 
@@ -195,5 +195,5 @@ Every tool card in the transcript ends its first line with what the last model c
 | `○ set aside` | Left out of this call. The model did not see it this time, but it stays in the history under its name: nothing is lost. |
 | `↺ recalled` | It had been set aside and came back, whole or in part, because the model asked for it (`recall`) or the work returned to it. |
 
-Set aside is the curator's main saving: the view stays small while the history keeps everything. Recalled is
+Set aside is RACE's main saving: the view stays small while the history keeps everything. Recalled is
 the proof that leaving something out is reversible.

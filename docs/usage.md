@@ -21,12 +21,12 @@ The context policy is set in `~/.nexo/config.toml` (`%USERPROFILE%\.nexo\config.
 
 ```toml
 [context]
-policy = "curator"                           # auto | plain | compact | curator
+policy = "race"                           # auto | plain | compact | race
 # curator_spec = "eoq=15000;ledger=10000"    # override the engine's settings
 # working_set = "10000/0/0"          # target/cap/hard tokens of the view (the default: cost rule, ceiling at 95 % of the model window)
 ```
 
-`auto`, the default, is the curator. `plain` sends the whole history; `compact` summarises once a request
+`auto`, the default, is RACE; `curator` remains an alias for the `race` policy. `plain` sends the whole history; `compact` summarises once a request
 reaches `compact_at` input tokens (**100000** by default, counted as the provider counts them), as often
 as needed, keeping the task statement and the files touched. The status bar shows what the policy is doing:
 `curator -12k tok` means it freed 12k tokens; `curator +3.0k tok` means it brought 3.0k back into view.
@@ -51,7 +51,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
   rebuild from experiments into a `coins.rs`; the small tasks are Rust mini-projects, each with a trap
   long runs tend to fall into (a rule stated once, a detail buried in noise, a goal that changes).
 - `--arms`: one arm per context policy, `[NAME@]plain|compact|curator[:k=v;k=v]`;
-  `lean@curator:eoq=15000` is the curator with that spec, reported as `lean`.
+  `lean@curator:eoq=15000` is RACE with that spec, reported as `lean`.
 - `--repeats`, `--max-steps`: runs per task and arm, and the step limit of each run.
 - `--budget`: stops starting runs once that many dollars are spent. It needs prices: nexo knows
   DeepSeek's and those its provider presets list; for another model give them with
@@ -77,7 +77,7 @@ docs/
   related-work.md           what this work builds on
   providers-base.md         the provider protocols nexo speaks
   providers-policy.md       what each provider's terms allow
-  context-curator.md        how the curator builds the view of a call
+  race.md        how RACE builds the view of a call
   api.md                    nexo api: the API behind a website, from a HAR capture
   CI.md                     the GitHub Action and GitLab template
   bench/                    plans and results of the head-to-head runs
@@ -90,16 +90,16 @@ nexo/
 .github/workflows/         ci.yml (build, test and clippy on Linux, macOS and Windows, macOS not yet blocking; format check on Linux only; an MSRV job), install.yml, release.yml
 ```
 
-## Replaying the curator on a recorded run
+## Replaying RACE on a recorded run
 
 Every `nexo bench` run writes the requests it sent as a `.jsonl` transcript. The `replay` example runs
-the curator over one offline, request by request, with no model and no key, and prints what the model
+RACE over one offline, request by request, with no model and no key, and prints what the model
 would have been sent:
 
 ```sh
 cd nexo
-cargo run --release -p nexo-curator --features sim --example replay -- bench-out/realm-plain-0.jsonl
-cargo run --release -p nexo-curator --features sim --example replay -- FILE --spec "eoq=20000" --every 10
+cargo run --release -p nexo-race --features sim --example replay -- bench-out/realm-plain-0.jsonl
+cargo run --release -p nexo-race --features sim --example replay -- FILE --spec "eoq=20000" --every 10
 ```
 
 Columns: request, messages in view, tokens of the whole history, tokens of the view, share kept,
@@ -109,7 +109,7 @@ and what the ledger holds, then run the benchmark again.
 
 ## Further reading
 
-- [`../nexo/README.md`](../nexo/README.md): installing and using nexo, providers, sessions, the curator's status.
+- [`../nexo/README.md`](../nexo/README.md): installing and using nexo, providers, sessions, RACE's status.
 - [`nexo/ARCHITECTURE.md`](../nexo/ARCHITECTURE.md): the crates, their dependencies and their public API.
 - [`scoring.md`](scoring.md): the benchmark's scoring rules.
 - [`related-work.md`](related-work.md): prompt caches, context compression, Belady's

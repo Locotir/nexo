@@ -1,7 +1,7 @@
 # `nexo --wire`: what goes to the model, as it goes
 
 `--wire` records every request nexo sends to a model, byte for byte, with the answer that came back and what
-nexo decided before sending it: what the context policy (the curator) kept, how the request was fitted under
+nexo decided before sending it: what the context policy (RACE) kept, how the request was fitted under
 the model's window, and every warning. A report beside the files follows the session live.
 
 ```bash
@@ -35,7 +35,7 @@ One folder per nexo process, `<dir>/<date>-<time>-<pid>/` (`<dir>/latest` names 
     `ceiling`, the learned token `ratio`, and `failed` with the reason when the policy failed (nexo then sends
     everything).
   - `fit`: the model's `window`, what the request takes (`used`) and the `reply` room, how many times the
-    curator cut it again (`tries`, `shrink`), and `over` when it still did not fit.
+    RACE cut it again (`tries`, `shrink`), and `over` when it still did not fit.
   - `refused`: the request was not sent; the message is the one the person saw.
   - `warn` / `error`: every warning and error shown in the session.
 
@@ -49,7 +49,7 @@ jq -c 'select(.type=="response") | {n, usage}' events.jsonl
 ## The report
 
 The left side is the timeline: requests with their status, estimated / counted input tokens and time, the
-curator's views and the window fit between them, warnings in amber, failures in red. Pick a request to see it
+RACE's views and the window fit between them, warnings in amber, failures in red. Pick a request to see it
 split into its parts: system, tools and each message with its role, block kinds (`text`, `tool_use`, `image`,
 ...), size and first words; the largest is marked. Sort by size to find what fills the window. Links open the raw
 request, answer and reply. The filter searches everything; `live` pauses the reload.
