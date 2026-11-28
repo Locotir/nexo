@@ -76,7 +76,9 @@ fn the_earlier_lines_command_shows_the_lines_and_the_pages_after_the_cut_join_up
     let (start, _, _) = long_function(&img, 2000);
     let mut starts = Vec::new();
     crate::disasm::walk(img.read_at(start, 40_000).unwrap(), start, |ins, _| starts.push(ins.ip()));
-    let asked = hex(starts[1200] + 1);
+    // an instruction longer than one byte, so one byte past its start is still inside it
+    let k = (1200..).find(|&i| starts[i + 1] - starts[i] > 1).unwrap();
+    let asked = hex(starts[k] + 1);
     let o = func_window(&img, &asked, false, None, 40).unwrap();
     let p = o.page(None, 40);
     let earlier = p.lines[1].clone();
@@ -86,7 +88,7 @@ fn the_earlier_lines_command_shows_the_lines_and_the_pages_after_the_cut_join_up
     let from = from_of(cmd);
     assert_eq!(from, start);
     let lines: usize = cmd.rsplit("--lines ").next().unwrap().trim().parse().unwrap();
-    let skip = 1200 - LEAD_IN;
+    let skip = k - LEAD_IN;
     assert_eq!(lines, skip + 2, "{cmd}");
     let again = func_window(&img, &asked, false, Some(from), lines).unwrap().page(Some(from), lines);
     assert!(again.lines[0].starts_with("fn "), "{}", again.lines[0]);
