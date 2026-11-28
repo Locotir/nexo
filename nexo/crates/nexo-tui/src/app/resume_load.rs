@@ -39,7 +39,7 @@ pub(crate) struct ResumeLoad {
     pub done: usize,
     /// Blocks received so far.
     pub total: usize,
-    /// The replay has ended (`Context` arrived, or Esc stopped it): the cover stays until `done`
+    /// The replay has ended (its usage summary arrived): the cover stays until `done`
     /// catches `total`, so the transcript is never shown half laid out.
     pub sealed: bool,
     /// The line count `pump` measured for each block, at the width it measured it. A later `height`

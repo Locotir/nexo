@@ -51,8 +51,19 @@ impl Runtime {
     /// Builds what the loop holds, in the order the interface sees it: the tools, the session, the events of the
     /// start, the shared state, then the tasks that start with the session and the `session_start` hook.
     pub(super) async fn build(events: EventTx, setup: AgentSetup) -> anyhow::Result<Runtime> {
-        let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail, mcp, model_pinned } =
-            setup;
+        let AgentSetup {
+            mut config,
+            cwd,
+            mut provider,
+            mut model,
+            mut tools,
+            client,
+            resume,
+            gate,
+            mail,
+            mcp,
+            model_pinned,
+        } = setup;
         // whoever built the setup (the interface, a script, ACP), the managed policy is applied once more here
         config.enforce_managed();
         sweep_scratch_once();
@@ -60,6 +71,18 @@ impl Runtime {
         let chan_gate = ChannelGate::new(events.clone());
         let asker = crate::ask::ChannelAsker::new(events.clone());
         let gate: Arc<dyn PermissionGate> = gate.unwrap_or_else(|| chan_gate.clone());
+        let launch_model = (provider.clone(), model.clone());
+        let (mut session, history, replay) = open_session(resume.as_deref(), &cwd, &provider, &model, &events)?;
+        // Select the saved model before Ready and the replay, using the same availability checks as /model.
+        if replay && !model_pinned {
+            let (p, m) = (&session.meta().provider, &session.meta().model);
+            if nexo_providers::modellist::choices(&config).iter().any(|(cp, cm)| cp == p && cm == m)
+                && config.check_model(p, m).is_ok()
+            {
+                provider = p.clone();
+                model = m.clone();
+            }
+        }
         let pcfg =
             config.providers.get(&provider).cloned().ok_or_else(|| anyhow::anyhow!("unknown provider `{provider}`"))?;
         let audit = Audit::from_config(&config.audit);
@@ -77,7 +100,6 @@ impl Runtime {
             tools.add(Arc::new(control_tool::ControlTool::new("monitor", control_tx)));
         }
         let plan = add_ask_tools(&mut tools, tools_enabled, headless, &asker);
-        let (mut session, history, replay) = open_session(resume.as_deref(), &cwd, &provider, &model, &events)?;
         apply_title(&mut session, config.agent.session_title.as_deref(), &events);
         let bin_told = crate::bin_hint::told(&history);
         let dbg_told = crate::dbg_hint::told(&history);
@@ -100,6 +122,9 @@ impl Runtime {
             m.set_idle(true);
         }
         announce_session(&events, &session, &provider, &model, &cwd, perm.mode);
+        if (provider.as_str(), model.as_str()) != (launch_model.0.as_str(), launch_model.1.as_str()) {
+            emit(&events, AgentEvent::ModelChanged { provider: provider.clone(), model: model.clone() });
+        }
         warn_setup(&events, &config, &tools);
         // the goal before the replay: the interface draws the replayed goal against the one it now has
         let goal_log = reopened_goal(&mut session, &events);
@@ -118,6 +143,7 @@ impl Runtime {
             );
         }
         if replay {
+            emit(&events, AgentEvent::HistoryCleared);
             replay_history(&events, &session, &tools);
         }
         announce_model(&events, &config, &provider, &model);
@@ -246,8 +272,8 @@ impl Runtime {
         }
         let mut saving: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
         if replay {
-            settle_replay(&mut *state.lock().await, &mut saving).await;
             restore_model(&state, model_pinned).await;
+            settle_replay(&mut *state.lock().await, &mut saving).await;
         }
         spawn_catalogue_fill(&state);
         spawn_vendor_fill(&state);

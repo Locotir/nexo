@@ -225,3 +225,27 @@ fn grouped_tool_results_keep_the_height_the_cover_counted() {
     let group = a.blocks.iter().position(|b| matches!(b, Block::Group { .. })).unwrap();
     assert_eq!(a.block_at_line(a.offsets[group]), Some(group), "the group is visible after layout");
 }
+
+#[test]
+fn mid_session_replay_finishes_before_context_rebuild() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::HistoryCleared);
+    a.handle_agent(AgentEvent::SessionChanged { session_id: "resumed".into(), title: String::new() });
+    for i in 0..10 {
+        a.handle_agent(AgentEvent::History { index: i, message: Message::user(format!("message {i}")) });
+    }
+    for _ in 0..8 {
+        a.tick_frame(false);
+    }
+    assert!(a.resume_load.is_some(), "the cover stays until replay ends");
+    a.handle_agent(AgentEvent::Usage {
+        turn: Usage::default(),
+        call: Usage::default(),
+        session: Usage::default(),
+        cost_usd: 0.0,
+    });
+    for _ in 0..8 {
+        a.tick_frame(false);
+    }
+    assert!(a.resume_load.is_none(), "the usage summary ends the replay without waiting for context or Esc");
+}

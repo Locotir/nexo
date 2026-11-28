@@ -103,8 +103,6 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     );
     mail_sync(st);
     emit_goal(st);
-    replay_history(&st.events, &st.session, &st.tools);
-    close_open_calls(st);
 }
 
 /// A session that stopped between its last calls and their results (closed, killed, cut off): the
@@ -154,14 +152,17 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
         Ok(s) => {
             skipped_note(&st.events, id, &s);
             install_session(&mut st, s);
+            drop(st);
+            restore_model(state, false).await;
+            let mut st = state.lock().await;
+            replay_history(&st.events, &st.session, &st.tools);
+            close_open_calls(&mut st);
             if !st.history.is_empty() {
                 super::saved_state::load(&mut st);
                 view_now(&mut st, 0).await;
                 // a view shown, not sent: the next request finds no cache of it
                 st.last_sent.clear();
             }
-            drop(st);
-            restore_model(state, false).await;
         }
         Err(e) => notice_failure(
             &st.events,
@@ -181,6 +182,8 @@ pub(super) async fn fork_session(state: &Shared, index: Option<usize>) {
     match st.session.fork(keep) {
         Ok(s) => {
             install_session(&mut st, s);
+            replay_history(&st.events, &st.session, &st.tools);
+            close_open_calls(&mut st);
             if !st.history.is_empty() {
                 view_now(&mut st, 0).await;
                 // a view shown, not sent: the next request finds no cache of it

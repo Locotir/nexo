@@ -228,7 +228,11 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         }
         _ => 0,
     };
-    let want_h = ((body.len() + open_extra) as u16 + pinned_h + 2 + button_h).min(max_h).max(5);
+    let want_h = if matches!(modal, Modal::Picker(p) if p.kind == PickKind::Explore) {
+        max_h.max(5)
+    } else {
+        ((body.len() + open_extra) as u16 + pinned_h + 2 + button_h).min(max_h).max(5)
+    };
     // forms (a permission, the setup steps, lists with a typed filter) keep the full width; windows fit their content
     let want_w = match modal {
         Modal::Permission(_) | Modal::Setup(_) | Modal::Picker(_) | Modal::Trust(_) => w,

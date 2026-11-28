@@ -2,6 +2,11 @@ use super::*;
 
 impl App {
     pub(super) fn on_usage(&mut self, turn: Usage, call: Usage, session: Usage, cost_usd: f64) {
+        // Replay ends with a usage summary, before the potentially slow context rebuild.
+        // Live usage cannot interleave with a replay on the agent event stream.
+        if self.resume_load.is_some() {
+            self.finish_resume_load();
+        }
         // one event per model call: its input is what that call sent (the attempt that
         // answered), while the turn counts all it spent
         if call.total_input() > 0 {
