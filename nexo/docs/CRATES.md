@@ -6,7 +6,7 @@ only crates in the layers above its own; new code must not add an edge that poin
 
 | Layer | Crates | Depends on |
 | --- | --- | --- |
-| Leaves | `nexo-core`, `nexo-http`, `nexo-curator`, `nexo-binmagic`, `nexo-relay` | nothing in the workspace |
+| Leaves | `nexo-core`, `nexo-http`, `nexo-race`, `nexo-binmagic`, `nexo-relay` | nothing in the workspace |
 | Low | `nexo-bin` (binmagic), `nexo-browser-host` (relay), `nexo-providers` (core, http) | leaves |
 | Mid | `nexo-dbg` (bin), `nexo-browser` (relay, browser-host), `nexo-supervise` (core, providers) | low |
 | Tools | `nexo-tools` | core, binmagic, dbg, browser, relay, http, bin |

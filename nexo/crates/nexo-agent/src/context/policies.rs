@@ -72,8 +72,8 @@ pub(super) const REPLAY: usize = 2000;
 /// it was last given, so each call converts only the messages that changed.
 #[derive(Clone)]
 pub struct BuiltIn {
-    cur: nexo_curator::Curator,
-    /// The settings it was built with, as `Curator::new` took them.
+    cur: nexo_race::Race,
+    /// The settings it was built with, as `Race::new` took them.
     spec: String,
     seen: Vec<Message>,
     values: Vec<serde_json::Value>,
@@ -85,7 +85,7 @@ pub struct BuiltIn {
     /// The settings asked for that it runs without, and whether the transcript was told.
     caveat: Option<String>,
     told: bool,
-    /// A hash of each message of `values` (`nexo_curator::snapshot::message_hash`), so that saving the state
+    /// A hash of each message of `values` (`nexo_race::snapshot::message_hash`), so that saving the state
     /// never goes over the history again.
     hashes: Vec<u64>,
     /// The views asked of the curator, and the messages its state covered when it was last saved.
@@ -100,7 +100,7 @@ impl BuiltIn {
     /// The curator with the settings of `spec` (`key=value;...`), or why they cannot run here.
     pub fn new(spec: &str) -> Result<BuiltIn, String> {
         Ok(BuiltIn {
-            cur: nexo_curator::Curator::new(spec.trim())?,
+            cur: nexo_race::Race::new(spec.trim())?,
             spec: spec.trim().to_string(),
             seen: Vec::new(),
             values: Vec::new(),
@@ -122,7 +122,7 @@ impl BuiltIn {
     fn take_saved(&mut self) -> usize {
         let Some(bytes) = self.pending.take() else { return 0 };
         let t = std::time::Instant::now();
-        match nexo_curator::Curator::restore(self.cur.spec(), &bytes, &self.values, &self.hashes) {
+        match nexo_race::Race::restore(self.cur.spec(), &bytes, &self.values, &self.hashes) {
             Ok((cur, head)) => {
                 // what the host said of this run went to the new curator before this view (tools, window, prices,
                 // calls left, or nothing of them); the saved one has the last run's, so it takes this one's
@@ -158,17 +158,17 @@ impl BuiltIn {
         let mut copy = self.clone();
         if copy.pending.is_some() {
             copy.values = old_values.clone();
-            copy.hashes = old_values.iter().map(nexo_curator::snapshot::message_hash).collect();
+            copy.hashes = old_values.iter().map(nexo_race::snapshot::message_hash).collect();
             copy.take_saved();
         }
         let prepared =
             copy.cur.prepare_compaction(&old_values, from, &replacement_values).map_err(anyhow::Error::msg)?;
-        let hashes: Vec<_> = replacement_values.iter().map(nexo_curator::snapshot::message_hash).collect();
+        let hashes: Vec<_> = replacement_values.iter().map(nexo_race::snapshot::message_hash).collect();
         let covered = prepared.covered();
         if covered > hashes.len() {
             anyhow::bail!("prepared curator covers more than the replacement history");
         }
-        Ok(prepared.save(copy.views, nexo_curator::snapshot::history_hash(&hashes[..covered])).encode())
+        Ok(prepared.save(copy.views, nexo_race::snapshot::history_hash(&hashes[..covered])).encode())
     }
 
     /// The curator with what of `spec` it can run: a `key=value` it cannot run alone is left out, the
@@ -181,7 +181,7 @@ impl BuiltIn {
         let mut kept = Vec::new();
         let mut dropped = Vec::new();
         for item in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            match nexo_curator::Curator::new(item) {
+            match nexo_race::Race::new(item) {
                 Ok(_) => kept.push(item),
                 Err(e) => dropped.push(format!("{item} ({e})")),
             }
@@ -297,7 +297,7 @@ impl ContextPolicy for BuiltIn {
             return None;
         }
         self.saved_at = covered;
-        let saved = self.cur.save(self.views, nexo_curator::snapshot::history_hash(&self.hashes[..covered]));
+        let saved = self.cur.save(self.views, nexo_race::snapshot::history_hash(&self.hashes[..covered]));
         Some(Box::new(move || saved.encode()))
     }
 
@@ -328,8 +328,8 @@ impl ContextPolicy for BuiltIn {
             Ok(values) => values,
             Err(_) => return false,
         };
-        let hashes: Vec<_> = values.iter().map(nexo_curator::snapshot::message_hash).collect();
-        nexo_curator::Curator::restore(self.cur.spec(), bytes, &values, &hashes).is_ok()
+        let hashes: Vec<_> = values.iter().map(nexo_race::snapshot::message_hash).collect();
+        nexo_race::Race::restore(self.cur.spec(), bytes, &values, &hashes).is_ok()
     }
 
     fn compacted_prefix(&mut self, old_history: &[Message], from: usize, summary_len: usize) {
@@ -339,7 +339,7 @@ impl ContextPolicy for BuiltIn {
                 // Restore before truncating, when compaction happens before the first view.
                 if self.pending.is_some() {
                     self.values = values.clone();
-                    self.hashes = values.iter().map(nexo_curator::snapshot::message_hash).collect();
+                    self.hashes = values.iter().map(nexo_race::snapshot::message_hash).collect();
                     self.take_saved();
                     self.pending = None;
                 }
@@ -392,7 +392,7 @@ impl BuiltIn {
                 Some(v) => v,
                 None => serde_json::to_value(m)?,
             };
-            self.hashes.push(nexo_curator::snapshot::message_hash(&v));
+            self.hashes.push(nexo_race::snapshot::message_hash(&v));
             self.values.push(v);
             self.seen.push(m.clone());
         }
@@ -431,12 +431,12 @@ impl BuiltIn {
         // what the curator moved: the messages the conversation appended are always "in", every call,
         // and would hide the rest
         self.moved = (r.back, r.removed);
-        let zone = |z: &nexo_curator::Zone| nexo_core::ContextZone {
+        let zone = |z: &nexo_race::Zone| nexo_core::ContextZone {
             label: z.label.to_string(),
             active: z.active,
             card: z.card,
         };
-        let cell = |c: &nexo_curator::Cell| MemoryCell {
+        let cell = |c: &nexo_race::Cell| MemoryCell {
             zone: u32::try_from(c.zone).unwrap_or(u32::MAX),
             tokens: u64::try_from(c.tokens).unwrap_or(0),
             state: c.state.as_str().to_string(),
@@ -459,25 +459,25 @@ impl BuiltIn {
 }
 
 /// The curator's items for the interface.
-pub(super) fn curated_items(items: &[nexo_curator::Added]) -> Vec<nexo_core::CuratedItem> {
+pub(super) fn curated_items(items: &[nexo_race::Added]) -> Vec<nexo_core::CuratedItem> {
     use nexo_core::{CuratedKind, CuratedState};
     items
         .iter()
         .map(|a| nexo_core::CuratedItem {
             kind: match a.kind {
-                nexo_curator::AddedKind::Recalled => CuratedKind::Recalled,
-                nexo_curator::AddedKind::Start => CuratedKind::Start,
-                nexo_curator::AddedKind::Rule => CuratedKind::Rule,
-                nexo_curator::AddedKind::Thread => CuratedKind::Thread,
-                nexo_curator::AddedKind::Goal => CuratedKind::Goal,
-                nexo_curator::AddedKind::Memory => CuratedKind::Memory,
+                nexo_race::AddedKind::Recalled => CuratedKind::Recalled,
+                nexo_race::AddedKind::Start => CuratedKind::Start,
+                nexo_race::AddedKind::Rule => CuratedKind::Rule,
+                nexo_race::AddedKind::Thread => CuratedKind::Thread,
+                nexo_race::AddedKind::Goal => CuratedKind::Goal,
+                nexo_race::AddedKind::Memory => CuratedKind::Memory,
             },
             label: a.label.clone(),
             tokens: a.tokens.max(0) as u64,
             state: match a.state {
-                nexo_curator::AddedState::In => CuratedState::In,
-                nexo_curator::AddedState::Trimmed => CuratedState::Trimmed,
-                nexo_curator::AddedState::Out => CuratedState::Out,
+                nexo_race::AddedState::In => CuratedState::In,
+                nexo_race::AddedState::Trimmed => CuratedState::Trimmed,
+                nexo_race::AddedState::Out => CuratedState::Out,
             },
         })
         .collect()

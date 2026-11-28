@@ -11,7 +11,7 @@ nexo-core        contracts only: Message/Part, StreamEvent, Protocol, Tool, Agen
 nexo-providers   protocol adapters (openai-chat, openai-responses, anthropic, gemini, mock), presets, retry, SSE
 nexo-tools       built-in tools (read, write, edit, bash, jobs, glob, grep, ls, todo, note, recall, diagnostics, web_search, web_fetch) and the MCP stdio client
 nexo-agent       the loop: turns, tool execution, permissions, sessions (JSONL), cost, context policies, the curator policy
-nexo-curator     the context curator: the goal engine (ledger, rules/notes/pin blocks, rent-or-buy cuts), no I/O
+nexo-race     the context curator: the goal engine (ledger, rules/notes/pin blocks, rent-or-buy cuts), no I/O
 nexo-tui         the interface: consumes AgentEvent, produces AgentCommand; never touches providers or tools
 nexo-cli         the `nexo` binary: wires config → providers → tools → agent → tui / headless
 nexo-bench       `nexo bench`: agent tasks run against a real model under several context policies, scored and summed up
@@ -250,7 +250,7 @@ instructions and `system_prompt_extra` are appended unless the file starts
 with the line `<!-- nexo: raw -->` (then it is sent as is). The prompt is
 rebuilt at the start of every turn, so an edit applies to the next request.
 
-Built-in curator (`context::BuiltIn`, crate `nexo-curator`): the goal engine,
+Built-in curator (`context::BuiltIn`, crate `nexo-race`): the goal engine,
 the default for `auto` and `curator` and the only curator nexo has. It keeps
 the history it was last given and the JSON of each message, so a call converts
 only what changed; the engine itself caches each message's cut and the visible

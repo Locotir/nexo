@@ -92,7 +92,7 @@ impl App {
             let tx = state.tx.clone();
             std::thread::spawn(move || {
                 let texts: Vec<_> = sources.iter().map(|s| s.2.as_str()).collect();
-                let items = nexo_curator::explore::search(&texts, &query)
+                let items = nexo_race::explore::search(&texts, &query)
                     .into_iter()
                     .map(|hit| {
                         let (i, kind, _) = &sources[hit.source];

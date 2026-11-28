@@ -1819,7 +1819,7 @@ dependencies = [
  "nexo-bin",
  "nexo-binmagic",
  "nexo-core",
- "nexo-curator",
+ "nexo-race",
  "nexo-dbg",
  "nexo-providers",
  "nexo-supervise",
@@ -1860,7 +1860,7 @@ dependencies = [
  "futures",
  "nexo-agent",
  "nexo-core",
- "nexo-curator",
+ "nexo-race",
  "nexo-providers",
  "nexo-tools",
  "regex",
@@ -1995,12 +1995,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexo-curator"
+name = "nexo-race"
 version = "0.2.0"
 dependencies = [
  "fancy-regex",
  "indexmap",
- "nexo-curator",
+ "nexo-race",
  "postcard",
  "regex",
  "rustc-hash",
@@ -2142,7 +2142,7 @@ dependencies = [
  "libc",
  "nexo-agent",
  "nexo-core",
- "nexo-curator",
+ "nexo-race",
  "nexo-providers",
  "nexo-supervise",
  "nucleo-matcher",

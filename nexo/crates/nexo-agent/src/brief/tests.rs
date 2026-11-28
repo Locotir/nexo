@@ -259,7 +259,7 @@ async fn a_brief_keeps_its_budget_with_many_labels_and_text_of_several_bytes_a_l
         h.extend(read(&format!("r{i}"), &path, 1, &lines));
     }
     let task = "Исправь разбор_строки_7 и проверка_значения";
-    for engine in [Engine::Lexical, Engine::Curator] {
+    for engine in [Engine::Lexical, Engine::Race] {
         for budget in [600, 1500, 3000] {
             let cfg = BriefConfig { tokens: budget, engine, check_disk: false };
             let b = build(task, &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
@@ -274,7 +274,7 @@ async fn a_brief_keeps_its_budget_with_many_labels_and_text_of_several_bytes_a_l
 async fn a_brief_comes_from_the_curator_by_default() {
     let d = tempfile::tempdir().unwrap();
     let (_, _, h) = session(d.path());
-    for engine in [Engine::Auto, Engine::Curator] {
+    for engine in [Engine::Auto, Engine::Race] {
         let cfg = BriefConfig { tokens: 1500, engine, ..BriefConfig::default() };
         let b = build("Fix parse_line_7 in src/parser.rs", &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
         assert_eq!(b.engine, "curator", "{}", b.text);
@@ -290,7 +290,7 @@ async fn the_latest_request_the_ledger_states_is_not_an_excerpt_too() {
     let (_, _, mut h) = session(d.path());
     h.push(Message::user("Check that every retry_limit in src/config.rs stays under 10 and report the ones over it."));
     let task = "List each retry_limit of src/config.rs with its value";
-    for engine in [Engine::Lexical, Engine::Curator] {
+    for engine in [Engine::Lexical, Engine::Race] {
         let cfg = BriefConfig { tokens: 1500, engine, ..BriefConfig::default() };
         let b = build(task, &Arc::new(h.clone()), d.path(), &cfg).await.unwrap();
         assert_eq!(b.text.matches("stays under 10").count(), 1, "{engine:?}\n{}", b.text);
@@ -372,7 +372,7 @@ async fn briefing_does_not_stall_runtime_heartbeat() {
             .collect::<String>();
         h.extend(bash(&format!("b{i}"), &format!("cargo test component_{i}"), &out, false));
     }
-    let cfg = BriefConfig { tokens: 2000, engine: Engine::Curator, check_disk: false };
+    let cfg = BriefConfig { tokens: 2000, engine: Engine::Race, check_disk: false };
     let start = Instant::now();
     let timer = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(10)).await;

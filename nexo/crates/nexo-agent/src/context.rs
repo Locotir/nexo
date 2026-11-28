@@ -24,7 +24,7 @@ pub struct View {
 }
 
 /// The curator's memory: a cell per message of the history, in zones (the
-/// anchor and the conversation's topics), as `nexo_curator::Reply::memory` gives it.
+/// anchor and the conversation's topics), as `nexo_race::Reply::memory` gives it.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct Memory {
     pub zones: Vec<nexo_core::ContextZone>,

@@ -816,7 +816,7 @@ next request.
 
 `policy = "curator"` runs the context curator and sends the model its curated
 view instead of the whole history. The curator is built into nexo (the
-`nexo-curator` crate), runs in process and needs nothing else installed; each
+`nexo-race` crate), runs in process and needs nothing else installed; each
 call costs a few milliseconds and only the messages that changed are
 converted. `auto`, the default, is the curator, everywhere; a setting in
 `curator_spec` the curator cannot run is left out (the rest still applies),

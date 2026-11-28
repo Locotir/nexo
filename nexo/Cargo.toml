@@ -4,7 +4,7 @@ members = [
     "crates/nexo-core",
     "crates/nexo-providers",
     "crates/nexo-tools",
-    "crates/nexo-curator",
+    "crates/nexo-race",
     "crates/nexo-agent",
     "crates/nexo-supervise",
     "crates/nexo-tui",
@@ -35,7 +35,7 @@ publish = false
 nexo-core = { path = "crates/nexo-core" }
 nexo-providers = { path = "crates/nexo-providers" }
 nexo-tools = { path = "crates/nexo-tools" }
-nexo-curator = { path = "crates/nexo-curator" }
+nexo-race = { path = "crates/nexo-race" }
 nexo-agent = { path = "crates/nexo-agent" }
 nexo-supervise = { path = "crates/nexo-supervise" }
 nexo-tui = { path = "crates/nexo-tui" }
@@ -159,7 +159,7 @@ strip = true
 # macOS arm64: never strip or patch the file after the build; the signature would break (the release workflow checks it)
 
 # the curator replays whole conversations in its tests: optimised, they run in a fraction of the time
-[profile.dev.package.nexo-curator]
+[profile.dev.package.nexo-race]
 opt-level = 2
 [profile.dev.package."*"]
 opt-level = 2

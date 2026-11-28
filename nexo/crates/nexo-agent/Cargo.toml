@@ -27,7 +27,7 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 globset = { workspace = true }
 url = { workspace = true }
-nexo-curator = { workspace = true }
+nexo-race = { workspace = true }
 nexo-tools = { workspace = true }
 nexo-supervise = { workspace = true }
 nexo-binmagic = { workspace = true }

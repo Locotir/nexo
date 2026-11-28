@@ -14,7 +14,7 @@ pub const CALLS: usize = 8;
 /// The text shown when a call carries nothing from the curator.
 pub const NOTHING: &str = "No curator items reported for this selection.";
 
-const DISCLAIMER: &str = "Curator selection before final fit; not proof of what was sent.";
+const DISCLAIMER: &str = "Race selection before final fit; not proof of what was sent.";
 
 fn kind_name(k: CuratedKind) -> &'static str {
     match k {

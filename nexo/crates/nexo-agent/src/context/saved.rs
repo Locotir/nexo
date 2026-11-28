@@ -89,8 +89,8 @@ pub fn write_compaction(
 ) -> std::io::Result<()> {
     let values: Vec<_> =
         history.iter().map(serde_json::to_value).collect::<Result<_, _>>().map_err(std::io::Error::other)?;
-    let hashes: Vec<_> = values.iter().map(nexo_curator::snapshot::message_hash).collect();
-    let hash = nexo_curator::snapshot::history_hash(&hashes);
+    let hashes: Vec<_> = values.iter().map(nexo_race::snapshot::message_hash).collect();
+    let hash = nexo_race::snapshot::history_hash(&hashes);
     let path = session.with_extension(format!("jsonl.curator.compact.{}.{hash:016x}", history.len()));
     static NEXT_COMPACT: AtomicU64 = AtomicU64::new(0);
     let tmp = session.with_extension(format!(

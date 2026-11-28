@@ -2,7 +2,7 @@
 //! scripted replay through the curator shows the first topic leaving the view.
 
 use nexo_bench::tasks::{self, padded};
-use nexo_curator::Curator;
+use nexo_race::Race;
 use serde_json::{json, Value};
 
 fn task(id: &str) -> tasks::Task {
@@ -100,14 +100,14 @@ fn replay(
 }
 
 fn weight(msgs: &[Value]) -> i64 {
-    Curator::new("").unwrap().view(2_000, msgs, 0.0).unwrap().tokens
+    Race::new("").unwrap().view(2_000, msgs, 0.0).unwrap().tokens
 }
 
 /// The view at the last request, as text; the curator sees one request per user message.
 /// (pinned with `epoch=0`: the topic cards are the split of a view that is rewritten when the topic changes, which
 /// a view that runs by epochs leaves to its epoch.)
 fn last_view(msgs: &[Value], tools: &[&str]) -> String {
-    let mut c = Curator::new("epoch=0").unwrap();
+    let mut c = Race::new("epoch=0").unwrap();
     c.tools(&tools.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     let mut text = String::new();
     let mut outline = String::new();

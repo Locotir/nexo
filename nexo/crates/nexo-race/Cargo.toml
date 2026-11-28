@@ -1,0 +1,37 @@
+[package]
+name = "nexo-race"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "nexo: the context curator (goal engine) as a library"
+
+[dependencies]
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+regex = { workspace = true }
+fancy-regex = { workspace = true }
+rustc-hash = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["rc"] }
+postcard = { workspace = true }
+
+[dev-dependencies]
+# tests, examples and clippy --all-targets build with the simulator, so the default gate covers it; a
+# normal build does not (dev-dependencies are not unified into it)
+nexo-race = { path = ".", features = ["sim"] }
+tempfile = { workspace = true }
+
+[features]
+# the closed-loop session simulator (src/sim, examples/sim.rs, examples/replay.rs)
+sim = []
+
+[[example]]
+name = "replay"
+test = true
+required-features = ["sim"]
+
+[[example]]
+name = "sim"
+required-features = ["sim"]

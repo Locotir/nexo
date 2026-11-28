@@ -133,9 +133,9 @@ sin también tambien solo sólo nos les ella ellos algo bien así asi luego qué
 ";
 
 /// Names any model knows without reading them here (the curator's list).
-const GENERAL: &str = nexo_curator::GENERAL_WORDS;
+const GENERAL: &str = nexo_race::GENERAL_WORDS;
 /// The curator's model; only its link head is used here.
-const MODEL: &str = nexo_curator::MODEL_JSON;
+const MODEL: &str = nexo_race::MODEL_JSON;
 
 fn stop() -> &'static HashSet<&'static str> {
     static S: OnceLock<HashSet<&'static str>> = OnceLock::new();

@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use futures::StreamExt;
 use nexo_bench::llmb::{canonstep, read_instance};
 use nexo_core::{Collector, Message, ModelRequest, Part, ProviderConfig, ToolSpec};
-use nexo_curator::Curator;
+use nexo_race::Race;
 use serde_json::{Map, Value};
 
 struct Args {
@@ -162,7 +162,7 @@ fn checkpoints(a: &Args, inst: &canonstep::Adapted, expected: &Map<String, Value
     let mut out = Vec::new();
     for path in &a.files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut curators: Vec<Curator> = a.specs.iter().map(|s| Curator::new(s)).collect::<Result<_, _>>()?;
+        let mut curators: Vec<Race> = a.specs.iter().map(|s| Race::new(s)).collect::<Result<_, _>>()?;
         let mut system = String::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             let rec: Value = serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))?;

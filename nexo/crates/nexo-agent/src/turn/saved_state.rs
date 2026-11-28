@@ -33,7 +33,7 @@ pub(super) fn load(st: &mut State) {
         let best = candidates
             .into_iter()
             .filter(|b| st.policy.accepts_snapshot(b, &history))
-            .max_by_key(|b| nexo_curator::snapshot::Header::read(b).map(|h| h.covered).unwrap_or(0));
+            .max_by_key(|b| nexo_race::snapshot::Header::read(b).map(|h| h.covered).unwrap_or(0));
         if let Some(bytes) = best {
             st.policy.restore(bytes);
         }

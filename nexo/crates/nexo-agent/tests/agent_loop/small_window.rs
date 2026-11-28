@@ -433,7 +433,7 @@ async fn a_big_read(w: Option<u32>, policy: &str) -> (Vec<ModelRequest>, Vec<Age
     (client.requests(), evs)
 }
 
-/// Check the request captured at the provider boundary, not the size of the Curator view reported to the UI.
+/// Check the request captured at the provider boundary, not the size of the Race view reported to the UI.
 fn assert_fits(r: &ModelRequest, window: u32, ratio: f64) {
     let estimate = fixed_tokens(r) + nexo_core::message::estimate_tokens(&r.messages);
     let input = (estimate as f64 * ratio).ceil() as u64;

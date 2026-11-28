@@ -525,7 +525,7 @@ async fn a_throttle_that_reads_as_a_context_error_changes_nothing_and_asks_for_n
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let reqs = client.requests();
     assert_eq!(reqs.len(), FAT_TURNS + 2);
-    // Curator selections can change between turns; request size alone does not prove that the ratio changed.
+    // Race selections can change between turns; request size alone does not prove that the ratio changed.
     assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ModelLimits { source, .. } if source == "error")));
     r.stop().await;
 }

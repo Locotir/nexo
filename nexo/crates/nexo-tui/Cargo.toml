@@ -10,7 +10,7 @@ description = "nexo: the full-screen terminal interface (consumes AgentEvent, pr
 
 [dependencies]
 nexo-core = { workspace = true }
-nexo-curator = { workspace = true }
+nexo-race = { workspace = true }
 nexo-agent = { workspace = true }
 nexo-supervise = { workspace = true }
 nexo-providers = { workspace = true }

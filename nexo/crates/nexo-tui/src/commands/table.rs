@@ -97,7 +97,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("diff", "context and tools", 39, &[], "", "browse staged, unstaged and new files"),
     spec("panel", "context and tools", 36, &[], "", "sub-agents, lanes and sessions: watch, act"),
     spec("cost", "context and tools", 28, &["usage"], "", "window: tokens, cost, calls"),
-    spec("explore", "session", 18, &[], "<phrase>", "search this session with Curator (preview)"),
+    spec("explore", "session", 18, &[], "<phrase>", "search this session with Race (preview)"),
     spec("sent", "context and tools", 27, &["request"], "", "window: last prepared request summary"),
     spec("context", "context and tools", 25, &["ctx"], "[live]", "window: context estimates and map key"),
     spec("context-live", "context and tools", 26, &[], "", "selection map (not payload); key: /context"),

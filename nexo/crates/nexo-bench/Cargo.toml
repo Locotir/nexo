@@ -13,7 +13,7 @@ nexo-core = { workspace = true }
 nexo-agent = { workspace = true }
 nexo-providers = { workspace = true }
 nexo-tools = { workspace = true }
-nexo-curator = { workspace = true }
+nexo-race = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }

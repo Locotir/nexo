@@ -4,8 +4,8 @@ Run from the workspace, without provider credentials or an API call:
 
 ```sh
 cargo test --offline -p nexo-bench -j 2 tasks::session
-cargo test --offline -p nexo-curator -j 2 --test it fragment_matrix -- --nocapture
-cargo test --offline -p nexo-curator -j 2
+cargo test --offline -p nexo-race -j 2 --test it fragment_matrix -- --nocapture
+cargo test --offline -p nexo-race -j 2
 ```
 
 ## session-ops

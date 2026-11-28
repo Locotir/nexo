@@ -2,7 +2,7 @@
 //! and while what ran (`[16:13:08 the person stopped the request above (Esc) while ...]`), and, when messages typed
 //! one after another go to the model as one, the time each was typed (`[16:13:05, typed while you worked on the
 //! request above]`). The model reads which line came first and what happened in between instead of one block whose
-//! older half reads as part of the newest request. The curator reads the same lines (`nexo_curator::msg`).
+//! older half reads as part of the newest request. The curator reads the same lines (`nexo_race::msg`).
 
 use super::person_words;
 

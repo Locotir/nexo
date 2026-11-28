@@ -5,7 +5,7 @@ use super::*;
 pub const HOOK_CONTEXT_START: &str = "<hook-context>";
 /// The line before the person's own words when nexo put anything in their message (notes, hook context, files
 /// attached): what nexo adds goes first, and the request is the last thing the model reads. The curator has the same
-/// line (`nexo_curator::PERSON_MARK`).
+/// line (`nexo_race::PERSON_MARK`).
 pub const PERSON_MARK: &str = "[the person's message]";
 
 /// The person's own words in the text of a message they sent: what follows the last [`PERSON_MARK`] line, else the
@@ -132,14 +132,14 @@ pub fn goal_mark_at(text: &str) -> Option<usize> {
 }
 
 /// The first line of the note nexo puts at the head of a request (what changed in the project, what its check said).
-/// It is nexo's own text, never the person's. The curator has a copy (`nexo_curator::START_NOTE_HEAD`).
+/// It is nexo's own text, never the person's. The curator has a copy (`nexo_race::START_NOTE_HEAD`).
 pub const START_NOTE_HEAD: &str = "[project at the start of this request]";
 
 /// The goal request in the text of a message nexo sent: from the loop's goal mark ([`goal_mark_at`]) to the first blank
 /// line that is followed by the start note ([`START_NOTE_HEAD`]), a file nexo or the person put in the request
 /// ([`headed_file`]) or a `@path` line that says the file was an image or was not attached, else to the end; trimmed.
 /// What follows it (the start note and the files) is nexo's, not the goal's words. `None` when the message is no goal
-/// round. The curator has the same rule (`nexo_curator` msg.rs).
+/// round. The curator has the same rule (`nexo_race` msg.rs).
 pub fn goal_request(text: &str) -> Option<&str> {
     let rest = &text[goal_mark_at(text)?..];
     let end = rest
@@ -156,7 +156,7 @@ pub fn goal_request(text: &str) -> Option<&str> {
 }
 
 /// How the line starts that says a goal that was met is not running; the writer (`goal_state_line`) and the readers
-/// ([`goal_state_line_of`]) both use it. The curator has a copy (`nexo_curator` msg.rs).
+/// ([`goal_state_line_of`]) both use it. The curator has a copy (`nexo_race` msg.rs).
 pub const GOAL_MET_HEAD: &str = "[goal: met, not running";
 /// How the line starts that says a goal is paused, with the reason after it.
 pub const GOAL_PAUSED_HEAD: &str = "[goal: paused (";

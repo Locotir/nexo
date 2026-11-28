@@ -139,7 +139,7 @@ mod tests {
     ];
 
     fn curator_moves() -> Vec<String> {
-        let src = include_str!("../../nexo-curator/src/tools.rs");
+        let src = include_str!("../../nexo-race/src/tools.rs");
         let body = src.split("const DBG_MOVE").nth(1).expect("DBG_MOVE is there");
         let body = body.split("];").next().expect("the list ends");
         body.split('"').skip(1).step_by(2).map(String::from).collect()

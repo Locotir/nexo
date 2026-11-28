@@ -72,7 +72,7 @@ impl Arm {
             let spec = own.as_str();
             match policy {
                 "curator" => {
-                    nexo_curator::Curator::new(spec).map_err(|e| format!("arm {text:?}: {e}"))?;
+                    nexo_race::Race::new(spec).map_err(|e| format!("arm {text:?}: {e}"))?;
                 }
                 "compact" => {
                     compact_at(spec).map_err(|e| format!("arm {text:?}: {e}"))?;

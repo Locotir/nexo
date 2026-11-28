@@ -43,7 +43,7 @@ pub struct Args {
     /// Context policy: auto | plain | curator | compact (auto is the curator, built in)
     #[arg(long, value_name = "POLICY", value_parser = context_policy_arg)]
     pub context: Option<String>,
-    /// Curator settings for this run, over [context] curator_spec (`eoq=32000;dedup=0`)
+    /// Race settings for this run, over [context] curator_spec (`eoq=32000;dedup=0`)
     #[arg(long, value_name = "SPEC", env = "NEXO_CURATOR_SPEC")]
     pub curator_spec: Option<String>,
     /// Theme: dark, nexo, light, mono, catppuccin-mocha, gruvbox, nord, dracula, solarized-dark, tokyo-night

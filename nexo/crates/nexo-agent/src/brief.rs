@@ -70,14 +70,14 @@ pub enum Engine {
     /// The curator's selection ([`curated::select`]).
     Auto,
     /// The same as `Auto`.
-    Curator,
+    Race,
     Lexical,
 }
 
 impl Engine {
     pub fn parse(s: &str) -> Engine {
         match s.trim().to_ascii_lowercase().as_str() {
-            "curator" => Engine::Curator,
+            "curator" => Engine::Race,
             "lexical" | "rust" => Engine::Lexical,
             _ => Engine::Auto,
         }
@@ -184,7 +184,7 @@ fn build_sync(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfig) ->
     let (spans, engine, text) = loop {
         let (mut spans, engine) = match cfg.engine {
             Engine::Lexical => (lexical_but(task, history, left, skip), "lexical"),
-            Engine::Auto | Engine::Curator => (curator_but(task, history, left, skip), "curator"),
+            Engine::Auto | Engine::Race => (curator_but(task, history, left, skip), "curator"),
         };
         for s in &mut spans {
             annotate(s, cwd, cfg.check_disk);

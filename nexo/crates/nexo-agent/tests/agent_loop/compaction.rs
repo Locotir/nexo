@@ -306,14 +306,14 @@ async fn a_cut_summary_is_not_asked_for_again_every_round() {
 #[test]
 fn the_curators_goal_marks_match_nexos() {
     use nexo_core::agent as ours;
-    assert_eq!(nexo_curator::GOAL_SET_MARK, ours::GOAL_SET_MARK);
-    assert_eq!(nexo_curator::GOAL_CONTINUE_MARK, ours::GOAL_CONTINUE_MARK);
-    assert_eq!(nexo_curator::START_NOTE_HEAD, ours::START_NOTE_HEAD);
-    assert_eq!(nexo_curator::GOAL_MET_HEAD, ours::GOAL_MET_HEAD);
-    assert_eq!(nexo_curator::GOAL_PAUSED_HEAD, ours::GOAL_PAUSED_HEAD);
-    assert_eq!(nexo_curator::ATTACHED, ours::ATTACHED);
-    assert_eq!(nexo_curator::INCLUDED, ours::INCLUDED);
-    assert_eq!(nexo_curator::PERSON_MARK, ours::PERSON_MARK);
+    assert_eq!(nexo_race::GOAL_SET_MARK, ours::GOAL_SET_MARK);
+    assert_eq!(nexo_race::GOAL_CONTINUE_MARK, ours::GOAL_CONTINUE_MARK);
+    assert_eq!(nexo_race::START_NOTE_HEAD, ours::START_NOTE_HEAD);
+    assert_eq!(nexo_race::GOAL_MET_HEAD, ours::GOAL_MET_HEAD);
+    assert_eq!(nexo_race::GOAL_PAUSED_HEAD, ours::GOAL_PAUSED_HEAD);
+    assert_eq!(nexo_race::ATTACHED, ours::ATTACHED);
+    assert_eq!(nexo_race::INCLUDED, ours::INCLUDED);
+    assert_eq!(nexo_race::PERSON_MARK, ours::PERSON_MARK);
 }
 
 /// The two cuts of a goal request (`goal_request`) read the same text the same way.
@@ -335,6 +335,6 @@ fn the_curators_goal_request_matches_nexos() {
         format!("{note}\n\nplease add {} to the docs", ours::GOAL_SET_MARK),
         "write the report".to_string(),
     ] {
-        assert_eq!(nexo_curator::goal_request(&text), ours::goal_request(&text), "{text}");
+        assert_eq!(nexo_race::goal_request(&text), ours::goal_request(&text), "{text}");
     }
 }

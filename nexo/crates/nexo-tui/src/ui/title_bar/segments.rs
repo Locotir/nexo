@@ -5,7 +5,7 @@ use super::*;
 /// The segments of the title bar, most important first within the drop
 /// order: `(model, mode[, goal], gauge, mem, branch, directory)`; when the
 /// bar does not fit, the directory goes first, then the branch, then the
-/// memory, then the gauge's counts. A signed Curator delta can shorten the model
+/// memory, then the gauge's counts. A signed Race delta can shorten the model
 /// before the label is dropped; otherwise the original drop order remains.
 pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     with_policy(app, avail, policy_text(app).as_deref())

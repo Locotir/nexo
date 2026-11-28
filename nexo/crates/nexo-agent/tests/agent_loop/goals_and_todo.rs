@@ -849,7 +849,7 @@ async fn a_stop_typed_as_a_goal_round_ends_leaves_the_goal_waiting() {
 async fn first_erroneous_brief_cannot_replace_goal_even_after_reopen() {
     let dir = test_tmpdir().unwrap();
     let original = "Take over Agent Bots on gzor.es";
-    let unrelated = json!({"want":"Fix Curator", "why":"context", "how":"edit code", "done":"tests"});
+    let unrelated = json!({"want":"Fix Race", "why":"context", "how":"edit code", "done":"tests"});
     let client =
         Scripted::new(vec![Reply::Events(call("g1", "goal_brief", unrelated)), Reply::Events(text("GOAL WAIT"))]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
@@ -859,11 +859,11 @@ async fn first_erroneous_brief_cannot_replace_goal_even_after_reopen() {
     };
     r.send(AgentCommand::SetGoal { text: Some(original.into()), attachments: vec![] });
     let evs = r.turn().await;
-    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Goal { text: Some(t), .. } if t.contains("Curator"))));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Goal { text: Some(t), .. } if t.contains("Race"))));
     let reqs = client.requests();
-    assert!(reqs.iter().all(|q| q.system.contains(original) && !q.system.contains("Curator")));
+    assert!(reqs.iter().all(|q| q.system.contains(original) && !q.system.contains("Race")));
     assert!(reqs.iter().all(|q| !q.tools.iter().any(|t| t.name == "goal_brief")));
-    assert!(!last_text_part(reqs.last().unwrap()).unwrap_or_default().contains("Want: Fix Curator"));
+    assert!(!last_text_part(reqs.last().unwrap()).unwrap_or_default().contains("Want: Fix Race"));
     r.stop().await;
     let s = nexo_agent::session::Session::open(&id).unwrap();
     assert_eq!(s.goal(), Some(original));
@@ -881,7 +881,7 @@ async fn reopening_legacy_brief_with_original_never_injects_it_as_goal() {
     data_dir();
     let mut s = nexo_agent::session::Session::create(d.path(), "mock", "m1").unwrap();
     s.record_goal(Some("Take over Agent Bots")).unwrap();
-    s.record_goal_text("Want: Fix Curator\nWhy: context\nHow: edit\nDone when: tests", Default::default()).unwrap();
+    s.record_goal_text("Want: Fix Race\nWhy: context\nHow: edit\nDone when: tests", Default::default()).unwrap();
     let id = s.id().to_string();
     drop(s);
     let client = Scripted::new(vec![Reply::Events(text("ok"))]);
@@ -893,8 +893,8 @@ async fn reopening_legacy_brief_with_original_never_injects_it_as_goal() {
     r.turn().await;
     let reqs = client.requests();
     assert!(reqs[0].system.contains("Take over Agent Bots"));
-    assert!(!reqs[0].system.contains("Curator"));
-    assert!(!last_text_part(&reqs[0]).unwrap_or_default().contains("Curator"));
+    assert!(!reqs[0].system.contains("Race"));
+    assert!(!last_text_part(&reqs[0]).unwrap_or_default().contains("Race"));
     r.stop().await;
 }
 

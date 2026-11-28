@@ -567,7 +567,7 @@ fn long_history_stream_to_frame_latency() {
     }
 }
 
-/// Compare Curator's two directions on the same long-history scene. Setup and
+/// Compare Race's two directions on the same long-history scene. Setup and
 /// Context dispatch are outside the timers; the injected clock advances through
 /// the cue rather than repeatedly rendering its first frame.
 #[test]
@@ -622,7 +622,7 @@ fn curator_animation_frame_and_typing_latency() {
             let buf = term.backend().buffer();
             let bar: String = (0..100).map(|x| buf[(x, 35)].symbol()).collect();
             assert!(bar.contains("◆ high"), "{bar}");
-            let figure = bar.split_once("curator").expect("visible Curator").1.trim_start();
+            let figure = bar.split_once("curator").expect("visible Race").1.trim_start();
             assert!(figure.starts_with(sign) && figure.contains("k tok"), "{bar}");
             if settled {
                 assert!(bar.contains(label), "{bar}");
