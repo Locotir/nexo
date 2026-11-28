@@ -195,7 +195,7 @@ allow = ["read", "glob", "grep", "ls", "bash(git status*)", "bash(git diff*)"]
 deny = []
 
 [context]
-policy = "auto"                     # auto (curator if found) | plain | curator | compact
+policy = "auto"                     # auto (RACE) | plain | race | compact; "curator" still works
 # curator_spec = "eoq=24000"        # settings for the curator, key=value;... (see the README)
 
 [ui]

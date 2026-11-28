@@ -441,8 +441,11 @@ mod tests {
     fn a_context_policy_that_does_not_exist_is_refused_before_the_run_starts() {
         use clap::Parser;
         let e = super::Args::try_parse_from(["nexo", "--context", "bogus"]).unwrap_err().to_string();
-        assert!(e.contains("unknown context policy \"bogus\"") && e.contains("auto, plain, curator, compact"), "{e}");
-        for ok in ["plain", "auto", "curator", "compact", " plain ", ""] {
+        assert!(
+            e.contains("unknown context policy \"bogus\"") && e.contains("auto, plain, race, curator, compact"),
+            "{e}"
+        );
+        for ok in ["plain", "auto", "race", "curator", "compact", " plain ", ""] {
             let a = super::Args::try_parse_from(["nexo", "--context", ok]).unwrap();
             assert_eq!(a.context.as_deref(), Some(ok));
         }

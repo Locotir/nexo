@@ -498,16 +498,16 @@ pub fn working_set_spec(spec: &str, working_set: &str) -> Result<String, String>
 }
 
 /// The names a context policy is asked for by, in the order they are listed to the person.
-pub const POLICY_NAMES: [&str; 4] = ["auto", "plain", "curator", "compact"];
+pub const POLICY_NAMES: [&str; 5] = ["auto", "plain", "race", "curator", "compact"];
 
-/// The policy `cfg.policy` names (`auto`, `plain`, `compact`, `curator`;
-/// anything else: plain). `auto` and `curator` are the curator.
+/// The policy `cfg.policy` names (`auto`, `plain`, `compact`, `race`, `curator`;
+/// anything else: plain). `auto`, `race` and its old name `curator` are RACE.
 pub fn from_config(cfg: &ContextConfig) -> Box<dyn ContextPolicy> {
     match cfg.policy.trim() {
         "compact" => Box::new(Compact { compact_at: cfg.compact_at }),
         "plain" => Box::new(Plain::default()),
         // a setting the curator cannot run leaves out that setting, never the curator
-        "curator" | "auto" | "" => match working_set_spec(&cfg.curator_spec, &cfg.working_set) {
+        "race" | "curator" | "auto" | "" => match working_set_spec(&cfg.curator_spec, &cfg.working_set) {
             Ok(spec) => Box::new(BuiltIn::lenient(&spec)),
             Err(why) => {
                 let mut b = BuiltIn::lenient(&cfg.curator_spec);

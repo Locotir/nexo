@@ -134,9 +134,9 @@ pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
         ));
     }
     let policy = cfg.context.policy.trim();
-    if !matches!(policy, "auto" | "plain" | "curator" | "compact" | "") {
+    if !matches!(policy, "auto" | "plain" | "race" | "curator" | "compact" | "") {
         out.push(format!(
-            "{}: [context] policy = {policy:?} is not a policy; accepted: auto, plain, curator, compact",
+            "{}: [context] policy = {policy:?} is not a policy; accepted: auto, plain, race (old name: curator), compact",
             source_of(cwd, Some("context"), "policy").display()
         ));
     }
@@ -175,9 +175,9 @@ pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
         ));
     }
     let engine = cfg.agent.subagent_brief_engine.trim().to_ascii_lowercase();
-    if !matches!(engine.as_str(), "auto" | "curator" | "lexical" | "rust") {
+    if !matches!(engine.as_str(), "auto" | "race" | "curator" | "lexical" | "rust") {
         out.push(format!(
-            "{}: [agent] subagent_brief_engine = {:?} is not an engine, so it reads as auto; accepted: auto, curator, lexical, rust",
+            "{}: [agent] subagent_brief_engine = {:?} is not an engine, so it reads as auto; accepted: auto, race (old name: curator), lexical, rust",
             source_of(cwd, Some("agent"), "subagent_brief_engine").display(),
             cfg.agent.subagent_brief_engine
         ));
@@ -327,7 +327,10 @@ mod tests {
         cfg.agent.subagent_brief_engine = "lexicall".into();
         let w = warnings_for(&cfg, "subagent_brief_engine");
         assert_eq!(w.len(), 1, "{w:?}");
-        assert!(w[0].contains("\"lexicall\"") && w[0].contains("accepted: auto, curator, lexical, rust"), "{w:?}");
+        assert!(
+            w[0].contains("\"lexicall\"") && w[0].contains("accepted: auto, race (old name: curator), lexical, rust"),
+            "{w:?}"
+        );
         cfg.agent.subagent_brief_engine = "Rust".into();
         assert!(warnings_for(&cfg, "subagent_brief_engine").is_empty());
     }

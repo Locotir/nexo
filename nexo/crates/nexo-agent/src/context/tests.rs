@@ -64,8 +64,8 @@ fn config_picks_the_policy() {
     let p = from_config(&cfg);
     assert_eq!(p.name(), "plain");
     assert!(p.detail().is_none(), "asked for: nothing to explain");
-    // auto and curator: the built-in curator
-    for name in ["auto", "curator", ""] {
+    // auto, race and its old name curator: the built-in engine
+    for name in ["auto", "race", "curator", ""] {
         cfg.policy = name.into();
         let p = from_config(&cfg);
         assert_eq!((p.name(), p.directives(&["note"])), ("curator", None));

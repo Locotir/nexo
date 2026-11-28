@@ -77,7 +77,7 @@ pub enum Engine {
 impl Engine {
     pub fn parse(s: &str) -> Engine {
         match s.trim().to_ascii_lowercase().as_str() {
-            "curator" => Engine::Race,
+            "race" | "curator" => Engine::Race,
             "lexical" | "rust" => Engine::Lexical,
             _ => Engine::Auto,
         }
