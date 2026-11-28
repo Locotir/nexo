@@ -152,6 +152,9 @@ clap = { version = "4", features = ["derive", "env"] }
 # tests
 httpmock = "0.9"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 4
