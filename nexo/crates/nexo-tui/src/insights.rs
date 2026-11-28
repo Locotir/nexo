@@ -260,7 +260,7 @@ fn words(i: &Insight, home: Option<&str>, room: usize) -> Words {
             w.advice = Some("Smaller model for sub-agents; shorter briefs.");
         }
         InsightKind::CuratorLeftOut { tokens } => {
-            w.head = format!("Race left out {}", fmt_k(*tokens));
+            w.head = format!("RACE left out {}", fmt_k(*tokens));
             w.good = true;
         }
     }
@@ -545,7 +545,7 @@ mod tests {
         assert!(l[at + 2].contains("Pipe through head or tail"));
         assert!(l.iter().any(|l| l.contains("80%  of spend on model-x  $4.10")));
         assert!(l.iter().any(|l| l.contains("55%  of spend in ~/foo  $2.20")), "{l:#?}");
-        assert!(l.iter().any(|l| l.contains("22%  Race left out 1.20M")));
+        assert!(l.iter().any(|l| l.contains("22%  RACE left out 1.20M")));
     }
 
     #[test]
@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(bar_of("Long context"), Some(th.warn2), "62%");
         assert_eq!(bar_of("Bash output"), Some(th.warn), "41%");
         assert_eq!(bar_of("Cache misses"), Some(th.accent), "24%");
-        assert_eq!(bar_of("Race left out"), Some(th.success), "a win, in green");
+        assert_eq!(bar_of("RACE left out"), Some(th.success), "a win, in green");
         let track = ls.iter().find(|l| text(l).contains("Cache misses")).unwrap();
         assert_eq!(track.spans[1].style.fg, Some(th.dim2));
         let money = ls.iter().find(|l| text(l).contains("$4.10")).unwrap();

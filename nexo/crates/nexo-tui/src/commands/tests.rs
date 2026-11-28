@@ -252,7 +252,7 @@ fn ranks_primary_names_before_aliases_before_fuzzy_matches() {
     assert!(rank("zzz").is_empty());
     let by_desc: Vec<_> = rank("search session").iter().map(|r| COMMANDS[r.index].name).collect();
     assert!(by_desc.contains(&"explore"), "every word found in the description: {by_desc:?}");
-    let tail = rank("curator");
+    let tail = rank("race");
     assert!(
         tail.iter().any(|r| COMMANDS[r.index].name == "explore" && r.hits.is_empty()),
         "a description match lights no letters"

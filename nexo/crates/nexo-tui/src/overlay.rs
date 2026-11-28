@@ -340,7 +340,7 @@ fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
     // Race's most recent selection, before the final request fit.
     if let Some(items) = app.curated.first() {
         out.push(Line::default());
-        out.extend(crate::curated::lines(theme, items, w, "Race selection (before fit)"));
+        out.extend(crate::curated::lines(theme, items, w, "RACE selection (before fit)"));
     }
     // Reference help follows live figures and selection, so it never pushes the
     // current call's inventory out of the initial viewport. It remains scrollable.
@@ -356,9 +356,9 @@ fn context_live_key(theme: &Theme, w: usize) -> Vec<Line<'static>> {
         "Colours identify message kinds: you, assistant reply, tool call, tool output. They are not a health score.",
         "Cells: █ whole, ▒ shortened or stubbed, ░ parts recalled, · omitted, ? retention unknown. These are local alignment states, not provider acknowledgements.",
         "Scale: up to the displayed estimated tokens per cell, rounded up separately for each message (at least one cell). The scale adapts to panel size; it is not a percentage of the model window.",
-        "Anchor (◆): the first-message memory area; Race can rebuild it with standing rules, notes, pinned files and a map of older topics. It is not the full original history.",
+        "Anchor (◆): the first-message memory area; RACE can rebuild it with standing rules, notes, pinned files and a map of older topics. It is not the full original history.",
         "Topics: ● now = active, ◐ back = selected older content, ▭ card = topic summary, ○ = inactive, ? = unknown. Hidden topics still exist in history.",
-        "Selected originals counts original message estimates, not retained payload sizes. Shortened messages, recalled quotes and synthetic additions differ; Race rows (F3) describe selection before final fitting.",
+        "Selected originals counts original message estimates, not retained payload sizes. Shortened messages, recalled quotes and synthetic additions differ; RACE rows (F3) describe selection before final fitting.",
         "Use /sent for the last prepared request summary after fitting, including system and tool definitions. Preparation does not confirm transmission or receipt; provider serialization may differ.",
         "Quote heat (◇) marks a source message, not exact positions. Brightness is the topic's quoted tokens / estimated input, capped at 1%; unknown input has no heat scale.",
     ] {

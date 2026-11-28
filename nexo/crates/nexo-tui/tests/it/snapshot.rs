@@ -771,7 +771,7 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let all = draw(&mut a, 120, 60).join("\n");
-    assert!(!all.contains("Race selection (before fit)"), "{all}");
+    assert!(!all.contains("RACE selection (before fit)"), "{all}");
     a.modal = None;
     a.handle_agent(AgentEvent::Curated { items: curated_items(), relation_quotes: None, quote_heat: None });
     a.run_command(nexo_tui::commands::Command::Context);
@@ -779,7 +779,7 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     let rows = draw(&mut a, 120, 60);
     let all = rows.join("\n");
     let at = |s: &str| rows.iter().position(|l| l.contains(s)).unwrap_or_else(|| panic!("{s} not in\n{all}"));
-    assert!(all.contains("Race selection (before fit)"), "{all}");
+    assert!(all.contains("RACE selection (before fit)"), "{all}");
     assert!(at("thread") < at("recalled") && at("recalled") < at("rule") && at("rule") < at("total"), "{all}");
     assert!(rows[at("thread")].contains("parser rewrite") && rows[at("thread")].contains("12.4k"), "{all}");
     assert!(rows[at("recalled")].contains("~900"), "{all}");
@@ -792,7 +792,7 @@ fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
     );
     let scrolled = draw(&mut a, 120, 60).join("\n");
     assert!(scrolled.contains("old notes"), "{scrolled}");
-    assert!(scrolled.contains("Race selection before final fit; not proof of what was sent."), "{scrolled}");
+    assert!(scrolled.contains("RACE selection before final fit; not proof of what was sent."), "{scrolled}");
     // a call with nothing from the curator says so
     a.modal = None;
     a.handle_agent(AgentEvent::Curated { items: Vec::new(), relation_quotes: None, quote_heat: None });

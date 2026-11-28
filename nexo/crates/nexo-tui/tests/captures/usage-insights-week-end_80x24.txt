@@ -7,7 +7,7 @@
               │ ██████▍░  80%  of spend on model-x  $4.10        │
               │                Use a cheaper model for routine   │
               │                steps.                            │
-              │ █▊░░░░░░  22%  Curator left out 1.20M            │
+              │ █▊░░░░░░  22%  RACE left out 1.20M               │
               │                                                  │
               │ Biggest sessions                      cost cache │
               │ login · today                        $1.82   71% │
