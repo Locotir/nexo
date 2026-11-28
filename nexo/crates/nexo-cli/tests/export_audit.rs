@@ -145,6 +145,15 @@ fn audit_writes_a_line_per_call_and_request_and_the_report_sums() {
 }
 
 #[test]
+fn audit_flag_enables_the_configured_log_for_one_run() {
+    let d = tempfile::tempdir().unwrap();
+    let log = d.path().join("flag.jsonl");
+    let cfg = format!("{MOCK}[audit]\nenabled = false\npath = '{}'\n", log.display());
+    ok(&nexo(d.path(), &cfg, &["--yolo", "--audit", "-p", "hi"]));
+    assert!(!lines(&log).is_empty());
+}
+
+#[test]
 fn audit_off_writes_nothing() {
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("a.txt"), "x\n").unwrap();

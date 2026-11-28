@@ -36,7 +36,15 @@ pub(super) fn way_out(e: &anyhow::Error) -> String {
 
 /// The configuration of `cwd` with the presets and the providers the person asked for.
 pub(super) fn load_config(args: &Args, cwd: &std::path::Path) -> anyhow::Result<nexo_core::Config> {
-    load_config_for(args.provider.as_deref(), cwd)
+    let mut config = load_config_for(args.provider.as_deref(), cwd)?;
+    apply_audit_flag(&mut config, args.audit);
+    Ok(config)
+}
+
+pub(crate) fn apply_audit_flag(config: &mut nexo_core::Config, audit: bool) {
+    if audit {
+        config.audit.enabled = true;
+    }
 }
 
 /// The configuration of `cwd` with the presets and `provider` (the one asked for, if any) ready to use.

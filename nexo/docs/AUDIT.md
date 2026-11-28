@@ -34,7 +34,8 @@ file before you share it.
 
 ## The audit log
 
-Off by default. In `config.toml`:
+Off by default. Pass `--audit` to enable it for one run, using the configured path and defaults.
+In `config.toml`:
 
 ```toml
 [audit]

@@ -23,6 +23,7 @@ use crate::setup;
 /// What the command line set for every session of this server.
 #[derive(Clone, Default)]
 pub struct Opts {
+    pub audit: bool,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<PermissionMode>,
@@ -107,6 +108,7 @@ pub async fn start(
     resume: Option<String>,
 ) -> Result<(Arc<Sess>, Vec<AgentEvent>, PermissionMode), RpcError> {
     let mut config = nexo_core::Config::load(&cwd).map_err(|e| RpcError::internal(e.to_string()))?;
+    crate::cli::apply_audit_flag(&mut config, opts.audit);
     setup::apply_presets(&mut config);
     for p in [opts.provider.clone(), config.provider.clone()].into_iter().flatten() {
         crate::account::adopt(&mut config, &p);

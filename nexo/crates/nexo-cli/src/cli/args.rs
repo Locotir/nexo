@@ -37,6 +37,9 @@ pub struct Args {
     /// Never ask for permission (the same as --permission-mode yolo).
     #[arg(long, conflicts_with = "permission_mode")]
     pub yolo: bool,
+    /// Enable the audit log for this run.
+    #[arg(long)]
+    pub audit: bool,
     /// OS sandbox for the bash tool: off | workspace-write | read-only
     #[arg(long, value_name = "MODE", env = "NEXO_SANDBOX", value_parser = sandbox_mode_arg)]
     pub sandbox: Option<String>,

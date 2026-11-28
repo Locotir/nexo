@@ -14,8 +14,8 @@ mod dispatch;
 mod modes;
 
 pub use args::*;
+pub(crate) use config::{apply_audit_flag, load_config_for, point_to_the_files};
 use config::{load_config, trust_asked, way_out};
-pub(crate) use config::{load_config_for, point_to_the_files};
 use dispatch::run_in;
 use modes::{headless_collect, interactive};
 
@@ -151,6 +151,15 @@ async fn run(args: Args) -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_flag_enables_loaded_config_with_yolo() {
+        let args = Args::try_parse_from(["nexo", "--yolo", "--audit"]).unwrap();
+        assert!(args.yolo);
+        let dir = tempfile::tempdir().unwrap();
+        let config = load_config(&args, dir.path()).unwrap();
+        assert!(config.audit.enabled);
+    }
 
     #[test]
     fn trace_is_held_back_for_the_request_libraries() {

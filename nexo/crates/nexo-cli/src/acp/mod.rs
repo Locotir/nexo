@@ -41,6 +41,7 @@ pub async fn run(args: &crate::cli::Args) -> anyhow::Result<i32> {
         permission_mode,
         context: args.context.clone(),
         curator_spec: args.curator_spec.clone(),
+        audit: args.audit,
     };
     serve(tokio::io::stdin(), tokio::io::stdout(), opts).await
 }
