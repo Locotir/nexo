@@ -46,6 +46,8 @@ impl AgentsView {
             " panel · policy "
         } else if self.observing.is_some() {
             " panel · observation "
+        } else if self.cards_page {
+            " panel · cards "
         } else {
             " panel "
         };
@@ -74,7 +76,7 @@ impl AgentsView {
 
         let pad = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
         let wide = r.width >= WIDE_FROM;
-        let page = self.policy_page || self.observing.is_some();
+        let page = self.policy_page || self.observing.is_some() || self.cards_page;
         // the split between the tree and the pane: where the divider runs
         let split = (wide && !page).then(|| {
             let tw = ((inner.width as f32 * TREE_SHARE) as u16).clamp(TREE_MIN, TREE_MAX);
@@ -118,6 +120,8 @@ impl AgentsView {
         self.lines.clear();
         if self.policy_page {
             self.draw_policy(f, Rect::new(pad.x, body_y, pad.width, body_h), theme);
+        } else if self.cards_page {
+            self.draw_cards(f, Rect::new(pad.x, body_y, pad.width, body_h), theme);
         } else if self.observing.is_some() {
             self.draw_observation(f, Rect::new(pad.x, body_y, pad.width, body_h), theme);
         } else {
@@ -332,7 +336,7 @@ impl AgentsView {
         if self.wide() || self.open {
             k.push("Tab pane");
         }
-        k.extend(["/ filter", "f show", "F source"]);
+        k.extend(["/ filter", "f show", "F source", "c cards"]);
         if sup {
             k.push("P policy");
         }
@@ -376,6 +380,9 @@ impl AgentsView {
         }
         if self.policy_page {
             return Line::from(Span::styled(truncate("↑↓ scroll · P/Esc back", w), theme.dim2()));
+        }
+        if self.cards_page {
+            return Line::from(Span::styled(truncate("↑↓ scroll · c or Esc back", w), theme.dim2()));
         }
         if self.observing.is_some() {
             return Line::from(Span::styled(truncate("↑↓ scroll · n message · Esc back", w), theme.dim2()));

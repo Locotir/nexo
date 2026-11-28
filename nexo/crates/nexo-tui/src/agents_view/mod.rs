@@ -2,8 +2,9 @@
 //! person, this session and its sub-agents, the `nexo team` lanes, the other live nexo sessions, then the
 //! sessions of other programs), one line each; the pane on the right tells the selected row in full. The keys
 //! depend on the kind of row selected, and the footer lists only those. It supervises, messages, starts and
-//! stops lanes; a message flies to its row as a letter.
+//! stops lanes; a message flies to its row as a letter. `c` opens the same rows as cards.
 
+mod cards;
 mod chips;
 mod detail;
 mod draw;
@@ -216,6 +217,12 @@ pub struct AgentsView {
     /// The policy page is showing instead of the tree.
     policy_page: bool,
     policy_scroll: usize,
+    /// The card page is showing instead of the tree (`c`).
+    cards_page: bool,
+    cards_scroll: usize,
+    /// Recent steps of each row, oldest first, at most four. A card shows the newest bright and up to three
+    /// before it dim. Filled as `last_step` changes, and from ribbon notes the first time a row is seen.
+    steps: HashMap<String, std::collections::VecDeque<String>>,
     /// Stable key of the session being observed, independent of fleet reordering.
     observing: Option<String>,
     observe_scroll: usize,
@@ -302,6 +309,9 @@ impl AgentsView {
             focus: false,
             policy_page: false,
             policy_scroll: 0,
+            cards_page: false,
+            cards_scroll: 0,
+            steps: HashMap::new(),
             observing: None,
             observe_scroll: 0,
             observe_max: 0,
@@ -375,6 +385,7 @@ impl AgentsView {
         let mut v = AgentsView::new(None, still);
         v.rows = rows;
         v.clock = clock;
+        v.note_steps();
         v.retarget(None);
         v
     }
@@ -388,6 +399,7 @@ impl AgentsView {
     pub fn set_rows(&mut self, rows: Vec<AgentRow>) {
         let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
         self.rows = rows;
+        self.note_steps();
         self.retarget(keep);
     }
 
@@ -523,6 +535,7 @@ impl AgentsView {
         let keep = self.selected_item().map(|it| (it.id(), it.row().map(|r| r.key.clone())));
         self.rows = rows;
         self.clock = clock;
+        self.note_steps();
         self.retarget(keep);
         changed || history_changed || waited
     }
@@ -558,6 +571,11 @@ impl AgentsView {
 
     /// What keeps the window the same window: the filters, the page, and whether any row has arrived yet.
     pub fn size_key(&self) -> (u8, u8, bool, bool) {
-        (self.show as u8, self.filter as u8, self.policy_page || self.observing.is_some(), self.rows.is_empty())
+        (
+            self.show as u8,
+            self.filter as u8,
+            self.policy_page || self.observing.is_some() || self.cards_page,
+            self.rows.is_empty(),
+        )
     }
 }

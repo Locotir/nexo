@@ -244,6 +244,29 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             }
             out.push(mk(ObsKind::TurnEnd { last_text_tail: t }));
         }
+        AgentEvent::Sub { id, item } => {
+            // The run id ends in the job number the panel's rows use. A run that has not said it yet
+            // has no card to write on, so the line waits for the next item.
+            if let Some(job) = id.rsplit_once('#').and_then(|(_, n)| n.parse::<u32>().ok()) {
+                if let Some(text) = sub_line(item) {
+                    let key = format!("{}.{}", g.key(), job);
+                    out.push(Observation { agent_key: key.clone(), at: now, kind: ObsKind::Step { text } });
+                    out.push(Observation { agent_key: key, at: now, kind: ObsKind::Activity });
+                }
+            }
+        }
+        AgentEvent::SubDelta { id, text } => {
+            if let Some(job) = id.rsplit_once('#').and_then(|(_, n)| n.parse::<u32>().ok()) {
+                let text = one_line(text, STEP_CHARS);
+                if !text.is_empty() {
+                    out.push(Observation {
+                        agent_key: format!("{}.{}", g.key(), job),
+                        at: now,
+                        kind: ObsKind::Step { text },
+                    });
+                }
+            }
+        }
         AgentEvent::SubState { info } => {
             // Run IDs end in the job number used by panel rows. Do not guess a target
             // from the parent session or a profile when the runner has not resolved it.
@@ -342,6 +365,28 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
     out
 }
 
+/// One short line of what a sub-agent just did, from the item it already keeps. Mail and the task it
+/// was given are not a step: the card already shows the task as its name.
+fn sub_line(item: &nexo_core::subs::SubItem) -> Option<String> {
+    use nexo_core::subs::SubItem;
+    let text = match item {
+        SubItem::Call { name, summary, .. } => {
+            let name = tool_name(name);
+            if summary.trim().is_empty() {
+                name
+            } else {
+                format!("{name}  {}", one_line(summary, STEP_CHARS))
+            }
+        }
+        SubItem::Text { text } => one_line(text, STEP_CHARS),
+        SubItem::Result { ok: false, output, .. } => format!("failed  {}", one_line(output, STEP_CHARS)),
+        SubItem::Task { .. } | SubItem::Person { .. } | SubItem::Parent { .. } | SubItem::Result { .. } => {
+            return None;
+        }
+    };
+    (!text.is_empty()).then_some(text)
+}
+
 impl Source for NexoSource {
     fn id(&self) -> &str {
         "nexo-events"
@@ -376,6 +421,42 @@ mod nudge_tests {
         assert!(obs.iter().all(|o| o.kind != ObsKind::UserInput), "{obs:?}");
         s.observe(&AgentEvent::TurnStart { turn: 2 }, 20);
         assert!(me.poll(21).iter().any(|o| o.kind == ObsKind::UserInput), "the person's turn counts again");
+    }
+
+    #[test]
+    fn a_sub_agent_call_lands_on_its_own_row_and_a_note_wins() {
+        use nexo_core::subs::SubItem;
+        let s = NexoSource::new();
+        let mut me = s.clone();
+        s.observe(
+            &AgentEvent::Ready {
+                session_id: "s1".into(),
+                provider: "p".into(),
+                model: "m".into(),
+                cwd: "/w".into(),
+                permission_mode: PermissionMode::Ask,
+            },
+            1,
+        );
+        let call =
+            SubItem::Call { id: "c".into(), name: "bash".into(), summary: "rm -rf build".into(), args: "{}".into() };
+        s.observe(&AgentEvent::Sub { id: "run#7".into(), item: call }, 2);
+        let step = |k: &ObsKind| matches!(k, ObsKind::Step { text } if text.contains("rm -rf build"));
+        assert!(me.poll(3).iter().any(|o| o.agent_key == "s1.7" && step(&o.kind)));
+        // no job number yet: nothing to attach the line to
+        s.observe(&AgentEvent::Sub { id: "bare".into(), item: SubItem::Text { text: "x".into() } }, 4);
+        assert!(me.poll(5).is_empty());
+        s.observe(
+            &AgentEvent::Sub {
+                id: "run#7".into(),
+                item: SubItem::Text { text: "iOS: deleted the builds folder".into() },
+            },
+            6,
+        );
+        let got = me.poll(7);
+        assert!(got
+            .iter()
+            .any(|o| matches!(&o.kind, ObsKind::Step { text } if text == "iOS: deleted the builds folder")));
     }
 
     #[test]

@@ -68,6 +68,9 @@ impl AgentsView {
         if self.policy_page {
             return self.policy_key(key);
         }
+        if self.cards_page {
+            return self.cards_key(key);
+        }
         if self.observing.is_some() {
             return self.observe_key(key);
         }
@@ -123,6 +126,7 @@ impl AgentsView {
                 self.policy_page = true;
                 self.policy_scroll = 0;
             }
+            KeyCode::Char('c') => self.cards_toggle(),
             KeyCode::Char('z') if !matches!(kind, Some(Kind::Sub | Kind::Job)) => self.toggle_pause(false),
             KeyCode::Char('Z') => self.toggle_pause(true),
             KeyCode::Char('s') if lane => self.lane_start(false),
@@ -526,7 +530,7 @@ impl AgentsView {
         if !contains(self.window, x, y) {
             return self.key(KeyEvent::from(KeyCode::Esc));
         }
-        if typing || self.policy_page || self.observing.is_some() {
+        if typing || self.policy_page || self.cards_page || self.observing.is_some() {
             return ModalOut::Nothing;
         }
         if contains(self.pane_area, x, y) {
@@ -560,6 +564,10 @@ impl AgentsView {
     pub fn scroll_by(&mut self, delta: i32) {
         if self.policy_page {
             self.policy_scroll = (self.policy_scroll as i32 + delta).max(0) as usize;
+            return;
+        }
+        if self.cards_page {
+            self.cards_scroll = (self.cards_scroll as i32 + delta).max(0) as usize;
             return;
         }
         if self.observing.is_some() {
