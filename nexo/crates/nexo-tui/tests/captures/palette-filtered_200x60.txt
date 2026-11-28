@@ -42,18 +42,18 @@
 
 
 
-
-
-
-
-
-
-
-
  /model                [name]                             switch model, or set one up
  /permissions  (mode)  [ask|accept-edits|plan|yolo…       set the permission mode
  /memory               [user|add <text>|share [id]]       edit the instructions the agent reads
  /shared-memory        [<id>|list|off|read|write]         other sessions' memory, shared notes
+ /effort               [level|default]                    how much the model reasons
+ /fast                 [on|off]                           use the model's fast version, and back
+ /add-dir              <folder>                           let the file tools use one more folder
+ /plan                 [text|off]                         plan mode: reads only, plan to approve
+ /pricing              [in=… out=… cache=… write=…]       the model's prices per million tokens
+ /status                                                  version, model, key, endpoint, session
+ /settings             [mouse|timestamps|vim]             a window: mouse, times, vim keys
+ /tools                                                   the tools the model has, by kind
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                                10:00

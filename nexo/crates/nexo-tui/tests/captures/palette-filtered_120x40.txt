@@ -22,18 +22,18 @@
     ✓ edit src/lib.rs · +1 −1  3ms
     │ @@ -1,1 +1,1 @@
     │ 1 - let x = 1;
-    └ 1 + let x = 2;
-
-  ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=… out=… cache=…) · from config
-
-  ◇ compacted 2 messages
-
-       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
-
  /model                [name]                        switch model, or set one up
  /permissions  (mode)  [ask|accept-edits|plan|yolo…  set the permission mode
  /memory               [user|add <text>|share [id]]  edit the instructions the agent reads
  /shared-memory        [<id>|list|off|read|write]    other sessions' memory, shared notes
+ /effort               [level|default]               how much the model reasons
+ /fast                 [on|off]                      use the model's fast version, and back
+ /add-dir              <folder>                      let the file tools use one more folder
+ /plan                 [text|off]                    plan mode: reads only, plan to approve
+ /pricing              [in=… out=… cache=… write=…]  the model's prices per million tokens
+ /status                                             version, model, key, endpoint, session
+ /settings             [mouse|timestamps|vim]        a window: mouse, times, vim keys
+ /tools                                              the tools the model has, by kind
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                10:00

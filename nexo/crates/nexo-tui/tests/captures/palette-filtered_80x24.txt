@@ -6,18 +6,18 @@
     ▎ fn main() {}                                                             │
                                                                                │
     ✓ read tests/a.rs · 2 lines  12ms ▸                                        │
-    ✓ edit src/lib.rs · +1 −1  3ms                                             ┃
-    │ @@ -1,1 +1,1 @@                                                          ┃
-    │ 1 - let x = 1;                                                           ┃
-    └ 1 + let x = 2;                                                           ┃
-                                                                               ┃
-  ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing    ┃
-    in=… out=… cache=…) · from config                                          ┃
-                                                                               ┃
  /model                [name]              switch model, or set one up
  /permissions  (mode)  [ask|accept-edits…  set the permission mode
  /memory               [user|add <text>…   edit the instructions the agent rea…
  /shared-memory        [<id>|list|off…     other sessions' memory, shared notes
+ /effort               [level|default]     how much the model reasons
+ /fast                 [on|off]            use the model's fast version, and b…
+ /add-dir              <folder>            let the file tools use one more fol…
+ /plan                 [text|off]          plan mode: reads only, plan to appr…
+ /pricing                                  the model's prices per million toke…
+ /status                                   version, model, key, endpoint, sess…
+ /settings             [mouse|timestamps…  a window: mouse, times, vim keys
+ /tools                                    the tools the model has, by kind
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close        10:00
