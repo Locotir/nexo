@@ -39,6 +39,7 @@ mod keys;
 mod lines;
 mod palette_ui;
 mod pointer;
+pub(crate) mod resume_load;
 mod status_and_call_text;
 pub(crate) mod sub;
 mod submit;
@@ -479,6 +480,10 @@ pub struct App {
     /// The sub-agent runs of the session as the agent last told them, and the one whose conversation is open.
     pub sub_runs: Vec<sub::RunRec>,
     pub sub_view: Option<sub::SubView>,
+    /// A resumed history still arriving or still being laid out: the screen shows the loading cover.
+    pub(crate) resume_load: Option<resume_load::ResumeLoad>,
+    /// A clear just happened: the history that follows is a replay and may raise the cover.
+    resume_arm: resume_load::ResumeArm,
 }
 
 impl App {
@@ -689,6 +694,8 @@ impl App {
             modal_was: false,
             sub_runs: Vec::new(),
             sub_view: None,
+            resume_load: None,
+            resume_arm: resume_load::ResumeArm::default(),
             opts,
         };
         let found = std::mem::take(&mut app.opts.skills);

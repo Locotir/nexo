@@ -345,6 +345,11 @@ impl App {
             self.read_branch();
         }
         self.sync_theme_preview();
+        // a resumed history lays out a slice per tick, off the draw path. It goes before the walk of the
+        // blocks: that walk is over every block, and a long resume must not pay it before its own slice.
+        if self.resume_load.is_some() {
+            self.pump_resume_load();
+        }
         let mut any = false;
         let mut live = false;
         for i in 0..self.blocks.len() {
@@ -477,6 +482,10 @@ impl App {
                 self.dirty = true;
             }
         }
+        // the cover is still up: the frame keeps moving until the layout finishes
+        if self.resume_load.is_some() {
+            any = true;
+        }
         // the panel knows which of its jobs are sub-agents it can write to, and reads the output of the one it shows
         if let Some(Modal::Agents(v)) = &mut self.modal {
             v.set_monitor_count(self.monitors.len());
@@ -523,7 +532,7 @@ impl App {
             self.dirty = true;
         }
         self.moving = any;
-        if any || live || self.busy || self.context_wait {
+        if any || live || self.busy || self.context_wait || self.resume_load.is_some() {
             self.dirty = true;
         }
         if let Some((_, t)) = &self.status {
@@ -545,7 +554,8 @@ impl App {
         // the banner's intro moves from the first frame, before any tick has set `moving`
         // the crest on the work line crosses the rule in 2 s: a frame every 16 ms while it is on the rule,
         // the beat while it rests off it
-        if self.words.pending() > 0 {
+        if self.words.pending() > 0 || self.resume_load.is_some() {
+            // a resume still laying out asks for a tick every frame, animations or not: the cover must not crawl
             Load::Work
         } else if self.moving || self.intro_running() || (self.busy && self.fx_on() && self.crest_on_rule()) {
             Load::Motion

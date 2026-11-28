@@ -7,6 +7,7 @@ use ratatui::widgets::{Block as Box_, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::anim;
+use crate::app::resume_load::draw_resume_cover;
 use crate::app::{
     status_life, App, HintHit, Hover, StatusHit, FILES_PANEL_MIN_W, FILES_PANEL_W, MAP_FLASH_MS, STATUS_FADE_MS,
 };
@@ -55,6 +56,11 @@ pub const MAX_QUEUE_ROWS: usize = 3;
 type Buttons = (Vec<(String, char)>, usize);
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // a resumed history still laying out: the cover, and nothing of a half-built transcript
+    if app.resume_load.is_some() {
+        draw_resume_cover(f, app, f.area());
+        return;
+    }
     draw_all(f, app);
     // a highlight noted while drawing (a list row, a block) starts its glide in this frame, after
     // the tick: the loop must know, or at rest the next frame waits for the next key and the

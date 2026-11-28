@@ -236,6 +236,7 @@ mod nexo_started_requests;
 mod opening;
 mod outside_click;
 mod pastes_questions_and_plans;
+mod resume_load;
 mod scrollbar_titles_and_status_bar;
 mod sent_message_stays_visible;
 mod session_lists_changes_and_selection;

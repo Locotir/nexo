@@ -30,9 +30,11 @@ impl App {
         self.context_wait = self.context.is_none();
         // a conversation being loaded: its words are indexed on the frames that follow, not in this burst
         self.words.defer(self.context_wait);
+        // the first message after a clear opens the loading cover; each one after grows it
         let t = crate::trace::span("history");
         self.history(index, message);
         drop(t);
+        self.note_resume_load();
         if index % 2000 == 1999 || index == 372 {
             crate::trace::totals(&format!("history {}", index + 1));
         }
@@ -40,7 +42,10 @@ impl App {
 
     pub(super) fn on_history_cleared(&mut self) {
         self.prep = None;
-        self.clear_transcript()
+        // a resume that was still loading is over: the history that follows this clear is a replay
+        self.resume_load = None;
+        self.clear_transcript();
+        self.arm_resume_load();
     }
 
     pub(super) fn on_session_changed(&mut self, session_id: String, title: String) {

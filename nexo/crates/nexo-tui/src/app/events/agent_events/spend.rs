@@ -106,6 +106,8 @@ impl App {
         }
         self.context_wait = false;
         self.words.defer(false);
+        // the replay is over: what is still unwrapped finishes under the cover, then the transcript shows
+        self.finish_resume_load();
         self.relation_quotes = None;
         self.quote_heat = None;
         self.context = Some(ContextInfo {

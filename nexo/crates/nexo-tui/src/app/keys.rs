@@ -301,6 +301,11 @@ impl App {
         if self.in_sub() {
             return self.esc_sub();
         }
+        // a resume still loading: Esc stops it and shows what is laid out so far
+        if self.resume_load.is_some() {
+            self.cancel_resume_load();
+            return;
+        }
         let now = self.now();
         // the quick presses after an Esc that closed a window were meant for the way back: they stop there
         if self.stepped_back_at.is_some_and(|t| now.saturating_duration_since(t) < STEP_BACK_WAIT) {
