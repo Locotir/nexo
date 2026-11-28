@@ -9,7 +9,7 @@ fn row(id: &str, title: &str) -> nexo_core::agent::SessionRow {
     nexo_core::agent::SessionRow { id: id.into(), title: title.into(), ..Default::default() }
 }
 
-fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
+pub(super) fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let opts = TuiOptions {
         cwd: PathBuf::from("."),

@@ -167,6 +167,7 @@ pub struct App {
     /// The draft set aside while the commands window opened by its key has the box.
     pub kept_draft: Option<crate::input::Draft>,
     pub modal: Option<Modal>,
+    explore_state: Option<explore::ExploreState>,
     /// `/diff`: the full-screen change viewer, when open.
     pub diffview: Option<crate::diffview::DiffView>,
     pending_permissions: VecDeque<PermissionRequest>,
@@ -516,6 +517,7 @@ impl App {
             hint_state: Default::default(),
             palette: None,
             modal: None,
+            explore_state: None,
             diffview: None,
             pending_permissions: VecDeque::new(),
             pending_questions: VecDeque::new(),

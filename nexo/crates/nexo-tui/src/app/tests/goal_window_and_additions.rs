@@ -465,6 +465,17 @@ fn a_message_with_only_the_start_note_added_shows_no_line() {
     assert!(all.contains("hola") && !all.contains("nexo added") && !all.contains("attached: 0 files"), "{all}");
 }
 
+fn wait_explorer(a: &mut App) {
+    for _ in 0..200 {
+        a.explore_tick();
+        if matches!(&a.modal, Some(Modal::Picker(p)) if !p.items.is_empty()) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("explorer results timed out");
+}
+
 #[test]
 fn explorer_is_a_local_preview_with_navigable_originals() {
     let (mut a, mut rx) = app();
@@ -474,6 +485,7 @@ fn explorer_is_a_local_preview_with_navigable_originals() {
     a.push(Block::User { text: "unrelated filler".into(), at: None });
     frame(&mut a, 100, 30);
     a.run_command(Command::Explore(Some("alpha 4872".into())));
+    wait_explorer(&mut a);
     let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
     assert_eq!(p.kind, PickKind::Explore);
     assert!(p.title.contains("PREVIEW, not sent"));
@@ -494,6 +506,7 @@ fn explorer_sanitizes_quotes_without_changing_originals() {
     a.blocks.push(Block::User { text: "alpha 4872 fixed".into(), at: None });
     a.blocks.push(Block::User { text: "unrelated filler".into(), at: None });
     a.explore(Some("alpha 4872"));
+    wait_explorer(&mut a);
     let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
     let label = &p.items.iter().find(|item| item.value == source.to_string()).expect("matching quote").label;
     assert!(!label.chars().any(crate::render::wrap::unsafe_char), "unsafe label: {label:?}");
@@ -522,4 +535,25 @@ fn explorer_reports_partial_when_byte_budget_is_exhausted() {
     a.explore(Some("alpha 4872"));
     let Some(Modal::Picker(p)) = &a.modal else { panic!("explorer picker") };
     assert!(p.title.contains("partial transcript"));
+}
+
+#[test]
+fn explorer_live_query_and_escape() {
+    let (mut a, _rx) = app();
+    a.push(Block::User { text: "alpha 4872 broken".into(), at: None });
+    a.push(Block::User { text: "banana 8349 fixed".into(), at: None });
+    a.explore(Some("alpha 4872"));
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.query == "alpha 4872"));
+    wait_explorer(&mut a);
+    press(&mut a, KeyCode::Char('u'));
+    // Replace via the same picker paste path used by the UI.
+    if let Some(Modal::Picker(p)) = &mut a.modal {
+        p.query.clear();
+        p.paste("banana 8349");
+    }
+    a.explore_tick();
+    wait_explorer(&mut a);
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.items.iter().any(|i| i.label.contains("banana"))));
+    press(&mut a, KeyCode::Esc);
+    assert!(a.modal.is_none());
 }

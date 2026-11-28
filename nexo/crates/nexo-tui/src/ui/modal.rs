@@ -86,6 +86,9 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             (crate::modal::permission_title(p.req.agent.as_deref(), &p.req.tool, inner_w), lines, Some(b))
         }
         Modal::Picker(p) => {
+            if p.kind == PickKind::Explore {
+                pinned = vec![Line::from(Span::styled("↑/↓ move · Enter jump · Esc close", theme.dim()))];
+            }
             let mut lines = vec![
                 Line::from(vec![
                     Span::styled("› ", theme.style(theme.accent)),

@@ -138,8 +138,12 @@ impl Picker {
     }
 
     pub(crate) fn refilter(&mut self) {
-        let labels: Vec<String> = self.items.iter().map(|i| self.hay(i)).collect();
-        self.ranked = fuzzy::rank(&self.query, &labels);
+        if self.kind == PickKind::Explore {
+            self.ranked = (0..self.items.len()).collect();
+        } else {
+            let labels: Vec<String> = self.items.iter().map(|i| self.hay(i)).collect();
+            self.ranked = fuzzy::rank(&self.query, &labels);
+        }
         self.selected = 0;
     }
 
@@ -162,6 +166,9 @@ impl Picker {
         let room = MAX_QUERY.saturating_sub(self.query.chars().count());
         let line = text.chars().filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'));
         self.query.extend(line.map(|c| if c.is_control() { ' ' } else { c }).take(room));
+        if self.kind == PickKind::Explore {
+            self.items.clear();
+        }
         self.refilter();
     }
 }
@@ -729,16 +736,25 @@ impl Modal {
                 }
                 KeyCode::Backspace => {
                     p.query.pop();
+                    if p.kind == PickKind::Explore {
+                        p.items.clear();
+                    }
                     p.refilter();
                     ModalOut::Nothing
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     p.query.clear();
+                    if p.kind == PickKind::Explore {
+                        p.items.clear();
+                    }
                     p.refilter();
                     ModalOut::Nothing
                 }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     p.query.push(c);
+                    if p.kind == PickKind::Explore {
+                        p.items.clear();
+                    }
                     p.refilter();
                     ModalOut::Nothing
                 }

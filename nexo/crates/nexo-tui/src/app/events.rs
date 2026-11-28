@@ -318,6 +318,7 @@ impl App {
     }
 
     pub fn tick_frame(&mut self, beat: bool) {
+        self.explore_tick();
         self.sub_tick();
         let t = crate::trace::span("index");
         let waiting = self.words.pending();
